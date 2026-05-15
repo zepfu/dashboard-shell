@@ -28,6 +28,7 @@ const MAX_LIMIT = 500
 const MAX_CLIENT_ROWS = 250
 const MAX_HEALTH_ROWS = 20_000
 const MAX_PROVIDER_ERROR_ROWS = 2_000
+const MAX_PROVIDER_STATUS_ROWS = 500
 const STALE_RECORD_THRESHOLD_MINUTES = 120
 const UPSTREAM_FETCH_TIMEOUT_MS = Number(
   process.env.SHELL_REPORT_UPSTREAM_TIMEOUT_MS ?? 30_000
@@ -434,6 +435,36 @@ LIMIT $1;
   return { sql, values: [MAX_PROVIDER_ERROR_ROWS] }
 }
 
+function buildProviderStatusUsageQuery() {
+  const sql = `
+SELECT
+    COALESCE(sh.provider, 'unknown') AS provider,
+    COALESCE(sh.model, 'unknown') AS model,
+    COUNT(*)::double precision AS traces,
+    SUM(COALESCE(sh.input_tokens, 0)
+      + COALESCE(sh.output_tokens, 0)
+      + COALESCE(sh.cache_read_input_tokens, 0)
+      + COALESCE(sh.cache_creation_input_tokens, 0)
+      + COALESCE(sh.reasoning_tokens_reported, 0)
+      + COALESCE(sh.reasoning_tokens_estimated, 0))::double precision AS token_total,
+    SUM(COALESCE(sh.response_cost_usd, 0))::double precision AS usd_cost,
+    MIN(COALESCE(sh.start_time, sh.created_at)) AS period_start,
+    MAX(COALESCE(sh.end_time, sh.start_time, sh.created_at)) AS period_end
+FROM public.session_history sh
+WHERE COALESCE(sh.start_time, sh.created_at) >= now() - interval '24 hours'
+  AND COALESCE(sh.start_time, sh.created_at) < now()
+GROUP BY
+    COALESCE(sh.provider, 'unknown'),
+    COALESCE(sh.model, 'unknown')
+ORDER BY
+    COALESCE(sh.provider, 'unknown') ASC,
+    token_total DESC
+LIMIT $1;
+`
+
+  return { sql, values: [MAX_PROVIDER_STATUS_ROWS] }
+}
+
 function buildQuotaQuery() {
   const sql = `
 WITH normalized AS (
@@ -710,6 +741,18 @@ function normalizeProviderErrorObservationRow(row) {
     error_class: row.error_class ?? 'unknown',
     retry_after_seconds: normalizeNumber(row.retry_after_seconds),
     expected_reset_at: row.expected_reset_at ?? null,
+  }
+}
+
+function normalizeProviderStatusUsageRow(row) {
+  return {
+    provider: row.provider ?? 'unknown',
+    model: row.model ?? 'unknown',
+    traces: normalizeNumber(row.traces) ?? 0,
+    token_total: normalizeNumber(row.token_total) ?? 0,
+    usd_cost: normalizeNumber(row.usd_cost) ?? 0,
+    period_start: row.period_start ?? null,
+    period_end: row.period_end ?? null,
   }
 }
 
@@ -1045,6 +1088,7 @@ async function handleUsageReport(req, res) {
   const clientUsageQuery = buildClientUsageQuery(requestUrl.searchParams)
   const providerLatencyHealthQuery = buildProviderLatencyHealthQuery()
   const providerErrorObservationQuery = buildProviderErrorObservationQuery()
+  const providerStatusUsageQuery = buildProviderStatusUsageQuery()
   const quotaQuery = buildQuotaQuery()
   const freshnessQuery = buildFreshnessQuery()
 
@@ -1055,6 +1099,7 @@ async function handleUsageReport(req, res) {
     clientUsageResult,
     providerLatencyHealthResult,
     providerErrorObservationResult,
+    providerStatusUsageResult,
     quotaResult,
     freshnessResult,
   ] = await Promise.all([
@@ -1070,6 +1115,7 @@ async function handleUsageReport(req, res) {
       providerErrorObservationQuery.sql,
       providerErrorObservationQuery.values
     ),
+    pool.query(providerStatusUsageQuery.sql, providerStatusUsageQuery.values),
     pool.query(quotaQuery.sql, quotaQuery.values),
     pool.query(freshnessQuery.sql, freshnessQuery.values),
   ])
@@ -1094,6 +1140,9 @@ async function handleUsageReport(req, res) {
     ),
     providerErrorObservations: providerErrorObservationResult.rows.map(
       normalizeProviderErrorObservationRow
+    ),
+    providerStatusUsage: providerStatusUsageResult.rows.map(
+      normalizeProviderStatusUsageRow
     ),
     quotas: quotaResult.rows.map(normalizeQuotaRow),
     rows,

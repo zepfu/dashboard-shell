@@ -55,6 +55,7 @@ import {
   type UsageReportClientRow,
   type UsageReportProviderErrorObservationRow,
   type UsageReportProviderLatencyHealthRow,
+  type UsageReportProviderStatusUsageRow,
   type UsageReportQuotaRow,
   type UsageReportQuotaUsageBreakdown,
   type UsageReportResponse,
@@ -87,6 +88,15 @@ const OTHER_REPOSITORY = 'Other'
 const OTHER_CLIENTS = 'Other'
 const FIVE_MINUTES_MS = 5 * 60 * 1000
 const RECENT_HEALTH_ERROR_WINDOW_MS = 24 * 60 * 60 * 1000
+const PROVIDER_STATUS_24H_WINDOW_MS = 24 * 60 * 60 * 1000
+
+const unmeteredProviderConfigs = [
+  { key: 'xai', label: 'xAI' },
+  { key: 'openrouter', label: 'OpenRouter' },
+  { key: 'local', label: 'Local' },
+] as const
+
+type UnmeteredProviderKey = (typeof unmeteredProviderConfigs)[number]['key']
 
 const grainLabels: Record<UsageReportGrain, string> = {
   day: 'Day',
@@ -281,6 +291,16 @@ type QuotaUsageSummary = {
   breakdown: UsageReportQuotaUsageBreakdown[]
 }
 
+type UnmeteredProviderStatus = {
+  key: UnmeteredProviderKey
+  label: string
+  color: string
+  tokens: number
+  cost: number
+  traces: number
+  breakdown: UsageReportQuotaUsageBreakdown[]
+}
+
 type ClientVersionBreakdown = {
   client: string
   version: string
@@ -375,6 +395,13 @@ export function UsageReportDashboard() {
       usageReport.data?.providerLatencyHealth,
       usageReport.data?.providerErrorObservations,
     ]
+  )
+  const unmeteredProviderStatuses = useMemo(
+    () =>
+      buildUnmeteredProviderStatuses(
+        usageReport.data?.providerStatusUsage ?? []
+      ),
+    [usageReport.data?.providerStatusUsage]
   )
   const recentHealthErrorCount = useMemo(
     () => countRecentHealthErrors(quotaHealthInput),
@@ -529,6 +556,9 @@ export function UsageReportDashboard() {
       <Tabs defaultValue='usage' className='space-y-4'>
         <TabsList>
           <TabsTrigger value='usage'>Usage</TabsTrigger>
+          <TabsTrigger value='client' data-client-tab=''>
+            Client
+          </TabsTrigger>
           <TabsTrigger
             value='health'
             aria-label={
@@ -551,8 +581,8 @@ export function UsageReportDashboard() {
         </TabsList>
 
         <TabsContent value='usage' className='mt-0'>
-          <div className='usage-report-layout grid grid-cols-1 gap-4 min-[1800px]:grid-cols-[minmax(0,1.25fr)_minmax(360px,0.95fr)_minmax(380px,1fr)] min-[2200px]:grid-cols-[minmax(0,1.25fr)_minmax(420px,0.95fr)_minmax(420px,0.9fr)] xl:grid-cols-7 xl:items-stretch'>
-            <Card className='usage-report-token-card min-[1800px]:col-span-1 xl:col-span-4 xl:flex xl:flex-col'>
+          <div className='usage-report-layout grid grid-cols-1 gap-4 xl:items-stretch'>
+            <Card className='usage-report-token-card xl:flex xl:flex-col'>
               <CardHeader>
                 <CardTitle>Token Trend</CardTitle>
                 <CardDescription>
@@ -630,11 +660,11 @@ export function UsageReportDashboard() {
               </CardContent>
             </Card>
 
-            <Card className='usage-report-provider-card min-[1800px]:col-span-1 min-[1800px]:row-span-1 xl:col-span-3 xl:row-span-2'>
+            <Card className='usage-report-provider-card'>
               <CardHeader>
-                <CardTitle>Provider Quota</CardTitle>
+                <CardTitle>Provider Status</CardTitle>
                 <CardDescription>
-                  Current provider and model-class windows
+                  Quota windows, 24-hour usage, and provider health
                 </CardDescription>
               </CardHeader>
               <CardContent className='space-y-4'>
@@ -646,45 +676,38 @@ export function UsageReportDashboard() {
                     <Skeleton className='h-72 w-full' />
                   </div>
                 ) : (
-                  <>
-                    <ProviderQuotaList
-                      rows={quotas}
-                      health={quotaHealthInput}
-                    />
-                    <div className='min-[1800px]:hidden'>
-                      <ClientUsagePie
-                        clientUsage={clientUsage}
-                        activeSlice={activeClientUsage}
-                        onSliceHover={setClientUsageHover}
-                        variant='embedded'
-                      />
-                    </div>
-                  </>
-                )}
-              </CardContent>
-            </Card>
-
-            <Card className='usage-report-client-card hidden min-[1800px]:flex min-[1800px]:flex-col'>
-              <CardHeader>
-                <CardTitle>Client Usage</CardTitle>
-                <CardDescription>
-                  Token share by client for the selected range
-                </CardDescription>
-              </CardHeader>
-              <CardContent className='flex flex-1 flex-col'>
-                {usageReport.isPending ? (
-                  <Skeleton className='h-[520px] w-full' />
-                ) : (
-                  <ClientUsagePie
-                    clientUsage={clientUsage}
-                    activeSlice={activeClientUsage}
-                    onSliceHover={setClientUsageHover}
-                    variant='standalone'
+                  <ProviderStatusList
+                    rows={quotas}
+                    health={quotaHealthInput}
+                    unmeteredStatuses={unmeteredProviderStatuses}
                   />
                 )}
               </CardContent>
             </Card>
           </div>
+        </TabsContent>
+
+        <TabsContent value='client' className='mt-0'>
+          <Card className='flex flex-col'>
+            <CardHeader>
+              <CardTitle>Client Usage</CardTitle>
+              <CardDescription>
+                Token share and version detail by client for the selected range
+              </CardDescription>
+            </CardHeader>
+            <CardContent className='flex flex-1 flex-col'>
+              {usageReport.isPending ? (
+                <Skeleton className='h-[520px] w-full' />
+              ) : (
+                <ClientUsagePie
+                  clientUsage={clientUsage}
+                  activeSlice={activeClientUsage}
+                  onSliceHover={setClientUsageHover}
+                  variant='standalone'
+                />
+              )}
+            </CardContent>
+          </Card>
         </TabsContent>
 
         <TabsContent value='health' className='mt-0'>
@@ -866,12 +889,14 @@ function MetricCard({
   )
 }
 
-function ProviderQuotaList({
+function ProviderStatusList({
   rows,
   health,
+  unmeteredStatuses,
 }: {
   rows: UsageReportQuotaRow[]
   health: QuotaHealthInput
+  unmeteredStatuses: UnmeteredProviderStatus[]
 }) {
   const quotaRows = rows.filter((row) =>
     [
@@ -888,171 +913,18 @@ function ProviderQuotaList({
   )
   const providerRows = quotaRows.filter((row) => !isGoogleQuotaRow(row))
   const sortedProviderRows = [...providerRows].sort(compareProviderQuotaRows)
-
-  if (!quotaRows.length) {
-    return (
-      <div className='py-8 text-center text-sm text-muted-foreground'>
-        No provider quota rows returned.
-      </div>
-    )
-  }
+  const openAiRow = sortedProviderRows.find(isOpenAiQuotaRow)
+  const anthropicRow = sortedProviderRows.find(isAnthropicQuotaRow)
+  const fallbackRows = sortedProviderRows.filter(
+    (row) => !isOpenAiQuotaRow(row) && !isAnthropicQuotaRow(row)
+  )
 
   return (
-    <div className='space-y-4'>
-      {sortedProviderRows.map((row) => {
-        const color = providerColorFor(row.provider)
-        return (
-          <div
-            key={`${row.provider}:${row.model ?? ''}`}
-            data-provider-quota={row.provider.toLowerCase()}
-            className='space-y-3 rounded-md border border-l-4 p-3'
-            style={{
-              borderLeftColor: color,
-              backgroundColor: colorWithAlpha(color, 0.07),
-            }}
-          >
-            <div className='flex items-center justify-between gap-3'>
-              <div className='min-w-0'>
-                <div className='truncate text-sm font-medium'>
-                  {formatProviderQuotaTitle(row)}
-                </div>
-              </div>
-              <Badge variant='outline'>{quotaFreshnessLabel(row)}</Badge>
-            </div>
-            <div className={providerQuotaGridClass(row)}>
-              {isOpenAiQuotaRow(row) ? (
-                <>
-                  <QuotaValue
-                    label='5-Hour'
-                    percent={row.short_remaining_pct}
-                    resetAt={row.short_reset_at}
-                    active={row.short_active}
-                    usageTokens={row.short_usage_tokens}
-                    usageBreakdown={row.short_usage_breakdown}
-                    healthOverlay={buildQuotaHealthOverlay({
-                      label: 'OpenAI 5-Hour',
-                      provider: row.provider,
-                      windowMs: 5 * 60 * 60 * 1000,
-                      health,
-                      modelMatches: (model) => !isSparkModel(model),
-                    })}
-                  />
-                  <QuotaValue
-                    label='Weekly'
-                    percent={row.weekly_remaining_pct}
-                    resetAt={row.weekly_reset_at}
-                    active={row.weekly_active}
-                    usageTokens={row.weekly_usage_tokens}
-                    usageBreakdown={row.weekly_usage_breakdown}
-                    healthOverlay={buildQuotaHealthOverlay({
-                      label: 'OpenAI Weekly',
-                      provider: row.provider,
-                      windowMs: 7 * 24 * 60 * 60 * 1000,
-                      health,
-                      modelMatches: (model) => !isSparkModel(model),
-                    })}
-                  />
-                  <QuotaValue
-                    label='Spark 5-Hour'
-                    percent={openAiSparkShortSpecialPercent(row)}
-                    resetAt={shortSpecialResetAt(row)}
-                    active={row.short_special_active}
-                    usageTokens={row.short_special_usage_tokens}
-                    usageBreakdown={row.short_special_usage_breakdown}
-                    healthOverlay={buildQuotaHealthOverlay({
-                      label: 'OpenAI Spark 5-Hour',
-                      provider: row.provider,
-                      windowMs: 5 * 60 * 60 * 1000,
-                      health,
-                      modelMatches: isSparkModel,
-                    })}
-                  />
-                  <QuotaValue
-                    label='Spark Weekly'
-                    percent={row.special_remaining_pct}
-                    resetAt={row.special_reset_at}
-                    active={row.special_active}
-                    usageTokens={row.special_usage_tokens}
-                    usageBreakdown={row.special_usage_breakdown}
-                    healthOverlay={buildQuotaHealthOverlay({
-                      label: 'OpenAI Spark Weekly',
-                      provider: row.provider,
-                      windowMs: 7 * 24 * 60 * 60 * 1000,
-                      health,
-                      modelMatches: isSparkModel,
-                    })}
-                  />
-                </>
-              ) : (
-                <>
-                  <QuotaValue
-                    label={shortQuotaLabel(row.provider)}
-                    percent={row.short_remaining_pct}
-                    resetAt={row.short_reset_at}
-                    active={row.short_active}
-                    usageTokens={row.short_usage_tokens}
-                    usageBreakdown={row.short_usage_breakdown}
-                    healthOverlay={buildQuotaHealthOverlay({
-                      label: `${providerDisplayName(row.provider)} ${shortQuotaLabel(row.provider)}`,
-                      provider: row.provider,
-                      windowMs: 5 * 60 * 60 * 1000,
-                      health,
-                    })}
-                  />
-                  <QuotaValue
-                    label='Weekly'
-                    percent={row.weekly_remaining_pct}
-                    resetAt={row.weekly_reset_at}
-                    active={row.weekly_active}
-                    usageTokens={row.weekly_usage_tokens}
-                    usageBreakdown={row.weekly_usage_breakdown}
-                    healthOverlay={buildQuotaHealthOverlay({
-                      label: `${providerDisplayName(row.provider)} Weekly`,
-                      provider: row.provider,
-                      windowMs: 7 * 24 * 60 * 60 * 1000,
-                      health,
-                    })}
-                  />
-                  <QuotaValue
-                    label={specialQuotaLabel(row.provider)}
-                    percent={row.special_remaining_pct}
-                    resetAt={row.special_reset_at}
-                    active={row.special_active}
-                    usageTokens={row.special_usage_tokens}
-                    usageBreakdown={row.special_usage_breakdown}
-                    healthOverlay={buildQuotaHealthOverlay({
-                      label: `${providerDisplayName(row.provider)} ${specialQuotaLabel(row.provider)}`,
-                      provider: row.provider,
-                      windowMs: 7 * 24 * 60 * 60 * 1000,
-                      health,
-                      modelMatches:
-                        row.provider.toLowerCase() === 'anthropic'
-                          ? isSonnetModel
-                          : undefined,
-                    })}
-                  />
-                  {shouldShowShortSpecialQuota(row) ? (
-                    <QuotaValue
-                      label={shortSpecialQuotaLabel(row.provider)}
-                      percent={row.short_special_remaining_pct}
-                      resetAt={row.short_special_reset_at}
-                      active={row.short_special_active}
-                      usageTokens={row.short_special_usage_tokens}
-                      usageBreakdown={row.short_special_usage_breakdown}
-                      healthOverlay={buildQuotaHealthOverlay({
-                        label: `${providerDisplayName(row.provider)} ${shortSpecialQuotaLabel(row.provider)}`,
-                        provider: row.provider,
-                        windowMs: 5 * 60 * 60 * 1000,
-                        health,
-                      })}
-                    />
-                  ) : null}
-                </>
-              )}
-            </div>
-          </div>
-        )
-      })}
+    <div className='provider-status-grid'>
+      {openAiRow ? <OpenAiStatusCard row={openAiRow} health={health} /> : null}
+      {anthropicRow ? (
+        <AnthropicStatusCard row={anthropicRow} health={health} />
+      ) : null}
       {googleRows.length ? (
         <GoogleQuotaCard
           rows={googleRows}
@@ -1060,7 +932,327 @@ function ProviderQuotaList({
           health={health}
         />
       ) : null}
+      {fallbackRows.map((row) => (
+        <GenericProviderStatusCard
+          key={`${row.provider}:${row.model ?? ''}`}
+          row={row}
+          health={health}
+        />
+      ))}
+      {unmeteredStatuses.map((status) => (
+        <UnmeteredProviderStatusCard
+          key={status.key}
+          status={status}
+          health={health}
+        />
+      ))}
     </div>
+  )
+}
+
+function ProviderStatusFrame({
+  providerKey,
+  title,
+  description,
+  badge,
+  color,
+  className,
+  children,
+}: {
+  providerKey: string
+  title: string
+  description?: string
+  badge: string
+  color: string
+  className?: string
+  children: ReactNode
+}) {
+  return (
+    <div
+      data-provider-quota={providerKey}
+      data-provider-status={providerKey}
+      className={`space-y-3 rounded-md border border-l-4 p-3 ${className ?? ''}`}
+      style={{
+        borderLeftColor: color,
+        backgroundColor: colorWithAlpha(color, 0.07),
+      }}
+    >
+      <div className='flex items-center justify-between gap-3'>
+        <div className='min-w-0'>
+          <div className='truncate text-sm font-medium'>{title}</div>
+          {description ? (
+            <div className='text-xs text-muted-foreground'>{description}</div>
+          ) : null}
+        </div>
+        <Badge variant='outline'>{badge}</Badge>
+      </div>
+      {children}
+    </div>
+  )
+}
+
+function OpenAiStatusCard({
+  row,
+  health,
+}: {
+  row: UsageReportQuotaRow
+  health: QuotaHealthInput
+}) {
+  return (
+    <ProviderStatusFrame
+      providerKey='openai'
+      title='OpenAI'
+      description='Normal and Spark quota windows'
+      badge={quotaFreshnessLabel(row)}
+      color={providerColorFor(row.provider)}
+      className='provider-status-span'
+    >
+      <div className='grid gap-3 text-xs sm:grid-cols-2'>
+        <div className='grid gap-3'>
+          <QuotaValue
+            label='5-Hour'
+            percent={row.short_remaining_pct}
+            resetAt={row.short_reset_at}
+            active={row.short_active}
+            usageTokens={row.short_usage_tokens}
+            usageBreakdown={row.short_usage_breakdown}
+            healthOverlay={buildQuotaHealthOverlay({
+              label: 'OpenAI 5-Hour',
+              provider: row.provider,
+              windowMs: 5 * 60 * 60 * 1000,
+              health,
+              modelMatches: (model) => !isSparkModel(model),
+            })}
+          />
+          <QuotaValue
+            label='Spark 5-Hour'
+            percent={openAiSparkShortSpecialPercent(row)}
+            resetAt={shortSpecialResetAt(row)}
+            active={row.short_special_active}
+            usageTokens={row.short_special_usage_tokens}
+            usageBreakdown={row.short_special_usage_breakdown}
+            healthOverlay={buildQuotaHealthOverlay({
+              label: 'OpenAI Spark 5-Hour',
+              provider: row.provider,
+              windowMs: 5 * 60 * 60 * 1000,
+              health,
+              modelMatches: isSparkModel,
+            })}
+          />
+        </div>
+        <div className='grid gap-3'>
+          <QuotaValue
+            label='Weekly'
+            percent={row.weekly_remaining_pct}
+            resetAt={row.weekly_reset_at}
+            active={row.weekly_active}
+            usageTokens={row.weekly_usage_tokens}
+            usageBreakdown={row.weekly_usage_breakdown}
+            healthOverlay={buildQuotaHealthOverlay({
+              label: 'OpenAI Weekly',
+              provider: row.provider,
+              windowMs: 7 * 24 * 60 * 60 * 1000,
+              health,
+              modelMatches: (model) => !isSparkModel(model),
+            })}
+          />
+          <QuotaValue
+            label='Spark Weekly'
+            percent={row.special_remaining_pct}
+            resetAt={row.special_reset_at}
+            active={row.special_active}
+            usageTokens={row.special_usage_tokens}
+            usageBreakdown={row.special_usage_breakdown}
+            healthOverlay={buildQuotaHealthOverlay({
+              label: 'OpenAI Spark Weekly',
+              provider: row.provider,
+              windowMs: 7 * 24 * 60 * 60 * 1000,
+              health,
+              modelMatches: isSparkModel,
+            })}
+          />
+        </div>
+      </div>
+    </ProviderStatusFrame>
+  )
+}
+
+function AnthropicStatusCard({
+  row,
+  health,
+}: {
+  row: UsageReportQuotaRow
+  health: QuotaHealthInput
+}) {
+  return (
+    <ProviderStatusFrame
+      providerKey='anthropic'
+      title='Anthropic'
+      description='5-hour, weekly, and Sonnet windows'
+      badge={quotaFreshnessLabel(row)}
+      color={providerColorFor(row.provider)}
+    >
+      <div className='grid gap-3 text-xs'>
+        <QuotaValue
+          label='5-Hour'
+          percent={row.short_remaining_pct}
+          resetAt={row.short_reset_at}
+          active={row.short_active}
+          usageTokens={row.short_usage_tokens}
+          usageBreakdown={row.short_usage_breakdown}
+          healthOverlay={buildQuotaHealthOverlay({
+            label: 'Anthropic 5-Hour',
+            provider: row.provider,
+            windowMs: 5 * 60 * 60 * 1000,
+            health,
+          })}
+        />
+        <QuotaValue
+          label='Weekly'
+          percent={row.weekly_remaining_pct}
+          resetAt={row.weekly_reset_at}
+          active={row.weekly_active}
+          usageTokens={row.weekly_usage_tokens}
+          usageBreakdown={row.weekly_usage_breakdown}
+          healthOverlay={buildQuotaHealthOverlay({
+            label: 'Anthropic Weekly',
+            provider: row.provider,
+            windowMs: 7 * 24 * 60 * 60 * 1000,
+            health,
+          })}
+        />
+        <QuotaValue
+          label='Sonnet'
+          percent={row.special_remaining_pct}
+          resetAt={row.special_reset_at}
+          active={row.special_active}
+          usageTokens={row.special_usage_tokens}
+          usageBreakdown={row.special_usage_breakdown}
+          healthOverlay={buildQuotaHealthOverlay({
+            label: 'Anthropic Sonnet',
+            provider: row.provider,
+            windowMs: 7 * 24 * 60 * 60 * 1000,
+            health,
+            modelMatches: isSonnetModel,
+          })}
+        />
+      </div>
+    </ProviderStatusFrame>
+  )
+}
+
+function GenericProviderStatusCard({
+  row,
+  health,
+}: {
+  row: UsageReportQuotaRow
+  health: QuotaHealthInput
+}) {
+  return (
+    <ProviderStatusFrame
+      providerKey={providerColorKey(row.provider)}
+      title={formatProviderQuotaTitle(row)}
+      badge={quotaFreshnessLabel(row)}
+      color={providerColorFor(row.provider)}
+    >
+      <div className='grid gap-3 text-xs'>
+        <QuotaValue
+          label={shortQuotaLabel(row.provider)}
+          percent={row.short_remaining_pct}
+          resetAt={row.short_reset_at}
+          active={row.short_active}
+          usageTokens={row.short_usage_tokens}
+          usageBreakdown={row.short_usage_breakdown}
+          healthOverlay={buildQuotaHealthOverlay({
+            label: `${providerDisplayName(row.provider)} ${shortQuotaLabel(row.provider)}`,
+            provider: row.provider,
+            windowMs: 5 * 60 * 60 * 1000,
+            health,
+          })}
+        />
+        <QuotaValue
+          label='Weekly'
+          percent={row.weekly_remaining_pct}
+          resetAt={row.weekly_reset_at}
+          active={row.weekly_active}
+          usageTokens={row.weekly_usage_tokens}
+          usageBreakdown={row.weekly_usage_breakdown}
+          healthOverlay={buildQuotaHealthOverlay({
+            label: `${providerDisplayName(row.provider)} Weekly`,
+            provider: row.provider,
+            windowMs: 7 * 24 * 60 * 60 * 1000,
+            health,
+          })}
+        />
+        <QuotaValue
+          label={specialQuotaLabel(row.provider)}
+          percent={row.special_remaining_pct}
+          resetAt={row.special_reset_at}
+          active={row.special_active}
+          usageTokens={row.special_usage_tokens}
+          usageBreakdown={row.special_usage_breakdown}
+          healthOverlay={buildQuotaHealthOverlay({
+            label: `${providerDisplayName(row.provider)} ${specialQuotaLabel(row.provider)}`,
+            provider: row.provider,
+            windowMs: 7 * 24 * 60 * 60 * 1000,
+            health,
+          })}
+        />
+        {shouldShowShortSpecialQuota(row) ? (
+          <QuotaValue
+            label={shortSpecialQuotaLabel(row.provider)}
+            percent={row.short_special_remaining_pct}
+            resetAt={row.short_special_reset_at}
+            active={row.short_special_active}
+            usageTokens={row.short_special_usage_tokens}
+            usageBreakdown={row.short_special_usage_breakdown}
+            healthOverlay={buildQuotaHealthOverlay({
+              label: `${providerDisplayName(row.provider)} ${shortSpecialQuotaLabel(row.provider)}`,
+              provider: row.provider,
+              windowMs: 5 * 60 * 60 * 1000,
+              health,
+            })}
+          />
+        ) : null}
+      </div>
+    </ProviderStatusFrame>
+  )
+}
+
+function UnmeteredProviderStatusCard({
+  status,
+  health,
+}: {
+  status: UnmeteredProviderStatus
+  health: QuotaHealthInput
+}) {
+  return (
+    <ProviderStatusFrame
+      providerKey={status.key}
+      title={status.label}
+      description='24-hour usage and health window'
+      badge='Unmetered'
+      color={status.color}
+    >
+      <div className='grid gap-3 text-xs'>
+        <QuotaValue
+          label='24-Hour'
+          percent={null}
+          percentLabel='∞'
+          resetAt={nextLocalMidnightIso()}
+          active
+          usageTokens={status.tokens}
+          usageBreakdown={status.breakdown}
+          usageLabel='tokens over 24h'
+          healthOverlay={buildQuotaHealthOverlay({
+            label: `${status.label} 24-Hour`,
+            provider: status.key,
+            windowMs: PROVIDER_STATUS_24H_WINDOW_MS,
+            health,
+          })}
+        />
+      </div>
+    </ProviderStatusFrame>
   )
 }
 
@@ -1505,6 +1697,10 @@ function isOpenAiQuotaRow(row: UsageReportQuotaRow) {
   return row.provider.toLowerCase() === 'openai'
 }
 
+function isAnthropicQuotaRow(row: UsageReportQuotaRow) {
+  return row.provider.toLowerCase() === 'anthropic'
+}
+
 function compareProviderQuotaRows(
   left: UsageReportQuotaRow,
   right: UsageReportQuotaRow
@@ -1555,24 +1751,14 @@ function GoogleQuotaCard({
   }
 
   return (
-    <div
-      data-provider-quota='google'
-      className='space-y-3 rounded-md border border-l-4 p-3'
-      style={{
-        borderLeftColor: color,
-        backgroundColor: colorWithAlpha(color, 0.07),
-      }}
+    <ProviderStatusFrame
+      providerKey='google'
+      title='Gemini'
+      description='Independent model-class request windows'
+      badge={googleQuotaFreshnessLabel(classRows)}
+      color={color}
     >
-      <div className='flex items-center justify-between gap-3'>
-        <div className='min-w-0'>
-          <div className='truncate text-sm font-medium'>Gemini</div>
-          <div className='text-xs text-muted-foreground'>
-            Independent model-class request windows
-          </div>
-        </div>
-        <Badge variant='outline'>{googleQuotaFreshnessLabel(classRows)}</Badge>
-      </div>
-      <div className='grid grid-cols-[repeat(auto-fit,minmax(11rem,1fr))] gap-3 text-xs'>
+      <div className='grid gap-3 text-xs'>
         {googleQuotaClasses.map((quotaClass) => {
           const row = classRows.get(quotaClass.key)
           return (
@@ -1596,28 +1782,33 @@ function GoogleQuotaCard({
           )
         })}
       </div>
-    </div>
+    </ProviderStatusFrame>
   )
 }
 
 function QuotaValue({
   label,
   percent,
+  percentLabel: percentLabelOverride,
   resetAt,
   active,
   usageTokens,
   usageBreakdown,
+  usageLabel,
   healthOverlay,
 }: {
   label: string
   percent: number | null
+  percentLabel?: string
   resetAt: string | null
   active: boolean
   usageTokens: number
   usageBreakdown: UsageReportQuotaUsageBreakdown[]
+  usageLabel?: string
   healthOverlay?: QuotaHealthOverlay | null
 }) {
-  const percentLabel = formatPercent(percent)
+  const percentLabel = percentLabelOverride ?? formatPercent(percent)
+  const tokenUsageLabel = usageLabel ?? 'tokens since reset'
 
   return (
     <div
@@ -1642,7 +1833,11 @@ function QuotaValue({
             {active ? 'Resets ' : 'Latest '}
             {formatShortDateTime(resetAt)}
           </div>
-          <QuotaUsageBar tokens={usageTokens} breakdown={usageBreakdown} />
+          <QuotaUsageBar
+            tokens={usageTokens}
+            breakdown={usageBreakdown}
+            usageLabel={tokenUsageLabel}
+          />
         </div>
         <QuotaHealthTimeline overlay={healthOverlay} />
       </div>
@@ -1653,22 +1848,24 @@ function QuotaValue({
 function QuotaUsageBar({
   tokens,
   breakdown,
+  usageLabel = 'tokens since reset',
 }: {
   tokens: number
   breakdown: UsageReportQuotaUsageBreakdown[]
+  usageLabel?: string
 }) {
   const visibleBreakdown = breakdown.filter((item) => item.tokens > 0)
 
   return (
     <div className='space-y-1 pt-1'>
       <div className='text-[11px] text-muted-foreground tabular-nums'>
-        {formatCompact(tokens)} tokens since reset
+        {formatCompact(tokens)} {usageLabel}
       </div>
       <UiTooltip>
         <TooltipTrigger asChild>
           <div
             className='flex h-2 overflow-hidden rounded-full bg-muted ring-sidebar-ring outline-none focus-visible:ring-2'
-            aria-label={`${formatCompact(tokens)} tokens since reset`}
+            aria-label={`${formatCompact(tokens)} ${usageLabel}`}
             tabIndex={0}
           >
             {visibleBreakdown.length ? (
@@ -1697,7 +1894,11 @@ function QuotaUsageBar({
           sideOffset={6}
           className='max-h-72 w-80 overflow-auto border bg-popover text-popover-foreground shadow-md'
         >
-          <QuotaUsageTooltip tokens={tokens} breakdown={visibleBreakdown} />
+          <QuotaUsageTooltip
+            tokens={tokens}
+            breakdown={visibleBreakdown}
+            usageLabel={usageLabel}
+          />
         </TooltipContent>
       </UiTooltip>
       {visibleBreakdown.length ? (
@@ -1730,14 +1931,16 @@ function QuotaUsageBar({
 function QuotaUsageTooltip({
   tokens,
   breakdown,
+  usageLabel = 'tokens since reset',
 }: {
   tokens: number
   breakdown: UsageReportQuotaUsageBreakdown[]
+  usageLabel?: string
 }) {
   if (!breakdown.length) {
     return (
       <div className='text-xs text-muted-foreground'>
-        No token usage recorded since reset.
+        No token usage recorded for this window.
       </div>
     )
   }
@@ -1745,7 +1948,7 @@ function QuotaUsageTooltip({
   return (
     <div className='space-y-2'>
       <div className='border-b pb-2 text-xs font-medium'>
-        {formatCompact(tokens)} tokens since reset
+        {formatCompact(tokens)} {usageLabel}
       </div>
       <div className='space-y-1'>
         {breakdown.map((item) => {
@@ -2082,6 +2285,57 @@ function TokenTrendDetail({
       ) : null}
     </div>
   )
+}
+
+function buildUnmeteredProviderStatuses(
+  rows: UsageReportProviderStatusUsageRow[]
+): UnmeteredProviderStatus[] {
+  const byProvider = new Map<UnmeteredProviderKey, UnmeteredProviderStatus>()
+  for (const config of unmeteredProviderConfigs) {
+    byProvider.set(config.key, {
+      key: config.key,
+      label: config.label,
+      color: providerColorFor(config.key),
+      tokens: 0,
+      cost: 0,
+      traces: 0,
+      breakdown: [],
+    })
+  }
+
+  for (const row of rows) {
+    const providerKey = providerColorKey(row.provider)
+    if (!isUnmeteredProviderKey(providerKey)) continue
+    const status = byProvider.get(providerKey)
+    if (!status) continue
+
+    status.tokens += row.token_total
+    status.cost += row.usd_cost
+    status.traces += row.traces
+    status.breakdown = mergeQuotaUsage(
+      {
+        tokens: status.tokens - row.token_total,
+        breakdown: status.breakdown,
+      },
+      {
+        tokens: row.token_total,
+        breakdown: [
+          {
+            model: row.model,
+            tokens: row.token_total,
+            cost: row.usd_cost,
+            traces: row.traces,
+          },
+        ],
+      }
+    ).breakdown
+  }
+
+  return unmeteredProviderConfigs.map((config) => byProvider.get(config.key)!)
+}
+
+function isUnmeteredProviderKey(value: string): value is UnmeteredProviderKey {
+  return unmeteredProviderConfigs.some((config) => config.key === value)
 }
 
 function buildProviderTrendRows(rows: UsageReportTrendRow[]) {
@@ -3302,12 +3556,6 @@ function quotaPercentSortValue(value: number | null) {
   return value ?? Number.POSITIVE_INFINITY
 }
 
-function providerQuotaGridClass(row: UsageReportQuotaRow) {
-  return shouldShowShortSpecialQuota(row)
-    ? 'grid grid-cols-[repeat(auto-fit,minmax(12rem,1fr))] gap-3 text-xs'
-    : 'grid grid-cols-[repeat(auto-fit,minmax(11rem,1fr))] gap-3 text-xs'
-}
-
 function shouldShowShortSpecialQuota(row: UsageReportQuotaRow) {
   return (
     row.provider.toLowerCase() === 'openai' ||
@@ -3344,6 +3592,14 @@ function providerDisplayName(provider: string) {
   if (normalized === 'openai') return 'OpenAI'
   if (normalized === 'anthropic') return 'Anthropic'
   if (normalized === 'google' || normalized === 'gemini') return 'Gemini'
+  if (normalized === 'xai' || normalized === 'x.ai') return 'xAI'
+  if (normalized === 'openrouter' || normalized === 'open-router') {
+    return 'OpenRouter'
+  }
+  if (normalized === 'local' || normalized.startsWith('local_')) {
+    return 'Local'
+  }
+  if (normalized === 'nvidia_nim') return 'NVIDIA NIM'
   if (normalized === 'chatgpt') return 'ChatGPT'
   return provider
 }
@@ -3411,6 +3667,18 @@ function formatShortDateTime(value: string | null | undefined) {
     hour: 'numeric',
     minute: '2-digit',
   }).format(new Date(value))
+}
+
+function nextLocalMidnightIso(now = new Date()) {
+  return new Date(
+    now.getFullYear(),
+    now.getMonth(),
+    now.getDate() + 1,
+    0,
+    0,
+    0,
+    0
+  ).toISOString()
 }
 
 function formatDurationMs(value: number | null | undefined) {
