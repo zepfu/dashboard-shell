@@ -1,5 +1,7 @@
+import type { CSSProperties } from 'react'
 import { Link } from '@tanstack/react-router'
 import { Menu } from 'lucide-react'
+import { getAccentStyle } from '@/lib/accent-color'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import {
@@ -15,7 +17,16 @@ type TopNavProps = React.HTMLAttributes<HTMLElement> & {
     href: string
     isActive: boolean
     disabled?: boolean
+    accentColor?: string
   }[]
+}
+
+function topNavAccentStyle(accentColor: string | undefined) {
+  return getAccentStyle(accentColor, {
+    colorVar: '--top-nav-accent',
+    backgroundVar: '--top-nav-accent-bg',
+    backgroundTint: 12,
+  }) as CSSProperties | undefined
 }
 
 export function TopNav({ className, links, ...props }: TopNavProps) {
@@ -29,11 +40,19 @@ export function TopNav({ className, links, ...props }: TopNavProps) {
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent side='bottom' align='start'>
-            {links.map(({ title, href, isActive, disabled }) => (
+            {links.map(({ title, href, isActive, disabled, accentColor }) => (
               <DropdownMenuItem key={`${title}-${href}`} asChild>
                 <Link
                   to={href}
-                  className={!isActive ? 'text-muted-foreground' : ''}
+                  style={topNavAccentStyle(accentColor)}
+                  className={cn(
+                    !isActive && 'text-muted-foreground',
+                    accentColor &&
+                      'hover:text-[var(--top-nav-accent)] focus:text-[var(--top-nav-accent)]',
+                    isActive &&
+                      accentColor &&
+                      'bg-[var(--top-nav-accent-bg)] text-[var(--top-nav-accent)]'
+                  )}
                   disabled={disabled}
                 >
                   {title}
@@ -51,12 +70,20 @@ export function TopNav({ className, links, ...props }: TopNavProps) {
         )}
         {...props}
       >
-        {links.map(({ title, href, isActive, disabled }) => (
+        {links.map(({ title, href, isActive, disabled, accentColor }) => (
           <Link
             key={`${title}-${href}`}
             to={href}
             disabled={disabled}
-            className={`text-sm font-medium transition-colors hover:text-primary ${isActive ? '' : 'text-muted-foreground'}`}
+            style={topNavAccentStyle(accentColor)}
+            className={cn(
+              'relative text-sm font-medium transition-colors hover:text-primary',
+              !isActive && 'text-muted-foreground',
+              accentColor && 'hover:text-[var(--top-nav-accent)]',
+              isActive &&
+                accentColor &&
+                'text-[var(--top-nav-accent)] after:absolute after:start-0 after:-bottom-2 after:h-0.5 after:w-full after:rounded-full after:bg-[var(--top-nav-accent)]'
+            )}
           >
             {title}
           </Link>

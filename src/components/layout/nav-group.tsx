@@ -1,6 +1,8 @@
 import { type ReactNode } from 'react'
 import { Link, useLocation } from '@tanstack/react-router'
 import { ChevronRight } from 'lucide-react'
+import { getAccentStyle } from '@/lib/accent-color'
+import { cn } from '@/lib/utils'
 import {
   Collapsible,
   CollapsibleContent,
@@ -32,6 +34,21 @@ import {
   type NavLink,
   type NavGroup as NavGroupProps,
 } from './types'
+
+const accentedNavClass =
+  'data-[active=true]:bg-[var(--nav-accent-bg)] data-[active=true]:text-[var(--nav-accent)] hover:text-[var(--nav-accent)]'
+
+function navAccentClass(accentColor: string | undefined) {
+  return accentColor ? accentedNavClass : undefined
+}
+
+function navAccentStyle(accentColor: string | undefined) {
+  return getAccentStyle(accentColor, {
+    colorVar: '--nav-accent',
+    backgroundVar: '--nav-accent-bg',
+    backgroundTint: 12,
+  })
+}
 
 export function NavGroup({ title, items }: NavGroupProps) {
   const { state, isMobile } = useSidebar()
@@ -70,6 +87,8 @@ function SidebarMenuLink({ item, href }: { item: NavLink; href: string }) {
         asChild
         isActive={checkIsActive(href, item)}
         tooltip={item.title}
+        style={navAccentStyle(item.accentColor)}
+        className={navAccentClass(item.accentColor)}
       >
         <Link to={item.url} onClick={() => setOpenMobile(false)}>
           {item.icon && <item.icon />}
@@ -89,15 +108,17 @@ function SidebarMenuCollapsible({
   href: string
 }) {
   const { setOpenMobile } = useSidebar()
+  const isActive = checkIsActive(href, item, true)
   return (
-    <Collapsible
-      asChild
-      defaultOpen={checkIsActive(href, item, true)}
-      className='group/collapsible'
-    >
+    <Collapsible asChild defaultOpen={isActive} className='group/collapsible'>
       <SidebarMenuItem>
         <CollapsibleTrigger asChild>
-          <SidebarMenuButton tooltip={item.title}>
+          <SidebarMenuButton
+            tooltip={item.title}
+            isActive={isActive}
+            style={navAccentStyle(item.accentColor)}
+            className={navAccentClass(item.accentColor)}
+          >
             {item.icon && <item.icon />}
             <span>{item.title}</span>
             {item.badge && <NavBadge>{item.badge}</NavBadge>}
@@ -111,6 +132,12 @@ function SidebarMenuCollapsible({
                 <SidebarMenuSubButton
                   asChild
                   isActive={checkIsActive(href, subItem)}
+                  style={navAccentStyle(
+                    subItem.accentColor ?? item.accentColor
+                  )}
+                  className={navAccentClass(
+                    subItem.accentColor ?? item.accentColor
+                  )}
                 >
                   <Link to={subItem.url} onClick={() => setOpenMobile(false)}>
                     {subItem.icon && <subItem.icon />}
@@ -134,13 +161,16 @@ function SidebarMenuCollapsedDropdown({
   item: NavCollapsible
   href: string
 }) {
+  const isActive = checkIsActive(href, item, true)
   return (
     <SidebarMenuItem>
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
           <SidebarMenuButton
             tooltip={item.title}
-            isActive={checkIsActive(href, item)}
+            isActive={isActive}
+            style={navAccentStyle(item.accentColor)}
+            className={navAccentClass(item.accentColor)}
           >
             {item.icon && <item.icon />}
             <span>{item.title}</span>
@@ -157,7 +187,15 @@ function SidebarMenuCollapsedDropdown({
             <DropdownMenuItem key={`${sub.title}-${sub.url}`} asChild>
               <Link
                 to={sub.url}
-                className={`${checkIsActive(href, sub) ? 'bg-secondary' : ''}`}
+                style={navAccentStyle(sub.accentColor ?? item.accentColor)}
+                className={cn(
+                  checkIsActive(href, sub) &&
+                    ((sub.accentColor ?? item.accentColor)
+                      ? 'bg-[var(--nav-accent-bg)] text-[var(--nav-accent)]'
+                      : 'bg-secondary'),
+                  (sub.accentColor ?? item.accentColor) &&
+                    'hover:text-[var(--nav-accent)] focus:text-[var(--nav-accent)]'
+                )}
               >
                 {sub.icon && <sub.icon />}
                 <span className='max-w-52 text-wrap'>{sub.title}</span>

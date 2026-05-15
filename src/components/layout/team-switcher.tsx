@@ -1,12 +1,13 @@
 import * as React from 'react'
-import { ChevronsUpDown, Plus } from 'lucide-react'
+import { Link, useLocation } from '@tanstack/react-router'
+import { ChevronsUpDown } from 'lucide-react'
+import { getAccentStyle } from '@/lib/accent-color'
+import { cn } from '@/lib/utils'
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuLabel,
-  DropdownMenuSeparator,
-  DropdownMenuShortcut,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import {
@@ -21,12 +22,23 @@ type TeamSwitcherProps = {
     name: string
     logo: React.ElementType
     plan: string
+    basePath: string
+    accentColor?: string
   }[]
 }
 
 export function TeamSwitcher({ teams }: TeamSwitcherProps) {
   const { isMobile } = useSidebar()
-  const [activeTeam, setActiveTeam] = React.useState(teams[0])
+  const location = useLocation()
+  const activeTeam = React.useMemo(
+    () => activeTeamForPath(teams, location.pathname),
+    [location.pathname, teams]
+  )
+  const activeAccentStyle = getAccentStyle(activeTeam.accentColor, {
+    colorVar: '--team-accent',
+    backgroundVar: '--team-accent-bg',
+    backgroundTint: 14,
+  })
 
   return (
     <SidebarMenu>
@@ -37,7 +49,15 @@ export function TeamSwitcher({ teams }: TeamSwitcherProps) {
               size='lg'
               className='data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground'
             >
-              <div className='flex aspect-square size-8 items-center justify-center rounded-lg bg-sidebar-primary text-sidebar-primary-foreground'>
+              <div
+                style={activeAccentStyle}
+                className={cn(
+                  'flex aspect-square size-8 items-center justify-center rounded-lg',
+                  activeTeam.accentColor
+                    ? 'bg-[var(--team-accent)] text-white shadow-sm'
+                    : 'bg-sidebar-primary text-sidebar-primary-foreground'
+                )}
+              >
                 <activeTeam.logo className='size-4' />
               </div>
               <div className='grid flex-1 text-start text-sm leading-tight'>
@@ -58,29 +78,55 @@ export function TeamSwitcher({ teams }: TeamSwitcherProps) {
             <DropdownMenuLabel className='text-xs text-muted-foreground'>
               Teams
             </DropdownMenuLabel>
-            {teams.map((team, index) => (
-              <DropdownMenuItem
-                key={team.name}
-                onClick={() => setActiveTeam(team)}
-                className='gap-2 p-2'
-              >
-                <div className='flex size-6 items-center justify-center rounded-sm border'>
-                  <team.logo className='size-4 shrink-0' />
-                </div>
-                {team.name}
-                <DropdownMenuShortcut>⌘{index + 1}</DropdownMenuShortcut>
+            {teams.map((team) => (
+              <DropdownMenuItem key={team.name} className='gap-2 p-2' asChild>
+                <Link
+                  to={team.basePath}
+                  className='flex w-full items-center gap-2'
+                  aria-current={team === activeTeam ? 'page' : undefined}
+                >
+                  <div
+                    style={getAccentStyle(team.accentColor, {
+                      colorVar: '--team-accent',
+                      backgroundVar: '--team-accent-bg',
+                      backgroundTint: 14,
+                    })}
+                    className={cn(
+                      'flex size-6 items-center justify-center rounded-sm border',
+                      team.accentColor &&
+                        'border-transparent bg-[var(--team-accent-bg)] text-[var(--team-accent)]'
+                    )}
+                  >
+                    <team.logo className='size-4 shrink-0' />
+                  </div>
+                  <span>{team.name}</span>
+                  {team === activeTeam ? (
+                    <span className='ms-auto text-xs text-muted-foreground'>
+                      Current
+                    </span>
+                  ) : null}
+                </Link>
               </DropdownMenuItem>
             ))}
-            <DropdownMenuSeparator />
-            <DropdownMenuItem className='gap-2 p-2'>
-              <div className='flex size-6 items-center justify-center rounded-md border bg-background'>
-                <Plus className='size-4' />
-              </div>
-              <div className='font-medium text-muted-foreground'>Add team</div>
-            </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
       </SidebarMenuItem>
     </SidebarMenu>
+  )
+}
+
+function activeTeamForPath(
+  teams: TeamSwitcherProps['teams'],
+  pathname: string
+) {
+  return (
+    [...teams]
+      .sort((left, right) => right.basePath.length - left.basePath.length)
+      .find((team) =>
+        team.basePath === '/'
+          ? pathname === '/'
+          : pathname === team.basePath ||
+            pathname.startsWith(`${team.basePath}/`)
+      ) ?? teams[0]
   )
 }

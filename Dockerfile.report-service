@@ -1,0 +1,21 @@
+FROM node:22-alpine
+
+WORKDIR /app
+
+ENV NODE_ENV=production
+ENV SHELL_REPORT_PORT=3010
+
+COPY server/package.json server/pnpm-lock.yaml ./
+
+RUN corepack enable \
+  && corepack prepare pnpm@10.30.2 --activate \
+  && pnpm install --prod --frozen-lockfile --ignore-scripts
+
+COPY server ./server
+
+EXPOSE 3010
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD node -e "fetch('http://127.0.0.1:3010/api/shell/health').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+
+CMD ["node", "server/report-service.mjs"]

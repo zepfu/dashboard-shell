@@ -1,0 +1,62 @@
+# Pre-commit hooks for dashboard-shell
+# Install: pip install pre-commit && pre-commit install
+# Run all hooks against full tree: pre-commit run --all-files
+
+repos:
+  # Standard hygiene
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-json
+        exclude: ^tsconfig\.(app|node)\.json$
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: ['--maxkb=500']
+      - id: mixed-line-ending
+        args: ['--fix=lf']
+
+  # Secret scanning (mirrors aawm-tap-dashboard)
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.21.2
+    hooks:
+      - id: gitleaks
+
+  # GitHub Actions workflow linting (mirrors aawm-tap-dashboard)
+  - repo: https://github.com/rhysd/actionlint
+    rev: v1.7.4
+    hooks:
+      - id: actionlint
+
+  # TypeScript type check
+  - repo: local
+    hooks:
+      - id: tsc-check
+        name: TypeScript type check
+        entry: npx tsc --noEmit -p tsconfig.json
+        language: system
+        types_or: [ts, tsx]
+        pass_filenames: false
+        require_serial: true
+
+  # ESLint
+  - repo: local
+    hooks:
+      - id: eslint
+        name: ESLint
+        entry: npx eslint
+        language: system
+        types_or: [ts, tsx]
+        require_serial: true
+
+  # Prettier
+  - repo: local
+    hooks:
+      - id: prettier
+        name: Prettier
+        entry: npx prettier --check
+        language: system
+        types_or: [ts, tsx, json, yaml, markdown]
+        require_serial: true

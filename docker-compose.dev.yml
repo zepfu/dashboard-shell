@@ -1,0 +1,152 @@
+services:
+  dashboard-shell-dev:
+    image: node:22-alpine
+    container_name: dashboard-shell-dev
+    restart: unless-stopped
+    working_dir: /workspace/dashboard-shell
+    depends_on:
+      aawm-tap-dashboard-dev:
+        condition: service_healthy
+      dashboard-shell-reports-dev:
+        condition: service_healthy
+    environment:
+      AAWM_TAP_REMOTE_ENTRY: "http://localhost:${AAWM_TAP_REMOTE_DEV_PORT:-5173}/remoteEntry.js"
+      AAWM_TAP_REMOTE_ENTRY_TYPE: "module"
+      CHOKIDAR_USEPOLLING: "${CHOKIDAR_USEPOLLING:-true}"
+      DASHBOARD_SHELL_DEV_PORT: "${DASHBOARD_SHELL_DEV_PORT:-3006}"
+      SHELL_REPORT_API_TARGET: "http://dashboard-shell-reports-dev:${SHELL_REPORT_PORT:-3010}"
+      WATCHPACK_POLLING: "${WATCHPACK_POLLING:-true}"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "${DASHBOARD_SHELL_DEV_PORT:-3006}:${DASHBOARD_SHELL_DEV_PORT:-3006}"
+    networks:
+      - aawm_tap
+    volumes:
+      - .:/workspace/dashboard-shell
+      - dashboard_shell_dev_node_modules:/workspace/dashboard-shell/node_modules
+      - dashboard_shell_dev_pnpm_store:/pnpm/store
+    command:
+      - sh
+      - -lc
+      - |
+        corepack enable
+        corepack prepare pnpm@10.30.2 --activate
+        pnpm config set store-dir /pnpm/store
+        pnpm install --frozen-lockfile
+        rm -rf node_modules/.vite
+        pnpm exec vite --host 0.0.0.0 --port "$${DASHBOARD_SHELL_DEV_PORT:-3006}" --strictPort
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "wget -qO- http://127.0.0.1:$${DASHBOARD_SHELL_DEV_PORT:-3006}/ >/dev/null",
+        ]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 5
+
+  dashboard-shell-reports-dev:
+    image: node:22-alpine
+    container_name: dashboard-shell-reports-dev
+    restart: unless-stopped
+    working_dir: /workspace/dashboard-shell
+    environment:
+      AAWM_TAP_API_KEY: "${AAWM_TAP_API_KEY:-}"
+      AAWM_TAP_ACCESS_TOKEN: "${AAWM_TAP_ACCESS_TOKEN:-}"
+      AAWM_TAP_ADMIN_CAPABILITY: "${AAWM_TAP_ADMIN_CAPABILITY:-}"
+      AAWM_TAP_API_TARGET: "${AAWM_TAP_API_TARGET:-http://host.docker.internal:8010}"
+      VITE_API_KEY: "${VITE_API_KEY:-}"
+      VITE_ACCESS_TOKEN: "${VITE_ACCESS_TOKEN:-}"
+      VITE_TAP_ACCESS_TOKEN: "${VITE_TAP_ACCESS_TOKEN:-}"
+      VITE_TAP_API_KEY: "${VITE_TAP_API_KEY:-}"
+      DATABASE_URL: "${DATABASE_URL:-}"
+      SHELL_REPORT_DATABASE_HOST_REWRITE: "${SHELL_REPORT_DATABASE_HOST_REWRITE:-aawm-postgres18}"
+      SHELL_REPORT_DATABASE_PORT_REWRITE: "${SHELL_REPORT_DATABASE_PORT_REWRITE:-5432}"
+      SHELL_REPORT_DB_POOL_MAX: "${SHELL_REPORT_DB_POOL_MAX:-5}"
+      SHELL_REPORT_PORT: "${SHELL_REPORT_PORT:-3010}"
+    expose:
+      - "${SHELL_REPORT_PORT:-3010}"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - aawm_tap
+      - aawm_core
+    volumes:
+      - .:/workspace/dashboard-shell
+      - dashboard_shell_reports_dev_node_modules:/workspace/dashboard-shell/node_modules
+      - dashboard_shell_reports_dev_pnpm_store:/pnpm/store
+    command:
+      - sh
+      - -lc
+      - |
+        corepack enable
+        corepack prepare pnpm@10.30.2 --activate
+        pnpm config set store-dir /pnpm/store
+        pnpm install --frozen-lockfile
+        node server/report-service.mjs
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "node -e \"fetch('http://127.0.0.1:$${SHELL_REPORT_PORT:-3010}/api/shell/health').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\"",
+        ]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 5
+
+  aawm-tap-dashboard-dev:
+    image: node:22-alpine
+    container_name: dashboard-shell-aawm-tap-dashboard-dev
+    restart: unless-stopped
+    working_dir: /workspace/aawm-tap-dashboard
+    environment:
+      AAWM_TAP_REMOTE_DEV_PORT: "${AAWM_TAP_REMOTE_DEV_PORT:-5173}"
+      CHOKIDAR_USEPOLLING: "${CHOKIDAR_USEPOLLING:-true}"
+      VITE_API_KEY: ""
+      VITE_ACCESS_TOKEN: ""
+      VITE_TAP_ACCESS_TOKEN: ""
+      VITE_TAP_API_KEY: ""
+      WATCHPACK_POLLING: "${WATCHPACK_POLLING:-true}"
+    ports:
+      - "${AAWM_TAP_REMOTE_DEV_PORT:-5173}:${AAWM_TAP_REMOTE_DEV_PORT:-5173}"
+    networks:
+      - aawm_tap
+    volumes:
+      - ../aawm-tap-dashboard:/workspace/aawm-tap-dashboard
+      - aawm_tap_dashboard_dev_node_modules:/workspace/aawm-tap-dashboard/node_modules
+      - aawm_tap_dashboard_dev_npm_cache:/root/.npm
+    command:
+      - sh
+      - -lc
+      - |
+        npm ci
+        npm run dev -- --host 0.0.0.0 --port "$${AAWM_TAP_REMOTE_DEV_PORT:-5173}" --strictPort --cors
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "wget -qO- http://127.0.0.1:$${AAWM_TAP_REMOTE_DEV_PORT:-5173}/remoteEntry.js >/dev/null",
+        ]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 5
+
+volumes:
+  aawm_tap_dashboard_dev_node_modules:
+  aawm_tap_dashboard_dev_npm_cache:
+  dashboard_shell_dev_node_modules:
+  dashboard_shell_dev_pnpm_store:
+  dashboard_shell_reports_dev_node_modules:
+  dashboard_shell_reports_dev_pnpm_store:
+
+networks:
+  aawm_tap:
+    name: aawm-tap_default
+    external: true
+  aawm_core:
+    name: aawm_default
+    external: true

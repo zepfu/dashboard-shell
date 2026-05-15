@@ -1,3 +1,99 @@
+# Dashboard Shell
+
+Host application for project dashboard modules. This repo currently starts from
+the shadcn-admin shell and is being adapted into a Module Federation host.
+
+## Local Module Integration
+
+The first remote is the sibling repo `../aawm-tap-dashboard`, exposed as
+`aawm-tap-dashboard/module` with `remoteEntry.js` at the remote web root.
+
+Run the live dev container stack:
+
+```bash
+pnpm docker:dev
+```
+
+Then open `http://localhost:3006/aawm-tap/overview`. This stack runs Vite
+servers in containers with bind-mounted source from this repo and
+`../aawm-tap-dashboard`, so changes in either checkout are served live without a
+Docker image rebuild. The shell dev server proxies `/api/aawm-tap/*` to the
+shell report service, which then forwards to `AAWM_TAP_API_TARGET`. That target
+defaults to `http://host.docker.internal:8010`.
+
+The same dev stack starts the shell report API on `SHELL_REPORT_PORT`, which
+defaults to `3010`. The browser reads the General dashboard report through
+`/api/shell/reports/usage`; `DATABASE_URL` is only read by that server-side
+service. The dev shell, dev remote, and dev report service all join the external
+`aawm-tap_default` network used by the aawm-tap model containers. The dev report
+service also joins `aawm_default` so host-style database URLs can be rewritten to
+the internal Postgres service while development stays containerized. If TAP
+requires a dashboard key, set `AAWM_TAP_API_KEY` in this repo's `.env`; the shell
+service injects it as `X-API-Key` and strips client-sent auth before forwarding.
+Do not keep a real TAP key in `../aawm-tap-dashboard/.env` as a `VITE_*` value,
+because Vite exposes those values to browser code.
+
+Stop the live dev stack with:
+
+```bash
+pnpm docker:dev:down
+```
+
+You can also run the same live setup directly on the host with separate
+terminals:
+
+```bash
+cd ../aawm-tap-dashboard
+npm run dev:standalone -- --host 0.0.0.0 --port 5173 --strictPort --cors
+
+cd ../dashboard-shell
+pnpm dev:reports
+
+cd ../dashboard-shell
+pnpm dev:with-aawm
+```
+
+Run the container stack:
+
+```bash
+pnpm docker:up
+```
+
+Then open `http://localhost:3005/aawm-tap/overview`. Set
+`DASHBOARD_SHELL_PORT=3000` if you want to publish the container on port 3000.
+The compose services run detached and use `restart: unless-stopped`, so Docker
+will bring the shell and the AAWM TAP remote back after a system restart unless
+they were intentionally stopped.
+
+The static compose stack also starts `dashboard-shell-reports`, and nginx proxies
+`/api/shell/*` and `/api/aawm-tap/*` to that service. Set `DATABASE_URL` in
+`.env` or the process environment before starting compose if the General
+dashboard should query live report data. Set `AAWM_TAP_API_KEY` here, not in the
+remote browser bundle, when TAP requires `X-API-Key`. The static shell, remote,
+and report service all join `aawm-tap_default`; the report service also joins
+`aawm_default` so a host-published database URL such as `127.0.0.1:5434` can be
+rewritten to the internal `aawm-postgres18:5432` endpoint.
+
+The shell defaults to loading the remote through
+`/modules/aawm-tap/remoteEntry.js`, which `nginx.conf` proxies to the
+`aawm-tap-dashboard` container. For local Vite development, override it with
+`AAWM_TAP_REMOTE_ENTRY`.
+
+## Tap UI Contract
+
+Tap remotes should follow the shell contract in
+[`docs/tap-ui-contract.md`](docs/tap-ui-contract.md). The current component
+sharing model is vendor-and-sync: a tap vendors the shell's shadcn primitives,
+`theme.css`, and `cn()` helper locally, then uses shell runtime CSS variables
+through token-backed Tailwind classes. The shell now consumes a tap manifest's
+`accentColor` in module chrome.
+
+To scaffold a new tap with that baseline:
+
+```bash
+pnpm scaffold:tap ../example-dashboard --module-id example-dashboard --name "Example" --base-path /example
+```
+
 # Shadcn Admin Dashboard
 
 Admin Dashboard UI crafted with Shadcn and Vite. Built with responsiveness and accessibility in mind.

@@ -1,0 +1,83 @@
+services:
+  dashboard-shell:
+    restart: unless-stopped
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: dashboard-shell:local
+    ports:
+      - "${DASHBOARD_SHELL_PORT:-3005}:80"
+    depends_on:
+      aawm-tap-dashboard:
+        condition: service_healthy
+      dashboard-shell-reports:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - aawm_tap
+
+  dashboard-shell-reports:
+    restart: unless-stopped
+    build:
+      context: .
+      dockerfile: Dockerfile.report-service
+    image: dashboard-shell-reports:local
+    environment:
+      AAWM_TAP_API_KEY: "${AAWM_TAP_API_KEY:-}"
+      AAWM_TAP_ACCESS_TOKEN: "${AAWM_TAP_ACCESS_TOKEN:-}"
+      AAWM_TAP_ADMIN_CAPABILITY: "${AAWM_TAP_ADMIN_CAPABILITY:-}"
+      AAWM_TAP_API_TARGET: "${AAWM_TAP_API_TARGET:-http://host.docker.internal:8010}"
+      VITE_API_KEY: "${VITE_API_KEY:-}"
+      VITE_ACCESS_TOKEN: "${VITE_ACCESS_TOKEN:-}"
+      VITE_TAP_ACCESS_TOKEN: "${VITE_TAP_ACCESS_TOKEN:-}"
+      VITE_TAP_API_KEY: "${VITE_TAP_API_KEY:-}"
+      DATABASE_URL: "${DATABASE_URL:-}"
+      SHELL_REPORT_DATABASE_HOST_REWRITE: "${SHELL_REPORT_DATABASE_HOST_REWRITE:-aawm-postgres18}"
+      SHELL_REPORT_DATABASE_PORT_REWRITE: "${SHELL_REPORT_DATABASE_PORT_REWRITE:-5432}"
+      SHELL_REPORT_DB_POOL_MAX: "${SHELL_REPORT_DB_POOL_MAX:-5}"
+      SHELL_REPORT_PORT: "3010"
+    expose:
+      - "3010"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3010/api/shell/health').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - aawm_tap
+      - aawm_core
+
+  aawm-tap-dashboard:
+    restart: unless-stopped
+    build:
+      context: ../aawm-tap-dashboard
+      dockerfile: Dockerfile
+    image: aawm-tap-dashboard:local
+    expose:
+      - "80"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/remoteEntry.js >/dev/null"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    networks:
+      - aawm_tap
+
+networks:
+  aawm_tap:
+    name: aawm-tap_default
+    external: true
+  aawm_core:
+    name: aawm_default
+    external: true

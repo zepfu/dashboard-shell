@@ -2,6 +2,7 @@ import {
   Construction,
   LayoutDashboard,
   Monitor,
+  Activity,
   Bug,
   ListTodo,
   FileX,
@@ -10,6 +11,7 @@ import {
   Bell,
   Package,
   Palette,
+  Search,
   ServerOff,
   Settings,
   Wrench,
@@ -18,37 +20,83 @@ import {
   Users,
   MessagesSquare,
   ShieldCheck,
-  AudioWaveform,
+  Database,
+  GitBranch,
   Command,
-  GalleryVerticalEnd,
 } from 'lucide-react'
 import { ClerkLogo } from '@/assets/clerk-logo'
 import { type SidebarData } from '../types'
 
+const aawmTapAccentColor = 'hsl(220 70% 50%)'
+
 export const sidebarData: SidebarData = {
   user: {
-    name: 'satnaing',
-    email: 'satnaingdev@gmail.com',
-    avatar: '/avatars/shadcn.jpg',
+    name: 'Dashboard Shell',
+    email: 'local dashboard',
   },
   teams: [
     {
-      name: 'Shadcn Admin',
+      name: 'Dashboard Shell',
       logo: Command,
-      plan: 'Vite + ShadcnUI',
+      plan: 'Host App',
+      basePath: '/',
     },
     {
-      name: 'Acme Inc',
-      logo: GalleryVerticalEnd,
-      plan: 'Enterprise',
-    },
-    {
-      name: 'Acme Corp.',
-      logo: AudioWaveform,
-      plan: 'Startup',
+      name: 'AAWM TAP',
+      logo: LayoutDashboard,
+      plan: 'Remote Module',
+      basePath: '/aawm-tap',
+      accentColor: aawmTapAccentColor,
     },
   ],
   navGroups: [
+    {
+      title: 'Dashboards',
+      items: [
+        {
+          title: 'AAWM TAP',
+          icon: LayoutDashboard,
+          accentColor: aawmTapAccentColor,
+          items: [
+            {
+              title: 'Overview',
+              url: '/aawm-tap/overview',
+              icon: LayoutDashboard,
+            },
+            {
+              title: 'Processes',
+              url: '/aawm-tap/processes',
+              icon: ListTodo,
+            },
+            {
+              title: 'Watchlist',
+              url: '/aawm-tap/watchlist',
+              icon: ShieldCheck,
+            },
+            {
+              title: 'Sources',
+              url: '/aawm-tap/sources',
+              icon: Database,
+            },
+            {
+              title: 'Search',
+              url: '/aawm-tap/search',
+              icon: Search,
+            },
+            {
+              title: 'Graph',
+              url: '/aawm-tap/graph',
+              icon: GitBranch,
+            },
+            {
+              title: 'Admin',
+              url: '/aawm-tap/admin',
+              icon: Activity,
+            },
+          ],
+        },
+      ],
+    },
     {
       title: 'General',
       items: [
