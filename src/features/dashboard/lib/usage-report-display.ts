@@ -3,9 +3,11 @@ const providerColorsByKey: Record<string, string> = {
   anthropic: '#7c3aed',
   google: '#0891b2',
   gemini: '#0891b2',
+  xai: '#334155',
   openrouter: '#4f46e5',
+  local: '#c026d3',
   local_llm: '#c026d3',
-  local_embed: '#0369a1',
+  local_embed: '#c026d3',
   nvidia_nim: '#6d28d9',
   chatgpt: '#475569',
 }
@@ -14,6 +16,7 @@ export const providerColors = [
   '#2563eb',
   '#7c3aed',
   '#0891b2',
+  '#334155',
   '#4f46e5',
   '#c026d3',
   '#0369a1',
@@ -96,6 +99,9 @@ export function providerColorFor(provider: string) {
 export function providerColorKey(provider: string) {
   const normalized = provider.toLowerCase()
   if (normalized === 'google' || normalized === 'gemini') return 'google'
+  if (normalized === 'x.ai' || normalized === 'xai') return 'xai'
+  if (normalized === 'open-router') return 'openrouter'
+  if (normalized === 'local' || normalized.startsWith('local_')) return 'local'
   return normalized
 }
 

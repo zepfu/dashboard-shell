@@ -187,6 +187,16 @@ export interface UsageReportProviderErrorObservationRow {
   expected_reset_at: string | null
 }
 
+export interface UsageReportProviderStatusUsageRow {
+  provider: string
+  model: string
+  traces: number
+  token_total: number
+  usd_cost: number
+  period_start: string | null
+  period_end: string | null
+}
+
 export interface UsageReportQuotaRow {
   provider: string
   model: string | null
@@ -245,6 +255,7 @@ export interface UsageReportResponse {
   clients: UsageReportClientRow[]
   providerLatencyHealth: UsageReportProviderLatencyHealthRow[]
   providerErrorObservations: UsageReportProviderErrorObservationRow[]
+  providerStatusUsage: UsageReportProviderStatusUsageRow[]
   quotas: UsageReportQuotaRow[]
   rows: UsageReportRow[]
 }

@@ -68,48 +68,46 @@
   animation: slideUp 300ms ease-out;
 }
 
-.usage-report-client-card {
-  display: none;
-}
-
-@media (min-width: 1800px) {
+@media (min-width: 1280px) {
   .usage-report-layout {
-    grid-template-columns:
-      minmax(0, 1.15fr) minmax(420px, 0.95fr)
-      minmax(400px, 0.9fr);
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
-  .usage-report-token-card,
+  .usage-report-token-card {
+    grid-column: 1 / span 2;
+  }
+
   .usage-report-provider-card {
-    grid-column: span 1 / span 1;
-    grid-row: span 1 / span 1;
-  }
-
-  .usage-report-client-card {
-    display: flex;
-    flex-direction: column;
+    grid-column: 3;
   }
 }
 
 @media (min-width: 2200px) {
   .usage-report-layout {
-    grid-template-columns:
-      minmax(640px, 1.25fr) minmax(420px, 0.95fr)
-      repeat(auto-fit, minmax(420px, 0.9fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 
   .usage-report-token-card {
-    grid-column: 1;
+    grid-column: 1 / span 3;
   }
 
   .usage-report-provider-card {
-    grid-column: 2;
+    grid-column: 4;
   }
+}
 
-  .usage-report-client-card {
-    display: flex;
-    flex-direction: column;
-    grid-column: 3 / -1;
+.provider-status-grid {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.provider-status-span {
+  grid-column: 1 / -1;
+}
+
+@media (min-width: 640px) {
+  .provider-status-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
