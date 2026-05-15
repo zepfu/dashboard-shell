@@ -24,7 +24,6 @@ import {
   XAxis,
   YAxis,
 } from 'recharts'
-import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
@@ -435,11 +434,28 @@ export function UsageReportDashboard() {
   }
 
   return (
-    <div className='space-y-4'>
-      <div className='grid gap-3 md:grid-cols-[repeat(3,minmax(0,1fr))_auto]'>
+    <div className='space-y-3'>
+      <div className='grid gap-3 xl:grid-cols-[minmax(0,1fr)_auto] xl:items-start'>
+        <div className='min-w-0'>
+          <h1 className='text-2xl font-bold tracking-tight'>
+            General Dashboard
+          </h1>
+          <div className='mt-1 flex flex-col gap-2 text-sm text-muted-foreground sm:flex-row sm:flex-wrap sm:items-center'>
+            <span>LiteLLM usage, quota, cost, and repository activity</span>
+            <FreshnessIndicator
+              loading={usageReport.isPending}
+              metadata={usageReport.data?.metadata}
+            />
+          </div>
+        </div>
+        <MetricStrip summary={summary} loading={usageReport.isPending} />
+      </div>
+
+      <div className='grid gap-2 md:grid-cols-[repeat(3,minmax(0,12rem))_auto]'>
         <Field label='From'>
           <Input
             type='date'
+            className='h-8'
             value={draftFromDate}
             aria-invalid={!isValidDateInput(draftFromDate)}
             onBlur={commitDateRange}
@@ -452,6 +468,7 @@ export function UsageReportDashboard() {
         <Field label='To'>
           <Input
             type='date'
+            className='h-8'
             value={draftToDate}
             aria-invalid={!isValidDateInput(draftToDate)}
             onBlur={commitDateRange}
@@ -466,7 +483,7 @@ export function UsageReportDashboard() {
             value={grain}
             onValueChange={(value) => setGrain(value as UsageReportGrain)}
           >
-            <SelectTrigger className='w-full'>
+            <SelectTrigger className='h-8 w-full'>
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -482,7 +499,7 @@ export function UsageReportDashboard() {
           <Button
             type='button'
             variant='outline'
-            className='w-full md:w-auto'
+            className='h-8 w-full md:w-auto'
             disabled={usageReport.isFetching || !dateRangeValid}
             onClick={() => {
               if (dateRangeDirty) {
@@ -502,11 +519,6 @@ export function UsageReportDashboard() {
         </div>
       </div>
 
-      <FreshnessIndicator
-        loading={usageReport.isPending}
-        metadata={usageReport.data?.metadata}
-      />
-
       {usageReport.isError ? (
         <Card className='border-destructive/50'>
           <CardHeader>
@@ -519,39 +531,6 @@ export function UsageReportDashboard() {
           </CardHeader>
         </Card>
       ) : null}
-
-      <div className='grid gap-4 sm:grid-cols-2 xl:grid-cols-4'>
-        <MetricCard
-          title='Traces'
-          value={formatNumber(summary?.traces)}
-          detail={formatRecordWindow(summary)}
-          icon={Activity}
-          loading={usageReport.isPending}
-        />
-        <MetricCard
-          title='Tokens'
-          value={formatCompact(summary?.token_total)}
-          detail={`${formatCompact(summary?.token_in)} in / ${formatCompact(summary?.token_out)} out`}
-          icon={Cpu}
-          loading={usageReport.isPending}
-        />
-        <MetricCard
-          title='USD Cost'
-          value={formatCurrency(summary?.usd_cost)}
-          detail={`${formatCurrency(summary?.cache_miss_usd_cost)} cache miss`}
-          icon={Coins}
-          loading={usageReport.isPending}
-        />
-        <MetricCard
-          title='Git Activity'
-          value={formatNumber(
-            (summary?.git_commit ?? 0) + (summary?.git_push ?? 0)
-          )}
-          detail={`${formatNumber(summary?.git_commit)} commits / ${formatNumber(summary?.git_push)} pushes`}
-          icon={GitCommitHorizontal}
-          loading={usageReport.isPending}
-        />
-      </div>
 
       <Tabs defaultValue='usage' className='space-y-4'>
         <TabsList>
@@ -815,7 +794,7 @@ function clamp(min: number, value: number, max: number) {
 
 function Field({ label, children }: { label: string; children: ReactNode }) {
   return (
-    <div className='space-y-2'>
+    <div className='space-y-1'>
       <Label className='text-xs font-medium text-muted-foreground'>
         {label}
       </Label>
@@ -832,28 +811,84 @@ function FreshnessIndicator({
   metadata: UsageReportResponse['metadata'] | undefined
 }) {
   if (loading) {
-    return <Skeleton className='h-16 w-full' />
+    return <Skeleton className='h-6 w-64' />
   }
   if (!metadata) return null
 
   const Icon = metadata.latestRecordStale ? AlertTriangle : ShieldCheck
+  const statusText =
+    metadata.latestRecordAgeMinutes === null
+      ? 'No session records found'
+      : `${formatAge(metadata.latestRecordAgeMinutes)} old`
 
   return (
-    <Alert variant={metadata.latestRecordStale ? 'destructive' : 'default'}>
-      <Icon />
-      <AlertTitle>
-        Latest record: {formatDateTime(metadata.latestRecordAt)}
-      </AlertTitle>
-      <AlertDescription>
-        {metadata.latestRecordAgeMinutes === null
-          ? 'No session records were found.'
-          : `${formatAge(metadata.latestRecordAgeMinutes)} old; warning threshold is ${formatAge(metadata.staleRecordThresholdMinutes)}.`}
-      </AlertDescription>
-    </Alert>
+    <span
+      className={`inline-flex min-w-0 items-center gap-1.5 rounded-md border px-2 py-1 text-xs ${
+        metadata.latestRecordStale
+          ? 'border-destructive/40 bg-destructive/10 text-destructive'
+          : 'bg-muted/40 text-muted-foreground'
+      }`}
+      data-report-freshness=''
+      data-report-stale={metadata.latestRecordStale ? 'true' : 'false'}
+      title={`Latest record ${formatDateTime(metadata.latestRecordAt)}; warning threshold is ${formatAge(metadata.staleRecordThresholdMinutes)}.`}
+    >
+      <Icon className='size-3.5 shrink-0' />
+      <span className='truncate'>
+        Latest {formatShortDateTime(metadata.latestRecordAt)}
+      </span>
+      <span aria-hidden='true'>/</span>
+      <span className='shrink-0 tabular-nums'>{statusText}</span>
+    </span>
   )
 }
 
-function MetricCard({
+function MetricStrip({
+  summary,
+  loading,
+}: {
+  summary: UsageReportResponse['summary'] | undefined
+  loading: boolean
+}) {
+  return (
+    <div
+      className='grid gap-2 sm:grid-cols-2 xl:w-[44rem] xl:grid-cols-4'
+      data-report-metric-strip=''
+    >
+      <MetricItem
+        title='Traces'
+        value={formatNumber(summary?.traces)}
+        detail={formatRecordWindow(summary)}
+        icon={Activity}
+        loading={loading}
+      />
+      <MetricItem
+        title='Tokens'
+        value={formatCompact(summary?.token_total)}
+        detail={`${formatCompact(summary?.token_in)} in / ${formatCompact(summary?.token_out)} out`}
+        icon={Cpu}
+        loading={loading}
+      />
+      <MetricItem
+        title='USD'
+        value={formatCurrency(summary?.usd_cost)}
+        detail={`${formatCurrency(summary?.cache_miss_usd_cost)} cache miss`}
+        icon={Coins}
+        loading={loading}
+      />
+      <MetricItem
+        title='Git'
+        value={formatNumber(
+          (summary?.git_commit ?? 0) + (summary?.git_push ?? 0)
+        )}
+        detail={`${formatNumber(summary?.git_commit)} commits / ${formatNumber(summary?.git_push)} pushes`}
+        icon={GitCommitHorizontal}
+        loading={loading}
+      />
+    </div>
+  )
+}
+
+function MetricItem({
   title,
   value,
   detail,
@@ -867,25 +902,32 @@ function MetricCard({
   loading: boolean
 }) {
   return (
-    <Card>
-      <CardHeader className='flex flex-row items-center justify-between space-y-0 pb-2'>
-        <CardTitle className='text-sm font-medium'>{title}</CardTitle>
+    <div
+      className='min-w-0 rounded-md border bg-card px-3 py-2 shadow-sm'
+      data-report-metric={title}
+    >
+      <div className='flex items-center justify-between gap-2'>
+        <div className='truncate text-[11px] font-medium text-muted-foreground uppercase'>
+          {title}
+        </div>
         <Icon className='size-4 text-muted-foreground' />
-      </CardHeader>
-      <CardContent>
-        {loading ? (
-          <div className='space-y-2'>
-            <Skeleton className='h-8 w-24' />
-            <Skeleton className='h-4 w-32' />
+      </div>
+      {loading ? (
+        <div className='mt-1 space-y-1'>
+          <Skeleton className='h-5 w-20' />
+          <Skeleton className='h-3 w-28' />
+        </div>
+      ) : (
+        <>
+          <div className='mt-1 truncate text-lg leading-none font-semibold tabular-nums'>
+            {value}
           </div>
-        ) : (
-          <>
-            <div className='text-2xl font-bold tabular-nums'>{value}</div>
-            <p className='text-xs text-muted-foreground'>{detail}</p>
-          </>
-        )}
-      </CardContent>
-    </Card>
+          <div className='mt-1 truncate text-[11px] text-muted-foreground'>
+            {detail}
+          </div>
+        </>
+      )}
+    </div>
   )
 }
 
@@ -1594,7 +1636,7 @@ function HealthMetricsPanel({ health }: { health: ProviderHealthMetrics }) {
                     }}
                   >
                     <span className='truncate text-muted-foreground'>
-                      {model.model}
+                      {displayModelName(model.model, summary.provider)}
                     </span>
                     <span className='text-right tabular-nums'>
                       {formatCompact(model.requests)}
@@ -1916,7 +1958,9 @@ function QuotaUsageBar({
                 className='size-1.5 shrink-0 rounded-full'
                 style={{ backgroundColor: modelColorFor(item.model) }}
               />
-              <span className='min-w-0 truncate'>{item.model}</span>
+              <span className='min-w-0 truncate'>
+                {displayModelName(item.model)}
+              </span>
             </span>
           ))}
           {visibleBreakdown.length > 3 ? (
@@ -1965,7 +2009,9 @@ function QuotaUsageTooltip({
                 ),
               }}
             >
-              <span className='truncate font-medium'>{item.model}</span>
+              <span className='truncate font-medium'>
+                {displayModelName(item.model)}
+              </span>
               <span className='text-right text-muted-foreground tabular-nums'>
                 {formatPercent(percent)} / {formatCompact(item.tokens)}
                 <span className='block'>{formatCurrency(item.cost)}</span>
@@ -2218,10 +2264,17 @@ function TokenTrendDetail({
                     <div
                       key={breakdown.model}
                       data-token-trend-model-row=''
-                      className='grid grid-cols-[minmax(0,1fr)_auto] gap-3 rounded-sm px-2 py-0.5 text-xs'
+                      className='grid grid-cols-[minmax(0,1fr)_auto] gap-3 rounded-sm border-l-4 px-2 py-0.5 text-xs'
+                      style={{
+                        borderColor: modelColorFor(breakdown.model),
+                        backgroundColor: colorWithAlpha(
+                          modelColorFor(breakdown.model),
+                          0.08
+                        ),
+                      }}
                     >
                       <span className='truncate text-muted-foreground'>
-                        {breakdown.model}
+                        {displayModelName(breakdown.model, item.name)}
                       </span>
                       <span className='text-right tabular-nums'>
                         {formatPercent(
@@ -2823,7 +2876,9 @@ function buildQuotaHealthMarkers({
     marker.count += 1
     marker.observedAt = latestIso(marker.observedAt, row.observed_at) ?? ''
     marker.classes.add(row.error_class || 'unknown')
-    if (row.model && row.model !== 'unknown') marker.models.add(row.model)
+    if (row.model && row.model !== 'unknown') {
+      marker.models.add(displayModelName(row.model, provider))
+    }
     markers.set(key, marker)
   }
 
@@ -3584,7 +3639,56 @@ function shortSpecialQuotaLabel(provider: string) {
 
 function formatProviderQuotaTitle(row: UsageReportQuotaRow) {
   const provider = providerDisplayName(row.provider)
-  return row.model ? `${provider} / ${row.model}` : provider
+  return row.model
+    ? `${provider} / ${displayModelName(row.model, row.provider)}`
+    : provider
+}
+
+function displayModelName(
+  model: string | null | undefined,
+  provider?: string | null
+) {
+  const value = model?.trim() || 'unknown'
+  const normalized = value.toLowerCase()
+  for (const prefix of providerModelPrefixCandidates(provider)) {
+    if (normalized.startsWith(`${prefix}/`)) {
+      return value.slice(prefix.length + 1)
+    }
+  }
+  return value
+}
+
+function providerModelPrefixCandidates(provider?: string | null) {
+  const candidates = new Set([
+    'openai',
+    'anthropic',
+    'google',
+    'gemini',
+    'xai',
+    'x.ai',
+    'openrouter',
+    'open-router',
+    'local',
+    'local_llm',
+    'local_embed',
+    'nvidia_nim',
+    'chatgpt',
+  ])
+
+  if (provider) {
+    const normalized = provider.trim().toLowerCase()
+    const colorKey = providerColorKey(provider)
+    const display = providerDisplayName(provider).toLowerCase()
+    candidates.add(normalized)
+    candidates.add(colorKey)
+    candidates.add(display)
+    candidates.add(display.replace(/\s+/g, ''))
+    candidates.add(display.replace(/\s+/g, '-'))
+  }
+
+  return [...candidates]
+    .filter(Boolean)
+    .sort((left, right) => right.length - left.length)
 }
 
 function providerDisplayName(provider: string) {
