@@ -10,6 +10,10 @@ import { RouterProvider, createRouter } from '@tanstack/react-router'
 import { toast } from 'sonner'
 import { useAuthStore } from '@/stores/auth-store'
 import { handleServerError } from '@/lib/handle-server-error'
+import {
+  reloadForStaleAsset,
+  reloadForStaleAssetError,
+} from '@/lib/stale-asset-reload'
 import { DirectionProvider } from './context/direction-provider'
 import { FontProvider } from './context/font-provider'
 import { ThemeProvider } from './context/theme-provider'
@@ -17,6 +21,21 @@ import { ThemeProvider } from './context/theme-provider'
 import { routeTree } from './routeTree.gen'
 // Styles
 import './styles/index.css'
+
+window.addEventListener('vite:preloadError', (event) => {
+  event.preventDefault()
+  reloadForStaleAsset()
+})
+
+window.addEventListener('error', (event) => {
+  reloadForStaleAssetError(event.error ?? event.message)
+})
+
+window.addEventListener('unhandledrejection', (event) => {
+  if (reloadForStaleAssetError(event.reason)) {
+    event.preventDefault()
+  }
+})
 
 const queryClient = new QueryClient({
   defaultOptions: {
