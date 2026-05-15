@@ -48,6 +48,11 @@ export const modelColors = [
   '#0e7490',
 ]
 
+const modelKindColors = {
+  embedding: '#0369a1',
+  reranker: '#c026d3',
+} as const
+
 export const clientColors = [
   '#2563eb',
   '#7c3aed',
@@ -106,7 +111,39 @@ export function providerColorKey(provider: string) {
 }
 
 export function modelColorFor(model: string) {
+  const kind = modelCalloutKind(model)
+  if (kind === 'embedding' || kind === 'reranker') {
+    return modelKindColors[kind]
+  }
   return modelColors[colorHash(model.toLowerCase(), modelColors.length)]
+}
+
+export function modelCalloutKind(model: string | null | undefined) {
+  const normalized = model?.trim().toLowerCase() ?? ''
+  if (!normalized) return 'standard'
+
+  if (
+    normalized.includes('rerank') ||
+    normalized.includes('re-rank') ||
+    normalized.includes('ranker')
+  ) {
+    return 'reranker'
+  }
+
+  if (
+    normalized.includes('embedding') ||
+    normalized.includes('embeddings') ||
+    normalized.includes('embed') ||
+    normalized.includes('text-embedding') ||
+    normalized.includes('embeddinggemma') ||
+    normalized.includes('e5-') ||
+    normalized.includes('gte-') ||
+    normalized.includes('nomic-embed')
+  ) {
+    return 'embedding'
+  }
+
+  return 'standard'
 }
 
 export function clientColorFor(client: string) {
