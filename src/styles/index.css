@@ -68,6 +68,51 @@
   animation: slideUp 300ms ease-out;
 }
 
+.usage-report-client-card {
+  display: none;
+}
+
+@media (min-width: 1800px) {
+  .usage-report-layout {
+    grid-template-columns:
+      minmax(0, 1.15fr) minmax(420px, 0.95fr)
+      minmax(400px, 0.9fr);
+  }
+
+  .usage-report-token-card,
+  .usage-report-provider-card {
+    grid-column: span 1 / span 1;
+    grid-row: span 1 / span 1;
+  }
+
+  .usage-report-client-card {
+    display: flex;
+    flex-direction: column;
+  }
+}
+
+@media (min-width: 2200px) {
+  .usage-report-layout {
+    grid-template-columns:
+      minmax(640px, 1.25fr) minmax(420px, 0.95fr)
+      repeat(auto-fit, minmax(420px, 0.9fr));
+  }
+
+  .usage-report-token-card {
+    grid-column: 1;
+  }
+
+  .usage-report-provider-card {
+    grid-column: 2;
+  }
+
+  .usage-report-client-card {
+    display: flex;
+    flex-direction: column;
+    grid-column: 3 / -1;
+  }
+}
+
 @keyframes slideDown {
   from {
     height: 0;
