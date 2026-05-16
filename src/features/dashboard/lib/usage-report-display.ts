@@ -105,6 +105,7 @@ export function providerColorKey(provider: string) {
   const normalized = provider.toLowerCase()
   if (normalized === 'google' || normalized === 'gemini') return 'google'
   if (normalized === 'x.ai' || normalized === 'xai') return 'xai'
+  if (normalized === 'nvidia') return 'nvidia_nim'
   if (normalized === 'open-router') return 'openrouter'
   if (normalized === 'local' || normalized.startsWith('local_')) return 'local'
   return normalized

@@ -94,10 +94,23 @@ function envSecret(...names) {
   return undefined
 }
 
+const createdAtEastern = "(sh.created_at AT TIME ZONE 'America/New_York')"
+const providerDimension = `
+CASE
+    WHEN lower(COALESCE(sh.provider, 'unknown')) IN ('xai', 'x.ai') THEN 'xai'
+    WHEN lower(COALESCE(sh.provider, 'unknown')) LIKE 'xai/%' THEN 'xai'
+    WHEN lower(COALESCE(sh.provider, 'unknown')) = 'nvidia' THEN 'nvidia_nim'
+    WHEN lower(COALESCE(sh.provider, 'unknown')) LIKE 'nvidia_nim/%' THEN 'nvidia_nim'
+    WHEN lower(COALESCE(sh.provider, 'unknown')) LIKE 'nvidia/%' THEN 'nvidia_nim'
+    WHEN lower(COALESCE(sh.provider, 'unknown')) LIKE 'local/%' THEN 'local'
+    WHEN lower(COALESCE(sh.provider, 'unknown')) LIKE 'local_%' THEN 'local'
+    ELSE COALESCE(sh.provider, 'unknown')
+END`
+
 const grains = {
-  day: "sh.created_at::date",
-  week: "date_trunc('week', sh.created_at)::date",
-  month: "date_trunc('month', sh.created_at)::date",
+  day: `${createdAtEastern}::date`,
+  week: `date_trunc('week', ${createdAtEastern})::date`,
+  month: `date_trunc('month', ${createdAtEastern})::date`,
 }
 
 const dimensions = {
@@ -106,17 +119,17 @@ const dimensions = {
   client:
     "COALESCE(sh.client_name, 'unknown') || ' [' || COALESCE(sh.client_version, '0.0.0') || ']'",
   repository: "COALESCE(sh.tenant_id, 'unknown')",
-  provider: "COALESCE(sh.provider, 'unknown')",
+  provider: providerDimension,
   model: "COALESCE(sh.model, 'unknown')",
   provider_model:
-    "COALESCE(sh.provider, 'unknown') || '/' || COALESCE(sh.model, 'unknown')",
+    `${providerDimension} || '/' || COALESCE(sh.model, 'unknown')`,
 }
 
 const filterColumns = {
   environment: dimensions.environment,
   client: dimensions.client,
   repository: "COALESCE(sh.tenant_id, 'unknown')",
-  provider: "COALESCE(sh.provider, 'unknown')",
+  provider: providerDimension,
   model: "COALESCE(sh.model, 'unknown')",
   provider_model: dimensions.provider_model,
 }
@@ -244,7 +257,10 @@ function buildFilteredWhere(searchParams) {
   const from = parseDateParam(searchParams.get('from'), defaultFromDate)
   const to = parseDateParam(searchParams.get('to'), defaultToDate)
   const values = [from, to]
-  const whereParts = ['sh.created_at >= $1', 'sh.created_at < $2']
+  const whereParts = [
+    `${createdAtEastern}::date >= $1::date`,
+    `${createdAtEastern}::date < $2::date`,
+  ]
 
   for (const key of Object.keys(filterColumns)) {
     appendMultiValueFilter(searchParams, key, whereParts, values)
@@ -298,7 +314,7 @@ function buildTrendQuery(searchParams) {
   const sql = `
 SELECT
     ${bucketExpression} AS bucket,
-    COALESCE(sh.provider, 'unknown') AS provider,
+    ${providerDimension} AS provider,
     COALESCE(sh.model, 'unknown') AS model,
     COALESCE(sh.tenant_id, 'unknown') AS repository,
     COUNT(*)::double precision AS traces,
@@ -313,12 +329,12 @@ FROM public.session_history sh
 WHERE ${whereParts.join('\n  AND ')}
 GROUP BY
     ${bucketExpression},
-    COALESCE(sh.provider, 'unknown'),
+    ${providerDimension},
     COALESCE(sh.model, 'unknown'),
     COALESCE(sh.tenant_id, 'unknown')
 ORDER BY
     ${bucketExpression} ASC,
-    COALESCE(sh.provider, 'unknown') ASC,
+    ${providerDimension} ASC,
     token_total DESC;
 `
 
@@ -438,7 +454,7 @@ LIMIT $1;
 function buildProviderStatusUsageQuery() {
   const sql = `
 SELECT
-    COALESCE(sh.provider, 'unknown') AS provider,
+    ${providerDimension} AS provider,
     COALESCE(sh.model, 'unknown') AS model,
     COUNT(*)::double precision AS traces,
     SUM(COALESCE(sh.input_tokens, 0)
@@ -454,10 +470,10 @@ FROM public.session_history sh
 WHERE COALESCE(sh.start_time, sh.created_at) >= now() - interval '24 hours'
   AND COALESCE(sh.start_time, sh.created_at) < now()
 GROUP BY
-    COALESCE(sh.provider, 'unknown'),
+    ${providerDimension},
     COALESCE(sh.model, 'unknown')
 ORDER BY
-    COALESCE(sh.provider, 'unknown') ASC,
+    ${providerDimension} ASC,
     token_total DESC
 LIMIT $1;
 `
@@ -469,9 +485,32 @@ function buildQuotaQuery() {
   const sql = `
 WITH normalized AS (
     SELECT
-        ri.provider,
-        NULLIF(ri.model, '') AS model,
         CASE
+            WHEN lower(COALESCE(ri.provider, 'unknown')) IN ('xai', 'x.ai') THEN 'xai'
+            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'xai/%' THEN 'xai'
+            WHEN lower(COALESCE(ri.provider, 'unknown')) = 'nvidia' THEN 'nvidia_nim'
+            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'nvidia_nim/%' THEN 'nvidia_nim'
+            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'nvidia/%' THEN 'nvidia_nim'
+            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'local/%' THEN 'local'
+            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'local_%' THEN 'local'
+            ELSE COALESCE(ri.provider, 'unknown')
+        END AS provider,
+        CASE
+            WHEN ri.quota_type IN ('monthly', 'requests')
+              AND (
+                  lower(COALESCE(ri.provider, 'unknown')) LIKE 'xai/%'
+                  OR lower(COALESCE(ri.provider, 'unknown')) IN ('xai', 'x.ai')
+              )
+            THEN NULL
+            ELSE NULLIF(ri.model, '')
+        END AS model,
+        CASE
+            WHEN ri.quota_type = 'requests'
+              AND (
+                  lower(COALESCE(ri.provider, 'unknown')) LIKE 'xai/%'
+                  OR lower(COALESCE(ri.provider, 'unknown')) IN ('xai', 'x.ai')
+              )
+            THEN 'monthly'
             WHEN ri.quota_type = 'weekly_special' THEN 'special'
             WHEN ri.quota_type = 'short_special' THEN 'short_special'
             WHEN ri.quota_type = 'requests' THEN 'short'
@@ -486,7 +525,7 @@ WITH normalized AS (
             ELSE false
         END AS active
     FROM public.rate_limit_intervals ri
-    WHERE ri.quota_type IN ('weekly', 'short', 'weekly_special', 'short_special', 'requests')
+    WHERE ri.quota_type IN ('weekly', 'short', 'weekly_special', 'short_special', 'requests', 'monthly')
 ),
 ranked AS (
     SELECT
@@ -536,6 +575,7 @@ usage_by_type AS (
         WHERE s.expected_reset_at IS NOT NULL
           AND sh.start_time >= s.expected_reset_at - CASE
               WHEN s.provider = 'google' THEN INTERVAL '24 hours'
+              WHEN s.quota_type = 'monthly' THEN INTERVAL '1 month'
               WHEN s.quota_type IN ('short', 'short_special') THEN INTERVAL '5 hours'
               ELSE INTERVAL '7 days'
           END
@@ -545,11 +585,11 @@ usage_by_type AS (
           END
           AND (
               (s.provider = 'google'
-                AND COALESCE(sh.provider, 'unknown') IN ('google', 'gemini')
+                AND ${providerDimension} = 'google'
                 AND COALESCE(sh.model, 'unknown') = COALESCE(s.model, 'unknown'))
               OR
               (s.provider <> 'google'
-                AND COALESCE(sh.provider, 'unknown') = s.provider)
+                AND ${providerDimension} = s.provider)
           )
           AND (
               s.provider <> 'openai'
@@ -600,7 +640,14 @@ SELECT
     MAX(s.interval_end) FILTER (WHERE s.quota_type = 'short_special') AS short_special_interval_end,
     MAX(s.active::int) FILTER (WHERE s.quota_type = 'short_special')::double precision AS short_special_active,
     MAX(usage.usage_tokens) FILTER (WHERE s.quota_type = 'short_special')::double precision AS short_special_usage_tokens,
-    (ARRAY_AGG(usage.usage_breakdown) FILTER (WHERE s.quota_type = 'short_special'))[1] AS short_special_usage_breakdown
+    (ARRAY_AGG(usage.usage_breakdown) FILTER (WHERE s.quota_type = 'short_special'))[1] AS short_special_usage_breakdown,
+    MAX(s.remaining_pct) FILTER (WHERE s.quota_type = 'monthly')::double precision AS monthly_remaining_pct,
+    MAX(s.expected_reset_at) FILTER (WHERE s.quota_type = 'monthly') AS monthly_reset_at,
+    MAX(s.interval_start) FILTER (WHERE s.quota_type = 'monthly') AS monthly_interval_start,
+    MAX(s.interval_end) FILTER (WHERE s.quota_type = 'monthly') AS monthly_interval_end,
+    MAX(s.active::int) FILTER (WHERE s.quota_type = 'monthly')::double precision AS monthly_active,
+    MAX(usage.usage_tokens) FILTER (WHERE s.quota_type = 'monthly')::double precision AS monthly_usage_tokens,
+    (ARRAY_AGG(usage.usage_breakdown) FILTER (WHERE s.quota_type = 'monthly'))[1] AS monthly_usage_breakdown
 FROM selected s
 LEFT JOIN usage_by_type usage
   ON usage.provider = s.provider
@@ -807,6 +854,15 @@ function normalizeQuotaRow(row) {
     short_special_usage_breakdown: normalizeUsageBreakdown(
       row.short_special_usage_breakdown
     ),
+    monthly_remaining_pct: normalizeNumber(row.monthly_remaining_pct),
+    monthly_reset_at: row.monthly_reset_at ?? null,
+    monthly_interval_start: row.monthly_interval_start ?? null,
+    monthly_interval_end: row.monthly_interval_end ?? null,
+    monthly_active: Boolean(normalizeNumber(row.monthly_active)),
+    monthly_usage_tokens: normalizeNumber(row.monthly_usage_tokens) ?? 0,
+    monthly_usage_breakdown: normalizeUsageBreakdown(
+      row.monthly_usage_breakdown
+    ),
   }
 }
 
@@ -924,7 +980,10 @@ function buildUsageQuery(searchParams) {
     searchParams.get('direction')?.toLowerCase() === 'asc' ? 'ASC' : 'DESC'
 
   const values = [from, to]
-  const whereParts = ['sh.created_at >= $1', 'sh.created_at < $2']
+  const whereParts = [
+    `${createdAtEastern}::date >= $1::date`,
+    `${createdAtEastern}::date < $2::date`,
+  ]
 
   for (const key of Object.keys(filterColumns)) {
     appendMultiValueFilter(searchParams, key, whereParts, values)
@@ -1054,8 +1113,7 @@ LEFT JOIN LATERAL (
 LEFT JOIN LATERAL (
     SELECT ri.expected_reset_at, ri.remaining_pct
     FROM public.rate_limit_intervals ri
-    WHERE sh.provider = 'gemini'
-      AND ri.provider = 'google'
+    WHERE ri.provider = replace(sh.provider, 'gemini', 'google')
       AND ri.quota_type = 'requests'
       AND ri.model = sh.model
       AND ri.fromDate <= sh.start_time

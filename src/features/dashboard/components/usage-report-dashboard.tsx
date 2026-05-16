@@ -88,10 +88,10 @@ const OTHER_CLIENTS = 'Other'
 const FIVE_MINUTES_MS = 5 * 60 * 1000
 const RECENT_HEALTH_ERROR_WINDOW_MS = 24 * 60 * 60 * 1000
 const PROVIDER_STATUS_24H_WINDOW_MS = 24 * 60 * 60 * 1000
+const PROVIDER_STATUS_MONTH_WINDOW_MS = 31 * 24 * 60 * 60 * 1000
 
 const unmeteredProviderConfigs = [
-  { key: 'xai', label: 'xAI' },
-  { key: 'openrouter', label: 'OpenRouter' },
+  { key: 'nvidia_nim', label: 'NVIDIA' },
   { key: 'local', label: 'Local' },
 ] as const
 
@@ -561,6 +561,34 @@ export function UsageReportDashboard() {
 
         <TabsContent value='usage' className='mt-0'>
           <div className='usage-report-layout grid grid-cols-1 gap-4 xl:items-stretch'>
+            <Card className='usage-report-provider-card'>
+              <CardHeader>
+                <CardTitle>Provider Status</CardTitle>
+                <CardDescription>
+                  Quota windows, monthly limits, 24-hour usage, and provider
+                  health
+                </CardDescription>
+              </CardHeader>
+              <CardContent className='space-y-4'>
+                {usageReport.isPending ? (
+                  <div className='grid gap-3 md:grid-cols-3 xl:grid-cols-6'>
+                    <Skeleton className='h-40 w-full xl:col-span-2 xl:row-span-2' />
+                    <Skeleton className='h-40 w-full' />
+                    <Skeleton className='h-40 w-full' />
+                    <Skeleton className='h-40 w-full' />
+                    <Skeleton className='h-40 w-full' />
+                    <Skeleton className='h-40 w-full' />
+                  </div>
+                ) : (
+                  <ProviderStatusList
+                    rows={quotas}
+                    health={quotaHealthInput}
+                    unmeteredStatuses={unmeteredProviderStatuses}
+                  />
+                )}
+              </CardContent>
+            </Card>
+
             <Card className='usage-report-token-card xl:flex xl:flex-col'>
               <CardHeader>
                 <CardTitle>Token Trend</CardTitle>
@@ -635,31 +663,6 @@ export function UsageReportDashboard() {
                   <div className='flex h-[320px] items-center justify-center text-sm text-muted-foreground'>
                     No token trend data returned for this range.
                   </div>
-                )}
-              </CardContent>
-            </Card>
-
-            <Card className='usage-report-provider-card'>
-              <CardHeader>
-                <CardTitle>Provider Status</CardTitle>
-                <CardDescription>
-                  Quota windows, 24-hour usage, and provider health
-                </CardDescription>
-              </CardHeader>
-              <CardContent className='space-y-4'>
-                {usageReport.isPending ? (
-                  <div className='space-y-3'>
-                    <Skeleton className='h-16 w-full' />
-                    <Skeleton className='h-16 w-full' />
-                    <Skeleton className='h-16 w-full' />
-                    <Skeleton className='h-72 w-full' />
-                  </div>
-                ) : (
-                  <ProviderStatusList
-                    rows={quotas}
-                    health={quotaHealthInput}
-                    unmeteredStatuses={unmeteredProviderStatuses}
-                  />
                 )}
               </CardContent>
             </Card>
@@ -946,6 +949,7 @@ function ProviderStatusList({
       row.short_remaining_pct,
       row.special_remaining_pct,
       row.short_special_remaining_pct,
+      row.monthly_remaining_pct,
     ].some((value) => value !== null)
   )
   const googleRows = quotaRows.filter(
@@ -957,8 +961,10 @@ function ProviderStatusList({
   const sortedProviderRows = [...providerRows].sort(compareProviderQuotaRows)
   const openAiRow = sortedProviderRows.find(isOpenAiQuotaRow)
   const anthropicRow = sortedProviderRows.find(isAnthropicQuotaRow)
+  const xAiRow = sortedProviderRows.find(isXAiQuotaRow)
   const fallbackRows = sortedProviderRows.filter(
-    (row) => !isOpenAiQuotaRow(row) && !isAnthropicQuotaRow(row)
+    (row) =>
+      !isOpenAiQuotaRow(row) && !isAnthropicQuotaRow(row) && !isXAiQuotaRow(row)
   )
 
   return (
@@ -974,6 +980,7 @@ function ProviderStatusList({
           health={health}
         />
       ) : null}
+      {xAiRow ? <XAiStatusCard row={xAiRow} health={health} /> : null}
       {fallbackRows.map((row) => (
         <GenericProviderStatusCard
           key={`${row.provider}:${row.model ?? ''}`}
@@ -1013,7 +1020,7 @@ function ProviderStatusFrame({
     <div
       data-provider-quota={providerKey}
       data-provider-status={providerKey}
-      className={`space-y-3 rounded-md border border-l-4 p-3 ${className ?? ''}`}
+      className={`flex h-full min-h-0 flex-col space-y-3 rounded-md border border-l-4 p-3 ${className ?? ''}`}
       style={{
         borderLeftColor: color,
         backgroundColor: colorWithAlpha(color, 0.07),
@@ -1049,8 +1056,8 @@ function OpenAiStatusCard({
       color={providerColorFor(row.provider)}
       className='provider-status-span'
     >
-      <div className='grid gap-3 text-xs sm:grid-cols-2'>
-        <div className='grid gap-3'>
+      <div className='grid flex-1 gap-3 text-xs sm:grid-cols-2'>
+        <div className='grid grid-rows-2 gap-3'>
           <QuotaValue
             label='5-Hour'
             percent={row.short_remaining_pct}
@@ -1082,7 +1089,7 @@ function OpenAiStatusCard({
             })}
           />
         </div>
-        <div className='grid gap-3'>
+        <div className='grid grid-rows-2 gap-3'>
           <QuotaValue
             label='Weekly'
             percent={row.weekly_remaining_pct}
@@ -1134,7 +1141,7 @@ function AnthropicStatusCard({
       badge={quotaFreshnessLabel(row)}
       color={providerColorFor(row.provider)}
     >
-      <div className='grid gap-3 text-xs'>
+      <div className='grid flex-1 gap-3 text-xs sm:grid-cols-3'>
         <QuotaValue
           label='5-Hour'
           percent={row.short_remaining_pct}
@@ -1197,7 +1204,7 @@ function GenericProviderStatusCard({
       badge={quotaFreshnessLabel(row)}
       color={providerColorFor(row.provider)}
     >
-      <div className='grid gap-3 text-xs'>
+      <div className='grid flex-1 gap-3 text-xs'>
         <QuotaValue
           label={shortQuotaLabel(row.provider)}
           percent={row.short_remaining_pct}
@@ -1261,6 +1268,42 @@ function GenericProviderStatusCard({
   )
 }
 
+function XAiStatusCard({
+  row,
+  health,
+}: {
+  row: UsageReportQuotaRow
+  health: QuotaHealthInput
+}) {
+  return (
+    <ProviderStatusFrame
+      providerKey='xai'
+      title='xAI'
+      description='Monthly quota window'
+      badge={quotaFreshnessLabel(row)}
+      color={providerColorFor(row.provider)}
+    >
+      <div className='grid flex-1 gap-3 text-xs'>
+        <QuotaValue
+          label='Monthly'
+          percent={row.monthly_remaining_pct}
+          resetAt={row.monthly_reset_at}
+          active={row.monthly_active}
+          usageTokens={row.monthly_usage_tokens}
+          usageBreakdown={row.monthly_usage_breakdown}
+          usageLabel='tokens this month'
+          healthOverlay={buildQuotaHealthOverlay({
+            label: 'xAI Monthly',
+            provider: row.provider,
+            windowMs: PROVIDER_STATUS_MONTH_WINDOW_MS,
+            health,
+          })}
+        />
+      </div>
+    </ProviderStatusFrame>
+  )
+}
+
 function UnmeteredProviderStatusCard({
   status,
   health,
@@ -1276,7 +1319,7 @@ function UnmeteredProviderStatusCard({
       badge='Unmetered'
       color={status.color}
     >
-      <div className='grid gap-3 text-xs'>
+      <div className='grid flex-1 gap-3 text-xs'>
         <QuotaValue
           label='24-Hour'
           percent={null}
@@ -1743,6 +1786,10 @@ function isAnthropicQuotaRow(row: UsageReportQuotaRow) {
   return row.provider.toLowerCase() === 'anthropic'
 }
 
+function isXAiQuotaRow(row: UsageReportQuotaRow) {
+  return providerColorKey(row.provider) === 'xai'
+}
+
 function compareProviderQuotaRows(
   left: UsageReportQuotaRow,
   right: UsageReportQuotaRow
@@ -1761,7 +1808,10 @@ function providerQuotaSortRank(provider: string) {
   if (normalized === 'openai') return 0
   if (normalized === 'anthropic') return 1
   if (normalized === 'google' || normalized === 'gemini') return 2
-  return 3
+  if (normalized === 'xai' || normalized === 'x.ai') return 3
+  if (normalized === 'nvidia_nim' || normalized === 'nvidia') return 4
+  if (normalized === 'local' || normalized.startsWith('local_')) return 5
+  return 6
 }
 
 function GoogleQuotaCard({
@@ -1800,7 +1850,7 @@ function GoogleQuotaCard({
       badge={googleQuotaFreshnessLabel(classRows)}
       color={color}
     >
-      <div className='grid gap-3 text-xs'>
+      <div className='grid flex-1 gap-3 text-xs sm:grid-cols-3'>
         {googleQuotaClasses.map((quotaClass) => {
           const row = classRows.get(quotaClass.key)
           return (
@@ -1856,12 +1906,12 @@ function QuotaValue({
     <div
       data-quota-value={label}
       data-quota-percent={percentLabel}
-      className='min-w-0 space-y-1'
+      className='flex min-h-0 min-w-0 flex-col'
     >
       <div
         className={
           healthOverlay
-            ? 'grid min-w-0 grid-cols-[minmax(0,1fr)_0.875rem] gap-2'
+            ? 'grid h-full min-h-28 min-w-0 grid-cols-[minmax(0,1fr)_0.875rem] gap-2'
             : 'min-w-0'
         }
       >
@@ -2043,9 +2093,9 @@ function QuotaHealthTimeline({
           role='img'
           aria-label={quotaHealthAriaLabel(overlay)}
           tabIndex={0}
-          className='flex min-h-28 justify-center py-1 ring-sidebar-ring outline-none focus-visible:ring-2'
+          className='flex h-full min-h-0 justify-center py-1 ring-sidebar-ring outline-none focus-visible:ring-2'
         >
-          <div className='relative min-h-28 w-2 overflow-hidden rounded-full bg-muted'>
+          <div className='relative h-full min-h-0 w-2 overflow-hidden rounded-full bg-muted'>
             {overlay.segments.map((segment) => (
               <span
                 key={segment.key}
@@ -3579,6 +3629,7 @@ function providerActiveCount(row: UsageReportQuotaRow) {
     row.short_active,
     row.special_active,
     row.short_special_active,
+    row.monthly_active,
   ].filter(Boolean).length
 }
 
@@ -3671,6 +3722,7 @@ function providerModelPrefixCandidates(provider?: string | null) {
     'local',
     'local_llm',
     'local_embed',
+    'nvidia',
     'nvidia_nim',
     'chatgpt',
   ])
@@ -3703,7 +3755,7 @@ function providerDisplayName(provider: string) {
   if (normalized === 'local' || normalized.startsWith('local_')) {
     return 'Local'
   }
-  if (normalized === 'nvidia_nim') return 'NVIDIA NIM'
+  if (normalized === 'nvidia_nim' || normalized === 'nvidia') return 'NVIDIA'
   if (normalized === 'chatgpt') return 'ChatGPT'
   return provider
 }
