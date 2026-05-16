@@ -228,6 +228,13 @@ export interface UsageReportQuotaRow {
   short_special_active: boolean
   short_special_usage_tokens: number
   short_special_usage_breakdown: UsageReportQuotaUsageBreakdown[]
+  monthly_remaining_pct: number | null
+  monthly_reset_at: string | null
+  monthly_interval_start: string | null
+  monthly_interval_end: string | null
+  monthly_active: boolean
+  monthly_usage_tokens: number
+  monthly_usage_breakdown: UsageReportQuotaUsageBreakdown[]
 }
 
 export interface UsageReportQuotaUsageBreakdown {
