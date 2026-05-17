@@ -50,6 +50,7 @@ export default defineConfig({
     federation({
       name: 'dashboard-shell',
       dts: false,
+      shareStrategy: 'loaded-first',
       remotes: {
         'aawm-tap-dashboard': {
           type: aawmTapRemoteEntryType,
