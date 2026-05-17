@@ -115,7 +115,7 @@ const healthAttributionDisplayOrder: HealthAttributionLayer[] = [
 
 function defaultDateRange(now = new Date()) {
   const from = new Date(
-    Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1)
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - 6)
   )
   const to = new Date(
     Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1)
@@ -697,7 +697,7 @@ export function UsageReportDashboard() {
             <CardHeader>
               <CardTitle>Health Metrics</CardTitle>
               <CardDescription>
-                Provider latency, errors, and probes over the last 14 days
+                Provider latency, errors, and probes over the last 24 hours
               </CardDescription>
             </CardHeader>
             <CardContent className='flex flex-1 flex-col gap-3'>

@@ -26,10 +26,22 @@ const AAWM_TAP_ADMIN_CAPABILITY = envSecret(
 const DEFAULT_GROUP_BY = ['environment', 'client', 'repository', 'provider_model']
 const MAX_LIMIT = 500
 const MAX_CLIENT_ROWS = 250
-const MAX_HEALTH_ROWS = 20_000
+const HEALTH_WINDOW_HOURS = Math.max(
+  1,
+  Math.min(Number(process.env.SHELL_REPORT_HEALTH_WINDOW_HOURS ?? 24), 336)
+)
+const MAX_HEALTH_ROWS = Math.max(
+  100,
+  Math.min(Number(process.env.SHELL_REPORT_HEALTH_MAX_ROWS ?? 1_500), 20_000)
+)
 const MAX_PROVIDER_ERROR_ROWS = 2_000
 const MAX_PROVIDER_STATUS_ROWS = 500
 const STALE_RECORD_THRESHOLD_MINUTES = 120
+const REPORT_CACHE_TTL_MS = Math.max(
+  0,
+  Number(process.env.SHELL_REPORT_CACHE_TTL_MS ?? 30_000)
+)
+const MAX_REPORT_CACHE_ENTRIES = 20
 const UPSTREAM_FETCH_TIMEOUT_MS = Number(
   process.env.SHELL_REPORT_UPSTREAM_TIMEOUT_MS ?? 30_000
 )
@@ -61,6 +73,46 @@ const pool = DATABASE_URL
       connectionTimeoutMillis: 10_000,
     })
   : null
+const reportCache = new Map()
+
+async function cachedReport(key, load) {
+  if (REPORT_CACHE_TTL_MS <= 0) return load()
+
+  const now = Date.now()
+  const cached = reportCache.get(key)
+  if (cached?.value !== undefined && cached.expiresAt > now) {
+    return cached.value
+  }
+  if (cached?.promise) return cached.promise
+
+  const promise = load()
+    .then((value) => {
+      reportCache.set(key, {
+        value,
+        expiresAt: Date.now() + REPORT_CACHE_TTL_MS,
+      })
+      pruneReportCache()
+      return value
+    })
+    .catch((error) => {
+      if (reportCache.get(key)?.promise === promise) {
+        reportCache.delete(key)
+      }
+      throw error
+    })
+
+  reportCache.set(key, { promise, expiresAt: 0 })
+  pruneReportCache()
+  return promise
+}
+
+function pruneReportCache() {
+  while (reportCache.size > MAX_REPORT_CACHE_ENTRIES) {
+    const oldestKey = reportCache.keys().next().value
+    if (oldestKey === undefined) return
+    reportCache.delete(oldestKey)
+  }
+}
 
 function normalizeDatabaseUrl(value) {
   if (!value) return value
@@ -163,7 +215,7 @@ function parseDateParam(value, fallback) {
 function defaultFromDate() {
   const now = new Date()
   return new Date(
-    Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1)
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - 6)
   ).toISOString()
 }
 
@@ -420,12 +472,12 @@ SELECT
     request_period_start,
     request_period_end
 FROM public.provider_latency_health_5m
-WHERE bucket_start >= now() - interval '14 days'
+WHERE bucket_start >= now() - ($2::double precision * interval '1 hour')
 ORDER BY bucket_start DESC, environment, provider, model
 LIMIT $1;
 `
 
-  return { sql, values: [MAX_HEALTH_ROWS] }
+  return { sql, values: [MAX_HEALTH_ROWS, HEALTH_WINDOW_HOURS] }
 }
 
 function buildProviderErrorObservationQuery() {
@@ -714,6 +766,28 @@ function buildFreshnessQuery() {
     sql: 'SELECT MAX(sh.created_at) AS latest_record_at FROM public.session_history sh;',
     values: [],
   }
+}
+
+async function loadQuotaReport() {
+  return cachedReport('quotas', async () => {
+    const quotaQuery = buildQuotaQuery()
+    const freshnessQuery = buildFreshnessQuery()
+    const [quotaResult, freshnessResult] = await Promise.all([
+      pool.query(quotaQuery.sql, quotaQuery.values),
+      pool.query(freshnessQuery.sql, freshnessQuery.values),
+    ])
+    const freshness = buildFreshnessMetadata(
+      firstRow(freshnessResult).latest_record_at
+    )
+
+    return {
+      metadata: {
+        ...freshness,
+        staleRecordThresholdMinutes: STALE_RECORD_THRESHOLD_MINUTES,
+      },
+      quotas: quotaResult.rows.map(normalizeQuotaRow),
+    }
+  })
 }
 
 function normalizeSummary(row) {
@@ -1189,71 +1263,69 @@ async function handleUsageReport(req, res) {
   }
 
   const requestUrl = new URL(req.url, `http://${req.headers.host}`)
-  const { sql, values, metadata } = buildUsageQuery(requestUrl.searchParams)
-  const summaryQuery = buildSummaryQuery(requestUrl.searchParams)
-  const trendQuery = buildTrendQuery(requestUrl.searchParams)
-  const clientUsageQuery = buildClientUsageQuery(requestUrl.searchParams)
-  const providerLatencyHealthQuery = buildProviderLatencyHealthQuery()
-  const providerErrorObservationQuery = buildProviderErrorObservationQuery()
-  const providerStatusUsageQuery = buildProviderStatusUsageQuery()
-  const quotaQuery = buildQuotaQuery()
-  const freshnessQuery = buildFreshnessQuery()
+  const body = await cachedReport(`usage:${requestUrl.search}`, async () => {
+    const { sql, values, metadata } = buildUsageQuery(requestUrl.searchParams)
+    const summaryQuery = buildSummaryQuery(requestUrl.searchParams)
+    const trendQuery = buildTrendQuery(requestUrl.searchParams)
+    const clientUsageQuery = buildClientUsageQuery(requestUrl.searchParams)
+    const providerLatencyHealthQuery = buildProviderLatencyHealthQuery()
+    const providerErrorObservationQuery = buildProviderErrorObservationQuery()
+    const providerStatusUsageQuery = buildProviderStatusUsageQuery()
+    const quotaReportPromise = loadQuotaReport()
 
-  const [
-    result,
-    summaryResult,
-    trendResult,
-    clientUsageResult,
-    providerLatencyHealthResult,
-    providerErrorObservationResult,
-    providerStatusUsageResult,
-    quotaResult,
-    freshnessResult,
-  ] = await Promise.all([
-    pool.query(sql, values),
-    pool.query(summaryQuery.sql, summaryQuery.values),
-    pool.query(trendQuery.sql, trendQuery.values),
-    pool.query(clientUsageQuery.sql, clientUsageQuery.values),
-    pool.query(
-      providerLatencyHealthQuery.sql,
-      providerLatencyHealthQuery.values
-    ),
-    pool.query(
-      providerErrorObservationQuery.sql,
-      providerErrorObservationQuery.values
-    ),
-    pool.query(providerStatusUsageQuery.sql, providerStatusUsageQuery.values),
-    pool.query(quotaQuery.sql, quotaQuery.values),
-    pool.query(freshnessQuery.sql, freshnessQuery.values),
-  ])
+    const [
+      result,
+      summaryResult,
+      trendResult,
+      clientUsageResult,
+      providerLatencyHealthResult,
+      providerErrorObservationResult,
+      providerStatusUsageResult,
+      quotaReport,
+    ] = await Promise.all([
+      pool.query(sql, values),
+      pool.query(summaryQuery.sql, summaryQuery.values),
+      pool.query(trendQuery.sql, trendQuery.values),
+      pool.query(clientUsageQuery.sql, clientUsageQuery.values),
+      pool.query(
+        providerLatencyHealthQuery.sql,
+        providerLatencyHealthQuery.values
+      ),
+      pool.query(
+        providerErrorObservationQuery.sql,
+        providerErrorObservationQuery.values
+      ),
+      pool.query(providerStatusUsageQuery.sql, providerStatusUsageQuery.values),
+      quotaReportPromise,
+    ])
 
-  const rows = result.rows.map(normalizeRow)
-  const summary = normalizeSummary(firstRow(summaryResult))
-  const freshness = buildFreshnessMetadata(
-    firstRow(freshnessResult).latest_record_at
-  )
+    const rows = result.rows.map(normalizeRow)
+    const summary = normalizeSummary(firstRow(summaryResult))
 
-  sendJson(res, 200, {
-    metadata: {
-      ...metadata,
-      ...freshness,
-      staleRecordThresholdMinutes: STALE_RECORD_THRESHOLD_MINUTES,
-    },
-    summary,
-    trend: trendResult.rows.map(normalizeTrendRow),
-    clients: clientUsageResult.rows.map(normalizeClientUsageRow),
-    providerLatencyHealth: providerLatencyHealthResult.rows.map(
-      normalizeProviderLatencyHealthRow
-    ),
-    providerErrorObservations: providerErrorObservationResult.rows.map(
-      normalizeProviderErrorObservationRow
-    ),
-    providerStatusUsage: providerStatusUsageResult.rows.map(
-      normalizeProviderStatusUsageRow
-    ),
-    quotas: quotaResult.rows.map(normalizeQuotaRow),
-    rows,
+    return {
+      metadata: {
+        ...metadata,
+        ...quotaReport.metadata,
+        staleRecordThresholdMinutes: STALE_RECORD_THRESHOLD_MINUTES,
+      },
+      summary,
+      trend: trendResult.rows.map(normalizeTrendRow),
+      clients: clientUsageResult.rows.map(normalizeClientUsageRow),
+      providerLatencyHealth: providerLatencyHealthResult.rows.map(
+        normalizeProviderLatencyHealthRow
+      ),
+      providerErrorObservations: providerErrorObservationResult.rows.map(
+        normalizeProviderErrorObservationRow
+      ),
+      providerStatusUsage: providerStatusUsageResult.rows.map(
+        normalizeProviderStatusUsageRow
+      ),
+      quotas: quotaReport.quotas,
+      rows,
+    }
   })
+
+  sendJson(res, 200, body)
 }
 
 async function handleUsageQuotas(_req, res) {
@@ -1264,23 +1336,7 @@ async function handleUsageQuotas(_req, res) {
     return
   }
 
-  const quotaQuery = buildQuotaQuery()
-  const freshnessQuery = buildFreshnessQuery()
-  const [quotaResult, freshnessResult] = await Promise.all([
-    pool.query(quotaQuery.sql, quotaQuery.values),
-    pool.query(freshnessQuery.sql, freshnessQuery.values),
-  ])
-  const freshness = buildFreshnessMetadata(
-    firstRow(freshnessResult).latest_record_at
-  )
-
-  sendJson(res, 200, {
-    metadata: {
-      ...freshness,
-      staleRecordThresholdMinutes: STALE_RECORD_THRESHOLD_MINUTES,
-    },
-    quotas: quotaResult.rows.map(normalizeQuotaRow),
-  })
+  sendJson(res, 200, await loadQuotaReport())
 }
 
 async function handleAawmTapProxy(req, res) {
