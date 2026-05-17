@@ -53,6 +53,16 @@ export default defineConfig({
   },
   server: {
     port: dashboardShellDevPort,
+    watch: {
+      ignored: [
+        '**/.analysis/**',
+        '**/.claude/**',
+        '**/.codex/**',
+        '**/.gemini/**',
+        '**/@mf-types/**',
+        '**/dist/**',
+      ],
+    },
     proxy: {
       '/api/aawm-tap': {
         target: shellReportApiTarget,
