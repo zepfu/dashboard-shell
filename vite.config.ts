@@ -14,6 +14,31 @@ const shellReportApiTarget =
 const dashboardShellDevPort = Number(
   process.env.DASHBOARD_SHELL_DEV_PORT ?? 3006
 )
+const repoRoot = path.resolve(__dirname)
+const ignoredDevWatchPathNames = new Set([
+  '.analysis',
+  '.claude',
+  '.codex',
+  '.gemini',
+  '@mf-types',
+  'dist',
+])
+
+const isIgnoredDevWatchPath = (watchPath: string) => {
+  const absoluteWatchPath = path.resolve(repoRoot, watchPath)
+  const relativeWatchPath = path.relative(repoRoot, absoluteWatchPath)
+
+  if (
+    relativeWatchPath.startsWith('..') ||
+    path.isAbsolute(relativeWatchPath)
+  ) {
+    return false
+  }
+
+  return relativeWatchPath
+    .split(path.sep)
+    .some((segment) => ignoredDevWatchPathNames.has(segment))
+}
 
 // https://vite.dev/config/
 export default defineConfig({
@@ -54,14 +79,7 @@ export default defineConfig({
   server: {
     port: dashboardShellDevPort,
     watch: {
-      ignored: [
-        '**/.analysis/**',
-        '**/.claude/**',
-        '**/.codex/**',
-        '**/.gemini/**',
-        '**/@mf-types/**',
-        '**/dist/**',
-      ],
+      ignored: isIgnoredDevWatchPath,
     },
     proxy: {
       '/api/aawm-tap': {
