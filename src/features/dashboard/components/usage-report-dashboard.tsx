@@ -89,6 +89,7 @@ const FIVE_MINUTES_MS = 5 * 60 * 1000
 const RECENT_HEALTH_ERROR_WINDOW_MS = 24 * 60 * 60 * 1000
 const PROVIDER_STATUS_24H_WINDOW_MS = 24 * 60 * 60 * 1000
 const PROVIDER_STATUS_MONTH_WINDOW_MS = 31 * 24 * 60 * 60 * 1000
+const QUOTA_MODEL_PREVIEW_LIMIT = 6
 
 const unmeteredProviderConfigs = [
   { key: 'nvidia_nim', label: 'NVIDIA' },
@@ -532,9 +533,12 @@ export function UsageReportDashboard() {
         </Card>
       ) : null}
 
-      <Tabs defaultValue='usage' className='space-y-4'>
+      <Tabs defaultValue='status' className='space-y-4'>
         <TabsList>
-          <TabsTrigger value='usage'>Usage</TabsTrigger>
+          <TabsTrigger value='status'>Status</TabsTrigger>
+          <TabsTrigger value='token' data-token-tab=''>
+            Token
+          </TabsTrigger>
           <TabsTrigger value='client' data-client-tab=''>
             Client
           </TabsTrigger>
@@ -559,114 +563,110 @@ export function UsageReportDashboard() {
           </TabsTrigger>
         </TabsList>
 
-        <TabsContent value='usage' className='mt-0'>
-          <div className='usage-report-layout grid grid-cols-1 gap-4 xl:items-stretch'>
-            <Card className='usage-report-provider-card'>
-              <CardHeader>
-                <CardTitle>Provider Status</CardTitle>
-                <CardDescription>
-                  Quota windows, monthly limits, 24-hour usage, and provider
-                  health
-                </CardDescription>
-              </CardHeader>
-              <CardContent className='space-y-4'>
-                {usageReport.isPending ? (
-                  <div className='grid gap-3 md:grid-cols-3 xl:grid-cols-6'>
-                    <Skeleton className='h-40 w-full xl:col-span-2 xl:row-span-2' />
-                    <Skeleton className='h-40 w-full' />
-                    <Skeleton className='h-40 w-full' />
-                    <Skeleton className='h-40 w-full' />
-                    <Skeleton className='h-40 w-full' />
-                    <Skeleton className='h-40 w-full' />
-                  </div>
-                ) : (
-                  <ProviderStatusList
-                    rows={quotas}
-                    health={quotaHealthInput}
-                    unmeteredStatuses={unmeteredProviderStatuses}
-                  />
-                )}
-              </CardContent>
-            </Card>
+        <TabsContent value='status' className='mt-0'>
+          <Card className='usage-report-provider-card'>
+            <CardHeader>
+              <CardTitle>Provider Status</CardTitle>
+              <CardDescription>
+                Quota windows, monthly limits, 24-hour usage, and provider
+                health
+              </CardDescription>
+            </CardHeader>
+            <CardContent className='space-y-4'>
+              {usageReport.isPending ? (
+                <div className='grid gap-3 md:grid-cols-3 xl:grid-cols-6'>
+                  <Skeleton className='h-40 w-full xl:col-span-2 xl:row-span-2' />
+                  <Skeleton className='h-40 w-full' />
+                  <Skeleton className='h-40 w-full' />
+                  <Skeleton className='h-40 w-full' />
+                  <Skeleton className='h-40 w-full' />
+                  <Skeleton className='h-40 w-full' />
+                </div>
+              ) : (
+                <ProviderStatusList
+                  rows={quotas}
+                  health={quotaHealthInput}
+                  unmeteredStatuses={unmeteredProviderStatuses}
+                />
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
 
-            <Card className='usage-report-token-card xl:flex xl:flex-col'>
-              <CardHeader>
-                <CardTitle>Token Trend</CardTitle>
-                <CardDescription>
-                  Provider-colored tokens for{' '}
-                  {formatDateRange(fromDate, toDate)}
-                </CardDescription>
-              </CardHeader>
-              <CardContent className='flex flex-1 flex-col gap-3 ps-2'>
-                {usageReport.isPending ? (
-                  <Skeleton className='h-[320px] w-full' />
-                ) : trend.rows.length ? (
-                  <>
-                    <div className='relative h-[260px] shrink-0'>
-                      <ResponsiveContainer width='100%' height='100%'>
-                        <BarChart
-                          accessibilityLayer
-                          role='img'
-                          title='Token trend chart'
-                          desc='Stacked bar chart showing token usage by provider for each time bucket in the selected report range.'
-                          aria-label={`Token trend by provider for ${formatDateRange(fromDate, toDate)}`}
-                          data={trend.rows}
-                          onMouseMove={handleTokenTrendHover}
-                        >
-                          <CartesianGrid
-                            strokeDasharray='3 3'
-                            vertical={false}
+        <TabsContent value='token' className='mt-0'>
+          <Card className='usage-report-token-card xl:flex xl:flex-col'>
+            <CardHeader>
+              <CardTitle>Token Trend</CardTitle>
+              <CardDescription>
+                Provider-colored tokens for {formatDateRange(fromDate, toDate)}
+              </CardDescription>
+            </CardHeader>
+            <CardContent className='flex flex-1 flex-col gap-3 ps-2'>
+              {usageReport.isPending ? (
+                <Skeleton className='h-[320px] w-full' />
+              ) : trend.rows.length ? (
+                <>
+                  <div className='relative h-[260px] shrink-0'>
+                    <ResponsiveContainer width='100%' height='100%'>
+                      <BarChart
+                        accessibilityLayer
+                        role='img'
+                        title='Token trend chart'
+                        desc='Stacked bar chart showing token usage by provider for each time bucket in the selected report range.'
+                        aria-label={`Token trend by provider for ${formatDateRange(fromDate, toDate)}`}
+                        data={trend.rows}
+                        onMouseMove={handleTokenTrendHover}
+                      >
+                        <CartesianGrid strokeDasharray='3 3' vertical={false} />
+                        <XAxis
+                          dataKey='bucket'
+                          stroke='#888888'
+                          fontSize={12}
+                          tickLine={false}
+                          axisLine={false}
+                          minTickGap={18}
+                        />
+                        <YAxis
+                          stroke='#888888'
+                          fontSize={12}
+                          tickLine={false}
+                          axisLine={false}
+                          tickFormatter={(value) =>
+                            formatCompact(Number(value))
+                          }
+                        />
+                        {trend.series.map((series) => (
+                          <Bar
+                            key={series.key}
+                            dataKey={series.key}
+                            name={series.provider}
+                            stackId='tokens'
+                            fill={series.color}
+                            radius={[3, 3, 0, 0]}
                           />
-                          <XAxis
-                            dataKey='bucket'
-                            stroke='#888888'
-                            fontSize={12}
-                            tickLine={false}
-                            axisLine={false}
-                            minTickGap={18}
-                          />
-                          <YAxis
-                            stroke='#888888'
-                            fontSize={12}
-                            tickLine={false}
-                            axisLine={false}
-                            tickFormatter={(value) =>
-                              formatCompact(Number(value))
-                            }
-                          />
-                          {trend.series.map((series) => (
-                            <Bar
-                              key={series.key}
-                              dataKey={series.key}
-                              name={series.provider}
-                              stackId='tokens'
-                              fill={series.color}
-                              radius={[3, 3, 0, 0]}
-                            />
-                          ))}
-                        </BarChart>
-                      </ResponsiveContainer>
-                      <ActiveChartTotalOverlay
-                        active={activeTokenTrend}
-                        rows={trend.rows}
-                      />
-                    </div>
-                    {activeTokenTrend ? (
-                      <TokenTrendDetail
-                        label={activeTokenTrend.label}
-                        row={activeTokenTrend.row}
-                        series={activeTokenTrend.series}
-                      />
-                    ) : null}
-                  </>
-                ) : (
-                  <div className='flex h-[320px] items-center justify-center text-sm text-muted-foreground'>
-                    No token trend data returned for this range.
+                        ))}
+                      </BarChart>
+                    </ResponsiveContainer>
+                    <ActiveChartTotalOverlay
+                      active={activeTokenTrend}
+                      rows={trend.rows}
+                    />
                   </div>
-                )}
-              </CardContent>
-            </Card>
-          </div>
+                  {activeTokenTrend ? (
+                    <TokenTrendDetail
+                      label={activeTokenTrend.label}
+                      row={activeTokenTrend.row}
+                      series={activeTokenTrend.series}
+                    />
+                  ) : null}
+                </>
+              ) : (
+                <div className='flex h-[320px] items-center justify-center text-sm text-muted-foreground'>
+                  No token trend data returned for this range.
+                </div>
+              )}
+            </CardContent>
+          </Card>
         </TabsContent>
 
         <TabsContent value='client' className='mt-0'>
@@ -1026,16 +1026,43 @@ function ProviderStatusFrame({
         backgroundColor: colorWithAlpha(color, 0.07),
       }}
     >
-      <div className='flex items-center justify-between gap-3'>
-        <div className='min-w-0'>
-          <div className='truncate text-sm font-medium'>{title}</div>
-          {description ? (
-            <div className='text-xs text-muted-foreground'>{description}</div>
-          ) : null}
-        </div>
-        <Badge variant='outline'>{badge}</Badge>
-      </div>
+      <ProviderStatusHeader
+        title={title}
+        description={description}
+        badge={badge}
+      />
       {children}
+    </div>
+  )
+}
+
+function ProviderStatusHeader({
+  title,
+  description,
+  badge,
+  hidden = false,
+  className,
+}: {
+  title: string
+  description?: string
+  badge: string
+  hidden?: boolean
+  className?: string
+}) {
+  return (
+    <div
+      aria-hidden={hidden || undefined}
+      className={`flex min-h-8 items-center justify-between gap-3 ${hidden ? 'invisible' : ''} ${className ?? ''}`}
+    >
+      <div className='min-w-0'>
+        <div className='truncate text-sm font-medium'>{title}</div>
+        {description ? (
+          <div className='truncate text-xs text-muted-foreground'>
+            {description}
+          </div>
+        ) : null}
+      </div>
+      <Badge variant='outline'>{badge}</Badge>
     </div>
   )
 }
@@ -1047,82 +1074,102 @@ function OpenAiStatusCard({
   row: UsageReportQuotaRow
   health: QuotaHealthInput
 }) {
+  const badge = quotaFreshnessLabel(row)
+  const color = providerColorFor(row.provider)
+
   return (
-    <ProviderStatusFrame
-      providerKey='openai'
-      title='OpenAI'
-      description='Normal and Spark quota windows'
-      badge={quotaFreshnessLabel(row)}
-      color={providerColorFor(row.provider)}
-      className='provider-status-span'
+    <div
+      data-provider-quota='openai'
+      data-provider-status='openai'
+      className='provider-status-span h-full min-h-0 overflow-hidden rounded-md border border-l-4'
+      style={{
+        borderLeftColor: color,
+        backgroundColor: colorWithAlpha(color, 0.07),
+      }}
     >
-      <div className='grid flex-1 gap-3 text-xs sm:grid-cols-2'>
-        <div className='grid grid-rows-2 gap-3'>
-          <QuotaValue
-            label='5-Hour'
-            percent={row.short_remaining_pct}
-            resetAt={row.short_reset_at}
-            active={row.short_active}
-            usageTokens={row.short_usage_tokens}
-            usageBreakdown={row.short_usage_breakdown}
-            healthOverlay={buildQuotaHealthOverlay({
-              label: 'OpenAI 5-Hour',
-              provider: row.provider,
-              windowMs: 5 * 60 * 60 * 1000,
-              health,
-              modelMatches: (model) => !isSparkModel(model),
-            })}
+      <div className='grid h-full min-h-0 gap-3 xl:grid-rows-2'>
+        <div className='flex min-h-0 flex-col space-y-3 p-3'>
+          <ProviderStatusHeader
+            title='OpenAI'
+            description='Normal and Spark quota windows'
+            badge={badge}
           />
-          <QuotaValue
-            label='Spark 5-Hour'
-            percent={openAiSparkShortSpecialPercent(row)}
-            resetAt={shortSpecialResetAt(row)}
-            active={row.short_special_active}
-            usageTokens={row.short_special_usage_tokens}
-            usageBreakdown={row.short_special_usage_breakdown}
-            healthOverlay={buildQuotaHealthOverlay({
-              label: 'OpenAI Spark 5-Hour',
-              provider: row.provider,
-              windowMs: 5 * 60 * 60 * 1000,
-              health,
-              modelMatches: isSparkModel,
-            })}
-          />
+          <div className='grid min-h-0 flex-1 gap-3 text-xs sm:grid-cols-2'>
+            <QuotaValue
+              label='5-Hour'
+              percent={row.short_remaining_pct}
+              resetAt={row.short_reset_at}
+              active={row.short_active}
+              usageTokens={row.short_usage_tokens}
+              usageBreakdown={row.short_usage_breakdown}
+              healthOverlay={buildQuotaHealthOverlay({
+                label: 'OpenAI 5-Hour',
+                provider: row.provider,
+                windowMs: 5 * 60 * 60 * 1000,
+                health,
+                modelMatches: (model) => !isSparkModel(model),
+              })}
+            />
+            <QuotaValue
+              label='Weekly'
+              percent={row.weekly_remaining_pct}
+              resetAt={row.weekly_reset_at}
+              active={row.weekly_active}
+              usageTokens={row.weekly_usage_tokens}
+              usageBreakdown={row.weekly_usage_breakdown}
+              healthOverlay={buildQuotaHealthOverlay({
+                label: 'OpenAI Weekly',
+                provider: row.provider,
+                windowMs: 7 * 24 * 60 * 60 * 1000,
+                health,
+                modelMatches: (model) => !isSparkModel(model),
+              })}
+            />
+          </div>
         </div>
-        <div className='grid grid-rows-2 gap-3'>
-          <QuotaValue
-            label='Weekly'
-            percent={row.weekly_remaining_pct}
-            resetAt={row.weekly_reset_at}
-            active={row.weekly_active}
-            usageTokens={row.weekly_usage_tokens}
-            usageBreakdown={row.weekly_usage_breakdown}
-            healthOverlay={buildQuotaHealthOverlay({
-              label: 'OpenAI Weekly',
-              provider: row.provider,
-              windowMs: 7 * 24 * 60 * 60 * 1000,
-              health,
-              modelMatches: (model) => !isSparkModel(model),
-            })}
+        <div className='flex min-h-0 flex-col space-y-3 p-3 pt-0 xl:pt-3'>
+          <ProviderStatusHeader
+            title='OpenAI'
+            description='Normal and Spark quota windows'
+            badge={badge}
+            hidden
+            className='hidden xl:flex'
           />
-          <QuotaValue
-            label='Spark Weekly'
-            percent={row.special_remaining_pct}
-            resetAt={row.special_reset_at}
-            active={row.special_active}
-            usageTokens={row.special_usage_tokens}
-            usageBreakdown={row.special_usage_breakdown}
-            healthOverlay={buildQuotaHealthOverlay({
-              label: 'OpenAI Spark Weekly',
-              provider: row.provider,
-              windowMs: 7 * 24 * 60 * 60 * 1000,
-              health,
-              modelMatches: isSparkModel,
-            })}
-          />
+          <div className='grid min-h-0 flex-1 gap-3 text-xs sm:grid-cols-2'>
+            <QuotaValue
+              label='Spark 5-Hour'
+              percent={openAiSparkShortSpecialPercent(row)}
+              resetAt={shortSpecialResetAt(row)}
+              active={row.short_special_active}
+              usageTokens={row.short_special_usage_tokens}
+              usageBreakdown={row.short_special_usage_breakdown}
+              healthOverlay={buildQuotaHealthOverlay({
+                label: 'OpenAI Spark 5-Hour',
+                provider: row.provider,
+                windowMs: 5 * 60 * 60 * 1000,
+                health,
+                modelMatches: isSparkModel,
+              })}
+            />
+            <QuotaValue
+              label='Spark Weekly'
+              percent={row.special_remaining_pct}
+              resetAt={row.special_reset_at}
+              active={row.special_active}
+              usageTokens={row.special_usage_tokens}
+              usageBreakdown={row.special_usage_breakdown}
+              healthOverlay={buildQuotaHealthOverlay({
+                label: 'OpenAI Spark Weekly',
+                provider: row.provider,
+                windowMs: 7 * 24 * 60 * 60 * 1000,
+                health,
+                modelMatches: isSparkModel,
+              })}
+            />
+          </div>
         </div>
       </div>
-    </ProviderStatusFrame>
+    </div>
   )
 }
 
@@ -1916,12 +1963,23 @@ function QuotaValue({
         }
       >
         <div className='min-w-0 space-y-1'>
-          <div className='flex min-w-0 items-start gap-1 text-muted-foreground'>
+          <div
+            className='flex h-4 min-w-0 items-start gap-1 text-muted-foreground'
+            data-quota-label=''
+          >
             <Clock3 className='mt-0.5 size-3 shrink-0' />
-            <span className='min-w-0 leading-tight'>{label}</span>
+            <span className='min-w-0 truncate leading-tight'>{label}</span>
           </div>
-          <div className='font-semibold tabular-nums'>{percentLabel}</div>
-          <div className='truncate text-muted-foreground'>
+          <div
+            className='h-5 font-semibold tabular-nums'
+            data-quota-percent-text=''
+          >
+            {percentLabel}
+          </div>
+          <div
+            className='h-5 truncate text-muted-foreground'
+            data-quota-reset-text=''
+          >
             {active ? 'Resets ' : 'Latest '}
             {formatShortDateTime(resetAt)}
           </div>
@@ -1950,12 +2008,16 @@ function QuotaUsageBar({
 
   return (
     <div className='space-y-1 pt-1'>
-      <div className='text-[11px] text-muted-foreground tabular-nums'>
+      <div
+        className='flex min-h-8 items-end text-[11px] leading-tight text-muted-foreground tabular-nums'
+        data-quota-usage-label=''
+      >
         {formatCompact(tokens)} {usageLabel}
       </div>
       <UiTooltip>
         <TooltipTrigger asChild>
           <div
+            data-quota-usage-bar=''
             className='flex h-2 overflow-hidden rounded-full bg-muted ring-sidebar-ring outline-none focus-visible:ring-2'
             aria-label={`${formatCompact(tokens)} ${usageLabel}`}
             tabIndex={0}
@@ -1995,10 +2057,10 @@ function QuotaUsageBar({
       </UiTooltip>
       {visibleBreakdown.length ? (
         <div
-          className='grid gap-1 text-[10px] text-muted-foreground'
+          className='grid max-h-24 gap-1 overflow-hidden text-[10px] text-muted-foreground'
           data-quota-model-list=''
         >
-          {visibleBreakdown.slice(0, 3).map((item) => (
+          {visibleBreakdown.slice(0, QUOTA_MODEL_PREVIEW_LIMIT).map((item) => (
             <span
               key={item.model}
               className='flex min-w-0 items-center gap-1'
@@ -2013,8 +2075,8 @@ function QuotaUsageBar({
               </span>
             </span>
           ))}
-          {visibleBreakdown.length > 3 ? (
-            <span>+{visibleBreakdown.length - 3}</span>
+          {visibleBreakdown.length > QUOTA_MODEL_PREVIEW_LIMIT ? (
+            <span>+{visibleBreakdown.length - QUOTA_MODEL_PREVIEW_LIMIT}</span>
           ) : null}
         </div>
       ) : null}

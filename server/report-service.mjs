@@ -97,6 +97,7 @@ function envSecret(...names) {
 const createdAtEastern = "(sh.created_at AT TIME ZONE 'America/New_York')"
 const providerDimension = `
 CASE
+    WHEN lower(COALESCE(sh.provider, 'unknown')) IN ('google', 'gemini') THEN 'google'
     WHEN lower(COALESCE(sh.provider, 'unknown')) IN ('xai', 'x.ai') THEN 'xai'
     WHEN lower(COALESCE(sh.provider, 'unknown')) LIKE 'xai/%' THEN 'xai'
     WHEN lower(COALESCE(sh.provider, 'unknown')) = 'nvidia' THEN 'nvidia_nim'
@@ -541,6 +542,54 @@ selected AS (
     FROM ranked
     WHERE quota_rank = 1
 ),
+selected_with_fallbacks AS (
+    SELECT *
+    FROM selected
+    UNION ALL
+    SELECT
+        weekly.provider,
+        weekly.model,
+        'special' AS quota_type,
+        weekly.expected_reset_at,
+        0::double precision AS remaining_pct,
+        weekly.interval_start,
+        weekly.interval_end,
+        weekly.active,
+        weekly.quota_rank
+    FROM selected weekly
+    WHERE weekly.provider = 'openai'
+      AND weekly.model IS NULL
+      AND weekly.quota_type = 'weekly'
+      AND NOT EXISTS (
+          SELECT 1
+          FROM selected special
+          WHERE special.provider = weekly.provider
+            AND special.model IS NOT DISTINCT FROM weekly.model
+            AND special.quota_type = 'special'
+      )
+    UNION ALL
+    SELECT
+        short.provider,
+        short.model,
+        'short_special' AS quota_type,
+        short.expected_reset_at,
+        0::double precision AS remaining_pct,
+        short.interval_start,
+        short.interval_end,
+        short.active,
+        short.quota_rank
+    FROM selected short
+    WHERE short.provider = 'openai'
+      AND short.model IS NULL
+      AND short.quota_type = 'short'
+      AND NOT EXISTS (
+          SELECT 1
+          FROM selected short_special
+          WHERE short_special.provider = short.provider
+            AND short_special.model IS NOT DISTINCT FROM short.model
+            AND short_special.quota_type = 'short_special'
+      )
+),
 usage_by_type AS (
     SELECT
         s.provider,
@@ -559,7 +608,7 @@ usage_by_type AS (
             ) FILTER (WHERE model_usage.model IS NOT NULL),
             '[]'::jsonb
         ) AS usage_breakdown
-    FROM selected s
+    FROM selected_with_fallbacks s
     LEFT JOIN LATERAL (
         SELECT
             COALESCE(sh.model, 'unknown') AS model,
@@ -648,7 +697,7 @@ SELECT
     MAX(s.active::int) FILTER (WHERE s.quota_type = 'monthly')::double precision AS monthly_active,
     MAX(usage.usage_tokens) FILTER (WHERE s.quota_type = 'monthly')::double precision AS monthly_usage_tokens,
     (ARRAY_AGG(usage.usage_breakdown) FILTER (WHERE s.quota_type = 'monthly'))[1] AS monthly_usage_breakdown
-FROM selected s
+FROM selected_with_fallbacks s
 LEFT JOIN usage_by_type usage
   ON usage.provider = s.provider
  AND usage.model IS NOT DISTINCT FROM s.model
