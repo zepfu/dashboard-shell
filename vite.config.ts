@@ -1,5 +1,5 @@
 import path from 'path'
-import { defineConfig } from 'vite'
+import { defineConfig, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react-swc'
 import { federation } from '@module-federation/vite'
 import tailwindcss from '@tailwindcss/vite'
@@ -40,9 +40,21 @@ const isIgnoredDevWatchPath = (watchPath: string) => {
     .some((segment) => ignoredDevWatchPathNames.has(segment))
 }
 
+const noStoreDevServerResponses = (): Plugin => ({
+  name: 'dashboard-shell-dev-no-store',
+  apply: 'serve',
+  configureServer(server) {
+    server.middlewares.use((_request, response, next) => {
+      response.setHeader('Cache-Control', 'no-store')
+      next()
+    })
+  },
+})
+
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [
+    noStoreDevServerResponses(),
     tanstackRouter({
       target: 'react',
       autoCodeSplitting: true,
@@ -79,6 +91,9 @@ export default defineConfig({
   },
   server: {
     port: dashboardShellDevPort,
+    headers: {
+      'Cache-Control': 'no-store',
+    },
     watch: {
       ignored: isIgnoredDevWatchPath,
     },
