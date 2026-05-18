@@ -21,7 +21,12 @@
  * whole strip rather than per-cell affordances to avoid 288 simultaneous
  * tooltip mounts.
  */
-import { memo, type ReactElement, type ReactNode } from 'react'
+import {
+  memo,
+  type CSSProperties,
+  type ReactElement,
+  type ReactNode,
+} from 'react'
 import { HoverTooltip } from './hover-tooltip'
 
 interface CellDef {
@@ -109,24 +114,20 @@ export function HealthStrip({
        - overflow: visible so tooltip can escape (§11 #10)
        - vbar-label CSS classes with corrected letterSpacing 0.06em, opacity 0.7 (§11 #3,4,5)
        - accent-warm (not accent-chrome) for top "24H" label per mockup line 2003 (§11 #3)
+
+       Wave 15-A S11 fix: when tooltipContent is provided the strip is wrapped in
+       HoverTooltip. Previously HoverTooltip used display:inline-block which has
+       no intrinsic height when its only child is position:absolute — causing the
+       entire strip to render at 0×0. Fix: place HoverTooltip inside an explicit
+       abs-positioned sizing shell (same inset as the old stripEl). HoverTooltip
+       fills that shell (display:block; height:100%) so the inner strip can use
+       height:100% instead of position:absolute. This preserves tooltip anchoring
+       (`right: calc(100% + 8px)`) relative to the 12px-wide shell.
     */
-    const stripEl = (
-      <div
-        aria-hidden='true'
-        className='health-strip-wrapper'
-        style={{
-          position: 'absolute',
-          top: '6px',
-          right: '6px',
-          bottom: '6px',
-          width: '12px',
-          display: 'flex',
-          flexDirection: 'column',
-          borderLeft: '1px solid rgba(245,158,11,0.25)',
-          borderRight: '1px solid var(--border)',
-          overflow: 'visible',
-        }}
-      >
+
+    /** Inner strip content — shared by both branches. */
+    const stripInner = (
+      <>
         {/* "24H" label at top — .vbar-label.top per mockup lines 1989-2003 */}
         <div className='vbar-label top'>24H</div>
         <div
@@ -144,18 +145,67 @@ export function HealthStrip({
         </div>
         {/* "NOW" label at bottom — .vbar-label.bottom per mockup lines 2005-2007 */}
         <div className='vbar-label bottom'>NOW</div>
-      </div>
+      </>
     )
 
+    /** Shared strip-wrapper style — no positioning; sizing comes from parent. */
+    const stripWrapperStyle: CSSProperties = {
+      display: 'flex',
+      flexDirection: 'column',
+      borderLeft: '1px solid rgba(245,158,11,0.25)',
+      borderRight: '1px solid var(--border)',
+      overflow: 'visible',
+      height: '100%',
+    }
+
+    /** Shared positioning shell — anchors to the provider card (position:relative). */
+    const shellStyle: CSSProperties = {
+      position: 'absolute',
+      top: '6px',
+      right: '6px',
+      bottom: '6px',
+      width: '12px',
+    }
+
     if (tooltipContent !== undefined) {
+      /*
+       * Wave 15-A S11: positioning shell sits between the card and HoverTooltip.
+       * HoverTooltip (display:block; height:100%) fills the shell.
+       * The inner .health-strip-wrapper uses height:100% (not position:absolute).
+       * The tooltip panel uses `right: calc(100% + 8px)` relative to the 12px shell.
+       */
       return (
-        <HoverTooltip content={tooltipContent} variant='health'>
-          {stripEl}
-        </HoverTooltip>
+        <div aria-hidden='true' style={shellStyle}>
+          <HoverTooltip content={tooltipContent} variant='health'>
+            <div className='health-strip-wrapper' style={stripWrapperStyle}>
+              {stripInner}
+            </div>
+          </HoverTooltip>
+        </div>
       )
     }
 
-    return stripEl
+    // No tooltip — plain abs-positioned strip (original behavior).
+    return (
+      <div
+        aria-hidden='true'
+        className='health-strip-wrapper'
+        style={{
+          position: 'absolute',
+          top: '6px',
+          right: '6px',
+          bottom: '6px',
+          width: '12px',
+          display: 'flex',
+          flexDirection: 'column',
+          borderLeft: '1px solid rgba(245,158,11,0.25)',
+          borderRight: '1px solid var(--border)',
+          overflow: 'visible',
+        }}
+      >
+        {stripInner}
+      </div>
+    )
   }
 
   // Horizontal (default) — 288-cell grid row wrapped in .health-strip-wrapper
