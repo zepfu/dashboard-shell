@@ -108,7 +108,12 @@ export function HoverTooltip({
   return (
     <div
       className={className}
-      style={{ position: 'relative', display: 'inline-block' }}
+      style={{
+        position: 'relative',
+        // quota variant wraps a full-width bar — use block so width:100% resolves
+        // correctly. Other variants (health, default) remain inline-block.
+        display: variant === 'quota' ? 'block' : 'inline-block',
+      }}
       onPointerEnter={() => {
         setIsOpen(true)
       }}
