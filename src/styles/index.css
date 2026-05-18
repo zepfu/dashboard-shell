@@ -1216,3 +1216,62 @@ tbody tr {
 }
 
 /* End Wave 14-H */
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Wave 15-A: Visual regression fixes
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* ── S12 HIGH: Token trend stacked slice + swatch colors per provider ───────
+   Wave 14-F.5 removed inline `background: s.color` from .tt-slice/.tt-swatch
+   expecting these CSS class rules to exist — they were never added.
+   Values from mockup lines 1339-1345 + 1368-1374 (authoritative spec).     */
+.tt-slice.tt-anthropic,
+.tt-swatch.tt-anthropic {
+  background: #cc7855;
+}
+.tt-slice.tt-openai,
+.tt-swatch.tt-openai {
+  background: #10a37f;
+}
+.tt-slice.tt-google,
+.tt-swatch.tt-google {
+  background: #4285f4;
+}
+.tt-slice.tt-xai,
+.tt-swatch.tt-xai {
+  background: #f5f5f5;
+}
+.tt-slice.tt-nvidia,
+.tt-swatch.tt-nvidia {
+  background: #76b900;
+}
+.tt-slice.tt-openrouter,
+.tt-swatch.tt-openrouter {
+  background: #7e57c2;
+}
+.tt-slice.tt-local,
+.tt-swatch.tt-local {
+  background: #94a3b8;
+}
+
+/* ── S16 MEDIUM: .alert-glyph 12px centered span ────────────────────────────
+   Mockup lines 403-408: display:inline-block, 12px width, text-align:center,
+   margin-right:2px. Enforces fixed-width glyph column for alert alignment.  */
+.alert-item .alert-glyph {
+  display: inline-block;
+  width: 12px;
+  text-align: center;
+  margin-right: 2px;
+}
+.alert-item.alert-early-reset .alert-glyph {
+  color: #a3e635;
+}
+.alert-item.alert-cache-stale .alert-glyph {
+  color: var(--accent-warm);
+}
+
+/* ── S2-1 LOW: Sidebar max-height + overflow-y per mockup line 137-138 ──────
+   NOTE: .sidebar already has max-height: calc(100vh - 40px) and overflow-y: auto
+   defined at line 391-392 (present since Wave 14). S2-1 is already satisfied.   */
+
+/* End Wave 15-A */
