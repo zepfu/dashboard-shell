@@ -193,6 +193,20 @@
   .provider-card.aggregate { display: flex !important; }
 }
 
+/* Wave 11 PR2: aggregate card styling */
+/* Dashed amber border to distinguish the Σ Aggregate Totals card from peers. */
+/* Hidden below 2100px — no room for an 8th card at narrower widths.          */
+.provider-card.aggregate {
+  border: 1px dashed var(--accent-chrome) !important;
+  display: none;
+}
+@media (min-width: 2100px) {
+  .provider-card.aggregate {
+    display: flex;
+  }
+}
+/* End Wave 11 PR2 */
+
 @media (min-width: 3840px) {
   .provider-summary {
     grid-template-columns: repeat(8, minmax(0, 1fr));
