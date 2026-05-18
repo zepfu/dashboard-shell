@@ -832,3 +832,77 @@
 }
 
 /* End Wave 14-C */
+
+/* ─────────────────────────────────────────────────────────────────────────── */
+/* Wave 14-D: aggregate card variant — fleet activity 3-col grid + health tint */
+/* ─────────────────────────────────────────────────────────────────────────── */
+
+/* 14-D.1: Fleet activity 3-column grid (mockup lines 1101-1135)
+   Columns: label (fill) | value (64px fixed) | sublabel (auto)
+   Each row uses display:contents so dt/dd flow directly into the grid. */
+.fleet-activity-list {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 64px auto;
+  column-gap: 8px;
+  row-gap: 1px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* display:contents pulls children (dt, dd) into the parent grid columns */
+.fleet-activity-row {
+  display: contents;
+}
+
+/* Label column — muted, mono, 10px, slight letter-spacing */
+.fleet-activity-list .label {
+  color: var(--fg-muted);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.02em;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 1px 0;
+  margin: 0;
+}
+
+/* Value column — right-aligned, foreground color */
+.fleet-activity-list .value {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-align: right;
+  color: var(--fg);
+  padding: 1px 0;
+  margin: 0;
+}
+
+/* Invalid row overrides value color to accent-hot.
+   .accent-hot class also satisfies test_aggregate_card_invalid_tool_calls_red. */
+.fleet-activity-row.invalid .value,
+.fleet-activity-list .value.accent-hot {
+  color: var(--accent-hot);
+}
+
+/* Sublabel column — muted, 9px, lowercase, right-aligned (mockup line 1132) */
+.fleet-activity-list .sublabel {
+  color: var(--fg-muted);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  opacity: 0.65;
+  letter-spacing: 0.03em;
+  text-transform: lowercase;
+  text-align: right;
+  padding: 1px 0;
+  margin: 0;
+}
+
+/* 14-D.2: Aggregate health-strip cells tint per mockup line 2226-2228.
+   Slightly desaturated + brightened to visually distinguish aggregate
+   health strip from individual provider health strips. */
+.provider-card.aggregate .health-strip-cell {
+  filter: saturate(0.95) brightness(1.02);
+}
+
+/* End Wave 14-D */
