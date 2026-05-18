@@ -51,6 +51,7 @@ import {
   ProviderCard,
   type ProviderCardConfig,
   type ProviderMetrics,
+  type QuotaBarGroup,
   type QuotaRowConfig,
   type TopModelRow,
 } from './provider-card'
@@ -371,75 +372,110 @@ function buildAggregateMetrics(
 }
 
 /**
- * Builds QuotaRowConfig[] from a UsageReportQuotaRow for display in
- * the provider card quota bar.
+ * Maps a consumed-percent value to the appropriate iv-* threshold CSS class.
  *
- * Wave 9: uses iv-* threshold class names matching v9.7 CSS rules.
+ * Wave 11 PR3 (11-h): classes now key on consumed% (100 − remaining%) so
+ * colours align with intuitive severity — high consumption = red/amber.
+ *   <5%  consumed → iv-0-5  (dim cool — nearly empty bar)
+ *   5–10%         → iv-5-10 (cool blue)
+ *   10–25%        → iv-10-25 (teal)
+ *   25–50%        → iv-25-50 (amber)
+ *   ≥50%          → iv-50-p  (red — more than half consumed)
+ */
+function ivClassForConsumed(consumedPct: number): string {
+  if (consumedPct >= 50) return 'iv-50-p'
+  if (consumedPct >= 25) return 'iv-25-50'
+  if (consumedPct >= 10) return 'iv-10-25'
+  if (consumedPct >= 5) return 'iv-5-10'
+  return 'iv-0-5'
+}
+
+/**
+ * Builds 12 equal QuotaRowConfig segments for a single quota interval row.
+ *
+ * Wave 11 PR3 (11-h): emits N=12 equal segments, all sharing the same iv-*
+ * class derived from the row's current consumed percent. The visual segment
+ * boundary comes from the border-right rule on each `.quota-interval`.
+ * One segment (the one representing "now") receives highVelocity=true, which
+ * triggers the spectral-shimmer animation added in 11-j.
+ */
+function buildQuotaSegments(remainingPct: number): QuotaRowConfig[] {
+  const consumedPct = Math.max(0, Math.min(100, 100 - remainingPct))
+  const severityClass = ivClassForConsumed(consumedPct)
+  const SEGMENTS = 12
+  const highVelocityIdx = Math.min(
+    SEGMENTS - 1,
+    Math.floor((consumedPct / 100) * SEGMENTS)
+  )
+
+  return Array.from({ length: SEGMENTS }, (_, i) => ({
+    widthPct: 100 / SEGMENTS,
+    severityClass,
+    highVelocity: i === highVelocityIdx,
+  }))
+}
+
+/**
+ * Builds QuotaBarGroup[] from all quota rows for a single provider.
+ *
+ * Wave 11 PR3 (11-h): replaces the legacy flat QuotaRowConfig[] return.
+ * Each active interval type (weekly, short, special, monthly) produces one
+ * QuotaBarGroup whose `segments` field holds the 12-segment array.
  */
 function buildQuotaIntervals(
   quotaRows: UsageReportQuotaRow[],
   provider: string
-): QuotaRowConfig[] {
+): QuotaBarGroup[] {
   const providerQuotas = quotaRows.filter(
     (r) => r.provider.toLowerCase() === provider.toLowerCase()
   )
   if (providerQuotas.length === 0) return []
 
-  const result: QuotaRowConfig[] = []
+  const result: QuotaBarGroup[] = []
   for (const row of providerQuotas) {
-    const intervals = [
+    const candidates = [
       {
-        pct: row.weekly_remaining_pct,
+        remainingPct: row.weekly_remaining_pct,
         active: row.weekly_active,
-        velocity: false,
         label: 'Weekly',
-        resetDate: undefined as string | undefined,
+        resetAt: row.weekly_reset_at ?? undefined,
+        usedTokens: row.weekly_usage_tokens,
       },
       {
-        pct: row.short_remaining_pct,
+        remainingPct: row.short_remaining_pct,
         active: row.short_active,
-        velocity: true,
         label: 'Short',
-        resetDate: undefined as string | undefined,
+        resetAt: row.short_reset_at ?? undefined,
+        usedTokens: row.short_usage_tokens,
       },
       {
-        pct: row.special_remaining_pct,
+        remainingPct: row.special_remaining_pct,
         active: row.special_active,
-        velocity: false,
         label: 'Special',
-        resetDate: undefined as string | undefined,
+        resetAt: row.special_reset_at ?? undefined,
+        usedTokens: row.special_usage_tokens,
       },
       {
-        pct: row.monthly_remaining_pct,
+        remainingPct: row.monthly_remaining_pct,
         active: row.monthly_active,
-        velocity: false,
         label: 'Monthly',
-        resetDate: undefined as string | undefined,
+        resetAt: row.monthly_reset_at ?? undefined,
+        usedTokens: row.monthly_usage_tokens,
       },
     ]
 
-    for (const interval of intervals) {
-      if (!interval.active || interval.pct === null) continue
-      const widthPct = Math.max(0, Math.min(100, interval.pct))
-      // v9.7 iv-* threshold class mapping:
-      // 0–5% → iv-0-5 (dim cool), 5–10% → iv-5-10 (cool blue),
-      // 10–25% → iv-10-25 (teal), 25–50% → iv-25-50 (amber), ≥50% → iv-50-p (red)
-      const ivClass =
-        widthPct < 5
-          ? 'iv-0-5'
-          : widthPct < 10
-            ? 'iv-5-10'
-            : widthPct < 25
-              ? 'iv-10-25'
-              : widthPct < 50
-                ? 'iv-25-50'
-                : 'iv-50-p'
+    for (const candidate of candidates) {
+      if (!candidate.active || candidate.remainingPct === null) continue
+      const consumedPct = Math.max(
+        0,
+        Math.min(100, 100 - candidate.remainingPct)
+      )
       result.push({
-        widthPct,
-        severityClass: ivClass,
-        highVelocity: interval.velocity,
-        label: interval.label,
-        resetDate: interval.resetDate,
+        label: candidate.label,
+        consumedPct,
+        remainingPct: candidate.remainingPct,
+        resetAt: candidate.resetAt,
+        segments: buildQuotaSegments(candidate.remainingPct),
       })
     }
   }

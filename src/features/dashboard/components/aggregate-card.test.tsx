@@ -34,10 +34,21 @@ const mockHealthCells = Array.from({ length: 288 }, () => ({
   color: 'var(--card-2)',
 }))
 
-const mockQuotas = Array.from({ length: 8 }, () => ({
-  widthPct: 12.5,
-  severityClass: 'iv-ok',
-  highVelocity: false,
+// Wave 11 PR3 (11-h/11-i): QuotaBarGroup[] — each entry is a quota-type bar
+// with pre-built 12-segment array matching the new ProviderCard quota contract.
+const makeSegments = () =>
+  Array.from({ length: 12 }, (_, i) => ({
+    widthPct: 100 / 12,
+    severityClass: 'iv-ok',
+    highVelocity: i === 0,
+  }))
+
+const mockQuotas = Array.from({ length: 2 }, (_, i) => ({
+  label: i === 0 ? 'Weekly' : 'Short',
+  consumedPct: 30,
+  remainingPct: 70,
+  resetAt: '2026-05-19',
+  segments: makeSegments(),
 }))
 
 const baseFleetActivity = {
