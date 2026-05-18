@@ -21,6 +21,7 @@ import {
   type SortingState,
 } from '@tanstack/react-table'
 import { CLIENT_BRAND_COLORS } from '../lib/client-brand-colors'
+import { formatUsd } from '../lib/usage-report-display'
 import { Sparkline } from './primitives/sparkline'
 
 // ---------------------------------------------------------------------------
@@ -185,7 +186,7 @@ export function ClientBreakdownTable({
                 : 'var(--accent-cool)'
           return (
             <div className='metric-cell'>
-              <span style={{ color: costColor }}>${numFmt(val, 4)}</span>
+              <span style={{ color: costColor }}>{formatUsd(val)}</span>
               <span
                 className='metric-microbar'
                 style={

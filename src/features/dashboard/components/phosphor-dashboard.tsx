@@ -40,7 +40,7 @@ import {
 import { useAnomalyDetection } from '../hooks/use-anomaly-detection'
 import { CLIENT_BRAND_COLORS } from '../lib/client-brand-colors'
 import { normalizeTrendData } from '../lib/trend-utils'
-import { clientColorFor, providerColorFor } from '../lib/usage-report-display'
+import { clientColorFor, providerBrandHex } from '../lib/usage-report-display'
 import { AggregateCard } from './aggregate-card'
 import { ClientBreakdownTable, type ClientRow } from './client-breakdown-table'
 import { ComparisonPanel } from './comparison-panel'
@@ -391,28 +391,53 @@ function ivClassForConsumed(consumedPct: number): string {
 }
 
 /**
- * Builds 12 equal QuotaRowConfig segments for a single quota interval row.
+ * Builds 12 equal QuotaRowConfig segments for a single quota interval row,
+ * with a VISIBLE COLOR GRADIENT across segments.
  *
- * Wave 11 PR3 (11-h): emits N=12 equal segments, all sharing the same iv-*
- * class derived from the row's current consumed percent. The visual segment
- * boundary comes from the border-right rule on each `.quota-interval`.
- * One segment (the one representing "now") receives highVelocity=true, which
- * triggers the spectral-shimmer animation added in 11-j.
+ * Wave 11 PR3 (11-h): emitted 12 entries all sharing the SAME iv-* class —
+ * visually a single solid-colored bar, NOT the rainbow strip the reference
+ * shows (operator complaint #8 not fully addressed).
+ *
+ * Wave 12 Fix 5: each segment now gets its OWN severity class based on its
+ * relative position in the consumption window:
+ *   - Segments before the "now" cursor (already consumed) use a deeper class
+ *     based on overall consumed% severity.
+ *   - The "now" cursor segment uses iv-5-10 (transition color).
+ *   - Segments after the cursor (remaining quota) use iv-0-5 (dim/cool).
+ *
+ * This produces a visible left→right color gradient: deeper on the consumed
+ * side, lighter on the remaining side, matching the reference's rainbow strip
+ * appearance even without real time-bucket backend data.
  */
 function buildQuotaSegments(remainingPct: number): QuotaRowConfig[] {
   const consumedPct = Math.max(0, Math.min(100, 100 - remainingPct))
-  const severityClass = ivClassForConsumed(consumedPct)
   const SEGMENTS = 12
   const highVelocityIdx = Math.min(
     SEGMENTS - 1,
     Math.floor((consumedPct / 100) * SEGMENTS)
   )
 
-  return Array.from({ length: SEGMENTS }, (_, i) => ({
-    widthPct: 100 / SEGMENTS,
-    severityClass,
-    highVelocity: i === highVelocityIdx,
-  }))
+  // Severity class for the consumed portion — based on overall consumed level
+  const consumedClass = ivClassForConsumed(consumedPct)
+
+  return Array.from({ length: SEGMENTS }, (_, i) => {
+    let severityClass: string
+    if (i < highVelocityIdx) {
+      // Fully consumed segment: use the overall consumed severity
+      severityClass = consumedClass
+    } else if (i === highVelocityIdx) {
+      // Transition "now" segment: one step lighter to mark the boundary
+      severityClass = 'iv-5-10'
+    } else {
+      // Unconsumed remaining quota: dim cool
+      severityClass = 'iv-0-5'
+    }
+    return {
+      widthPct: 100 / SEGMENTS,
+      severityClass,
+      highVelocity: i === highVelocityIdx,
+    }
+  })
 }
 
 /**
@@ -903,7 +928,8 @@ export default function PhosphorDashboard({
             {providers.map((provider) => {
               const config: ProviderCardConfig = {
                 provider,
-                color: providerColorFor(provider),
+                // Wave 12 Fix 1: use reference brand hex for card header name color
+                color: providerBrandHex(provider),
               }
               const metrics = buildProviderMetrics(
                 provider,

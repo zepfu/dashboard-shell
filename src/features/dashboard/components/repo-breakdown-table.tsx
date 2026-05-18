@@ -22,7 +22,7 @@ import {
   useReactTable,
   type SortingState,
 } from '@tanstack/react-table'
-import { providerColorFor } from '../lib/usage-report-display'
+import { providerColorFor, formatUsd } from '../lib/usage-report-display'
 import { Sparkline } from './primitives/sparkline'
 
 // ---------------------------------------------------------------------------
@@ -174,7 +174,7 @@ export function RepoBreakdownTable({
                 : 'var(--accent-cool)'
           return (
             <div className='metric-cell'>
-              <span style={{ color: costColor }}>${numFmt(val, 4)}</span>
+              <span style={{ color: costColor }}>{formatUsd(val)}</span>
               <span
                 className='metric-microbar'
                 style={

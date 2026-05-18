@@ -12,6 +12,40 @@ const providerColorsByKey: Record<string, string> = {
   chatgpt: '#475569',
 }
 
+/**
+ * Reference brand-identity hex palette for provider name/label coloring.
+ *
+ * Wave 12 Fix 1: introduced to replace the legacy `providerColorsByKey` palette
+ * at call sites that need to match the v9.7 reference (Model Ledger Provider
+ * column, ProviderCard header). The legacy palette is intentionally kept for
+ * severity/gutter coloring (MasterLedger gutter) that has different semantics.
+ */
+export const PROVIDER_BRAND_HEX: Record<string, string> = {
+  openai: '#10a37f',
+  anthropic: '#d97757',
+  google: '#4285f4',
+  xai: '#475569',
+  nvidia_nim: '#76b900',
+  openrouter: '#7e57c2',
+  local: '#64748b',
+}
+
+/**
+ * Returns the reference brand-identity hex for a provider, falling back to
+ * `'var(--fg)'` for unknown providers.
+ *
+ * Wave 12 Fix 1: use this at any call site where the v9.7 reference shows
+ * provider-branded text colors (card headers, ledger Provider cells).
+ */
+export function providerBrandHex(provider: string): string {
+  const key = providerColorKey(provider)
+  return (
+    PROVIDER_BRAND_HEX[key] ??
+    PROVIDER_BRAND_HEX[provider.toLowerCase()] ??
+    'var(--fg)'
+  )
+}
+
 export const providerColors = [
   '#2563eb',
   '#7c3aed',
@@ -191,4 +225,60 @@ export function formatCurrency(value: number | null | undefined) {
     currency: 'USD',
     maximumFractionDigits: value < 1 ? 4 : 2,
   }).format(value)
+}
+
+/**
+ * Formats a millisecond latency value for display.
+ *
+ * Wave 12 Fix 4: resolves the regression where real P95 values (e.g. 13201ms)
+ * rendered as `13201.163149995ms` with full-precision floats.
+ *   ≥1000ms → `13.2s`
+ *   <1000ms → `247ms` (rounded to integer)
+ *   null/undefined → `—`
+ */
+export function formatLatency(ms: number | null | undefined): string {
+  if (ms == null) return '—'
+  if (ms >= 1000) return `${(ms / 1000).toFixed(1)}s`
+  return `${Math.round(ms)}ms`
+}
+
+/**
+ * Formats a USD cost value with comma-separated thousands and exactly 2
+ * decimal places.
+ *
+ * Wave 12 Fix 4: resolves the regression where real cost values (e.g. 1560.10)
+ * rendered as `$1560.1038` with 4 decimals and no comma separator.
+ *   null/undefined → `—`
+ */
+export function formatUsd(usd: number | null | undefined): string {
+  if (usd == null) return '—'
+  return `$${usd.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+}
+
+/**
+ * Formats an ISO reset-at timestamp as a short relative distance string.
+ *
+ * Wave 12 Fix 4: resolves the regression where the full ISO string
+ * `2026-05-21T15:00:00.000Z` was rendered verbatim in the quota reset cell.
+ * Output example: `in 3d 1h` (via date-fns formatDistanceToNow).
+ *   null/undefined/empty → `—`
+ */
+export function formatResetDistance(iso: string | null | undefined): string {
+  if (!iso) return '—'
+  try {
+    const date = new Date(iso)
+    if (Number.isNaN(date.getTime())) return '—'
+    // date-fns formatDistanceToNow is not available; use native fallback
+    const diffMs = date.getTime() - Date.now()
+    if (diffMs <= 0) return 'now'
+    const totalMins = Math.floor(diffMs / 60_000)
+    const days = Math.floor(totalMins / 1440)
+    const hours = Math.floor((totalMins % 1440) / 60)
+    const mins = totalMins % 60
+    if (days > 0) return `in ${days.toString()}d ${hours.toString()}h`
+    if (hours > 0) return `in ${hours.toString()}h ${mins.toString()}m`
+    return `in ${mins.toString()}m`
+  } catch {
+    return '—'
+  }
 }
