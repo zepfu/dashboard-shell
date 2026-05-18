@@ -1,9 +1,11 @@
 /**
  * TokenTrendChart — 24-bar stacked provider token visualisation.
  *
- * Renders a strip of vertical stacked bars where each bar represents one
- * time bucket and each coloured slice represents a provider's proportion
- * of total tokens. Bars grow from the bottom up using column-reverse flex.
+ * Wave 9 changes (v9.7 reference parity):
+ * - Chart container: background var(--card), border 1px solid var(--border), padding 8px.
+ * - Individual bars: border 1px solid var(--border), opacity 0.85, hover 1.0.
+ * - Legend: gap 12px (was 8px), swatch 10×10px + border (was 8×8px no border).
+ * - Section title: .section-title class with amber color (rendered by parent section).
  *
  * Accessibility: the outer container carries a descriptive aria-label.
  */
@@ -53,9 +55,13 @@ export function TokenTrendChart({
       aria-label='Token usage over time, stacked by provider'
       style={{ width: '100%' }}
     >
-      {/* Bar strip */}
+      {/* Bar strip with reference card styling */}
       <div
+        className='token-trend-chart'
         style={{
+          background: 'var(--card)',
+          border: '1px solid var(--border)',
+          padding: '8px',
           display: 'flex',
           alignItems: 'flex-end',
           gap: '1px',
@@ -81,6 +87,15 @@ export function TokenTrendChart({
                 flexDirection: 'column-reverse',
                 overflow: 'hidden',
                 minWidth: 0,
+                border: '1px solid var(--border)',
+                opacity: 0.85,
+                transition: 'opacity 50ms',
+              }}
+              onMouseEnter={(e) => {
+                ;(e.currentTarget as HTMLDivElement).style.opacity = '1'
+              }}
+              onMouseLeave={(e) => {
+                ;(e.currentTarget as HTMLDivElement).style.opacity = '0.85'
               }}
             >
               {series.map((s) => {
@@ -92,12 +107,13 @@ export function TokenTrendChart({
                 return (
                   <div
                     key={s.key}
-                    className={s.cssClass}
+                    className={`tt-slice ${s.cssClass}`}
                     style={{
                       flexBasis: `${pct.toFixed(4)}%`,
                       flexShrink: 0,
                       background: s.color,
                       minHeight: '1px',
+                      width: '100%',
                     }}
                   />
                 )
@@ -112,9 +128,13 @@ export function TokenTrendChart({
         className='tt-legend'
         style={{
           display: 'flex',
+          gap: '12px',
           flexWrap: 'wrap',
-          gap: '8px',
-          marginTop: '6px',
+          fontFamily: 'var(--font-mono)',
+          fontSize: '10px',
+          color: 'var(--fg-muted)',
+          padding: '6px 8px',
+          letterSpacing: '0.02em',
         }}
       >
         {series.map((s) => (
@@ -122,19 +142,19 @@ export function TokenTrendChart({
             key={s.key}
             className='tt-leg-item'
             style={{
-              display: 'flex',
+              display: 'inline-flex',
               alignItems: 'center',
               gap: '4px',
-              fontSize: '10px',
-              color: 'var(--fg-muted)',
             }}
           >
             <span
+              className={`tt-swatch ${s.cssClass}`}
               style={{
                 display: 'inline-block',
-                width: '8px',
-                height: '8px',
+                width: '10px',
+                height: '10px',
                 background: s.color,
+                border: '1px solid var(--border)',
                 flexShrink: 0,
               }}
             />

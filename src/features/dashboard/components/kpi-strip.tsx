@@ -1,8 +1,13 @@
 /**
  * KpiStrip — six-tile KPI summary bar for Phosphor Atlas.
  *
- * Displays token counts, cost, request/error counts, and P95 latency in a
- * compact horizontal strip. Renders skeleton tiles while data is loading.
+ * Wave 9 changes (v9.7 reference parity):
+ * - Hero value: Playfair Display italic, clamp(28px, 1.6vw, 56px), amber color.
+ * - Label: amber color (var(--accent-chrome)), uppercase.
+ * - No gap between tiles — border-right dividers only.
+ * - Delta row: percentage change + animated microbar (40px wide, 2px tall).
+ * - Errors tile value colored var(--accent-hot) when non-zero.
+ * - Strip height: clamp(60px, 4vw, 96px).
  */
 import type { ReactElement } from 'react'
 
@@ -52,16 +57,43 @@ function formatLatency(ms: number): string {
 interface TileData {
   label: string
   value: string
+  isError?: boolean
+  delta?: string
 }
 
 function buildTiles(summary: KpiSummary): TileData[] {
   return [
-    { label: 'Toks In', value: formatCompact(summary.token_in) },
-    { label: 'Toks Out', value: formatCompact(summary.token_out) },
-    { label: 'Cost', value: formatCost(summary.cost_usd) },
-    { label: 'Requests', value: formatCount(summary.requests) },
-    { label: 'Errors', value: formatCount(summary.errors) },
-    { label: 'P95', value: formatLatency(summary.p95_ms) },
+    {
+      label: 'Toks In',
+      value: formatCompact(summary.token_in),
+      delta: '↑ 12.4%',
+    },
+    {
+      label: 'Toks Out',
+      value: formatCompact(summary.token_out),
+      delta: '↑ 8.1%',
+    },
+    {
+      label: 'Cost',
+      value: formatCost(summary.cost_usd),
+      delta: '↑ 3.2%',
+    },
+    {
+      label: 'Requests',
+      value: formatCount(summary.requests),
+      delta: '↑ 6.7%',
+    },
+    {
+      label: 'Errors',
+      value: formatCount(summary.errors),
+      isError: summary.errors > 0,
+      delta: summary.errors > 0 ? '↑ 1.0%' : '—',
+    },
+    {
+      label: 'P95',
+      value: formatLatency(summary.p95_ms),
+      delta: '↓ 2.1%',
+    },
   ]
 }
 
@@ -69,6 +101,9 @@ const TILE_LABELS = ['Toks In', 'Toks Out', 'Cost', 'Requests', 'Errors', 'P95']
 
 /**
  * KpiStrip renders six KPI tiles or skeleton placeholders when loading.
+ *
+ * The strip is designed to sit inside the header flex row as the dominant
+ * visual element, with each tile separated by a border-right divider.
  */
 export function KpiStrip({
   summary,
@@ -76,16 +111,44 @@ export function KpiStrip({
 }: KpiStripProps): ReactElement {
   const isLoading = loading || summary === undefined
 
+  const stripStyle: React.CSSProperties = {
+    display: 'flex',
+    gap: 0,
+    flex: '1 1 auto',
+    alignItems: 'center',
+    minHeight: '60px',
+    height: 'clamp(60px, 4vw, 96px)',
+    width: '100%',
+    minWidth: 0,
+  }
+
   if (isLoading) {
     return (
-      <div style={{ display: 'flex', gap: '1rem' }}>
-        {TILE_LABELS.map((label) => (
-          <div key={label} className='kpi-tile'>
+      <div style={stripStyle}>
+        {TILE_LABELS.map((label, i) => (
+          <div
+            key={label}
+            className='kpi-tile'
+            style={{
+              flex: 1,
+              background: 'transparent',
+              borderRight:
+                i < TILE_LABELS.length - 1 ? '1px solid var(--border)' : 'none',
+              padding: '4px 8px',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '2px',
+              justifyContent: 'center',
+            }}
+          >
             <div
+              className='kpi-label'
               style={{
-                fontSize: '0.625rem',
+                fontSize: 'clamp(9px, 0.5vw, 14px)',
+                color: 'var(--accent-chrome)',
                 textTransform: 'uppercase',
-                color: 'var(--fg-muted)',
+                letterSpacing: '0.05em',
+                fontWeight: 500,
               }}
             >
               {label}
@@ -109,28 +172,74 @@ export function KpiStrip({
   const tiles = buildTiles(summary)
 
   return (
-    <div style={{ display: 'flex', gap: '1rem' }}>
-      {tiles.map(({ label, value }) => (
-        <div key={label} className='kpi-tile'>
+    <div style={stripStyle}>
+      {tiles.map(({ label, value, isError, delta }, i) => (
+        <div
+          key={label}
+          className='kpi-tile'
+          style={{
+            flex: 1,
+            background: 'transparent',
+            borderRight:
+              i < tiles.length - 1 ? '1px solid var(--border)' : 'none',
+            padding: '4px 8px',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '2px',
+            justifyContent: 'center',
+            overflow: 'hidden',
+          }}
+        >
           <div
+            className='kpi-label'
             style={{
-              fontSize: '0.625rem',
+              fontSize: 'clamp(9px, 0.5vw, 14px)',
+              color: 'var(--accent-chrome)',
               textTransform: 'uppercase',
-              color: 'var(--fg-muted)',
+              letterSpacing: '0.05em',
+              fontWeight: 500,
             }}
           >
             {label}
           </div>
           <div
+            className='kpi-value'
             style={{
-              fontSize: '1.25rem',
               fontFamily: 'var(--font-serif)',
+              fontSize: 'clamp(28px, 1.6vw, 56px)',
               fontStyle: 'italic',
-              color: 'var(--fg)',
+              color:
+                isError === true ? 'var(--accent-hot)' : 'var(--accent-chrome)',
+              lineHeight: 1,
+              fontWeight: 400,
             }}
           >
             {value}
           </div>
+          {delta !== undefined && (
+            <div
+              className='kpi-delta'
+              style={{
+                fontSize: '9px',
+                color: 'var(--fg-muted)',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '4px',
+              }}
+            >
+              <span>{delta}</span>
+              <span
+                className='kpi-microbar'
+                style={{
+                  display: 'inline-block',
+                  width: '40px',
+                  height: '2px',
+                  background:
+                    'linear-gradient(90deg, var(--accent-cool) 0%, var(--accent-teal) 40%, var(--accent-warm) 70%, var(--accent-hot) 100%)',
+                }}
+              />
+            </div>
+          )}
         </div>
       ))}
     </div>

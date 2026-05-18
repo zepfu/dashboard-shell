@@ -1,9 +1,15 @@
 /**
  * ProviderCard — per-provider metrics card for Phosphor Atlas dashboard.
  *
- * Renders provider metrics, health strip, quota interval bar, and anomaly
- * badges in the Phosphor design language (0 border-radius, mono values,
- * CSS custom property palette).
+ * Wave 9 changes (v9.7 reference parity):
+ * - HealthStrip: vertical orientation, absolutely positioned right edge.
+ *   Card reserves padding-right: 22px to avoid overlap.
+ * - Header: border-bottom, font-weight 600 (was 700), letter-spacing 0.05em.
+ * - Metric rows: provider-metric grid (1fr auto) pattern.
+ * - Quota section: labeled rows with percent + reset columns around bar.
+ * - TOKEN CACHE / REASONING: pc-sub-title + pc-mini-table pattern with
+ *   dashed border-top on section title.
+ * - card-pane-right at ≥3840px: per-model mini-table via topModels prop.
  */
 import type { ReactElement } from 'react'
 import { HealthStrip } from './primitives/health-strip'
@@ -34,11 +40,23 @@ export interface ProviderMetrics {
   traces: number
 }
 
-/** Interval configuration for one quota segment. */
+/** Interval configuration for one quota row. */
 export interface QuotaRowConfig {
   widthPct: number
+  /** v9.7 threshold class: iv-0-5 | iv-5-10 | iv-10-25 | iv-25-50 | iv-50-p */
   severityClass: string
   highVelocity: boolean
+  label?: string
+  resetDate?: string
+}
+
+/** Per-model mini-row for card-pane-right at ≥3840px. */
+export interface TopModelRow {
+  model: string
+  tokens: number
+  cost_usd: number
+  requests: number
+  sparkline?: number[]
 }
 
 /**
@@ -63,37 +81,81 @@ function hasEarlyReset(
   return earlyReset.has(provider)
 }
 
+/** Format a compact token/cost value. */
+function fmtCompact(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`
+  return String(n)
+}
+
 // ---------------------------------------------------------------------------
 // Sub-components
 // ---------------------------------------------------------------------------
 
-interface MetricRowProps {
-  label: string
-  value: number | string
-  highlight?: boolean
+interface PcSubTitleProps {
+  title: string
 }
 
-function MetricRow({
-  label,
-  value,
-  highlight = false,
-}: MetricRowProps): ReactElement {
+/** Section sub-title with dashed border-top, amber color. */
+function PcSubTitle({ title }: PcSubTitleProps): ReactElement {
   return (
     <div
+      className='pc-sub-title'
       style={{
-        display: 'flex',
-        justifyContent: 'space-between',
-        alignItems: 'center',
-        padding: '2px 0',
-        fontSize: '11px',
-        lineHeight: '1.4',
+        fontFamily: 'var(--font-mono)',
+        fontSize: '10px',
+        color: 'var(--accent-chrome)',
+        textTransform: 'uppercase',
+        letterSpacing: '0.1em',
+        marginTop: '6px',
+        marginBottom: '3px',
+        paddingTop: '4px',
+        borderTop: '1px dashed var(--border)',
       }}
     >
-      <span style={{ color: 'var(--fg-muted)' }}>{label}</span>
+      {title}
+    </div>
+  )
+}
+
+interface PcMiniRowProps {
+  label: string
+  value: string
+  valueMod?: 'cost' | 'muted' | undefined
+}
+
+/** Mini table row: label left, value right. */
+function PcMiniRow({ label, value, valueMod }: PcMiniRowProps): ReactElement {
+  const valueColor =
+    valueMod === 'cost'
+      ? 'var(--accent-warm)'
+      : valueMod === 'muted'
+        ? 'var(--fg-muted)'
+        : 'var(--fg)'
+
+  return (
+    <div
+      className='pc-mini-row'
+      style={{
+        display: 'grid',
+        gridTemplateColumns: 'minmax(0, 1fr) auto',
+        columnGap: '6px',
+        alignItems: 'baseline',
+        fontFamily: 'var(--font-mono)',
+        fontSize: '10px',
+        color: 'var(--fg-muted)',
+        padding: '1px 0',
+      }}
+    >
+      <span className='label' style={{ color: 'var(--fg-muted)' }}>
+        {label}
+      </span>
       <span
+        className={`value${valueMod !== undefined ? ` ${valueMod}` : ''}`}
         style={{
-          fontFamily: 'monospace',
-          color: highlight ? 'var(--accent-hot)' : 'var(--fg)',
+          textAlign: 'right',
+          color: valueColor,
+          fontVariantNumeric: 'tabular-nums',
         }}
       >
         {value}
@@ -102,21 +164,25 @@ function MetricRow({
   )
 }
 
-interface SectionHeaderProps {
+interface QuotaSectionTitleProps {
   title: string
 }
 
-function SectionHeader({ title }: SectionHeaderProps): ReactElement {
+/** Quota section title with dashed border-top. */
+function QuotaSectionTitle({ title }: QuotaSectionTitleProps): ReactElement {
   return (
     <div
+      className='quota-section-title'
       style={{
+        fontFamily: 'var(--font-mono)',
         fontSize: '9px',
-        fontWeight: 700,
-        letterSpacing: '0.08em',
-        color: 'var(--fg-muted)',
-        marginTop: '8px',
-        marginBottom: '2px',
+        color: 'var(--accent-chrome)',
         textTransform: 'uppercase',
+        letterSpacing: '0.1em',
+        marginTop: '6px',
+        marginBottom: '3px',
+        paddingTop: '4px',
+        borderTop: '1px dashed var(--border)',
       }}
     >
       {title}
@@ -134,11 +200,17 @@ export interface ProviderCardProps {
   healthCells: { color: string }[]
   quotas: QuotaRowConfig[]
   anomalies?: AnomalyFlags
+  /** Per-model mini-table rows shown in card-pane-right at ≥3840px. */
+  topModels?: TopModelRow[]
 }
 
 /**
- * ProviderCard renders a Phosphor Atlas provider metrics panel with health
- * strip, quota bar, and optional anomaly badges.
+ * ProviderCard renders a Phosphor Atlas provider metrics panel.
+ *
+ * Layout:
+ *  - Absolutely positioned vertical HealthStrip at right edge (v9w1 update)
+ *  - card-pane-left: metrics, quota, TOKEN CACHE, REASONING
+ *  - card-pane-right (≥3840px): per-model mini-table
  */
 export function ProviderCard({
   config,
@@ -146,6 +218,7 @@ export function ProviderCard({
   healthCells,
   quotas,
   anomalies,
+  topModels = [],
 }: ProviderCardProps): ReactElement {
   const showEarlyReset =
     anomalies !== undefined &&
@@ -157,58 +230,59 @@ export function ProviderCard({
 
   return (
     <div
+      className='provider-card'
       style={{
         background: 'var(--card)',
         border: '1px solid var(--border)',
         borderRadius: 0,
-        padding: '12px',
-        minWidth: '200px',
+        padding: '10px',
+        paddingRight: '22px', // reserve space for vertical health strip
+        maxWidth: '460px',
+        width: '100%',
+        display: 'flex',
+        flexDirection: 'column',
+        position: 'relative',
+        fontSize: 'clamp(10px, 0.55vw, 14px)',
       }}
     >
+      {/* Vertical HealthStrip — absolutely positioned at right edge */}
+      <HealthStrip cells={healthCells} orientation='vertical' />
+
       {/* Header: provider name + anomaly badges */}
       <div
+        className='provider-name'
         style={{
+          color: config.color,
+          fontWeight: 600,
+          fontSize: '11px',
+          textTransform: 'uppercase',
+          marginBottom: '6px',
+          borderBottom: '1px solid var(--border)',
+          paddingBottom: '4px',
+          letterSpacing: '0.05em',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'space-between',
-          marginBottom: '8px',
         }}
       >
-        <span
-          style={{
-            fontSize: '11px',
-            fontWeight: 700,
-            letterSpacing: '0.1em',
-            color: config.color,
-          }}
-        >
-          {config.provider.toUpperCase()}
-        </span>
+        <span>{config.provider.toUpperCase()}</span>
         <div style={{ display: 'flex', gap: '4px' }}>
           {showEarlyReset && (
             <span
-              className='icon-reset'
+              className='quota-anomaly-icon icon-reset'
               aria-label='early reset detected'
               title='Early quota reset detected'
-              style={{
-                fontSize: '12px',
-                color: 'var(--accent-warm)',
-                cursor: 'default',
-              }}
+              style={{ fontSize: '9px', color: '#a3e635' }}
             >
               ⟲
             </span>
           )}
           {showCacheStale && (
             <span
-              className='icon-cache'
+              className='quota-anomaly-icon icon-cache'
               aria-label='cache stale'
               title='Cache data is stale'
-              style={{
-                fontSize: '12px',
-                color: 'var(--accent-warm)',
-                cursor: 'default',
-              }}
+              style={{ fontSize: '9px', color: 'var(--accent-warm)' }}
             >
               ⚠
             </span>
@@ -216,46 +290,358 @@ export function ProviderCard({
         </div>
       </div>
 
-      {/* Health strip */}
-      <HealthStrip cells={healthCells} />
+      {/* card-pane-left — metrics, quotas, sub-sections */}
+      <div
+        className='card-pane-left'
+        style={{ display: 'flex', flexDirection: 'column' }}
+      >
+        {/* Primary metric rows */}
+        <div
+          className='provider-metric'
+          style={{
+            display: 'grid',
+            gridTemplateColumns: '1fr auto',
+            gap: '4px',
+            padding: '2px 0',
+            color: 'var(--fg-muted)',
+            fontSize: 'clamp(9px, 0.5vw, 13px)',
+          }}
+        >
+          <span>Toks In</span>
+          <span
+            className='provider-metric-value'
+            style={{
+              textAlign: 'right',
+              color: 'var(--fg)',
+              fontWeight: 500,
+              fontVariantNumeric: 'tabular-nums',
+            }}
+          >
+            {fmtCompact(data.tokens_in)}
+          </span>
+        </div>
+        <div
+          className='provider-metric'
+          style={{
+            display: 'grid',
+            gridTemplateColumns: '1fr auto',
+            gap: '4px',
+            padding: '2px 0',
+            color: 'var(--fg-muted)',
+            fontSize: 'clamp(9px, 0.5vw, 13px)',
+          }}
+        >
+          <span>Toks Out</span>
+          <span
+            className='provider-metric-value'
+            style={{
+              textAlign: 'right',
+              color: 'var(--fg)',
+              fontWeight: 500,
+              fontVariantNumeric: 'tabular-nums',
+            }}
+          >
+            {fmtCompact(data.tokens_out)}
+          </span>
+        </div>
+        <div
+          className='provider-metric'
+          style={{
+            display: 'grid',
+            gridTemplateColumns: '1fr auto',
+            gap: '4px',
+            padding: '2px 0',
+            color: 'var(--fg-muted)',
+            fontSize: 'clamp(9px, 0.5vw, 13px)',
+          }}
+        >
+          <span>Cost</span>
+          <span
+            className='provider-metric-value'
+            style={{
+              textAlign: 'right',
+              color: 'var(--fg)',
+              fontWeight: 500,
+              fontVariantNumeric: 'tabular-nums',
+            }}
+          >
+            ${data.cost_usd.toFixed(4)}
+          </span>
+        </div>
+        <div
+          className='provider-metric'
+          style={{
+            display: 'grid',
+            gridTemplateColumns: '1fr auto',
+            gap: '4px',
+            padding: '2px 0',
+            color: 'var(--fg-muted)',
+            fontSize: 'clamp(9px, 0.5vw, 13px)',
+          }}
+        >
+          <span>Requests</span>
+          <span
+            className='provider-metric-value'
+            style={{
+              textAlign: 'right',
+              color: 'var(--fg)',
+              fontWeight: 500,
+              fontVariantNumeric: 'tabular-nums',
+            }}
+          >
+            {data.requests.toLocaleString()}
+          </span>
+        </div>
+        <div
+          className='provider-metric'
+          style={{
+            display: 'grid',
+            gridTemplateColumns: '1fr auto',
+            gap: '4px',
+            padding: '2px 0',
+            color: 'var(--fg-muted)',
+            fontSize: 'clamp(9px, 0.5vw, 13px)',
+          }}
+        >
+          <span>Errors</span>
+          <span
+            className='provider-metric-value'
+            style={{
+              textAlign: 'right',
+              color: data.errors > 0 ? 'var(--accent-hot)' : 'var(--fg)',
+              fontWeight: 500,
+              fontVariantNumeric: 'tabular-nums',
+            }}
+          >
+            {data.errors.toLocaleString()}
+          </span>
+        </div>
+        <div
+          className='provider-metric'
+          style={{
+            display: 'grid',
+            gridTemplateColumns: '1fr auto',
+            gap: '4px',
+            padding: '2px 0',
+            color: 'var(--fg-muted)',
+            fontSize: 'clamp(9px, 0.5vw, 13px)',
+          }}
+        >
+          <span>P95</span>
+          <span
+            className='provider-metric-value'
+            style={{
+              textAlign: 'right',
+              color: 'var(--fg)',
+              fontWeight: 500,
+              fontVariantNumeric: 'tabular-nums',
+            }}
+          >
+            {data.p95_ms}ms
+          </span>
+        </div>
+        <div
+          className='provider-metric'
+          style={{
+            display: 'grid',
+            gridTemplateColumns: '1fr auto',
+            gap: '4px',
+            padding: '2px 0',
+            color: 'var(--fg-muted)',
+            fontSize: 'clamp(9px, 0.5vw, 13px)',
+          }}
+        >
+          <span>Traces</span>
+          <span
+            className='provider-metric-value'
+            style={{
+              textAlign: 'right',
+              color: 'var(--fg)',
+              fontWeight: 500,
+              fontVariantNumeric: 'tabular-nums',
+            }}
+          >
+            {data.traces.toLocaleString()}
+          </span>
+        </div>
 
-      {/* Quota interval bar */}
-      <div style={{ marginTop: '6px' }}>
-        <QuotaIntervalBar intervals={quotas} />
+        {/* QUOTAS section */}
+        {quotas.length > 0 && (
+          <>
+            <QuotaSectionTitle title='Quotas' />
+            <div
+              className='quota-list'
+              style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}
+            >
+              {quotas.map((quota, i) => (
+                <div key={i}>
+                  <div
+                    className='quota-row'
+                    style={{
+                      display: 'grid',
+                      gridTemplateColumns: 'minmax(0, 1fr) 28px 38px',
+                      columnGap: '6px',
+                      alignItems: 'center',
+                      fontFamily: 'var(--font-mono)',
+                      fontSize: '10px',
+                      color: 'var(--fg-muted)',
+                      lineHeight: '1.15',
+                    }}
+                  >
+                    <span
+                      className='quota-row-label'
+                      style={{
+                        whiteSpace: 'nowrap',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                      }}
+                    >
+                      {quota.label ?? `Quota ${i + 1}`}
+                    </span>
+                    <span
+                      className='quota-row-pct'
+                      style={{
+                        textAlign: 'right',
+                        fontVariantNumeric: 'tabular-nums',
+                      }}
+                    >
+                      {quota.widthPct.toFixed(0)}%
+                    </span>
+                    <span
+                      className='quota-row-reset'
+                      style={{
+                        textAlign: 'right',
+                        fontSize: '9px',
+                        color: 'var(--fg-muted)',
+                      }}
+                    >
+                      {quota.resetDate ?? '—'}
+                    </span>
+                  </div>
+                  <QuotaIntervalBar intervals={[quota]} />
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+
+        {/* TOKEN CACHE sub-section */}
+        <PcSubTitle title='TOKEN CACHE' />
+        <div className='pc-mini-table'>
+          <PcMiniRow label='Cache In' value={fmtCompact(data.cache_input)} />
+          <PcMiniRow
+            label='Cache Create'
+            value={fmtCompact(data.cache_creation)}
+          />
+          <PcMiniRow
+            label='Cache Miss'
+            value={fmtCompact(cacheMiss)}
+            valueMod='muted'
+          />
+          <PcMiniRow
+            label='Cache Savings'
+            value={fmtCompact(cacheSavings)}
+            valueMod='cost'
+          />
+        </div>
+
+        {/* REASONING sub-section */}
+        <PcSubTitle title='REASONING' />
+        <div className='pc-mini-table'>
+          <PcMiniRow
+            label='Reason Rptd'
+            value={fmtCompact(data.reasoning_reported)}
+          />
+          <PcMiniRow
+            label='Reason Est'
+            value={fmtCompact(data.reasoning_estimated)}
+          />
+          <PcMiniRow label='Reason Sources' value='—' valueMod='muted' />
+        </div>
       </div>
 
-      {/* Primary metric rows (7 non-duplicate metrics) */}
-      <div style={{ marginTop: '8px' }}>
-        <MetricRow label='Toks In' value={data.tokens_in.toLocaleString()} />
-        <MetricRow label='Toks Out' value={data.tokens_out.toLocaleString()} />
-        <MetricRow label='Cost' value={`$${data.cost_usd.toFixed(4)}`} />
-        <MetricRow label='Requests' value={data.requests.toLocaleString()} />
-        <MetricRow label='Errors' value={data.errors.toLocaleString()} />
-        <MetricRow label='P95' value={`${data.p95_ms}ms`} />
-        <MetricRow label='Traces' value={data.traces.toLocaleString()} />
-      </div>
-
-      {/* TOKEN CACHE section — also satisfies Cache In / Cache Create in 11-metric list */}
-      <SectionHeader title='TOKEN CACHE' />
-      <MetricRow label='Cache In' value={data.cache_input.toLocaleString()} />
-      <MetricRow
-        label='Cache Create'
-        value={data.cache_creation.toLocaleString()}
-      />
-      <MetricRow label='Cache Miss' value={cacheMiss.toLocaleString()} />
-      <MetricRow label='Cache Savings' value={cacheSavings.toLocaleString()} />
-
-      {/* REASONING section — also satisfies Reason Rptd / Reason Est in 11-metric list */}
-      <SectionHeader title='REASONING' />
-      <MetricRow
-        label='Reason Rptd'
-        value={data.reasoning_reported.toLocaleString()}
-      />
-      <MetricRow
-        label='Reason Est'
-        value={data.reasoning_estimated.toLocaleString()}
-      />
-      <MetricRow label='Reason Sources' value='—' />
+      {/* card-pane-right — per-model mini-table at ≥3840px */}
+      {topModels.length > 0 && (
+        <div
+          className='card-pane-right'
+          style={{ display: 'none' }} // shown via CSS at ≥3840px
+        >
+          <div
+            className='pane-title'
+            style={{
+              fontFamily: 'var(--font-mono)',
+              fontSize: '9px',
+              color: 'var(--accent-chrome)',
+              textTransform: 'uppercase',
+              letterSpacing: '0.1em',
+              paddingBottom: '4px',
+              borderBottom: '1px dashed var(--border)',
+              marginBottom: '4px',
+            }}
+          >
+            Top Models
+          </div>
+          {topModels.map((m, i) => (
+            <div
+              key={i}
+              className='model-mini-row'
+              style={{
+                display: 'grid',
+                gridTemplateColumns: 'minmax(0, 1fr) auto auto auto',
+                columnGap: '6px',
+                alignItems: 'baseline',
+                fontFamily: 'var(--font-mono)',
+                fontSize: '10px',
+                color: 'var(--fg-muted)',
+                padding: '3px 0',
+                borderBottom: '1px solid rgba(42,53,71,0.4)',
+              }}
+            >
+              <span
+                className='name'
+                style={{
+                  color: 'var(--fg)',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {m.model}
+              </span>
+              <span
+                className='tok'
+                style={{
+                  color: 'var(--fg)',
+                  fontVariantNumeric: 'tabular-nums',
+                  fontSize: '9.5px',
+                }}
+              >
+                {fmtCompact(m.tokens)}
+              </span>
+              <span
+                className='cost'
+                style={{
+                  color: 'var(--fg)',
+                  fontVariantNumeric: 'tabular-nums',
+                  fontSize: '9.5px',
+                }}
+              >
+                ${m.cost_usd.toFixed(2)}
+              </span>
+              <span
+                className='p95'
+                style={{
+                  color: 'var(--fg)',
+                  fontVariantNumeric: 'tabular-nums',
+                  fontSize: '9.5px',
+                }}
+              >
+                {m.requests.toLocaleString()}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }

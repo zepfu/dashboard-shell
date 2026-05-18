@@ -255,22 +255,33 @@ export function MasterLedgerTable({
   const totalCost = rows.reduce((s, r) => s + r.cost_usd, 0)
 
   return (
-    <div style={{ width: '100%', overflowX: 'auto' }}>
+    <div
+      className='table-wrapper'
+      style={{
+        width: '100%',
+        overflowX: 'auto',
+        overflowY: 'auto',
+        maxHeight: '400px',
+        background: 'var(--card)',
+        border: '1px solid var(--border)',
+      }}
+    >
       <table
         aria-label='Model usage ledger'
         style={{
           width: '100%',
           borderCollapse: 'collapse',
-          fontSize: '11px',
-          fontFamily: 'inherit',
+          fontSize: 'clamp(11px, 0.6vw, 16px)',
+          fontFamily: 'var(--font-mono)',
         }}
       >
         <thead
           style={{
             position: 'sticky',
             top: 0,
-            background: 'var(--card)',
-            zIndex: 1,
+            zIndex: 10,
+            background: 'var(--card-2)',
+            borderBottom: '1px solid rgba(245,158,11,0.25)',
           }}
         >
           {table.getHeaderGroups().map((headerGroup) => (
@@ -306,11 +317,15 @@ export function MasterLedgerTable({
                         : undefined
                     }
                     style={{
-                      padding: '4px 8px',
+                      padding: '6px 8px',
                       textAlign: 'left',
                       fontWeight: 600,
-                      color: 'var(--fg-muted)',
-                      borderBottom: '1px solid var(--border)',
+                      color: 'var(--accent-chrome)',
+                      background: 'var(--card-2)',
+                      fontSize: '10px',
+                      textTransform: 'uppercase',
+                      letterSpacing: '0.04em',
+                      borderRight: '1px solid var(--border)',
                       cursor: isSortable ? 'pointer' : 'default',
                       userSelect: 'none',
                       whiteSpace: 'nowrap',
@@ -334,23 +349,29 @@ export function MasterLedgerTable({
               key={row.id}
               style={{ borderBottom: '1px solid var(--border)' }}
             >
-              {row.getVisibleCells().map((cell) => {
+              {row.getVisibleCells().map((cell, cellIdx) => {
                 const meta = cell.column.columnDef.meta as
                   | { className?: string }
                   | undefined
+                const isNumeric =
+                  cell.column.id !== 'model' &&
+                  cell.column.id !== 'provider' &&
+                  cell.column.id !== 'sparkline'
+                const isFirst = cellIdx === 0
                 return (
                   <td
                     key={cell.id}
                     className={meta?.className}
                     style={{
-                      padding: '4px 8px',
-                      fontFamily:
-                        cell.column.id !== 'model' &&
-                        cell.column.id !== 'provider' &&
-                        cell.column.id !== 'sparkline'
-                          ? 'monospace'
-                          : 'inherit',
-                      color: 'var(--fg)',
+                      padding: '6px 8px',
+                      fontFamily: 'var(--font-mono)',
+                      color: isNumeric ? 'var(--accent-cool)' : 'var(--fg)',
+                      borderRight: '1px solid var(--border)',
+                      borderLeft: isFirst
+                        ? '4px solid var(--accent-cool)'
+                        : undefined,
+                      paddingLeft: isFirst ? '6px' : undefined,
+                      textAlign: isNumeric ? 'right' : 'left',
                     }}
                   >
                     {flexRender(cell.column.columnDef.cell, cell.getContext())}
