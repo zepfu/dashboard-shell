@@ -116,6 +116,7 @@ export function AlertsRail({ alerts }: AlertsRailProps): ReactElement {
   return (
     <div
       aria-live='polite'
+      className='alerts-panel'
       style={{
         background: 'var(--card)',
         border: '1px solid var(--border)',
