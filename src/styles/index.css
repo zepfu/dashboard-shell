@@ -15,6 +15,10 @@
   }
   body {
     @apply min-h-svh w-full bg-background text-foreground has-[div[data-variant='inset']]:bg-sidebar;
+    /* Wave 14-A: body typography per mockup lines 27-44 */
+    font-family: var(--font-mono);
+    font-size: 12px;
+    line-height: 1.4;
   }
 
   /* Override Radix scroll locking for sticky headers */
@@ -354,4 +358,73 @@
   .quota-interval.high-velocity::after {
     animation: none;
   }
+}
+
+/* Wave 14-A: Phosphor sidebar */
+.sidebar {
+  grid-row: 1 / -1;
+  grid-column: 1;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-right: none;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: calc(100vh - 40px);
+  overflow-y: auto;
+  font-size: 11px;
+}
+
+.sidebar-section {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.sidebar-group-title {
+  font-size: 9px;
+  color: var(--fg-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-weight: 600;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 2px;
+}
+
+.sidebar-item {
+  color: var(--fg-muted);
+  padding: 3px 6px;
+  cursor: pointer;
+  transition: all 50ms;
+}
+
+.sidebar-item:hover {
+  color: var(--fg);
+  background: var(--card-2);
+}
+
+.sidebar-item.active {
+  color: var(--accent-chrome);
+  background: var(--card-2);
+  font-weight: 500;
+}
+
+.sidebar-team-switcher {
+  padding: 6px 6px;
+  background: var(--card-2);
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  color: var(--fg);
+  font-size: 9px;
+  margin-bottom: 6px;
+}
+
+.sidebar-footer {
+  margin-top: auto;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+  font-size: 9px;
+  color: var(--fg-muted);
 }

@@ -57,7 +57,7 @@ body::before {
   --chart-4: var(--accent-warm);
   --chart-5: var(--accent-hot);
 
-  --sidebar: var(--background);
+  --sidebar: var(--card);
   --sidebar-foreground: var(--foreground);
   --sidebar-primary: var(--primary);
   --sidebar-primary-foreground: var(--primary-foreground);

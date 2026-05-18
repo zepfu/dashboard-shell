@@ -1,4 +1,4 @@
-import { Outlet } from '@tanstack/react-router'
+import { Outlet, useLocation } from '@tanstack/react-router'
 import { getCookie } from '@/lib/cookies'
 import { cn } from '@/lib/utils'
 import { LayoutProvider } from '@/context/layout-provider'
@@ -13,12 +13,17 @@ type AuthenticatedLayoutProps = {
 
 export function AuthenticatedLayout({ children }: AuthenticatedLayoutProps) {
   const defaultOpen = getCookie('sidebar_state') !== 'false'
+  // Wave 14-A: suppress the host AppSidebar on the dashboard route (`/`).
+  // The dashboard route renders PhosphorSidebar inside PhosphorLayout's sidebar
+  // slot. All other routes continue to use the host AppSidebar normally.
+  const location = useLocation()
+  const isDashboard = location.pathname === '/'
   return (
     <SearchProvider>
       <LayoutProvider>
         <SidebarProvider defaultOpen={defaultOpen}>
           <SkipToMain />
-          <AppSidebar />
+          {!isDashboard && <AppSidebar />}
           <SidebarInset
             className={cn(
               // Set content container, so we can use container queries
