@@ -263,7 +263,7 @@ export function Dashboard(): ReactElement {
                   margin: 0,
                 }}
               >
-                Phosphor Atlas
+                General Dashboard
               </h1>
               <div
                 className='freshness-indicator'

@@ -1,9 +1,9 @@
 /**
  * PhosphorDashboard — Wave 9 reference-parity integration component.
  *
- * Composes the full set of Phosphor Atlas components into six anchored
+ * Composes the full set of Phosphor Atlas components into five anchored
  * sections that match the AnchorBar shortcuts:
- *   status → tokens → models → repos → clients → health
+ *   status → tokens → models → repos → clients
  *
  * Wave 9 changes:
  * - Section label inversion fix: id="models" now contains ProviderCards;
@@ -13,6 +13,15 @@
  * - Provider grid: CSS grid repeat(4,1fr) → repeat(8,1fr) at wider breakpoints.
  * - Comparison panel at ≥3840px.
  * - iv-* quota interval class names replacing severity-*.
+ *
+ * Wave 11 PR1 (11-b, 11-c):
+ * - Provider cards move from id="models" → id="status" (title: "Provider Health Summary").
+ * - MasterLedgerTable moves from id="health" → id="models" (title: "Model Ledger").
+ * - Standalone id="health" section removed; anchor `h` resolves in PR7.
+ * - Section order: status → tokens → [models+repos row] → clients.
+ * - models+repos wrapped in .ledger-repo-row: side-by-side 8fr/4fr at ≥1600px.
+ * - Section titles: Models→Model Ledger, Repos→Repository Breakdown,
+ *   Clients→Client Usage.
  *
  * Data is fetched via fetchUsageReport + fetchUsageReportQuotas; anomaly
  * flags come from useAnomalyDetection.
@@ -628,6 +637,10 @@ function SectionSkeleton({ height = 80 }: SectionSkeletonProps): ReactElement {
  * Wave 9: Section label inversion corrected — models section contains
  * ProviderCards, health section contains MasterLedgerTable, matching the
  * v9.7 reference (data-tab="models" renders ledger + providers in reference).
+ *
+ * Wave 11 PR1: Section restructure — provider cards under #status, Model Ledger
+ * under #models, standalone #health removed, side-by-side ledger+repo row at
+ * ≥1600px via .ledger-repo-row CSS module class.
  */
 export default function PhosphorDashboard({
   from,
@@ -761,31 +774,18 @@ export default function PhosphorDashboard({
         gap: '4px',
       }}
     >
-      {/* ── TOKENS ────────────────────────────────────────────────────── */}
+      {/* ── STATUS (Provider Health Summary) ─────────────────────────── */}
+      {/* Wave 11 PR1 (11-b): provider cards move here from #models.     */}
+      {/* D3: AggregateCard injected as the last peer in the grid;       */}
+      {/* CSS hides it below 2100px (see provider-card.module.css).      */}
       <section
-        id='tokens'
-        data-tab='tokens'
-        aria-labelledby='section-tokens-heading'
+        id='status'
+        data-tab='status'
+        aria-labelledby='section-status-heading'
       >
-        <SectionTitle id='section-tokens-heading'>
-          Token Trend · Stacked by Provider · 24h
+        <SectionTitle id='section-status-heading'>
+          Provider Health Summary
         </SectionTitle>
-        {reportLoading ? (
-          <SectionSkeleton height={120} />
-        ) : (
-          <TokenTrendChart data={trendData} series={PROVIDER_SERIES} />
-        )}
-      </section>
-
-      {/* ── MODELS (ProviderCards — v9.7: models section holds provider cards) ── */}
-      {/* D3: AggregateCard is injected as the last item in the provider grid */}
-      {/* so at 2100px+ it sits as the 8th card in a single 8-column row. */}
-      <section
-        id='models'
-        data-tab='models'
-        aria-labelledby='section-models-heading'
-      >
-        <SectionTitle id='section-models-heading'>Models</SectionTitle>
         {reportLoading ? (
           <SectionSkeleton height={120} />
         ) : (
@@ -814,7 +814,7 @@ export default function PhosphorDashboard({
                 />
               )
             })}
-            {/* D3: AggregateCard as 8th peer — Fleet totals in the provider row */}
+            {/* D3: AggregateCard as 8th peer — Σ Aggregate Totals in the provider row */}
             <AggregateCard
               config={aggregateConfig}
               data={aggregateMetrics}
@@ -840,19 +840,54 @@ export default function PhosphorDashboard({
         )}
       </section>
 
-      {/* ── REPOS ─────────────────────────────────────────────────────── */}
+      {/* ── TOKENS ────────────────────────────────────────────────────── */}
       <section
-        id='repos'
-        data-tab='repos'
-        aria-labelledby='section-repos-heading'
+        id='tokens'
+        data-tab='tokens'
+        aria-labelledby='section-tokens-heading'
       >
-        <SectionTitle id='section-repos-heading'>Repos</SectionTitle>
+        <SectionTitle id='section-tokens-heading'>
+          Token Trend · Stacked by Provider · 24h
+        </SectionTitle>
         {reportLoading ? (
           <SectionSkeleton height={120} />
         ) : (
-          <RepoBreakdownTable rows={repoRows} />
+          <TokenTrendChart data={trendData} series={PROVIDER_SERIES} />
         )}
       </section>
+
+      {/* ── MODEL LEDGER + REPOSITORY BREAKDOWN (side-by-side ≥1600px) ── */}
+      {/* Wave 11 PR1 (11-b, 11-c): ledger moves from #health → #models; */}
+      {/* repo stays in #repos; both wrapped for 8fr/4fr grid at 1600px+. */}
+      <div className={styles['ledger-repo-row']}>
+        <section
+          id='models'
+          data-tab='models'
+          aria-labelledby='section-models-heading'
+        >
+          <SectionTitle id='section-models-heading'>Model Ledger</SectionTitle>
+          {reportLoading ? (
+            <SectionSkeleton height={200} />
+          ) : (
+            <MasterLedgerTable rows={modelRows} />
+          )}
+        </section>
+
+        <section
+          id='repos'
+          data-tab='repos'
+          aria-labelledby='section-repos-heading'
+        >
+          <SectionTitle id='section-repos-heading'>
+            Repository Breakdown
+          </SectionTitle>
+          {reportLoading ? (
+            <SectionSkeleton height={120} />
+          ) : (
+            <RepoBreakdownTable rows={repoRows} />
+          )}
+        </section>
+      </div>
 
       {/* ── CLIENTS ───────────────────────────────────────────────────── */}
       <section
@@ -860,7 +895,7 @@ export default function PhosphorDashboard({
         data-tab='clients'
         aria-labelledby='section-clients-heading'
       >
-        <SectionTitle id='section-clients-heading'>Clients</SectionTitle>
+        <SectionTitle id='section-clients-heading'>Client Usage</SectionTitle>
         {reportLoading ? (
           <SectionSkeleton height={200} />
         ) : (
@@ -879,20 +914,6 @@ export default function PhosphorDashboard({
               <ClientBreakdownTable rows={clientRows} />
             </div>
           </div>
-        )}
-      </section>
-
-      {/* ── HEALTH (MasterLedgerTable — v9.7: health section holds ledger) ── */}
-      <section
-        id='health'
-        data-tab='health'
-        aria-labelledby='section-health-heading'
-      >
-        <SectionTitle id='section-health-heading'>Health</SectionTitle>
-        {reportLoading ? (
-          <SectionSkeleton height={200} />
-        ) : (
-          <MasterLedgerTable rows={modelRows} />
         )}
       </section>
 
