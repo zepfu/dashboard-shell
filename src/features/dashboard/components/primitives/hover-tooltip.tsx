@@ -13,9 +13,10 @@
  * - `quota`: tip appears ABOVE children (tip-quota class).
  *
  * ## Structured content subclasses (callers opt-in)
- * - `.v9-tip-head` — heading row (amber, bold, 11px)
- * - `.v9-tip-row`  — data row (three-column grid: label / value / meta)
- * - `.v9-tip-foot` — footer row (small, muted)
+ * - `.v9-tip-head` — heading row (amber, bold, 10px, letter-spacing 0.04em)
+ * - `.v9-tip-row`  — data row (4-column grid: 38px label / value / 70px / auto)
+ * - `.v9-tip-foot` — footer row (9px, italic, muted, dashed border-top)
+ * - `.v9-tip-sub`  — subtitle row inside tip-quota (9px, muted)
  */
 import { useState, type ReactElement, type ReactNode } from 'react'
 
@@ -34,39 +35,67 @@ interface HoverTooltipProps {
   className?: string
 }
 
-/** Scoped styles injected once into the document for subclass structure rules. */
+/**
+ * Scoped styles injected once into the document for subclass structure rules.
+ * Wave 14-G: updated to match v9.7 mockup lines 2011–2089 verbatim.
+ * - .v9-tip-head: font-size 10px, letter-spacing 0.04em, border-bottom dashed
+ * - .v9-tip-row: font-size 9px, grid 38px 1fr 70px auto, col-gap 5px
+ * - .v9-tip-foot: font-style italic, 3px margin/padding, dashed border-top
+ * - .tip-health: right calc(100% + 8px), width 280px
+ * - .tip-quota: width 240px, right 0 left auto
+ */
 const TOOLTIP_STYLES = `
 .v9-tip .v9-tip-head {
   display: block;
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 700;
-  color: var(--accent-chrome, #f59e0b);
+  color: var(--accent-warm, #f59e0b);
+  letter-spacing: 0.04em;
   margin-bottom: 4px;
+  padding-bottom: 3px;
+  border-bottom: 1px dashed rgba(245, 158, 11, 0.4);
 }
 .v9-tip .v9-tip-row {
   display: grid;
-  grid-template-columns: 1fr auto auto;
-  gap: 0 6px;
-  font-size: 10px;
+  grid-template-columns: 38px minmax(0, 1fr) 70px auto;
+  column-gap: 5px;
+  font-size: 9px;
   color: var(--fg, #e2e8f0);
+  padding: 1px 0;
   line-height: 1.6;
 }
 .v9-tip .v9-tip-foot {
   display: block;
   font-size: 9px;
   color: var(--fg-muted, #94a3b8);
-  margin-top: 4px;
+  font-style: italic;
+  margin-top: 3px;
+  padding-top: 3px;
+  border-top: 1px dashed rgba(42, 53, 71, 0.6);
 }
-.tip-health {
-  right: calc(100% + 6px);
+.v9-tip.tip-health {
+  width: 280px;
+  right: calc(100% + 8px);
   left: auto;
   top: 50%;
   transform: translateY(-50%);
+  max-width: none;
 }
-.tip-quota {
+.v9-tip.tip-quota {
+  width: 240px;
   bottom: calc(100% + 6px);
   top: auto;
-  left: 0;
+  right: 0;
+  left: auto;
+  max-width: calc(100% + 40px);
+}
+.v9-tip.tip-quota .v9-tip-sub {
+  font-size: 9px;
+  color: var(--fg-muted, #94a3b8);
+  margin-bottom: 3px;
+}
+.v9-tip.tip-quota .v9-tip-row {
+  grid-template-columns: minmax(0, 1fr) auto;
 }
 `
 
@@ -129,26 +158,40 @@ export function HoverTooltip({
         data-state={isOpen ? 'open' : 'closed'}
         style={{
           position: 'absolute',
-          background: 'rgba(17, 23, 34, 0.95)',
-          border: '1px solid var(--accent-chrome, #f59e0b)',
+          /* Wave 14-G: rgba(11,16,24,0.96) per mockup line 2011 */
+          backgroundColor: 'rgba(11, 16, 24, 0.96)',
+          border: '1px solid #f59e0b',
           padding: '6px 8px',
           minWidth: '120px',
           fontSize: '10px',
           color: 'var(--fg, #e2e8f0)',
-          backdropFilter: 'blur(8px)',
-          WebkitBackdropFilter: 'blur(8px)',
+          /* Wave 14-G: blur(2px) per mockup line 2012 */
+          backdropFilter: 'blur(2px)',
+          WebkitBackdropFilter: 'blur(2px)',
+          /* Wave 14-G: box-shadow per mockup line 2013 */
+          boxShadow: '0 4px 12px rgba(0, 0, 0, 0.55)',
+          lineHeight: 1.3,
           zIndex: 200,
           ...(isOpen
             ? { opacity: 1, pointerEvents: 'auto' }
             : { opacity: 0, pointerEvents: 'none' }),
           ...(variant === 'quota'
-            ? { bottom: 'calc(100% + 6px)', top: 'auto', left: 0 }
+            ? {
+                width: '240px',
+                bottom: 'calc(100% + 6px)',
+                top: 'auto',
+                right: 0,
+                left: 'auto',
+                maxWidth: 'calc(100% + 40px)',
+              }
             : variant === 'health'
               ? {
-                  right: 'calc(100% + 6px)',
+                  width: '280px',
+                  right: 'calc(100% + 8px)',
                   left: 'auto',
                   top: '50%',
                   transform: 'translateY(-50%)',
+                  maxWidth: 'none',
                 }
               : { top: 0, left: '100%' }),
         }}
