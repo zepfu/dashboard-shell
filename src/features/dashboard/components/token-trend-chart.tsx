@@ -7,6 +7,13 @@
  * - Legend: gap 12px (was 8px), swatch 10×10px + border (was 8×8px no border).
  * - Section title: .section-title class with amber color (rendered by parent section).
  *
+ * Wave 14-F compliance (audit §12):
+ * - Hover via CSS .trend-bar:hover (opacity 1) instead of JS event handlers,
+ *   restoring the mockup-spec `transition: opacity 50ms` (audit §12 deviation 2).
+ *   CSS rule added to index.css Wave 14-F block.
+ * - .tt-slice: removed inline `background` override — color applied exclusively
+ *   via CSS class (audit §12 deviation 3).
+ *
  * Accessibility: the outer container carries a descriptive aria-label.
  */
 import type { ReactElement } from 'react'
@@ -88,14 +95,9 @@ export function TokenTrendChart({
                 overflow: 'hidden',
                 minWidth: 0,
                 border: '1px solid var(--border)',
+                // 14-F.5: opacity set via inline style; CSS .trend-bar:hover
+                // overrides to 1 with transition: opacity 50ms from index.css
                 opacity: 0.85,
-                transition: 'opacity 50ms',
-              }}
-              onMouseEnter={(e) => {
-                ;(e.currentTarget as HTMLDivElement).style.opacity = '1'
-              }}
-              onMouseLeave={(e) => {
-                ;(e.currentTarget as HTMLDivElement).style.opacity = '0.85'
               }}
             >
               {series.map((s) => {
@@ -107,11 +109,12 @@ export function TokenTrendChart({
                 return (
                   <div
                     key={s.key}
+                    // 14-F.5: color applied via CSS class only (audit §12 deviation 3)
+                    // Inline background removed — .tt-anthropic etc. define the color
                     className={`tt-slice ${s.cssClass}`}
                     style={{
                       flexBasis: `${pct.toFixed(4)}%`,
                       flexShrink: 0,
-                      background: s.color,
                       minHeight: '1px',
                       width: '100%',
                     }}
@@ -148,12 +151,12 @@ export function TokenTrendChart({
             }}
           >
             <span
+              // 14-F.5: swatch color applied via CSS class only
               className={`tt-swatch ${s.cssClass}`}
               style={{
                 display: 'inline-block',
                 width: '10px',
                 height: '10px',
-                background: s.color,
                 border: '1px solid var(--border)',
                 flexShrink: 0,
               }}

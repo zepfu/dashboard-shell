@@ -10,6 +10,14 @@
  * - Metric-cell microbar overlays on Requests, Tokens, Cost (C14).
  * - New sparkline column at end, tinted by client brand color (C14).
  * - Amber uppercase thead with letter-spacing 0.05em.
+ *
+ * Wave 14-F refactor:
+ * - metric-microbar → .microbar class with --microbar-fill var (14-F.1)
+ * - Remove inline METRIC_CELL_CSS block (class now in index.css Wave 14-F block)
+ * - .number className added to numeric td cells (14-F.1)
+ * - th letter-spacing corrected to 0.04em (audit §15 deviation 9)
+ * - Client section grid 120px 1fr at ≥1600px handled via index.css .client-section
+ *   media query (14-F.4 — parent wrapper in phosphor-dashboard.tsx out of scope)
  */
 import { useMemo, useState, type ReactElement } from 'react'
 import {
@@ -53,33 +61,6 @@ function numFmt(n: number, decimals = 0): string {
 }
 
 // ---------------------------------------------------------------------------
-// Inline CSS — metric-cell / metric-microbar (idempotent if PR5 adds globally)
-// ---------------------------------------------------------------------------
-
-const METRIC_CELL_CSS = `
-.metric-cell {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 0;
-}
-.metric-microbar {
-  display: block;
-  height: 2px;
-  width: 100%;
-  background: linear-gradient(
-    to right,
-    var(--accent-cool) 0%,
-    var(--accent-cool) var(--fill, 0%),
-    transparent var(--fill, 0%)
-  );
-  border-radius: 0;
-  margin-top: 1px;
-}
-`
-
-// ---------------------------------------------------------------------------
 // ClientBreakdownTable
 // ---------------------------------------------------------------------------
 
@@ -89,8 +70,8 @@ export interface ClientBreakdownTableProps {
 
 /**
  * ClientBreakdownTable renders a sortable sticky-header table of client
- * usage statistics with brand-colored client cells, microbar overlays, and
- * a sparkline trend column.
+ * usage statistics with brand-colored client cells, microbar overlays via
+ * .microbar class (14-F.1), and a sparkline trend column.
  */
 export function ClientBreakdownTable({
   rows,
@@ -142,10 +123,10 @@ export function ClientBreakdownTable({
             <div className='metric-cell'>
               <span style={{ color: 'var(--accent-cool)' }}>{numFmt(val)}</span>
               <span
-                className='metric-microbar'
+                className='microbar'
                 style={
                   {
-                    '--fill': `${fillPct.toFixed(1)}%`,
+                    '--microbar-fill': `${fillPct.toFixed(1)}%`,
                   } as React.CSSProperties
                 }
               />
@@ -162,10 +143,10 @@ export function ClientBreakdownTable({
             <div className='metric-cell'>
               <span style={{ color: 'var(--accent-cool)' }}>{numFmt(val)}</span>
               <span
-                className='metric-microbar'
+                className='microbar'
                 style={
                   {
-                    '--fill': `${fillPct.toFixed(1)}%`,
+                    '--microbar-fill': `${fillPct.toFixed(1)}%`,
                   } as React.CSSProperties
                 }
               />
@@ -188,10 +169,10 @@ export function ClientBreakdownTable({
             <div className='metric-cell'>
               <span style={{ color: costColor }}>{formatUsd(val)}</span>
               <span
-                className='metric-microbar'
+                className='microbar'
                 style={
                   {
-                    '--fill': `${fillPct.toFixed(1)}%`,
+                    '--microbar-fill': `${fillPct.toFixed(1)}%`,
                   } as React.CSSProperties
                 }
               />
@@ -225,137 +206,130 @@ export function ClientBreakdownTable({
   })
 
   return (
-    <>
-      {/* Idempotent metric-cell CSS — safe if PR5 also emits globally */}
-      <style>{METRIC_CELL_CSS}</style>
-      <div
-        className='client-table-wrapper'
+    <div
+      className='client-table-wrapper'
+      style={{
+        width: '100%',
+        overflowX: 'auto',
+        overflowY: 'auto',
+        maxHeight: '160px',
+        background: 'var(--card)',
+        border: '1px solid var(--border)',
+      }}
+    >
+      <table
+        aria-label='Client usage breakdown'
+        className='client-table'
         style={{
           width: '100%',
-          overflowX: 'auto',
-          overflowY: 'auto',
-          maxHeight: '160px',
-          background: 'var(--card)',
-          border: '1px solid var(--border)',
+          borderCollapse: 'collapse',
+          fontSize: '10px',
+          fontFamily: 'var(--font-mono)',
         }}
       >
-        <table
-          aria-label='Client usage breakdown'
-          className='client-table'
+        <thead
           style={{
-            width: '100%',
-            borderCollapse: 'collapse',
-            fontSize: '10px',
-            fontFamily: 'var(--font-mono)',
+            position: 'sticky',
+            top: 0,
+            zIndex: 10,
+            background: 'var(--card-2)',
+            borderBottom: '1px solid rgba(245,158,11,0.25)',
           }}
         >
-          <thead
-            style={{
-              position: 'sticky',
-              top: 0,
-              zIndex: 10,
-              background: 'var(--card-2)',
-              borderBottom: '1px solid rgba(245,158,11,0.25)',
-            }}
-          >
-            {table.getHeaderGroups().map((headerGroup) => (
-              <tr key={headerGroup.id}>
-                {headerGroup.headers.map((header) => {
-                  const sortDir = header.column.getIsSorted()
-                  const isSortable = header.column.getCanSort()
-                  let ariaSort: 'ascending' | 'descending' | 'none' | undefined
-                  if (isSortable) {
-                    ariaSort =
-                      sortDir === 'asc'
-                        ? 'ascending'
-                        : sortDir === 'desc'
-                          ? 'descending'
-                          : 'none'
-                  }
+          {table.getHeaderGroups().map((headerGroup) => (
+            <tr key={headerGroup.id}>
+              {headerGroup.headers.map((header) => {
+                const sortDir = header.column.getIsSorted()
+                const isSortable = header.column.getCanSort()
+                let ariaSort: 'ascending' | 'descending' | 'none' | undefined
+                if (isSortable) {
+                  ariaSort =
+                    sortDir === 'asc'
+                      ? 'ascending'
+                      : sortDir === 'desc'
+                        ? 'descending'
+                        : 'none'
+                }
 
-                  return (
-                    <th
-                      key={header.id}
-                      aria-sort={ariaSort}
-                      data-sortable={isSortable ? 'true' : undefined}
-                      onClick={
-                        isSortable
-                          ? header.column.getToggleSortingHandler()
-                          : undefined
-                      }
-                      style={{
-                        padding: '4px 6px',
-                        textAlign: 'left',
-                        fontWeight: 600,
-                        color: 'var(--accent-chrome)',
-                        background: 'var(--card-2)',
-                        fontSize: '9px',
-                        textTransform: 'uppercase',
-                        letterSpacing: '0.05em',
-                        borderRight: '1px solid var(--border)',
-                        borderBottom: '1px solid rgba(245, 158, 11, 0.25)',
-                        cursor: isSortable ? 'pointer' : 'default',
-                        userSelect: 'none',
-                        whiteSpace: 'nowrap',
-                      }}
-                    >
-                      {flexRender(
-                        header.column.columnDef.header,
-                        header.getContext()
-                      )}
-                      {sortDir === 'asc'
-                        ? ' ↑'
-                        : sortDir === 'desc'
-                          ? ' ↓'
-                          : ''}
-                    </th>
-                  )
-                })}
-              </tr>
-            ))}
-          </thead>
+                return (
+                  <th
+                    key={header.id}
+                    aria-sort={ariaSort}
+                    data-sortable={isSortable ? 'true' : undefined}
+                    onClick={
+                      isSortable
+                        ? header.column.getToggleSortingHandler()
+                        : undefined
+                    }
+                    style={{
+                      padding: '4px 6px',
+                      textAlign: 'left',
+                      fontWeight: 600,
+                      color: 'var(--accent-chrome)',
+                      background: 'var(--card-2)',
+                      fontSize: '9px',
+                      textTransform: 'uppercase',
+                      // 14-F audit §15 fix: 0.05em → 0.04em per mockup spec
+                      letterSpacing: '0.04em',
+                      borderRight: '1px solid var(--border)',
+                      borderBottom: '1px solid rgba(245, 158, 11, 0.25)',
+                      cursor: isSortable ? 'pointer' : 'default',
+                      userSelect: 'none',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {flexRender(
+                      header.column.columnDef.header,
+                      header.getContext()
+                    )}
+                    {sortDir === 'asc' ? ' ↑' : sortDir === 'desc' ? ' ↓' : ''}
+                  </th>
+                )
+              })}
+            </tr>
+          ))}
+        </thead>
 
-          <tbody>
-            {table.getRowModel().rows.map((row) => (
-              <tr
-                key={row.id}
-                style={{ borderBottom: '1px solid var(--border)' }}
-              >
-                {row.getVisibleCells().map((cell) => {
-                  // Attach data-client to the <td> for the client column
-                  const isClientCol = cell.column.id === 'client'
-                  const isText =
-                    cell.column.id === 'client' ||
-                    cell.column.id === 'version' ||
-                    cell.column.id === 'sparkline'
-                  return (
-                    <td
-                      key={cell.id}
-                      data-client={
-                        isClientCol ? row.original.client : undefined
-                      }
-                      style={{
-                        padding: '3px 6px',
-                        fontFamily: 'var(--font-mono)',
-                        color: 'var(--fg)',
-                        borderRight: '1px solid var(--border)',
-                        textAlign: isText ? 'left' : 'right',
-                        whiteSpace: 'nowrap',
-                        verticalAlign: 'top',
-                      }}
-                    >
-                      {flexRender(
-                        cell.column.columnDef.cell,
-                        cell.getContext()
-                      )}
-                    </td>
-                  )
-                })}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </>
+        <tbody>
+          {table.getRowModel().rows.map((row) => (
+            <tr
+              key={row.id}
+              style={{ borderBottom: '1px solid var(--border)' }}
+            >
+              {row.getVisibleCells().map((cell) => {
+                // Attach data-client to the <td> for the client column
+                const isClientCol = cell.column.id === 'client'
+                const isText =
+                  cell.column.id === 'client' ||
+                  cell.column.id === 'version' ||
+                  cell.column.id === 'sparkline'
+
+                // 14-F.1: .number className on numeric cells
+                const tdClassName = !isText ? 'number' : undefined
+
+                return (
+                  <td
+                    key={cell.id}
+                    className={tdClassName}
+                    data-client={isClientCol ? row.original.client : undefined}
+                    style={{
+                      padding: '3px 6px',
+                      fontFamily: 'var(--font-mono)',
+                      color: 'var(--fg)',
+                      borderRight: '1px solid var(--border)',
+                      textAlign: isText ? 'left' : 'right',
+                      whiteSpace: 'nowrap',
+                      verticalAlign: 'top',
+                    }}
+                  >
+                    {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                  </td>
+                )
+              })}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   )
 }

@@ -217,13 +217,8 @@ export function KpiStrip({
       {tiles.map(({ label, key, rawValue, value, isError }, i) => {
         const deltaVal = deltas?.[key]
         const deltaStr = renderDelta(deltaVal)
-        const deltaPositive = deltaVal !== undefined && deltaVal >= 0
-        const deltaColor =
-          deltaVal === undefined
-            ? 'var(--fg-muted)'
-            : deltaPositive
-              ? 'var(--accent-warm)'
-              : 'var(--accent-hot)'
+        // 14-B.6: mockup §5 line 300 — .kpi-delta { color: var(--fg-muted); }
+        // All deltas use uniform muted color regardless of sign (no amber/red).
         const fillPct = Math.round((rawValue / maxRaw) * 100)
 
         return (
@@ -275,7 +270,7 @@ export function KpiStrip({
               className='kpi-delta'
               style={{
                 fontSize: '9px',
-                color: deltaColor,
+                color: 'var(--fg-muted)',
                 display: 'flex',
                 alignItems: 'center',
                 gap: '4px',
