@@ -29,6 +29,24 @@
   }
 }
 
+/* ── Ledger + Repo side-by-side row (Wave 11 PR1 — 11-c) ───────────────── */
+
+/** Below 1600px: stack Model Ledger above Repository Breakdown. */
+.ledger-repo-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/** ≥1600px: side-by-side 8fr (Model Ledger) / 4fr (Repository Breakdown). */
+@media (min-width: 1600px) {
+  .ledger-repo-row {
+    display: grid;
+    grid-template-columns: 8fr 4fr;
+    gap: 4px;
+  }
+}
+
 /* ── Comparison section ─────────────────────────────────────────────────── */
 
 .comparison-section {
