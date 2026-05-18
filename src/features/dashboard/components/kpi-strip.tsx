@@ -8,6 +8,12 @@
  * - Delta row: percentage change + animated microbar (40px wide, 2px tall).
  * - Errors tile value colored var(--accent-hot) when non-zero.
  * - Strip height: clamp(60px, 4vw, 96px).
+ *
+ * Wave 11 PR7-lite (audit C27–C29):
+ * - Label renames: Cost → Cost (24h), Errors → Errors (24h), P95 → P95 Latency,
+ *   Toks In → Tokens In, Toks Out → Tokens Out; Requests unchanged.
+ * - Added `deltas` optional prop for real delta values; falls back to em-dash.
+ * - Microbar fill computed proportionally via CSS --fill custom property.
  */
 import type { ReactElement } from 'react'
 
@@ -20,9 +26,17 @@ interface KpiSummary {
   p95_ms: number
 }
 
+/** Keys matching KpiSummary fields, used for delta lookup. */
+type KpiKey = keyof KpiSummary
+
 interface KpiStripProps {
   summary: KpiSummary | undefined
   loading?: boolean
+  /**
+   * Optional delta values (fractional, e.g. 0.124 = +12.4%).
+   * When present, rendered as ↑/↓ percentage; when absent, shows em-dash.
+   */
+  deltas?: Partial<Record<KpiKey, number>>
 }
 
 /** Format a token count with compact SI suffixes (k / M). */
@@ -54,50 +68,72 @@ function formatLatency(ms: number): string {
   return `${ms}ms`
 }
 
+/** Render a delta fraction as a ↑/↓ percentage string. */
+function renderDelta(delta: number | undefined): string {
+  if (delta === undefined) return '—'
+  const pct = (Math.abs(delta) * 100).toFixed(1)
+  return delta >= 0 ? `↑ ${pct}%` : `↓ ${pct}%`
+}
+
 interface TileData {
   label: string
+  key: KpiKey
+  rawValue: number
   value: string
   isError?: boolean
-  delta?: string
 }
 
 function buildTiles(summary: KpiSummary): TileData[] {
   return [
     {
-      label: 'Toks In',
+      label: 'Tokens In',
+      key: 'token_in',
+      rawValue: summary.token_in,
       value: formatCompact(summary.token_in),
-      delta: '↑ 12.4%',
     },
     {
-      label: 'Toks Out',
+      label: 'Tokens Out',
+      key: 'token_out',
+      rawValue: summary.token_out,
       value: formatCompact(summary.token_out),
-      delta: '↑ 8.1%',
     },
     {
-      label: 'Cost',
+      label: 'Cost (24h)',
+      key: 'cost_usd',
+      rawValue: summary.cost_usd,
       value: formatCost(summary.cost_usd),
-      delta: '↑ 3.2%',
     },
     {
       label: 'Requests',
+      key: 'requests',
+      rawValue: summary.requests,
       value: formatCount(summary.requests),
-      delta: '↑ 6.7%',
     },
     {
-      label: 'Errors',
+      label: 'Errors (24h)',
+      key: 'errors',
+      rawValue: summary.errors,
       value: formatCount(summary.errors),
       isError: summary.errors > 0,
-      delta: summary.errors > 0 ? '↑ 1.0%' : '—',
     },
     {
-      label: 'P95',
+      label: 'P95 Latency',
+      key: 'p95_ms',
+      rawValue: summary.p95_ms,
       value: formatLatency(summary.p95_ms),
-      delta: '↓ 2.1%',
     },
   ]
 }
 
-const TILE_LABELS = ['Toks In', 'Toks Out', 'Cost', 'Requests', 'Errors', 'P95']
+/** Updated skeleton labels to match renamed tiles. */
+const TILE_LABELS = [
+  'Tokens In',
+  'Tokens Out',
+  'Cost (24h)',
+  'Requests',
+  'Errors (24h)',
+  'P95 Latency',
+]
 
 /**
  * KpiStrip renders six KPI tiles or skeleton placeholders when loading.
@@ -108,6 +144,7 @@ const TILE_LABELS = ['Toks In', 'Toks Out', 'Cost', 'Requests', 'Errors', 'P95']
 export function KpiStrip({
   summary,
   loading = false,
+  deltas,
 }: KpiStripProps): ReactElement {
   const isLoading = loading || summary === undefined
 
@@ -171,77 +208,98 @@ export function KpiStrip({
 
   const tiles = buildTiles(summary)
 
+  // Compute max raw value across tiles for proportional microbar fill.
+  // Use max of all rawValues; guard against zero-division with fallback of 1.
+  const maxRaw = Math.max(...tiles.map((t) => t.rawValue), 1)
+
   return (
     <div style={stripStyle}>
-      {tiles.map(({ label, value, isError, delta }, i) => (
-        <div
-          key={label}
-          className='kpi-tile'
-          style={{
-            flex: 1,
-            background: 'transparent',
-            borderRight:
-              i < tiles.length - 1 ? '1px solid var(--border)' : 'none',
-            padding: '4px 8px',
-            display: 'flex',
-            flexDirection: 'column',
-            gap: '2px',
-            justifyContent: 'center',
-            overflow: 'hidden',
-          }}
-        >
+      {tiles.map(({ label, key, rawValue, value, isError }, i) => {
+        const deltaVal = deltas?.[key]
+        const deltaStr = renderDelta(deltaVal)
+        const deltaPositive = deltaVal !== undefined && deltaVal >= 0
+        const deltaColor =
+          deltaVal === undefined
+            ? 'var(--fg-muted)'
+            : deltaPositive
+              ? 'var(--accent-warm)'
+              : 'var(--accent-hot)'
+        const fillPct = Math.round((rawValue / maxRaw) * 100)
+
+        return (
           <div
-            className='kpi-label'
+            key={label}
+            className='kpi-tile'
             style={{
-              fontSize: 'clamp(9px, 0.5vw, 14px)',
-              color: 'var(--accent-chrome)',
-              textTransform: 'uppercase',
-              letterSpacing: '0.05em',
-              fontWeight: 500,
+              flex: 1,
+              background: 'transparent',
+              borderRight:
+                i < tiles.length - 1 ? '1px solid var(--border)' : 'none',
+              padding: '4px 8px',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '2px',
+              justifyContent: 'center',
+              overflow: 'hidden',
             }}
           >
-            {label}
-          </div>
-          <div
-            className='kpi-value'
-            style={{
-              fontFamily: 'var(--font-serif)',
-              fontSize: 'clamp(28px, 1.6vw, 56px)',
-              fontStyle: 'italic',
-              color:
-                isError === true ? 'var(--accent-hot)' : 'var(--accent-chrome)',
-              lineHeight: 1,
-              fontWeight: 400,
-            }}
-          >
-            {value}
-          </div>
-          {delta !== undefined && (
+            <div
+              className='kpi-label'
+              style={{
+                fontSize: 'clamp(9px, 0.5vw, 14px)',
+                color: 'var(--accent-chrome)',
+                textTransform: 'uppercase',
+                letterSpacing: '0.05em',
+                fontWeight: 500,
+              }}
+            >
+              {label}
+            </div>
+            <div
+              className='kpi-value'
+              style={{
+                fontFamily: 'var(--font-serif)',
+                fontSize: 'clamp(28px, 1.6vw, 56px)',
+                fontStyle: 'italic',
+                color:
+                  isError === true
+                    ? 'var(--accent-hot)'
+                    : 'var(--accent-chrome)',
+                lineHeight: 1,
+                fontWeight: 400,
+              }}
+            >
+              {value}
+            </div>
             <div
               className='kpi-delta'
               style={{
                 fontSize: '9px',
-                color: 'var(--fg-muted)',
+                color: deltaColor,
                 display: 'flex',
                 alignItems: 'center',
                 gap: '4px',
               }}
             >
-              <span>{delta}</span>
+              <span>{deltaStr}</span>
+              {/* Microbar: --fill drives the CSS animation width (11-v). */}
               <span
                 className='kpi-microbar'
-                style={{
-                  display: 'inline-block',
-                  width: '40px',
-                  height: '2px',
-                  background:
-                    'linear-gradient(90deg, var(--accent-cool) 0%, var(--accent-teal) 40%, var(--accent-warm) 70%, var(--accent-hot) 100%)',
-                }}
+                style={
+                  {
+                    display: 'inline-block',
+                    width: '40px',
+                    height: '2px',
+                    background:
+                      'linear-gradient(90deg, var(--accent-cool) 0%, var(--accent-teal) 40%, var(--accent-warm) 70%, var(--accent-hot) 100%)',
+                    '--fill': `${fillPct}%`,
+                  } as React.CSSProperties
+                }
               />
             </div>
-          )}
-        </div>
-      ))}
+          </div>
+        )
+      })}
     </div>
   )
 }

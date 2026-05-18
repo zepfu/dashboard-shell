@@ -248,3 +248,24 @@
     height: 0;
   }
 }
+
+/* Wave 11 PR7-lite */
+
+/* 11-v — KPI microbar fill animation */
+@keyframes microbarFill {
+  from { width: 0%; }
+  to { width: var(--fill, 0%); }
+}
+.kpi-microbar {
+  animation: microbarFill 0.6s ease-out forwards;
+}
+
+/* 11-w — Alert pulse animation */
+@keyframes alertPulse {
+  0% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.02); opacity: 0.95; }
+  100% { transform: scale(1); opacity: 1; }
+}
+.alert-item {
+  animation: alertPulse 0.4s ease-out;
+}
