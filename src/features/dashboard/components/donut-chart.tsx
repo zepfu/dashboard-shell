@@ -106,7 +106,7 @@ export function DonutChart({ slices }: DonutChartProps): ReactElement {
           textAnchor='middle'
           fontSize='20'
           fill='var(--fg)'
-          fontFamily='monospace'
+          fontFamily='var(--font-mono)'
         >
           {slices.length}
         </text>

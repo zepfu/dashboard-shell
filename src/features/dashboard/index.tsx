@@ -129,7 +129,7 @@ export function Dashboard(): ReactElement {
   const [from, setFrom] = useState(defaults.from)
   const [to, setTo] = useState(defaults.to)
   const [grain, setGrain] = useState<UsageReportGrain>('day')
-  const [activePeriod, setActivePeriod] = useState<string>('7d')
+  const [activePeriod, setActivePeriod] = useState<string>('24h')
 
   const handleRangeChange = (
     nextFrom: string,
@@ -455,17 +455,19 @@ export function Dashboard(): ReactElement {
               fontSize: '10px',
             }}
           >
+            {/* 14-H.1: label display:contents so parent gap governs spacing (audit §6 #1) */}
+            {/* 14-H.1: date-input width 100px per mockup line 789 (was 110px) (audit §6 #2) */}
             <label
               htmlFor='ctrl-from'
               style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '4px',
+                display: 'contents',
                 color: 'var(--fg-muted)',
                 fontSize: '10px',
               }}
             >
-              From
+              <span style={{ color: 'var(--fg-muted)', fontSize: '10px' }}>
+                From
+              </span>
               <input
                 id='ctrl-from'
                 type='date'
@@ -481,21 +483,21 @@ export function Dashboard(): ReactElement {
                   padding: '3px 6px',
                   fontFamily: 'var(--font-mono)',
                   fontSize: '10px',
-                  width: '110px',
+                  width: '100px',
                 }}
               />
             </label>
             <label
               htmlFor='ctrl-to'
               style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '4px',
+                display: 'contents',
                 color: 'var(--fg-muted)',
                 fontSize: '10px',
               }}
             >
-              To
+              <span style={{ color: 'var(--fg-muted)', fontSize: '10px' }}>
+                To
+              </span>
               <input
                 id='ctrl-to'
                 type='date'
@@ -511,7 +513,7 @@ export function Dashboard(): ReactElement {
                   padding: '3px 6px',
                   fontFamily: 'var(--font-mono)',
                   fontSize: '10px',
-                  width: '110px',
+                  width: '100px',
                 }}
               />
             </label>
