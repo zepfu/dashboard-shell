@@ -174,23 +174,31 @@ export function HealthStrip({
     return stripEl
   }
 
-  // Horizontal (default) — 288-cell grid row
+  // Horizontal (default) — 288-cell grid row wrapped in .health-strip-wrapper
   return (
     <div
       aria-hidden='true'
-      className='health-strip'
+      className='health-strip-wrapper'
       style={{
-        display: 'grid',
-        gridTemplateColumns: `repeat(${TOTAL_CELLS}, 1fr)`,
-        height: '6px',
-        gap: 0,
-        width: '100%',
-        overflow: 'hidden',
+        borderRight: '1px solid var(--border)',
       }}
     >
-      {padded.map((cell, i) => (
-        <HealthCell key={i} color={cell.color} vertical={false} />
-      ))}
+      <div
+        aria-hidden='true'
+        className='health-strip'
+        style={{
+          display: 'grid',
+          gridTemplateColumns: `repeat(${TOTAL_CELLS}, 1fr)`,
+          height: '6px',
+          gap: 0,
+          width: '100%',
+          overflow: 'hidden',
+        }}
+      >
+        {padded.map((cell, i) => (
+          <HealthCell key={i} color={cell.color} vertical={false} />
+        ))}
+      </div>
     </div>
   )
 }
