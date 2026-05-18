@@ -815,3 +815,20 @@
 .attribution-legend .legend-cat.cat-miss .legend-swatch {
   background: rgba(20, 184, 166, 0.6);
 }
+
+/* ─────────────────────────────────────────────────────────────────────────── */
+/* Wave 14-C: provider card content rewrite                                    */
+/* ─────────────────────────────────────────────────────────────────────────── */
+
+/* 14-C.10: .pc-mini-row .label text-transform lowercase (mockup line 1181) */
+.pc-mini-row .label {
+  text-transform: lowercase;
+}
+
+/* 14-C.8: est-mark asterisk on reasoning estimated value (mockup line 1191) */
+.est-mark {
+  color: rgba(245, 158, 11, 0.55);
+  margin-left: 2px;
+}
+
+/* End Wave 14-C */

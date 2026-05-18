@@ -270,6 +270,21 @@ function buildProviderMetrics(
       : undefined
   const p95 = latestRow?.upstream_p95_ms ?? 0
 
+  // Wave 14-C: rate_limits, capacity from health rows; packet_loss from ping probe.
+  const rate_limits = providerHealthRows.reduce(
+    (s, r) => s + r.rate_limit_events,
+    0
+  )
+  const capacity = providerHealthRows.reduce((s, r) => s + r.capacity_events, 0)
+  // Use average packet loss across all health rows that have data; null if none probed.
+  const packetLossValues = providerHealthRows
+    .map((r) => r.provider_ping_packet_loss_pct)
+    .filter((v): v is number => v !== null)
+  const packet_loss_pct =
+    packetLossValues.length > 0
+      ? packetLossValues.reduce((s, v) => s + v, 0) / packetLossValues.length
+      : null
+
   // Aggregate per-provider token / cost / cache / reasoning from usage rows
   const tokens_in = providerUsageRows.reduce((s, r) => s + (r.token_in ?? 0), 0)
   const tokens_out = providerUsageRows.reduce(
@@ -286,6 +301,11 @@ function buildProviderMetrics(
     (s, r) => s + (r.token_cache_creation ?? 0),
     0
   )
+  // Wave 14-C: cache_miss_usd from cache_miss_usd_cost API field (dollar cost of misses).
+  const cache_miss_usd = providerUsageRows.reduce(
+    (s, r) => s + (r.cache_miss_usd_cost ?? 0),
+    0
+  )
   const reasoning_reported = providerUsageRows.reduce(
     (s, r) => s + (r.token_reasoning_reported ?? 0),
     0
@@ -294,6 +314,9 @@ function buildProviderMetrics(
     (s, r) => s + (r.token_reasoning_estimated ?? 0),
     0
   )
+  // TODO: API doesn't expose no_reasoning_calls yet — wired as zero.
+  // reasoning_tokens_sources field exists but holds a JSON string, not a count.
+  const no_reasoning_calls = 0
 
   return {
     tokens_in,
@@ -304,9 +327,14 @@ function buildProviderMetrics(
     p95_ms: p95,
     cache_input,
     cache_creation,
+    cache_miss_usd,
     reasoning_reported,
     reasoning_estimated,
+    no_reasoning_calls,
     traces,
+    rate_limits,
+    capacity,
+    packet_loss_pct,
   }
 }
 
@@ -337,6 +365,17 @@ function buildAggregateMetrics(
     .filter((v): v is number => v !== null)
   const p95 = p95Values.length > 0 ? Math.max(...p95Values) : 0
 
+  // Wave 14-C: aggregate rate_limits, capacity, packet_loss across all health rows.
+  const rate_limits = healthRows.reduce((s, r) => s + r.rate_limit_events, 0)
+  const capacity = healthRows.reduce((s, r) => s + r.capacity_events, 0)
+  const packetLossValues = healthRows
+    .map((r) => r.provider_ping_packet_loss_pct)
+    .filter((v): v is number => v !== null)
+  const packet_loss_pct =
+    packetLossValues.length > 0
+      ? packetLossValues.reduce((s, v) => s + v, 0) / packetLossValues.length
+      : null
+
   // Sum across every usage row for fleet-wide totals
   const tokens_in = rows.reduce((s, r) => s + (r.token_in ?? 0), 0)
   const tokens_out = rows.reduce((s, r) => s + (r.token_out ?? 0), 0)
@@ -347,6 +386,11 @@ function buildAggregateMetrics(
     (s, r) => s + (r.token_cache_creation ?? 0),
     0
   )
+  // Wave 14-C: cache_miss_usd from cache_miss_usd_cost API field.
+  const cache_miss_usd = rows.reduce(
+    (s, r) => s + (r.cache_miss_usd_cost ?? 0),
+    0
+  )
   const reasoning_reported = rows.reduce(
     (s, r) => s + (r.token_reasoning_reported ?? 0),
     0
@@ -355,6 +399,8 @@ function buildAggregateMetrics(
     (s, r) => s + (r.token_reasoning_estimated ?? 0),
     0
   )
+  // TODO: API doesn't expose no_reasoning_calls yet — wired as zero.
+  const no_reasoning_calls = 0
 
   return {
     tokens_in,
@@ -365,9 +411,14 @@ function buildAggregateMetrics(
     p95_ms: p95,
     cache_input,
     cache_creation,
+    cache_miss_usd,
     reasoning_reported,
     reasoning_estimated,
+    no_reasoning_calls,
     traces,
+    rate_limits,
+    capacity,
+    packet_loss_pct,
   }
 }
 
