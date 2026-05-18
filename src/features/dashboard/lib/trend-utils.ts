@@ -11,12 +11,25 @@ import type { TrendBucket } from '../components/token-trend-chart'
 // normalizeTrendData
 // ---------------------------------------------------------------------------
 
+/** Target bucket count for the trend chart — one bar per hour over 24 hours. */
+const TREND_BUCKET_COUNT = 24
+
 /**
  * normalizeTrendData groups UsageReportTrendRow records by bucket_start,
  * summing per-provider token counts into a totals map per bucket.
  *
+ * The result is always padded (or truncated) to exactly {@link TREND_BUCKET_COUNT}
+ * buckets so that the TokenTrendChart always renders ~24 narrow bars regardless
+ * of whether the API returns daily, weekly, or monthly aggregates:
+ *
+ * - If the raw data produces ≥24 buckets: keep the most recent 24.
+ * - If the raw data produces <24 buckets: prepend empty buckets labelled
+ *   `Xh` (where X counts down from the left) so the chart fills the full
+ *   width with appropriately narrow bars.
+ *
  * @param rows - Raw trend rows from the usage report API.
- * @returns Array of TrendBucket objects in ascending bucket order.
+ * @returns Array of exactly {@link TREND_BUCKET_COUNT} TrendBucket objects
+ *   in ascending bucket order.
  */
 export function normalizeTrendData(rows: UsageReportTrendRow[]): TrendBucket[] {
   // Use an ordered map (insertion order = chronological order after sorting)
@@ -35,10 +48,30 @@ export function normalizeTrendData(rows: UsageReportTrendRow[]): TrendBucket[] {
   // Sort buckets chronologically
   const sortedKeys = [...bucketMap.keys()].sort()
 
-  return sortedKeys.map((bucket) => ({
+  const dataBuckets: TrendBucket[] = sortedKeys.map((bucket) => ({
     label: bucket,
     totals: bucketMap.get(bucket) ?? {},
   }))
+
+  // Truncate to the most recent TREND_BUCKET_COUNT if we have too many
+  const trimmed =
+    dataBuckets.length > TREND_BUCKET_COUNT
+      ? dataBuckets.slice(dataBuckets.length - TREND_BUCKET_COUNT)
+      : dataBuckets
+
+  // Pad the beginning with empty buckets so the total is always exactly 24
+  const padCount = TREND_BUCKET_COUNT - trimmed.length
+  const padBuckets: TrendBucket[] = Array.from(
+    { length: padCount },
+    (_, i) => ({
+      // Label counts back from the oldest real bucket so that the x-axis
+      // reads as "Xh ago" for context (e.g. "23h", "22h", …).
+      label: `${padCount - i + trimmed.length - 1}h`,
+      totals: {},
+    })
+  )
+
+  return [...padBuckets, ...trimmed]
 }
 
 // ---------------------------------------------------------------------------
