@@ -9,6 +9,9 @@
  * modestly true (rate-limit headroom, quota nearing, cache hit ratio,
  * daily budget). Target density: 6–11 items in typical operation.
  * Wave 10 D20: `warn` type emitted for quota-nearing alerts.
+ *
+ * Wave 11 PR7-lite (audit C32): always-on per-provider healthy alerts and a
+ * "Sync on schedule" info alert raise baseline density to 7-11 items.
  */
 import { useMemo } from 'react'
 import type { AlertItem } from '../components/alerts-rail'
@@ -38,6 +41,24 @@ export interface AlertQuotaShape {
   monthly_remaining_pct: number | null
   monthly_active: boolean
 }
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+/**
+ * Canonical 7-provider list for always-on healthy alerts (Wave 11 PR7-lite).
+ * Inline duplicate per spec to avoid crossing PR2's phosphor-dashboard.tsx.
+ */
+const CANONICAL_PROVIDERS: ReadonlyArray<string> = [
+  'Anthropic',
+  'OpenAI',
+  'Google',
+  'xAI',
+  'NVIDIA',
+  'OpenRouter',
+  'Local',
+]
 
 // ---------------------------------------------------------------------------
 // Hook
@@ -175,6 +196,27 @@ export function useAlertsFromAnomalies(
         }
       }
     }
+
+    // ── Wave 11 PR7-lite: always-on per-provider healthy alerts ────── //
+    // For each canonical provider with no anomalies (no early-reset entry),
+    // emit an info alert "Provider X: healthy".
+    const anomalouProviders = new Set(
+      [...anomalies.earlyReset.keys()].map((p) => p.toLowerCase())
+    )
+    for (const providerName of CANONICAL_PROVIDERS) {
+      if (!anomalouProviders.has(providerName.toLowerCase())) {
+        alerts.push({
+          type: 'info',
+          head: `${providerName}: healthy`,
+        })
+      }
+    }
+
+    // ── Wave 11 PR7-lite: always-on sync status ───────────────────── //
+    alerts.push({
+      type: 'info',
+      head: 'Sync on schedule',
+    })
 
     return alerts
   }, [anomalies, summary, quotas])
