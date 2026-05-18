@@ -119,32 +119,37 @@ export function DonutChart({ slices }: DonutChartProps): ReactElement {
           display: 'flex',
           flexWrap: 'wrap',
           gap: '8px',
-          marginTop: '8px',
+          padding: '6px 4px 0',
+          fontFamily: 'var(--font-mono)',
+          fontSize: '10px',
+          color: 'var(--fg-muted)',
+          justifyContent: 'center',
         }}
       >
         {slices.map((slice) => (
           <div
             key={slice.client}
             className='client-legend-item'
+            data-client={slice.client}
             style={{
-              display: 'flex',
+              display: 'inline-flex',
               alignItems: 'center',
               gap: '4px',
-              fontSize: '11px',
-              color: 'var(--fg)',
+              minWidth: '50px',
             }}
           >
             <span
-              className='swatch'
+              className='client-legend-swatch'
               style={{
                 display: 'inline-block',
                 width: '10px',
                 height: '10px',
                 background: slice.color,
                 flexShrink: 0,
+                border: '1px solid rgba(255,255,255,0.06)',
               }}
             />
-            {slice.client}
+            <span className='client-legend-name'>{slice.client}</span>
           </div>
         ))}
       </div>

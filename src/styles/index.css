@@ -145,6 +145,92 @@
   }
 }
 
+/* ─────────────────────────────────────────────────────────────────
+   Phosphor Atlas v9.7 — quota interval bar threshold colors.
+   These classes are applied by QuotaIntervalBar via buildQuotaIntervals().
+   Class names must match the iv-* convention from the v9.7 reference mockup.
+   ───────────────────────────────────────────────────────────────── */
+.quota-interval { flex: 1 1 0; }
+.quota-interval.iv-0-5   { background: #1e3a5f; opacity: 1; }
+.quota-interval.iv-5-10  { background: #3b82f6; opacity: 0.8; }
+.quota-interval.iv-10-25 { background: #14b8a6; opacity: 1; }
+.quota-interval.iv-25-50 { background: #cc7e0a; opacity: 1; }
+.quota-interval.iv-50-p  { background: #cc3838; opacity: 1; }
+
+/* Velocity shimmer on high-velocity interval segments */
+@keyframes iv-shimmer {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.55; }
+}
+
+.quota-interval.high-velocity {
+  animation: iv-shimmer 2.6s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .quota-interval.high-velocity {
+    animation: none;
+  }
+}
+
+/* Provider summary grid responsive breakpoints */
+.provider-summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px;
+}
+
+@media (min-width: 1600px) {
+  .provider-summary {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 2100px) {
+  .provider-summary {
+    grid-template-columns: repeat(8, minmax(0, 1fr));
+  }
+  .provider-card.aggregate { display: flex !important; }
+}
+
+@media (min-width: 3840px) {
+  .provider-summary {
+    grid-template-columns: repeat(8, minmax(0, 1fr));
+  }
+  .provider-card {
+    max-width: none !important;
+    display: grid !important;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) !important;
+    gap: 10px !important;
+    align-items: start !important;
+  }
+  .provider-card .provider-name {
+    grid-column: 1 / -1 !important;
+  }
+  .card-pane-left { grid-column: 1; min-width: 0; }
+  .card-pane-right {
+    grid-column: 2 !important;
+    display: flex !important;
+    flex-direction: column !important;
+    min-width: 0 !important;
+  }
+  section[data-tab="comparison"] {
+    display: block !important;
+    grid-column: 14 / 21;
+    grid-row: 7;
+  }
+  .col-4k-only { display: table-cell !important; }
+}
+
+/* Pulse dot animation for freshness indicator */
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.3; }
+}
+.pulse-dot {
+  animation: pulse-dot 1s infinite;
+}
+
 @keyframes slideDown {
   from {
     height: 0;

@@ -1,3 +1,24 @@
+/* SVG topographic pattern overlay — v9.7 reference design language.
+   Subtle 45° amber lines at 2% opacity give the background depth without
+   competing with content. z-index: -1 keeps it below all content layers. */
+body::before {
+  content: '';
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background-image: repeating-linear-gradient(
+    45deg,
+    transparent,
+    transparent 80px,
+    rgba(245, 158, 11, 0.02) 80px,
+    rgba(245, 158, 11, 0.02) 160px
+  );
+  pointer-events: none;
+  z-index: -1;
+}
+
 :root {
   /* Phosphor Atlas — base tokens */
   --bg: #0a0d12;
