@@ -668,6 +668,10 @@ function buildClientSlices(
 
 /**
  * Builds ClientRow[] for ClientBreakdownTable from API client rows.
+ *
+ * Wave 11 PR6 (11-o): populates `spark` as a degenerate single-point series
+ * from token_total so the sparkline column renders a baseline. When time-series
+ * data becomes available, replace [c.token_total] with the real array.
  */
 function buildClientRows(
   clients: {
@@ -684,6 +688,8 @@ function buildClientRows(
     requests: c.traces,
     tokens: c.token_total,
     cost_usd: c.usd_cost,
+    // Degenerate spark: single point placeholder until time-series is wired
+    spark: [c.token_total],
   }))
 }
 
@@ -1000,6 +1006,19 @@ export default function PhosphorDashboard({
           <SectionTitle id='section-repos-heading'>
             Repository Breakdown
           </SectionTitle>
+          {/* Wave 11 PR6 (11-n, C41): table caption */}
+          <div
+            className='table-caption'
+            style={{
+              fontSize: '9px',
+              color: 'var(--fg-muted)',
+              textTransform: 'uppercase',
+              letterSpacing: '0.05em',
+              padding: '2px 0 4px',
+            }}
+          >
+            By repository · 24h aggregate
+          </div>
           {reportLoading ? (
             <SectionSkeleton height={120} />
           ) : (
@@ -1015,6 +1034,19 @@ export default function PhosphorDashboard({
         aria-labelledby='section-clients-heading'
       >
         <SectionTitle id='section-clients-heading'>Client Usage</SectionTitle>
+        {/* Wave 11 PR6 (11-o, C14): table caption */}
+        <div
+          className='table-caption'
+          style={{
+            fontSize: '9px',
+            color: 'var(--fg-muted)',
+            textTransform: 'uppercase',
+            letterSpacing: '0.05em',
+            padding: '2px 0 4px',
+          }}
+        >
+          By client · 24h aggregate
+        </div>
         {reportLoading ? (
           <SectionSkeleton height={200} />
         ) : (
