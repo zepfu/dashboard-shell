@@ -40,7 +40,7 @@ export interface ProviderMetrics {
   traces: number
 }
 
-/** Interval configuration for one quota row. */
+/** Interval configuration for one segment within a quota bar. */
 export interface QuotaRowConfig {
   widthPct: number
   /** v9.7 threshold class: iv-0-5 | iv-5-10 | iv-10-25 | iv-25-50 | iv-50-p */
@@ -48,6 +48,26 @@ export interface QuotaRowConfig {
   highVelocity: boolean
   label?: string
   resetDate?: string
+}
+
+/**
+ * A single quota-type bar (weekly / short / special / monthly) with its
+ * pre-built N=12 segment array.
+ *
+ * Wave 11 PR3 (11-h, 11-i): replaces the old flat QuotaRowConfig[] prop so
+ * the card can render multi-segment bars with per-bar label + tooltip.
+ */
+export interface QuotaBarGroup {
+  /** Human-readable quota type: 'Weekly' | 'Short' | 'Special' | 'Monthly'. */
+  label: string
+  /** 0–100: percentage of quota already consumed (100 − remaining). */
+  consumedPct: number
+  /** 0–100: raw remaining percentage from the API. */
+  remainingPct: number
+  /** ISO timestamp when the interval next resets, if known. */
+  resetAt?: string
+  /** N=12 equal-width segments; all share the same severityClass. */
+  segments: QuotaRowConfig[]
 }
 
 /** Per-model mini-row for card-pane-right at ≥3840px. */
@@ -198,7 +218,8 @@ export interface ProviderCardProps {
   config: ProviderCardConfig
   data: ProviderMetrics
   healthCells: { color: string }[]
-  quotas: QuotaRowConfig[]
+  /** Wave 11 PR3 (11-i): each entry is one quota-type bar with 12 segments. */
+  quotas: QuotaBarGroup[]
   anomalies?: AnomalyFlags
   /** Per-model mini-table rows shown in card-pane-right at ≥3840px. */
   topModels?: TopModelRow[]
@@ -265,7 +286,7 @@ export function ProviderCard({
       {/* Vertical HealthStrip — absolutely positioned at right edge */}
       <HealthStrip cells={healthCells} orientation='vertical' />
 
-      {/* Header: provider name + anomaly badges */}
+      {/* Header: provider name (anomaly badges moved to quota-row-label per 11-i) */}
       <div
         className='provider-name'
         style={{
@@ -277,34 +298,9 @@ export function ProviderCard({
           borderBottom: '1px solid var(--border)',
           paddingBottom: '4px',
           letterSpacing: '0.05em',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
         }}
       >
         <span>{config.provider.toUpperCase()}</span>
-        <div style={{ display: 'flex', gap: '4px' }}>
-          {showEarlyReset && (
-            <span
-              className='quota-anomaly-icon icon-reset'
-              aria-label='early reset detected'
-              title='Early quota reset detected'
-              style={{ fontSize: '9px', color: '#a3e635' }}
-            >
-              ⟲
-            </span>
-          )}
-          {showCacheStale && (
-            <span
-              className='quota-anomaly-icon icon-cache'
-              aria-label='cache stale'
-              title='Cache data is stale'
-              style={{ fontSize: '9px', color: 'var(--accent-warm)' }}
-            >
-              ⚠
-            </span>
-          )}
-        </div>
       </div>
 
       {/* card-pane-left — metrics, quotas, sub-sections */}
@@ -482,7 +478,7 @@ export function ProviderCard({
           </span>
         </div>
 
-        {/* QUOTAS section */}
+        {/* QUOTAS section — Wave 11 PR3 (11-i): each bar uses 12 segments */}
         {quotas.length > 0 && (
           <>
             <QuotaSectionTitle title='Quotas' />
@@ -490,54 +486,108 @@ export function ProviderCard({
               className='quota-list'
               style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}
             >
-              {quotas.map((quota, i) => (
-                <div key={i}>
-                  <div
-                    className='quota-row'
-                    style={{
-                      display: 'grid',
-                      gridTemplateColumns: 'minmax(0, 1fr) 28px 38px',
-                      columnGap: '6px',
-                      alignItems: 'center',
-                      fontFamily: 'var(--font-mono)',
-                      fontSize: '10px',
-                      color: 'var(--fg-muted)',
-                      lineHeight: '1.15',
-                    }}
-                  >
-                    <span
-                      className='quota-row-label'
+              {quotas.map((quotaBar, i) => {
+                const tooltipContent = (
+                  <>
+                    <div className='v9-tip-head'>{quotaBar.label}</div>
+                    <div className='v9-tip-row'>
+                      <span>Used</span>
+                      <span>{quotaBar.consumedPct.toFixed(0)}%</span>
+                      <span />
+                    </div>
+                    <div className='v9-tip-row'>
+                      <span>Resets</span>
+                      <span>{quotaBar.resetAt ?? '—'}</span>
+                      <span />
+                    </div>
+                  </>
+                )
+                return (
+                  <div key={i}>
+                    <div
+                      className='quota-row'
                       style={{
-                        whiteSpace: 'nowrap',
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis',
-                      }}
-                    >
-                      {quota.label ?? `Quota ${i + 1}`}
-                    </span>
-                    <span
-                      className='quota-row-pct'
-                      style={{
-                        textAlign: 'right',
-                        fontVariantNumeric: 'tabular-nums',
-                      }}
-                    >
-                      {quota.widthPct.toFixed(0)}%
-                    </span>
-                    <span
-                      className='quota-row-reset'
-                      style={{
-                        textAlign: 'right',
-                        fontSize: '9px',
+                        display: 'grid',
+                        gridTemplateColumns: 'minmax(0, 1fr) 28px 38px',
+                        columnGap: '6px',
+                        alignItems: 'center',
+                        fontFamily: 'var(--font-mono)',
+                        fontSize: '10px',
                         color: 'var(--fg-muted)',
+                        lineHeight: '1.15',
                       }}
                     >
-                      {quota.resetDate ?? '—'}
-                    </span>
+                      {/* Label + anomaly icons (11-i: icons moved here from header) */}
+                      <div
+                        className='quota-row-label'
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '3px',
+                          whiteSpace: 'nowrap',
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                        }}
+                      >
+                        <span
+                          style={{
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                          }}
+                        >
+                          {quotaBar.label}
+                        </span>
+                        {showEarlyReset && (
+                          <span
+                            className='quota-anomaly-icon icon-reset'
+                            aria-label='early reset'
+                            title='Early quota reset detected'
+                            style={{ fontSize: '9px', color: '#a3e635' }}
+                          >
+                            ⟲
+                          </span>
+                        )}
+                        {showCacheStale && (
+                          <span
+                            className='quota-anomaly-icon icon-cache'
+                            aria-label='cache stale'
+                            title='Cache data is stale'
+                            style={{
+                              fontSize: '9px',
+                              color: 'var(--accent-warm)',
+                            }}
+                          >
+                            ⚠
+                          </span>
+                        )}
+                      </div>
+                      <span
+                        className='quota-row-pct'
+                        style={{
+                          textAlign: 'right',
+                          fontVariantNumeric: 'tabular-nums',
+                        }}
+                      >
+                        {quotaBar.remainingPct.toFixed(0)}%
+                      </span>
+                      <span
+                        className='quota-row-reset'
+                        style={{
+                          textAlign: 'right',
+                          fontSize: '9px',
+                          color: 'var(--fg-muted)',
+                        }}
+                      >
+                        {quotaBar.resetAt ?? '—'}
+                      </span>
+                    </div>
+                    <QuotaIntervalBar
+                      intervals={quotaBar.segments}
+                      tooltipContent={tooltipContent}
+                    />
                   </div>
-                  <QuotaIntervalBar intervals={[quota]} />
-                </div>
-              ))}
+                )
+              })}
             </div>
           </>
         )}

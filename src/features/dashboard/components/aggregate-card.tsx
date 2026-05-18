@@ -22,7 +22,7 @@ import {
   ProviderCard,
   type ProviderCardConfig,
   type ProviderMetrics,
-  type QuotaRowConfig,
+  type QuotaBarGroup,
   type AnomalyFlags,
 } from './provider-card'
 
@@ -43,7 +43,8 @@ export interface AggregateCardProps {
   config: ProviderCardConfig
   data: ProviderMetrics
   healthCells: { color: string }[]
-  quotas: QuotaRowConfig[]
+  /** Wave 11 PR3 (11-i): each entry is one quota-type bar with 12 segments. */
+  quotas: QuotaBarGroup[]
   fleetActivity: FleetActivity
   anomalies?: AnomalyFlags
 }

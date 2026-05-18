@@ -50,7 +50,7 @@ export function QuotaIntervalBar({
         height: '6px',
         background: 'var(--card-2)',
         border: '1px solid var(--border)',
-        overflow: 'hidden',
+        overflow: 'visible',
       }}
     >
       {intervals.map((interval, i) => (
