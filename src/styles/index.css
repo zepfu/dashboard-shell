@@ -906,3 +906,20 @@
 }
 
 /* End Wave 14-D */
+
+/* ─────────────────────────────────────────────────────────────────────────── */
+/* Wave 14-E: quota consumed% severity classes + animation rewrites           */
+/* ─────────────────────────────────────────────────────────────────────────── */
+
+/* 14-E.2: .quota-row-pct severity color per mockup lines 1261-1264           */
+/*   Tiers: <10% → cool (blue), 10–25% → teal, 25–75% → warm, ≥75% → hot    */
+.quota-row-pct.cool { color: var(--accent-cool); }
+.quota-row-pct.teal { color: var(--accent-teal); }
+.quota-row-pct.warm { color: var(--accent-warm); }
+.quota-row-pct.hot  { color: var(--accent-hot); }
+
+/* 14-E.3: quota anomaly icon colors via class — removes inline style overrides */
+.quota-anomaly-icon.icon-reset { color: #a3e635; }
+.quota-anomaly-icon.icon-cache { color: var(--accent-warm); }
+
+/* End Wave 14-E (partial — keyframe rewrites in next commit) */

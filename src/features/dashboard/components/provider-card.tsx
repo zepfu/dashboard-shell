@@ -144,6 +144,26 @@ function fmtPacketLoss(pct: number | null): string {
   return `${pct.toFixed(1)}%`
 }
 
+/**
+ * Returns the CSS modifier class for a `.quota-row-pct` element based on
+ * consumed percentage.
+ *
+ * Tier thresholds per mockup lines 1261-1264 (Section 10 #3):
+ *   <10%   → cool (blue)
+ *   10–25% → teal
+ *   25–75% → warm (amber)
+ *   ≥75%   → hot  (red)
+ *
+ * Wave 14-E.2: applied to `.quota-row-pct` so consumed% values are color-coded
+ * by severity instead of rendering uniformly in the default foreground color.
+ */
+function pctSeverityClass(consumedPct: number): string {
+  if (consumedPct >= 75) return 'hot'
+  if (consumedPct >= 25) return 'warm'
+  if (consumedPct >= 10) return 'teal'
+  return 'cool'
+}
+
 // ---------------------------------------------------------------------------
 // Sub-components
 // ---------------------------------------------------------------------------
@@ -548,7 +568,6 @@ export function ProviderCard({
                             className='quota-anomaly-icon icon-reset'
                             aria-label='early reset'
                             title='Early quota reset detected'
-                            style={{ fontSize: '9px', color: '#a3e635' }}
                           >
                             ⟲
                           </span>
@@ -558,23 +577,21 @@ export function ProviderCard({
                             className='quota-anomaly-icon icon-cache'
                             aria-label='cache stale'
                             title='Cache data is stale'
-                            style={{
-                              fontSize: '9px',
-                              color: 'var(--accent-warm)',
-                            }}
                           >
                             ⚠
                           </span>
                         )}
                       </div>
+                      {/* 14-E.1: display consumed% (not remaining%) per mockup line 2438
+                          14-E.2: severity class colors pct text per consumption tier */}
                       <span
-                        className='quota-row-pct'
+                        className={`quota-row-pct ${pctSeverityClass(quotaBar.consumedPct)}`}
                         style={{
                           textAlign: 'right',
                           fontVariantNumeric: 'tabular-nums',
                         }}
                       >
-                        {quotaBar.remainingPct.toFixed(0)}%
+                        {quotaBar.consumedPct.toFixed(0)}%
                       </span>
                       <span
                         className='quota-row-reset'
