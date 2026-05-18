@@ -1,0 +1,28 @@
+/**
+ * Shimmer animation for high-velocity quota intervals.
+ *
+ * The animation is disabled when the user has requested reduced motion,
+ * per WCAG 2.1 Success Criterion 2.3.3 (Animation from Interactions).
+ */
+
+@keyframes shimmer {
+  0% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.6;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+
+.high-velocity {
+  animation: shimmer 1.2s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .high-velocity {
+    animation: none;
+  }
+}
