@@ -10,8 +10,14 @@
  * - Controls bar styled per reference (control-input, period-btn).
  * - Alerts wired via useAlertsFromAnomalies hook (operator decision 3).
  * - Body topographic overlay added in theme.css (operator decision 8).
+ *
+ * Wave 11 PR7-lite:
+ * - Attribution legend rewritten per audit C22 (ATTRIBUTION label + 5 pill swatches).
+ * - Fleet Pulse label updated to "FLEET HEALTH PULSE · 24H · 5m" (audit C23).
+ * - Freshness indicator now computes from dataUpdatedAt (audit C24).
  */
-import { useMemo, useState, type ReactElement } from 'react'
+import { useEffect, useMemo, useState, type ReactElement } from 'react'
+import { formatDistanceToNow } from 'date-fns'
 import { useQuery } from '@tanstack/react-query'
 import { ConfigDrawer } from '@/components/config-drawer'
 import { ProfileDropdown } from '@/components/profile-dropdown'
@@ -137,7 +143,11 @@ export function Dashboard(): ReactElement {
     }
   }
 
-  const { data: summaryReport, isLoading: summaryLoading } = useQuery({
+  const {
+    data: summaryReport,
+    isLoading: summaryLoading,
+    dataUpdatedAt,
+  } = useQuery({
     queryKey: ['usage-report-phosphor', from, to, grain],
     queryFn: () =>
       fetchUsageReport({
@@ -147,6 +157,26 @@ export function Dashboard(): ReactElement {
         groupBy: ['provider', 'model', 'repository'],
       }),
   })
+
+  // Wave 11 PR7-lite (audit C24): compute freshness string from dataUpdatedAt.
+  // Re-evaluate every 10 s so relative time stays current.
+  const [freshnessStr, setFreshnessStr] = useState<string>('Loading…')
+  useEffect(() => {
+    const compute = (): void => {
+      if (dataUpdatedAt === 0) {
+        setFreshnessStr('Loading…')
+        return
+      }
+      setFreshnessStr(
+        `Updated ${formatDistanceToNow(new Date(dataUpdatedAt))} ago`
+      )
+    }
+    compute()
+    const id = setInterval(compute, 10_000)
+    return () => {
+      clearInterval(id)
+    }
+  }, [dataUpdatedAt])
 
   const kpiSummary = useMemo(
     () => toKpiSummary(summaryReport?.summary),
@@ -175,13 +205,6 @@ export function Dashboard(): ReactElement {
     summaryReport?.summary,
     quotaRows
   )
-
-  const nowStr = new Date().toLocaleString('en-US', {
-    month: 'short',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  })
 
   return (
     <PhosphorLayout
@@ -285,7 +308,7 @@ export function Dashboard(): ReactElement {
                     borderRadius: '50%',
                   }}
                 />
-                {nowStr}
+                {freshnessStr}
               </div>
             </div>
 
@@ -320,45 +343,65 @@ export function Dashboard(): ReactElement {
                   textTransform: 'uppercase',
                 }}
               >
-                Fleet Health Pulse
+                FLEET HEALTH PULSE · 24H · 5m
               </div>
               <HealthStrip cells={FLEET_PULSE_CELLS} orientation='horizontal' />
             </div>
 
-            {/* Attribution legend */}
+            {/* Attribution legend — Wave 11 PR7-lite (audit C22) */}
+            {/* Format: ATTRIBUTION ▭ NORM ▭ PAPI ▭ WKLD ▭ CTRL ▭ MISS */}
             <div
               className='attribution-legend'
               style={{
-                display: 'flex',
-                gap: '12px',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '8px',
                 flexWrap: 'wrap',
                 fontSize: '9px',
+                fontFamily: 'var(--font-mono)',
                 color: 'var(--fg-muted)',
                 marginTop: '4px',
               }}
             >
+              {/* ATTRIBUTION label prefix — amber per mockup */}
+              <span
+                style={{
+                  color: 'var(--accent-warm)',
+                  letterSpacing: '0.06em',
+                  fontWeight: 600,
+                  fontSize: '9px',
+                }}
+              >
+                ATTRIBUTION
+              </span>
               {[
-                { label: 'Healthy', color: 'var(--accent-cool)' },
-                { label: 'Degraded', color: 'var(--accent-warm)' },
-                { label: 'Critical', color: 'var(--accent-hot)' },
-                { label: 'Unknown', color: 'var(--card-2)' },
-                { label: 'Attribution gap', color: 'var(--accent-teal)' },
+                { label: 'NORM', color: 'var(--accent-cool)' },
+                { label: 'PAPI', color: 'var(--accent-teal)' },
+                { label: 'WKLD', color: 'var(--accent-chrome)' },
+                { label: 'CTRL', color: 'var(--accent-warm)' },
+                { label: 'MISS', color: 'rgba(20, 184, 166, 0.6)' },
               ].map(({ label, color }) => (
-                <div
+                <span
                   key={label}
-                  style={{ display: 'flex', alignItems: 'center', gap: '4px' }}
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '4px',
+                  }}
                 >
+                  {/* 10px × 5px pill swatch, 1px border-radius */}
                   <span
                     style={{
                       display: 'inline-block',
-                      width: '8px',
-                      height: '8px',
+                      width: '10px',
+                      height: '5px',
+                      borderRadius: '1px',
                       background: color,
                       flexShrink: 0,
                     }}
                   />
                   {label}
-                </div>
+                </span>
               ))}
             </div>
           </div>

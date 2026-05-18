@@ -19,7 +19,15 @@ const mockSummary = {
   p95_ms: 800,
 }
 
-const KPI_LABELS = ['Toks In', 'Toks Out', 'Cost', 'Requests', 'Errors', 'P95']
+// Wave 11 PR7-lite: labels updated per audit C27.
+const KPI_LABELS = [
+  'Tokens In',
+  'Tokens Out',
+  'Cost (24h)',
+  'Requests',
+  'Errors (24h)',
+  'P95 Latency',
+]
 
 test('test_kpi_strip_renders_six_tiles', () => {
   const { container } = render(<KpiStrip summary={mockSummary} />)
@@ -28,9 +36,13 @@ test('test_kpi_strip_renders_six_tiles', () => {
   const tiles = container.querySelectorAll('.kpi-tile')
   expect(tiles.length).toBe(6)
 
-  // Each label should be present
+  // Each label should be present (use string literal match to avoid regex
+  // special-char issues with parentheses in "Cost (24h)", "Errors (24h)").
   for (const label of KPI_LABELS) {
-    expect(screen.getByText(new RegExp(label, 'i'))).toBeInTheDocument()
+    const elements = screen.getAllByText((_content, element) => {
+      return element?.textContent?.toLowerCase() === label.toLowerCase()
+    })
+    expect(elements.length).toBeGreaterThan(0)
   }
 })
 
