@@ -305,53 +305,70 @@
 }
 
 /* 11-w — Alert pulse animation */
+/* 14-E.5: rewritten from scale(1.02) to translateX(-4px)→0 per mockup       */
+/*   lines 349-352 (Section 16 #1). Eliminates layout shift from scale.       */
 @keyframes alertPulse {
-  0% {
-    transform: scale(1);
-    opacity: 1;
+  from {
+    opacity: 0.6;
+    transform: translateX(-4px);
   }
-  50% {
-    transform: scale(1.02);
-    opacity: 0.95;
-  }
-  100% {
-    transform: scale(1);
+  to {
     opacity: 1;
+    transform: translateX(0);
   }
 }
 .alert-item {
   animation: alertPulse 0.4s ease-out;
 }
 
-/* Wave 11 PR3: spectral-shimmer + multi-segment quotas */
+/* Wave 11 PR3 → Wave 14-E.4: spectral-shimmer rewritten to inset+background-
+   position pulsing glow per mockup lines 2154-2182 (Section 10 #7).
+   OLD: traveling beam (left: -100% → 200%) — REMOVED.
+   NEW: fixed gradient covering segment inset:0, animated by background-position
+        0%→200% with opacity pulse 0.35→0.85→0.35 over 2.6s linear. */
+@keyframes spectral-shimmer {
+  0% {
+    background-position: 0% 0%;
+    opacity: 0.35;
+  }
+  50% {
+    background-position: 100% 0%;
+    opacity: 0.85;
+  }
+  100% {
+    background-position: 200% 0%;
+    opacity: 0.35;
+  }
+}
 .quota-interval.high-velocity {
   position: relative;
   overflow: hidden;
 }
+/* Default state — static glow at mid-point (visible even without motion) */
 .quota-interval.high-velocity::after {
   content: '';
   position: absolute;
-  top: 0;
-  left: -100%;
-  width: 50%;
-  height: 100%;
+  inset: 0;
   background: linear-gradient(
     90deg,
-    transparent 0%,
-    rgba(245, 158, 11, 0.4) 30%,
-    rgba(255, 255, 255, 0.6) 50%,
-    rgba(245, 158, 11, 0.4) 70%,
-    transparent 100%
+    rgba(255, 255, 255, 0.08) 0%,
+    rgba(255, 255, 255, 0.45) 25%,
+    rgba(245, 158, 11, 0.78) 45%,
+    rgba(255, 240, 200, 0.95) 50%,
+    rgba(239, 68, 68, 0.78) 55%,
+    rgba(245, 158, 11, 0.65) 75%,
+    rgba(255, 255, 255, 0.08) 100%
   );
-  animation: spectral-shimmer 2.6s linear infinite;
+  background-size: 200% 100%;
+  background-position: 50% 0%;
+  mix-blend-mode: normal;
+  opacity: 0.6;
+  z-index: 2;
   pointer-events: none;
 }
-@keyframes spectral-shimmer {
-  0% {
-    left: -100%;
-  }
-  100% {
-    left: 200%;
+@media (prefers-reduced-motion: no-preference) {
+  .quota-interval.high-velocity::after {
+    animation: spectral-shimmer 2.6s linear infinite;
   }
 }
 @media (prefers-reduced-motion: reduce) {
@@ -906,3 +923,53 @@
 }
 
 /* End Wave 14-D */
+
+/* ─────────────────────────────────────────────────────────────────────────── */
+/* Wave 14-E: quota consumed% severity classes + animation rewrites           */
+/* ─────────────────────────────────────────────────────────────────────────── */
+
+/* 14-E.2: .quota-row-pct severity color per mockup lines 1261-1264           */
+/*   Tiers: <10% → cool (blue), 10–25% → teal, 25–75% → warm, ≥75% → hot    */
+.quota-row-pct.cool {
+  color: var(--accent-cool);
+}
+.quota-row-pct.teal {
+  color: var(--accent-teal);
+}
+.quota-row-pct.warm {
+  color: var(--accent-warm);
+}
+.quota-row-pct.hot {
+  color: var(--accent-hot);
+}
+
+/* 14-E.3: quota anomaly icon colors via class — removes inline style overrides */
+.quota-anomaly-icon.icon-reset {
+  color: #a3e635;
+}
+.quota-anomaly-icon.icon-cache {
+  color: var(--accent-warm);
+}
+
+/* 14-E.3: quota anomaly subtitle per mockup lines 425-436                    */
+/*   Spans all 3 grid columns below the label/pct/reset row.                  */
+.quota-anomaly-sub {
+  grid-column: 1 / 4;
+  font-family: var(--font-mono);
+  font-size: 8px;
+  color: var(--fg-muted);
+  letter-spacing: 0.02em;
+  margin: -1px 0 2px 0;
+  line-height: 1.2;
+  opacity: 0.85;
+}
+.anomaly-glyph-reset {
+  color: #a3e635;
+  margin-right: 3px;
+}
+.anomaly-glyph-cache {
+  color: var(--accent-warm);
+  margin-right: 3px;
+}
+
+/* End Wave 14-E */
