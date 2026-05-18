@@ -12,6 +12,11 @@
  * - card-pane-right at ≥3840px: per-model mini-table via topModels prop.
  */
 import type { ReactElement, ReactNode } from 'react'
+import {
+  formatLatency,
+  formatUsd,
+  formatResetDistance,
+} from '../lib/usage-report-display'
 import { HealthStrip } from './primitives/health-strip'
 import { QuotaIntervalBar } from './primitives/quota-interval-bar'
 
@@ -262,6 +267,31 @@ export function ProviderCard({
   const cacheMiss = data.tokens_in - data.cache_input - data.cache_creation
   const cacheSavings = data.cache_input
 
+  // Wave 12 Fix 2: build tooltip content for the vertical HealthStrip.
+  // The primitive supports tooltipContent but ProviderCard never passed it —
+  // operator complaint #6 ("health bars do not have hover over") unaddressed.
+  const healthTooltipContent = (
+    <>
+      <div className='v9-tip-head'>{config.provider.toUpperCase()} HEALTH</div>
+      <div className='v9-tip-row'>
+        <span>P95</span>
+        <span>{formatLatency(data.p95_ms)}</span>
+        <span />
+      </div>
+      <div className='v9-tip-row'>
+        <span>Errors</span>
+        <span>{data.errors.toLocaleString()}</span>
+        <span />
+      </div>
+      <div className='v9-tip-row'>
+        <span>Requests</span>
+        <span>{data.requests.toLocaleString()}</span>
+        <span />
+      </div>
+      <div className='v9-tip-foot'>288 cells · last 24h</div>
+    </>
+  )
+
   const rootClassName = ['provider-card', wrapperClassName]
     .filter(Boolean)
     .join(' ')
@@ -284,7 +314,12 @@ export function ProviderCard({
       }}
     >
       {/* Vertical HealthStrip — absolutely positioned at right edge */}
-      <HealthStrip cells={healthCells} orientation='vertical' />
+      {/* Wave 12 Fix 2: pass healthTooltipContent so hover tooltip is functional */}
+      <HealthStrip
+        cells={healthCells}
+        orientation='vertical'
+        tooltipContent={healthTooltipContent}
+      />
 
       {/* Header: provider name (anomaly badges moved to quota-row-label per 11-i) */}
       <div
@@ -378,7 +413,7 @@ export function ProviderCard({
               fontVariantNumeric: 'tabular-nums',
             }}
           >
-            ${data.cost_usd.toFixed(4)}
+            {formatUsd(data.cost_usd)}
           </span>
         </div>
         <div
@@ -450,7 +485,7 @@ export function ProviderCard({
               fontVariantNumeric: 'tabular-nums',
             }}
           >
-            {data.p95_ms}ms
+            {formatLatency(data.p95_ms)}
           </span>
         </div>
         <div
@@ -497,7 +532,7 @@ export function ProviderCard({
                     </div>
                     <div className='v9-tip-row'>
                       <span>Resets</span>
-                      <span>{quotaBar.resetAt ?? '—'}</span>
+                      <span>{formatResetDistance(quotaBar.resetAt)}</span>
                       <span />
                     </div>
                   </>
@@ -578,7 +613,7 @@ export function ProviderCard({
                           color: 'var(--fg-muted)',
                         }}
                       >
-                        {quotaBar.resetAt ?? '—'}
+                        {formatResetDistance(quotaBar.resetAt)}
                       </span>
                     </div>
                     <QuotaIntervalBar
