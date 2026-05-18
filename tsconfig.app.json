@@ -20,6 +20,9 @@
       "@/*": ["./src/*"]
     },
 
+    /* Test runner globals (vitest + @testing-library/jest-dom) */
+    "types": ["vitest/globals", "@testing-library/jest-dom"],
+
     /* Linting */
     "strict": true,
     "noUnusedLocals": true,
