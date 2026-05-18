@@ -17,7 +17,6 @@
  * return an empty string even if the stylesheet is present. The test therefore
  * falls back to scanning `document.styleSheets` for the expected rule.
  */
-// @ts-expect-error -- Tasks component does not yet expose data-plugin wrapper (red phase)
 import { render } from '@testing-library/react'
 import { Tasks } from '@/features/tasks'
 

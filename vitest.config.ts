@@ -18,5 +18,11 @@ export default defineConfig({
     globals: true,
     setupFiles: ['src/test/setup.ts'],
     include: ['src/**/*.test.{ts,tsx}'],
+    // Process CSS files so that `import './tasks.module.css'` side-effects
+    // inject rules into document.styleSheets during jsdom tests.
+    // Required for plugin-theme-override.test.tsx stylesheet scanning.
+    css: {
+      include: /.+/,
+    },
   },
 })

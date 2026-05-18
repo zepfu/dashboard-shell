@@ -8,7 +8,6 @@
  *
  * All tests expected to FAIL (red) — source file does not exist yet.
  */
-// @ts-expect-error -- module does not exist yet (red phase)
 import { render, screen, fireEvent } from '@testing-library/react'
 import { RepoBreakdownTable } from './repo-breakdown-table'
 

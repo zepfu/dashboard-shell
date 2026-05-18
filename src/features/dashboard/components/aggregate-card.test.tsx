@@ -7,7 +7,6 @@
  *
  * All tests expected to FAIL (red) — source file does not exist yet.
  */
-// @ts-expect-error -- module does not exist yet (red phase)
 import { render, screen } from '@testing-library/react'
 import { AggregateCard } from './aggregate-card'
 
@@ -65,6 +64,9 @@ test('test_aggregate_card_renders_fleet_activity_section', () => {
 
   expect(screen.getByText('FLEET ACTIVITY')).toBeInTheDocument()
 
+  // Use exact-match strings because "Tool Calls" is a substring of
+  // "Invalid Tool Calls" — with semantic <dt> elements both would match a
+  // /Tool Calls/i regex, causing getByText to throw "found multiple elements".
   const rowLabels = [
     'Tool Calls',
     'Git Commits',
@@ -72,7 +74,7 @@ test('test_aggregate_card_renders_fleet_activity_section', () => {
     'Invalid Tool Calls',
   ]
   for (const label of rowLabels) {
-    expect(screen.getByText(new RegExp(label, 'i'))).toBeInTheDocument()
+    expect(screen.getByText(label, { exact: true })).toBeInTheDocument()
   }
 })
 
