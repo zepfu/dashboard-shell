@@ -1,6 +1,7 @@
 node_modules
 dist
 dist-ssr
+test-results
 @mf-types
 .git
 .env
