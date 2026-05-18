@@ -7,7 +7,6 @@
  *
  * All tests expected to FAIL (red) — source file does not exist yet.
  */
-// @ts-expect-error -- module does not exist yet (red phase)
 import { renderHook } from '@testing-library/react'
 import { useAnomalyDetection } from './use-anomaly-detection'
 
