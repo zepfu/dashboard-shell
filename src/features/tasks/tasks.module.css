@@ -1,0 +1,15 @@
+/**
+ * tasks.module.css — Phosphor token overrides for the tasks plugin route.
+ *
+ * This file is imported for its side-effects in `tasks/index.tsx` so that
+ * the CSS rule is injected into the document's style sheets at runtime.
+ *
+ * The `[data-plugin="tasks"]` scope ensures overrides apply only within the
+ * tasks route wrapper and do not leak to the global shell tokens.
+ *
+ * See docs/plugins/theme-contract.md for the full plugin token contract.
+ */
+
+[data-plugin='tasks'] {
+  --accent-chrome: #6366f1;
+}

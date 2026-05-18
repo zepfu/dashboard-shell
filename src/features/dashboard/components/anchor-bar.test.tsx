@@ -7,7 +7,6 @@
  *
  * All tests expected to FAIL (red) — source file does not exist yet.
  */
-// @ts-expect-error -- module does not exist yet (red phase)
 import { act, render, screen } from '@testing-library/react'
 import AnchorBar from './anchor-bar'
 
