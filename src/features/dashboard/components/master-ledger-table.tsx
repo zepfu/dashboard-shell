@@ -13,6 +13,11 @@
  * - Cost/Err%/Quota% severity coloring
  * - Sparkline per-row tint from row severity
  * - tfoot removed (was off-by-N; audit C11)
+ *
+ * Wave 14-F refactor:
+ * - gutter color via .gutter-{hot,warm,teal,cool} CSS classes (14-F.2)
+ * - .number className on numeric cells (14-F.1)
+ * - .microbar class replacing .metric-microbar (14-F.1)
  */
 import { useState, useMemo, type ReactElement } from 'react'
 import {
@@ -67,13 +72,26 @@ export interface ModelRow {
 // ---------------------------------------------------------------------------
 
 /**
- * Returns a CSS color variable string representing the severity of a row,
+ * Returns the CSS gutter class name representing the severity of a row,
  * derived from error_pct, quota_pct, and cost_usd thresholds.
+ *
+ * 14-F.2: Maps severity to .gutter-* class names from the Wave 14-F CSS
+ * class system instead of inline color values.
+ */
+function rowSeverityClass(row: ModelRow): string {
+  if (row.error_pct >= 2) return 'gutter-hot'
+  if (row.error_pct >= 0.5 || row.quota_pct >= 75) return 'gutter-warm'
+  if (row.cost_usd >= 1) return 'gutter-teal'
+  return 'gutter-cool'
+}
+
+/**
+ * Returns the CSS color variable for sparkline tinting (still needed for
+ * Sparkline color prop which accepts a color string, not a class name).
  */
 function rowSeverityColor(row: ModelRow): string {
   if (row.error_pct >= 2) return 'var(--accent-hot)'
-  if (row.error_pct >= 0.5) return 'var(--accent-warm)'
-  if (row.quota_pct >= 75) return 'var(--accent-warm)'
+  if (row.error_pct >= 0.5 || row.quota_pct >= 75) return 'var(--accent-warm)'
   if (row.cost_usd >= 1) return 'var(--accent-teal)'
   return 'var(--accent-cool)'
 }
@@ -319,332 +337,313 @@ export function MasterLedgerTable({
   })
 
   return (
-    <>
-      {/* Inline styles for microbar overlay (C5) */}
-      <style>{`
-        .metric-cell { position: relative; }
-        .metric-microbar {
-          position: absolute;
-          bottom: 0;
-          left: 0;
-          height: 2px;
-          width: var(--fill, 0%);
-          background: currentColor;
-          opacity: 0.4;
-        }
-      `}</style>
-
-      <div
-        className='table-wrapper'
+    <div
+      className='table-wrapper'
+      style={{
+        width: '100%',
+        overflowX: 'auto',
+        overflowY: 'auto',
+        maxHeight: '400px',
+        background: 'var(--card)',
+        border: '1px solid var(--border)',
+      }}
+    >
+      <table
+        aria-label='Model usage ledger'
         style={{
           width: '100%',
-          overflowX: 'auto',
-          overflowY: 'auto',
-          maxHeight: '400px',
-          background: 'var(--card)',
-          border: '1px solid var(--border)',
+          borderCollapse: 'collapse',
+          fontSize: 'clamp(11px, 0.6vw, 16px)',
+          fontFamily: 'var(--font-mono)',
         }}
       >
-        <table
-          aria-label='Model usage ledger'
+        <thead
           style={{
-            width: '100%',
-            borderCollapse: 'collapse',
-            fontSize: 'clamp(11px, 0.6vw, 16px)',
-            fontFamily: 'var(--font-mono)',
+            position: 'sticky',
+            top: 0,
+            zIndex: 10,
+            background: 'var(--card-2)',
+            borderBottom: '1px solid rgba(245,158,11,0.25)',
           }}
         >
-          <thead
-            style={{
-              position: 'sticky',
-              top: 0,
-              zIndex: 10,
-              background: 'var(--card-2)',
-              borderBottom: '1px solid rgba(245,158,11,0.25)',
-            }}
-          >
-            {table.getHeaderGroups().map((headerGroup) => (
-              <tr key={headerGroup.id}>
-                {headerGroup.headers.map((header) => {
-                  const sortDir = header.column.getIsSorted()
-                  const isSortable = header.column.getCanSort()
+          {table.getHeaderGroups().map((headerGroup) => (
+            <tr key={headerGroup.id}>
+              {headerGroup.headers.map((header) => {
+                const sortDir = header.column.getIsSorted()
+                const isSortable = header.column.getCanSort()
 
-                  // Determine aria-sort value
-                  let ariaSort: 'ascending' | 'descending' | 'none' | undefined
-                  if (isSortable) {
-                    ariaSort =
-                      sortDir === 'asc'
-                        ? 'ascending'
-                        : sortDir === 'desc'
-                          ? 'descending'
-                          : 'none'
-                  }
+                // Determine aria-sort value
+                let ariaSort: 'ascending' | 'descending' | 'none' | undefined
+                if (isSortable) {
+                  ariaSort =
+                    sortDir === 'asc'
+                      ? 'ascending'
+                      : sortDir === 'desc'
+                        ? 'descending'
+                        : 'none'
+                }
 
-                  const meta = header.column.columnDef.meta as
+                const meta = header.column.columnDef.meta as
+                  | { className?: string }
+                  | undefined
+
+                return (
+                  <th
+                    key={header.id}
+                    className={meta?.className}
+                    aria-sort={ariaSort}
+                    data-sortable={isSortable ? 'true' : undefined}
+                    onClick={
+                      isSortable
+                        ? header.column.getToggleSortingHandler()
+                        : undefined
+                    }
+                    style={{
+                      padding: '6px 8px',
+                      textAlign: 'left',
+                      fontWeight: 600,
+                      color: 'var(--accent-chrome)',
+                      background: 'var(--card-2)',
+                      fontSize: '10px',
+                      textTransform: 'uppercase',
+                      letterSpacing: '0.04em',
+                      borderRight: '1px solid var(--border)',
+                      cursor: isSortable ? 'pointer' : 'default',
+                      userSelect: 'none',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {flexRender(
+                      header.column.columnDef.header,
+                      header.getContext()
+                    )}
+                    {sortDir === 'asc' ? ' ↑' : sortDir === 'desc' ? ' ↓' : ''}
+                  </th>
+                )
+              })}
+            </tr>
+          ))}
+        </thead>
+
+        <tbody>
+          {table.getRowModel().rows.map((row) => {
+            const orig = row.original
+            const gutterClass = rowSeverityClass(orig)
+            const severityColor = rowSeverityColor(orig)
+            // Wave 12 Fix 1: use reference brand hex for Provider column cell.
+            // providerColorFor() returns legacy palette (blue/purple) which was
+            // the false-fix in Wave 11 — swap to providerBrandHex() here.
+            const providerColor = providerBrandHex(orig.provider)
+
+            return (
+              <tr
+                key={row.id}
+                style={{ borderBottom: '1px solid var(--border)' }}
+              >
+                {row.getVisibleCells().map((cell, cellIdx) => {
+                  const meta = cell.column.columnDef.meta as
                     | { className?: string }
                     | undefined
+                  const colId = cell.column.id
+                  const isFirst = cellIdx === 0
+
+                  // Determine per-column styles
+                  let cellColor: string
+                  let cellContent: ReactElement | string
+
+                  if (colId === 'provider') {
+                    // C4: brand color for provider name
+                    cellColor = providerColor
+                    cellContent = flexRender(
+                      cell.column.columnDef.cell,
+                      cell.getContext()
+                    ) as ReactElement | string
+                  } else if (colId === 'cost_usd') {
+                    // C6: cost severity color + microbar (14-F.1 .microbar class)
+                    cellColor = costColor(orig.cost_usd)
+                    const fillPct = (orig.cost_usd / maxCostUsd) * 100
+                    cellContent = (
+                      <div className='metric-cell'>
+                        <span>
+                          {flexRender(
+                            cell.column.columnDef.cell,
+                            cell.getContext()
+                          )}
+                        </span>
+                        <span
+                          className='microbar'
+                          style={
+                            {
+                              '--microbar-fill': `${fillPct.toFixed(1)}%`,
+                            } as React.CSSProperties
+                          }
+                        />
+                      </div>
+                    )
+                  } else if (colId === 'error_pct') {
+                    // C7: err% severity color
+                    cellColor = errorPctColor(orig.error_pct)
+                    cellContent = flexRender(
+                      cell.column.columnDef.cell,
+                      cell.getContext()
+                    ) as ReactElement | string
+                  } else if (colId === 'quota_pct') {
+                    // C8: quota% severity color + microbar (14-F.1 .microbar class)
+                    cellColor = quotaPctColor(orig.quota_pct)
+                    const fillPct = (orig.quota_pct / maxQuotaPct) * 100
+                    cellContent = (
+                      <div className='metric-cell'>
+                        <span>
+                          {flexRender(
+                            cell.column.columnDef.cell,
+                            cell.getContext()
+                          )}
+                        </span>
+                        <span
+                          className='microbar'
+                          style={
+                            {
+                              '--microbar-fill': `${fillPct.toFixed(1)}%`,
+                            } as React.CSSProperties
+                          }
+                        />
+                      </div>
+                    )
+                  } else if (colId === 'tokens_in') {
+                    // C5: microbar proportional to column max (14-F.1 .microbar class)
+                    cellColor = 'var(--accent-cool)'
+                    const fillPct = (orig.tokens_in / maxTokensIn) * 100
+                    cellContent = (
+                      <div className='metric-cell'>
+                        <span>
+                          {flexRender(
+                            cell.column.columnDef.cell,
+                            cell.getContext()
+                          )}
+                        </span>
+                        <span
+                          className='microbar'
+                          style={
+                            {
+                              '--microbar-fill': `${fillPct.toFixed(1)}%`,
+                            } as React.CSSProperties
+                          }
+                        />
+                      </div>
+                    )
+                  } else if (colId === 'tokens_out') {
+                    // C5: microbar proportional to column max (14-F.1 .microbar class)
+                    cellColor = 'var(--accent-cool)'
+                    const fillPct = (orig.tokens_out / maxTokensOut) * 100
+                    cellContent = (
+                      <div className='metric-cell'>
+                        <span>
+                          {flexRender(
+                            cell.column.columnDef.cell,
+                            cell.getContext()
+                          )}
+                        </span>
+                        <span
+                          className='microbar'
+                          style={
+                            {
+                              '--microbar-fill': `${fillPct.toFixed(1)}%`,
+                            } as React.CSSProperties
+                          }
+                        />
+                      </div>
+                    )
+                  } else if (colId === 'requests') {
+                    // C5: microbar proportional to column max (14-F.1 .microbar class)
+                    cellColor = 'var(--accent-cool)'
+                    const fillPct = (orig.requests / maxRequests) * 100
+                    cellContent = (
+                      <div className='metric-cell'>
+                        <span>
+                          {flexRender(
+                            cell.column.columnDef.cell,
+                            cell.getContext()
+                          )}
+                        </span>
+                        <span
+                          className='microbar'
+                          style={
+                            {
+                              '--microbar-fill': `${fillPct.toFixed(1)}%`,
+                            } as React.CSSProperties
+                          }
+                        />
+                      </div>
+                    )
+                  } else if (colId === 'sparkline') {
+                    // C9: sparkline tinted by row severity
+                    cellColor = 'var(--fg)'
+                    const sparkData = orig.spark ?? [orig.tokens_in]
+                    cellContent = (
+                      <Sparkline data={sparkData} color={severityColor} />
+                    )
+                  } else if (colId === 'model') {
+                    // Model name: default foreground
+                    cellColor = 'var(--fg)'
+                    cellContent = flexRender(
+                      cell.column.columnDef.cell,
+                      cell.getContext()
+                    ) as ReactElement | string
+                  } else {
+                    // Other numeric columns (p50ms, p95ms, $/1k, 4K/5K cols)
+                    cellColor = 'var(--accent-cool)'
+                    cellContent = flexRender(
+                      cell.column.columnDef.cell,
+                      cell.getContext()
+                    ) as ReactElement | string
+                  }
+
+                  const isNumericAlign =
+                    colId !== 'model' &&
+                    colId !== 'provider' &&
+                    colId !== 'sparkline'
+
+                  // 14-F.1: add .number class to numeric cells for CSS class system parity
+                  const isNumericCell =
+                    colId !== 'model' &&
+                    colId !== 'provider' &&
+                    colId !== 'sparkline'
+
+                  // Build className: meta class + optional gutter class + optional number class
+                  const tdClassName =
+                    [
+                      meta?.className,
+                      isFirst ? gutterClass : undefined,
+                      isNumericCell ? 'number' : undefined,
+                    ]
+                      .filter(Boolean)
+                      .join(' ') || undefined
 
                   return (
-                    <th
-                      key={header.id}
-                      className={meta?.className}
-                      aria-sort={ariaSort}
-                      data-sortable={isSortable ? 'true' : undefined}
-                      onClick={
-                        isSortable
-                          ? header.column.getToggleSortingHandler()
-                          : undefined
-                      }
+                    <td
+                      key={cell.id}
+                      className={tdClassName}
                       style={{
                         padding: '6px 8px',
-                        textAlign: 'left',
-                        fontWeight: 600,
-                        color: 'var(--accent-chrome)',
-                        background: 'var(--card-2)',
-                        fontSize: '10px',
-                        textTransform: 'uppercase',
-                        letterSpacing: '0.04em',
+                        fontFamily: 'var(--font-mono)',
+                        color: cellColor,
                         borderRight: '1px solid var(--border)',
-                        cursor: isSortable ? 'pointer' : 'default',
-                        userSelect: 'none',
-                        whiteSpace: 'nowrap',
+                        // 14-F.2: gutter now applied via .gutter-* class; keep borderLeft
+                        // for the 4px solid base with inherited color from class
+                        borderLeft: isFirst ? '4px solid' : undefined,
+                        paddingLeft: isFirst ? '6px' : undefined,
+                        textAlign: isNumericAlign ? 'right' : 'left',
                       }}
                     >
-                      {flexRender(
-                        header.column.columnDef.header,
-                        header.getContext()
-                      )}
-                      {sortDir === 'asc'
-                        ? ' ↑'
-                        : sortDir === 'desc'
-                          ? ' ↓'
-                          : ''}
-                    </th>
+                      {cellContent}
+                    </td>
                   )
                 })}
               </tr>
-            ))}
-          </thead>
-
-          <tbody>
-            {table.getRowModel().rows.map((row) => {
-              const orig = row.original
-              const severityColor = rowSeverityColor(orig)
-              // Wave 12 Fix 1: use reference brand hex for Provider column cell.
-              // providerColorFor() returns legacy palette (blue/purple) which was
-              // the false-fix in Wave 11 — swap to providerBrandHex() here.
-              // providerColorFor() is still used for severity gutter (rowSeverityColor).
-              const providerColor = providerBrandHex(orig.provider)
-
-              return (
-                <tr
-                  key={row.id}
-                  style={{ borderBottom: '1px solid var(--border)' }}
-                >
-                  {row.getVisibleCells().map((cell, cellIdx) => {
-                    const meta = cell.column.columnDef.meta as
-                      | { className?: string }
-                      | undefined
-                    const colId = cell.column.id
-                    const isFirst = cellIdx === 0
-
-                    // Determine per-column styles
-                    let cellColor: string
-                    let cellContent: ReactElement | string
-
-                    if (colId === 'provider') {
-                      // C4: brand color for provider name
-                      cellColor = providerColor
-                      cellContent = flexRender(
-                        cell.column.columnDef.cell,
-                        cell.getContext()
-                      ) as ReactElement | string
-                    } else if (colId === 'cost_usd') {
-                      // C6: cost severity color + microbar
-                      cellColor = costColor(orig.cost_usd)
-                      cellContent = (
-                        <div
-                          className='metric-cell'
-                          style={{ position: 'relative' }}
-                        >
-                          <span>
-                            {flexRender(
-                              cell.column.columnDef.cell,
-                              cell.getContext()
-                            )}
-                          </span>
-                          <span
-                            className='metric-microbar'
-                            style={
-                              {
-                                '--fill': `${(orig.cost_usd / maxCostUsd) * 100}%`,
-                              } as React.CSSProperties
-                            }
-                          />
-                        </div>
-                      )
-                    } else if (colId === 'error_pct') {
-                      // C7: err% severity color
-                      cellColor = errorPctColor(orig.error_pct)
-                      cellContent = flexRender(
-                        cell.column.columnDef.cell,
-                        cell.getContext()
-                      ) as ReactElement | string
-                    } else if (colId === 'quota_pct') {
-                      // C8: quota% severity color + microbar
-                      cellColor = quotaPctColor(orig.quota_pct)
-                      const fillPct = (orig.quota_pct / maxQuotaPct) * 100
-                      cellContent = (
-                        <div
-                          className='metric-cell'
-                          style={{ position: 'relative' }}
-                        >
-                          <span>
-                            {flexRender(
-                              cell.column.columnDef.cell,
-                              cell.getContext()
-                            )}
-                          </span>
-                          <span
-                            className='metric-microbar'
-                            style={
-                              {
-                                '--fill': `${fillPct}%`,
-                              } as React.CSSProperties
-                            }
-                          />
-                        </div>
-                      )
-                    } else if (colId === 'tokens_in') {
-                      // C5: microbar proportional to column max
-                      cellColor = 'var(--accent-cool)'
-                      const fillPct = (orig.tokens_in / maxTokensIn) * 100
-                      cellContent = (
-                        <div
-                          className='metric-cell'
-                          style={{ position: 'relative' }}
-                        >
-                          <span>
-                            {flexRender(
-                              cell.column.columnDef.cell,
-                              cell.getContext()
-                            )}
-                          </span>
-                          <span
-                            className='metric-microbar'
-                            style={
-                              {
-                                '--fill': `${fillPct}%`,
-                              } as React.CSSProperties
-                            }
-                          />
-                        </div>
-                      )
-                    } else if (colId === 'tokens_out') {
-                      // C5: microbar proportional to column max
-                      cellColor = 'var(--accent-cool)'
-                      const fillPct = (orig.tokens_out / maxTokensOut) * 100
-                      cellContent = (
-                        <div
-                          className='metric-cell'
-                          style={{ position: 'relative' }}
-                        >
-                          <span>
-                            {flexRender(
-                              cell.column.columnDef.cell,
-                              cell.getContext()
-                            )}
-                          </span>
-                          <span
-                            className='metric-microbar'
-                            style={
-                              {
-                                '--fill': `${fillPct}%`,
-                              } as React.CSSProperties
-                            }
-                          />
-                        </div>
-                      )
-                    } else if (colId === 'requests') {
-                      // C5: microbar proportional to column max
-                      cellColor = 'var(--accent-cool)'
-                      const fillPct = (orig.requests / maxRequests) * 100
-                      cellContent = (
-                        <div
-                          className='metric-cell'
-                          style={{ position: 'relative' }}
-                        >
-                          <span>
-                            {flexRender(
-                              cell.column.columnDef.cell,
-                              cell.getContext()
-                            )}
-                          </span>
-                          <span
-                            className='metric-microbar'
-                            style={
-                              {
-                                '--fill': `${fillPct}%`,
-                              } as React.CSSProperties
-                            }
-                          />
-                        </div>
-                      )
-                    } else if (colId === 'sparkline') {
-                      // C9: sparkline tinted by row severity
-                      cellColor = 'var(--fg)'
-                      const sparkData = orig.spark ?? [orig.tokens_in]
-                      cellContent = (
-                        <Sparkline data={sparkData} color={severityColor} />
-                      )
-                    } else if (colId === 'model') {
-                      // Model name: default foreground
-                      cellColor = 'var(--fg)'
-                      cellContent = flexRender(
-                        cell.column.columnDef.cell,
-                        cell.getContext()
-                      ) as ReactElement | string
-                    } else {
-                      // Other numeric columns (p50ms, p95ms, $/1k, 4K/5K cols)
-                      cellColor = 'var(--accent-cool)'
-                      cellContent = flexRender(
-                        cell.column.columnDef.cell,
-                        cell.getContext()
-                      ) as ReactElement | string
-                    }
-
-                    const isNumericAlign =
-                      colId !== 'model' &&
-                      colId !== 'provider' &&
-                      colId !== 'sparkline'
-
-                    return (
-                      <td
-                        key={cell.id}
-                        className={meta?.className}
-                        style={{
-                          padding: '6px 8px',
-                          fontFamily: 'var(--font-mono)',
-                          color: cellColor,
-                          borderRight: '1px solid var(--border)',
-                          // C4: severity-derived gutter on first cell
-                          borderLeft: isFirst
-                            ? `4px solid ${severityColor}`
-                            : undefined,
-                          paddingLeft: isFirst ? '6px' : undefined,
-                          textAlign: isNumericAlign ? 'right' : 'left',
-                        }}
-                      >
-                        {cellContent}
-                      </td>
-                    )
-                  })}
-                </tr>
-              )
-            })}
-          </tbody>
-        </table>
-      </div>
-    </>
+            )
+          })}
+        </tbody>
+      </table>
+    </div>
   )
 }
