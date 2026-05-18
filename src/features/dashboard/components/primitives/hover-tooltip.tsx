@@ -140,8 +140,18 @@ export function HoverTooltip({
       style={{
         position: 'relative',
         // quota variant wraps a full-width bar — use block so width:100% resolves
-        // correctly. Other variants (health, default) remain inline-block.
-        display: variant === 'quota' ? 'block' : 'inline-block',
+        // correctly.
+        // health variant: the outer caller (health-strip.tsx) wraps HoverTooltip
+        //   in an abs-positioned sizing shell (top:6px/bottom:6px/width:12px).
+        //   HoverTooltip then fills that shell via display:block + height:100%.
+        //   This lets the internal strip use height:100% without needing an
+        //   abs-positioned child, fixing the 0-height collapse. Wave 15-A S11.
+        // default: inline-block (unchanged).
+        display:
+          variant === 'quota' || variant === 'health'
+            ? 'block'
+            : 'inline-block',
+        ...(variant === 'health' ? { height: '100%' } : {}),
       }}
       onPointerEnter={() => {
         setIsOpen(true)
