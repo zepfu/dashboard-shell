@@ -2,10 +2,18 @@
  * RepoBreakdownTable — sortable TanStack Table for per-repository usage.
  *
  * Renders a sortable, sticky-header table with repository, token, cost,
- * trace, top model, and sparkline columns. Follows the same patterns as
- * MasterLedgerTable but with a simpler 6-column schema.
+ * request, top model, and sparkline columns. Follows the same patterns as
+ * MasterLedgerTable: severity gutter on first cell, metric-cell microbars
+ * on numeric columns, and provider-tinted sparkline.
+ *
+ * Wave 11 PR6 (11-n):
+ * - Severity gutter on first cell — dynamic color based on row thresholds.
+ * - Microbar overlays on Tokens, Cost, Requests columns.
+ * - Provider-tinted sparkline via providerColorFor / rowSeverityColor.
+ * - Column rename: Traces → Requests, Trend → 24h Tok/Hr.
+ * - Amber uppercase thead with letter-spacing 0.05em.
  */
-import { useState, type ReactElement } from 'react'
+import { useMemo, useState, type ReactElement } from 'react'
 import {
   createColumnHelper,
   flexRender,
@@ -13,8 +21,8 @@ import {
   getSortedRowModel,
   useReactTable,
   type SortingState,
-  type ColumnDef,
 } from '@tanstack/react-table'
+import { providerColorFor } from '../lib/usage-report-display'
 import { Sparkline } from './primitives/sparkline'
 
 // ---------------------------------------------------------------------------
@@ -26,9 +34,33 @@ export interface RepoRow {
   repository: string
   tokens: number
   cost_usd: number
+  /** Request/trace count — renamed from 'traces' in C40 fix. */
   traces: number
   top_model: string
+  /** Provider hint for sparkline tinting (optional). */
+  top_model_provider?: string
   spark?: number[]
+}
+
+// ---------------------------------------------------------------------------
+// Severity helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Computes a severity gutter color for a repo row based on cost and request
+ * volume thresholds.
+ *
+ * Thresholds (per-row):
+ *   cost > 1.0 → hot (red)
+ *   cost > 0.5 → warm (amber)
+ *   traces < 5  → warm (low-activity amber)
+ *   otherwise   → cool (blue)
+ */
+function rowSeverityColor(row: RepoRow): string {
+  if (row.cost_usd > 1.0) return 'var(--accent-hot)'
+  if (row.cost_usd > 0.5) return 'var(--accent-warm)'
+  if (row.traces < 5) return 'var(--accent-warm)'
+  return 'var(--accent-cool)'
 }
 
 // ---------------------------------------------------------------------------
@@ -45,40 +77,31 @@ function numFmt(n: number, decimals = 0): string {
 }
 
 // ---------------------------------------------------------------------------
-// Column definitions
+// Inline CSS — metric-cell / metric-microbar (idempotent if PR5 adds globally)
 // ---------------------------------------------------------------------------
 
-const columns: ColumnDef<RepoRow, unknown>[] = [
-  helper.accessor('repository', {
-    header: 'Repository',
-    cell: (info) => info.getValue() as string,
-  }),
-  helper.accessor('tokens', {
-    header: 'Tokens',
-    cell: (info) => numFmt(info.getValue() as number),
-  }),
-  helper.accessor('cost_usd', {
-    header: 'Cost',
-    cell: (info) => `$${numFmt(info.getValue() as number, 4)}`,
-  }),
-  helper.accessor('traces', {
-    header: 'Traces',
-    cell: (info) => numFmt(info.getValue() as number),
-  }),
-  helper.accessor('top_model', {
-    header: 'Top Model',
-    cell: (info) => info.getValue() as string,
-  }),
-  {
-    id: 'sparkline',
-    header: 'Trend',
-    enableSorting: false,
-    cell: ({ row }) => {
-      const data = row.original.spark ?? [row.original.tokens]
-      return <Sparkline data={data} color='var(--accent-cool)' />
-    },
-  },
-]
+const METRIC_CELL_CSS = `
+.metric-cell {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0;
+}
+.metric-microbar {
+  display: block;
+  height: 2px;
+  width: 100%;
+  background: linear-gradient(
+    to right,
+    var(--accent-cool) 0%,
+    var(--accent-cool) var(--fill, 0%),
+    transparent var(--fill, 0%)
+  );
+  border-radius: 0;
+  margin-top: 1px;
+}
+`
 
 // ---------------------------------------------------------------------------
 // RepoBreakdownTable
@@ -90,12 +113,122 @@ export interface RepoBreakdownTableProps {
 
 /**
  * RepoBreakdownTable renders a sortable, sticky-header table of repository
- * usage metrics with sparkline trend column.
+ * usage metrics with severity gutter, microbar overlays, and a tinted
+ * sparkline trend column.
  */
 export function RepoBreakdownTable({
   rows,
 }: RepoBreakdownTableProps): ReactElement {
   const [sorting, setSorting] = useState<SortingState>([])
+
+  // Compute column-level maxima for microbar scaling
+  const maxTokens = useMemo(
+    () => Math.max(1, ...rows.map((r) => r.tokens)),
+    [rows]
+  )
+  const maxCost = useMemo(
+    () => Math.max(1, ...rows.map((r) => r.cost_usd)),
+    [rows]
+  )
+  const maxTraces = useMemo(
+    () => Math.max(1, ...rows.map((r) => r.traces)),
+    [rows]
+  )
+
+  const columns = useMemo(
+    () => [
+      helper.accessor('repository', {
+        header: 'Repository',
+        cell: (info) => info.getValue() as string,
+      }),
+      helper.accessor('tokens', {
+        header: 'Tokens',
+        cell: (info) => {
+          const val = info.getValue() as number
+          const fillPct = (val / maxTokens) * 100
+          return (
+            <div className='metric-cell'>
+              <span style={{ color: 'var(--accent-cool)' }}>{numFmt(val)}</span>
+              <span
+                className='metric-microbar'
+                style={
+                  {
+                    '--fill': `${fillPct.toFixed(1)}%`,
+                  } as React.CSSProperties
+                }
+              />
+            </div>
+          )
+        },
+      }),
+      helper.accessor('cost_usd', {
+        header: 'Cost',
+        cell: (info) => {
+          const val = info.getValue() as number
+          const fillPct = (val / maxCost) * 100
+          const costColor =
+            val > 1.0
+              ? 'var(--accent-hot)'
+              : val > 0.5
+                ? 'var(--accent-warm)'
+                : 'var(--accent-cool)'
+          return (
+            <div className='metric-cell'>
+              <span style={{ color: costColor }}>${numFmt(val, 4)}</span>
+              <span
+                className='metric-microbar'
+                style={
+                  {
+                    '--fill': `${fillPct.toFixed(1)}%`,
+                  } as React.CSSProperties
+                }
+              />
+            </div>
+          )
+        },
+      }),
+      // C40: renamed from Traces → Requests
+      helper.accessor('traces', {
+        header: 'Requests',
+        cell: (info) => {
+          const val = info.getValue() as number
+          const fillPct = (val / maxTraces) * 100
+          return (
+            <div className='metric-cell'>
+              <span style={{ color: 'var(--accent-cool)' }}>{numFmt(val)}</span>
+              <span
+                className='metric-microbar'
+                style={
+                  {
+                    '--fill': `${fillPct.toFixed(1)}%`,
+                  } as React.CSSProperties
+                }
+              />
+            </div>
+          )
+        },
+      }),
+      helper.accessor('top_model', {
+        header: 'Top Model',
+        cell: (info) => info.getValue() as string,
+      }),
+      // C40: renamed from Trend → 24h Tok/Hr
+      helper.display({
+        id: 'sparkline',
+        header: '24h Tok/Hr',
+        cell: ({ row }) => {
+          const sparkData = row.original.spark ?? [row.original.tokens]
+          // Tint by provider if hint available, fall back to severity color
+          const sparkColor =
+            (row.original.top_model_provider != null
+              ? providerColorFor(row.original.top_model_provider)
+              : null) ?? rowSeverityColor(row.original)
+          return <Sparkline data={sparkData} color={sparkColor} />
+        },
+      }),
+    ],
+    [maxTokens, maxCost, maxTraces]
+  )
 
   const table = useReactTable({
     data: rows,
@@ -108,125 +241,141 @@ export function RepoBreakdownTable({
   })
 
   return (
-    <div
-      className='repo-table-wrapper'
-      style={{
-        width: '100%',
-        overflowX: 'auto',
-        overflowY: 'auto',
-        maxHeight: '240px',
-        background: 'var(--card)',
-        border: '1px solid var(--border)',
-        marginBottom: '8px',
-      }}
-    >
-      <table
-        aria-label='Repository usage breakdown'
-        className='repo-table'
+    <>
+      {/* Idempotent metric-cell CSS — safe if PR5 also emits globally */}
+      <style>{METRIC_CELL_CSS}</style>
+      <div
+        className='repo-table-wrapper'
         style={{
           width: '100%',
-          borderCollapse: 'collapse',
-          fontSize: '10px',
-          fontFamily: 'var(--font-mono)',
+          overflowX: 'auto',
+          overflowY: 'auto',
+          maxHeight: '240px',
+          background: 'var(--card)',
+          border: '1px solid var(--border)',
+          marginBottom: '8px',
         }}
       >
-        <thead
+        <table
+          aria-label='Repository usage breakdown'
+          className='repo-table'
           style={{
-            position: 'sticky',
-            top: 0,
-            zIndex: 10,
-            background: 'var(--card-2)',
-            borderBottom: '1px solid rgba(245,158,11,0.25)',
+            width: '100%',
+            borderCollapse: 'collapse',
+            fontSize: '10px',
+            fontFamily: 'var(--font-mono)',
           }}
         >
-          {table.getHeaderGroups().map((headerGroup) => (
-            <tr key={headerGroup.id}>
-              {headerGroup.headers.map((header) => {
-                const sortDir = header.column.getIsSorted()
-                const isSortable = header.column.getCanSort()
-                let ariaSort: 'ascending' | 'descending' | 'none' | undefined
-                if (isSortable) {
-                  ariaSort =
-                    sortDir === 'asc'
-                      ? 'ascending'
-                      : sortDir === 'desc'
-                        ? 'descending'
-                        : 'none'
-                }
+          <thead
+            style={{
+              position: 'sticky',
+              top: 0,
+              zIndex: 10,
+              background: 'var(--card-2)',
+              borderBottom: '1px solid rgba(245,158,11,0.25)',
+            }}
+          >
+            {table.getHeaderGroups().map((headerGroup) => (
+              <tr key={headerGroup.id}>
+                {headerGroup.headers.map((header) => {
+                  const sortDir = header.column.getIsSorted()
+                  const isSortable = header.column.getCanSort()
+                  let ariaSort: 'ascending' | 'descending' | 'none' | undefined
+                  if (isSortable) {
+                    ariaSort =
+                      sortDir === 'asc'
+                        ? 'ascending'
+                        : sortDir === 'desc'
+                          ? 'descending'
+                          : 'none'
+                  }
 
-                return (
-                  <th
-                    key={header.id}
-                    aria-sort={ariaSort}
-                    data-sortable={isSortable ? 'true' : undefined}
-                    onClick={
-                      isSortable
-                        ? header.column.getToggleSortingHandler()
-                        : undefined
-                    }
-                    style={{
-                      padding: '4px 6px',
-                      textAlign: 'left',
-                      fontWeight: 600,
-                      color: 'var(--accent-chrome)',
-                      background: 'var(--card-2)',
-                      fontSize: '9px',
-                      textTransform: 'uppercase',
-                      letterSpacing: '0.04em',
-                      borderRight: '1px solid var(--border)',
-                      cursor: isSortable ? 'pointer' : 'default',
-                      userSelect: 'none',
-                      whiteSpace: 'nowrap',
-                    }}
-                  >
-                    {flexRender(
-                      header.column.columnDef.header,
-                      header.getContext()
-                    )}
-                    {sortDir === 'asc' ? ' ↑' : sortDir === 'desc' ? ' ↓' : ''}
-                  </th>
-                )
-              })}
-            </tr>
-          ))}
-        </thead>
+                  return (
+                    <th
+                      key={header.id}
+                      aria-sort={ariaSort}
+                      data-sortable={isSortable ? 'true' : undefined}
+                      onClick={
+                        isSortable
+                          ? header.column.getToggleSortingHandler()
+                          : undefined
+                      }
+                      style={{
+                        padding: '4px 6px',
+                        textAlign: 'left',
+                        fontWeight: 600,
+                        color: 'var(--accent-chrome)',
+                        background: 'var(--card-2)',
+                        fontSize: '9px',
+                        textTransform: 'uppercase',
+                        letterSpacing: '0.05em',
+                        borderRight: '1px solid var(--border)',
+                        borderBottom: '1px solid rgba(245, 158, 11, 0.25)',
+                        cursor: isSortable ? 'pointer' : 'default',
+                        userSelect: 'none',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      {flexRender(
+                        header.column.columnDef.header,
+                        header.getContext()
+                      )}
+                      {sortDir === 'asc'
+                        ? ' ↑'
+                        : sortDir === 'desc'
+                          ? ' ↓'
+                          : ''}
+                    </th>
+                  )
+                })}
+              </tr>
+            ))}
+          </thead>
 
-        <tbody>
-          {table.getRowModel().rows.map((row) => (
-            <tr
-              key={row.id}
-              style={{ borderBottom: '1px solid var(--border)' }}
-            >
-              {row.getVisibleCells().map((cell, cellIdx) => {
-                const isFirst = cellIdx === 0
-                const isText =
-                  cell.column.id === 'repository' ||
-                  cell.column.id === 'top_model' ||
-                  cell.column.id === 'sparkline'
-                return (
-                  <td
-                    key={cell.id}
-                    style={{
-                      padding: '4px 6px',
-                      fontFamily: 'var(--font-mono)',
-                      color: 'var(--fg)',
-                      borderRight: '1px solid var(--border)',
-                      borderLeft: isFirst
-                        ? '4px solid var(--accent-cool)'
-                        : undefined,
-                      paddingLeft: isFirst ? '6px' : undefined,
-                      textAlign: isText ? 'left' : 'right',
-                      whiteSpace: 'nowrap',
-                    }}
-                  >
-                    {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                  </td>
-                )
-              })}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
+          <tbody>
+            {table.getRowModel().rows.map((row) => {
+              const gutterColor = rowSeverityColor(row.original)
+              return (
+                <tr
+                  key={row.id}
+                  style={{ borderBottom: '1px solid var(--border)' }}
+                >
+                  {row.getVisibleCells().map((cell, cellIdx) => {
+                    const isFirst = cellIdx === 0
+                    const isText =
+                      cell.column.id === 'repository' ||
+                      cell.column.id === 'top_model' ||
+                      cell.column.id === 'sparkline'
+                    return (
+                      <td
+                        key={cell.id}
+                        style={{
+                          padding: '4px 6px',
+                          fontFamily: 'var(--font-mono)',
+                          color: 'var(--fg)',
+                          borderRight: '1px solid var(--border)',
+                          borderLeft: isFirst
+                            ? `4px solid ${gutterColor}`
+                            : undefined,
+                          paddingLeft: isFirst ? '6px' : undefined,
+                          textAlign: isText ? 'left' : 'right',
+                          whiteSpace: 'nowrap',
+                          verticalAlign: 'top',
+                        }}
+                      >
+                        {flexRender(
+                          cell.column.columnDef.cell,
+                          cell.getContext()
+                        )}
+                      </td>
+                    )
+                  })}
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+    </>
   )
 }
