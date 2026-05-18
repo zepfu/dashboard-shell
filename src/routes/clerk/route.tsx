@@ -8,7 +8,6 @@ import { SidebarTrigger } from '@/components/ui/sidebar'
 import { ConfigDrawer } from '@/components/config-drawer'
 import { AuthenticatedLayout } from '@/components/layout/authenticated-layout'
 import { Main } from '@/components/layout/main'
-import { ThemeSwitch } from '@/components/theme-switch'
 
 export const Route = createFileRoute('/clerk')({
   component: RouteComponent,
@@ -44,7 +43,6 @@ function MissingClerkPubKey() {
       <div className='bg-backgroundh-16 flex justify-between p-4'>
         <SidebarTrigger variant='outline' className='scale-125 sm:scale-100' />
         <div className='space-x-4'>
-          <ThemeSwitch />
           <ConfigDrawer />
         </div>
       </div>
