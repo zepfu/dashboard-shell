@@ -1,3 +1,48 @@
+/**
+ * Provider name aliases — maps a canonical provider key to the set of strings
+ * that may appear in the `providerLatencyHealth` materialized view.
+ *
+ * Wave 15-B (15-B.2): The DB materialised view `provider_latency_health_5m`
+ * stores Google rows under the key `'gemini'`, while the dashboard's canonical
+ * provider list and the `rows` collection both use `'google'` (because
+ * report-service.mjs CASE-maps them on the rows/trend side but NOT on the
+ * health side). This map lets callers expand a canonical key to all its DB
+ * aliases before filtering health rows.
+ */
+export const PROVIDER_ALIASES: Record<string, readonly string[]> = {
+  google: ['google', 'gemini'],
+}
+
+/**
+ * Returns all alias strings that should be matched for a given canonical
+ * provider key (case-insensitive lower).
+ *
+ * Wave 15-B.2: Use when filtering `providerLatencyHealth` rows to avoid
+ * dropping gemini rows for the google provider card.
+ */
+export function providerAliases(provider: string): readonly string[] {
+  const key = provider.toLowerCase()
+  return PROVIDER_ALIASES[key] ?? [key]
+}
+
+/**
+ * Maps any DB/alias provider string to its canonical key.
+ *
+ * Wave 15-B.2: Use in buildModelRows to normalise health row provider keys
+ * so that DB keys like 'gemini' map to the canonical 'google' key used in
+ * providerStatusUsage, ensuring health latency lookups succeed.
+ *
+ * @example canonicalProvider('gemini') → 'google'
+ * @example canonicalProvider('openai') → 'openai'
+ */
+export function canonicalProvider(provider: string): string {
+  const key = provider.toLowerCase()
+  for (const [canonical, aliases] of Object.entries(PROVIDER_ALIASES)) {
+    if (aliases.includes(key)) return canonical
+  }
+  return key
+}
+
 const providerColorsByKey: Record<string, string> = {
   openai: '#2563eb',
   anthropic: '#7c3aed',
@@ -263,6 +308,35 @@ export function formatUsd(usd: number | null | undefined): string {
  * Output example: `in 3d 1h` (via date-fns formatDistanceToNow).
  *   null/undefined/empty → `—`
  */
+/**
+ * Sums real error events across all provider latency health rows.
+ *
+ * Wave 15-B.6: replaces the hardcoded `errors: 0` in toKpiSummary (index.tsx).
+ * Counts provider_error_events, provider_5xx_events, provider_timeout_events,
+ * and network_error_events.
+ *
+ * Usage in index.tsx (TODO 15-C):
+ *   errors: computeFleetErrors(summaryReport?.providerLatencyHealth ?? [])
+ */
+export function computeFleetErrors(
+  healthRows: {
+    provider_error_events: number
+    provider_5xx_events: number
+    provider_timeout_events: number
+    network_error_events: number
+  }[]
+): number {
+  return healthRows.reduce(
+    (s, r) =>
+      s +
+      r.provider_error_events +
+      r.provider_5xx_events +
+      r.provider_timeout_events +
+      r.network_error_events,
+    0
+  )
+}
+
 export function formatResetDistance(iso: string | null | undefined): string {
   if (!iso) return '—'
   try {

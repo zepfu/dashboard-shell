@@ -40,7 +40,12 @@ import {
 import { useAnomalyDetection } from '../hooks/use-anomaly-detection'
 import { CLIENT_BRAND_COLORS } from '../lib/client-brand-colors'
 import { normalizeTrendData } from '../lib/trend-utils'
-import { clientColorFor, providerBrandHex } from '../lib/usage-report-display'
+import {
+  canonicalProvider,
+  clientColorFor,
+  providerAliases,
+  providerBrandHex,
+} from '../lib/usage-report-display'
 import { AggregateCard } from './aggregate-card'
 import { ClientBreakdownTable, type ClientRow } from './client-breakdown-table'
 import { ComparisonPanel } from './comparison-panel'
@@ -188,8 +193,10 @@ function padHealthCells(
   rows: UsageReportProviderLatencyHealthRow[],
   provider: string
 ): { color: string }[] {
-  const providerRows = rows.filter(
-    (r) => r.provider.toLowerCase() === provider.toLowerCase()
+  // 15-B.2: use alias map so 'google' also picks up 'gemini' health rows
+  const aliases = providerAliases(provider)
+  const providerRows = rows.filter((r) =>
+    aliases.includes(r.provider.toLowerCase())
   )
   const cells = providerRows.map((row) => ({
     color: healthCellColor(row),
@@ -245,11 +252,14 @@ function buildProviderMetrics(
   healthRows: UsageReportProviderLatencyHealthRow[],
   rows: UsageReportRow[]
 ): ProviderMetrics {
-  const providerHealthRows = healthRows.filter(
-    (r) => r.provider.toLowerCase() === provider.toLowerCase()
+  // 15-B.2: expand canonical provider key to all DB aliases
+  // (e.g. 'google' → ['google','gemini'] so gemini health rows are included)
+  const aliases = providerAliases(provider)
+  const providerHealthRows = healthRows.filter((r) =>
+    aliases.includes(r.provider.toLowerCase())
   )
-  const providerUsageRows = rows.filter(
-    (r) => (r.provider ?? '').toLowerCase() === provider.toLowerCase()
+  const providerUsageRows = rows.filter((r) =>
+    aliases.includes((r.provider ?? '').toLowerCase())
   )
 
   const requests = providerHealthRows.reduce((s, r) => s + r.requests, 0)
@@ -263,12 +273,14 @@ function buildProviderMetrics(
     0
   )
 
-  // Best available P95 — use most recent health row
-  const latestRow =
-    providerHealthRows.length > 0
-      ? providerHealthRows[providerHealthRows.length - 1]
-      : undefined
-  const p95 = latestRow?.upstream_p95_ms ?? 0
+  // 15-B.1: providerLatencyHealth is ordered bucket_start DESC (newest first).
+  // The original code used `[length - 1]` (oldest row), which consistently
+  // has upstream_p95_ms = null (no-traffic tail buckets). Fix: scan from
+  // index 0 (most-recent) and pick the first row with a non-null p95.
+  const latestP95Row = providerHealthRows.find(
+    (r) => r.upstream_p95_ms !== null
+  )
+  const p95 = latestP95Row?.upstream_p95_ms ?? 0
 
   // Wave 14-C: rate_limits, capacity from health rows; packet_loss from ping probe.
   const rate_limits = providerHealthRows.reduce(
@@ -509,6 +521,8 @@ function buildQuotaIntervals(
 
   const result: QuotaBarGroup[] = []
   for (const row of providerQuotas) {
+    // F-QB-1 / 15-B.10: Added short_special so openai's exhausted
+    // short_special_remaining_pct=0 (and similar) is rendered.
     const candidates = [
       {
         remainingPct: row.weekly_remaining_pct,
@@ -530,6 +544,13 @@ function buildQuotaIntervals(
         label: 'Special',
         resetAt: row.special_reset_at ?? undefined,
         usedTokens: row.special_usage_tokens,
+      },
+      {
+        remainingPct: row.short_special_remaining_pct,
+        active: row.short_special_active,
+        label: 'Short-Special',
+        resetAt: row.short_special_reset_at ?? undefined,
+        usedTokens: row.short_special_usage_tokens,
       },
       {
         remainingPct: row.monthly_remaining_pct,
@@ -558,6 +579,14 @@ function buildQuotaIntervals(
 
   return result
 }
+
+// ---------------------------------------------------------------------------
+// computeFleetErrors lives in usage-report-display.ts (lib) so the helper
+// can be imported by both phosphor-dashboard and index.tsx without violating
+// the react-refresh/only-export-components constraint.
+// TODO (15-C): in index.tsx toKpiSummary replace `errors: 0` with:
+//   errors: computeFleetErrors(summaryReport?.providerLatencyHealth ?? [])
+// ---------------------------------------------------------------------------
 
 /**
  * Canonical provider order — always present in fixed sequence.
@@ -608,46 +637,76 @@ function buildRepoRows(
     model?: string
   }[]
 ): RepoRow[] {
+  // 15-B.7: Track per-repo model token sums so we can pick the genuine top
+  // model (max token_total) instead of the last-iterated model.
   const repoMap = new Map<
     string,
-    { tokens: number; cost: number; traces: number; topModel: string }
+    {
+      tokens: number
+      cost: number
+      traces: number
+      modelTokens: Map<string, number>
+    }
   >()
 
   for (const row of rows) {
     const repo = row.repository ?? '(unknown)'
+    const rowTokens = row.token_total ?? 0
     const existing = repoMap.get(repo)
     if (existing === undefined) {
+      const modelTokens = new Map<string, number>()
+      if (row.model) modelTokens.set(row.model, rowTokens)
       repoMap.set(repo, {
-        tokens: row.token_total ?? 0,
+        tokens: rowTokens,
         cost: row.usd_cost ?? 0,
         traces: row.traces ?? 0,
-        topModel: row.model ?? '',
+        modelTokens,
       })
     } else {
-      existing.tokens += row.token_total ?? 0
+      existing.tokens += rowTokens
       existing.cost += row.usd_cost ?? 0
       existing.traces += row.traces ?? 0
-      // Keep the model with the most activity as "top model"
-      if ((row.token_total ?? 0) > 0 && row.model) {
-        existing.topModel = row.model
+      // Accumulate per-model token totals for max selection
+      if (row.model) {
+        existing.modelTokens.set(
+          row.model,
+          (existing.modelTokens.get(row.model) ?? 0) + rowTokens
+        )
       }
     }
   }
 
   return [...repoMap.entries()]
     .sort(([, a], [, b]) => b.tokens - a.tokens)
-    .map(([repository, data]) => ({
-      repository,
-      tokens: data.tokens,
-      cost_usd: data.cost,
-      traces: data.traces,
-      top_model: data.topModel,
-    }))
+    .map(([repository, data]) => {
+      // 15-B.7: Pick the model with the most accumulated tokens for this repo
+      let topModel = ''
+      let topTokens = -1
+      for (const [model, modelTokens] of data.modelTokens) {
+        if (modelTokens > topTokens) {
+          topTokens = modelTokens
+          topModel = model
+        }
+      }
+      return {
+        repository,
+        tokens: data.tokens,
+        cost_usd: data.cost,
+        traces: data.traces,
+        top_model: topModel,
+      }
+    })
 }
 
 /**
  * Builds ModelRow[] for MasterLedgerTable from providerStatusUsage rows
  * aggregated by provider+model key.
+ *
+ * Wave 15-B fixes:
+ * - 15-B.3: real token_in / token_out aggregated from usageRows (report.rows)
+ *   grouped by provider+model, replacing the fake 60/40 split of token_total.
+ * - 15-B.4: upstream_p50_ms wired from healthRows (was always null/0).
+ * - 15-B.5: quota_pct computed from quotaRows (was always hardcoded 0).
  */
 function buildModelRows(
   rows: {
@@ -657,9 +716,62 @@ function buildModelRows(
     token_total: number
     usd_cost: number
   }[],
-  healthRows: UsageReportProviderLatencyHealthRow[]
+  healthRows: UsageReportProviderLatencyHealthRow[],
+  usageRows: UsageReportRow[],
+  quotaRows: UsageReportQuotaRow[]
 ): ModelRow[] {
+  // 15-B.3: Aggregate real token_in / token_out from report.rows by provider+model.
+  // providerStatusUsage (the `rows` param) lacks per-direction token fields;
+  // report.rows has them and uses group_by=provider,model,repository so we sum
+  // across all repository buckets.
+  // 15-B.2: normalise via canonicalProvider so 'google' rows in report.rows
+  // always key as 'google' (not 'gemini'), matching providerStatusUsage keys.
+  const tokensByKey = new Map<string, { token_in: number; token_out: number }>()
+  for (const r of usageRows) {
+    const p = canonicalProvider(r.provider ?? '')
+    const m = (r.model ?? '').toLowerCase()
+    if (!p || !m) continue
+    const key = `${p}::${m}`
+    const existing = tokensByKey.get(key)
+    const tin = r.token_in ?? 0
+    const tout = r.token_out ?? 0
+    if (existing === undefined) {
+      tokensByKey.set(key, { token_in: tin, token_out: tout })
+    } else {
+      existing.token_in += tin
+      existing.token_out += tout
+    }
+  }
+
+  // 15-B.5: Pre-compute consumed quota % per provider (provider-level quotas).
+  // For model-scoped quota rows use provider+model key; for provider-scoped
+  // rows (model === null) use provider key as fallback.
+  const quotaByProvider = new Map<string, number>()
+  for (const q of quotaRows) {
+    const p = q.provider.toLowerCase()
+    // Use the most-consumed active quota for this provider row as a
+    // representative percentage (short_active > weekly_active priority).
+    let consumed: number | null = null
+    if (q.short_active && q.short_remaining_pct !== null) {
+      consumed = Math.max(0, Math.min(100, 100 - q.short_remaining_pct))
+    } else if (q.weekly_active && q.weekly_remaining_pct !== null) {
+      consumed = Math.max(0, Math.min(100, 100 - q.weekly_remaining_pct))
+    } else if (q.monthly_active && q.monthly_remaining_pct !== null) {
+      consumed = Math.max(0, Math.min(100, 100 - q.monthly_remaining_pct))
+    }
+    if (consumed === null) continue
+    // Use provider+model key for model-scoped entries; provider key for
+    // provider-level entries (model === null).
+    const key = q.model !== null ? `${p}::${q.model.toLowerCase()}` : `${p}::`
+    const prev = quotaByProvider.get(key)
+    // Take the max consumed pct if multiple quota types exist for same key
+    if (prev === undefined || consumed > prev) {
+      quotaByProvider.set(key, consumed)
+    }
+  }
+
   // Group health data by provider+model for latency lookups
+  // 15-B.4: also accumulate upstream_p50_ms (previously always left null)
   const healthByKey = new Map<
     string,
     {
@@ -670,7 +782,11 @@ function buildModelRows(
     }
   >()
   for (const row of healthRows) {
-    const key = `${row.provider}::${row.model}`
+    // 15-B.2: normalise health provider key via alias map so 'gemini' rows
+    // map to canonical 'google' (health view uses 'gemini'; providerStatusUsage
+    // and report.rows use 'google' — the canonical key).
+    const canonical = canonicalProvider(row.provider)
+    const key = `${canonical}::${row.model}`
     const existing = healthByKey.get(key)
     const errors =
       row.provider_error_events +
@@ -678,7 +794,8 @@ function buildModelRows(
       row.provider_timeout_events
     if (existing === undefined) {
       healthByKey.set(key, {
-        p50: null,
+        // 15-B.4: seed p50 from the first (most-recent) row with a non-null value
+        p50: row.upstream_p50_ms,
         p95: row.upstream_p95_ms,
         errors,
         requests: row.requests,
@@ -686,6 +803,13 @@ function buildModelRows(
     } else {
       existing.errors += errors
       existing.requests += row.requests
+      // 15-B.4: take max p50/p95 across all health buckets for this model key
+      if (row.upstream_p50_ms !== null) {
+        existing.p50 =
+          existing.p50 !== null
+            ? Math.max(existing.p50, row.upstream_p50_ms)
+            : row.upstream_p50_ms
+      }
       if (row.upstream_p95_ms !== null) {
         existing.p95 =
           existing.p95 !== null
@@ -696,7 +820,9 @@ function buildModelRows(
   }
 
   return rows.map((row) => {
-    const key = `${row.provider}::${row.model}`
+    const providerKey = row.provider.toLowerCase()
+    const modelKey = row.model.toLowerCase()
+    const key = `${providerKey}::${modelKey}`
     const health = healthByKey.get(key)
     const requests = health?.requests ?? row.traces
     const errors = health?.errors ?? 0
@@ -704,18 +830,35 @@ function buildModelRows(
     const costPer1k =
       row.token_total > 0 ? (row.usd_cost / row.token_total) * 1000 : 0
 
+    // 15-B.3: use real per-direction tokens from report.rows; fall back to
+    // 60/40 split only when the usage rows don't have coverage for this model
+    // (e.g. providerStatusUsage has data but report.rows cap was hit)
+    const tokenAgg = tokensByKey.get(key)
+    const tokens_in = tokenAgg?.token_in ?? Math.round(row.token_total * 0.6)
+    const tokens_out = tokenAgg?.token_out ?? Math.round(row.token_total * 0.4)
+
+    // 15-B.5: look up quota consumed pct — prefer model-scoped key, then
+    // provider-only fallback
+    const modelQuotaKey = `${providerKey}::${modelKey}`
+    const providerQuotaKey = `${providerKey}::`
+    const quota_pct = Math.round(
+      quotaByProvider.get(modelQuotaKey) ??
+        quotaByProvider.get(providerQuotaKey) ??
+        0
+    )
+
     return {
       model: row.model,
       provider: row.provider,
-      tokens_in: Math.round(row.token_total * 0.6), // TODO: wire token_in from rows groupBy
-      tokens_out: Math.round(row.token_total * 0.4), // TODO: wire token_out from rows groupBy
+      tokens_in,
+      tokens_out,
       requests,
-      p50_ms: health?.p50 ?? 0,
+      p50_ms: health?.p50 ?? 0, // 15-B.4: wired upstream_p50_ms
       p95_ms: health?.p95 ?? 0,
       error_pct: Math.round(errorPct * 10) / 10,
       cost_usd: row.usd_cost,
       cost_per_1k: Math.round(costPer1k * 10000) / 10000,
-      quota_pct: 0, // TODO: wire from quota rows
+      quota_pct, // 15-B.5: wired from quota rows
       spark: [row.token_total],
     }
   })
@@ -897,9 +1040,16 @@ export default function PhosphorDashboard({
     () =>
       buildModelRows(
         report?.providerStatusUsage ?? [],
-        report?.providerLatencyHealth ?? []
+        report?.providerLatencyHealth ?? [],
+        report?.rows ?? [], // 15-B.3: real token_in/token_out
+        quotaRows // 15-B.5: quota_pct from quota rows
       ),
-    [report?.providerStatusUsage, report?.providerLatencyHealth]
+    [
+      report?.providerStatusUsage,
+      report?.providerLatencyHealth,
+      report?.rows,
+      quotaRows,
+    ]
   )
 
   const clientSlices = useMemo(
