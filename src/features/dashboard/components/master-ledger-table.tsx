@@ -24,7 +24,11 @@ import {
   type SortingState,
   type ColumnDef,
 } from '@tanstack/react-table'
-import { providerColorFor } from '../lib/usage-report-display'
+import {
+  providerBrandHex,
+  formatLatency,
+  formatUsd,
+} from '../lib/usage-report-display'
 import { Sparkline } from './primitives/sparkline'
 
 // ---------------------------------------------------------------------------
@@ -136,11 +140,11 @@ const baseColumns: ColumnDef<ModelRow, unknown>[] = [
   }),
   helper.accessor('p50_ms', {
     header: 'p50ms',
-    cell: (info) => `${numFmt(info.getValue() as number)}ms`,
+    cell: (info) => formatLatency(info.getValue() as number),
   }),
   helper.accessor('p95_ms', {
     header: 'p95ms',
-    cell: (info) => `${numFmt(info.getValue() as number)}ms`,
+    cell: (info) => formatLatency(info.getValue() as number),
   }),
   helper.accessor('error_pct', {
     header: 'Err%',
@@ -148,7 +152,7 @@ const baseColumns: ColumnDef<ModelRow, unknown>[] = [
   }),
   helper.accessor('cost_usd', {
     header: 'Cost',
-    cell: (info) => `$${numFmt(info.getValue() as number, 4)}`,
+    cell: (info) => formatUsd(info.getValue() as number),
   }),
   helper.accessor('cost_per_1k', {
     header: '$/1k',
@@ -427,7 +431,11 @@ export function MasterLedgerTable({
             {table.getRowModel().rows.map((row) => {
               const orig = row.original
               const severityColor = rowSeverityColor(orig)
-              const providerColor = providerColorFor(orig.provider)
+              // Wave 12 Fix 1: use reference brand hex for Provider column cell.
+              // providerColorFor() returns legacy palette (blue/purple) which was
+              // the false-fix in Wave 11 — swap to providerBrandHex() here.
+              // providerColorFor() is still used for severity gutter (rowSeverityColor).
+              const providerColor = providerBrandHex(orig.provider)
 
               return (
                 <tr

@@ -183,13 +183,16 @@
 /* Wave 11 PR2: aggregate card styling */
 /* Dashed amber border to distinguish the Σ Aggregate Totals card from peers. */
 /* Hidden below 2100px — no room for an 8th card at narrower widths.          */
+/* Wave 12 Fix 3: added !important to beat inline style={{ display: 'flex' }} */
+/* on the ProviderCard root, which had equal specificity and was winning the   */
+/* cascade, causing the aggregate card to always render regardless of width.   */
 .provider-card.aggregate {
   border: 1px dashed var(--accent-chrome) !important;
-  display: none;
+  display: none !important;
 }
 @media (min-width: 2100px) {
   .provider-card.aggregate {
-    display: flex;
+    display: flex !important;
   }
 }
 /* End Wave 11 PR2 */
