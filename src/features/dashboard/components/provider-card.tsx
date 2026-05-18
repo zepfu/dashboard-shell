@@ -10,12 +10,23 @@
  * - TOKEN CACHE / REASONING: pc-sub-title + pc-mini-table pattern with
  *   dashed border-top on section title.
  * - card-pane-right at ≥3840px: per-model mini-table via topModels prop.
+ *
+ * Wave 14-C changes:
+ * - Provider-name color reverted to var(--accent-chrome) per mockup line 1047.
+ * - Provider-name fontSize removed (inherits clamp from .provider-card).
+ * - 9-row metric grid per mockup lines 2424-2432.
+ * - Token Cache labels lowercase: in/create/miss/miss $.
+ * - miss $ row shows cache_miss_usd dollar value.
+ * - Reasoning labels lowercase: reported/estimated/no-reasoning calls.
+ * - est-mark asterisk on estimated value.
+ * - no-reasoning calls wired to integer.
  */
 import type { ReactElement, ReactNode } from 'react'
 import {
   formatLatency,
   formatUsd,
   formatResetDistance,
+  providerBrandHex,
 } from '../lib/usage-report-display'
 import { HealthStrip } from './primitives/health-strip'
 import { QuotaIntervalBar } from './primitives/quota-interval-bar'
@@ -40,9 +51,23 @@ export interface ProviderMetrics {
   p95_ms: number
   cache_input: number
   cache_creation: number
+  /** Dollar cost of cache misses (from cache_miss_usd_cost API field). */
+  cache_miss_usd: number
   reasoning_reported: number
   reasoning_estimated: number
+  /** Count of no-reasoning calls (from no_reasoning_calls API field if available). */
+  no_reasoning_calls: number
   traces: number
+  /** Rate limit events from UsageReportProviderLatencyHealthRow.rate_limit_events. */
+  rate_limits: number
+  /** Capacity events from UsageReportProviderLatencyHealthRow.capacity_events. */
+  capacity: number
+  /**
+   * Provider ping packet loss percentage.
+   * From UsageReportProviderLatencyHealthRow.provider_ping_packet_loss_pct.
+   * null when not probed.
+   */
+  packet_loss_pct: number | null
 }
 
 /** Interval configuration for one segment within a quota bar. */
@@ -113,6 +138,12 @@ function fmtCompact(n: number): string {
   return String(n)
 }
 
+/** Format packet loss percentage as string. Returns '—' when null. */
+function fmtPacketLoss(pct: number | null): string {
+  if (pct === null) return '—'
+  return `${pct.toFixed(1)}%`
+}
+
 // ---------------------------------------------------------------------------
 // Sub-components
 // ---------------------------------------------------------------------------
@@ -145,7 +176,8 @@ function PcSubTitle({ title }: PcSubTitleProps): ReactElement {
 
 interface PcMiniRowProps {
   label: string
-  value: string
+  /** String or JSX value (e.g. with est-mark asterisk). */
+  value: ReactNode
   valueMod?: 'cost' | 'muted' | undefined
 }
 
@@ -216,6 +248,51 @@ function QuotaSectionTitle({ title }: QuotaSectionTitleProps): ReactElement {
 }
 
 // ---------------------------------------------------------------------------
+// ProviderMetric — single primary metric row
+// ---------------------------------------------------------------------------
+
+interface ProviderMetricProps {
+  label: string
+  children: ReactNode
+  /** When true, inherits error color on value (errors > 0 pattern). */
+  valueColor?: string
+}
+
+/** Primary metric row matching mockup .provider-metric pattern. */
+function ProviderMetric({
+  label,
+  children,
+  valueColor,
+}: ProviderMetricProps): ReactElement {
+  return (
+    <div
+      className='provider-metric'
+      style={{
+        display: 'grid',
+        gridTemplateColumns: '1fr auto',
+        gap: '4px',
+        padding: '2px 0',
+        color: 'var(--fg-muted)',
+        fontSize: 'clamp(9px, 0.5vw, 13px)',
+      }}
+    >
+      <span>{label}</span>
+      <span
+        className='provider-metric-value'
+        style={{
+          textAlign: 'right',
+          color: valueColor ?? 'var(--fg)',
+          fontWeight: 500,
+          fontVariantNumeric: 'tabular-nums',
+        }}
+      >
+        {children}
+      </span>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // ProviderCard
 // ---------------------------------------------------------------------------
 
@@ -265,7 +342,13 @@ export function ProviderCard({
   const showCacheStale = anomalies?.cacheStale === true
 
   const cacheMiss = data.tokens_in - data.cache_input - data.cache_creation
-  const cacheSavings = data.cache_input
+
+  // 14-C.6: status is healthy unless errors are significant or data says otherwise.
+  const isHealthy = data.errors === 0
+  const statusColor = isHealthy
+    ? providerBrandHex(config.provider)
+    : 'var(--accent-hot)'
+  const statusGlyph = isHealthy ? '✓' : '✗'
 
   // Wave 12 Fix 2: build tooltip content for the vertical HealthStrip.
   // The primitive supports tooltipContent but ProviderCard never passed it —
@@ -321,13 +404,15 @@ export function ProviderCard({
         tooltipContent={healthTooltipContent}
       />
 
-      {/* Header: provider name (anomaly badges moved to quota-row-label per 11-i) */}
+      {/* Header: provider name
+          14-C.1: color is var(--accent-chrome) per mockup line 1047 (not brand hex).
+          14-C.2: no fontSize — inherits clamp(10px, 0.55vw, 14px) from .provider-card.
+      */}
       <div
         className='provider-name'
         style={{
-          color: config.color,
+          color: 'var(--accent-chrome)',
           fontWeight: 600,
-          fontSize: '11px',
           textTransform: 'uppercase',
           marginBottom: '6px',
           borderBottom: '1px solid var(--border)',
@@ -343,175 +428,61 @@ export function ProviderCard({
         className='card-pane-left'
         style={{ display: 'flex', flexDirection: 'column' }}
       >
-        {/* Primary metric rows */}
-        <div
-          className='provider-metric'
-          style={{
-            display: 'grid',
-            gridTemplateColumns: '1fr auto',
-            gap: '4px',
-            padding: '2px 0',
-            color: 'var(--fg-muted)',
-            fontSize: 'clamp(9px, 0.5vw, 13px)',
-          }}
+        {/*
+         * 14-C.3: 9-row primary metric grid per mockup lines 2424-2432.
+         * Order: Requests, Tokens, Cost, p95 Latency, Errors,
+         *        Rate Limits, Capacity, Packet Loss, Status
+         * Replaces the previous 7-row block (Toks In/Toks Out/Cost/Requests/Errors/P95/Traces).
+         */}
+
+        {/* Row 1 — Requests */}
+        <ProviderMetric label='Requests'>
+          {fmtCompact(data.requests)}
+        </ProviderMetric>
+
+        {/* Row 2 — Tokens (consolidated tokens_in + tokens_out) */}
+        <ProviderMetric label='Tokens'>
+          {fmtCompact(data.tokens_in + data.tokens_out)}
+        </ProviderMetric>
+
+        {/* Row 3 — Cost */}
+        <ProviderMetric label='Cost'>{formatUsd(data.cost_usd)}</ProviderMetric>
+
+        {/* Row 4 — p95 Latency (lowercase p per mockup) */}
+        <ProviderMetric label='p95 Latency'>
+          {formatLatency(data.p95_ms)}
+        </ProviderMetric>
+
+        {/* Row 5 — Errors */}
+        <ProviderMetric
+          label='Errors'
+          valueColor={data.errors > 0 ? 'var(--accent-hot)' : 'var(--fg)'}
         >
-          <span>Toks In</span>
-          <span
-            className='provider-metric-value'
-            style={{
-              textAlign: 'right',
-              color: 'var(--fg)',
-              fontWeight: 500,
-              fontVariantNumeric: 'tabular-nums',
-            }}
-          >
-            {fmtCompact(data.tokens_in)}
-          </span>
-        </div>
-        <div
-          className='provider-metric'
-          style={{
-            display: 'grid',
-            gridTemplateColumns: '1fr auto',
-            gap: '4px',
-            padding: '2px 0',
-            color: 'var(--fg-muted)',
-            fontSize: 'clamp(9px, 0.5vw, 13px)',
-          }}
-        >
-          <span>Toks Out</span>
-          <span
-            className='provider-metric-value'
-            style={{
-              textAlign: 'right',
-              color: 'var(--fg)',
-              fontWeight: 500,
-              fontVariantNumeric: 'tabular-nums',
-            }}
-          >
-            {fmtCompact(data.tokens_out)}
-          </span>
-        </div>
-        <div
-          className='provider-metric'
-          style={{
-            display: 'grid',
-            gridTemplateColumns: '1fr auto',
-            gap: '4px',
-            padding: '2px 0',
-            color: 'var(--fg-muted)',
-            fontSize: 'clamp(9px, 0.5vw, 13px)',
-          }}
-        >
-          <span>Cost</span>
-          <span
-            className='provider-metric-value'
-            style={{
-              textAlign: 'right',
-              color: 'var(--fg)',
-              fontWeight: 500,
-              fontVariantNumeric: 'tabular-nums',
-            }}
-          >
-            {formatUsd(data.cost_usd)}
-          </span>
-        </div>
-        <div
-          className='provider-metric'
-          style={{
-            display: 'grid',
-            gridTemplateColumns: '1fr auto',
-            gap: '4px',
-            padding: '2px 0',
-            color: 'var(--fg-muted)',
-            fontSize: 'clamp(9px, 0.5vw, 13px)',
-          }}
-        >
-          <span>Requests</span>
-          <span
-            className='provider-metric-value'
-            style={{
-              textAlign: 'right',
-              color: 'var(--fg)',
-              fontWeight: 500,
-              fontVariantNumeric: 'tabular-nums',
-            }}
-          >
-            {data.requests.toLocaleString()}
-          </span>
-        </div>
-        <div
-          className='provider-metric'
-          style={{
-            display: 'grid',
-            gridTemplateColumns: '1fr auto',
-            gap: '4px',
-            padding: '2px 0',
-            color: 'var(--fg-muted)',
-            fontSize: 'clamp(9px, 0.5vw, 13px)',
-          }}
-        >
-          <span>Errors</span>
-          <span
-            className='provider-metric-value'
-            style={{
-              textAlign: 'right',
-              color: data.errors > 0 ? 'var(--accent-hot)' : 'var(--fg)',
-              fontWeight: 500,
-              fontVariantNumeric: 'tabular-nums',
-            }}
-          >
-            {data.errors.toLocaleString()}
-          </span>
-        </div>
-        <div
-          className='provider-metric'
-          style={{
-            display: 'grid',
-            gridTemplateColumns: '1fr auto',
-            gap: '4px',
-            padding: '2px 0',
-            color: 'var(--fg-muted)',
-            fontSize: 'clamp(9px, 0.5vw, 13px)',
-          }}
-        >
-          <span>P95</span>
-          <span
-            className='provider-metric-value'
-            style={{
-              textAlign: 'right',
-              color: 'var(--fg)',
-              fontWeight: 500,
-              fontVariantNumeric: 'tabular-nums',
-            }}
-          >
-            {formatLatency(data.p95_ms)}
-          </span>
-        </div>
-        <div
-          className='provider-metric'
-          style={{
-            display: 'grid',
-            gridTemplateColumns: '1fr auto',
-            gap: '4px',
-            padding: '2px 0',
-            color: 'var(--fg-muted)',
-            fontSize: 'clamp(9px, 0.5vw, 13px)',
-          }}
-        >
-          <span>Traces</span>
-          <span
-            className='provider-metric-value'
-            style={{
-              textAlign: 'right',
-              color: 'var(--fg)',
-              fontWeight: 500,
-              fontVariantNumeric: 'tabular-nums',
-            }}
-          >
-            {data.traces.toLocaleString()}
-          </span>
-        </div>
+          {data.errors.toLocaleString()}
+        </ProviderMetric>
+
+        {/* Row 6 — Rate Limits (from rate_limit_events health row field) */}
+        <ProviderMetric label='Rate Limits'>
+          {data.rate_limits.toLocaleString()}
+        </ProviderMetric>
+
+        {/* Row 7 — Capacity (from capacity_events health row field) */}
+        <ProviderMetric label='Capacity'>
+          {data.capacity.toLocaleString()}
+        </ProviderMetric>
+
+        {/* Row 8 — Packet Loss (from provider_ping_packet_loss_pct; null → '—') */}
+        <ProviderMetric label='Packet Loss'>
+          {fmtPacketLoss(data.packet_loss_pct)}
+        </ProviderMetric>
+
+        {/*
+         * Row 9 — Status (14-C.4): brand hex ✓ for healthy, accent-hot ✗ otherwise.
+         * This is the ONLY place in the card where provider brand color is applied.
+         */}
+        <ProviderMetric label='Status'>
+          <span style={{ color: statusColor }}>{statusGlyph}</span>
+        </ProviderMetric>
 
         {/* QUOTAS section — Wave 11 PR3 (11-i): each bar uses 12 segments */}
         {quotas.length > 0 && (
@@ -627,38 +598,53 @@ export function ProviderCard({
           </>
         )}
 
-        {/* TOKEN CACHE sub-section */}
+        {/*
+         * TOKEN CACHE sub-section
+         * 14-C.5: lowercase labels: in / create / miss / miss $
+         * 14-C.6: miss $ row uses cache_miss_usd (dollar cost, not token count)
+         *         displayed with formatUsd() and valueMod='cost' for amber color.
+         */}
         <PcSubTitle title='TOKEN CACHE' />
         <div className='pc-mini-table'>
-          <PcMiniRow label='Cache In' value={fmtCompact(data.cache_input)} />
+          <PcMiniRow label='in' value={fmtCompact(data.cache_input)} />
+          <PcMiniRow label='create' value={fmtCompact(data.cache_creation)} />
           <PcMiniRow
-            label='Cache Create'
-            value={fmtCompact(data.cache_creation)}
-          />
-          <PcMiniRow
-            label='Cache Miss'
+            label='miss'
             value={fmtCompact(cacheMiss)}
             valueMod='muted'
           />
           <PcMiniRow
-            label='Cache Savings'
-            value={fmtCompact(cacheSavings)}
+            label='miss $'
+            value={formatUsd(data.cache_miss_usd)}
             valueMod='cost'
           />
         </div>
 
-        {/* REASONING sub-section */}
+        {/*
+         * REASONING sub-section
+         * 14-C.7: lowercase labels: reported / estimated / no-reasoning calls
+         * 14-C.8: estimated value has est-mark asterisk appended.
+         * 14-C.9: no-reasoning calls wired to integer (no_reasoning_calls field).
+         */}
         <PcSubTitle title='REASONING' />
         <div className='pc-mini-table'>
           <PcMiniRow
-            label='Reason Rptd'
+            label='reported'
             value={fmtCompact(data.reasoning_reported)}
           />
           <PcMiniRow
-            label='Reason Est'
-            value={fmtCompact(data.reasoning_estimated)}
+            label='estimated'
+            value={
+              <>
+                {fmtCompact(data.reasoning_estimated)}
+                <span className='est-mark'>*</span>
+              </>
+            }
           />
-          <PcMiniRow label='Reason Sources' value='—' valueMod='muted' />
+          <PcMiniRow
+            label='no-reasoning calls'
+            value={fmtCompact(data.no_reasoning_calls)}
+          />
         </div>
 
         {/* Extra pane-left content injected by subclasses (e.g. AggregateCard FLEET ACTIVITY) */}
