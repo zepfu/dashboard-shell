@@ -33,6 +33,7 @@ import {
   fetchUsageReportQuotas,
   type UsageReportProviderLatencyHealthRow,
   type UsageReportQuotaRow,
+  type UsageReportRow,
   type UsageReportTrendRow,
   type UsageReportGrain,
 } from '../api/usage-report'
@@ -231,19 +232,27 @@ function healthCellColor(row: UsageReportProviderLatencyHealthRow): string {
 }
 
 /**
- * Builds ProviderMetrics from latency health rows for a specific provider.
- * Falls back to summary totals for token/cost fields if health rows are sparse.
+ * Builds ProviderMetrics from latency health rows and per-row usage data for
+ * a specific provider.
+ *
+ * Wave 11 PR2 (11-g): token_in / token_out / usd_cost / traces and cache /
+ * reasoning fields are now aggregated from `rows` (UsageReportRow[]) filtered
+ * to the matching provider, resolving the $0 / 0-tokens bug.
  */
 function buildProviderMetrics(
   provider: string,
-  healthRows: UsageReportProviderLatencyHealthRow[]
+  healthRows: UsageReportProviderLatencyHealthRow[],
+  rows: UsageReportRow[]
 ): ProviderMetrics {
-  const providerRows = healthRows.filter(
+  const providerHealthRows = healthRows.filter(
     (r) => r.provider.toLowerCase() === provider.toLowerCase()
   )
+  const providerUsageRows = rows.filter(
+    (r) => (r.provider ?? '').toLowerCase() === provider.toLowerCase()
+  )
 
-  const requests = providerRows.reduce((s, r) => s + r.requests, 0)
-  const errors = providerRows.reduce(
+  const requests = providerHealthRows.reduce((s, r) => s + r.requests, 0)
+  const errors = providerHealthRows.reduce(
     (s, r) =>
       s +
       r.provider_error_events +
@@ -253,38 +262,63 @@ function buildProviderMetrics(
     0
   )
 
-  // Best available P95 — use most recent row
-  const latestRow = providerRows.at(-1)
+  // Best available P95 — use most recent health row
+  const latestRow =
+    providerHealthRows.length > 0
+      ? providerHealthRows[providerHealthRows.length - 1]
+      : undefined
   const p95 = latestRow?.upstream_p95_ms ?? 0
 
+  // Aggregate per-provider token / cost / cache / reasoning from usage rows
+  const tokens_in = providerUsageRows.reduce((s, r) => s + (r.token_in ?? 0), 0)
+  const tokens_out = providerUsageRows.reduce(
+    (s, r) => s + (r.token_out ?? 0),
+    0
+  )
+  const cost_usd = providerUsageRows.reduce((s, r) => s + (r.usd_cost ?? 0), 0)
+  const traces = providerUsageRows.reduce((s, r) => s + (r.traces ?? 0), 0)
+  const cache_input = providerUsageRows.reduce(
+    (s, r) => s + (r.token_cache_input ?? 0),
+    0
+  )
+  const cache_creation = providerUsageRows.reduce(
+    (s, r) => s + (r.token_cache_creation ?? 0),
+    0
+  )
+  const reasoning_reported = providerUsageRows.reduce(
+    (s, r) => s + (r.token_reasoning_reported ?? 0),
+    0
+  )
+  const reasoning_estimated = providerUsageRows.reduce(
+    (s, r) => s + (r.token_reasoning_estimated ?? 0),
+    0
+  )
+
   return {
-    tokens_in: 0, // TODO: wire per-provider token_in from rows groupBy
-    tokens_out: 0, // TODO: wire per-provider token_out from rows groupBy
-    cost_usd: 0, // TODO: wire per-provider cost from rows groupBy
+    tokens_in,
+    tokens_out,
+    cost_usd,
     requests,
     errors,
     p95_ms: p95,
-    cache_input: 0, // TODO: wire from rows groupBy
-    cache_creation: 0, // TODO: wire from rows groupBy
-    reasoning_reported: 0, // TODO: wire from rows groupBy
-    reasoning_estimated: 0, // TODO: wire from rows groupBy
-    traces: 0, // TODO: wire from rows groupBy
+    cache_input,
+    cache_creation,
+    reasoning_reported,
+    reasoning_estimated,
+    traces,
   }
 }
 
 /**
  * Builds aggregate ProviderMetrics by summing across all providers.
+ *
+ * Wave 11 PR2 (11-g item 4): token / cost / cache / reasoning totals are now
+ * derived from `rows` (all UsageReportRow entries) so the aggregate card
+ * reflects real data rather than the pre-summarised summary object.
  */
 function buildAggregateMetrics(
   healthRows: UsageReportProviderLatencyHealthRow[],
-  summaryTokenIn: number,
-  summaryTokenOut: number,
-  summaryCost: number,
-  summaryTraces: number,
-  summaryCacheInput: number,
-  summaryCacheCreation: number,
-  summaryReasoningReported: number,
-  summaryReasoningEstimated: number
+  rows: UsageReportRow[]
 ): ProviderMetrics {
   const requests = healthRows.reduce((s, r) => s + r.requests, 0)
   const errors = healthRows.reduce(
@@ -296,24 +330,43 @@ function buildAggregateMetrics(
       r.network_error_events,
     0
   )
-  // Fleet-wide P95: pick max P95 across latest bucket rows
+  // Fleet-wide P95: pick max P95 across all health rows
   const p95Values = healthRows
     .map((r) => r.upstream_p95_ms)
     .filter((v): v is number => v !== null)
   const p95 = p95Values.length > 0 ? Math.max(...p95Values) : 0
 
+  // Sum across every usage row for fleet-wide totals
+  const tokens_in = rows.reduce((s, r) => s + (r.token_in ?? 0), 0)
+  const tokens_out = rows.reduce((s, r) => s + (r.token_out ?? 0), 0)
+  const cost_usd = rows.reduce((s, r) => s + (r.usd_cost ?? 0), 0)
+  const traces = rows.reduce((s, r) => s + (r.traces ?? 0), 0)
+  const cache_input = rows.reduce((s, r) => s + (r.token_cache_input ?? 0), 0)
+  const cache_creation = rows.reduce(
+    (s, r) => s + (r.token_cache_creation ?? 0),
+    0
+  )
+  const reasoning_reported = rows.reduce(
+    (s, r) => s + (r.token_reasoning_reported ?? 0),
+    0
+  )
+  const reasoning_estimated = rows.reduce(
+    (s, r) => s + (r.token_reasoning_estimated ?? 0),
+    0
+  )
+
   return {
-    tokens_in: summaryTokenIn,
-    tokens_out: summaryTokenOut,
-    cost_usd: summaryCost,
+    tokens_in,
+    tokens_out,
+    cost_usd,
     requests,
     errors,
     p95_ms: p95,
-    cache_input: summaryCacheInput,
-    cache_creation: summaryCacheCreation,
-    reasoning_reported: summaryReasoningReported,
-    reasoning_estimated: summaryReasoningEstimated,
-    traces: summaryTraces,
+    cache_input,
+    cache_creation,
+    reasoning_reported,
+    reasoning_estimated,
+    traces,
   }
 }
 
@@ -395,18 +448,39 @@ function buildQuotaIntervals(
 }
 
 /**
- * Derives unique providers from latency health rows, falling back to
- * providerStatusUsage if health rows are empty.
+ * Canonical provider order — always present in fixed sequence.
+ *
+ * Wave 11 PR2 (11-f): the dashboard always shows all 7 canonical providers so
+ * the 8-card row is fully populated regardless of which providers the API
+ * happens to return data for in a given time range. Providers absent from
+ * the API response receive zeroed metrics.
+ */
+const CANONICAL_PROVIDERS = [
+  'anthropic',
+  'openai',
+  'google',
+  'xai',
+  'nvidia_nim',
+  'openrouter',
+  'local',
+] as const
+
+/**
+ * Always returns the canonical 7 providers in fixed order.
+ *
+ * Wave 11 PR2 (11-f): replaces the old dynamic derivation that only returned
+ * providers present in the API response. This ensures `local` (and any other
+ * provider the mock API omits) always appears in the grid with zeroed metrics.
+ *
+ * The `healthRows` and `trendRows` parameters are retained for API
+ * compatibility with existing useMemo call sites; they are no longer used for
+ * provider discovery.
  */
 function deriveProviders(
-  healthRows: UsageReportProviderLatencyHealthRow[],
-  trendRows: UsageReportTrendRow[]
+  _healthRows: UsageReportProviderLatencyHealthRow[],
+  _trendRows: UsageReportTrendRow[]
 ): string[] {
-  const fromHealth = [...new Set(healthRows.map((r) => r.provider))]
-  if (fromHealth.length > 0) return fromHealth
-
-  // Fallback: extract from trend rows
-  return [...new Set(trendRows.map((r) => r.provider))]
+  return [...CANONICAL_PROVIDERS]
 }
 
 /**
@@ -732,25 +806,17 @@ export default function PhosphorDashboard({
     [report?.providerLatencyHealth]
   )
 
-  // Aggregate card data (fleet-wide totals)
+  // Aggregate card data (fleet-wide totals from all usage rows)
+  // Wave 11 PR2 (11-g): now derived from report.rows rather than summary
   const aggregateMetrics = useMemo(
-    () =>
-      buildAggregateMetrics(
-        healthRows,
-        summary?.token_in ?? 0,
-        summary?.token_out ?? 0,
-        summary?.usd_cost ?? 0,
-        summary?.traces ?? 0,
-        summary?.token_cache_input ?? 0,
-        summary?.token_cache_creation ?? 0,
-        summary?.token_reasoning_reported ?? 0,
-        summary?.token_reasoning_estimated ?? 0
-      ),
-    [healthRows, summary]
+    () => buildAggregateMetrics(healthRows, report?.rows ?? []),
+    [healthRows, report?.rows]
   )
 
+  // Wave 11 PR2 (11-e): renamed from 'Fleet' to 'Σ Aggregate Totals'.
+  // The Σ character is intentional per the principal audit spec (S4).
   const aggregateConfig: ProviderCardConfig = {
-    provider: 'Fleet',
+    provider: 'Σ Aggregate Totals',
     color: 'var(--accent-chrome)',
   }
 
@@ -797,7 +863,11 @@ export default function PhosphorDashboard({
                 provider,
                 color: providerColorFor(provider),
               }
-              const metrics = buildProviderMetrics(provider, healthRows)
+              const metrics = buildProviderMetrics(
+                provider,
+                healthRows,
+                report?.rows ?? []
+              )
               const cells = padHealthCells(healthRows, provider)
               const quotaIntervals = buildQuotaIntervals(quotaRows, provider)
               const topModels = buildTopModels(providerStatusUsage, provider)

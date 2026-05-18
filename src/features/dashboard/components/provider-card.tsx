@@ -11,7 +11,7 @@
  *   dashed border-top on section title.
  * - card-pane-right at ≥3840px: per-model mini-table via topModels prop.
  */
-import type { ReactElement } from 'react'
+import type { ReactElement, ReactNode } from 'react'
 import { HealthStrip } from './primitives/health-strip'
 import { QuotaIntervalBar } from './primitives/quota-interval-bar'
 
@@ -202,6 +202,17 @@ export interface ProviderCardProps {
   anomalies?: AnomalyFlags
   /** Per-model mini-table rows shown in card-pane-right at ≥3840px. */
   topModels?: TopModelRow[]
+  /**
+   * Additional class name(s) merged into the root `provider-card` div.
+   * Used by AggregateCard to add the `aggregate` class for CSS targeting.
+   */
+  wrapperClassName?: string
+  /**
+   * Optional content rendered at the end of `card-pane-left`, after the
+   * REASONING sub-section. Used by AggregateCard to inject FLEET ACTIVITY
+   * inside the standard card layout flow.
+   */
+  extraPaneLeft?: ReactNode
 }
 
 /**
@@ -219,6 +230,8 @@ export function ProviderCard({
   quotas,
   anomalies,
   topModels = [],
+  wrapperClassName,
+  extraPaneLeft,
 }: ProviderCardProps): ReactElement {
   const showEarlyReset =
     anomalies !== undefined &&
@@ -228,9 +241,13 @@ export function ProviderCard({
   const cacheMiss = data.tokens_in - data.cache_input - data.cache_creation
   const cacheSavings = data.cache_input
 
+  const rootClassName = ['provider-card', wrapperClassName]
+    .filter(Boolean)
+    .join(' ')
+
   return (
     <div
-      className='provider-card'
+      className={rootClassName}
       style={{
         background: 'var(--card)',
         border: '1px solid var(--border)',
@@ -558,6 +575,9 @@ export function ProviderCard({
           />
           <PcMiniRow label='Reason Sources' value='—' valueMod='muted' />
         </div>
+
+        {/* Extra pane-left content injected by subclasses (e.g. AggregateCard FLEET ACTIVITY) */}
+        {extraPaneLeft}
       </div>
 
       {/* card-pane-right — per-model mini-table at ≥3840px */}
