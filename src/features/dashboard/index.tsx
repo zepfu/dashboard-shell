@@ -33,6 +33,7 @@ import AnchorBar from './components/anchor-bar'
 import { KpiStrip } from './components/kpi-strip'
 import PhosphorDashboard from './components/phosphor-dashboard'
 import { PhosphorLayout } from './components/phosphor-layout'
+import { PhosphorSidebar } from './components/phosphor-sidebar'
 import { HealthStrip } from './components/primitives/health-strip'
 import { useAlertsFromAnomalies } from './hooks/use-alerts-from-anomalies'
 import { useAnomalyDetection } from './hooks/use-anomaly-detection'
@@ -231,6 +232,7 @@ export function Dashboard(): ReactElement {
 
   return (
     <PhosphorLayout
+      sidebar={<PhosphorSidebar />}
       header={
         <div
           style={{
