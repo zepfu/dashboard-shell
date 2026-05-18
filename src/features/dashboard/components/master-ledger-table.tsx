@@ -22,7 +22,6 @@ import {
   getSortedRowModel,
   useReactTable,
   type SortingState,
-  type ColumnDef,
 } from '@tanstack/react-table'
 import {
   providerBrandHex,
@@ -117,7 +116,7 @@ function numFmt(n: number, decimals = 0): string {
 // Column definitions
 // ---------------------------------------------------------------------------
 
-const baseColumns: ColumnDef<ModelRow, unknown>[] = [
+const baseColumns = [
   helper.accessor('model', {
     header: 'Model',
     cell: (info) => info.getValue() as string,
@@ -164,7 +163,7 @@ const baseColumns: ColumnDef<ModelRow, unknown>[] = [
   }),
 ]
 
-const fourKColumns: ColumnDef<ModelRow, unknown>[] = [
+const fourKColumns = [
   helper.accessor('cost_per_1k_in', {
     id: 'cost_per_1k_in',
     header: '$/1k In',
@@ -212,7 +211,7 @@ const fourKColumns: ColumnDef<ModelRow, unknown>[] = [
   }),
 ]
 
-const fiveKColumns: ColumnDef<ModelRow, unknown>[] = [
+const fiveKColumns = [
   helper.accessor('tool', {
     id: 'tool',
     header: 'TOOL',
@@ -251,7 +250,7 @@ const fiveKColumns: ColumnDef<ModelRow, unknown>[] = [
   }),
 ]
 
-const sparklineColumn: ColumnDef<ModelRow, unknown>[] = [
+const sparklineColumn = [
   {
     id: 'sparkline',
     header: 'Trend',
@@ -261,7 +260,7 @@ const sparklineColumn: ColumnDef<ModelRow, unknown>[] = [
   },
 ]
 
-const allColumns: ColumnDef<ModelRow, unknown>[] = [
+const allColumns = [
   ...baseColumns,
   ...fourKColumns,
   ...fiveKColumns,

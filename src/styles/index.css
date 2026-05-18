@@ -150,13 +150,33 @@
    These classes are applied by QuotaIntervalBar via buildQuotaIntervals().
    Class names must match the iv-* convention from the v9.7 reference mockup.
    ───────────────────────────────────────────────────────────────── */
-.quota-interval { flex: 1 1 0; border-right: 1px solid var(--card-2); }
-.quota-interval:last-child { border-right: none; }
-.quota-interval.iv-0-5   { background: #1e3a5f; opacity: 1; }
-.quota-interval.iv-5-10  { background: #3b82f6; opacity: 0.8; }
-.quota-interval.iv-10-25 { background: #14b8a6; opacity: 1; }
-.quota-interval.iv-25-50 { background: #cc7e0a; opacity: 1; }
-.quota-interval.iv-50-p  { background: #cc3838; opacity: 1; }
+.quota-interval {
+  flex: 1 1 0;
+  border-right: 1px solid var(--card-2);
+}
+.quota-interval:last-child {
+  border-right: none;
+}
+.quota-interval.iv-0-5 {
+  background: #1e3a5f;
+  opacity: 1;
+}
+.quota-interval.iv-5-10 {
+  background: #3b82f6;
+  opacity: 0.8;
+}
+.quota-interval.iv-10-25 {
+  background: #14b8a6;
+  opacity: 1;
+}
+.quota-interval.iv-25-50 {
+  background: #cc7e0a;
+  opacity: 1;
+}
+.quota-interval.iv-50-p {
+  background: #cc3838;
+  opacity: 1;
+}
 
 /* Velocity shimmer removed — replaced by spectral-shimmer ::after gradient in Wave 11 PR3 */
 
@@ -177,7 +197,9 @@
   .provider-summary {
     grid-template-columns: repeat(8, minmax(0, 1fr));
   }
-  .provider-card.aggregate { display: flex !important; }
+  .provider-card.aggregate {
+    display: flex !important;
+  }
 }
 
 /* Wave 11 PR2: aggregate card styling */
@@ -211,25 +233,35 @@
   .provider-card .provider-name {
     grid-column: 1 / -1 !important;
   }
-  .card-pane-left { grid-column: 1; min-width: 0; }
+  .card-pane-left {
+    grid-column: 1;
+    min-width: 0;
+  }
   .card-pane-right {
     grid-column: 2 !important;
     display: flex !important;
     flex-direction: column !important;
     min-width: 0 !important;
   }
-  section[data-tab="comparison"] {
+  section[data-tab='comparison'] {
     display: block !important;
     grid-column: 14 / 21;
     grid-row: 7;
   }
-  .col-4k-only { display: table-cell !important; }
+  .col-4k-only {
+    display: table-cell !important;
+  }
 }
 
 /* Pulse dot animation for freshness indicator */
 @keyframes pulse-dot {
-  0%, 100% { opacity: 1; }
-  50%       { opacity: 0.3; }
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.3;
+  }
 }
 .pulse-dot {
   animation: pulse-dot 1s infinite;
@@ -257,8 +289,12 @@
 
 /* 11-v — KPI microbar fill animation */
 @keyframes microbarFill {
-  from { width: 0%; }
-  to { width: var(--fill, 0%); }
+  from {
+    width: 0%;
+  }
+  to {
+    width: var(--fill, 0%);
+  }
 }
 .kpi-microbar {
   animation: microbarFill 0.6s ease-out forwards;
@@ -266,9 +302,18 @@
 
 /* 11-w — Alert pulse animation */
 @keyframes alertPulse {
-  0% { transform: scale(1); opacity: 1; }
-  50% { transform: scale(1.02); opacity: 0.95; }
-  100% { transform: scale(1); opacity: 1; }
+  0% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(1.02);
+    opacity: 0.95;
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
 }
 .alert-item {
   animation: alertPulse 0.4s ease-out;
@@ -282,8 +327,10 @@
 .quota-interval.high-velocity::after {
   content: '';
   position: absolute;
-  top: 0; left: -100%;
-  width: 50%; height: 100%;
+  top: 0;
+  left: -100%;
+  width: 50%;
+  height: 100%;
   background: linear-gradient(
     90deg,
     transparent 0%,
@@ -296,9 +343,15 @@
   pointer-events: none;
 }
 @keyframes spectral-shimmer {
-  0%   { left: -100%; }
-  100% { left: 200%; }
+  0% {
+    left: -100%;
+  }
+  100% {
+    left: 200%;
+  }
 }
 @media (prefers-reduced-motion: reduce) {
-  .quota-interval.high-velocity::after { animation: none; }
+  .quota-interval.high-velocity::after {
+    animation: none;
+  }
 }
