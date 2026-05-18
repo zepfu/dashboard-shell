@@ -14,8 +14,15 @@
  * Accessibility: the strip is decorative and is hidden from the a11y tree
  * via `aria-hidden="true"`. A sibling text element should convey the same
  * information for screen reader users.
+ *
+ * ## Tooltip (vertical mode)
+ * Pass `tooltipContent` to show a `HoverTooltip` (variant `health`) around
+ * the entire vertical strip. Per the Wave 11 spec, one tooltip covers the
+ * whole strip rather than per-cell affordances to avoid 288 simultaneous
+ * tooltip mounts.
  */
-import { memo, type ReactElement } from 'react'
+import { memo, type ReactElement, type ReactNode } from 'react'
+import { HoverTooltip } from './hover-tooltip'
 
 interface CellDef {
   color: string
@@ -29,6 +36,13 @@ export interface HealthStripProps {
    * - 'vertical': column strip, 12px wide, absolutely positioned right edge.
    */
   orientation?: 'horizontal' | 'vertical'
+  /**
+   * Optional tooltip content for the entire strip.
+   * Only applied when `orientation === 'vertical'`.
+   * When provided, wraps the strip in a {@link HoverTooltip} with
+   * `variant="health"` so the tip appears to the left of the strip.
+   */
+  tooltipContent?: ReactNode
 }
 
 const TOTAL_CELLS = 288
@@ -72,6 +86,7 @@ const HealthCell = memo(function HealthCell({
 export function HealthStrip({
   cells,
   orientation = 'horizontal',
+  tooltipContent,
 }: HealthStripProps): ReactElement {
   const isVertical = orientation === 'vertical'
 
@@ -89,7 +104,7 @@ export function HealthStrip({
       : clipped
 
   if (isVertical) {
-    return (
+    const stripEl = (
       <div
         aria-hidden='true'
         style={{
@@ -147,6 +162,16 @@ export function HealthStrip({
         </div>
       </div>
     )
+
+    if (tooltipContent !== undefined) {
+      return (
+        <HoverTooltip content={tooltipContent} variant='health'>
+          {stripEl}
+        </HoverTooltip>
+      )
+    }
+
+    return stripEl
   }
 
   // Horizontal (default) — 288-cell grid row
