@@ -12,10 +12,17 @@
  * - FLEET ACTIVITY moved inside card-pane-left using the pc-sub-title /
  *   pc-mini-table pattern consistent with TOKEN CACHE and REASONING sections.
  *
+ * Wave 14-D:
+ * - 14-D.1: Fleet activity refactored to 3-column grid (label | value | sublabel)
+ *   per mockup spec (lines 1101-1135). CSS class `fleet-activity-list` /
+ *   `fleet-activity-row` added to index.css Wave 14-D block.
+ * - 14-D.2: Aggregate health cells gain `filter: saturate(0.95) brightness(1.02)`
+ *   tint via `.provider-card.aggregate .health-strip-cell` CSS rule.
+ *
  * Implementation note: fleet activity rows use a semantic `<dl>` description
- * list where each label is a `<dt>` and each value is a `<dd>`. Tests query
- * labels with `{ exact: true }` to avoid substring ambiguity between "Tool
- * Calls" and "Invalid Tool Calls".
+ * list where each label is a `<dt>` and each value+sublabel are `<dd>` elements.
+ * Tests query labels with `{ exact: true }` to avoid substring ambiguity between
+ * "Tool Calls" and "Invalid Tool Calls".
  */
 import type { ReactElement } from 'react'
 import {
@@ -56,40 +63,34 @@ export interface AggregateCardProps {
 interface FleetRowProps {
   label: string
   value: string
-  className?: string
-  valueStyle?: React.CSSProperties
+  /** Optional sublabel (e.g. "+12% vs prior", "3.2/min"). Rendered in third column. */
+  sublabel?: string
+  /** When true, value is rendered in accent-hot (red) color. */
+  hot?: boolean
 }
 
-/** A single fleet activity row rendered as dt/dd pair. */
+/**
+ * A single fleet activity row rendered as dt + dd (value) + dd (sublabel).
+ * Uses `display: contents` so all three cells flow into the parent grid's
+ * three columns: `minmax(0, 1fr) 64px auto`.
+ */
 function FleetRow({
   label,
   value,
-  className,
-  valueStyle,
+  sublabel,
+  hot = false,
 }: FleetRowProps): ReactElement {
+  const rowClass = hot ? 'fleet-activity-row invalid' : 'fleet-activity-row'
+  const valClass = hot ? 'value accent-hot' : 'value'
   return (
-    <>
-      <dt
-        style={{
-          fontSize: '11px',
-          color: 'var(--fg-muted)',
-          margin: 0,
-        }}
-      >
-        {label}
-      </dt>
-      <dd
-        className={className}
-        style={{
-          fontFamily: 'monospace',
-          textAlign: 'right',
-          margin: 0,
-          ...valueStyle,
-        }}
-      >
-        {value}
+    <div className={rowClass}>
+      <dt className='label'>{label}</dt>
+      <dd className={valClass}>{value}</dd>
+      <dd className='sublabel'>
+        {/* TODO: populate with real "vs prior" / rate / status data when available */}
+        {sublabel ?? ''}
       </dd>
-    </>
+    </div>
   )
 }
 
@@ -122,16 +123,19 @@ export function AggregateCard({
   // CACHE and REASONING sections in ProviderCard.
   const fleetActivitySection = (
     <>
-      {/* Pulse dot — only when there are recent errors */}
+      {/* Pulse dot — only when there are recent errors.
+          6px per mockup line 1139-1140; animation + box-shadow per lines 1143-1144.
+          The `.pulse-dot` CSS class in index.css provides the keyframe animation. */}
       {hasRecentErrors && (
         <div
           className='pulse-dot'
           aria-label='recent errors detected'
           style={{
-            width: '8px',
-            height: '8px',
+            width: '6px',
+            height: '6px',
             borderRadius: '50%',
             background: 'var(--accent-hot)',
+            boxShadow: '0 0 4px rgba(239, 68, 68, 0.7)',
             marginBottom: '4px',
           }}
         />
@@ -157,20 +161,18 @@ export function AggregateCard({
       </h4>
 
       {/*
-       * Semantic <dl> description list for screen-reader accessibility.
-       * Each row is a <dt> (label) + <dd> (value) pair laid out with CSS
-       * grid. Tests use exact-match queries (`{ exact: true }`) to avoid
-       * ambiguity between "Tool Calls" and "Invalid Tool Calls".
+       * 3-column grid per mockup lines 1101-1135:
+       *   col 1: label (minmax(0, 1fr)) — muted, mono, 10px
+       *   col 2: value (64px) — right-aligned, fg color; accent-hot when invalid
+       *   col 3: sublabel (auto) — muted, 9px, lowercase, right-aligned
+       *
+       * Each <div class="fleet-activity-row"> uses `display: contents` so its
+       * dt/dd children flow directly into the grid columns.
+       *
+       * Tests use exact-match queries (`{ exact: true }`) to avoid ambiguity
+       * between "Tool Calls" and "Invalid Tool Calls".
        */}
-      <dl
-        className='pc-mini-table'
-        style={{
-          display: 'grid',
-          gridTemplateColumns: '1fr auto',
-          rowGap: '2px',
-          margin: 0,
-        }}
-      >
+      <dl className='fleet-activity-list'>
         <FleetRow
           label='Tool Calls'
           value={fleetActivity.toolCalls.toLocaleString()}
@@ -186,10 +188,7 @@ export function AggregateCard({
         <FleetRow
           label='Invalid Tool Calls'
           value={fleetActivity.invalidToolCalls.toLocaleString()}
-          className={invalidHot ? 'accent-hot' : undefined}
-          valueStyle={{
-            color: invalidHot ? '#ef4444' : 'var(--fg)',
-          }}
+          hot={invalidHot}
         />
       </dl>
     </>
