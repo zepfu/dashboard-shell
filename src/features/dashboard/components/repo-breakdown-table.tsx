@@ -267,11 +267,20 @@ export function RepoBreakdownTable({
                         : 'none'
                 }
 
+                /* 14-H.4: data-sort-dir drives CSS ::after pseudo (⇅/↑/↓ + amber) */
+                const sortDirAttr =
+                  sortDir === 'asc'
+                    ? 'asc'
+                    : sortDir === 'desc'
+                      ? 'desc'
+                      : undefined
+
                 return (
                   <th
                     key={header.id}
                     aria-sort={ariaSort}
                     data-sortable={isSortable ? 'true' : undefined}
+                    data-sort-dir={sortDirAttr}
                     onClick={
                       isSortable
                         ? header.column.getToggleSortingHandler()
@@ -298,7 +307,6 @@ export function RepoBreakdownTable({
                       header.column.columnDef.header,
                       header.getContext()
                     )}
-                    {sortDir === 'asc' ? ' ↑' : sortDir === 'desc' ? ' ↓' : ''}
                   </th>
                 )
               })}

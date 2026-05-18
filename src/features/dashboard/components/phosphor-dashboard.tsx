@@ -955,7 +955,8 @@ export default function PhosphorDashboard({
         padding: '0',
         display: 'flex',
         flexDirection: 'column',
-        gap: '4px',
+        /* 14-H §20 #4: mockup default gap is 8px (4px only at 1600+) */
+        gap: '8px',
       }}
     >
       {/* ── STATUS (Provider Health Summary) ─────────────────────────── */}

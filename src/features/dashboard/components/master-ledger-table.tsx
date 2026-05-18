@@ -387,12 +387,22 @@ export function MasterLedgerTable({
                   | { className?: string }
                   | undefined
 
+                /* 14-H.4: data-sort-dir drives CSS ::after pseudo (⇅/↑/↓ + amber)
+                   per mockup lines 2234-2255. Inline glyph removed. */
+                const sortDirAttr =
+                  sortDir === 'asc'
+                    ? 'asc'
+                    : sortDir === 'desc'
+                      ? 'desc'
+                      : undefined
+
                 return (
                   <th
                     key={header.id}
                     className={meta?.className}
                     aria-sort={ariaSort}
                     data-sortable={isSortable ? 'true' : undefined}
+                    data-sort-dir={sortDirAttr}
                     onClick={
                       isSortable
                         ? header.column.getToggleSortingHandler()
@@ -417,7 +427,6 @@ export function MasterLedgerTable({
                       header.column.columnDef.header,
                       header.getContext()
                     )}
-                    {sortDir === 'asc' ? ' ↑' : sortDir === 'desc' ? ' ↓' : ''}
                   </th>
                 )
               })}
