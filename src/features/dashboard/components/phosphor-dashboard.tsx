@@ -972,6 +972,19 @@ export default function PhosphorDashboard({
           aria-labelledby='section-models-heading'
         >
           <SectionTitle id='section-models-heading'>Model Ledger</SectionTitle>
+          {/* Wave 11 PR5 (C10): table caption below section title */}
+          <div
+            className='table-caption'
+            style={{
+              fontSize: '9px',
+              color: 'var(--fg-muted)',
+              textTransform: 'uppercase',
+              letterSpacing: '0.05em',
+              padding: '2px 0 4px',
+            }}
+          >
+            Per-model usage · sorted by cost
+          </div>
           {reportLoading ? (
             <SectionSkeleton height={200} />
           ) : (
