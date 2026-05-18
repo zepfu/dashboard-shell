@@ -6,7 +6,6 @@
  *
  * All tests expected to FAIL (red) — source file does not exist yet.
  */
-// @ts-expect-error -- module does not exist yet (red phase)
 import { render, screen } from '@testing-library/react'
 import { ProviderCard } from './provider-card'
 

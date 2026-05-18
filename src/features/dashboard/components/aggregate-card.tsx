@@ -5,10 +5,10 @@
  * tracking tool calls, git activity, and invalid tool calls. Optionally
  * renders a pulse-dot when recent errors are detected.
  *
- * Implementation note: the fleet activity labels ("Tool Calls", "Git Commits",
- * "Git Pushes", "Invalid Tool Calls") are rendered as direct text nodes in a
- * single parent element so that getByText(/Tool Calls/i) matches exactly one
- * element despite "Invalid Tool Calls" containing the same substring.
+ * Implementation note: fleet activity rows use a semantic `<dl>` description
+ * list where each label is a `<dt>` and each value is a `<dd>`. Tests query
+ * labels with `{ exact: true }` to avoid substring ambiguity between "Tool
+ * Calls" and "Invalid Tool Calls".
  */
 import type { ReactElement } from 'react'
 import {
@@ -39,6 +39,50 @@ export interface AggregateCardProps {
   quotas: QuotaRowConfig[]
   fleetActivity: FleetActivity
   anomalies?: AnomalyFlags
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+interface FleetRowProps {
+  label: string
+  value: string
+  className?: string
+  valueStyle?: React.CSSProperties
+}
+
+/** A single fleet activity row rendered as dt/dd pair. */
+function FleetRow({
+  label,
+  value,
+  className,
+  valueStyle,
+}: FleetRowProps): ReactElement {
+  return (
+    <>
+      <dt
+        style={{
+          fontSize: '11px',
+          color: 'var(--fg-muted)',
+          margin: 0,
+        }}
+      >
+        {label}
+      </dt>
+      <dd
+        className={className}
+        style={{
+          fontFamily: 'monospace',
+          textAlign: 'right',
+          margin: 0,
+          ...valueStyle,
+        }}
+      >
+        {value}
+      </dd>
+    </>
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -100,7 +144,7 @@ export function AggregateCard({
           padding: '8px 12px 12px',
         }}
       >
-        {/* Section header — exact string "FLEET ACTIVITY" for getByText('FLEET ACTIVITY') */}
+        {/* Section header */}
         <div
           style={{
             fontSize: '9px',
@@ -114,66 +158,40 @@ export function AggregateCard({
         </div>
 
         {/*
-         * All four fleet activity labels are direct text nodes of this one
-         * container element. This means getByText(/Tool Calls/i),
-         * getByText(/Git Commits/i), getByText(/Git Pushes/i), and
-         * getByText(/Invalid Tool Calls/i) all resolve to EXACTLY this one
-         * element, avoiding the ambiguity where "Invalid Tool Calls" would also
-         * match the simpler /Tool Calls/i regex if they were separate elements.
-         *
-         * Value spans are child elements (not text nodes), so getNodeText()
-         * only returns the label text, not the values.
+         * Semantic <dl> description list for screen-reader accessibility.
+         * Each row is a <dt> (label) + <dd> (value) pair laid out with CSS
+         * grid. Tests use exact-match queries (`{ exact: true }`) to avoid
+         * ambiguity between "Tool Calls" and "Invalid Tool Calls".
          */}
-        <div
+        <dl
           style={{
             display: 'grid',
             gridTemplateColumns: '1fr auto',
             rowGap: '2px',
-            fontSize: '11px',
+            margin: 0,
           }}
         >
-          {'Tool Calls'}
-          <span
-            style={{
-              fontFamily: 'monospace',
-              color: 'var(--fg)',
-              textAlign: 'right',
-            }}
-          >
-            {fleetActivity.toolCalls.toLocaleString()}
-          </span>
-          {'Git Commits'}
-          <span
-            style={{
-              fontFamily: 'monospace',
-              color: 'var(--fg)',
-              textAlign: 'right',
-            }}
-          >
-            {fleetActivity.gitCommits.toLocaleString()}
-          </span>
-          {'Git Pushes'}
-          <span
-            style={{
-              fontFamily: 'monospace',
-              color: 'var(--fg)',
-              textAlign: 'right',
-            }}
-          >
-            {fleetActivity.gitPushes.toLocaleString()}
-          </span>
-          {'Invalid Tool Calls'}
-          <span
+          <FleetRow
+            label='Tool Calls'
+            value={fleetActivity.toolCalls.toLocaleString()}
+          />
+          <FleetRow
+            label='Git Commits'
+            value={fleetActivity.gitCommits.toLocaleString()}
+          />
+          <FleetRow
+            label='Git Pushes'
+            value={fleetActivity.gitPushes.toLocaleString()}
+          />
+          <FleetRow
+            label='Invalid Tool Calls'
+            value={fleetActivity.invalidToolCalls.toLocaleString()}
             className={invalidHot ? 'accent-hot' : undefined}
-            style={{
-              fontFamily: 'monospace',
+            valueStyle={{
               color: invalidHot ? '#ef4444' : 'var(--fg)',
-              textAlign: 'right',
             }}
-          >
-            {fleetActivity.invalidToolCalls.toLocaleString()}
-          </span>
-        </div>
+          />
+        </dl>
       </div>
     </div>
   )

@@ -8,16 +8,11 @@
  *
  * All tests expected to FAIL (red) — source components do not exist yet.
  */
-// @ts-expect-error -- module does not exist yet (red phase)
 import { render, screen, fireEvent } from '@testing-library/react'
-// @ts-expect-error -- module does not exist yet (red phase)
 import { AlertsRail } from './alerts-rail'
 import AnchorBar from './anchor-bar'
-// @ts-expect-error -- module does not exist yet (red phase)
 import { DonutChart } from './donut-chart'
-// @ts-expect-error -- module does not exist yet (red phase)
 import { MasterLedgerTable } from './master-ledger-table'
-// @ts-expect-error -- module does not exist yet (red phase)
 import { HealthStrip } from './primitives/health-strip'
 
 // ---------------------------------------------------------------------------
