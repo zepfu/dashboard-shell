@@ -33,10 +33,21 @@ const mockHealthCells = Array.from({ length: 288 }, () => ({
   color: 'var(--card-2)',
 }))
 
-const mockQuotas = Array.from({ length: 8 }, () => ({
-  widthPct: 12.5,
-  severityClass: 'iv-ok',
-  highVelocity: false,
+// Wave 11 PR3 (11-h/11-i): QuotaBarGroup[] — each entry is a quota-type bar
+// with pre-built N=12 segment array.
+const makeSegments = () =>
+  Array.from({ length: 12 }, (_, i) => ({
+    widthPct: 100 / 12,
+    severityClass: 'iv-ok',
+    highVelocity: i === 0,
+  }))
+
+const mockQuotas = Array.from({ length: 1 }, () => ({
+  label: 'Weekly',
+  consumedPct: 30,
+  remainingPct: 70,
+  resetAt: '2026-05-19',
+  segments: makeSegments(),
 }))
 
 // ---------------------------------------------------------------------------
@@ -159,6 +170,8 @@ test('test_provider_card_renders_health_strip', () => {
 })
 
 test('test_provider_card_quota_bar_renders_intervals', () => {
+  // Wave 11 PR3 (11-h/11-i): mockQuotas now contains 1 QuotaBarGroup with
+  // N=12 segments, so the rendered interval count is 1 × 12 = 12.
   const { container } = render(
     <ProviderCard
       config={anthropicConfig}
@@ -173,7 +186,7 @@ test('test_provider_card_quota_bar_renders_intervals', () => {
       ? container.querySelectorAll('.quota-interval')
       : container.querySelectorAll('[data-testid="quota-interval"]')
 
-  expect(intervals.length).toBe(8)
+  expect(intervals.length).toBe(12)
 })
 
 test('test_provider_card_anomaly_badge_early_reset', () => {
