@@ -1,9 +1,16 @@
 /**
  * AlertsRail — real-time alert feed for Phosphor Atlas.
  *
- * Renders a list of alert items with semantic colour coding derived from
- * Phosphor accent tokens. The container is marked aria-live="polite" so
- * screen readers announce new alerts automatically.
+ * Wave 9 changes (v9.7 reference parity):
+ * - Added "⚠ Alerts" panel title with border-bottom.
+ * - early-reset: lime green border (#a3e635), teal→amber gradient background.
+ * - cache-stale: amber border, diagonal stripe repeating-linear-gradient.
+ * - Alert gap reduced to 4px (was 0.5rem/8px).
+ * - max-height: calc(100vh - 60px) with overflow-y: auto scroll.
+ * - Panel background: var(--card), border: 1px solid var(--border).
+ *
+ * The container is marked aria-live="polite" so screen readers announce
+ * new alerts automatically.
  */
 import type { ReactElement } from 'react'
 
@@ -18,13 +25,60 @@ interface AlertsRailProps {
   alerts: AlertItem[]
 }
 
-/** Maps alert type to the primary accent colour token. */
-const ALERT_COLOR: Record<AlertItem['type'], string> = {
-  'rate-limit': 'var(--accent-hot)',
-  budget: 'var(--accent-hot)',
-  'early-reset': 'var(--accent-warm)',
-  'cache-stale': 'var(--accent-cool)',
-  info: 'var(--fg-muted)',
+/** Returns inline styles for an alert item based on its type. */
+function alertItemStyle(type: AlertItem['type']): React.CSSProperties {
+  const base: React.CSSProperties = {
+    padding: '6px 8px',
+    borderRadius: '1px',
+    borderLeft: '2px solid',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+  }
+
+  switch (type) {
+    case 'rate-limit':
+    case 'budget':
+      return {
+        ...base,
+        borderLeftColor: 'var(--accent-hot)',
+        color: 'var(--accent-hot)',
+        background: 'var(--card-2)',
+      }
+    case 'early-reset':
+      return {
+        ...base,
+        borderLeftColor: '#a3e635',
+        color: '#d9f99d',
+        background:
+          'linear-gradient(90deg, rgba(20,184,166,0.22) 0%, rgba(245,158,11,0.18) 100%)',
+        whiteSpace: 'normal',
+        overflow: 'visible',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '2px',
+      }
+    case 'cache-stale':
+      return {
+        ...base,
+        borderLeftColor: 'var(--accent-warm)',
+        color: 'var(--accent-warm)',
+        background:
+          'repeating-linear-gradient(135deg, rgba(245,158,11,0.12) 0 4px, rgba(245,158,11,0.04) 4px 8px), var(--card-2)',
+        whiteSpace: 'normal',
+        overflow: 'visible',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '2px',
+      }
+    case 'info':
+      return {
+        ...base,
+        borderLeftColor: 'var(--accent-cool)',
+        color: 'var(--accent-cool)',
+        background: 'var(--card-2)',
+      }
+  }
 }
 
 /**
@@ -34,7 +88,7 @@ const ALERT_COLOR: Record<AlertItem['type'], string> = {
  * tests querying either class succeed.
  */
 function alertClassNames(type: AlertItem['type']): string {
-  const base = `alert-${type}`
+  const base = `alert-item alert-${type}`
   if (type === 'rate-limit') {
     return `${base} alert-critical`
   }
@@ -42,33 +96,89 @@ function alertClassNames(type: AlertItem['type']): string {
 }
 
 /**
- * AlertsRail renders a stack of alert items with live-region semantics.
+ * AlertsRail renders a stack of alert items with live-region semantics and
+ * the v9.7 reference panel styling.
  */
 export function AlertsRail({ alerts }: AlertsRailProps): ReactElement {
   return (
     <div
       aria-live='polite'
-      style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}
+      style={{
+        background: 'var(--card)',
+        border: '1px solid var(--border)',
+        padding: '8px',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '4px',
+        fontSize: '10px',
+        maxHeight: 'calc(100vh - 60px)',
+        overflowY: 'auto',
+        height: '100%',
+      }}
     >
-      {alerts.map((alert, index) => (
-        <div
-          key={index}
-          className={alertClassNames(alert.type)}
-          style={{
-            borderLeft: `3px solid ${ALERT_COLOR[alert.type]}`,
-            padding: '0.5rem 0.75rem',
-            background: 'var(--card)',
-            color: 'var(--fg)',
-          }}
-        >
-          <div style={{ fontWeight: 600 }}>{alert.head}</div>
-          {alert.sub !== undefined && (
-            <div style={{ color: 'var(--fg-muted)', fontSize: '0.75rem' }}>
-              {alert.sub}
+      {/* Panel title */}
+      <div
+        className='alerts-title'
+        style={{
+          fontSize: '9px',
+          color: 'var(--fg-muted)',
+          textTransform: 'uppercase',
+          letterSpacing: '0.05em',
+          marginBottom: '4px',
+          borderBottom: '1px solid var(--border)',
+          paddingBottom: '4px',
+        }}
+      >
+        ⚠ Alerts
+      </div>
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+        {alerts.length === 0 ? (
+          <div
+            style={{
+              fontSize: '9px',
+              color: 'var(--fg-muted)',
+              padding: '4px 0',
+              fontStyle: 'italic',
+            }}
+          >
+            No active alerts
+          </div>
+        ) : (
+          alerts.map((alert, index) => (
+            <div
+              key={index}
+              className={alertClassNames(alert.type)}
+              style={alertItemStyle(alert.type)}
+            >
+              <div
+                className='alert-head'
+                style={{
+                  fontWeight: 600,
+                  fontSize: '10px',
+                  letterSpacing: '0.02em',
+                }}
+              >
+                {alert.head}
+              </div>
+              {alert.sub !== undefined && (
+                <div
+                  className='alert-sub'
+                  style={{
+                    fontSize: '9px',
+                    color: 'var(--fg-muted)',
+                    fontFamily: 'var(--font-mono)',
+                    fontWeight: 400,
+                    letterSpacing: '0.01em',
+                  }}
+                >
+                  {alert.sub}
+                </div>
+              )}
             </div>
-          )}
-        </div>
-      ))}
+          ))
+        )}
+      </div>
     </div>
   )
 }
