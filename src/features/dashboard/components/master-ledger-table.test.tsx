@@ -107,14 +107,12 @@ test('test_click_sort_toggles_ascending', () => {
   expect(firstDataRow.textContent).toContain('claude-3')
 })
 
-test('test_totals_row_present_in_tfoot', () => {
+test('test_no_tfoot_row', () => {
+  // Wave 11 PR5 (C11): tfoot removed — was off-by-N and had incorrect layout
   const { container } = render(<MasterLedgerTable rows={mockRows} />)
 
-  const tfootRow = container.querySelector('tfoot tr')
-  expect(tfootRow).not.toBeNull()
-
-  // Total tokens_in = 1000 + 5000 + 2000 = 8000
-  expect(tfootRow!.textContent).toContain('8000')
+  const tfoot = container.querySelector('tfoot')
+  expect(tfoot).toBeNull()
 })
 
 test('test_sparkline_column_renders_svg', () => {
