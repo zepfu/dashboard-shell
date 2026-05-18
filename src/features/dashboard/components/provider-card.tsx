@@ -603,6 +603,25 @@ export function ProviderCard({
                       >
                         {formatResetDistance(quotaBar.resetAt)}
                       </span>
+                      {/* 14-E.3: quota-anomaly-sub row spanning all 3 cols per
+                          mockup line 425-436. Rendered only when anomalies exist. */}
+                      {(showEarlyReset || showCacheStale) && (
+                        <span className='quota-anomaly-sub'>
+                          {showEarlyReset && (
+                            <>
+                              <span className='anomaly-glyph-reset'>⟲</span>
+                              {'early reset '}
+                            </>
+                          )}
+                          {showEarlyReset && showCacheStale && ' · '}
+                          {showCacheStale && (
+                            <>
+                              <span className='anomaly-glyph-cache'>⚠</span>
+                              {'cache stale'}
+                            </>
+                          )}
+                        </span>
+                      )}
                     </div>
                     <QuotaIntervalBar
                       intervals={quotaBar.segments}

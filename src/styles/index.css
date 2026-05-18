@@ -922,4 +922,19 @@
 .quota-anomaly-icon.icon-reset { color: #a3e635; }
 .quota-anomaly-icon.icon-cache { color: var(--accent-warm); }
 
+/* 14-E.3: quota anomaly subtitle per mockup lines 425-436                    */
+/*   Spans all 3 grid columns below the label/pct/reset row.                  */
+.quota-anomaly-sub {
+  grid-column: 1 / 4;
+  font-family: var(--font-mono);
+  font-size: 8px;
+  color: var(--fg-muted);
+  letter-spacing: 0.02em;
+  margin: -1px 0 2px 0;
+  line-height: 1.2;
+  opacity: 0.85;
+}
+.anomaly-glyph-reset { color: #a3e635; margin-right: 3px; }
+.anomaly-glyph-cache { color: var(--accent-warm); margin-right: 3px; }
+
 /* End Wave 14-E (partial — keyframe rewrites in next commit) */
