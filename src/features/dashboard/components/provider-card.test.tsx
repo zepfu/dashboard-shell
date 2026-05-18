@@ -92,8 +92,12 @@ test('test_provider_card_renders_11_metrics', () => {
     'Traces',
   ]
 
+  // Wave 12 Fix 2: healthTooltipContent now repeats 'P95', 'Errors', 'Requests'
+  // in the HoverTooltip content panel, so getByText (single-match) would throw.
+  // Use getAllByText and assert at least one match exists.
   for (const label of metricLabels) {
-    expect(screen.getByText(new RegExp(label, 'i'))).toBeInTheDocument()
+    const matches = screen.getAllByText(new RegExp(label, 'i'))
+    expect(matches.length).toBeGreaterThanOrEqual(1)
   }
 })
 
