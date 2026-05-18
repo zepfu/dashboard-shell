@@ -1,25 +1,14 @@
 /**
- * Shimmer animation for high-velocity quota intervals.
+ * Quota interval bar CSS module.
  *
- * The animation is disabled when the user has requested reduced motion,
- * per WCAG 2.1 Success Criterion 2.3.3 (Animation from Interactions).
+ * Wave 10 D17: Removed local shimmer keyframes and .high-velocity animation
+ * rule that conflicted with the global `iv-shimmer 2.6s linear infinite` rule
+ * defined in index.css. The global rule is the single source of truth for
+ * high-velocity shimmer animation so the cadence matches the v9.7 reference.
+ *
+ * Reduced-motion override remains here since it targets the global animation
+ * specifically for this component's usage context.
  */
-
-@keyframes shimmer {
-  0% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.6;
-  }
-  100% {
-    opacity: 1;
-  }
-}
-
-.high-velocity {
-  animation: shimmer 1.2s ease-in-out infinite;
-}
 
 @media (prefers-reduced-motion: reduce) {
   .high-velocity {

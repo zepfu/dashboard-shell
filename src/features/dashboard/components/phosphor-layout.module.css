@@ -13,38 +13,39 @@
 /* 1280px — collapse alerts panel on smaller desktops */
 @media (max-width: 1280px) {
   .phosphor-layout {
-    grid-template-columns: 220px 1fr;
+    grid-template-columns: 1fr;
   }
 }
 
-/* 1600–2559px — compress sidebar+alerts to give content room
-   Reference: sidebar 200px, alerts 240px */
+/* 1600–2559px — compress alerts to give content room; alerts: 240px */
 @media (min-width: 1600px) and (max-width: 2559px) {
   .phosphor-layout {
-    grid-template-columns: 200px 1fr 240px;
+    grid-template-columns: 1fr 240px;
   }
 }
 
-/* 2560px — 2K reference: 260px + 1fr + 340px */
+/* 2560px — 2K reference: 1fr + 340px */
 @media (min-width: 2560px) {
   .phosphor-layout {
-    grid-template-columns: 260px 1fr 340px;
+    grid-template-columns: 1fr 340px;
     gap: 4px;
   }
 }
 
-/* 3840px — 4K: 300px + 1fr + 380px */
+/* 3840px — 4K: 1fr + 380px */
 @media (min-width: 3840px) {
   .phosphor-layout {
-    grid-template-columns: 300px 1fr 380px;
+    grid-template-columns: 1fr 380px;
     gap: 6px;
+    padding: 16px 20px;
   }
 }
 
-/* 5120px — 5K ultrawide: 340px + 1fr + 420px */
+/* 5120px — 5K ultrawide: 1fr + 420px */
 @media (min-width: 5120px) {
   .phosphor-layout {
-    grid-template-columns: 340px 1fr 420px;
+    grid-template-columns: 1fr 420px;
     gap: 8px;
+    padding: 20px 24px;
   }
 }

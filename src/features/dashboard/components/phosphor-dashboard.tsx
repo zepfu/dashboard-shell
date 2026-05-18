@@ -36,6 +36,7 @@ import { ClientBreakdownTable, type ClientRow } from './client-breakdown-table'
 import { ComparisonPanel } from './comparison-panel'
 import { DonutChart, type SliceConfig } from './donut-chart'
 import { MasterLedgerTable, type ModelRow } from './master-ledger-table'
+import styles from './phosphor-dashboard.module.css'
 import {
   ProviderCard,
   type ProviderCardConfig,
@@ -195,9 +196,16 @@ function padHealthCells(
 
 /**
  * Determines the health cell color for a single latency health row based on
- * upstream P95 latency and provider error counts.
+ * upstream P95 latency, provider error counts, and attribution gaps.
+ *
+ * Wave 10 D16: cat-miss teal cells for attribution-gap rows.
  */
 function healthCellColor(row: UsageReportProviderLatencyHealthRow): string {
+  // D16: attribution-gap cells — no upstream latency data and no requests
+  if (row.requests === 0 || row.missing_upstream_latency > 0) {
+    return 'rgba(20, 184, 166, 0.6)' // cat-miss teal
+  }
+
   const errorCount =
     row.provider_error_events +
     row.provider_5xx_events +
@@ -747,46 +755,12 @@ export default function PhosphorDashboard({
     <div
       className='phosphor-dashboard main-content'
       style={{
-        padding: '4px',
+        padding: '0',
         display: 'flex',
         flexDirection: 'column',
         gap: '4px',
       }}
     >
-      {/* ── STATUS ────────────────────────────────────────────────────── */}
-      <section
-        id='status'
-        data-tab='status'
-        aria-labelledby='section-status-heading'
-      >
-        <SectionTitle id='section-status-heading'>Status</SectionTitle>
-        {reportLoading ? (
-          <SectionSkeleton height={180} />
-        ) : (
-          <AggregateCard
-            config={aggregateConfig}
-            data={aggregateMetrics}
-            healthCells={aggregateHealthCells}
-            quotas={[]}
-            fleetActivity={{
-              toolCalls: summary?.tool_calls ?? 0,
-              gitCommits: summary?.git_commit ?? 0,
-              gitPushes: summary?.git_push ?? 0,
-              invalidToolCalls: 0,
-              recentErrors: healthRows.reduce(
-                (s, r) =>
-                  s +
-                  r.provider_error_events +
-                  r.provider_5xx_events +
-                  r.provider_timeout_events,
-                0
-              ),
-            }}
-            anomalies={anomalies}
-          />
-        )}
-      </section>
-
       {/* ── TOKENS ────────────────────────────────────────────────────── */}
       <section
         id='tokens'
@@ -804,6 +778,8 @@ export default function PhosphorDashboard({
       </section>
 
       {/* ── MODELS (ProviderCards — v9.7: models section holds provider cards) ── */}
+      {/* D3: AggregateCard is injected as the last item in the provider grid */}
+      {/* so at 2100px+ it sits as the 8th card in a single 8-column row. */}
       <section
         id='models'
         data-tab='models'
@@ -812,14 +788,9 @@ export default function PhosphorDashboard({
         <SectionTitle id='section-models-heading'>Models</SectionTitle>
         {reportLoading ? (
           <SectionSkeleton height={120} />
-        ) : providers.length > 0 ? (
+        ) : (
           <div
-            className='provider-summary'
-            style={{
-              display: 'grid',
-              gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
-              gap: '4px',
-            }}
+            className={`provider-summary ${styles['provider-summary-grid']}`}
           >
             {providers.map((provider) => {
               const config: ProviderCardConfig = {
@@ -843,17 +814,29 @@ export default function PhosphorDashboard({
                 />
               )
             })}
+            {/* D3: AggregateCard as 8th peer — Fleet totals in the provider row */}
+            <AggregateCard
+              config={aggregateConfig}
+              data={aggregateMetrics}
+              healthCells={aggregateHealthCells}
+              quotas={[]}
+              fleetActivity={{
+                toolCalls: summary?.tool_calls ?? 0,
+                gitCommits: summary?.git_commit ?? 0,
+                gitPushes: summary?.git_push ?? 0,
+                invalidToolCalls: 0,
+                recentErrors: healthRows.reduce(
+                  (s, r) =>
+                    s +
+                    r.provider_error_events +
+                    r.provider_5xx_events +
+                    r.provider_timeout_events,
+                  0
+                ),
+              }}
+              anomalies={anomalies}
+            />
           </div>
-        ) : (
-          <p
-            style={{
-              fontSize: '0.75rem',
-              color: 'var(--fg-muted)',
-              padding: '4px 0',
-            }}
-          >
-            No provider data returned for this range.
-          </p>
         )}
       </section>
 
@@ -914,11 +897,12 @@ export default function PhosphorDashboard({
       </section>
 
       {/* ── COMPARISON (4K+ only) ─────────────────────────────────────── */}
+      {/* D19: hidden by default; CSS module shows at ≥3840px */}
       <section
         id='comparison'
         data-tab='comparison'
         aria-labelledby='section-comparison-heading'
-        style={{ display: 'none' }}
+        className={styles['comparison-section']}
       >
         <SectionTitle id='section-comparison-heading'>
           Provider Comparison
