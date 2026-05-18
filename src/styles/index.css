@@ -150,28 +150,15 @@
    These classes are applied by QuotaIntervalBar via buildQuotaIntervals().
    Class names must match the iv-* convention from the v9.7 reference mockup.
    ───────────────────────────────────────────────────────────────── */
-.quota-interval { flex: 1 1 0; }
+.quota-interval { flex: 1 1 0; border-right: 1px solid var(--card-2); }
+.quota-interval:last-child { border-right: none; }
 .quota-interval.iv-0-5   { background: #1e3a5f; opacity: 1; }
 .quota-interval.iv-5-10  { background: #3b82f6; opacity: 0.8; }
 .quota-interval.iv-10-25 { background: #14b8a6; opacity: 1; }
 .quota-interval.iv-25-50 { background: #cc7e0a; opacity: 1; }
 .quota-interval.iv-50-p  { background: #cc3838; opacity: 1; }
 
-/* Velocity shimmer on high-velocity interval segments */
-@keyframes iv-shimmer {
-  0%, 100% { opacity: 1; }
-  50%       { opacity: 0.55; }
-}
-
-.quota-interval.high-velocity {
-  animation: iv-shimmer 2.6s linear infinite;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .quota-interval.high-velocity {
-    animation: none;
-  }
-}
+/* Velocity shimmer removed — replaced by spectral-shimmer ::after gradient in Wave 11 PR3 */
 
 /* Provider summary grid responsive breakpoints */
 .provider-summary {
@@ -282,4 +269,33 @@
 }
 .alert-item {
   animation: alertPulse 0.4s ease-out;
+}
+
+/* Wave 11 PR3: spectral-shimmer + multi-segment quotas */
+.quota-interval.high-velocity {
+  position: relative;
+  overflow: hidden;
+}
+.quota-interval.high-velocity::after {
+  content: '';
+  position: absolute;
+  top: 0; left: -100%;
+  width: 50%; height: 100%;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(245, 158, 11, 0.4) 30%,
+    rgba(255, 255, 255, 0.6) 50%,
+    rgba(245, 158, 11, 0.4) 70%,
+    transparent 100%
+  );
+  animation: spectral-shimmer 2.6s linear infinite;
+  pointer-events: none;
+}
+@keyframes spectral-shimmer {
+  0%   { left: -100%; }
+  100% { left: 200%; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .quota-interval.high-velocity::after { animation: none; }
 }
