@@ -16,7 +16,13 @@ import type { ReactElement } from 'react'
 
 /** Discriminated union of supported alert categories. */
 export type AlertItem = {
-  type: 'rate-limit' | 'budget' | 'early-reset' | 'cache-stale' | 'info'
+  type:
+    | 'rate-limit'
+    | 'budget'
+    | 'early-reset'
+    | 'cache-stale'
+    | 'info'
+    | 'warn'
   head: string
   sub?: string
 }
@@ -76,6 +82,13 @@ function alertItemStyle(type: AlertItem['type']): React.CSSProperties {
         ...base,
         borderLeftColor: 'var(--accent-cool)',
         color: 'var(--accent-cool)',
+        background: 'var(--card-2)',
+      }
+    case 'warn':
+      return {
+        ...base,
+        borderLeftColor: 'var(--accent-warm)',
+        color: 'var(--accent-warm)',
         background: 'var(--card-2)',
       }
   }
