@@ -101,22 +101,34 @@ export function ClientBreakdownTable({
   })
 
   return (
-    <div style={{ width: '100%', overflowX: 'auto' }}>
+    <div
+      className='client-table-wrapper'
+      style={{
+        width: '100%',
+        overflowX: 'auto',
+        overflowY: 'auto',
+        maxHeight: '160px',
+        background: 'var(--card)',
+        border: '1px solid var(--border)',
+      }}
+    >
       <table
         aria-label='Client usage breakdown'
+        className='client-table'
         style={{
           width: '100%',
           borderCollapse: 'collapse',
-          fontSize: '11px',
-          fontFamily: 'inherit',
+          fontSize: '10px',
+          fontFamily: 'var(--font-mono)',
         }}
       >
         <thead
           style={{
             position: 'sticky',
             top: 0,
-            background: 'var(--card)',
-            zIndex: 1,
+            zIndex: 10,
+            background: 'var(--card-2)',
+            borderBottom: '1px solid rgba(245,158,11,0.25)',
           }}
         >
           {table.getHeaderGroups().map((headerGroup) => (
@@ -145,11 +157,15 @@ export function ClientBreakdownTable({
                         : undefined
                     }
                     style={{
-                      padding: '4px 8px',
+                      padding: '4px 6px',
                       textAlign: 'left',
                       fontWeight: 600,
-                      color: 'var(--fg-muted)',
-                      borderBottom: '1px solid var(--border)',
+                      color: 'var(--accent-chrome)',
+                      background: 'var(--card-2)',
+                      fontSize: '9px',
+                      textTransform: 'uppercase',
+                      letterSpacing: '0.04em',
+                      borderRight: '1px solid var(--border)',
                       cursor: isSortable ? 'pointer' : 'default',
                       userSelect: 'none',
                       whiteSpace: 'nowrap',
@@ -176,18 +192,19 @@ export function ClientBreakdownTable({
               {row.getVisibleCells().map((cell) => {
                 // Attach data-client to the <td> for the client column
                 const isClientCol = cell.column.id === 'client'
+                const isText =
+                  cell.column.id === 'client' || cell.column.id === 'version'
                 return (
                   <td
                     key={cell.id}
                     data-client={isClientCol ? row.original.client : undefined}
                     style={{
-                      padding: '4px 8px',
-                      fontFamily:
-                        cell.column.id !== 'client' &&
-                        cell.column.id !== 'version'
-                          ? 'monospace'
-                          : 'inherit',
+                      padding: '3px 6px',
+                      fontFamily: 'var(--font-mono)',
                       color: 'var(--fg)',
+                      borderRight: '1px solid var(--border)',
+                      textAlign: isText ? 'left' : 'right',
+                      whiteSpace: 'nowrap',
                     }}
                   >
                     {flexRender(cell.column.columnDef.cell, cell.getContext())}

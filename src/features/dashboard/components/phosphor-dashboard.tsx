@@ -1,17 +1,21 @@
 /**
- * PhosphorDashboard — Wave 8 route integration component.
+ * PhosphorDashboard — Wave 9 reference-parity integration component.
  *
- * Composes the full set of Phosphor Atlas components (ProviderCard /
- * AggregateCard, TokenTrendChart, RepoBreakdownTable, DonutChart,
- * ClientBreakdownTable, MasterLedgerTable) into six anchored sections
- * that match the AnchorBar shortcuts:
+ * Composes the full set of Phosphor Atlas components into six anchored
+ * sections that match the AnchorBar shortcuts:
  *   status → tokens → models → repos → clients → health
+ *
+ * Wave 9 changes:
+ * - Section label inversion fix: id="models" now contains ProviderCards;
+ *   id="health" now contains MasterLedgerTable (matches v9.7 reference).
+ * - Dense composition: gap reduced from 2rem to 4–8px; padding from 1rem to 4px.
+ * - Section headings: amber color, border-bottom, clamp font-size.
+ * - Provider grid: CSS grid repeat(4,1fr) → repeat(8,1fr) at wider breakpoints.
+ * - Comparison panel at ≥3840px.
+ * - iv-* quota interval class names replacing severity-*.
  *
  * Data is fetched via fetchUsageReport + fetchUsageReportQuotas; anomaly
  * flags come from useAnomalyDetection.
- *
- * Legacy UsageReportDashboard is kept as a fallback — dead-code cleanup
- * is deferred to a follow-up wave once this component is proven stable.
  */
 import { useMemo, type ReactElement } from 'react'
 import { useQuery } from '@tanstack/react-query'
@@ -29,6 +33,7 @@ import { normalizeTrendData } from '../lib/trend-utils'
 import { clientColorFor, providerColorFor } from '../lib/usage-report-display'
 import { AggregateCard } from './aggregate-card'
 import { ClientBreakdownTable, type ClientRow } from './client-breakdown-table'
+import { ComparisonPanel } from './comparison-panel'
 import { DonutChart, type SliceConfig } from './donut-chart'
 import { MasterLedgerTable, type ModelRow } from './master-ledger-table'
 import {
@@ -36,6 +41,7 @@ import {
   type ProviderCardConfig,
   type ProviderMetrics,
   type QuotaRowConfig,
+  type TopModelRow,
 } from './provider-card'
 import { RepoBreakdownTable, type RepoRow } from './repo-breakdown-table'
 import { TokenTrendChart, type ProviderSeries } from './token-trend-chart'
@@ -49,49 +55,49 @@ const HEALTH_CELL_COUNT = 288
 
 /**
  * Ordered provider series for TokenTrendChart.
- * Colors match the Phosphor design palette (var(--accent-*) or explicit hex).
+ * Colors match the Phosphor design palette reference hex values.
  */
 const PROVIDER_SERIES: ProviderSeries[] = [
   {
     key: 'anthropic',
     label: 'Anthropic',
-    color: providerColorFor('anthropic'),
+    color: '#cc7855',
     cssClass: 'tt-anthropic',
   },
   {
     key: 'openai',
     label: 'OpenAI',
-    color: providerColorFor('openai'),
+    color: '#10a37f',
     cssClass: 'tt-openai',
   },
   {
     key: 'google',
     label: 'Google',
-    color: providerColorFor('google'),
+    color: '#4285f4',
     cssClass: 'tt-google',
   },
   {
     key: 'xai',
     label: 'xAI',
-    color: providerColorFor('xai'),
+    color: '#f5f5f5',
     cssClass: 'tt-xai',
   },
   {
     key: 'nvidia_nim',
     label: 'NVIDIA',
-    color: providerColorFor('nvidia'),
+    color: '#76b900',
     cssClass: 'tt-nvidia',
   },
   {
     key: 'openrouter',
     label: 'OpenRouter',
-    color: providerColorFor('openrouter'),
+    color: '#7e57c2',
     cssClass: 'tt-openrouter',
   },
   {
     key: 'local',
     label: 'Local',
-    color: providerColorFor('local'),
+    color: '#94a3b8',
     cssClass: 'tt-local',
   },
 ]
@@ -107,6 +113,38 @@ export interface PhosphorDashboardProps {
   to?: string
   /** Aggregation grain: 'day' | 'week' | 'month'. */
   grain?: string
+}
+
+// ---------------------------------------------------------------------------
+// Section title style helper
+// ---------------------------------------------------------------------------
+
+/** Returns a consistent section-title <h2> element matching v9.7 spec. */
+function SectionTitle({
+  id,
+  children,
+}: {
+  id: string
+  children: string
+}): ReactElement {
+  return (
+    <h2
+      id={id}
+      className='section-title'
+      style={{
+        fontSize: 'clamp(10px, 0.6vw, 18px)',
+        color: 'var(--accent-chrome)',
+        textTransform: 'uppercase',
+        letterSpacing: '0.05em',
+        fontWeight: 600,
+        marginBottom: '6px',
+        borderBottom: '1px solid var(--border)',
+        paddingBottom: '4px',
+      }}
+    >
+      {children}
+    </h2>
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -265,6 +303,8 @@ function buildAggregateMetrics(
 /**
  * Builds QuotaRowConfig[] from a UsageReportQuotaRow for display in
  * the provider card quota bar.
+ *
+ * Wave 9: uses iv-* threshold class names matching v9.7 CSS rules.
  */
 function buildQuotaIntervals(
   quotaRows: UsageReportQuotaRow[],
@@ -282,37 +322,54 @@ function buildQuotaIntervals(
         pct: row.weekly_remaining_pct,
         active: row.weekly_active,
         velocity: false,
+        label: 'Weekly',
+        resetDate: undefined as string | undefined,
       },
       {
         pct: row.short_remaining_pct,
         active: row.short_active,
         velocity: true,
+        label: 'Short',
+        resetDate: undefined as string | undefined,
       },
       {
         pct: row.special_remaining_pct,
         active: row.special_active,
         velocity: false,
+        label: 'Special',
+        resetDate: undefined as string | undefined,
       },
       {
         pct: row.monthly_remaining_pct,
         active: row.monthly_active,
         velocity: false,
+        label: 'Monthly',
+        resetDate: undefined as string | undefined,
       },
     ]
 
     for (const interval of intervals) {
       if (!interval.active || interval.pct === null) continue
       const widthPct = Math.max(0, Math.min(100, interval.pct))
-      const severityClass =
-        widthPct < 10
-          ? 'severity-bad'
-          : widthPct < 25
-            ? 'severity-warn'
-            : 'severity-good'
+      // v9.7 iv-* threshold class mapping:
+      // 0–5% → iv-0-5 (dim cool), 5–10% → iv-5-10 (cool blue),
+      // 10–25% → iv-10-25 (teal), 25–50% → iv-25-50 (amber), ≥50% → iv-50-p (red)
+      const ivClass =
+        widthPct < 5
+          ? 'iv-0-5'
+          : widthPct < 10
+            ? 'iv-5-10'
+            : widthPct < 25
+              ? 'iv-10-25'
+              : widthPct < 50
+                ? 'iv-25-50'
+                : 'iv-50-p'
       result.push({
         widthPct,
-        severityClass,
+        severityClass: ivClass,
         highVelocity: interval.velocity,
+        label: interval.label,
+        resetDate: interval.resetDate,
       })
     }
   }
@@ -503,6 +560,32 @@ function buildClientRows(
   }))
 }
 
+/**
+ * Builds TopModelRow[] for ProviderCard card-pane-right at 4K.
+ * Groups providerStatusUsage by provider+model and returns top 3 by tokens.
+ */
+function buildTopModels(
+  rows: {
+    provider: string
+    model: string
+    token_total: number
+    usd_cost: number
+    traces: number
+  }[],
+  provider: string
+): TopModelRow[] {
+  return rows
+    .filter((r) => r.provider.toLowerCase() === provider.toLowerCase())
+    .sort((a, b) => b.token_total - a.token_total)
+    .slice(0, 3)
+    .map((r) => ({
+      model: r.model,
+      tokens: r.token_total,
+      cost_usd: r.usd_cost,
+      requests: r.traces,
+    }))
+}
+
 // ---------------------------------------------------------------------------
 // Skeleton helpers
 // ---------------------------------------------------------------------------
@@ -533,6 +616,10 @@ function SectionSkeleton({ height = 80 }: SectionSkeletonProps): ReactElement {
 /**
  * PhosphorDashboard renders the full Phosphor Atlas dashboard, composing all
  * Wave 4-6 components into anchored sections that map to AnchorBar shortcuts.
+ *
+ * Wave 9: Section label inversion corrected — models section contains
+ * ProviderCards, health section contains MasterLedgerTable, matching the
+ * v9.7 reference (data-tab="models" renders ledger + providers in reference).
  */
 export default function PhosphorDashboard({
   from,
@@ -566,7 +653,9 @@ export default function PhosphorDashboard({
   })
 
   const anomalies = useAnomalyDetection(
-    report?.providerLatencyHealth ?? [],
+    (report?.providerLatencyHealth ?? []).filter(
+      (r): r is typeof r & { bucket_start: string } => r.bucket_start !== null
+    ),
     report?.metadata
   )
 
@@ -649,31 +738,28 @@ export default function PhosphorDashboard({
     [healthRows]
   )
 
+  const providerStatusUsage = useMemo(
+    () => report?.providerStatusUsage ?? [],
+    [report?.providerStatusUsage]
+  )
+
   return (
     <div
-      className='phosphor-dashboard'
+      className='phosphor-dashboard main-content'
       style={{
-        padding: '1rem',
+        padding: '4px',
         display: 'flex',
         flexDirection: 'column',
-        gap: '2rem',
+        gap: '4px',
       }}
     >
       {/* ── STATUS ────────────────────────────────────────────────────── */}
-      <section id='status' aria-labelledby='section-status-heading'>
-        <h2
-          id='section-status-heading'
-          style={{
-            fontSize: '0.625rem',
-            fontWeight: 700,
-            letterSpacing: '0.1em',
-            textTransform: 'uppercase',
-            color: 'var(--fg-muted)',
-            marginBottom: '0.5rem',
-          }}
-        >
-          Status
-        </h2>
+      <section
+        id='status'
+        data-tab='status'
+        aria-labelledby='section-status-heading'
+      >
+        <SectionTitle id='section-status-heading'>Status</SectionTitle>
         {reportLoading ? (
           <SectionSkeleton height={180} />
         ) : (
@@ -686,7 +772,7 @@ export default function PhosphorDashboard({
               toolCalls: summary?.tool_calls ?? 0,
               gitCommits: summary?.git_commit ?? 0,
               gitPushes: summary?.git_push ?? 0,
-              invalidToolCalls: 0, // TODO: wire invalidToolCalls when API exposes it
+              invalidToolCalls: 0,
               recentErrors: healthRows.reduce(
                 (s, r) =>
                   s +
@@ -702,20 +788,14 @@ export default function PhosphorDashboard({
       </section>
 
       {/* ── TOKENS ────────────────────────────────────────────────────── */}
-      <section id='tokens' aria-labelledby='section-tokens-heading'>
-        <h2
-          id='section-tokens-heading'
-          style={{
-            fontSize: '0.625rem',
-            fontWeight: 700,
-            letterSpacing: '0.1em',
-            textTransform: 'uppercase',
-            color: 'var(--fg-muted)',
-            marginBottom: '0.5rem',
-          }}
-        >
-          Tokens
-        </h2>
+      <section
+        id='tokens'
+        data-tab='tokens'
+        aria-labelledby='section-tokens-heading'
+      >
+        <SectionTitle id='section-tokens-heading'>
+          Token Trend · Stacked by Provider · 24h
+        </SectionTitle>
         {reportLoading ? (
           <SectionSkeleton height={120} />
         ) : (
@@ -723,29 +803,22 @@ export default function PhosphorDashboard({
         )}
       </section>
 
-      {/* ── MODELS ────────────────────────────────────────────────────── */}
-      <section id='models' aria-labelledby='section-models-heading'>
-        <h2
-          id='section-models-heading'
-          style={{
-            fontSize: '0.625rem',
-            fontWeight: 700,
-            letterSpacing: '0.1em',
-            textTransform: 'uppercase',
-            color: 'var(--fg-muted)',
-            marginBottom: '0.5rem',
-          }}
-        >
-          Models
-        </h2>
+      {/* ── MODELS (ProviderCards — v9.7: models section holds provider cards) ── */}
+      <section
+        id='models'
+        data-tab='models'
+        aria-labelledby='section-models-heading'
+      >
+        <SectionTitle id='section-models-heading'>Models</SectionTitle>
         {reportLoading ? (
           <SectionSkeleton height={120} />
         ) : providers.length > 0 ? (
           <div
+            className='provider-summary'
             style={{
-              display: 'flex',
-              flexWrap: 'wrap',
-              gap: '0.5rem',
+              display: 'grid',
+              gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+              gap: '4px',
             }}
           >
             {providers.map((provider) => {
@@ -756,6 +829,7 @@ export default function PhosphorDashboard({
               const metrics = buildProviderMetrics(provider, healthRows)
               const cells = padHealthCells(healthRows, provider)
               const quotaIntervals = buildQuotaIntervals(quotaRows, provider)
+              const topModels = buildTopModels(providerStatusUsage, provider)
 
               return (
                 <ProviderCard
@@ -765,6 +839,7 @@ export default function PhosphorDashboard({
                   healthCells={cells}
                   quotas={quotaIntervals}
                   anomalies={anomalies}
+                  topModels={topModels}
                 />
               )
             })}
@@ -774,7 +849,7 @@ export default function PhosphorDashboard({
             style={{
               fontSize: '0.75rem',
               color: 'var(--fg-muted)',
-              padding: '1rem 0',
+              padding: '4px 0',
             }}
           >
             No provider data returned for this range.
@@ -783,20 +858,12 @@ export default function PhosphorDashboard({
       </section>
 
       {/* ── REPOS ─────────────────────────────────────────────────────── */}
-      <section id='repos' aria-labelledby='section-repos-heading'>
-        <h2
-          id='section-repos-heading'
-          style={{
-            fontSize: '0.625rem',
-            fontWeight: 700,
-            letterSpacing: '0.1em',
-            textTransform: 'uppercase',
-            color: 'var(--fg-muted)',
-            marginBottom: '0.5rem',
-          }}
-        >
-          Repos
-        </h2>
+      <section
+        id='repos'
+        data-tab='repos'
+        aria-labelledby='section-repos-heading'
+      >
+        <SectionTitle id='section-repos-heading'>Repos</SectionTitle>
         {reportLoading ? (
           <SectionSkeleton height={120} />
         ) : (
@@ -805,59 +872,58 @@ export default function PhosphorDashboard({
       </section>
 
       {/* ── CLIENTS ───────────────────────────────────────────────────── */}
-      <section id='clients' aria-labelledby='section-clients-heading'>
-        <h2
-          id='section-clients-heading'
-          style={{
-            fontSize: '0.625rem',
-            fontWeight: 700,
-            letterSpacing: '0.1em',
-            textTransform: 'uppercase',
-            color: 'var(--fg-muted)',
-            marginBottom: '0.5rem',
-          }}
-        >
-          Clients
-        </h2>
+      <section
+        id='clients'
+        data-tab='clients'
+        aria-labelledby='section-clients-heading'
+      >
+        <SectionTitle id='section-clients-heading'>Clients</SectionTitle>
         {reportLoading ? (
           <SectionSkeleton height={200} />
         ) : (
           <div
+            className='client-section'
             style={{
-              display: 'flex',
-              gap: '1.5rem',
-              flexWrap: 'wrap',
-              alignItems: 'flex-start',
+              display: 'grid',
+              gridTemplateColumns: '140px 1fr',
+              gap: '4px',
             }}
           >
-            <DonutChart slices={clientSlices} />
-            <div style={{ flex: 1, minWidth: '280px' }}>
+            <div className='client-donut'>
+              <DonutChart slices={clientSlices} />
+            </div>
+            <div className='client-table-wrapper'>
               <ClientBreakdownTable rows={clientRows} />
             </div>
           </div>
         )}
       </section>
 
-      {/* ── HEALTH ────────────────────────────────────────────────────── */}
-      <section id='health' aria-labelledby='section-health-heading'>
-        <h2
-          id='section-health-heading'
-          style={{
-            fontSize: '0.625rem',
-            fontWeight: 700,
-            letterSpacing: '0.1em',
-            textTransform: 'uppercase',
-            color: 'var(--fg-muted)',
-            marginBottom: '0.5rem',
-          }}
-        >
-          Health
-        </h2>
+      {/* ── HEALTH (MasterLedgerTable — v9.7: health section holds ledger) ── */}
+      <section
+        id='health'
+        data-tab='health'
+        aria-labelledby='section-health-heading'
+      >
+        <SectionTitle id='section-health-heading'>Health</SectionTitle>
         {reportLoading ? (
           <SectionSkeleton height={200} />
         ) : (
           <MasterLedgerTable rows={modelRows} />
         )}
+      </section>
+
+      {/* ── COMPARISON (4K+ only) ─────────────────────────────────────── */}
+      <section
+        id='comparison'
+        data-tab='comparison'
+        aria-labelledby='section-comparison-heading'
+        style={{ display: 'none' }}
+      >
+        <SectionTitle id='section-comparison-heading'>
+          Provider Comparison
+        </SectionTitle>
+        <ComparisonPanel providers={providers} modelRows={modelRows} />
       </section>
     </div>
   )

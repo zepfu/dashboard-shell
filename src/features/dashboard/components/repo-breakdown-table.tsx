@@ -108,22 +108,35 @@ export function RepoBreakdownTable({
   })
 
   return (
-    <div style={{ width: '100%', overflowX: 'auto' }}>
+    <div
+      className='repo-table-wrapper'
+      style={{
+        width: '100%',
+        overflowX: 'auto',
+        overflowY: 'auto',
+        maxHeight: '240px',
+        background: 'var(--card)',
+        border: '1px solid var(--border)',
+        marginBottom: '8px',
+      }}
+    >
       <table
         aria-label='Repository usage breakdown'
+        className='repo-table'
         style={{
           width: '100%',
           borderCollapse: 'collapse',
-          fontSize: '11px',
-          fontFamily: 'inherit',
+          fontSize: '10px',
+          fontFamily: 'var(--font-mono)',
         }}
       >
         <thead
           style={{
             position: 'sticky',
             top: 0,
-            background: 'var(--card)',
-            zIndex: 1,
+            zIndex: 10,
+            background: 'var(--card-2)',
+            borderBottom: '1px solid rgba(245,158,11,0.25)',
           }}
         >
           {table.getHeaderGroups().map((headerGroup) => (
@@ -152,11 +165,15 @@ export function RepoBreakdownTable({
                         : undefined
                     }
                     style={{
-                      padding: '4px 8px',
+                      padding: '4px 6px',
                       textAlign: 'left',
                       fontWeight: 600,
-                      color: 'var(--fg-muted)',
-                      borderBottom: '1px solid var(--border)',
+                      color: 'var(--accent-chrome)',
+                      background: 'var(--card-2)',
+                      fontSize: '9px',
+                      textTransform: 'uppercase',
+                      letterSpacing: '0.04em',
+                      borderRight: '1px solid var(--border)',
                       cursor: isSortable ? 'pointer' : 'default',
                       userSelect: 'none',
                       whiteSpace: 'nowrap',
@@ -180,23 +197,32 @@ export function RepoBreakdownTable({
               key={row.id}
               style={{ borderBottom: '1px solid var(--border)' }}
             >
-              {row.getVisibleCells().map((cell) => (
-                <td
-                  key={cell.id}
-                  style={{
-                    padding: '4px 8px',
-                    fontFamily:
-                      cell.column.id !== 'repository' &&
-                      cell.column.id !== 'top_model' &&
-                      cell.column.id !== 'sparkline'
-                        ? 'monospace'
-                        : 'inherit',
-                    color: 'var(--fg)',
-                  }}
-                >
-                  {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                </td>
-              ))}
+              {row.getVisibleCells().map((cell, cellIdx) => {
+                const isFirst = cellIdx === 0
+                const isText =
+                  cell.column.id === 'repository' ||
+                  cell.column.id === 'top_model' ||
+                  cell.column.id === 'sparkline'
+                return (
+                  <td
+                    key={cell.id}
+                    style={{
+                      padding: '4px 6px',
+                      fontFamily: 'var(--font-mono)',
+                      color: 'var(--fg)',
+                      borderRight: '1px solid var(--border)',
+                      borderLeft: isFirst
+                        ? '4px solid var(--accent-cool)'
+                        : undefined,
+                      paddingLeft: isFirst ? '6px' : undefined,
+                      textAlign: isText ? 'left' : 'right',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                  </td>
+                )
+              })}
             </tr>
           ))}
         </tbody>

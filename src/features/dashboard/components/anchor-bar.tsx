@@ -1,9 +1,14 @@
 /**
  * AnchorBar — keyboard-navigable section strip for Phosphor Atlas.
  *
- * Renders six anchor links with kbd-hint spans and attaches a global
- * keydown handler so users can jump between sections via single-letter
- * shortcuts (S/T/M/R/C/H).
+ * Wave 9 changes (v9.7 reference parity):
+ * - Bar: background var(--card), border 1px solid var(--border), border-top none.
+ * - Link gap: 12px (was 1rem/16px).
+ * - Active link: amber bottom underline (border-bottom: 1px solid #f59e0b).
+ * - kbd-hint: amber border, padding 0 1px, margin-right 1px.
+ *
+ * Keyboard shortcuts (s/t/m/r/c/h) and test contracts preserved:
+ * - m → models, h → health (section content changed in Wave 9, shortcuts stay).
  */
 import { useEffect, type ReactElement } from 'react'
 
@@ -87,44 +92,70 @@ export default function AnchorBar({
   }, [onSectionChange])
 
   return (
-    <nav aria-label='Sections (keyboard shortcuts: bracketed letter)'>
-      {SECTIONS.map(({ key, value, label, hint }) => (
-        <a
-          key={key}
-          href={`#${value}`}
-          onClick={(e) => {
-            e.preventDefault()
-            onSectionChange(value)
-            const el = document.getElementById(value)
-            if (el !== null) {
-              el.scrollIntoView({ behavior: 'smooth' })
-            }
-          }}
-          style={{
-            color:
-              activeSection === value
-                ? 'var(--accent-chrome)'
-                : 'var(--fg-muted)',
-            marginInlineEnd: '1rem',
-            textDecoration: 'none',
-            display: 'inline-flex',
-            alignItems: 'center',
-            gap: '0.125rem',
-          }}
-        >
-          <span
-            className='kbd-hint'
+    <nav
+      className='anchor-bar'
+      aria-label='Sections (keyboard shortcuts: bracketed letter)'
+      style={{
+        background: 'var(--card)',
+        border: '1px solid var(--border)',
+        borderTop: 'none',
+        padding: '6px 10px',
+        display: 'flex',
+        gap: '12px',
+        fontSize: '10px',
+        marginBottom: '8px',
+        overflowX: 'auto',
+      }}
+    >
+      {SECTIONS.map(({ key, value, label, hint }) => {
+        const isActive = activeSection === value
+        return (
+          <a
+            key={key}
+            href={`#${value}`}
+            onClick={(e) => {
+              e.preventDefault()
+              onSectionChange(value)
+              const el = document.getElementById(value)
+              if (el !== null) {
+                el.scrollIntoView({ behavior: 'smooth' })
+              }
+            }}
+            className='anchor-link'
             style={{
-              border: '1px solid var(--accent-chrome)',
-              padding: '0 2px',
-              fontSize: '0.75rem',
+              color: isActive ? 'var(--accent-chrome)' : 'var(--fg-muted)',
+              textDecoration: 'none',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '0.125rem',
+              fontFamily: 'var(--font-mono)',
+              letterSpacing: '0.02em',
+              fontWeight: isActive ? 500 : 400,
+              borderBottom: isActive ? '1px solid #f59e0b' : 'none',
+              paddingBottom: isActive ? '1px' : '2px',
+              whiteSpace: 'nowrap',
+              transition: 'all 50ms',
             }}
           >
-            {hint}
-          </span>
-          {label}
-        </a>
-      ))}
+            <span
+              className='kbd-hint'
+              style={{
+                border: '1px solid #f59e0b',
+                borderRadius: 0,
+                padding: '0 1px',
+                marginRight: '1px',
+                color: '#f59e0b',
+                fontFamily: 'var(--font-mono)',
+                letterSpacing: 0,
+                lineHeight: 1,
+              }}
+            >
+              {hint}
+            </span>
+            {label}
+          </a>
+        )
+      })}
     </nav>
   )
 }
