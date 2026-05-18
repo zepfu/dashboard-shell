@@ -1,0 +1,42 @@
+/**
+ * PhosphorDashboard responsive CSS module.
+ *
+ * Wave 10: provider-summary grid responsive breakpoints (D2).
+ * D19: comparison section responsive show at 3840px+.
+ * D7: section gap density helpers.
+ */
+
+/* ── Provider summary grid ─────────────────────────────────────────────── */
+
+/** Default baseline: 1280–1599px → 2 columns */
+.provider-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px;
+}
+
+/** 1600–2099px → 4 columns */
+@media (min-width: 1600px) {
+  .provider-summary-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
+/** 2100px+ → 8 columns (the 8-card row) */
+@media (min-width: 2100px) {
+  .provider-summary-grid {
+    grid-template-columns: repeat(8, minmax(0, 1fr));
+  }
+}
+
+/* ── Comparison section ─────────────────────────────────────────────────── */
+
+.comparison-section {
+  display: none;
+}
+
+@media (min-width: 3840px) {
+  .comparison-section {
+    display: block;
+  }
+}
