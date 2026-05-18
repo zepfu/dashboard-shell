@@ -16,7 +16,11 @@ import { useQuery } from '@tanstack/react-query'
 import { ConfigDrawer } from '@/components/config-drawer'
 import { ProfileDropdown } from '@/components/profile-dropdown'
 import { Search } from '@/components/search'
-import { fetchUsageReport, type UsageReportGrain } from './api/usage-report'
+import {
+  fetchUsageReport,
+  fetchUsageReportQuotas,
+  type UsageReportGrain,
+} from './api/usage-report'
 import { AlertsRail } from './components/alerts-rail'
 import AnchorBar from './components/anchor-bar'
 import { KpiStrip } from './components/kpi-strip'
@@ -85,141 +89,6 @@ const FLEET_PULSE_CELLS = Array.from({ length: 288 }, (_, i) => ({
         ? 'var(--accent-warm)'
         : 'var(--accent-cool)',
 }))
-
-// ---------------------------------------------------------------------------
-// Sidebar sub-component
-// ---------------------------------------------------------------------------
-
-interface SidebarProps {
-  activeRoute?: string
-}
-
-/**
- * PhosphorSidebar — restyled sidebar matching v9.7 reference.
- * Routes are NOT rewired (existing AppSidebar handles real routing).
- * This is a visual-only restyle of the sidebar slot.
- */
-function PhosphorSidebar({
-  activeRoute = 'dashboard',
-}: SidebarProps): ReactElement {
-  const groups = [
-    {
-      title: 'Dashboards',
-      items: [
-        {
-          id: 'dashboard',
-          label: 'Phosphor Atlas',
-          active: activeRoute === 'dashboard',
-        },
-        { id: 'overview', label: 'Overview', active: false },
-      ],
-    },
-    {
-      title: 'General',
-      items: [
-        { id: 'apps', label: 'Apps', active: false },
-        { id: 'chats', label: 'Chats', active: false },
-        { id: 'tasks', label: 'Tasks', active: false },
-      ],
-    },
-    {
-      title: 'Pages',
-      items: [
-        { id: 'users', label: 'Users', active: false },
-        { id: 'auth', label: 'Auth', active: false },
-        { id: 'errors', label: 'Errors', active: false },
-      ],
-    },
-    {
-      title: 'Other',
-      items: [{ id: 'settings', label: 'Settings', active: false }],
-    },
-  ]
-
-  return (
-    <div
-      style={{
-        background: 'var(--card)',
-        border: '1px solid var(--border)',
-        borderRight: 'none',
-        padding: '10px',
-        display: 'flex',
-        flexDirection: 'column',
-        gap: '8px',
-        maxHeight: 'calc(100vh - 40px)',
-        overflowY: 'auto',
-        fontSize: '11px',
-        height: '100%',
-      }}
-    >
-      {/* Team switcher */}
-      <div
-        style={{
-          padding: '6px',
-          background: 'var(--card-2)',
-          border: '1px solid var(--border)',
-          borderRadius: '2px',
-          color: 'var(--fg)',
-          fontSize: '9px',
-          marginBottom: '6px',
-        }}
-      >
-        Dashboard Shell ▼
-      </div>
-
-      {/* Nav groups */}
-      {groups.map((group) => (
-        <div
-          key={group.title}
-          style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}
-        >
-          <div
-            style={{
-              fontSize: '9px',
-              color: 'var(--fg-muted)',
-              textTransform: 'uppercase',
-              letterSpacing: '0.05em',
-              fontWeight: 600,
-              padding: '4px 0',
-              borderBottom: '1px solid var(--border)',
-              marginBottom: '2px',
-            }}
-          >
-            {group.title}
-          </div>
-          {group.items.map((item) => (
-            <div
-              key={item.id}
-              style={{
-                color: item.active ? 'var(--accent-chrome)' : 'var(--fg-muted)',
-                background: item.active ? 'var(--card-2)' : 'transparent',
-                padding: '3px 6px',
-                cursor: 'pointer',
-                fontWeight: item.active ? 500 : 400,
-                transition: 'all 50ms',
-              }}
-            >
-              {item.label}
-            </div>
-          ))}
-        </div>
-      ))}
-
-      {/* Sidebar footer */}
-      <div
-        style={{
-          marginTop: 'auto',
-          paddingTop: '8px',
-          borderTop: '1px solid var(--border)',
-          fontSize: '9px',
-          color: 'var(--fg-muted)',
-        }}
-      >
-        👤 Local User
-      </div>
-    </div>
-  )
-}
 
 // ---------------------------------------------------------------------------
 // Dashboard
@@ -291,7 +160,21 @@ export function Dashboard(): ReactElement {
     summaryReport?.metadata
   )
 
-  const alerts = useAlertsFromAnomalies(anomalies, summaryReport?.summary)
+  const { data: quotasData } = useQuery({
+    queryKey: ['usage-report-quotas-shell'],
+    queryFn: fetchUsageReportQuotas,
+  })
+
+  const quotaRows = useMemo(
+    () => quotasData?.quotas ?? summaryReport?.quotas ?? [],
+    [quotasData?.quotas, summaryReport?.quotas]
+  )
+
+  const alerts = useAlertsFromAnomalies(
+    anomalies,
+    summaryReport?.summary,
+    quotaRows
+  )
 
   const nowStr = new Date().toLocaleString('en-US', {
     month: 'short',
@@ -302,7 +185,6 @@ export function Dashboard(): ReactElement {
 
   return (
     <PhosphorLayout
-      sidebar={<PhosphorSidebar />}
       header={
         <div
           style={{
@@ -481,11 +363,13 @@ export function Dashboard(): ReactElement {
             </div>
           </div>
 
-          {/* Anchor bar */}
-          <AnchorBar
-            activeSection={activeSection}
-            onSectionChange={setActiveSection}
-          />
+          {/* Anchor bar — D11: flush to page-header (no gap above) */}
+          <div style={{ marginTop: '-4px' }}>
+            <AnchorBar
+              activeSection={activeSection}
+              onSectionChange={setActiveSection}
+            />
+          </div>
 
           {/* Controls bar — date range + period selector */}
           <div
@@ -570,7 +454,9 @@ export function Dashboard(): ReactElement {
                 <button
                   key={period}
                   type='button'
-                  className={`period-btn${activePeriod === period ? 'active' : ''}`}
+                  className={['period-btn', activePeriod === period && 'active']
+                    .filter(Boolean)
+                    .join(' ')}
                   onClick={() => {
                     handlePeriodBtn(period)
                   }}
