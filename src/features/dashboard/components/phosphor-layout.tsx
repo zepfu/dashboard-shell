@@ -51,7 +51,7 @@ export function PhosphorLayout({
         display: 'grid',
         gridTemplateColumns: '220px 1fr 260px',
         gridTemplateRows: 'auto auto',
-        minHeight: '100vh',
+        /* 14-H: drop minHeight:100vh per mockup §1 #2 — alignContent:start handles packing */
         background: 'var(--bg)',
         color: 'var(--fg)',
         padding: '12px 16px',

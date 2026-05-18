@@ -104,9 +104,16 @@ export function HealthStrip({
       : clipped
 
   if (isVertical) {
+    /* 14-H §11 fixes:
+       - Add health-strip-wrapper class + borderRight (§11 #1 from 14-G CSS rule)
+       - overflow: visible so tooltip can escape (§11 #10)
+       - vbar-label CSS classes with corrected letterSpacing 0.06em, opacity 0.7 (§11 #3,4,5)
+       - accent-warm (not accent-chrome) for top "24H" label per mockup line 2003 (§11 #3)
+    */
     const stripEl = (
       <div
         aria-hidden='true'
+        className='health-strip-wrapper'
         style={{
           position: 'absolute',
           top: '6px',
@@ -116,29 +123,18 @@ export function HealthStrip({
           display: 'flex',
           flexDirection: 'column',
           borderLeft: '1px solid rgba(245,158,11,0.25)',
-          overflow: 'hidden',
+          borderRight: '1px solid var(--border)',
+          overflow: 'visible',
         }}
       >
-        {/* "24H" label at top */}
-        <div
-          style={{
-            fontFamily: 'var(--font-mono)',
-            fontSize: '8px',
-            color: 'var(--accent-chrome)',
-            letterSpacing: '0.04em',
-            lineHeight: 1,
-            marginBottom: '2px',
-            textAlign: 'center',
-          }}
-        >
-          24H
-        </div>
+        {/* "24H" label at top — .vbar-label.top per mockup lines 1989-2003 */}
+        <div className='vbar-label top'>24H</div>
         <div
           style={{
             flex: 1,
             display: 'flex',
             flexDirection: 'column',
-            overflow: 'hidden',
+            overflow: 'visible',
             gap: 0,
           }}
         >
@@ -146,20 +142,8 @@ export function HealthStrip({
             <HealthCell key={i} color={cell.color} vertical />
           ))}
         </div>
-        {/* "NOW" label at bottom */}
-        <div
-          style={{
-            fontFamily: 'var(--font-mono)',
-            fontSize: '8px',
-            color: 'var(--fg-muted)',
-            letterSpacing: '0.04em',
-            lineHeight: 1,
-            marginTop: '2px',
-            textAlign: 'center',
-          }}
-        >
-          NOW
-        </div>
+        {/* "NOW" label at bottom — .vbar-label.bottom per mockup lines 2005-2007 */}
+        <div className='vbar-label bottom'>NOW</div>
       </div>
     )
 
@@ -175,29 +159,36 @@ export function HealthStrip({
   }
 
   // Horizontal (default) — 288-cell grid row wrapped in .health-strip-wrapper
+  // 14-H §11 #6: horizontal mode includes .health-strip-axis showing -24h / now endpoints
   return (
-    <div
-      aria-hidden='true'
-      className='health-strip-wrapper'
-      style={{
-        borderRight: '1px solid var(--border)',
-      }}
-    >
+    <div aria-hidden='true'>
       <div
         aria-hidden='true'
-        className='health-strip'
+        className='health-strip-wrapper'
         style={{
-          display: 'grid',
-          gridTemplateColumns: `repeat(${TOTAL_CELLS}, 1fr)`,
-          height: '6px',
-          gap: 0,
-          width: '100%',
-          overflow: 'hidden',
+          borderRight: '1px solid var(--border)',
         }}
       >
-        {padded.map((cell, i) => (
-          <HealthCell key={i} color={cell.color} vertical={false} />
-        ))}
+        <div
+          aria-hidden='true'
+          className='health-strip'
+          style={{
+            display: 'grid',
+            gridTemplateColumns: `repeat(${TOTAL_CELLS}, 1fr)`,
+            height: '6px',
+            gap: 0,
+            width: '100%',
+            overflow: 'hidden',
+          }}
+        >
+          {padded.map((cell, i) => (
+            <HealthCell key={i} color={cell.color} vertical={false} />
+          ))}
+        </div>
+      </div>
+      <div className='health-strip-axis'>
+        <span>-24h</span>
+        <span>now</span>
       </div>
     </div>
   )

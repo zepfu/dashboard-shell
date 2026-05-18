@@ -973,3 +973,246 @@
 }
 
 /* End Wave 14-E */
+
+/* ─────────────────────────────────────────────────────────────────────────── */
+/*  Wave 14-H — LOW-severity catch-up (final pixel-polish pass)               */
+/*  Closes all remaining LOW/MEDIUM deviations from wave14-principal-          */
+/*  exhaustive-audit.md that were not addressed in Waves 14-A through 14-G.   */
+/* ─────────────────────────────────────────────────────────────────────────── */
+
+/* ── 14-H.3: WebKit scrollbar 6px per mockup lines 1885-1897 ─────────────── */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: var(--bg);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 0;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--fg-muted);
+}
+
+/* ── 14-H.4: Sort indicators per mockup lines 2234-2255 ─────────────────── */
+/* Unsorted sortable columns get a faint ⇅ via pseudo-element */
+[data-sortable]::after {
+  content: ' ⇅';
+  opacity: 0.35;
+}
+[data-sortable][data-sort-dir='asc']::after {
+  content: ' ↑';
+  opacity: 1;
+  color: var(--accent-chrome);
+}
+[data-sortable][data-sort-dir='desc']::after {
+  content: ' ↓';
+  opacity: 1;
+  color: var(--accent-chrome);
+}
+
+/* ── §3 #10 / §20 #5: keyframe name parity — add alias `pulse` matching spec */
+/* Mockup uses `animation: pulse 1s infinite` (line 683-688). We keep         */
+/* pulse-dot for existing usage and add pulse as the spec-named alias.        */
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.3;
+  }
+}
+
+/* Fleet-activity pulse-dot variant: 6×6 hot red, larger animation per §9 #7-9 */
+/* Scoped to .fleet-activity-list so it overrides the freshness-indicator dot  */
+.fleet-activity-list .pulse-dot {
+  width: 6px;
+  height: 6px;
+  background: var(--accent-hot);
+  border-radius: 50%;
+  box-shadow: 0 0 4px rgba(239, 68, 68, 0.7);
+  animation: pulse-dot-anim 1.6s ease-in-out infinite;
+}
+
+@keyframes pulse-dot-anim {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.55;
+    transform: scale(0.8);
+  }
+}
+
+/* ── §4 #2,3,4: Anchor-link gap / display fix ──────────────────────────────  */
+/* Mockup: display default (not flex); kbd-hint uses margin-right: 1px only.   */
+.anchor-link {
+  display: inline;
+}
+/* Remove the flex gap; margin-right on kbd-hint governs spacing */
+.anchor-link .kbd-hint {
+  margin-right: 1px;
+}
+
+/* ── §6 #5: .controls border-right: none below 1600 ─────────────────────── */
+.controls {
+  border-right: none !important;
+}
+@media (min-width: 1600px) {
+  .controls {
+    border-right: 1px solid var(--border) !important;
+  }
+}
+
+/* ── §6 #6: .period-btn hover state per mockup line 816-818 ──────────────── */
+.period-btn:hover {
+  background: var(--card) !important;
+}
+
+/* ── §7 #1: grid-auto-rows: 1fr at 1280+ per mockup lines 987,994 ─────────  */
+@media (min-width: 1280px) {
+  .provider-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-auto-rows: 1fr;
+  }
+}
+
+/* ── §7 #2: justify-items: stretch at 2100+ per mockup lines 1012,1023 ───── */
+@media (min-width: 2100px) {
+  .provider-summary {
+    justify-items: stretch;
+  }
+}
+
+/* ── §7 #3: margin-top: 12px on .provider-summary per mockup line 955 ──────  */
+.provider-summary {
+  margin-top: 12px;
+}
+
+/* ── §7 #5: 1920px explicit breakpoint per mockup lines 998-1003 ────────── */
+@media (min-width: 1920px) {
+  .provider-summary {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-auto-rows: 1fr;
+  }
+}
+
+/* ── §10 #6: quota-intervals gap: 2px instead of border-right ────────────── */
+/* Removes the 1px border-right separator and uses a transparent gap instead  */
+/* per mockup line 2124: `.quota-intervals { gap: 2px; }`.                    */
+.quota-intervals {
+  gap: 2px;
+}
+.quota-interval {
+  border-right: none;
+}
+
+/* ── §10 #8: quota anomaly icon colors via class only (remove inline dup) ── */
+/* Class rules already in Wave 14-E; inline styles removed in component.       */
+/* No CSS needed here — handled by provider-card.tsx edit removing inline.     */
+
+/* ── §11 #3,4,5: vbar-label spec-correct styling per mockup lines 1989-2007  */
+.vbar-label {
+  font-family: var(--font-mono);
+  font-size: 8px;
+  letter-spacing: 0.06em;
+  line-height: 1;
+  text-align: center;
+  width: 12px;
+  padding-left: 4px;
+  pointer-events: none;
+}
+.vbar-label.top {
+  color: var(--accent-warm);
+  opacity: 0.7;
+  margin-bottom: 2px;
+}
+.vbar-label.bottom {
+  color: var(--fg-muted);
+  opacity: 0.7;
+  margin-top: 2px;
+}
+
+/* ── §11 #6: .health-strip-axis for horizontal fleet-pulse ends ──────────── */
+/* Mockup lines 1644-1653: shows -24h / now at either end of horizontal strip */
+.health-strip-axis {
+  display: flex;
+  justify-content: space-between;
+  font-family: var(--font-mono);
+  font-size: 8px;
+  color: var(--fg-muted);
+  letter-spacing: 0.04em;
+  opacity: 0.6;
+  margin-top: 2px;
+}
+
+/* ── §11 #7: health-strip-cell clamp height to 0.8-1.8px in vertical mode ── */
+/* Per mockup line 1944 `.health-strip-cell { height: clamp(0.8px, 100%, 1.8px); }` */
+.health-strip-cell {
+  height: clamp(0.8px, 100%, 1.8px);
+}
+
+/* ── §12 #2: trend-bar hover opacity via CSS (not JS) per mockup line 1331 ─ */
+/* Also adds transition: opacity 50ms per mockup line 1326.                    */
+.trend-bar {
+  transition: opacity 50ms;
+}
+.trend-bar:hover {
+  opacity: 1 !important;
+}
+
+/* ── §13 #7: table caption clamp font-size per mockup lines 1281-1287 ──────  */
+.table-caption {
+  font-size: clamp(8px, 0.45vw, 11px);
+  color: var(--fg-muted);
+  letter-spacing: 0.05em;
+  margin: -4px 0 6px 0;
+}
+
+/* ── §13 #8: sparkline clamp dimensions per mockup line 932-933 ────────────  */
+.sparkline {
+  width: clamp(80px, 5vw, 160px);
+  height: clamp(16px, 1.1vw, 28px);
+}
+
+/* ── §13 #9: table-wrapper max-height 320px at 1600+ per mockup line 1288 ── */
+@media (min-width: 1600px) {
+  .table-wrapper {
+    max-height: 320px;
+  }
+}
+
+/* ── §15 #5: client-section grid 120px at 1600+ per mockup lines 1835-1839 ─ */
+@media (min-width: 1600px) {
+  .client-section {
+    grid-template-columns: 120px 1fr;
+  }
+}
+
+/* ── §18 #3: body line-height: 1.4 per mockup line 32 ──────────────────────  */
+/* §18 #4: html/body height: 100% per mockup lines 33-35.                     */
+/* §14-A set font-family and font-size; this wave closes line-height + height. */
+html,
+body {
+  line-height: 1.4;
+  height: 100%;
+}
+
+/* ── §20 #10: tbody tr transition: background-color 50ms per mockup line 1328 */
+tbody tr {
+  transition: background-color 50ms;
+}
+
+/* ── §20 #4: main-content gap 4px at 1600+ (inline sets 8px default) ─────── */
+@media (min-width: 1600px) {
+  .main-content {
+    gap: 4px;
+  }
+}
+
+/* End Wave 14-H */

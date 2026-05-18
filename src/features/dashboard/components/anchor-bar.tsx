@@ -128,16 +128,14 @@ export default function AnchorBar({
             }}
             className='anchor-link'
             style={{
+              /* 14-H §4 #2,3,4: display default (not flex); no gap (kbd-hint uses margin-right: 1px);
+                 no paddingBottom hack — spec accepts the 1px layout shift on border-bottom. */
               color: isActive ? 'var(--accent-chrome)' : 'var(--fg-muted)',
               textDecoration: 'none',
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: '0.125rem',
               fontFamily: 'var(--font-mono)',
               letterSpacing: '0.02em',
               fontWeight: isActive ? 500 : 400,
               borderBottom: isActive ? '1px solid #f59e0b' : 'none',
-              paddingBottom: isActive ? '1px' : '2px',
               whiteSpace: 'nowrap',
               transition: 'all 50ms',
             }}
