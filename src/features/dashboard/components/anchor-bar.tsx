@@ -7,8 +7,10 @@
  * - Active link: amber bottom underline (border-bottom: 1px solid #f59e0b).
  * - kbd-hint: amber border, padding 0 1px, margin-right 1px.
  *
- * Keyboard shortcuts (s/t/m/r/c/h) and test contracts preserved:
- * - m → models, h → health (section content changed in Wave 9, shortcuts stay).
+ * Wave 11 PR1 re-anchor (audit C26):
+ * - PR1 moved provider cards to <section id="status"> and removed <section id="health">.
+ * - The [H]ealth shortcut now scrolls to #status (which contains provider health summary).
+ * - Visible label remains "[H]ealth" per reference mockup.
  */
 import { useEffect, type ReactElement } from 'react'
 
@@ -32,7 +34,9 @@ const SECTIONS: SectionDef[] = [
   { key: 'm', value: 'models', label: 'Models', hint: '[M]' },
   { key: 'r', value: 'repos', label: 'Repos', hint: '[R]' },
   { key: 'c', value: 'clients', label: 'Clients', hint: '[C]' },
-  { key: 'h', value: 'health', label: 'Health', hint: '[H]' },
+  // Wave 11 PR7-lite (audit C26): h key re-anchors to #status (PR1 removed #health).
+  // Visible label stays "[H]ealth" per reference mockup.
+  { key: 'h', value: 'status', label: 'Health', hint: '[H]' },
 ]
 
 const KEY_MAP: Record<string, string> = {
@@ -41,7 +45,8 @@ const KEY_MAP: Record<string, string> = {
   m: 'models',
   r: 'repos',
   c: 'clients',
-  h: 'health',
+  // Wave 11 PR7-lite: h now maps to 'status' (provider health summary section).
+  h: 'status',
 }
 
 /**
