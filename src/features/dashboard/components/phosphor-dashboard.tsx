@@ -130,6 +130,12 @@ export interface PhosphorDashboardProps {
   to?: string
   /** Aggregation grain: 'day' | 'week' | 'month'. */
   grain?: string
+  /**
+   * 15-C.4: Optional search term for client-side row filtering.
+   * Applied as a case-insensitive substring match against model, repo,
+   * and client name fields in the rendered tables.
+   */
+  searchTerm?: string
 }
 
 // ---------------------------------------------------------------------------
@@ -981,6 +987,7 @@ export default function PhosphorDashboard({
   from,
   to,
   grain,
+  searchTerm = '',
 }: PhosphorDashboardProps): ReactElement {
   const defaults = useMemo(() => defaultDateRange(), [])
   const resolvedFrom = from ?? defaults.from
@@ -1003,8 +1010,16 @@ export default function PhosphorDashboard({
       }),
   })
 
+  // 15-C.5: Include resolvedFrom/resolvedTo in the queryKey so the quotas query
+  // re-fetches when the user changes the date range. The /api/shell/reports/quotas
+  // endpoint does not currently accept from/to parameters (server-side it is a
+  // live snapshot from rate_limit_intervals). This wiring ensures the query
+  // invalidates on period changes, ready for when the API supports date-scoped
+  // quotas. The visual effect today: quotas panel refreshes on range change.
+  // TODO(15-C.5): Pass from/to to fetchUsageReportQuotas once the server
+  // endpoint supports date-scoped quota queries.
   const { data: quotasData } = useQuery({
-    queryKey: ['usage-report-quotas'],
+    queryKey: ['usage-report-quotas', resolvedFrom, resolvedTo],
     queryFn: fetchUsageReportQuotas,
   })
 
@@ -1066,6 +1081,36 @@ export default function PhosphorDashboard({
   const clientRows = useMemo(
     () => buildClientRows(report?.clients ?? []),
     [report?.clients]
+  )
+
+  // 15-C.4: Client-side search filtering for Model Ledger, Repo Breakdown,
+  // and Client Usage tables. Case-insensitive substring match on the primary
+  // name field for each row type. When searchTerm is empty all rows are shown.
+  const lowerSearch = searchTerm.toLowerCase()
+  const filteredModelRows = useMemo(
+    () =>
+      lowerSearch === ''
+        ? modelRows
+        : modelRows.filter((r) => r.model.toLowerCase().includes(lowerSearch)),
+    [modelRows, lowerSearch]
+  )
+  const filteredRepoRows = useMemo(
+    () =>
+      lowerSearch === ''
+        ? repoRows
+        : repoRows.filter((r) =>
+            r.repository.toLowerCase().includes(lowerSearch)
+          ),
+    [repoRows, lowerSearch]
+  )
+  const filteredClientRows = useMemo(
+    () =>
+      lowerSearch === ''
+        ? clientRows
+        : clientRows.filter((r) =>
+            r.client.toLowerCase().includes(lowerSearch)
+          ),
+    [clientRows, lowerSearch]
   )
 
   const summary = report?.summary
@@ -1222,7 +1267,8 @@ export default function PhosphorDashboard({
           {reportLoading ? (
             <SectionSkeleton height={200} />
           ) : (
-            <MasterLedgerTable rows={modelRows} />
+            // 15-C.4: use filteredModelRows to apply searchTerm filter
+            <MasterLedgerTable rows={filteredModelRows} />
           )}
         </section>
 
@@ -1250,7 +1296,8 @@ export default function PhosphorDashboard({
           {reportLoading ? (
             <SectionSkeleton height={120} />
           ) : (
-            <RepoBreakdownTable rows={repoRows} />
+            // 15-C.4: use filteredRepoRows to apply searchTerm filter
+            <RepoBreakdownTable rows={filteredRepoRows} />
           )}
         </section>
       </div>
@@ -1290,7 +1337,8 @@ export default function PhosphorDashboard({
               <DonutChart slices={clientSlices} />
             </div>
             <div className='client-table-wrapper'>
-              <ClientBreakdownTable rows={clientRows} />
+              {/* 15-C.4: use filteredClientRows to apply searchTerm filter */}
+              <ClientBreakdownTable rows={filteredClientRows} />
             </div>
           </div>
         )}
