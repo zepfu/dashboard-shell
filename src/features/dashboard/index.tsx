@@ -174,7 +174,8 @@ export function Dashboard(): ReactElement {
       }),
   })
 
-  // Wave 11 PR7-lite (audit C24): compute freshness string from dataUpdatedAt.
+  // 14-B.2: freshness format per mockup line 2384:
+  //   "FETCHED HH:MM:SS UTC · Xs ago"
   // Re-evaluate every 10 s so relative time stays current.
   const [freshnessStr, setFreshnessStr] = useState<string>('Loading…')
   useEffect(() => {
@@ -183,9 +184,10 @@ export function Dashboard(): ReactElement {
         setFreshnessStr('Loading…')
         return
       }
-      setFreshnessStr(
-        `Updated ${formatDistanceToNow(new Date(dataUpdatedAt))} ago`
-      )
+      const d = new Date(dataUpdatedAt)
+      const timeUTC = d.toUTCString().split(' ')[4] ?? ''
+      const distance = formatDistanceToNow(d)
+      setFreshnessStr(`FETCHED ${timeUTC} UTC · ${distance} ago`)
     }
     compute()
     const id = setInterval(compute, 10_000)
@@ -285,17 +287,17 @@ export function Dashboard(): ReactElement {
       main={
         <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
           {/* Page header — Playfair title, freshness, fleet-pulse, attribution */}
+          {/* 14-B.1: mockup §3 — NO background, NO border, NO padding; position: relative */}
           <div
             className='page-header'
             style={{
               display: 'flex',
               flexDirection: 'column',
               gap: '4px',
-              padding: '6px 8px',
-              background: 'var(--card)',
-              border: '1px solid var(--border)',
+              position: 'relative',
             }}
           >
+            {/* 14-B.3: search input restored to page-header-top per mockup line 2382 */}
             <div
               className='page-header-top'
               style={{
@@ -317,7 +319,26 @@ export function Dashboard(): ReactElement {
               >
                 General Dashboard
               </h1>
-              <div
+              {/* 14-B.3: search input per mockup — 180px, card-2 bg, mono, 10px */}
+              <input
+                type='text'
+                className='search-input'
+                placeholder='⌘K search...'
+                aria-label='Search dashboard'
+              />
+            </div>
+
+            {/* 14-B.2: freshness indicator inline in subtext per mockup line 2384 */}
+            {/* 14-B.?: subtext copy matches mockup verbatim */}
+            <div
+              className='page-subtext'
+              style={{
+                fontSize: 'clamp(10px, 0.55vw, 16px)',
+                color: 'var(--fg-muted)',
+              }}
+            >
+              {'LiteLLM usage, quota, cost, and repository activity · '}
+              <span
                 className='freshness-indicator'
                 style={{
                   fontSize: '9px',
@@ -327,28 +348,9 @@ export function Dashboard(): ReactElement {
                   gap: '4px',
                 }}
               >
-                <span
-                  className='pulse-dot'
-                  style={{
-                    display: 'inline-block',
-                    width: '4px',
-                    height: '4px',
-                    background: 'var(--accent-chrome)',
-                    borderRadius: '50%',
-                  }}
-                />
+                <span className='pulse-dot' />
                 {freshnessStr}
-              </div>
-            </div>
-
-            <div
-              className='page-subtext'
-              style={{
-                fontSize: 'clamp(10px, 0.55vw, 16px)',
-                color: 'var(--fg-muted)',
-              }}
-            >
-              Unified AI provider intelligence · {from} → {to}
+              </span>
             </div>
 
             {/* Fleet-pulse strip */}
@@ -377,72 +379,68 @@ export function Dashboard(): ReactElement {
               <HealthStrip cells={FLEET_PULSE_CELLS} orientation='horizontal' />
             </div>
 
-            {/* Attribution legend — Wave 11 PR7-lite (audit C22) */}
-            {/* Format: ATTRIBUTION ▭ NORM ▭ PAPI ▭ WKLD ▭ CTRL ▭ MISS */}
+            {/* Attribution legend — 14-B.5 per mockup lines 1951-1986, 2386 */}
+            {/* .attribution-legend: gap 12px, text-transform lowercase */}
+            {/* .legend-label: accent-chrome, letter-spacing 0.12em, opacity 0.85 */}
             <div
               className='attribution-legend'
+              aria-label='Health bar attribution'
               style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: '8px',
+                display: 'flex',
                 flexWrap: 'wrap',
+                gap: '12px',
+                alignItems: 'center',
                 fontSize: '9px',
                 fontFamily: 'var(--font-mono)',
                 color: 'var(--fg-muted)',
+                letterSpacing: '0.08em',
+                textTransform: 'lowercase',
                 marginTop: '4px',
               }}
             >
-              {/* ATTRIBUTION label prefix — amber per mockup */}
+              {/* "attribution" label — uppercase via text-transform, chrome color, 0.12em spacing, 0.85 opacity */}
               <span
+                className='legend-label'
                 style={{
-                  color: 'var(--accent-warm)',
-                  letterSpacing: '0.06em',
-                  fontWeight: 600,
-                  fontSize: '9px',
+                  color: 'var(--accent-chrome)',
+                  letterSpacing: '0.12em',
+                  textTransform: 'uppercase',
+                  opacity: 0.85,
                 }}
               >
-                ATTRIBUTION
+                attribution
               </span>
-              {/* B2: swatch backgrounds use rgba values per mockup (.attribution-legend .legend-cat.cat-* rules). */}
+              {/* Category pills — lowercase labels via CSS text-transform on parent */}
               {[
-                { label: 'NORM', color: 'rgba(58, 130, 243, 0.82)' },
-                { label: 'PAPI', color: 'rgba(245, 158, 11, 0.62)' },
-                { label: 'WKLD', color: 'rgba(239, 68, 68, 0.74)' },
-                { label: 'CTRL', color: 'rgba(126, 87, 194, 0.7)' },
-                { label: 'MISS', color: 'rgba(20, 184, 166, 0.6)' },
-              ].map(({ label, color }) => (
+                { key: 'norm', catClass: 'cat-norm' },
+                { key: 'papi', catClass: 'cat-papi' },
+                { key: 'wkld', catClass: 'cat-wkld' },
+                { key: 'ctrl', catClass: 'cat-ctrl' },
+                { key: 'miss', catClass: 'cat-miss' },
+              ].map(({ key, catClass }) => (
                 <span
-                  key={label}
+                  key={key}
+                  className={`legend-cat ${catClass}`}
                   style={{
                     display: 'inline-flex',
                     alignItems: 'center',
-                    gap: '4px',
+                    gap: '5px',
+                    color: 'var(--fg-muted)',
                   }}
                 >
-                  {/* 10px × 5px pill swatch, 1px border-radius */}
-                  <span
-                    style={{
-                      display: 'inline-block',
-                      width: '10px',
-                      height: '5px',
-                      borderRadius: '1px',
-                      background: color,
-                      flexShrink: 0,
-                    }}
-                  />
-                  {label}
+                  <span className='legend-swatch' />
+                  {key}
                 </span>
               ))}
             </div>
           </div>
 
-          {/* Anchor bar — D11: flush to page-header (no gap above) */}
-          <div style={{ marginTop: '-4px' }}>
-            <AnchorBar
-              activeSection={activeSection}
-              onSectionChange={setActiveSection}
-            />
-          </div>
+          {/* Anchor bar — flush to page-header via border-top: none */}
+          {/* 14-B.1: negative marginTop hack removed — page-header has no card chrome */}
+          <AnchorBar
+            activeSection={activeSection}
+            onSectionChange={setActiveSection}
+          />
 
           {/* Controls bar — date range + period selector */}
           <div
