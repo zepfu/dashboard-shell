@@ -9,7 +9,6 @@ import { Main } from '@/components/layout/main'
 import { TopNav } from '@/components/layout/top-nav'
 import { ProfileDropdown } from '@/components/profile-dropdown'
 import { Search } from '@/components/search'
-import { ThemeSwitch } from '@/components/theme-switch'
 import type { ProjectModule } from './types'
 
 type AawmTapModuleViewProps = {
@@ -148,7 +147,6 @@ function RemoteHeader({
       <TopNav links={navLinks} className='ms-6' />
       <div className='ms-auto flex items-center space-x-4'>
         <Search />
-        <ThemeSwitch />
         <ConfigDrawer />
         <ProfileDropdown />
       </div>

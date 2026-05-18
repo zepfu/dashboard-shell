@@ -9,12 +9,9 @@ import { IconSidebarFloating } from '@/assets/custom/icon-sidebar-floating'
 import { IconSidebarInset } from '@/assets/custom/icon-sidebar-inset'
 import { IconSidebarSidebar } from '@/assets/custom/icon-sidebar-sidebar'
 import { IconThemeDark } from '@/assets/custom/icon-theme-dark'
-import { IconThemeLight } from '@/assets/custom/icon-theme-light'
-import { IconThemeSystem } from '@/assets/custom/icon-theme-system'
 import { cn } from '@/lib/utils'
 import { useDirection } from '@/context/direction-provider'
 import { type Collapsible, useLayout } from '@/context/layout-provider'
-import { useTheme } from '@/context/theme-provider'
 import { Button } from '@/components/ui/button'
 import {
   Sheet,
@@ -30,13 +27,11 @@ import { useSidebar } from './ui/sidebar'
 export function ConfigDrawer() {
   const { setOpen } = useSidebar()
   const { resetDir } = useDirection()
-  const { resetTheme } = useTheme()
   const { resetLayout } = useLayout()
 
   const handleReset = () => {
     setOpen(true)
     resetDir()
-    resetTheme()
     resetLayout()
   }
 
@@ -168,44 +163,24 @@ function RadioGroupItem({
   )
 }
 
+/** Phosphor Atlas is permanently dark — show the dark option as active. */
 function ThemeConfig() {
-  const { defaultTheme, theme, setTheme } = useTheme()
   return (
     <div>
-      <SectionTitle
-        title='Theme'
-        showReset={theme !== defaultTheme}
-        onReset={() => setTheme(defaultTheme)}
-      />
+      <SectionTitle title='Theme' />
       <Radio
-        value={theme}
-        onValueChange={setTheme}
-        className='grid w-full max-w-md grid-cols-3 gap-4'
-        aria-label='Select theme preference'
+        value='dark'
+        className='grid w-full max-w-md grid-cols-1 gap-4'
+        aria-label='Theme preference (fixed dark)'
         aria-describedby='theme-description'
       >
-        {[
-          {
-            value: 'system',
-            label: 'System',
-            icon: IconThemeSystem,
-          },
-          {
-            value: 'light',
-            label: 'Light',
-            icon: IconThemeLight,
-          },
-          {
-            value: 'dark',
-            label: 'Dark',
-            icon: IconThemeDark,
-          },
-        ].map((item) => (
-          <RadioGroupItem key={item.value} item={item} isTheme />
-        ))}
+        <RadioGroupItem
+          item={{ value: 'dark', label: 'Dark', icon: IconThemeDark }}
+          isTheme
+        />
       </Radio>
       <div id='theme-description' className='sr-only'>
-        Choose between system preference, light mode, or dark mode
+        Phosphor Atlas uses a fixed dark theme
       </div>
     </div>
   )
