@@ -1,0 +1,56 @@
+/**
+ * PhosphorLayout responsive breakpoints.
+ *
+ * The base 3-column grid is declared as inline styles on the root element
+ * (so jsdom tests can inspect it). These @media rules handle per-breakpoint
+ * adjustments for real browser rendering.
+ */
+
+/* 1280px — collapse sidebar on smaller desktops */
+@media (max-width: 1280px) {
+  .phosphor-layout {
+    grid-template-columns: 0 1fr 260px;
+  }
+}
+
+/* 1600px — slightly wider content area */
+@media (min-width: 1600px) {
+  .phosphor-layout {
+    grid-template-columns: 240px 1fr 280px;
+  }
+}
+
+/* 1920px — standard desktop */
+@media (min-width: 1920px) {
+  .phosphor-layout {
+    grid-template-columns: 260px 1fr 300px;
+  }
+}
+
+/* 2100px — wide desktop */
+@media (min-width: 2100px) {
+  .phosphor-layout {
+    grid-template-columns: 280px 1fr 320px;
+  }
+}
+
+/* 2560px — 2K */
+@media (min-width: 2560px) {
+  .phosphor-layout {
+    grid-template-columns: 300px 1fr 360px;
+  }
+}
+
+/* 3840px — 4K */
+@media (min-width: 3840px) {
+  .phosphor-layout {
+    grid-template-columns: 360px 1fr 420px;
+  }
+}
+
+/* 5120px — 5K ultrawide */
+@media (min-width: 5120px) {
+  .phosphor-layout {
+    grid-template-columns: 420px 1fr 480px;
+  }
+}
