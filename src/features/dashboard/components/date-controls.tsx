@@ -168,7 +168,8 @@ export function DateControls({
           }}
           style={{ marginInlineStart: '0.25rem' }}
         >
-          <option value='hour'>hour</option>
+          {/* Note: 'hour' grain is NOT listed — the server returns HTTP 500 for grain=hour.
+              Valid server grains are day | week | month only. */}
           <option value='day'>day</option>
           <option value='week'>week</option>
           <option value='month'>month</option>

@@ -37,6 +37,7 @@ import { PhosphorSidebar } from './components/phosphor-sidebar'
 import { HealthStrip } from './components/primitives/health-strip'
 import { useAlertsFromAnomalies } from './hooks/use-alerts-from-anomalies'
 import { useAnomalyDetection } from './hooks/use-anomaly-detection'
+import { computeFleetErrors } from './lib/usage-report-display'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -69,11 +70,17 @@ interface KpiSummaryShape {
   p95_ms: number
 }
 
+/**
+ * Adapts the API summary + health rows into the KpiStrip shape.
+ *
+ * 15-C.1: errors now derived from computeFleetErrors instead of hardcoded 0.
+ */
 function toKpiSummary(
   summary:
     | { token_in: number; token_out: number; usd_cost: number; traces: number }
     | undefined,
-  fleetP95Ms: number
+  fleetP95Ms: number,
+  fleetErrors: number
 ): KpiSummaryShape | undefined {
   if (summary === undefined) return undefined
   return {
@@ -81,7 +88,7 @@ function toKpiSummary(
     token_out: summary.token_out,
     cost_usd: summary.usd_cost,
     requests: summary.traces,
-    errors: 0,
+    errors: fleetErrors,
     p95_ms: fleetP95Ms,
   }
 }
@@ -129,7 +136,10 @@ export function Dashboard(): ReactElement {
   const [from, setFrom] = useState(defaults.from)
   const [to, setTo] = useState(defaults.to)
   const [grain, setGrain] = useState<UsageReportGrain>('day')
-  const [activePeriod, setActivePeriod] = useState<string>('24h')
+  // 15-C.3: initial activePeriod aligned with the 7-day default date range
+  const [activePeriod, setActivePeriod] = useState<string>('7d')
+  // 15-C.4: controlled search input state for client-side row filtering
+  const [searchTerm, setSearchTerm] = useState<string>('')
 
   const handleRangeChange = (
     nextFrom: string,
@@ -145,6 +155,16 @@ export function Dashboard(): ReactElement {
     setActivePeriod(period)
     const now = new Date()
     const toStr = now.toISOString().slice(0, 10)
+
+    // 15-C.2: YTD sets Jan 1 of current year → today, day grain
+    if (period === 'YTD') {
+      const ytdFrom = new Date(now.getFullYear(), 0, 1)
+        .toISOString()
+        .slice(0, 10)
+      handleRangeChange(ytdFrom, toStr, 'day')
+      return
+    }
+
     const days: Record<string, number> = {
       '24h': 1,
       '7d': 7,
@@ -204,9 +224,15 @@ export function Dashboard(): ReactElement {
     [summaryReport?.providerLatencyHealth]
   )
 
+  // 15-C.1: Real error count from all provider health rows (replaces hardcoded 0).
+  const fleetErrors = useMemo(
+    () => computeFleetErrors(summaryReport?.providerLatencyHealth ?? []),
+    [summaryReport?.providerLatencyHealth]
+  )
+
   const kpiSummary = useMemo(
-    () => toKpiSummary(summaryReport?.summary, fleetP95Ms),
-    [summaryReport?.summary, fleetP95Ms]
+    () => toKpiSummary(summaryReport?.summary, fleetP95Ms, fleetErrors),
+    [summaryReport?.summary, fleetP95Ms, fleetErrors]
   )
 
   const anomalies = useAnomalyDetection(
@@ -320,11 +346,16 @@ export function Dashboard(): ReactElement {
                 General Dashboard
               </h1>
               {/* 14-B.3: search input per mockup — 180px, card-2 bg, mono, 10px */}
+              {/* 15-C.4: controlled input — value + onChange wire to searchTerm state */}
               <input
                 type='text'
                 className='search-input'
                 placeholder='⌘K search...'
                 aria-label='Search dashboard'
+                value={searchTerm}
+                onChange={(e) => {
+                  setSearchTerm(e.target.value)
+                }}
               />
             </div>
 
@@ -518,6 +549,40 @@ export function Dashboard(): ReactElement {
               />
             </label>
 
+            {/* 15-C.3: Grain selector — wired to grain state, triggers refetch via queryKey */}
+            <label
+              htmlFor='ctrl-grain'
+              style={{
+                display: 'contents',
+                color: 'var(--fg-muted)',
+                fontSize: '10px',
+              }}
+            >
+              <span style={{ color: 'var(--fg-muted)', fontSize: '10px' }}>
+                Grain
+              </span>
+              <select
+                id='ctrl-grain'
+                value={grain}
+                onChange={(e) => {
+                  handleRangeChange(from, to, e.target.value)
+                }}
+                style={{
+                  background: 'var(--card-2)',
+                  border: '1px solid var(--border)',
+                  borderBottom: '2px solid var(--accent-cool)',
+                  color: 'var(--fg)',
+                  padding: '3px 6px',
+                  fontFamily: 'var(--font-mono)',
+                  fontSize: '10px',
+                }}
+              >
+                <option value='day'>day</option>
+                <option value='week'>week</option>
+                <option value='month'>month</option>
+              </select>
+            </label>
+
             {/* Period selector — right-aligned */}
             <div
               className='period-selector'
@@ -560,7 +625,13 @@ export function Dashboard(): ReactElement {
           </div>
 
           {/* Main dashboard content */}
-          <PhosphorDashboard from={from} to={to} grain={grain} />
+          {/* 15-C.4: searchTerm passed for client-side row filtering */}
+          <PhosphorDashboard
+            from={from}
+            to={to}
+            grain={grain}
+            searchTerm={searchTerm}
+          />
         </div>
       }
       alerts={<AlertsRail alerts={alerts} />}
