@@ -26,6 +26,7 @@ import {
   fetchUsageReport,
   fetchUsageReportQuotas,
   type UsageReportGrain,
+  type UsageReportProviderLatencyHealthRow,
 } from './api/usage-report'
 import { AlertsRail } from './components/alerts-rail'
 import AnchorBar from './components/anchor-bar'
@@ -70,7 +71,8 @@ interface KpiSummaryShape {
 function toKpiSummary(
   summary:
     | { token_in: number; token_out: number; usd_cost: number; traces: number }
-    | undefined
+    | undefined,
+  fleetP95Ms: number
 ): KpiSummaryShape | undefined {
   if (summary === undefined) return undefined
   return {
@@ -79,8 +81,21 @@ function toKpiSummary(
     cost_usd: summary.usd_cost,
     requests: summary.traces,
     errors: 0,
-    p95_ms: 0,
+    p95_ms: fleetP95Ms,
   }
+}
+
+/**
+ * Computes fleet-wide P95 latency (ms) from all provider latency health rows.
+ * Uses the same max-P95 aggregation as buildProviderMetrics() in phosphor-dashboard.
+ */
+function computeFleetP95(
+  healthRows: UsageReportProviderLatencyHealthRow[]
+): number {
+  const values = healthRows
+    .map((r) => r.upstream_p95_ms)
+    .filter((v): v is number => v !== null)
+  return values.length > 0 ? Math.max(...values) : 0
 }
 
 // ---------------------------------------------------------------------------
@@ -178,9 +193,17 @@ export function Dashboard(): ReactElement {
     }
   }, [dataUpdatedAt])
 
+  // B4: Compute fleet-wide P95 from all provider latency health rows.
+  // The API does not expose p95 on the summary object, so we derive it here
+  // using the same max-P95 aggregation as phosphor-dashboard's buildProviderMetrics().
+  const fleetP95Ms = useMemo(
+    () => computeFleetP95(summaryReport?.providerLatencyHealth ?? []),
+    [summaryReport?.providerLatencyHealth]
+  )
+
   const kpiSummary = useMemo(
-    () => toKpiSummary(summaryReport?.summary),
-    [summaryReport?.summary]
+    () => toKpiSummary(summaryReport?.summary, fleetP95Ms),
+    [summaryReport?.summary, fleetP95Ms]
   )
 
   const anomalies = useAnomalyDetection(
@@ -236,7 +259,11 @@ export function Dashboard(): ReactElement {
           </div>
 
           {/* KPI strip — dominant header element */}
-          <KpiStrip summary={kpiSummary} loading={summaryLoading} />
+          {/* B3: deltas prop wired; API does not expose prior-period deltas yet so
+              all tiles show em-dash placeholders. When the API adds delta data,
+              populate the Record<KpiKey, number> here (e.g. from report.deltas).
+              TODO: API does not expose deltas yet */}
+          <KpiStrip summary={kpiSummary} loading={summaryLoading} deltas={{}} />
 
           {/* Header actions */}
           <div
@@ -374,11 +401,12 @@ export function Dashboard(): ReactElement {
               >
                 ATTRIBUTION
               </span>
+              {/* B2: swatch backgrounds use rgba values per mockup (.attribution-legend .legend-cat.cat-* rules). */}
               {[
-                { label: 'NORM', color: 'var(--accent-cool)' },
-                { label: 'PAPI', color: 'var(--accent-teal)' },
-                { label: 'WKLD', color: 'var(--accent-chrome)' },
-                { label: 'CTRL', color: 'var(--accent-warm)' },
+                { label: 'NORM', color: 'rgba(58, 130, 243, 0.82)' },
+                { label: 'PAPI', color: 'rgba(245, 158, 11, 0.62)' },
+                { label: 'WKLD', color: 'rgba(239, 68, 68, 0.74)' },
+                { label: 'CTRL', color: 'rgba(126, 87, 194, 0.7)' },
                 { label: 'MISS', color: 'rgba(20, 184, 166, 0.6)' },
               ].map(({ label, color }) => (
                 <span
