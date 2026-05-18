@@ -1,51 +1,46 @@
 /**
  * PhosphorLayout responsive breakpoints.
  *
- * Wave 9: corrected breakpoint column widths to match v9.7 reference exactly.
- * Reference compresses sidebar+alerts at 1600–2559px (200px/240px) to give
- * more content room for 8-card layout starting at 2100px. Expands at 2560+.
+ * Wave 14-A: Updated to 3-column grid breakpoints per mockup lines 95-124.
+ * - Baseline (inline): 220px 1fr 260px
+ * - 1600–2559px: 200px 1fr 240px (compress sidebar+alerts at narrower 2K)
+ * - ≥2560px: 260px 1fr 340px
+ * - ≥3840px: 300px 1fr 380px, padding 16px 20px, gap 6px
+ * - ≥5120px: 340px 1fr 420px, padding 20px 24px, gap 8px
  *
  * The base 3-column grid is declared as inline styles on the root element
  * (so jsdom tests can inspect it). These @media rules handle per-breakpoint
  * adjustments for real browser rendering.
  */
 
-/* 1280px — collapse alerts panel on smaller desktops */
-@media (max-width: 1280px) {
-  .phosphor-layout {
-    grid-template-columns: 1fr;
-  }
-}
-
-/* 1600–2559px — compress alerts to give content room; alerts: 240px */
+/* 1600–2559px — compress sidebar+alerts to give content room */
 @media (min-width: 1600px) and (max-width: 2559px) {
   .phosphor-layout {
-    grid-template-columns: 1fr 240px;
+    grid-template-columns: 200px 1fr 240px;
   }
 }
 
-/* 2560px — 2K reference: 1fr + 340px */
+/* 2560px — 2K reference */
 @media (min-width: 2560px) {
   .phosphor-layout {
-    grid-template-columns: 1fr 340px;
-    gap: 4px;
+    grid-template-columns: 260px 1fr 340px;
   }
 }
 
-/* 3840px — 4K: 1fr + 380px */
+/* 3840px — 4K */
 @media (min-width: 3840px) {
   .phosphor-layout {
-    grid-template-columns: 1fr 380px;
-    gap: 6px;
+    grid-template-columns: 300px 1fr 380px;
     padding: 16px 20px;
+    gap: 6px;
   }
 }
 
-/* 5120px — 5K ultrawide: 1fr + 420px */
+/* 5120px — 5K ultrawide */
 @media (min-width: 5120px) {
   .phosphor-layout {
-    grid-template-columns: 1fr 420px;
-    gap: 8px;
+    grid-template-columns: 340px 1fr 420px;
     padding: 20px 24px;
+    gap: 8px;
   }
 }
