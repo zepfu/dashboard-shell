@@ -23,9 +23,14 @@ const mockData = {
   p95_ms: 1200,
   cache_input: 0,
   cache_creation: 0,
+  cache_miss_usd: 0,
   reasoning_reported: 100,
   reasoning_estimated: 90,
+  no_reasoning_calls: 0,
   traces: 5,
+  rate_limits: 0,
+  capacity: 0,
+  packet_loss_pct: null,
 }
 
 const aggregateConfig = { provider: 'aggregate', color: '#3b82f6' }

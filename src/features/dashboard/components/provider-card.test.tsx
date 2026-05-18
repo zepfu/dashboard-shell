@@ -4,7 +4,8 @@
  * Component path: src/features/dashboard/components/provider-card.tsx
  * Expected export: ProviderCard (named)
  *
- * All tests expected to FAIL (red) — source file does not exist yet.
+ * Wave 14-C: tests updated to match 9-row metric grid, lowercase Token Cache
+ * and Reasoning labels, est-mark on estimated value, integer no-reasoning calls.
  */
 import { render, screen } from '@testing-library/react'
 import { ProviderCard } from './provider-card'
@@ -22,9 +23,14 @@ const mockData = {
   p95_ms: 1200,
   cache_input: 0,
   cache_creation: 0,
+  cache_miss_usd: 0,
   reasoning_reported: 100,
   reasoning_estimated: 90,
+  no_reasoning_calls: 5,
   traces: 5,
+  rate_limits: 0,
+  capacity: 0,
+  packet_loss_pct: null,
 }
 
 const anthropicConfig = { provider: 'anthropic', color: '#cc7855' }
@@ -68,7 +74,7 @@ test('test_provider_card_renders_provider_name', () => {
   expect(screen.getByText('ANTHROPIC')).toBeInTheDocument()
 })
 
-test('test_provider_card_renders_11_metrics', () => {
+test('test_provider_card_renders_9_metric_rows', () => {
   render(
     <ProviderCard
       config={anthropicConfig}
@@ -78,25 +84,24 @@ test('test_provider_card_renders_11_metrics', () => {
     />
   )
 
+  // Wave 14-C: 9-row metric grid per mockup lines 2424-2432.
   const metricLabels = [
-    'Toks In',
-    'Toks Out',
-    'Cost',
     'Requests',
+    'Tokens',
+    'Cost',
+    'p95 Latency',
     'Errors',
-    'P95',
-    'Cache In',
-    'Cache Create',
-    'Reason Rptd',
-    'Reason Est',
-    'Traces',
+    'Rate Limits',
+    'Capacity',
+    'Packet Loss',
+    'Status',
   ]
 
-  // Wave 12 Fix 2: healthTooltipContent now repeats 'P95', 'Errors', 'Requests'
+  // Wave 12 Fix 2: healthTooltipContent now repeats 'Errors', 'Requests'
   // in the HoverTooltip content panel, so getByText (single-match) would throw.
   // Use getAllByText and assert at least one match exists.
   for (const label of metricLabels) {
-    const matches = screen.getAllByText(new RegExp(label, 'i'))
+    const matches = screen.getAllByText(new RegExp(`^${label}$`, 'i'))
     expect(matches.length).toBeGreaterThanOrEqual(1)
   }
 })
@@ -113,17 +118,17 @@ test('test_provider_card_renders_token_cache_section', () => {
 
   expect(screen.getByText('TOKEN CACHE')).toBeInTheDocument()
 
-  const cacheRowLabels = [
-    'Cache In',
-    'Cache Create',
-    'Cache Miss',
-    'Cache Savings',
-  ]
+  // Wave 14-C: lowercase labels: in / create / miss / miss $
+  // Note: 'miss $' contains a literal $ so we use string matching not regex.
+  const cacheRowLabels = ['in', 'create', 'miss']
   let foundCount = 0
   for (const label of cacheRowLabels) {
-    const el = screen.queryByText(new RegExp(label, 'i'))
+    const el = screen.queryByText(new RegExp(`^${label}$`, 'i'))
     if (el) foundCount++
   }
+  // 'miss $' label uses literal dollar sign — check separately
+  const missDollarEl = screen.queryByText('miss $')
+  if (missDollarEl) foundCount++
   expect(foundCount).toBeGreaterThanOrEqual(4)
 })
 
@@ -139,13 +144,47 @@ test('test_provider_card_renders_reasoning_section', () => {
 
   expect(screen.getByText('REASONING')).toBeInTheDocument()
 
-  const reasoningRowLabels = ['Reason Rptd', 'Reason Est', 'Reason Sources']
+  // Wave 14-C: lowercase labels: reported / estimated / no-reasoning calls
+  const reasoningRowLabels = ['reported', 'estimated', 'no-reasoning calls']
   let foundCount = 0
   for (const label of reasoningRowLabels) {
-    const el = screen.queryByText(new RegExp(label, 'i'))
+    const el = screen.queryByText(new RegExp(`^${label}$`, 'i'))
     if (el) foundCount++
   }
   expect(foundCount).toBeGreaterThanOrEqual(3)
+})
+
+test('test_provider_card_reasoning_estimated_has_est_mark', () => {
+  const { container } = render(
+    <ProviderCard
+      config={anthropicConfig}
+      data={mockData}
+      healthCells={mockHealthCells}
+      quotas={mockQuotas}
+    />
+  )
+
+  // Wave 14-C.8: est-mark asterisk should appear after estimated value
+  const estMark = container.querySelector('.est-mark')
+  expect(estMark).not.toBeNull()
+  expect(estMark?.textContent).toBe('*')
+})
+
+test('test_provider_card_no_reasoning_calls_is_integer', () => {
+  render(
+    <ProviderCard
+      config={anthropicConfig}
+      data={{ ...mockData, no_reasoning_calls: 5 }}
+      healthCells={mockHealthCells}
+      quotas={mockQuotas}
+    />
+  )
+
+  // Wave 14-C.9: no-reasoning calls should show a number, not em-dash.
+  // The label 'no-reasoning calls' should be present and value fmtCompact(5) = '5'.
+  expect(screen.getByText('no-reasoning calls')).toBeInTheDocument()
+  // Verify the numeric value '5' is rendered (no em-dash placeholder for this row)
+  expect(screen.getByText('5')).toBeInTheDocument()
 })
 
 test('test_provider_card_renders_health_strip', () => {
