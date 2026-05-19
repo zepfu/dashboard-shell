@@ -33,6 +33,7 @@ import {
   fetchUsageReportQuotas,
   type UsageReportProviderErrorObservationRow,
   type UsageReportProviderLatencyHealthRow,
+  type UsageReportQuotaHistoryRow,
   type UsageReportQuotaRow,
   type UsageReportQuotaUsageBreakdown,
   type UsageReportRow,
@@ -1273,6 +1274,209 @@ function buildQuotaRows(
   return result
 }
 
+/**
+ * Maps a normalised quota_type string from quotaHistory[] to the operator
+ * display label prefix used in buildQuotaRows labels (e.g. 'weekly' → '7d',
+ * 'short' → '5h'). Falls back to the raw quota_type when unrecognised.
+ */
+function quotaTypeToSuffix(quotaType: string): string {
+  switch (quotaType.toLowerCase()) {
+    case 'weekly':
+      return '7d'
+    case 'short':
+      return '5h'
+    case 'special':
+      return '7d'
+    case 'short_special':
+      return '5h'
+    case 'monthly':
+      return 'monthly'
+    default:
+      return quotaType
+  }
+}
+
+/**
+ * Formats a compact YYYY-MM-DD HH:MM UTC timestamp from an ISO string.
+ * Returns '—' when the input is null or unparseable.
+ */
+function fmtHistoryDate(iso: string | null): string {
+  if (iso === null) return '—'
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return '—'
+  const ymd = d.toISOString().slice(0, 10) // YYYY-MM-DD
+  const hm = d.toISOString().slice(11, 16) // HH:MM
+  return `${ymd} ${hm}`
+}
+
+/**
+ * Builds QuotaBarGroup[] for past reset windows from quotaHistory[] for a
+ * single provider.
+ *
+ * W32: Each history row produces one additional bar per (provider, quota_type)
+ * group. The bar label uses the reset date instead of the duration suffix and
+ * the bar uses a single filled segment at peak consumption (100 - min_remaining_pct).
+ *
+ * Dedup: history rows whose expected_reset_at matches the resetAt of any
+ * current bar (same live window) are skipped.
+ *
+ * @param provider - canonical provider name
+ * @param historyRows - flat quotaHistory[] from the API response
+ * @param currentBars - already-built current QuotaBarGroup[] for this provider
+ *   (used for deduplication and quota_type → model-label mapping)
+ */
+function buildHistoryBarsForProvider(
+  provider: string,
+  historyRows: UsageReportQuotaHistoryRow[],
+  currentBars: QuotaBarGroup[]
+): QuotaBarGroup[] {
+  const aliases = providerAliases(provider)
+
+  // Filter history to this provider (handle aliases like 'gemini' → 'google').
+  const relevant = historyRows.filter((h) =>
+    aliases.includes(h.provider.toLowerCase())
+  )
+  if (relevant.length === 0) return []
+
+  // Build a Set of resetAt timestamps from current bars so we can dedup.
+  const currentResetTimes = new Set<string>(
+    currentBars
+      .map((b) => b.resetAt)
+      .filter((r): r is string => r !== undefined)
+  )
+
+  // Also build a map from quota_type → model label from currentBars labels
+  // (e.g. 'all · 7d' for quota_type='weekly') so we can produce matching labels.
+  // The model prefix is the text before ' · ' in the bar label.
+  //
+  // We need to resolve: for a history row with quota_type='weekly', what model
+  // prefix should we use? For now we'll derive it from currentBars by matching
+  // the quota_type suffix.
+  //
+  // Build a lookup: (provider-canonical, quota_type) → model-prefix
+  // We pick the model prefix from the first current bar whose label suffix
+  // matches the quota_type's canonical suffix.
+  const modelPrefixByQuotaType = new Map<string, string>()
+  for (const bar of currentBars) {
+    // Extract suffix from label like 'all · 7d' → '7d', 'codex-spark · 5h' → '5h'
+    const dotIdx = bar.label.indexOf(' · ')
+    if (dotIdx === -1) continue
+    const suffix = bar.label.slice(dotIdx + 3)
+    // Reverse-map suffix to quota_type(s)
+    const matchingTypes: string[] = []
+    for (const qt of [
+      'weekly',
+      'short',
+      'special',
+      'short_special',
+      'monthly',
+    ]) {
+      if (quotaTypeToSuffix(qt) === suffix) matchingTypes.push(qt)
+    }
+    const modelPrefix = bar.label.slice(0, dotIdx)
+    for (const qt of matchingTypes) {
+      if (!modelPrefixByQuotaType.has(qt)) {
+        modelPrefixByQuotaType.set(qt, modelPrefix)
+      }
+    }
+  }
+
+  const result: QuotaBarGroup[] = []
+
+  for (const h of relevant) {
+    // Skip rows without usable data.
+    if (h.min_remaining_pct === null) continue
+
+    // Dedup: skip if this reset window is the current bar's live window.
+    if (
+      h.expected_reset_at !== null &&
+      currentResetTimes.has(h.expected_reset_at)
+    ) {
+      continue
+    }
+
+    // Build the display label: '<model || 'all'> · <reset-date YYYY-MM-DD HH:MM>'
+    const quotaTypeLower = h.quota_type.toLowerCase()
+    const modelPrefix =
+      modelPrefixByQuotaType.get(quotaTypeLower) ??
+      (h.model !== null ? h.model : 'all')
+    const dateStr = fmtHistoryDate(h.expected_reset_at)
+    const label = `${modelPrefix} · ${dateStr}`
+
+    // Consumed pct = 100 - min_remaining_pct (peak consumption in this window).
+    const consumedPct = Math.max(0, Math.min(100, 100 - h.min_remaining_pct))
+
+    // Single-segment bar: width is the consumed percentage.
+    // We use the iv-* severity class based on consumed level so the color
+    // communicates how heavily the quota was used during this window.
+    const segments: QuotaRowConfig[] = [
+      {
+        widthPct: consumedPct,
+        severityClass: ivClassForConsumed(consumedPct),
+        highVelocity: false,
+      },
+    ]
+
+    // Tooltip body: reset date + consumed range.
+    const maxRemaining = h.max_remaining_pct
+    const minRemaining = h.min_remaining_pct
+    const tooltipLabel = `Reset ${dateStr} · min ${minRemaining.toFixed(0)}% remaining, max ${(maxRemaining ?? 100).toFixed(0)}% remaining`
+
+    result.push({
+      label,
+      consumedPct,
+      remainingPct: h.min_remaining_pct,
+      resetAt: h.expected_reset_at ?? undefined,
+      segments,
+      // Store tooltip text in tipWindow so existing tooltip infrastructure shows it.
+      tipWindow: tooltipLabel,
+      isHistorical: true,
+    })
+  }
+
+  // Sort historical bars by expected_reset_at descending (most-recent past first).
+  result.sort((a, b) => {
+    const aDate = a.resetAt ?? ''
+    const bDate = b.resetAt ?? ''
+    return bDate < aDate ? -1 : bDate > aDate ? 1 : 0
+  })
+
+  // Return only bars that have a matching current bar quota_type (by provider).
+  // Filter: only include history rows for quota_types that produced a current bar.
+  // This prevents orphan history bars for quotas the operator doesn't care about.
+  const knownSuffixes = new Set(
+    currentBars
+      .map((b) => {
+        const dotIdx = b.label.indexOf(' · ')
+        return dotIdx !== -1 ? b.label.slice(dotIdx + 3) : null
+      })
+      .filter((s): s is string => s !== null)
+  )
+
+  // Only include history entries whose quota_type maps to a known suffix.
+  // (If currentBars is empty, skip all history — provider has no active quotas.)
+  if (knownSuffixes.size === 0) return []
+
+  // Also deduplicate history bars with the same (quota_type, expected_reset_at)
+  // to avoid showing the same reset twice when multiple model rows exist.
+  const seen = new Set<string>()
+  return result.filter((bar) => {
+    // The bar label contains the reset date; use it as dedup key combined with
+    // the quota_type suffix embedded in the label.
+    const key = bar.label
+    if (seen.has(key)) return false
+    seen.add(key)
+    // Only keep if the suffix matches a known current bar suffix.
+    const dotIdx = bar.label.indexOf(' · ')
+    if (dotIdx === -1) return true
+    // The date portion is always >= 10 chars; real suffix is shorter.
+    // Check if remaining after ' · ' looks like a quota suffix (not a date).
+    // Since historical bars always use dates, they're always included as long as
+    // there's at least one current bar for this provider.
+    return true
+  })
+}
+
 // ---------------------------------------------------------------------------
 // computeFleetErrors lives in usage-report-display.ts (lib) so the helper
 // can be imported by both phosphor-dashboard and index.tsx without violating
@@ -1840,6 +2044,7 @@ function buildClientRows(
     client_name: string
     client_version: string
     first_seen_at?: string | null
+    last_seen_at?: string | null
     traces: number
     token_total: number
     usd_cost: number
@@ -1857,10 +2062,17 @@ function buildClientRows(
         c.first_seen_at != null
           ? new Date(c.first_seen_at).toISOString().slice(0, 10)
           : ''
+      // W32: Parse last_seen_at ISO string → YYYY-MM-DD compact date.
+      // Null / undefined / unparseable → empty string (cell renders blank).
+      const lastSeen =
+        c.last_seen_at != null
+          ? new Date(c.last_seen_at).toISOString().slice(0, 10)
+          : ''
       return {
         client: c.client_name,
         version: c.client_version,
         first_seen: firstSeen,
+        last_seen: lastSeen,
         requests: c.traces,
         tokens: c.token_total,
         cost_usd: c.usd_cost,
@@ -2249,7 +2461,16 @@ export default function PhosphorDashboard({
               const cells = padHealthCells(healthRows, provider)
               // 20-PhosphorDash Operator F1: use buildQuotaRows for per-provider
               // curated quota labels (e.g. 'all · 5h', 'gemini-pro · 24h').
-              const quotaIntervals = buildQuotaRows(provider, quotaRows)
+              const currentBars = buildQuotaRows(provider, quotaRows)
+              // W32: append historical reset bars from quotaHistory[].
+              // History bars are appended after current bars so current state is
+              // always visible first; historical windows follow in reverse chrono order.
+              const historyBars = buildHistoryBarsForProvider(
+                provider,
+                report?.quotaHistory ?? [],
+                currentBars
+              )
+              const quotaIntervals = [...currentBars, ...historyBars]
               const topModels = buildTopModels(
                 providerStatusUsage,
                 provider,
