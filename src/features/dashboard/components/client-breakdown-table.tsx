@@ -43,6 +43,10 @@ export interface ClientRow {
   requests: number
   tokens: number
   cost_usd: number
+  /** W25: provider/family color from buildClientRows; preferred over legacy CLIENT_BRAND_COLORS lookup. */
+  color?: string
+  /** W25: family name (claude code, codex, gemini, grok build) for filtering / future use. */
+  family?: string
 }
 
 // ---------------------------------------------------------------------------
@@ -87,7 +91,9 @@ export function ClientBreakdownTable({
         header: 'Client',
         cell: ({ row }) => {
           const brandColor =
-            CLIENT_BRAND_COLORS[row.original.client] ?? 'var(--fg)'
+            row.original.color ??
+            CLIENT_BRAND_COLORS[row.original.client] ??
+            'var(--fg)'
           return (
             <span
               data-client={row.original.client}
