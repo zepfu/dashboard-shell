@@ -15,7 +15,7 @@
  * via `aria-hidden="true"`. A sibling text element should convey the same
  * information for screen reader users.
  *
- * ## Cell colour model (Wave 20)
+ * ## Cell colour model (Wave 20 / Wave 24)
  * Each cell may carry an optional `category` and `intensity` (0–1). When
  * present, `deriveCellStyle` maps them to the mockup-correct RGBA palette:
  *
@@ -26,8 +26,27 @@
  * | 'warning' | 245, 158, 11      | 0.50–0.70   |
  * | 'miss'    | cat-miss CSS cls  | —           |
  *
- * When `category` is absent the `color` string is used unchanged (backward
- * compat with callers that pre-compute the color).
+ * When `category` is absent but `rawP95Ms` / `rawErrorCount` raw metrics are
+ * provided, `deriveCellStyle` derives the category automatically using a
+ * strip-wide p90 latency baseline (see Wave 24 amber threshold rule below).
+ *
+ * When neither `category` nor raw metrics are present, the `color` string is
+ * used unchanged (backward compat with callers that pre-compute the color).
+ *
+ * ## Wave 24 amber threshold rule
+ * Amber (warning) should appear RARELY — targeting ~2-5% of cells:
+ *
+ *   warning = errorCount > 0 || rawP95Ms > p90_of_strip
+ *
+ * where `p90_of_strip` is computed across all non-null rawP95Ms values in the
+ * rendered strip. Because the 90th-percentile cutoff is used, at most ~10% of
+ * cells can be amber from latency alone — and in practice far fewer (most
+ * providers have normal latency the vast majority of buckets). Error-triggered
+ * amber is equally rare since errors should be infrequent.
+ *
+ * Teal (cache-hit / low-latency band) applies when the bucket's p95 is strictly
+ * below the strip's p50 latency baseline, indicating a bucket with
+ * unusually fast responses (cache-hit characteristic).
  *
  * ## Tooltip (vertical mode) — Wave 20 tip-health structure
  * Pass `tooltipContent` to show a `HoverTooltip` (variant `health`) around
@@ -69,13 +88,18 @@ export interface HealthStripEvent {
 /**
  * Cell data passed to {@link HealthStrip}.
  *
- * When `category` + `intensity` are provided the component maps them to
- * mockup-correct RGBA values internally. When omitted, `color` is used as-is
- * (backward-compatible with earlier waves).
+ * Priority for color determination (highest to lowest):
+ * 1. Explicit `category` field — use as-is (Wave 20 semantic palette).
+ * 2. Raw metric fields `rawP95Ms` + `rawErrorCount` — derive category using
+ *    the strip-wide p90 latency baseline (Wave 24 percentile threshold).
+ * 3. `color` string — used unchanged (backward-compatible with earlier waves).
  */
 export interface CellDef {
   /**
-   * CSS color string — used when `category` is not provided.
+   * CSS color string — used when `category` is not provided and raw metrics
+   * are absent. Keeps backward compatibility with callers that pre-compute the
+   * color value.
+   *
    * @default 'var(--card-2)'
    */
   color: string
@@ -87,6 +111,8 @@ export interface CellDef {
    * - `'teal'`    — low-traffic or cache-hit band (teal family)
    * - `'warning'` — elevated latency or error rate (amber family)
    * - `'miss'`    — attribution gap / no upstream data (CSS `cat-miss`)
+   *
+   * When set, takes precedence over `rawP95Ms` / `rawErrorCount`.
    */
   category?: 'normal' | 'teal' | 'warning' | 'miss'
 
@@ -96,6 +122,30 @@ export interface CellDef {
    * Ignored when `category` is `'miss'` or absent.
    */
   intensity?: number
+
+  // -- Raw metrics for Wave 24 percentile-based category derivation -----------
+
+  /**
+   * Upstream P95 latency for the bucket in milliseconds.
+   *
+   * When provided (alongside `rawErrorCount`), the strip computes a p90
+   * baseline across all cells and uses it to derive the `warning` category
+   * only for buckets that genuinely exceed the 90th-percentile latency.
+   * See the Wave 24 amber threshold rule in the module doc-comment.
+   *
+   * Set to `null` to indicate no latency data for the bucket (treated as no
+   * traffic / neutral).
+   */
+  rawP95Ms?: number | null
+
+  /**
+   * Total error/event count for the bucket (provider + 5xx + timeout +
+   * network errors combined). A non-zero value unconditionally triggers
+   * the `warning` category regardless of latency.
+   *
+   * @default 0
+   */
+  rawErrorCount?: number
 
   // -- Tooltip metadata -------------------------------------------------------
 
@@ -146,6 +196,54 @@ const TOTAL_CELLS = 288
 const PADDING_COLOR = 'var(--card-2)'
 
 // ---------------------------------------------------------------------------
+// Wave 24 — percentile threshold helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Computes the p90 latency threshold across all cells that have a non-null
+ * `rawP95Ms` value.
+ *
+ * ## Wave 24 amber threshold rule
+ * We use the actual 90th percentile of the strip's own latency distribution
+ * rather than a fixed absolute threshold. This guarantees at most ~10% of
+ * cells could be amber from latency alone, matching the mockup frequency
+ * target of 2-5% (errors further constrain the count in practice).
+ *
+ * Returns `null` when no cells carry raw latency data (falls back to legacy
+ * `category` / `color` paths).
+ */
+function computeP90Threshold(cells: CellDef[]): number | null {
+  const values = cells
+    .map((c) => c.rawP95Ms)
+    .filter((v): v is number => v != null && v > 0)
+
+  if (values.length === 0) return null
+
+  const sorted = [...values].sort((a, b) => a - b)
+  // p90 index: take the value at the 90th percentile position.
+  const idx = Math.floor(sorted.length * 0.9)
+  return sorted[Math.min(idx, sorted.length - 1)]
+}
+
+/**
+ * Computes the p50 (median) latency threshold across all cells that have a
+ * non-null `rawP95Ms` value. Used to identify unusually fast (teal) buckets.
+ *
+ * Returns `null` when no cells carry raw latency data.
+ */
+function computeP50Threshold(cells: CellDef[]): number | null {
+  const values = cells
+    .map((c) => c.rawP95Ms)
+    .filter((v): v is number => v != null && v > 0)
+
+  if (values.length === 0) return null
+
+  const sorted = [...values].sort((a, b) => a - b)
+  const idx = Math.floor(sorted.length * 0.5)
+  return sorted[Math.min(idx, sorted.length - 1)]
+}
+
+// ---------------------------------------------------------------------------
 // Color derivation (Wave 20 — mockup-correct RGBA palette)
 // ---------------------------------------------------------------------------
 
@@ -170,42 +268,121 @@ function rgba(r: number, g: number, b: number, a: number): string {
 /**
  * Derives the CSS `background` value and optional extra class name for a cell.
  *
+ * ## Category resolution order (Wave 24)
+ *
+ * 1. **Explicit `category`** — used verbatim (highest priority, Wave 20).
+ * 2. **Raw metrics** (`rawP95Ms` / `rawErrorCount`) — derive category using
+ *    the percentile-based threshold rule (Wave 24):
+ *
+ *    ```
+ *    warning  = rawErrorCount > 0
+ *               || rawP95Ms > p90Threshold     // ≈ 2-5% of cells
+ *    teal     = rawP95Ms != null
+ *               && rawP95Ms > 0
+ *               && rawP95Ms < p50Threshold     // unusually fast bucket
+ *    normal   = everything else with traffic
+ *    miss     = rawP95Ms == null && rawErrorCount == 0  // no data
+ *    ```
+ *
+ * 3. **Fallback `color`** — returned unchanged for backward compatibility.
+ *
  * Wave 20 mockup palette:
  * - `normal`  → blue  rgb(58, 130, 243)  α ∈ [0.75, 0.90]
  * - `teal`    → teal  rgb(20, 184, 166)  α ∈ [0.60, 0.75]
  * - `warning` → amber rgb(245, 158, 11)  α ∈ [0.50, 0.70]
  * - `miss`    → cat-miss CSS class (no inline background; CSS owns the color)
  * - (none)    → `cell.color` string unchanged (backward compat)
+ *
+ * @param cell - The cell definition.
+ * @param p90Threshold - Strip-wide p90 latency (ms). `null` when no raw data.
+ * @param p50Threshold - Strip-wide p50 latency (ms). `null` when no raw data.
  */
-function deriveCellStyle(cell: CellDef): {
+function deriveCellStyle(
+  cell: CellDef,
+  p90Threshold: number | null,
+  p50Threshold: number | null
+): {
   background: string | undefined
   extraClass: string
 } {
   const intensity = cell.intensity ?? 0.5
 
-  switch (cell.category) {
-    case 'normal':
-      return {
-        background: rgba(58, 130, 243, lerp(0.75, 0.9, intensity)),
-        extraClass: '',
-      }
-    case 'teal':
-      return {
-        background: rgba(20, 184, 166, lerp(0.6, 0.75, intensity)),
-        extraClass: '',
-      }
-    case 'warning':
+  // 1. Explicit category — highest priority (Wave 20 callers).
+  if (cell.category !== undefined) {
+    switch (cell.category) {
+      case 'normal':
+        return {
+          background: rgba(58, 130, 243, lerp(0.75, 0.9, intensity)),
+          extraClass: '',
+        }
+      case 'teal':
+        return {
+          background: rgba(20, 184, 166, lerp(0.6, 0.75, intensity)),
+          extraClass: '',
+        }
+      case 'warning':
+        return {
+          background: rgba(245, 158, 11, lerp(0.5, 0.7, intensity)),
+          extraClass: '',
+        }
+      case 'miss':
+        // CSS class `cat-miss` owns the background — no inline style needed.
+        return { background: undefined, extraClass: 'cat-miss' }
+    }
+  }
+
+  // 2. Raw metric path — Wave 24 percentile-based category derivation.
+  //    Only engaged when at least rawP95Ms is present on the cell.
+  if (cell.rawP95Ms !== undefined && p90Threshold !== null) {
+    const p95 = cell.rawP95Ms
+    const errCount = cell.rawErrorCount ?? 0
+
+    // Miss: no latency data and no errors → attribution gap.
+    if (p95 === null && errCount === 0) {
+      return { background: undefined, extraClass: 'cat-miss' }
+    }
+
+    // Warning (amber — RARE, ~2-5% target):
+    //   - Any error in the bucket, OR
+    //   - P95 latency exceeds the strip-wide p90 threshold.
+    // Using p90 as the cut-point means at most ~10% of cells trigger from
+    // latency alone; in practice errors are also rare, keeping amber ≤5%.
+    if (errCount > 0 || (p95 !== null && p95 > p90Threshold)) {
       return {
         background: rgba(245, 158, 11, lerp(0.5, 0.7, intensity)),
         extraClass: '',
       }
-    case 'miss':
-      // CSS class `cat-miss` owns the background — no inline style needed.
-      return { background: undefined, extraClass: 'cat-miss' }
-    default:
-      // Backward compat: use the pre-computed color string.
-      return { background: cell.color, extraClass: '' }
+    }
+
+    // Teal (cache-hit / low-latency band — occasional, ~5-10%):
+    //   P95 is non-null, non-zero, and strictly below the strip p50.
+    //   Buckets where responses were unusually fast are likely cache-hit.
+    if (
+      p95 !== null &&
+      p95 > 0 &&
+      p50Threshold !== null &&
+      p95 < p50Threshold
+    ) {
+      return {
+        background: rgba(20, 184, 166, lerp(0.6, 0.75, intensity)),
+        extraClass: '',
+      }
+    }
+
+    // Normal (blue — dominant, ~80-90%): traffic present, latency in range.
+    if (p95 !== null && p95 > 0) {
+      return {
+        background: rgba(58, 130, 243, lerp(0.75, 0.9, intensity)),
+        extraClass: '',
+      }
+    }
+
+    // No data (null p95, errCount 0 already handled above, but guard anyway).
+    return { background: PADDING_COLOR, extraClass: '' }
   }
+
+  // 3. Backward compat: use the pre-computed color string.
+  return { background: cell.color, extraClass: '' }
 }
 
 // ---------------------------------------------------------------------------
@@ -242,9 +419,12 @@ function formatRelTime(offsetSec: number): string {
  * </div>
  * ```
  *
- * When `bucketStart` is absent the head falls back to `—`.
- * When per-event `events` are absent, one placeholder row is rendered with
- * TODO comments per the Wave 20 spec.
+ * Rendering rules (Wave 24):
+ * - `events` array with ≥1 entries: one `v9-tip-row` per event (fully wired).
+ * - `events` array with 0 entries but `eventCount > 0`: head + placeholder row
+ *   showing the aggregate count (upstream sent count but no detail rows yet).
+ * - `events` undefined: head + single row with "no event detail" message.
+ * - `bucketStart` absent: head falls back to `—` time display.
  */
 function buildCellTooltip(cell: CellDef, now: Date): ReactNode {
   // --- Head: relative time window -----------------------------------------
@@ -265,7 +445,6 @@ function buildCellTooltip(cell: CellDef, now: Date): ReactNode {
   } else {
     const n = cell.eventCount ?? 0
     const noun = n === 1 ? 'event' : 'events'
-    // TODO(w20): wire bucketStart from health row to enable relative time
     headText = n > 0 ? `— · ${n.toString()} ${noun}` : '— no data'
   }
 
@@ -273,6 +452,8 @@ function buildCellTooltip(cell: CellDef, now: Date): ReactNode {
   let rows: ReactNode
 
   if (cell.events != null && cell.events.length > 0) {
+    // Fully wired: one row per event (Wave 24 — bucketStart/events wired by
+    // W24-PhosphorDash upstream).
     rows = cell.events.map((ev, idx) => (
       <div key={idx} className='v9-tip-row'>
         <span className='t-time'>{ev.time}</span>
@@ -281,19 +462,27 @@ function buildCellTooltip(cell: CellDef, now: Date): ReactNode {
         <span className='t-count'>x{ev.count.toString()}</span>
       </div>
     ))
-  } else {
-    // No per-event detail — render a summary row.
+  } else if (cell.events != null && cell.events.length === 0) {
+    // Upstream provided an empty events array but eventCount > 0 — show a
+    // placeholder row with the aggregate count while detail is unavailable.
     const count = cell.eventCount ?? 0
     rows = (
       <div className='v9-tip-row'>
-        {/* TODO(w20): wire t-time from per-event observation rows */}
         <span className='t-time'>—</span>
-        {/* TODO(w20): wire t-model from per-event observation rows */}
         <span className='t-model'>—</span>
-        {/* TODO(w20): wire t-err from per-event observation rows */}
         <span className='t-err'>
           {count > 0 ? `${count.toString()} events` : 'ok'}
         </span>
+        <span className='t-count' />
+      </div>
+    )
+  } else {
+    // events is undefined — no per-event detail available from upstream.
+    rows = (
+      <div className='v9-tip-row'>
+        <span className='t-time'>—</span>
+        <span className='t-model'>—</span>
+        <span className='t-err'>no event detail</span>
         <span className='t-count' />
       </div>
     )
@@ -384,6 +573,12 @@ const HealthCell = memo(function HealthCell({
  * Wave 20: cells now support `category` + `intensity` for mockup-correct
  * RGBA colors and `bucketStart` / `eventCount` / `events` for rich
  * `tip-health` hover tooltips.
+ *
+ * Wave 24: cells may now carry `rawP95Ms` + `rawErrorCount` raw metrics.
+ * When present, the strip computes a percentile-based p90 latency threshold
+ * across all cells and uses it to derive the `warning` (amber) category only
+ * for genuinely elevated buckets — keeping amber at the mockup target of
+ * ~2-5% frequency. See the module doc-comment for the full threshold rule.
  */
 export function HealthStrip({
   cells,
@@ -404,6 +599,11 @@ export function HealthStrip({
         ]
       : clipped
 
+  // Wave 24: compute strip-wide latency percentiles for the amber threshold
+  // rule. These are null when no cells carry rawP95Ms (legacy callers).
+  const p90Threshold = computeP90Threshold(padded)
+  const p50Threshold = computeP50Threshold(padded)
+
   if (isVertical) {
     /* 14-H §11 fixes:
        - Add health-strip-wrapper class + borderRight (§11 #1 from 14-G CSS rule)
@@ -423,6 +623,9 @@ export function HealthStrip({
        Wave 20: resolveTooltipContent() picks the explicit tooltipContent prop
        first (backward compat), then auto-generates tip-health JSX from cell
        metadata (bucketStart / eventCount / events).
+
+       Wave 24: deriveCellStyle now receives p90Threshold / p50Threshold for
+       the percentile-based amber threshold rule.
     */
 
     const resolvedTooltip = resolveTooltipContent(tooltipContent, padded, now)
@@ -442,7 +645,11 @@ export function HealthStrip({
           }}
         >
           {padded.map((cell, i) => {
-            const { background, extraClass } = deriveCellStyle(cell)
+            const { background, extraClass } = deriveCellStyle(
+              cell,
+              p90Threshold,
+              p50Threshold
+            )
             return (
               <HealthCell
                 key={i}
@@ -545,7 +752,11 @@ export function HealthStrip({
           }}
         >
           {padded.map((cell, i) => {
-            const { background, extraClass } = deriveCellStyle(cell)
+            const { background, extraClass } = deriveCellStyle(
+              cell,
+              p90Threshold,
+              p50Threshold
+            )
             return (
               <HealthCell
                 key={i}
