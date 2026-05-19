@@ -32,7 +32,31 @@ export type UsageReportGrain = (typeof usageReportGrains)[number]
 export type UsageReportGroupPreset = (typeof usageReportGroupPresets)[number]
 export type UsageReportDimension = UsageReportGroupPreset['groupBy'][number]
 
-export interface UsageReportParams {
+/**
+ * Multi-value dimension filters supported by the usage report API.
+ *
+ * 15-D.1: The server uses parseCsv() on each param, so values are joined as
+ * comma-separated strings in the query string (e.g. `provider=openai,anthropic`).
+ * The server's filterColumns map accepts: provider, repository, client,
+ * environment, model, provider_model. Empty arrays → no filter applied (all
+ * values returned).
+ *
+ * Param names (singular) match the server's filterColumns keys exactly.
+ */
+export interface UsageReportFilterParams {
+  /** Filter to specific providers (empty = all). */
+  provider?: readonly string[]
+  /** Filter to specific repositories/tenant_ids (empty = all). */
+  repository?: readonly string[]
+  /** Filter to specific client names (empty = all). */
+  client?: readonly string[]
+  /** Filter to specific environments (empty = all). */
+  environment?: readonly string[]
+  /** Filter to specific models (empty = all). */
+  model?: readonly string[]
+}
+
+export interface UsageReportParams extends UsageReportFilterParams {
   from: string
   to: string
   grain: UsageReportGrain
@@ -298,6 +322,23 @@ export async function fetchUsageReport(
     limit: '500',
     sort: 'period_end',
   })
+
+  // 15-D.1: Append multi-value dimension filters as comma-separated params.
+  // The server's appendMultiValueFilter() calls parseCsv(searchParams.get(key))
+  // which splits on commas. Empty arrays → param omitted → no server-side filter.
+  const filterKeys = [
+    'provider',
+    'repository',
+    'client',
+    'environment',
+    'model',
+  ] as const
+  for (const key of filterKeys) {
+    const values = params[key]
+    if (values !== undefined && values.length > 0) {
+      searchParams.set(key, values.join(','))
+    }
+  }
 
   const response = await fetch(`/api/shell/reports/usage?${searchParams}`)
   if (!response.ok) {
