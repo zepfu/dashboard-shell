@@ -44,6 +44,7 @@ import {
   formatLatency,
   formatUsd,
   formatResetDistance,
+  modelBrandHex,
   providerBrandHex,
 } from '../lib/usage-report-display'
 import { HealthStrip } from './primitives/health-strip'
@@ -652,12 +653,16 @@ export function ProviderCard({
                     {/* Sub: velocity line e.g. "+5%/30m  ≈  +9%/h" */}
                     <div className='v9-tip-sub'>{tipVelocityStr}</div>
                     {/* Rows: top 3 contributing models with $delta */}
-                    {/* Wave 26 F8: .t-model colored by model's provider brand hex */}
+                    {/* Wave 26 F8 / Wave 27 follow-up: .t-model colored by the
+                        model's provider brand hex. providerBrandHex only
+                        matches provider *names*; tm.model is a *model* name
+                        (e.g. claude-opus-4-7) so we must first infer the
+                        provider via modelBrandHex. */}
                     {tipModelRows.map((tm, mi) => (
                       <div key={mi} className='v9-tip-row'>
                         <span
                           className='t-model'
-                          style={{ color: providerBrandHex(tm.model) }}
+                          style={{ color: modelBrandHex(tm.model) }}
                         >
                           {tm.model}
                         </span>
