@@ -3,7 +3,7 @@
  *
  * Component path: src/features/dashboard/components/alerts-rail.tsx
  * Expected export: AlertsRail (named)
- * Types: AlertItem = { type: 'rate-limit' | 'budget' | 'early-reset' | 'cache-stale' | 'info'; head: string; sub?: string }
+ * Types: AlertItem = { type: 'rate-limit' | 'early-reset' | 'cache-stale' | 'info' | 'warn'; head: string; sub?: string }
  * Props: { alerts: AlertItem[] }
  *
  * All tests expected to FAIL (red) — source file does not exist yet.
