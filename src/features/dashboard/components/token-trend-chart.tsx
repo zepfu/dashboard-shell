@@ -34,6 +34,14 @@
  *   grain, relative labels (e.g. "23h") are displayed as-is. To avoid
  *   crowding at 24 bars only even-indexed labels are shown (every other bar).
  *
+ * Wave 31 — Q1 bar-height fix:
+ * - Replaced `height: '100%'` on `.trend-bar` (which collapsed every bar to
+ *   4-7px under `align-items: flex-end`) with a volume-proportional inline
+ *   `height` computed as `(bucketTotal / maxBucketTotal) * 100%`. Non-zero
+ *   buckets are floored at 6% so the smallest visible bucket still renders a
+ *   ribbon. Empty buckets (total === 0) get 0% and are fully invisible.
+ *   Root-cause diagnosis: Wave 31 principal investigation, Q1 verdict.
+ *
  * Accessibility: the outer container carries a descriptive aria-label.
  */
 import type { CSSProperties, ReactElement, ReactNode } from 'react'
@@ -197,6 +205,14 @@ export function TokenTrendChart({
   // skip odd-indexed labels. Below 12 bars all labels can be shown.
   const skipAlternate = data.length >= 12
 
+  // Pre-compute per-bucket totals for volume-proportional height scaling.
+  // A single pass here avoids a second reduce inside the render loop and
+  // lets us derive maxBucketTotal before JSX construction begins.
+  const bucketTotals = data.map((bucket) =>
+    series.reduce((sum, s) => sum + (bucket.totals[s.key] ?? 0), 0)
+  )
+  const maxBucketTotal = Math.max(0, ...bucketTotals)
+
   return (
     <div
       aria-label='Token usage over time, stacked by provider'
@@ -217,11 +233,32 @@ export function TokenTrendChart({
         }}
       >
         {data.map((bucket, idx) => {
-          // Compute total tokens for this bucket across all series
-          const total = series.reduce(
-            (sum, s) => sum + (bucket.totals[s.key] ?? 0),
-            0
-          )
+          // Use the pre-computed per-bucket total (avoids a second reduce pass).
+          const total = bucketTotals[idx] ?? 0
+
+          // Compute the volume-proportional outer bar height as a % of the 80px
+          // container (height is set on the parent flex container above).
+          //
+          // Under `align-items: flex-end`, percentage heights on flex children
+          // are resolved relative to the container's definite height (80px), so
+          // `height: 50%` → 40px, `height: 100%` → 80px.
+          //
+          // The previous `height: '100%'` did NOT produce this: with no definite
+          // height on the flex container itself (only a fixed px value on the
+          // container), the percentage resolved against the *content* height of
+          // each child, collapsing every bar to the sum of its slice min-heights
+          // (4-7px). See Wave 31 principal investigation Q1 for DOM evidence.
+          //
+          // Rules (matching mockup lines 2780-2795):
+          //   • total === 0  → 0%  (empty bucket, bar invisible)
+          //   • raw < 6      → 6%  (floor so the smallest non-zero bucket still
+          //                         renders a visible ~5px ribbon)
+          //   • otherwise    → (total / maxBucketTotal) * 100%
+          let pctHeight = 0
+          if (total > 0 && maxBucketTotal > 0) {
+            const raw = (total / maxBucketTotal) * 100
+            pctHeight = raw < 6 ? 6 : raw
+          }
 
           // Only show tooltip for non-empty bars (at least one provider has tokens)
           const isEmpty = total === 0
@@ -235,7 +272,9 @@ export function TokenTrendChart({
               className='trend-bar'
               style={{
                 flex: 1,
-                height: '100%',
+                // Volume-proportional height replaces the former `height: '100%'`.
+                // flex:1 is kept for width distribution — that part was correct.
+                height: `${pctHeight.toFixed(1)}%`,
                 display: 'flex',
                 flexDirection: 'column-reverse',
                 overflow: 'hidden',
@@ -349,7 +388,7 @@ export function TokenTrendChart({
               }}
               aria-hidden={displayLabel === '' ? true : undefined}
             >
-              {displayLabel === '' ? ' ' : displayLabel}
+              {displayLabel === '' ? ' ' : displayLabel}
             </div>
           )
         })}
