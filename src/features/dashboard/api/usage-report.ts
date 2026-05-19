@@ -274,7 +274,9 @@ export interface UsageReportQuotaUsageBreakdown {
  * W32: A single past reset window entry from quotaHistory[].
  *
  * Each row represents one completed reset window for a (provider, quota_type)
- * pair, recording the observed min/max remaining_pct within that window.
+ * pair. Full parity with current quota bars: per-model breakdown, interval
+ * bounds, and token totals are all included so historical bars can render
+ * identically to current bars.
  */
 export interface UsageReportQuotaHistoryRow {
   provider: string
@@ -284,14 +286,20 @@ export interface UsageReportQuotaHistoryRow {
    * 'short_special' | 'monthly'
    */
   quota_type: string
-  /** ISO timestamp of the reset event (start of this window). */
+  /** ISO timestamp of the reset point that ended this window. */
   expected_reset_at: string | null
+  /** ISO timestamp of the earliest rate-limit record in this window. */
+  interval_start: string | null
+  /** ISO timestamp equal to expected_reset_at (the window close boundary). */
+  interval_end: string | null
   /** Lowest remaining_pct observed within this window (peak consumption). */
   min_remaining_pct: number | null
   /** Highest remaining_pct observed (typically near-100 just after reset). */
   max_remaining_pct: number | null
-  /** Earliest fromDate when this reset window first appeared in the data. */
-  reset_realized: string | null
+  /** Total tokens consumed within the window across all models. */
+  usage_tokens: number
+  /** Per-model breakdown: token/cost/traces for each model in the window. */
+  usage_breakdown: UsageReportQuotaUsageBreakdown[]
 }
 
 export interface UsageReportResponse {

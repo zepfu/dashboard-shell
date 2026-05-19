@@ -830,18 +830,93 @@ WITH normalized AS (
       AND ri.expected_reset_at IS NOT NULL
       AND ri.expected_reset_at >= $1::timestamptz
       AND ri.expected_reset_at < $2::timestamptz
+),
+window_bounds AS (
+    SELECT
+        provider,
+        model,
+        quota_type,
+        expected_reset_at,
+        MIN(interval_start) AS interval_start,
+        MIN(remaining_pct)::double precision AS min_remaining_pct,
+        MAX(remaining_pct)::double precision AS max_remaining_pct
+    FROM normalized
+    GROUP BY provider, model, quota_type, expected_reset_at
+),
+per_model_usage AS (
+    SELECT
+        wb.provider,
+        wb.model AS quota_model,
+        wb.quota_type,
+        wb.expected_reset_at,
+        COALESCE(sh.model, 'unknown') AS sh_model,
+        SUM(
+            COALESCE(sh.input_tokens, 0)
+            + COALESCE(sh.output_tokens, 0)
+            + COALESCE(sh.cache_read_input_tokens, 0)
+            + COALESCE(sh.cache_creation_input_tokens, 0)
+            + COALESCE(sh.reasoning_tokens_reported, 0)
+            + COALESCE(sh.reasoning_tokens_estimated, 0)
+        )::double precision AS tokens,
+        SUM(COALESCE(sh.response_cost_usd, 0))::double precision AS cost,
+        COUNT(*)::double precision AS traces
+    FROM window_bounds wb
+    JOIN public.session_history sh
+      ON (
+              CASE
+                  WHEN lower(COALESCE(sh.provider, 'unknown')) IN ('google', 'gemini') THEN 'google'
+                  WHEN lower(COALESCE(sh.provider, 'unknown')) IN ('xai', 'x.ai') THEN 'xai'
+                  WHEN lower(COALESCE(sh.provider, 'unknown')) LIKE 'xai/%' THEN 'xai'
+                  WHEN lower(COALESCE(sh.provider, 'unknown')) = 'nvidia' THEN 'nvidia_nim'
+                  WHEN lower(COALESCE(sh.provider, 'unknown')) LIKE 'nvidia_nim/%' THEN 'nvidia_nim'
+                  WHEN lower(COALESCE(sh.provider, 'unknown')) LIKE 'nvidia/%' THEN 'nvidia_nim'
+                  WHEN lower(COALESCE(sh.provider, 'unknown')) LIKE 'local/%' THEN 'local'
+                  WHEN lower(COALESCE(sh.provider, 'unknown')) LIKE 'local_%' THEN 'local'
+                  ELSE COALESCE(sh.provider, 'unknown')
+              END
+          ) = wb.provider
+      AND sh.created_at >= wb.interval_start
+      AND sh.created_at < wb.expected_reset_at
+      AND (wb.quota_model IS NULL OR sh.model = wb.quota_model)
+    GROUP BY wb.provider, wb.model, wb.quota_type, wb.expected_reset_at, COALESCE(sh.model, 'unknown')
 )
 SELECT
-    provider,
-    model,
-    quota_type,
-    expected_reset_at,
-    MIN(remaining_pct)::double precision AS min_remaining_pct,
-    MAX(remaining_pct)::double precision AS max_remaining_pct,
-    MIN(interval_start) AS reset_realized
-FROM normalized
-GROUP BY provider, model, quota_type, expected_reset_at
-ORDER BY expected_reset_at DESC;
+    wb.provider,
+    wb.model,
+    wb.quota_type,
+    wb.expected_reset_at,
+    wb.interval_start,
+    wb.expected_reset_at AS interval_end,
+    wb.min_remaining_pct,
+    wb.max_remaining_pct,
+    COALESCE(SUM(pmu.tokens), 0)::double precision AS usage_tokens,
+    COALESCE(
+        json_agg(
+            json_build_object(
+                'model', pmu.sh_model,
+                'tokens', pmu.tokens,
+                'cost', pmu.cost,
+                'traces', pmu.traces
+            )
+            ORDER BY pmu.tokens DESC
+        ) FILTER (WHERE pmu.sh_model IS NOT NULL),
+        '[]'::json
+    ) AS usage_breakdown
+FROM window_bounds wb
+LEFT JOIN per_model_usage pmu
+  ON pmu.provider = wb.provider
+  AND pmu.quota_type = wb.quota_type
+  AND pmu.expected_reset_at = wb.expected_reset_at
+  AND (pmu.quota_model IS NOT DISTINCT FROM wb.model)
+GROUP BY
+    wb.provider,
+    wb.model,
+    wb.quota_type,
+    wb.expected_reset_at,
+    wb.interval_start,
+    wb.min_remaining_pct,
+    wb.max_remaining_pct
+ORDER BY wb.expected_reset_at DESC;
 `
 
   return { sql, values: [from, to] }
@@ -1082,9 +1157,19 @@ function normalizeQuotaHistoryRow(row) {
     model: row.model ?? null,
     quota_type: row.quota_type ?? 'unknown',
     expected_reset_at: row.expected_reset_at ?? null,
+    interval_start: row.interval_start ?? null,
+    interval_end: row.interval_end ?? null,
     min_remaining_pct: normalizeNumber(row.min_remaining_pct),
     max_remaining_pct: normalizeNumber(row.max_remaining_pct),
-    reset_realized: row.reset_realized ?? null,
+    usage_tokens: normalizeNumber(row.usage_tokens) ?? 0,
+    usage_breakdown: Array.isArray(row.usage_breakdown)
+      ? row.usage_breakdown.map((b) => ({
+          model: b.model ?? 'unknown',
+          tokens: normalizeNumber(b.tokens) ?? 0,
+          cost: normalizeNumber(b.cost) ?? 0,
+          traces: normalizeNumber(b.traces) ?? 0,
+        }))
+      : [],
   }
 }
 
