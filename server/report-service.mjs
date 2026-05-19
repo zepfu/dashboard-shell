@@ -877,7 +877,7 @@ per_model_usage AS (
           ) = wb.provider
       AND sh.created_at >= wb.interval_start
       AND sh.created_at < wb.expected_reset_at
-      AND (wb.quota_model IS NULL OR sh.model = wb.quota_model)
+      AND (wb.model IS NULL OR sh.model = wb.model)
     GROUP BY wb.provider, wb.model, wb.quota_type, wb.expected_reset_at, COALESCE(sh.model, 'unknown')
 )
 SELECT
