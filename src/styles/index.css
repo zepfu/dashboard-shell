@@ -1551,7 +1551,39 @@ tbody tr {
   .main-content {
     display: grid !important;
     grid-template-columns: repeat(20, minmax(0, 1fr)) !important;
+    grid-template-rows: auto auto auto auto auto auto auto !important;
     gap: 12px !important;
+  }
+}
+
+/* Wave 20-CSS — 5120 C2 residual: per-section grid placements at ≥3840px.
+   W18-CSS established the 20-col grid but left sections to auto-place,
+   collapsing them into row 1 as ~220px columns.
+   Mockup 06-phosphor-atlas.html @media (min-width: 3840px) defines rows 4-7
+   for the five content sections + comparison panel (rows 1-3 are reserved for
+   .page-header/.anchor-bar/.controls in the mockup; these don't exist in the
+   current TSX so those rows collapse to zero height — a no-op).
+   Values taken verbatim from mockup lines 561-584. */
+@media (min-width: 3840px) {
+  section[data-tab='status'] {
+    grid-column: 1 / -1;
+    grid-row: 4;
+  }
+  section[data-tab='tokens'] {
+    grid-column: 1 / -1;
+    grid-row: 5;
+  }
+  section[data-tab='models'] {
+    grid-column: 1 / 14;
+    grid-row: 6;
+  }
+  section[data-tab='repos'] {
+    grid-column: 14 / 21;
+    grid-row: 6;
+  }
+  section[data-tab='clients'] {
+    grid-column: 1 / 14;
+    grid-row: 7;
   }
 }
 
