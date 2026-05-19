@@ -7,9 +7,15 @@
  * Uses @tanstack/react-table for sorting. Sticky thead.
  *
  * All tests expected to FAIL (red) — source file does not exist yet.
+ *
+ * Wave 31 additions:
+ * - Q8: Err% hover tooltip when providerErrorObservations are provided.
  */
 import { render, screen, fireEvent } from '@testing-library/react'
-import { MasterLedgerTable } from './master-ledger-table'
+import {
+  MasterLedgerTable,
+  type ProviderErrorObservation,
+} from './master-ledger-table'
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -208,4 +214,144 @@ test('test_5k_columns_have_responsive_class', () => {
     container.querySelector('[class*="col-5k-only"]')
 
   expect(col5k).not.toBeNull()
+})
+
+// ---------------------------------------------------------------------------
+// Wave 31 Q8 — Err% hover tooltip
+// ---------------------------------------------------------------------------
+
+/** Minimal error observation fixture for provider+model filtering tests. */
+const makeErrorObs = (
+  provider: string,
+  model: string,
+  observedAt: string,
+  statusCode: number,
+  errorClass: string,
+  errorCode: string
+): ProviderErrorObservation => ({
+  observed_at: observedAt,
+  environment: 'prod',
+  provider,
+  model,
+  model_group: 'unknown',
+  route_family: 'anthropic_messages',
+  status_code: statusCode,
+  error_type: 'HTTPException',
+  error_code: errorCode,
+  error_class: errorClass,
+  retry_after_seconds: null,
+  expected_reset_at: null,
+})
+
+const errorRow = {
+  model: 'claude-3',
+  provider: 'anthropic',
+  tokens_in: 1000,
+  tokens_out: 2000,
+  requests: 100,
+  p50_ms: 200,
+  p95_ms: 500,
+  error_pct: 9.0,
+  cost_usd: 0.1,
+  cost_per_1k: 0.05,
+  cache_miss_pct: 12.5,
+  cache_miss_usd_cost: 0.01,
+  reasoning_reported: 500,
+  reasoning_estimated: 600,
+}
+
+const zeroErrorRow = {
+  ...errorRow,
+  model: 'gpt-4o',
+  provider: 'openai',
+  error_pct: 0,
+}
+
+const matchingObs: ProviderErrorObservation[] = [
+  makeErrorObs(
+    'anthropic',
+    'claude-3',
+    '2026-05-19T15:07:05.860Z',
+    529,
+    'capacity_exhausted',
+    'unknown'
+  ),
+  makeErrorObs(
+    'anthropic',
+    'claude-3',
+    '2026-05-19T14:00:00.000Z',
+    500,
+    'server_error',
+    'internal'
+  ),
+]
+
+const unmatchedObs: ProviderErrorObservation[] = [
+  makeErrorObs(
+    'openai',
+    'gpt-4o',
+    '2026-05-19T15:07:05.860Z',
+    429,
+    'rate_limited',
+    'too_many_requests'
+  ),
+]
+
+test('test_err_pct_hover_tooltip_renders_when_observations_present', () => {
+  // Err% > 0 and matching observations → HoverTooltip wrapper is rendered in
+  // the cell.  The tooltip content (hidden by default) should include both
+  // the "most recent errors:" heading and the individual error lines.
+  render(
+    <MasterLedgerTable rows={[errorRow]} errorObservations={matchingObs} />
+  )
+
+  // The static (hidden) tooltip content is always in the DOM; confirm the
+  // heading text is present.
+  expect(screen.getByText(/most recent error/i)).toBeInTheDocument()
+  // Both error class entries should appear.
+  expect(screen.getByText(/capacity_exhausted/)).toBeInTheDocument()
+  expect(screen.getByText(/server_error/)).toBeInTheDocument()
+})
+
+test('test_err_pct_no_tooltip_when_error_pct_is_zero', () => {
+  // error_pct === 0 → no tooltip content even if observations exist.
+  render(
+    <MasterLedgerTable rows={[zeroErrorRow]} errorObservations={unmatchedObs} />
+  )
+  expect(screen.queryByText(/most recent error/i)).toBeNull()
+})
+
+test('test_err_pct_no_tooltip_when_no_matching_observations', () => {
+  // error_pct > 0 but no observations match the row's provider+model →
+  // no HoverTooltip; the cell renders a plain text percentage.
+  render(
+    <MasterLedgerTable rows={[errorRow]} errorObservations={unmatchedObs} />
+  )
+  expect(screen.queryByText(/most recent error/i)).toBeNull()
+})
+
+test('test_err_pct_no_tooltip_when_observations_omitted', () => {
+  // errorObservations defaults to [] → no tooltip rendered.
+  render(<MasterLedgerTable rows={[errorRow]} />)
+  expect(screen.queryByText(/most recent error/i)).toBeNull()
+})
+
+test('test_err_pct_tooltip_caps_at_ten_rows', () => {
+  // Provide 12 matching observations; tooltip should show at most 10 rows.
+  const manyObs = Array.from({ length: 12 }, (_, i) =>
+    makeErrorObs(
+      'anthropic',
+      'claude-3',
+      `2026-05-19T${String(i).padStart(2, '0')}:00:00.000Z`,
+      529,
+      'capacity_exhausted',
+      'unknown'
+    )
+  )
+  render(<MasterLedgerTable rows={[errorRow]} errorObservations={manyObs} />)
+
+  // The heading says "10 most recent errors:" — not "12".
+  expect(screen.getByText(/10 most recent errors/i)).toBeInTheDocument()
+  // "12 most recent" must NOT appear.
+  expect(screen.queryByText(/12 most recent/i)).toBeNull()
 })
