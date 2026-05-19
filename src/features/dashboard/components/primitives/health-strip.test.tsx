@@ -243,3 +243,258 @@ test('test_health_strip_vertical_tip_health_opens_on_pointer_enter', () => {
   const tip = container.querySelector('.v9-tip')
   expect(tip?.getAttribute('data-state')).toBe('open')
 })
+
+// ---------------------------------------------------------------------------
+// Wave 24 — percentile-based amber threshold (Bug F9)
+// ---------------------------------------------------------------------------
+
+test('test_health_strip_raw_metrics_normal_bucket_is_blue', () => {
+  // A bucket with p95 in the middle of the distribution → normal (blue).
+  // Distribution: 20 cells spanning 100–2000ms.
+  // sorted[10] = p50 = 1100ms; sorted[18] = p90 = 1900ms.
+  // Test cell at 1200ms: above p50 (not teal) and below p90 (not amber) → normal.
+  const testCell = { color: 'var(--card-2)', rawP95Ms: 1200, rawErrorCount: 0 }
+  const others = [
+    { color: 'var(--card-2)', rawP95Ms: 100, rawErrorCount: 0 },
+    { color: 'var(--card-2)', rawP95Ms: 200, rawErrorCount: 0 },
+    { color: 'var(--card-2)', rawP95Ms: 300, rawErrorCount: 0 },
+    { color: 'var(--card-2)', rawP95Ms: 400, rawErrorCount: 0 },
+    { color: 'var(--card-2)', rawP95Ms: 500, rawErrorCount: 0 },
+    { color: 'var(--card-2)', rawP95Ms: 600, rawErrorCount: 0 },
+    { color: 'var(--card-2)', rawP95Ms: 700, rawErrorCount: 0 },
+    { color: 'var(--card-2)', rawP95Ms: 800, rawErrorCount: 0 },
+    { color: 'var(--card-2)', rawP95Ms: 900, rawErrorCount: 0 },
+    { color: 'var(--card-2)', rawP95Ms: 1000, rawErrorCount: 0 },
+    // testCell 1200ms placed here in sorted order
+    { color: 'var(--card-2)', rawP95Ms: 1300, rawErrorCount: 0 },
+    { color: 'var(--card-2)', rawP95Ms: 1400, rawErrorCount: 0 },
+    { color: 'var(--card-2)', rawP95Ms: 1500, rawErrorCount: 0 },
+    { color: 'var(--card-2)', rawP95Ms: 1600, rawErrorCount: 0 },
+    { color: 'var(--card-2)', rawP95Ms: 1700, rawErrorCount: 0 },
+    { color: 'var(--card-2)', rawP95Ms: 1800, rawErrorCount: 0 },
+    { color: 'var(--card-2)', rawP95Ms: 1900, rawErrorCount: 0 }, // p90
+    { color: 'var(--card-2)', rawP95Ms: 2000, rawErrorCount: 0 },
+    { color: 'var(--card-2)', rawP95Ms: 2100, rawErrorCount: 0 },
+  ]
+  const cells = [
+    testCell,
+    ...others,
+    ...Array.from({ length: 288 - 1 - others.length }, () => ({
+      color: 'var(--card-2)',
+    })),
+  ]
+
+  const { container } = render(<HealthStrip cells={cells} />)
+  const cellEls = container.querySelectorAll('.health-strip-cell')
+  const firstCell = cellEls[0] as HTMLElement
+  const bg = firstCell.style.background || firstCell.style.backgroundColor
+
+  // Should be blue (normal): above p50 so not teal; below p90 so not amber
+  expect(bg).toMatch(/rgba?\(58,\s*130,\s*243/)
+})
+
+test('test_health_strip_raw_metrics_high_latency_bucket_is_amber', () => {
+  // A bucket with p95 strictly exceeding the strip p90 → warning (amber).
+  // 11 non-padding cells so p90 index = Math.floor(11*0.9) = 9.
+  // Sorted values: [100,200,300,400,500,600,700,800,900,3000,5000]
+  //   → p90 = sorted[9] = 3000ms
+  // First cell at 5000ms: 5000 > 3000 → amber.
+  const cells = [
+    { color: 'var(--card-2)', rawP95Ms: 5000, rawErrorCount: 0 }, // >> p90(3000) → amber
+    { color: 'var(--card-2)', rawP95Ms: 100, rawErrorCount: 0 },
+    { color: 'var(--card-2)', rawP95Ms: 200, rawErrorCount: 0 },
+    { color: 'var(--card-2)', rawP95Ms: 300, rawErrorCount: 0 },
+    { color: 'var(--card-2)', rawP95Ms: 400, rawErrorCount: 0 },
+    { color: 'var(--card-2)', rawP95Ms: 500, rawErrorCount: 0 },
+    { color: 'var(--card-2)', rawP95Ms: 600, rawErrorCount: 0 },
+    { color: 'var(--card-2)', rawP95Ms: 700, rawErrorCount: 0 },
+    { color: 'var(--card-2)', rawP95Ms: 800, rawErrorCount: 0 },
+    { color: 'var(--card-2)', rawP95Ms: 900, rawErrorCount: 0 },
+    { color: 'var(--card-2)', rawP95Ms: 3000, rawErrorCount: 0 }, // p90 anchor value
+    ...Array.from({ length: 277 }, () => ({ color: 'var(--card-2)' })),
+  ]
+
+  const { container } = render(<HealthStrip cells={cells} />)
+  const cellEls = container.querySelectorAll('.health-strip-cell')
+  const firstCell = cellEls[0] as HTMLElement
+  const bg = firstCell.style.background || firstCell.style.backgroundColor
+
+  // Should be amber (warning): p95=5000ms strictly exceeds p90=3000ms
+  expect(bg).toMatch(/rgba?\(245,\s*158,\s*11/)
+})
+
+test('test_health_strip_raw_metrics_error_bucket_is_amber', () => {
+  // Any non-zero rawErrorCount triggers amber regardless of latency
+  const cells = [
+    { color: 'var(--card-2)', rawP95Ms: 200, rawErrorCount: 1 }, // error → amber
+    { color: 'var(--card-2)', rawP95Ms: 100, rawErrorCount: 0 },
+    { color: 'var(--card-2)', rawP95Ms: 300, rawErrorCount: 0 },
+    ...Array.from({ length: 285 }, () => ({ color: 'var(--card-2)' })),
+  ]
+
+  const { container } = render(<HealthStrip cells={cells} />)
+  const cellEls = container.querySelectorAll('.health-strip-cell')
+  const firstCell = cellEls[0] as HTMLElement
+  const bg = firstCell.style.background || firstCell.style.backgroundColor
+
+  expect(bg).toMatch(/rgba?\(245,\s*158,\s*11/)
+})
+
+test('test_health_strip_raw_metrics_low_latency_bucket_is_teal', () => {
+  // A bucket with p95 below the strip p50 → teal (cache-hit band)
+  // 10 cells; p50 ≈ 500ms; first cell at 50ms is below p50 → teal
+  const cells = [
+    { color: 'var(--card-2)', rawP95Ms: 50, rawErrorCount: 0 }, // < p50 → teal
+    { color: 'var(--card-2)', rawP95Ms: 200, rawErrorCount: 0 },
+    { color: 'var(--card-2)', rawP95Ms: 300, rawErrorCount: 0 },
+    { color: 'var(--card-2)', rawP95Ms: 400, rawErrorCount: 0 },
+    { color: 'var(--card-2)', rawP95Ms: 500, rawErrorCount: 0 },
+    { color: 'var(--card-2)', rawP95Ms: 600, rawErrorCount: 0 },
+    { color: 'var(--card-2)', rawP95Ms: 700, rawErrorCount: 0 },
+    { color: 'var(--card-2)', rawP95Ms: 800, rawErrorCount: 0 },
+    { color: 'var(--card-2)', rawP95Ms: 900, rawErrorCount: 0 },
+    { color: 'var(--card-2)', rawP95Ms: 1000, rawErrorCount: 0 },
+    ...Array.from({ length: 278 }, () => ({ color: 'var(--card-2)' })),
+  ]
+
+  const { container } = render(<HealthStrip cells={cells} />)
+  const cellEls = container.querySelectorAll('.health-strip-cell')
+  const firstCell = cellEls[0] as HTMLElement
+  const bg = firstCell.style.background || firstCell.style.backgroundColor
+
+  // Should be teal (low-latency / cache-hit band)
+  expect(bg).toMatch(/rgba?\(20,\s*184,\s*166/)
+})
+
+test('test_health_strip_raw_metrics_miss_bucket_gets_cat_miss_class', () => {
+  // rawP95Ms: null + rawErrorCount: 0 → attribution gap → cat-miss
+  const cells = [
+    { color: 'var(--card-2)', rawP95Ms: null, rawErrorCount: 0 },
+    { color: 'var(--card-2)', rawP95Ms: 500, rawErrorCount: 0 },
+    { color: 'var(--card-2)', rawP95Ms: 600, rawErrorCount: 0 },
+    ...Array.from({ length: 285 }, () => ({ color: 'var(--card-2)' })),
+  ]
+
+  const { container } = render(<HealthStrip cells={cells} />)
+  const missCells = container.querySelectorAll('.health-strip-cell.cat-miss')
+  expect(missCells.length).toBeGreaterThanOrEqual(1)
+
+  const firstMiss = missCells[0] as HTMLElement
+  const bg = firstMiss.style.background || firstMiss.style.backgroundColor
+  expect(bg === '' || bg === 'transparent').toBe(true)
+})
+
+test('test_health_strip_amber_frequency_stays_rare_with_raw_metrics', () => {
+  // Simulate 288 cells with realistic latency distribution.
+  // Amber should appear in at most ~10% of traffic cells (p90 rule).
+  // Build a log-normal-ish distribution: most cells 100-800ms, a few spikes.
+  const latencies = Array.from({ length: 288 }, (_, i) => {
+    if (i < 258) return 100 + (i % 8) * 100 // 100-800ms → normal
+    if (i < 274) return 900 + (i % 4) * 100 // 900-1200ms → near p90
+    return 2000 + i * 10 // >2000ms → above p90 → amber
+  })
+
+  const cells = latencies.map((p95) => ({
+    color: 'var(--card-2)',
+    rawP95Ms: p95,
+    rawErrorCount: 0,
+  }))
+
+  const { container } = render(<HealthStrip cells={cells} />)
+  const allCells = container.querySelectorAll('.health-strip-cell')
+  let amberCount = 0
+  for (const el of allCells) {
+    const bg = (el as HTMLElement).style.background
+    if (bg.includes('245') && bg.includes('158') && bg.includes('11')) {
+      amberCount++
+    }
+  }
+
+  // At most ~10% amber (p90 rule); target is 2-5% in practice
+  expect(amberCount).toBeLessThanOrEqual(Math.ceil(288 * 0.12))
+})
+
+// ---------------------------------------------------------------------------
+// Wave 24 — tip-health event rendering edge cases (Bug F1a)
+// ---------------------------------------------------------------------------
+
+test('test_health_strip_tip_health_renders_one_row_per_event', () => {
+  // When events array has entries, one v9-tip-row per event
+  const events = [
+    { time: '13:42', model: 'gpt-4o', errorType: '503 capacity', count: 1 },
+    { time: '13:44', model: 'claude-3', errorType: 'timeout', count: 2 },
+  ]
+  const cells = [
+    {
+      color: 'var(--card-2)',
+      bucketStart: new Date(Date.now() - 14 * 3600 * 1000).toISOString(),
+      eventCount: 3,
+      events,
+    },
+    ...Array.from({ length: 287 }, () => ({ color: 'var(--card-2)' })),
+  ]
+
+  const { container } = render(
+    <HealthStrip cells={cells} orientation='vertical' />
+  )
+
+  const rows = container.querySelectorAll('.v9-tip-row')
+  expect(rows.length).toBe(2)
+
+  const firstRow = rows[0]
+  expect(firstRow.querySelector('.t-time')?.textContent).toBe('13:42')
+  expect(firstRow.querySelector('.t-model')?.textContent).toBe('gpt-4o')
+  expect(firstRow.querySelector('.t-err')?.textContent).toBe('503 capacity')
+  expect(firstRow.querySelector('.t-count')?.textContent).toBe('x1')
+})
+
+test('test_health_strip_tip_health_empty_events_shows_placeholder', () => {
+  // events array is empty but eventCount > 0 → placeholder row
+  const cells = [
+    {
+      color: 'var(--card-2)',
+      bucketStart: new Date(Date.now() - 14 * 3600 * 1000).toISOString(),
+      eventCount: 5,
+      events: [] as {
+        time: string
+        model: string
+        errorType: string
+        count: number
+      }[],
+    },
+    ...Array.from({ length: 287 }, () => ({ color: 'var(--card-2)' })),
+  ]
+
+  const { container } = render(
+    <HealthStrip cells={cells} orientation='vertical' />
+  )
+
+  const rows = container.querySelectorAll('.v9-tip-row')
+  expect(rows.length).toBe(1)
+
+  const errSpan = rows[0].querySelector('.t-err')
+  expect(errSpan?.textContent).toContain('5 events')
+})
+
+test('test_health_strip_tip_health_undefined_events_shows_no_detail', () => {
+  // events is undefined → single row with "no event detail"
+  const cells = [
+    {
+      color: 'var(--card-2)',
+      bucketStart: new Date(Date.now() - 14 * 3600 * 1000).toISOString(),
+      eventCount: 0,
+      // events intentionally omitted
+    },
+    ...Array.from({ length: 287 }, () => ({ color: 'var(--card-2)' })),
+  ]
+
+  const { container } = render(
+    <HealthStrip cells={cells} orientation='vertical' />
+  )
+
+  const rows = container.querySelectorAll('.v9-tip-row')
+  expect(rows.length).toBe(1)
+
+  const errSpan = rows[0].querySelector('.t-err')
+  expect(errSpan?.textContent).toBe('no event detail')
+})
