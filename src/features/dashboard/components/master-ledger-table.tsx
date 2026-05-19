@@ -362,7 +362,14 @@ export function MasterLedgerTable({
   return (
     <Fragment>
       {/* F5 (Wave 20-Tables): mockup L2822 — sparkline trend caption */}
-      <div className='table-caption'>
+      <div
+        className='table-caption'
+        style={{
+          whiteSpace: 'nowrap',
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+        }}
+      >
         sparkline: 24h hourly trend · tok/hr per model
       </div>
       <div
