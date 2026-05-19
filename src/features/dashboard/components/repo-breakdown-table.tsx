@@ -30,7 +30,11 @@ import {
   useReactTable,
   type SortingState,
 } from '@tanstack/react-table'
-import { providerColorFor, formatUsd } from '../lib/usage-report-display'
+import {
+  providerBrandHex,
+  providerColorFor,
+  formatUsd,
+} from '../lib/usage-report-display'
 import { Sparkline } from './primitives/sparkline'
 
 // ---------------------------------------------------------------------------
@@ -128,7 +132,11 @@ export function RepoBreakdownTable({
     }),
     helper.accessor('top_model', {
       header: 'Top Model',
-      cell: (info) => info.getValue() as string,
+      cell: (info) => {
+        const model = info.getValue() as string
+        const brandColor = providerBrandHex(model)
+        return <span style={{ color: brandColor }}>{model}</span>
+      },
     }),
     // C40: renamed from Trend → 24h Tok/Hr
     helper.display({

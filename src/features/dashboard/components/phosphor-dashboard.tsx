@@ -1261,6 +1261,8 @@ function buildModelRows(
   // cache_pct = (cache_input + cache_creation) / token_in × 100.
   // We use token_in (not token_total) as the denominator because cache tokens
   // are measured relative to input tokens processed.
+  // 26-Bundle (operator F#12): extend per-key accumulator with cache_miss and
+  // reasoning fields so they can be surfaced in the new ledger columns.
   const tokensByKey = new Map<
     string,
     {
@@ -1268,6 +1270,9 @@ function buildModelRows(
       token_out: number
       cache_input: number
       cache_creation: number
+      cache_miss_usd: number
+      reasoning_reported: number
+      reasoning_estimated: number
     }
   >()
   for (const r of usageRows) {
@@ -1280,80 +1285,33 @@ function buildModelRows(
     const tout = r.token_out ?? 0
     const ci = r.token_cache_input ?? 0
     const cc = r.token_cache_creation ?? 0
+    const cm_usd = r.cache_miss_usd_cost ?? 0
+    const rr = r.token_reasoning_reported ?? 0
+    const re = r.token_reasoning_estimated ?? 0
     if (existing === undefined) {
       tokensByKey.set(key, {
         token_in: tin,
         token_out: tout,
         cache_input: ci,
         cache_creation: cc,
+        cache_miss_usd: cm_usd,
+        reasoning_reported: rr,
+        reasoning_estimated: re,
       })
     } else {
       existing.token_in += tin
       existing.token_out += tout
       existing.cache_input += ci
       existing.cache_creation += cc
+      existing.cache_miss_usd += cm_usd
+      existing.reasoning_reported += rr
+      existing.reasoning_estimated += re
     }
   }
 
-  // 15-B.5: Pre-compute consumed quota % per provider (provider-level quotas).
-  // For model-scoped quota rows use provider+model key; for provider-scoped
-  // rows (model === null) use provider key as fallback.
-  //
-  // 22-PhosphorDash Fix ⚠-W21-2: the provider-level fallback key (model=null,
-  // stored as `${p}::`) must NOT include special / short_special intervals.
-  // Those intervals are model-specific sub-quotas (e.g. codex-spark, sonnet)
-  // that happen to be stored on the provider row.  Including them caused the
-  // codex-spark exhaustion (short_special_remaining_pct=0) to broadcast
-  // quota_pct=100 onto every OpenAI model row via the fallback chain.
-  //
-  // Strategy (option a from the audit): when processing a model=null row, only
-  // consider short / weekly / monthly for the provider-level fallback key.
-  // special / short_special are included only for model-scoped keys
-  // (q.model !== null) — though in practice the live API encodes those on the
-  // model=null row and the display is handled separately by buildQuotaRows.
-  const quotaByProvider = new Map<string, number>()
-  for (const q of quotaRows) {
-    const p = q.provider.toLowerCase()
-    const isProviderLevel = q.model === null
-
-    // 18-PhosphorDash: Fix data-audit ✘-2 — iterate all interval types and
-    // take the MAX consumed% across active intervals.
-    // 22-PhosphorDash: for provider-level rows (model=null) restrict to the
-    // main fleet intervals (short/weekly/monthly) so sub-quota exhaustion
-    // (special/short_special) does not pollute the provider fallback key.
-    let consumed: number | null = null
-    const intervalCandidates = isProviderLevel
-      ? [
-          { active: q.short_active, remainingPct: q.short_remaining_pct },
-          { active: q.weekly_active, remainingPct: q.weekly_remaining_pct },
-          { active: q.monthly_active, remainingPct: q.monthly_remaining_pct },
-        ]
-      : [
-          { active: q.short_active, remainingPct: q.short_remaining_pct },
-          {
-            active: q.short_special_active,
-            remainingPct: q.short_special_remaining_pct,
-          },
-          { active: q.special_active, remainingPct: q.special_remaining_pct },
-          { active: q.weekly_active, remainingPct: q.weekly_remaining_pct },
-          { active: q.monthly_active, remainingPct: q.monthly_remaining_pct },
-        ]
-    for (const iv of intervalCandidates) {
-      if (iv.active && iv.remainingPct !== null) {
-        const c = Math.max(0, Math.min(100, 100 - iv.remainingPct))
-        if (consumed === null || c > consumed) consumed = c
-      }
-    }
-    if (consumed === null) continue
-    // Use provider+model key for model-scoped entries; provider key for
-    // provider-level entries (model === null).
-    const key = q.model !== null ? `${p}::${q.model.toLowerCase()}` : `${p}::`
-    const prev = quotaByProvider.get(key)
-    // Take the max consumed pct if multiple quota types exist for same key
-    if (prev === undefined || consumed > prev) {
-      quotaByProvider.set(key, consumed)
-    }
-  }
+  // quotaRows param retained in signature for backward compat with call-sites
+  // but quota_pct column removed (Wave 26, operator F#13).
+  void quotaRows
 
   // Group health data by provider+model for latency lookups
   // 15-B.4: also accumulate upstream_p50_ms (previously always left null)
@@ -1431,15 +1389,24 @@ function buildModelRows(
       cache_pct = Math.round((cacheTokens / tokenAgg.token_in) * 1000) / 10
     }
 
-    // 15-B.5: look up quota consumed pct — prefer model-scoped key, then
-    // provider-only fallback
-    const modelQuotaKey = `${providerKey}::${modelKey}`
-    const providerQuotaKey = `${providerKey}::`
-    const quota_pct = Math.round(
-      quotaByProvider.get(modelQuotaKey) ??
-        quotaByProvider.get(providerQuotaKey) ??
-        0
-    )
+    // 26-Bundle (operator F#12): derive cache_miss_pct + populate new fields.
+    // cache_miss_pct: best-effort — use cache_miss_usd / usd_cost * 100 when
+    // both are positive; otherwise undefined so table shows '—'.
+    const cache_miss_usd_cost =
+      tokenAgg !== undefined ? tokenAgg.cache_miss_usd : undefined
+    let cache_miss_pct: number | undefined
+    if (
+      cache_miss_usd_cost !== undefined &&
+      cache_miss_usd_cost > 0 &&
+      row.usd_cost > 0
+    ) {
+      cache_miss_pct =
+        Math.round((cache_miss_usd_cost / row.usd_cost) * 1000) / 10
+    }
+    const reasoning_reported =
+      tokenAgg !== undefined ? tokenAgg.reasoning_reported : undefined
+    const reasoning_estimated =
+      tokenAgg !== undefined ? tokenAgg.reasoning_estimated : undefined
 
     return {
       model: row.model,
@@ -1452,8 +1419,16 @@ function buildModelRows(
       error_pct: Math.round(errorPct * 10) / 10,
       cost_usd: row.usd_cost,
       cost_per_1k: Math.round(costPer1k * 10000) / 10000,
-      quota_pct, // 15-B.5: wired from quota rows
+      // quota_pct removed — Wave 26 operator F#13
       cache_pct: cache_pct ?? undefined, // 20-PhosphorDash: null → undefined for optional field
+      // 26-Bundle (operator F#12): cache miss + reasoning fields
+      cache_miss_pct,
+      cache_miss_usd_cost:
+        cache_miss_usd_cost !== undefined ? cache_miss_usd_cost : undefined,
+      reasoning_reported:
+        reasoning_reported !== undefined ? reasoning_reported : undefined,
+      reasoning_estimated:
+        reasoning_estimated !== undefined ? reasoning_estimated : undefined,
       spark: [row.token_total],
     }
   })

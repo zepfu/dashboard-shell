@@ -15,38 +15,46 @@
  * via `aria-hidden="true"`. A sibling text element should convey the same
  * information for screen reader users.
  *
- * ## Cell colour model (Wave 20 / Wave 24)
+ * ## Cell colour model (Wave 20 / Wave 24 / Wave 26)
  * Each cell may carry an optional `category` and `intensity` (0–1). When
  * present, `deriveCellStyle` maps them to the mockup-correct RGBA palette:
  *
- * | category  | RGB base          | alpha range |
- * |-----------|-------------------|-------------|
- * | 'normal'  | 58, 130, 243      | 0.75–0.90   |
- * | 'teal'    | 20, 184, 166      | 0.60–0.75   |
- * | 'warning' | 245, 158, 11      | 0.50–0.70   |
- * | 'miss'    | cat-miss CSS cls  | —           |
+ * | category  | RGB base          | alpha range | meaning                    |
+ * |-----------|-------------------|-------------|----------------------------|
+ * | 'blue'    | 58, 130, 243      | 0.75–0.90   | no data (absence of data)  |
+ * | 'green'   | 16, 185, 129      | 0.60–0.80   | everything good            |
+ * | 'orange'  | 245, 158, 11      | 0.50–0.70   | intermittent errors        |
+ * | 'red'     | 239, 68, 68       | 0.70–0.90   | service unavailable        |
+ * | 'miss'    | cat-miss CSS cls  | —           | attribution gap            |
+ *
+ * Legacy category names (Wave 20 callers) are still honoured for backward
+ * compat:
+ * | 'normal'  → maps to 'blue'   |
+ * | 'teal'    → maps to 'green'  |
+ * | 'warning' → maps to 'orange' |
  *
  * When `category` is absent but `rawP95Ms` / `rawErrorCount` raw metrics are
- * provided, `deriveCellStyle` derives the category automatically using a
- * strip-wide p90 latency baseline (see Wave 24 amber threshold rule below).
+ * provided, `deriveCellStyle` derives the category using the Wave 26 4-state
+ * semantics (operator F#7):
+ *
+ *   red    = rawErrorCount > 0 && rawP95Ms === null   (service down)
+ *   orange = rawErrorCount > 0                         (intermittent errors)
+ *   blue   = rawP95Ms === null && rawErrorCount === 0  (no data)
+ *   green  = everything else                           (good)
+ *
+ * The Wave 24 percentile-based p90/p50 logic is retained as secondary path
+ * but operator F#7 explicit 4-state mapping takes priority.
  *
  * When neither `category` nor raw metrics are present, the `color` string is
  * used unchanged (backward compat with callers that pre-compute the color).
  *
- * ## Wave 24 amber threshold rule
- * Amber (warning) should appear RARELY — targeting ~2-5% of cells:
+ * ## Wave 26 4-state rule (operator F#7)
+ * Explicit data-presence + error semantics replace the amber-frequency target:
  *
- *   warning = errorCount > 0 || rawP95Ms > p90_of_strip
- *
- * where `p90_of_strip` is computed across all non-null rawP95Ms values in the
- * rendered strip. Because the 90th-percentile cutoff is used, at most ~10% of
- * cells can be amber from latency alone — and in practice far fewer (most
- * providers have normal latency the vast majority of buckets). Error-triggered
- * amber is equally rare since errors should be infrequent.
- *
- * Teal (cache-hit / low-latency band) applies when the bucket's p95 is strictly
- * below the strip's p50 latency baseline, indicating a bucket with
- * unusually fast responses (cache-hit characteristic).
+ *   red    = errorCount > 0 && p95 === null   → service unavailable
+ *   orange = errorCount > 0                    → intermittent
+ *   blue   = p95 === null && errorCount === 0  → no data
+ *   green  = else                              → good
  *
  * ## Tooltip (vertical mode) — Wave 20 tip-health structure
  * Pass `tooltipContent` to show a `HoverTooltip` (variant `health`) around
@@ -107,14 +115,29 @@ export interface CellDef {
   /**
    * Semantic category controlling the RGB base of the rendered cell.
    *
-   * - `'normal'`  — healthy / expected traffic (blue family)
-   * - `'teal'`    — low-traffic or cache-hit band (teal family)
-   * - `'warning'` — elevated latency or error rate (amber family)
+   * Wave 26 canonical names (operator F#7):
+   * - `'blue'`    — no data / absence of data  rgb(58, 130, 243)
+   * - `'green'`   — everything good            rgb(16, 185, 129)
+   * - `'orange'`  — intermittent errors        rgb(245, 158, 11)
+   * - `'red'`     — service unavailable        rgb(239, 68, 68)
    * - `'miss'`    — attribution gap / no upstream data (CSS `cat-miss`)
+   *
+   * Wave 20 legacy aliases (still accepted for backward compat):
+   * - `'normal'`  → blue
+   * - `'teal'`    → green
+   * - `'warning'` → orange
    *
    * When set, takes precedence over `rawP95Ms` / `rawErrorCount`.
    */
-  category?: 'normal' | 'teal' | 'warning' | 'miss'
+  category?:
+    | 'blue'
+    | 'green'
+    | 'orange'
+    | 'red'
+    | 'miss'
+    | 'normal'
+    | 'teal'
+    | 'warning'
 
   /**
    * Relative intensity within the bucket (0–1).
@@ -266,35 +289,82 @@ function rgba(r: number, g: number, b: number, a: number): string {
 }
 
 /**
+ * Maps a Wave 26 canonical category name to its CSS background value.
+ *
+ * Wave 26 4-state palette (operator F#7):
+ * - `'blue'`   → rgb(58, 130, 243)   absence of data
+ * - `'green'`  → rgb(16, 185, 129)   everything good
+ * - `'orange'` → rgb(245, 158, 11)   intermittent errors
+ * - `'red'`    → rgb(239, 68, 68)    service unavailable
+ * - `'miss'`   → cat-miss CSS class  attribution gap
+ *
+ * Legacy Wave 20 aliases: 'normal' → blue, 'teal' → green, 'warning' → orange.
+ */
+function categoryToColor(
+  cat: NonNullable<CellDef['category']>,
+  intensity: number
+): { background: string | undefined; extraClass: string } {
+  switch (cat) {
+    // Wave 26 canonical names
+    case 'blue':
+    case 'normal': // legacy alias → blue (no data)
+      return {
+        background: rgba(58, 130, 243, lerp(0.75, 0.9, intensity)),
+        extraClass: '',
+      }
+    case 'green':
+    case 'teal': // legacy alias → green (good)
+      return {
+        background: rgba(16, 185, 129, lerp(0.6, 0.8, intensity)),
+        extraClass: '',
+      }
+    case 'orange':
+    case 'warning': // legacy alias → orange (intermittent)
+      return {
+        background: rgba(245, 158, 11, lerp(0.5, 0.7, intensity)),
+        extraClass: '',
+      }
+    case 'red':
+      return {
+        background: rgba(239, 68, 68, lerp(0.7, 0.9, intensity)),
+        extraClass: '',
+      }
+    case 'miss':
+      // CSS class `cat-miss` owns the background — no inline style needed.
+      return { background: undefined, extraClass: 'cat-miss' }
+  }
+}
+
+/**
  * Derives the CSS `background` value and optional extra class name for a cell.
  *
- * ## Category resolution order (Wave 24)
+ * ## Category resolution order (Wave 26)
  *
- * 1. **Explicit `category`** — used verbatim (highest priority, Wave 20).
- * 2. **Raw metrics** (`rawP95Ms` / `rawErrorCount`) — derive category using
- *    the percentile-based threshold rule (Wave 24):
+ * 1. **Explicit `category`** — used verbatim via `categoryToColor()` (highest
+ *    priority). Supports both Wave 26 canonical names and Wave 20 legacy aliases.
+ *
+ * 2. **Raw metrics** (`rawP95Ms` / `rawErrorCount`) — derive category using the
+ *    Wave 26 4-state rule (operator F#7):
  *
  *    ```
- *    warning  = rawErrorCount > 0
- *               || rawP95Ms > p90Threshold     // ≈ 2-5% of cells
- *    teal     = rawP95Ms != null
- *               && rawP95Ms > 0
- *               && rawP95Ms < p50Threshold     // unusually fast bucket
- *    normal   = everything else with traffic
- *    miss     = rawP95Ms == null && rawErrorCount == 0  // no data
+ *    red    = rawErrorCount > 0 && rawP95Ms === null  → service down
+ *    orange = rawErrorCount > 0                        → intermittent errors
+ *    blue   = rawP95Ms === null && rawErrorCount === 0 → no data
+ *    green  = else                                     → good
  *    ```
  *
  * 3. **Fallback `color`** — returned unchanged for backward compatibility.
  *
- * Wave 20 mockup palette:
- * - `normal`  → blue  rgb(58, 130, 243)  α ∈ [0.75, 0.90]
- * - `teal`    → teal  rgb(20, 184, 166)  α ∈ [0.60, 0.75]
- * - `warning` → amber rgb(245, 158, 11)  α ∈ [0.50, 0.70]
- * - `miss`    → cat-miss CSS class (no inline background; CSS owns the color)
- * - (none)    → `cell.color` string unchanged (backward compat)
+ * Wave 26 palette:
+ * - `blue`   → rgb(58, 130, 243)   α ∈ [0.75, 0.90]  absence of data
+ * - `green`  → rgb(16, 185, 129)   α ∈ [0.60, 0.80]  good
+ * - `orange` → rgb(245, 158, 11)   α ∈ [0.50, 0.70]  intermittent errors
+ * - `red`    → rgb(239, 68, 68)    α ∈ [0.70, 0.90]  service unavailable
+ * - `miss`   → cat-miss CSS class  no inline bg       attribution gap
  *
  * @param cell - The cell definition.
  * @param p90Threshold - Strip-wide p90 latency (ms). `null` when no raw data.
+ *   Retained for secondary percentile logic but Wave 26 4-state takes priority.
  * @param p50Threshold - Strip-wide p50 latency (ms). `null` when no raw data.
  */
 function deriveCellStyle(
@@ -307,81 +377,47 @@ function deriveCellStyle(
 } {
   const intensity = cell.intensity ?? 0.5
 
-  // 1. Explicit category — highest priority (Wave 20 callers).
+  // 1. Explicit category — highest priority (Wave 20 + Wave 26 callers).
   if (cell.category !== undefined) {
-    switch (cell.category) {
-      case 'normal':
-        return {
-          background: rgba(58, 130, 243, lerp(0.75, 0.9, intensity)),
-          extraClass: '',
-        }
-      case 'teal':
-        return {
-          background: rgba(20, 184, 166, lerp(0.6, 0.75, intensity)),
-          extraClass: '',
-        }
-      case 'warning':
-        return {
-          background: rgba(245, 158, 11, lerp(0.5, 0.7, intensity)),
-          extraClass: '',
-        }
-      case 'miss':
-        // CSS class `cat-miss` owns the background — no inline style needed.
-        return { background: undefined, extraClass: 'cat-miss' }
-    }
+    return categoryToColor(cell.category, intensity)
   }
 
-  // 2. Raw metric path — Wave 24 percentile-based category derivation.
-  //    Only engaged when at least rawP95Ms is present on the cell.
-  if (cell.rawP95Ms !== undefined && p90Threshold !== null) {
+  // 2. Raw metric path — Wave 26 4-state category derivation (operator F#7).
+  //    Engaged when rawP95Ms is present on the cell (even as null).
+  if (cell.rawP95Ms !== undefined) {
     const p95 = cell.rawP95Ms
     const errCount = cell.rawErrorCount ?? 0
 
-    // Miss: no latency data and no errors → attribution gap.
-    if (p95 === null && errCount === 0) {
-      return { background: undefined, extraClass: 'cat-miss' }
+    // Red: errors present AND no latency data → service unavailable (down).
+    if (errCount > 0 && p95 === null) {
+      return categoryToColor('red', intensity)
     }
 
-    // Warning (amber — RARE, ~2-5% target):
-    //   - Any error in the bucket, OR
-    //   - P95 latency exceeds the strip-wide p90 threshold.
-    // Using p90 as the cut-point means at most ~10% of cells trigger from
-    // latency alone; in practice errors are also rare, keeping amber ≤5%.
-    if (errCount > 0 || (p95 !== null && p95 > p90Threshold)) {
-      return {
-        background: rgba(245, 158, 11, lerp(0.5, 0.7, intensity)),
-        extraClass: '',
-      }
+    // Orange: any errors present → intermittent errors.
+    if (errCount > 0) {
+      return categoryToColor('orange', intensity)
     }
 
-    // Teal (cache-hit / low-latency band — occasional, ~5-10%):
-    //   P95 is non-null, non-zero, and strictly below the strip p50.
-    //   Buckets where responses were unusually fast are likely cache-hit.
-    if (
-      p95 !== null &&
-      p95 > 0 &&
-      p50Threshold !== null &&
-      p95 < p50Threshold
-    ) {
-      return {
-        background: rgba(20, 184, 166, lerp(0.6, 0.75, intensity)),
-        extraClass: '',
-      }
+    // Blue: no data (null p95, no errors) → absence of data.
+    if (p95 === null) {
+      return categoryToColor('blue', intensity)
     }
 
-    // Normal (blue — dominant, ~80-90%): traffic present, latency in range.
-    if (p95 !== null && p95 > 0) {
-      return {
-        background: rgba(58, 130, 243, lerp(0.75, 0.9, intensity)),
-        extraClass: '',
-      }
+    // Secondary: when p90Threshold is available, use percentile logic for
+    // latency-only degradation signal (no errors, but very high latency).
+    // This preserves the Wave 24 amber-frequency semantics for callers that
+    // don't send errors but do want high-latency cells highlighted.
+    if (p90Threshold !== null && p95 > p90Threshold) {
+      return categoryToColor('orange', intensity)
     }
 
-    // No data (null p95, errCount 0 already handled above, but guard anyway).
-    return { background: PADDING_COLOR, extraClass: '' }
+    // Green: traffic present, no errors → everything good.
+    return categoryToColor('green', intensity)
   }
 
   // 3. Backward compat: use the pre-computed color string.
+  // p50Threshold retained in signature for API stability; unused in path 3.
+  void p50Threshold
   return { background: cell.color, extraClass: '' }
 }
 
