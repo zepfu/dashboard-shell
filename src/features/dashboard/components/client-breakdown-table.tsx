@@ -1,9 +1,9 @@
 /**
  * ClientBreakdownTable — sortable TanStack Table for per-client usage.
  *
- * Renders a sticky-header, sortable table with exactly 6 columns per spec:
- * Client, Version, First Seen, Requests, Tokens, Cost. The Client <td> carries
- * a data-client attribute for testability and brand-colour lookups.
+ * Renders a sticky-header, sortable table with exactly 7 columns per spec:
+ * Client, Version, First Seen, Last Seen, Requests, Tokens, Cost. The Client
+ * <td> carries a data-client attribute for testability and brand-colour lookups.
  *
  * Wave 11 PR6 (11-o):
  * - Client cells colored via CLIENT_BRAND_COLORS (C13).
@@ -23,6 +23,11 @@
  * Wave 31:
  * - Added "First Seen" column (between Version and Requests) wired from
  *   first_seen_at API field, formatted as YYYY-MM-DD.
+ *
+ * Wave 32:
+ * - Added "Last Seen" column (between First Seen and Requests) wired from
+ *   last_seen_at API field, formatted as YYYY-MM-DD. Sorted descending by
+ *   default (newest activity first); rows missing last_seen sort last.
  */
 import { useMemo, useState, type ReactElement } from 'react'
 import {
@@ -46,6 +51,8 @@ export interface ClientRow {
   version: string
   /** W31: date the client was first seen, formatted YYYY-MM-DD. Empty string when unknown. */
   first_seen?: string
+  /** W32: date of the most recent request, formatted YYYY-MM-DD. Empty string when unknown. */
+  last_seen?: string
   requests: number
   tokens: number
   cost_usd: number
@@ -87,10 +94,11 @@ export function ClientBreakdownTable({
 }: ClientBreakdownTableProps): ReactElement {
   const [sorting, setSorting] = useState<SortingState>([])
 
-  // §6.1: 6 columns — Client, Version, First Seen, Requests, Tokens, Cost.
+  // §6.1: 7 columns — Client, Version, First Seen, Last Seen, Requests, Tokens, Cost.
   // §6.2: no microbars on any numeric cell (plain <td> per mockup L3264-3266).
   // Sparkline/Trend column removed entirely.
   // W31: "First Seen" inserted between Version and Requests, sorted by ISO string.
+  // W32: "Last Seen" inserted between First Seen and Requests, sorted DESC (newest first).
   const columns = useMemo(
     () => [
       helper.display({
@@ -121,6 +129,15 @@ export function ClientBreakdownTable({
       helper.accessor('first_seen', {
         header: 'First Seen',
         sortDescFirst: false,
+        sortUndefined: 1,
+        cell: (info) => (info.getValue() as string | undefined) ?? '',
+      }),
+      // W32: "Last Seen" column — YYYY-MM-DD compact date, sorted DESC by default
+      // (newest activity first). sortUndefined: 1 ensures rows without a last_seen
+      // value sort to the bottom regardless of sort direction.
+      helper.accessor('last_seen', {
+        header: 'Last Seen',
+        sortDescFirst: true,
         sortUndefined: 1,
         cell: (info) => (info.getValue() as string | undefined) ?? '',
       }),
@@ -255,11 +272,12 @@ export function ClientBreakdownTable({
               {row.getVisibleCells().map((cell) => {
                 // Attach data-client to the <td> for the client column
                 const isClientCol = cell.column.id === 'client'
-                // Text columns (left-aligned, no .number class): client, version, first_seen
+                // Text columns (left-aligned, no .number class): client, version, first_seen, last_seen
                 const isText =
                   cell.column.id === 'client' ||
                   cell.column.id === 'version' ||
-                  cell.column.id === 'first_seen'
+                  cell.column.id === 'first_seen' ||
+                  cell.column.id === 'last_seen'
 
                 // 14-F.1: .number className on numeric cells
                 const tdClassName = !isText ? 'number' : undefined
