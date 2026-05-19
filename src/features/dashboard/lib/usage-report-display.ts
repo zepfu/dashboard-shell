@@ -91,6 +91,105 @@ export function providerBrandHex(provider: string): string {
   )
 }
 
+/**
+ * Infers a canonical provider key from a model name.
+ *
+ * Wave 27 (W26 follow-up): consumers like ProviderCard's quota-hover .t-model
+ * row and RepoBreakdownTable's "Top Model" cell pass *model* names (e.g.
+ * `claude-opus-4-7`, `gpt-5.5`) into {@link providerBrandHex}. That helper's
+ * lookup table (PROVIDER_BRAND_HEX) is keyed by provider names only
+ * (`anthropic`, `openai`, ...), so model-name inputs fell through to the
+ * `var(--fg)` fallback and rendered un-branded. This helper bridges that gap
+ * by pattern-matching the model prefix back to its provider key.
+ *
+ * Patterns covered:
+ *   claude-*, claude_*, anthropic*               -> 'anthropic'
+ *   gpt-*, o1-*, o3-*, o4-*, chatgpt*, codex*,
+ *     text-embedding*, text-davinci*             -> 'openai'
+ *   gemini*, embeddinggemma*                     -> 'google'
+ *   grok*                                        -> 'xai'
+ *   nvidia*, nemo*, nim-*                        -> 'nvidia_nim'
+ *   strings containing '/' (vendor/model paths)  -> 'openrouter'
+ *   llama*, mistral*, mixtral*, qwen*, phi*,
+ *     deepseek*, nomic-embed*, gte-*, e5-*       -> 'local'
+ *
+ * Unrecognised inputs fall through to the raw lowercased string so that
+ * {@link providerBrandHex} can attempt its own match (and otherwise return
+ * the `var(--fg)` fallback).
+ */
+export function modelToProviderKey(model: string): string {
+  const m = model.trim().toLowerCase()
+  if (m === '') return ''
+
+  // Anthropic - Claude family
+  if (m.startsWith('claude') || m.startsWith('anthropic')) return 'anthropic'
+
+  // OpenAI - GPT family + reasoning (o1/o3/o4) + ChatGPT + Codex +
+  // text-embedding / text-davinci legacy models
+  if (
+    m.startsWith('gpt-') ||
+    m.startsWith('gpt_') ||
+    m.startsWith('gpt5') ||
+    m.startsWith('gpt4') ||
+    m.startsWith('gpt3') ||
+    m === 'gpt' ||
+    m.startsWith('o1-') ||
+    m.startsWith('o3-') ||
+    m.startsWith('o4-') ||
+    m.startsWith('chatgpt') ||
+    m.startsWith('codex') ||
+    m.startsWith('text-embedding') ||
+    m.startsWith('text-davinci') ||
+    m.startsWith('davinci')
+  ) {
+    return 'openai'
+  }
+
+  // Google - Gemini family + EmbeddingGemma
+  if (m.startsWith('gemini') || m.startsWith('embeddinggemma')) return 'google'
+
+  // xAI - Grok family
+  if (m.startsWith('grok')) return 'xai'
+
+  // NVIDIA NIM - branded prefixes
+  if (m.startsWith('nvidia') || m.startsWith('nemo') || m.startsWith('nim-')) {
+    return 'nvidia_nim'
+  }
+
+  // OpenRouter - uses `<vendor>/<model>` paths
+  if (m.includes('/')) return 'openrouter'
+
+  // Local / open-weight families served via local_llm / local_embed
+  if (
+    m.startsWith('llama') ||
+    m.startsWith('mistral') ||
+    m.startsWith('mixtral') ||
+    m.startsWith('qwen') ||
+    m.startsWith('phi') ||
+    m.startsWith('deepseek') ||
+    m.startsWith('nomic-embed') ||
+    m.startsWith('gte-') ||
+    m.startsWith('e5-')
+  ) {
+    return 'local'
+  }
+
+  return m
+}
+
+/**
+ * Convenience wrapper: returns the reference brand-identity hex for a model
+ * name, inferring the provider via {@link modelToProviderKey}.
+ *
+ * Wave 27: use this at call sites where the input is a *model* name (e.g.
+ * `claude-opus-4-7`, `gpt-5.5`) rather than a provider key. Falls back to
+ * `var(--fg)` for unknown models.
+ */
+export function modelBrandHex(model: string): string {
+  const key = modelToProviderKey(model)
+  return providerBrandHex(key)
+}
+
 export const providerColors = [
   '#2563eb',
   '#7c3aed',
