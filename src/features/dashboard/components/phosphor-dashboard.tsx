@@ -1297,15 +1297,29 @@ function quotaTypeToSuffix(quotaType: string): string {
 }
 
 /**
- * Formats a compact YYYY-MM-DD HH:MM UTC timestamp from an ISO string.
+ * Rounds a UTC timestamp to the nearest 30-minute boundary.
+ * Used to collapse sub-minute poll-jitter duplicates (e.g. 00:04:53, 00:04:54,
+ * 00:04:56 → all round to 00:00) into a single logical reset slot.
+ */
+function roundToNearest30Min(iso: string): Date {
+  const ms = 30 * 60 * 1000
+  return new Date(Math.round(new Date(iso).getTime() / ms) * ms)
+}
+
+/**
+ * Formats a compact YYYY-MM-DD HH:MM label for a history bar, using the
+ * timestamp rounded to the nearest 30-minute boundary.  The format matches the
+ * previous raw-minute formatter (no UTC suffix) so existing label patterns are
+ * preserved while sub-minute jitter is suppressed.
  * Returns '—' when the input is null or unparseable.
  */
-function fmtHistoryDate(iso: string | null): string {
+function fmtHistoryDateRounded(iso: string | null): string {
   if (iso === null) return '—'
   const d = new Date(iso)
   if (Number.isNaN(d.getTime())) return '—'
-  const ymd = d.toISOString().slice(0, 10) // YYYY-MM-DD
-  const hm = d.toISOString().slice(11, 16) // HH:MM
+  const r = roundToNearest30Min(iso)
+  const ymd = r.toISOString().slice(0, 10) // YYYY-MM-DD
+  const hm = r.toISOString().slice(11, 16) // HH:MM
   return `${ymd} ${hm}`
 }
 
@@ -1364,11 +1378,13 @@ function buildHistoryBarsForProvider(
   // If no current bars exist the provider has no active quotas — skip history.
   if (currentBars.length === 0) return []
 
-  // Build a Set of resetAt timestamps from current bars so we can dedup.
-  const currentResetTimes = new Set<string>(
+  // Build a Set of rounded resetAt timestamps from current bars so we can
+  // dedup history rows that fall within 30 minutes of a live reset window.
+  const currentRoundedResetTimes = new Set<string>(
     currentBars
       .map((b) => b.resetAt)
       .filter((r): r is string => r !== undefined)
+      .map((r) => roundToNearest30Min(r).toISOString())
   )
 
   // Build a lookup: quota_type → model-prefix from current bar labels.
@@ -1392,8 +1408,25 @@ function buildHistoryBarsForProvider(
     }
   }
 
-  // Deduplicate by (quota_type, expected_reset_at) — multiple model rows in the
-  // same window must not produce duplicate bars.
+  // Pre-pass: for each rounded slot, collect the set of distinct quota_types
+  // that appear.  Any slot with >1 quota_type needs label disambiguation so
+  // bars that would otherwise render identical labels become distinguishable.
+  const quotaTypesPerSlot = new Map<string, Set<string>>()
+  for (const h of relevant) {
+    if (h.min_remaining_pct === null) continue
+    if (h.expected_reset_at === null) continue
+    const slot = roundToNearest30Min(h.expected_reset_at).toISOString()
+    if (currentRoundedResetTimes.has(slot)) continue
+    let types = quotaTypesPerSlot.get(slot)
+    if (types === undefined) {
+      types = new Set<string>()
+      quotaTypesPerSlot.set(slot, types)
+    }
+    types.add(h.quota_type.toLowerCase())
+  }
+
+  // Deduplicate by (quota_type, rounded-slot) — sub-minute poll-jitter
+  // duplicates of the same quota type collapse to one bar per 30-min window.
   const seen = new Set<string>()
   const result: QuotaBarGroup[] = []
 
@@ -1401,26 +1434,36 @@ function buildHistoryBarsForProvider(
     // Skip rows without usable data.
     if (h.min_remaining_pct === null) continue
 
-    // Dedup against current bars.
-    if (
-      h.expected_reset_at !== null &&
-      currentResetTimes.has(h.expected_reset_at)
-    ) {
+    const roundedSlot =
+      h.expected_reset_at !== null
+        ? roundToNearest30Min(h.expected_reset_at).toISOString()
+        : ''
+
+    // Dedup against current bars (rounded comparison suppresses history rows
+    // within 30 minutes of any live reset window).
+    if (roundedSlot !== '' && currentRoundedResetTimes.has(roundedSlot)) {
       continue
     }
 
-    // Dedup across multiple history rows for the same (quota_type, reset).
-    const dedupeKey = `${h.quota_type}::${h.expected_reset_at ?? ''}`
+    // Dedup across multiple history rows for the same (quota_type, rounded slot).
+    const dedupeKey = `${h.quota_type}::${roundedSlot}`
     if (seen.has(dedupeKey)) continue
     seen.add(dedupeKey)
 
     // Build the display label: '<model-prefix> · <reset-date YYYY-MM-DD HH:MM>'
+    // Use the rounded date so visually identical bars can never be produced by
+    // sub-minute poll-jitter.  Append '(quota_type)' when multiple quota types
+    // share the same rounded slot to keep adjacent bars distinguishable.
     const quotaTypeLower = h.quota_type.toLowerCase()
     const modelPrefix =
       modelPrefixByQuotaType.get(quotaTypeLower) ??
       (h.model !== null ? h.model : 'all')
-    const dateStr = fmtHistoryDate(h.expected_reset_at)
-    const label = `${modelPrefix} · ${dateStr}`
+    const dateStr = fmtHistoryDateRounded(h.expected_reset_at)
+    const disambig =
+      roundedSlot !== '' && (quotaTypesPerSlot.get(roundedSlot)?.size ?? 0) > 1
+        ? ` (${quotaTypeLower})`
+        : ''
+    const label = `${modelPrefix} · ${dateStr}${disambig}`
 
     // Full-parity 12-segment render using the same buildQuotaSegments function
     // as current bars. Use min_remaining_pct (peak consumption).
