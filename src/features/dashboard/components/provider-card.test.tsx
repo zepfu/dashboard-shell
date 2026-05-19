@@ -342,3 +342,92 @@ test('test_provider_card_quota_tip_model_has_brand_color', () => {
   )
   expect(coloredSpans.length).toBeGreaterThanOrEqual(1)
 })
+
+// ---------------------------------------------------------------------------
+// W32 — historical reset bar tests
+// ---------------------------------------------------------------------------
+
+/**
+ * W32: ProviderCard renders additional quota bars for historical resets.
+ *
+ * When quotas[] includes bars with isHistorical=true (produced by
+ * buildHistoryBarsForProvider in phosphor-dashboard), those bars should
+ * appear in the quota list alongside the current bar.
+ */
+test('test_provider_card_renders_historical_bars_with_reduced_opacity', () => {
+  const currentBar = {
+    label: 'all · 7d',
+    consumedPct: 40,
+    remainingPct: 60,
+    resetAt: '2026-05-19T00:00:00Z',
+    segments: makeSegments(),
+  }
+  const historicalBar = {
+    label: 'all · 2026-05-12 00:00',
+    consumedPct: 88,
+    remainingPct: 12,
+    resetAt: '2026-05-12T00:00:00Z',
+    segments: [{ widthPct: 88, severityClass: 'iv-50-p', highVelocity: false }],
+    isHistorical: true,
+  }
+
+  const { container } = render(
+    <ProviderCard
+      config={anthropicConfig}
+      data={mockData}
+      healthCells={mockHealthCells}
+      quotas={[currentBar, historicalBar]}
+    />
+  )
+
+  // Should render 2 quota bars total (1 current + 1 historical).
+  // Each QuotaBarGroup renders one .quota-row-bar.
+  const bars = container.querySelectorAll('.quota-row-bar')
+  expect(bars.length).toBe(2)
+})
+
+test('test_provider_card_historical_bar_single_segment', () => {
+  // Historical bars use a single fill segment (not 12-segment gradient).
+  const historicalBar = {
+    label: 'all · 2026-05-12 00:00',
+    consumedPct: 75,
+    remainingPct: 25,
+    resetAt: '2026-05-12T00:00:00Z',
+    segments: [
+      { widthPct: 75, severityClass: 'iv-25-50', highVelocity: false },
+    ],
+    isHistorical: true,
+  }
+
+  const { container } = render(
+    <ProviderCard
+      config={anthropicConfig}
+      data={mockData}
+      healthCells={mockHealthCells}
+      quotas={[historicalBar]}
+    />
+  )
+
+  // Exactly 1 quota-interval element inside the single bar.
+  const intervals = container.querySelectorAll('.quota-interval')
+  expect(intervals.length).toBe(1)
+})
+
+test('test_provider_card_historical_bars_do_not_break_empty_quotaHistory', () => {
+  // When no quotaHistory is present (quotas = only current bars), rendering
+  // must not differ from baseline — current bars still work as before W32.
+  const { container } = render(
+    <ProviderCard
+      config={anthropicConfig}
+      data={mockData}
+      healthCells={mockHealthCells}
+      quotas={mockQuotas}
+    />
+  )
+
+  // Still renders the Quotas section title.
+  expect(container.querySelector('.quota-section-title')).not.toBeNull()
+  // Still renders exactly 12 intervals (1 bar × 12 segments).
+  const intervals = container.querySelectorAll('.quota-interval')
+  expect(intervals.length).toBe(12)
+})

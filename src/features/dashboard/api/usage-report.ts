@@ -146,6 +146,8 @@ export interface UsageReportClientRow {
   client_name: string
   client_version: string
   first_seen_at: string | null
+  /** W32: timestamp of the most recent request from this client/version tuple. */
+  last_seen_at: string | null
   traces: number
   token_total: number
   usd_cost: number
@@ -268,6 +270,30 @@ export interface UsageReportQuotaUsageBreakdown {
   traces: number
 }
 
+/**
+ * W32: A single past reset window entry from quotaHistory[].
+ *
+ * Each row represents one completed reset window for a (provider, quota_type)
+ * pair, recording the observed min/max remaining_pct within that window.
+ */
+export interface UsageReportQuotaHistoryRow {
+  provider: string
+  model: string | null
+  /**
+   * Quota type after normalisation: 'weekly' | 'special' | 'short' |
+   * 'short_special' | 'monthly'
+   */
+  quota_type: string
+  /** ISO timestamp of the reset event (start of this window). */
+  expected_reset_at: string | null
+  /** Lowest remaining_pct observed within this window (peak consumption). */
+  min_remaining_pct: number | null
+  /** Highest remaining_pct observed (typically near-100 just after reset). */
+  max_remaining_pct: number | null
+  /** Earliest fromDate when this reset window first appeared in the data. */
+  reset_realized: string | null
+}
+
 export interface UsageReportResponse {
   metadata: {
     from: string
@@ -288,6 +314,8 @@ export interface UsageReportResponse {
   providerErrorObservations: UsageReportProviderErrorObservationRow[]
   providerStatusUsage: UsageReportProviderStatusUsageRow[]
   quotas: UsageReportQuotaRow[]
+  /** W32: flat list of past reset windows per (provider, quota_type). */
+  quotaHistory: UsageReportQuotaHistoryRow[]
   rows: UsageReportRow[]
 }
 
