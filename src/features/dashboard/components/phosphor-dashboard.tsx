@@ -1619,6 +1619,11 @@ function buildModelRows(
         reasoning_reported !== undefined ? reasoning_reported : undefined,
       reasoning_estimated:
         reasoning_estimated !== undefined ? reasoning_estimated : undefined,
+      // Wave 30 operator reorder: total cache tokens for new Cache toks column
+      cache_toks:
+        tokenAgg !== undefined
+          ? tokenAgg.cache_input + tokenAgg.cache_creation
+          : undefined,
       spark: sparkByKey.get(
         `${canonicalProvider(row.provider)}::${modelKey}`
       ) ?? [row.token_total],
