@@ -33,6 +33,7 @@ import {
   fetchUsageReportQuotas,
   type UsageReportProviderLatencyHealthRow,
   type UsageReportQuotaRow,
+  type UsageReportQuotaUsageBreakdown,
   type UsageReportRow,
   type UsageReportSummary,
   type UsageReportTrendRow,
@@ -44,6 +45,7 @@ import { normalizeTrendData } from '../lib/trend-utils'
 import {
   canonicalProvider,
   clientColorFor,
+  PROVIDER_BRAND_HEX,
   providerAliases,
   providerBrandHex,
 } from '../lib/usage-report-display'
@@ -53,12 +55,14 @@ import { ComparisonPanel } from './comparison-panel'
 import { DonutChart, type SliceConfig } from './donut-chart'
 import { MasterLedgerTable, type ModelRow } from './master-ledger-table'
 import styles from './phosphor-dashboard.module.css'
+import { type CellDef, type HealthStripEvent } from './primitives/health-strip'
 import {
   ProviderCard,
   type ProviderCardConfig,
   type ProviderMetrics,
   type QuotaBarGroup,
   type QuotaRowConfig,
+  type QuotaTipModel,
   type TopModelRow,
 } from './provider-card'
 import { RepoBreakdownTable, type RepoRow } from './repo-breakdown-table'
@@ -208,27 +212,56 @@ function defaultDateRange(): { from: string; to: string } {
 /**
  * Pads or truncates a health cell array to exactly HEALTH_CELL_COUNT entries.
  * Missing cells are filled with a neutral muted color.
+ *
+ * Wave 24-PhosphorDash (operator F1a): wires CellDef hover metadata —
+ * `bucketStart` from health row bucket_start, `eventCount` from aggregate
+ * error/timeout/rate-limit/capacity counts, and `events: []` (no per-event
+ * detail is available at health-row granularity from the API).
  */
 function padHealthCells(
   rows: UsageReportProviderLatencyHealthRow[],
   provider: string
-): { color: string }[] {
+): CellDef[] {
   // 15-B.2: use alias map so 'google' also picks up 'gemini' health rows
   const aliases = providerAliases(provider)
   const providerRows = rows.filter((r) =>
     aliases.includes(r.provider.toLowerCase())
   )
-  const cells = providerRows.map((row) => ({
-    color: healthCellColor(row),
-  }))
+  // Satisfy the HealthStripEvent[] type even though we have no per-event data.
+  const emptyEvents: HealthStripEvent[] = []
+
+  const cells: CellDef[] = providerRows.map((row) => {
+    // F1a: total event count = all error-class counters for this 5-min bucket.
+    const eventCount =
+      row.provider_error_events +
+      row.provider_5xx_events +
+      row.provider_timeout_events +
+      row.network_error_events +
+      row.rate_limit_events +
+      row.capacity_events
+
+    return {
+      color: healthCellColor(row),
+      // F1a: bucket_start drives the relative-time header in buildCellTooltip.
+      bucketStart: row.bucket_start ?? undefined,
+      // F1a: total events in this bucket (errors + timeouts + rate-limits + capacity).
+      eventCount: eventCount > 0 ? eventCount : undefined,
+      // F1a: no per-event JSON available at health-row granularity; pass empty
+      // array so W24-HealthStrip's buildCellTooltip renders a summary-only tooltip.
+      events: emptyEvents,
+    }
+  })
 
   if (cells.length >= HEALTH_CELL_COUNT) {
     return cells.slice(cells.length - HEALTH_CELL_COUNT)
   }
 
-  const pad = Array.from({ length: HEALTH_CELL_COUNT - cells.length }, () => ({
+  const pad = Array.from<CellDef>({
+    length: HEALTH_CELL_COUNT - cells.length,
+  }).fill({
     color: 'var(--card-2)',
-  }))
+    events: emptyEvents,
+  })
   return [...pad, ...cells]
 }
 
@@ -671,7 +704,97 @@ function extractInterval(
 }
 
 /**
+ * Formats a quota tooltip window label from interval start/end ISO strings.
+ *
+ * Wave 24-PhosphorDash (operator F1b): produces relative labels like
+ * `−30m → now` (short/5h), `−12h → now` (weekly/7d), `−24h → now` (Google
+ * 24h short), `this month` (monthly).  Falls back to `—` when timestamps are
+ * unavailable.
+ *
+ * @param intervalType - Which quota interval produced this bar.
+ * @param intervalStart - ISO string for interval start, or null.
+ * @param intervalEnd   - ISO string for interval end (≈ now), or null.
+ */
+function formatTipWindow(
+  intervalType: 'short' | 'weekly' | 'special' | 'short_special' | 'monthly',
+  intervalStart: string | null,
+  intervalEnd: string | null
+): string {
+  // Monthly quotas: simple label; exact dates rarely meaningful in the tooltip.
+  if (intervalType === 'monthly') return 'this month'
+
+  // For time-bounded intervals, compute the elapsed span and render relative.
+  if (intervalStart !== null && intervalEnd !== null) {
+    const startMs = new Date(intervalStart).getTime()
+    const endMs = new Date(intervalEnd).getTime()
+    if (!Number.isNaN(startMs) && !Number.isNaN(endMs)) {
+      const spanMs = endMs - startMs
+      const spanH = spanMs / 3_600_000
+      // Round to nearest sensible unit for display.
+      if (spanH <= 1) {
+        const spanM = Math.round(spanMs / 60_000)
+        return `−${spanM.toString()}m → now`
+      }
+      if (spanH <= 36) {
+        const rounded = Math.round(spanH)
+        return `−${rounded.toString()}h → now`
+      }
+      const spanD = Math.round(spanH / 24)
+      return `−${spanD.toString()}d → now`
+    }
+  }
+
+  // Fallback by interval type when timestamps are absent.
+  switch (intervalType) {
+    case 'short':
+    case 'short_special':
+      return '−5h → now'
+    case 'weekly':
+    case 'special':
+      return '−7d → now'
+    default:
+      return '—'
+  }
+}
+
+/**
+ * Derives top-3 tipModels from a UsageReportQuotaUsageBreakdown array.
+ *
+ * Wave 24-PhosphorDash (operator F1b): aggregates cost per model, picks the
+ * top 3 by cost, and formats costDelta as `$X.XX` strings.
+ * Returns undefined when the breakdown is empty so QuotaBarGroup renders `—`.
+ */
+function tipModelsFromBreakdown(
+  breakdown: UsageReportQuotaUsageBreakdown[]
+): QuotaTipModel[] | undefined {
+  if (breakdown.length === 0) return undefined
+
+  // Aggregate cost per model (breakdown may have duplicates from multiple rows).
+  const costByModel = new Map<string, number>()
+  for (const entry of breakdown) {
+    if (!entry.model) continue
+    costByModel.set(
+      entry.model,
+      (costByModel.get(entry.model) ?? 0) + entry.cost
+    )
+  }
+  if (costByModel.size === 0) return undefined
+
+  return [...costByModel.entries()]
+    .sort(([, a], [, b]) => b - a)
+    .slice(0, 3)
+    .map(([model, cost]) => ({
+      model,
+      costDelta: `$${cost.toFixed(2)}`,
+    }))
+}
+
+/**
  * Creates a QuotaBarGroup for a single (label, interval) pair.
+ *
+ * Wave 24-PhosphorDash (operator F1b): now wires optional `tipWindow` from
+ * interval timestamps and `tipModels` from the usage breakdown array for the
+ * same interval. `tipVelocity` is left undefined (no time-series data available).
  *
  * Returns null if the interval is not active on the given row.
  */
@@ -683,12 +806,49 @@ function makeQuotaBarGroup(
   const iv = extractInterval(row, interval)
   if (iv === null) return null
   const consumedPct = Math.max(0, Math.min(100, 100 - iv.remainingPct))
+
+  // F1b: interval_start/end for tipWindow, breakdown for tipModels.
+  let intervalStart: string | null = null
+  let intervalEnd: string | null = null
+  let breakdown: UsageReportQuotaUsageBreakdown[] = []
+  switch (interval) {
+    case 'short':
+      intervalStart = row.short_interval_start
+      intervalEnd = row.short_interval_end
+      breakdown = row.short_usage_breakdown
+      break
+    case 'weekly':
+      intervalStart = row.weekly_interval_start
+      intervalEnd = row.weekly_interval_end
+      breakdown = row.weekly_usage_breakdown
+      break
+    case 'special':
+      intervalStart = row.special_interval_start
+      intervalEnd = row.special_interval_end
+      breakdown = row.special_usage_breakdown
+      break
+    case 'short_special':
+      intervalStart = row.short_special_interval_start
+      intervalEnd = row.short_special_interval_end
+      breakdown = row.short_special_usage_breakdown
+      break
+    case 'monthly':
+      intervalStart = row.monthly_interval_start
+      intervalEnd = row.monthly_interval_end
+      breakdown = row.monthly_usage_breakdown
+      break
+  }
+
   return {
     label,
     consumedPct,
     remainingPct: iv.remainingPct,
     resetAt: iv.resetAt,
     segments: buildQuotaSegments(iv.remainingPct),
+    // F1b: computed tip fields.
+    tipWindow: formatTipWindow(interval, intervalStart, intervalEnd),
+    // tipVelocity: no time-series data available; omit so tooltip shows '—'.
+    tipModels: tipModelsFromBreakdown(breakdown),
   }
 }
 
@@ -1260,8 +1420,148 @@ function buildModelRows(
   })
 }
 
+// ---------------------------------------------------------------------------
+// Client family aggregation (operator F7)
+// ---------------------------------------------------------------------------
+
+/**
+ * Maps raw client_name variants → canonical { family, provider }.
+ *
+ * Wave 24-PhosphorDash (operator F7): collapses all observed client_name
+ * variants (from live API + test fixtures) into four display families so the
+ * Client Adoption chart matches the mockup. The normalization key is produced
+ * by `normalizeClientKey()` which lowercases, trims, and collapses hyphens,
+ * underscores and spaces to a single space.
+ *
+ * Observed live variants:
+ *   claude-code, claude_code, claude-cli    → 'claude code' / anthropic
+ *   codex, codex-cli, codex-exec, codex-tui → 'codex'       / openai
+ *   gemini, gemini-cli                       → 'gemini'      / google
+ *   grok-build, grok-cli, grok              → 'grok build'  / xai
+ *   cursor                                   → 'cursor'      / openai (brand hex)
+ *   aider                                    → 'aider'       / local  (brand hex)
+ */
+const CLIENT_FAMILY_MAP: Record<string, { family: string; provider: string }> =
+  {
+    // Anthropic / Claude Code
+    'claude code': { family: 'claude code', provider: 'anthropic' },
+    'claude cli': { family: 'claude code', provider: 'anthropic' },
+    // OpenAI / Codex
+    codex: { family: 'codex', provider: 'openai' },
+    'codex cli': { family: 'codex', provider: 'openai' },
+    'codex exec': { family: 'codex', provider: 'openai' },
+    'codex tui': { family: 'codex', provider: 'openai' },
+    // Google / Gemini
+    gemini: { family: 'gemini', provider: 'google' },
+    'gemini cli': { family: 'gemini', provider: 'google' },
+    // xAI / Grok Build
+    'grok build': { family: 'grok build', provider: 'xai' },
+    'grok cli': { family: 'grok build', provider: 'xai' },
+    grok: { family: 'grok build', provider: 'xai' },
+    // Cursor (standalone; use openai brand hex as its color)
+    cursor: { family: 'cursor', provider: 'openai' },
+    // Aider (standalone; use local brand hex as its color)
+    aider: { family: 'aider', provider: 'local' },
+  }
+
+/**
+ * Normalizes a raw client_name to a lookup key for CLIENT_FAMILY_MAP.
+ * Lowercases, trims, and collapses all hyphens / underscores / spaces to a
+ * single ASCII space so that 'claude-code', 'claude_code', 'Claude Code' all
+ * map to 'claude code'.
+ */
+function normalizeClientKey(name: string): string {
+  return name
+    .toLowerCase()
+    .trim()
+    .replace(/[-_ ]+/g, ' ')
+}
+
+/**
+ * Returns the CSS color to use for a client family.
+ *
+ * Priority (F7):
+ *   1. PROVIDER_BRAND_HEX[provider] from CLIENT_FAMILY_MAP entry.
+ *   2. CLIENT_BRAND_COLORS[rawClientName] legacy lookup.
+ *   3. clientColorFor hash fallback.
+ */
+function clientFamilyColor(
+  rawName: string,
+  provider: string | undefined
+): string {
+  if (provider !== undefined) {
+    const brandHex = PROVIDER_BRAND_HEX[provider]
+    if (brandHex !== undefined) return brandHex
+  }
+  return CLIENT_BRAND_COLORS[rawName] ?? clientColorFor(rawName)
+}
+
+/**
+ * Aggregates a flat list of client rows into family buckets.
+ *
+ * Wave 24-PhosphorDash (operator F7): collapses 'claude-code', 'claude_code',
+ * etc. into a single 'claude code' entry, deriving color from provider brand.
+ * Unknown client_name variants are left as-is (ungrouped) so new clients that
+ * don't appear in CLIENT_FAMILY_MAP still surface rather than disappear.
+ */
+function aggregateByClientFamily(
+  clients: {
+    client_name: string
+    traces: number
+    token_total: number
+    usd_cost: number
+    client_version?: string
+  }[]
+): {
+  family: string
+  provider: string | undefined
+  traces: number
+  token_total: number
+  usd_cost: number
+}[] {
+  const buckets = new Map<
+    string,
+    {
+      family: string
+      provider: string | undefined
+      traces: number
+      token_total: number
+      usd_cost: number
+    }
+  >()
+
+  for (const c of clients) {
+    const key = normalizeClientKey(c.client_name)
+    const mapping = CLIENT_FAMILY_MAP[key]
+    const family = mapping?.family ?? c.client_name
+    const provider = mapping?.provider
+    const bucketKey = family // one bucket per family
+
+    const existing = buckets.get(bucketKey)
+    if (existing === undefined) {
+      buckets.set(bucketKey, {
+        family,
+        provider,
+        traces: c.traces,
+        token_total: c.token_total,
+        usd_cost: c.usd_cost,
+      })
+    } else {
+      existing.traces += c.traces
+      existing.token_total += c.token_total
+      existing.usd_cost += c.usd_cost
+    }
+  }
+
+  return [...buckets.values()]
+}
+
 /**
  * Builds DonutChart SliceConfig[] from client usage data.
+ *
+ * Wave 24-PhosphorDash (operator F7): aggregates raw client_name variants into
+ * canonical families (claude code, codex, gemini, grok build) before slicing.
+ * Colors are derived from PROVIDER_BRAND_HEX for the family's provider.
  */
 function buildClientSlices(
   clients: {
@@ -1269,15 +1569,22 @@ function buildClientSlices(
     token_total: number
   }[]
 ): SliceConfig[] {
-  return clients
-    .filter((c) => c.token_total > 0)
+  const families = aggregateByClientFamily(
+    clients.map((c) => ({
+      client_name: c.client_name,
+      traces: 0,
+      token_total: c.token_total,
+      usd_cost: 0,
+    }))
+  )
+  return families
+    .filter((f) => f.token_total > 0)
     .sort((a, b) => b.token_total - a.token_total)
     .slice(0, 7)
-    .map((c) => ({
-      client: c.client_name,
-      tokens: c.token_total,
-      color:
-        CLIENT_BRAND_COLORS[c.client_name] ?? clientColorFor(c.client_name),
+    .map((f) => ({
+      client: f.family,
+      tokens: f.token_total,
+      color: clientFamilyColor(f.family, f.provider),
     }))
 }
 
@@ -1287,6 +1594,11 @@ function buildClientSlices(
  * Wave 11 PR6 (11-o): populates `spark` as a degenerate single-point series
  * from token_total so the sparkline column renders a baseline. When time-series
  * data becomes available, replace [c.token_total] with the real array.
+ *
+ * Wave 24-PhosphorDash (operator F7): aggregates raw client_name variants into
+ * canonical families before building rows, matching the donut chart grouping.
+ * The `version` field is left empty for aggregated family rows since individual
+ * client versions may vary across the collapsed variants.
  */
 function buildClientRows(
   clients: {
@@ -1297,15 +1609,19 @@ function buildClientRows(
     usd_cost: number
   }[]
 ): ClientRow[] {
-  return clients.map((c) => ({
-    client: c.client_name,
-    version: c.client_version,
-    requests: c.traces,
-    tokens: c.token_total,
-    cost_usd: c.usd_cost,
-    // Degenerate spark: single point placeholder until time-series is wired
-    spark: [c.token_total],
-  }))
+  const families = aggregateByClientFamily(clients)
+  return families
+    .sort((a, b) => b.token_total - a.token_total)
+    .map((f) => ({
+      client: f.family,
+      // Version is meaningless after family aggregation; leave blank.
+      version: '',
+      requests: f.traces,
+      tokens: f.token_total,
+      cost_usd: f.usd_cost,
+      // Degenerate spark: single point placeholder until time-series is wired
+      spark: [f.token_total],
+    }))
 }
 
 /**
