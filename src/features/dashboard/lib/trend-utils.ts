@@ -87,6 +87,43 @@ export function normalizeTrendData(rows: UsageReportTrendRow[]): TrendBucket[] {
 }
 
 // ---------------------------------------------------------------------------
+// formatBucketLabel
+// ---------------------------------------------------------------------------
+
+/**
+ * ISO-8601 date pattern (accepts both date-only and full datetime strings).
+ *
+ * Matches strings that start with `YYYY-MM-DD` so that daily-grain bucket
+ * keys produced by the API (e.g. `2026-05-19T00:00:00.000Z`) are detected
+ * and formatted as `MM/DD`. Relative labels such as `"23h"` do not match and
+ * are returned unchanged.
+ */
+const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}/
+
+/**
+ * Formats a raw {@link TrendBucket} label for display in the x-axis label row.
+ *
+ * - ISO-8601 strings → `MM/DD` (e.g. `"2026-05-19T00:00:00.000Z"` → `"05/19"`).
+ * - Relative strings (e.g. `"23h"`, `"0h"`) → returned as-is.
+ *
+ * Exported so that the component and tests can share the same formatting logic
+ * without duplicating the regex and slice arithmetic.
+ *
+ * @param rawLabel - The `label` field from a {@link TrendBucket}.
+ * @returns A short display string suitable for an 8–9 px monospaced label.
+ */
+export function formatBucketLabel(rawLabel: string): string {
+  if (!ISO_DATE_RE.test(rawLabel)) return rawLabel
+
+  // Parse the date portion only to avoid timezone edge cases.
+  // YYYY-MM-DD → MM/DD
+  const datePart = rawLabel.slice(0, 10) // "YYYY-MM-DD"
+  const month = datePart.slice(5, 7) // "MM"
+  const day = datePart.slice(8, 10) // "DD"
+  return `${month}/${day}`
+}
+
+// ---------------------------------------------------------------------------
 // computeSparklinePoints
 // ---------------------------------------------------------------------------
 
