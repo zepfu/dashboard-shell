@@ -81,13 +81,14 @@ test('test_aggregate_card_renders_fleet_activity_section', () => {
   expect(screen.getByText('FLEET ACTIVITY')).toBeInTheDocument()
 
   // Use exact-match strings because "Tool Calls" is a substring of
-  // "Invalid Tool Calls" — with semantic <dt> elements both would match a
+  // "invalid tool calls" — with semantic <dt> elements both would match a
   // /Tool Calls/i regex, causing getByText to throw "found multiple elements".
+  // Note: "invalid tool calls" is lowercase per mockup L2766.
   const rowLabels = [
     'Tool Calls',
     'Git Commits',
     'Git Pushes',
-    'Invalid Tool Calls',
+    'invalid tool calls',
   ]
   for (const label of rowLabels) {
     expect(screen.getByText(label, { exact: true })).toBeInTheDocument()
@@ -125,29 +126,34 @@ test('test_aggregate_card_invalid_tool_calls_red', () => {
   expect(redEl).not.toBeNull()
 })
 
-test('test_aggregate_card_pulse_dot_present_when_errors', () => {
+test('test_aggregate_card_pulse_dot_present_when_invalid_tool_calls', () => {
+  // Wave 25: pulse-dot trigger changed from recentErrors > 0 to invalidToolCalls > 0
+  // per mockup L2766. Dot is inline inside the "invalid tool calls" label span.
   const { container } = render(
     <AggregateCard
       config={aggregateConfig}
       data={mockData}
       healthCells={mockHealthCells}
       quotas={mockQuotas}
-      fleetActivity={{ ...baseFleetActivity, recentErrors: 3 }}
+      fleetActivity={{ ...baseFleetActivity, invalidToolCalls: 142 }}
     />
   )
 
   const pulseDot = container.querySelector('.pulse-dot')
   expect(pulseDot).not.toBeNull()
+  // Verify dot is inside the label dt (inline positioning per mockup L2766)
+  expect(pulseDot?.closest('dt.label')).not.toBeNull()
 })
 
-test('test_aggregate_card_no_pulse_when_zero_errors', () => {
+test('test_aggregate_card_no_pulse_when_zero_invalid_tool_calls', () => {
+  // Wave 25: no pulse-dot when invalidToolCalls === 0 (baseFleetActivity default)
   const { container } = render(
     <AggregateCard
       config={aggregateConfig}
       data={mockData}
       healthCells={mockHealthCells}
       quotas={mockQuotas}
-      fleetActivity={{ ...baseFleetActivity, recentErrors: 0 }}
+      fleetActivity={{ ...baseFleetActivity, invalidToolCalls: 0 }}
     />
   )
 
