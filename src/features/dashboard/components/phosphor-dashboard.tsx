@@ -34,6 +34,7 @@ import {
   type UsageReportProviderLatencyHealthRow,
   type UsageReportQuotaRow,
   type UsageReportRow,
+  type UsageReportSummary,
   type UsageReportTrendRow,
   type UsageReportGrain,
 } from '../api/usage-report'
@@ -372,13 +373,20 @@ function buildProviderMetrics(
 /**
  * Builds aggregate ProviderMetrics by summing across all providers.
  *
- * Wave 11 PR2 (11-g item 4): token / cost / cache / reasoning totals are now
- * derived from `rows` (all UsageReportRow entries) so the aggregate card
- * reflects real data rather than the pre-summarised summary object.
+ * Wave 11 PR2 (11-g item 4): token / cost / cache / reasoning totals were
+ * previously derived from `rows` (all UsageReportRow entries). However, the
+ * server caps `report.rows` at 500 entries, causing systematic 20-30%
+ * undercounts in the Aggregate card when real usage exceeds 500 rows.
+ *
+ * Wave 16-D: restores summary-based aggregation for token / cost / cache /
+ * reasoning / trace totals. `report.summary` is computed server-side from the
+ * full untruncated dataset, so it always matches the KPI strip values.
+ * Health-derived metrics (requests, errors, p95_ms, rate_limits, capacity,
+ * packet_loss_pct) are unaffected — they come from health rows, not usage rows.
  */
 function buildAggregateMetrics(
   healthRows: UsageReportProviderLatencyHealthRow[],
-  rows: UsageReportRow[]
+  summary: UsageReportSummary | undefined
 ): ProviderMetrics {
   const requests = healthRows.reduce((s, r) => s + r.requests, 0)
   const errors = healthRows.reduce(
@@ -407,29 +415,19 @@ function buildAggregateMetrics(
       ? packetLossValues.reduce((s, v) => s + v, 0) / packetLossValues.length
       : null
 
-  // Sum across every usage row for fleet-wide totals
-  const tokens_in = rows.reduce((s, r) => s + (r.token_in ?? 0), 0)
-  const tokens_out = rows.reduce((s, r) => s + (r.token_out ?? 0), 0)
-  const cost_usd = rows.reduce((s, r) => s + (r.usd_cost ?? 0), 0)
-  const traces = rows.reduce((s, r) => s + (r.traces ?? 0), 0)
-  const cache_input = rows.reduce((s, r) => s + (r.token_cache_input ?? 0), 0)
-  const cache_creation = rows.reduce(
-    (s, r) => s + (r.token_cache_creation ?? 0),
-    0
-  )
-  // Wave 14-C: cache_miss_usd from cache_miss_usd_cost API field.
-  const cache_miss_usd = rows.reduce(
-    (s, r) => s + (r.cache_miss_usd_cost ?? 0),
-    0
-  )
-  const reasoning_reported = rows.reduce(
-    (s, r) => s + (r.token_reasoning_reported ?? 0),
-    0
-  )
-  const reasoning_estimated = rows.reduce(
-    (s, r) => s + (r.token_reasoning_estimated ?? 0),
-    0
-  )
+  // Wave 16-D: use summary (server-side full-dataset totals) to avoid the
+  // row-cap undercount. When summary is undefined (data still loading), return
+  // zeros for these fields.
+  const tokens_in = summary?.token_in ?? 0
+  const tokens_out = summary?.token_out ?? 0
+  const cost_usd = summary?.usd_cost ?? 0
+  const traces = summary?.traces ?? 0
+  const cache_input = summary?.token_cache_input ?? 0
+  const cache_creation = summary?.token_cache_creation ?? 0
+  // Wave 14-C: cache_miss_usd from summary's cache_miss_usd_cost field.
+  const cache_miss_usd = summary?.cache_miss_usd_cost ?? 0
+  const reasoning_reported = summary?.token_reasoning_reported ?? 0
+  const reasoning_estimated = summary?.token_reasoning_estimated ?? 0
   // TODO: API doesn't expose no_reasoning_calls yet — wired as zero.
   const no_reasoning_calls = 0
 
@@ -698,10 +696,23 @@ function buildRepoRows(
   return [...repoMap.entries()]
     .sort(([, a], [, b]) => b.tokens - a.tokens)
     .map(([repository, data]) => {
-      // 15-B.7: Pick the model with the most accumulated tokens for this repo
+      // 15-B.7: Pick the model with the most accumulated tokens for this repo.
+      // 16-D: Exclude sentinel/placeholder model names ('', 'unknown', 'null')
+      // from the top-model competition. These entries (e.g. rows where
+      // sh.model IS NULL in the DB) were out-massing named models and causing
+      // every repo to display top_model="unknown". Token sums are unaffected —
+      // only the topModel picker is filtered.
       let topModel = ''
       let topTokens = -1
       for (const [model, modelTokens] of data.modelTokens) {
+        const normalized = model.toLowerCase().trim()
+        if (
+          normalized === '' ||
+          normalized === 'unknown' ||
+          normalized === 'null'
+        ) {
+          continue
+        }
         if (modelTokens > topTokens) {
           topTokens = modelTokens
           topModel = model
@@ -1192,11 +1203,12 @@ export default function PhosphorDashboard({
     [report?.providerLatencyHealth]
   )
 
-  // Aggregate card data (fleet-wide totals from all usage rows)
-  // Wave 11 PR2 (11-g): now derived from report.rows rather than summary
+  // Aggregate card data (fleet-wide totals from report.summary)
+  // Wave 16-D: restored to summary-based aggregation to fix the row-cap
+  // undercount (report.rows is server-capped at 500; summary covers all rows).
   const aggregateMetrics = useMemo(
-    () => buildAggregateMetrics(healthRows, report?.rows ?? []),
-    [healthRows, report?.rows]
+    () => buildAggregateMetrics(healthRows, summary),
+    [healthRows, summary]
   )
 
   // Wave 11 PR2 (11-e): renamed from 'Fleet' to 'Σ Aggregate Totals'.
