@@ -29,6 +29,15 @@
  *       missing fields render '—' placeholders (TODO(w20) comments for wiring).
  * - F6: cost cell in card-pane-right switched to toLocaleString() for comma
  *       formatting on values ≥ $1,000.
+ *
+ * Wave 26 changes (F2 / F8):
+ * - F2: REQUESTS section (pc-sub-title + pc-mini-table) replaces the old
+ *       'Requests' provider-metric row; contains requests + no-reasoning requests.
+ *       TOKENS section (pc-sub-title + pc-mini-table) replaces the old TOKEN CACHE
+ *       and REASONING blocks; contains in / out / cost / cache in / cache creation /
+ *       cache miss $ / reasoning reported / reasoning estimated.
+ *       Rows 1-3 (Requests, Tokens, Cost) removed from provider-metric grid.
+ * - F8: Quota hover .t-model spans colored with providerBrandHex() for brand color.
  */
 import type { ReactElement, ReactNode } from 'react'
 import {
@@ -383,16 +392,21 @@ export interface ProviderCardProps {
 /**
  * ProviderCard renders a Phosphor Atlas provider metrics panel.
  *
- * Layout (mockup line 2421-2469 order):
+ * Layout (Wave 26 F2 order):
  *  - Absolutely positioned vertical HealthStrip at right edge (v9w1 update)
  *  - card-pane-left:
- *      1. 9 provider-metric rows (Requests → Status)
- *      2. TOKEN CACHE sub-section (pc-sub-title + pc-mini-table)
- *      3. REASONING sub-section (pc-sub-title + pc-mini-table)
- *      4. Quotas section title + quota-list
+ *      1. REQUESTS section (pc-sub-title + pc-mini-table):
+ *         requests / no-reasoning requests
+ *      2. 6 provider-metric rows: p95 Latency / Errors / Rate Limits /
+ *         Capacity / Packet Loss / Status
+ *      3. health-strip (via HealthStrip component, absolutely positioned)
+ *      4. TOKENS section (pc-sub-title + pc-mini-table):
+ *         in / out / cost / cache in / cache creation / cache miss $ /
+ *         reasoning reported / reasoning estimated*
+ *      5. Quotas section title + quota-list
  *  - card-pane-right (≥3840px): per-model mini-table
  *
- * Wave 20 F2: TOKEN CACHE + REASONING moved above Quotas per mockup.
+ * Wave 26 F8: quota tip .t-model spans colored with providerBrandHex().
  */
 export function ProviderCard({
   config,
@@ -408,8 +422,6 @@ export function ProviderCard({
     anomalies !== undefined &&
     hasEarlyReset(anomalies.earlyReset, config.provider)
   const showCacheStale = anomalies?.cacheStale === true
-
-  const cacheMiss = data.tokens_in - data.cache_input - data.cache_creation
 
   // 14-C.6: status is healthy unless errors are significant or data says otherwise.
   const isHealthy = data.errors === 0
@@ -505,31 +517,30 @@ export function ProviderCard({
         style={{ display: 'flex', flexDirection: 'column' }}
       >
         {/*
-         * 14-C.3: 9-row primary metric grid per mockup lines 2424-2432.
-         * Order: Requests, Tokens, Cost, p95 Latency, Errors,
-         *        Rate Limits, Capacity, Packet Loss, Status
-         * Replaces the previous 7-row block (Toks In/Toks Out/Cost/Requests/Errors/P95/Traces).
+         * Wave 26 F2: REQUESTS section replaces the old 'Requests' provider-metric
+         * row. Contains requests total and no-reasoning requests count.
+         */}
+        <PcSubTitle title='REQUESTS' />
+        <div className='pc-mini-table'>
+          <PcMiniRow label='requests' value={data.requests.toLocaleString()} />
+          <PcMiniRow
+            label='no-reasoning requests'
+            value={data.no_reasoning_calls.toLocaleString()}
+          />
+        </div>
+
+        {/*
+         * Wave 26 F2: Remaining 6 provider-metric rows (Requests, Tokens, Cost
+         * moved out into REQUESTS and TOKENS sections above / below).
+         * Order: p95 Latency, Errors, Rate Limits, Capacity, Packet Loss, Status.
          */}
 
-        {/* Row 1 — Requests */}
-        <ProviderMetric label='Requests'>
-          {fmtCompact(data.requests)}
-        </ProviderMetric>
-
-        {/* Row 2 — Tokens (consolidated tokens_in + tokens_out) */}
-        <ProviderMetric label='Tokens'>
-          {fmtCompact(data.tokens_in + data.tokens_out)}
-        </ProviderMetric>
-
-        {/* Row 3 — Cost */}
-        <ProviderMetric label='Cost'>{formatUsd(data.cost_usd)}</ProviderMetric>
-
-        {/* Row 4 — p95 Latency (lowercase p per mockup) */}
+        {/* p95 Latency (lowercase p per mockup) */}
         <ProviderMetric label='p95 Latency'>
           {formatLatency(data.p95_ms)}
         </ProviderMetric>
 
-        {/* Row 5 — Errors */}
+        {/* Errors */}
         <ProviderMetric
           label='Errors'
           valueColor={data.errors > 0 ? 'var(--accent-hot)' : 'var(--fg)'}
@@ -537,77 +548,71 @@ export function ProviderCard({
           {data.errors.toLocaleString()}
         </ProviderMetric>
 
-        {/* Row 6 — Rate Limits (from rate_limit_events health row field) */}
+        {/* Rate Limits (from rate_limit_events health row field) */}
         <ProviderMetric label='Rate Limits'>
           {data.rate_limits.toLocaleString()}
         </ProviderMetric>
 
-        {/* Row 7 — Capacity (from capacity_events health row field) */}
+        {/* Capacity (from capacity_events health row field) */}
         <ProviderMetric label='Capacity'>
           {data.capacity.toLocaleString()}
         </ProviderMetric>
 
-        {/* Row 8 — Packet Loss (from provider_ping_packet_loss_pct; null → '—') */}
+        {/* Packet Loss (from provider_ping_packet_loss_pct; null → '—') */}
         <ProviderMetric label='Packet Loss'>
           {fmtPacketLoss(data.packet_loss_pct)}
         </ProviderMetric>
 
         {/*
-         * Row 9 — Status (14-C.4): brand hex ✓ for healthy, accent-hot ✗ otherwise.
-         * This is the ONLY place in the card where provider brand color is applied.
+         * Status (14-C.4): brand hex ✓ for healthy, accent-hot ✗ otherwise.
+         * This is the ONLY place in the card where provider brand color is applied
+         * in the metric grid.
          */}
         <ProviderMetric label='Status'>
           <span style={{ color: statusColor }}>{statusGlyph}</span>
         </ProviderMetric>
 
         {/*
-         * TOKEN CACHE sub-section
-         * 14-C.5: lowercase labels: in / create / miss / miss $
-         * 14-C.6: miss $ row uses cache_miss_usd (dollar cost, not token count)
-         *         displayed with formatUsd() and valueMod='cost' for amber color.
-         * Wave 20 F2: moved ABOVE Quotas per mockup line 2434 order.
+         * Wave 26 F2: TOKENS section consolidates the old TOKEN CACHE and REASONING
+         * sub-sections, and absorbs the old Tokens + Cost provider-metric rows.
+         * Order: in / out / cost / cache in / cache creation / cache miss $ /
+         *        reasoning reported / reasoning estimated*
          */}
-        <PcSubTitle title='TOKEN CACHE' />
+        <PcSubTitle title='TOKENS' />
         <div className='pc-mini-table'>
-          <PcMiniRow label='in' value={fmtCompact(data.cache_input)} />
-          <PcMiniRow label='create' value={fmtCompact(data.cache_creation)} />
+          {/* Token volume split: in / out */}
+          <PcMiniRow label='in' value={fmtCompact(data.tokens_in)} />
+          <PcMiniRow label='out' value={fmtCompact(data.tokens_out)} />
+          {/* Cost (moved from old Row 3 of metric grid) */}
           <PcMiniRow
-            label='miss'
-            value={fmtCompact(cacheMiss)}
-            valueMod='muted'
+            label='cost'
+            value={formatUsd(data.cost_usd)}
+            valueMod='cost'
+          />
+          {/* Cache sub-rows (moved from old TOKEN CACHE section) */}
+          <PcMiniRow label='cache in' value={fmtCompact(data.cache_input)} />
+          <PcMiniRow
+            label='cache creation'
+            value={fmtCompact(data.cache_creation)}
           />
           <PcMiniRow
-            label='miss $'
+            label='cache miss $'
             value={formatUsd(data.cache_miss_usd)}
             valueMod='cost'
           />
-        </div>
-
-        {/*
-         * REASONING sub-section
-         * 14-C.7: lowercase labels: reported / estimated / no-reasoning calls
-         * 14-C.8: estimated value has est-mark asterisk appended.
-         * 14-C.9: no-reasoning calls wired to integer (no_reasoning_calls field).
-         * Wave 20 F2: moved ABOVE Quotas per mockup line 2434 order.
-         */}
-        <PcSubTitle title='REASONING' />
-        <div className='pc-mini-table'>
+          {/* Reasoning sub-rows (moved from old REASONING section) */}
           <PcMiniRow
-            label='reported'
+            label='reasoning reported'
             value={fmtCompact(data.reasoning_reported)}
           />
           <PcMiniRow
-            label='estimated'
+            label='reasoning estimated'
             value={
               <>
                 {fmtCompact(data.reasoning_estimated)}
                 <span className='est-mark'>*</span>
               </>
             }
-          />
-          <PcMiniRow
-            label='no-reasoning calls'
-            value={fmtCompact(data.no_reasoning_calls)}
           />
         </div>
 
@@ -647,9 +652,15 @@ export function ProviderCard({
                     {/* Sub: velocity line e.g. "+5%/30m  ≈  +9%/h" */}
                     <div className='v9-tip-sub'>{tipVelocityStr}</div>
                     {/* Rows: top 3 contributing models with $delta */}
+                    {/* Wave 26 F8: .t-model colored by model's provider brand hex */}
                     {tipModelRows.map((tm, mi) => (
                       <div key={mi} className='v9-tip-row'>
-                        <span className='t-model'>{tm.model}</span>
+                        <span
+                          className='t-model'
+                          style={{ color: providerBrandHex(tm.model) }}
+                        >
+                          {tm.model}
+                        </span>
                         <span className='t-count'>{tm.costDelta}</span>
                       </div>
                     ))}
