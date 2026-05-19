@@ -115,7 +115,10 @@ const PROVIDER_SERIES: ProviderSeries[] = [
   {
     key: 'xai',
     label: 'xAI',
-    color: '#f5f5f5',
+    // W28-TrendVisual Track A: was '#f5f5f5' (near-white, visually problematic).
+    // Changed to '#475569' to match PROVIDER_BRAND_HEX.xai for brand-color
+    // visibility per operator request (W26-Research Track A recommendation).
+    color: '#475569',
     cssClass: 'tt-xai',
   },
   {

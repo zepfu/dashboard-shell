@@ -24,10 +24,22 @@
  * - F8b: normalizeTrendData (trend-utils.ts) now canonicalises provider names
  *   before keying into TrendBucket.totals, ensuring xai rows are never lost.
  *
+ * Wave 28-TrendVisual:
+ * - Track B: hover tooltip per bar — shows bucket label + per-provider token
+ *   breakdown sorted by token count descending. Uses the existing HoverTooltip
+ *   primitive (variant='quota': above-bar positioning) and .v9-tip-* CSS
+ *   class structure consistent with other dashboard tooltips.
+ * - Track C: bucket label row below the bar strip. Each bar shows its
+ *   TrendBucket.label; ISO-8601 timestamps are formatted as MM/DD for daily
+ *   grain, relative labels (e.g. "23h") are displayed as-is. To avoid
+ *   crowding at 24 bars only even-indexed labels are shown (every other bar).
+ *
  * Accessibility: the outer container carries a descriptive aria-label.
  */
-import type { CSSProperties, ReactElement } from 'react'
+import type { CSSProperties, ReactElement, ReactNode } from 'react'
+import { formatBucketLabel } from '../lib/trend-utils'
 import { PROVIDER_BRAND_HEX } from '../lib/usage-report-display'
+import { HoverTooltip } from './primitives/hover-tooltip'
 
 // ---------------------------------------------------------------------------
 // Provider colour map
@@ -70,6 +82,72 @@ function resolveSliceColor(key: string, color: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// Tooltip content builder
+// ---------------------------------------------------------------------------
+
+/**
+ * Builds the tooltip {@link ReactNode} for a single hovered bucket.
+ *
+ * Shows the bucket label as a heading and then one row per provider
+ * (from `series`) that has a non-zero token count, sorted descending by
+ * token count. Uses the standard `.v9-tip-head` / `.v9-tip-row` CSS
+ * structure shared by all dashboard tooltips.
+ *
+ * @param bucket - The {@link TrendBucket} being hovered.
+ * @param series - Ordered series config (used only for provider label lookup).
+ * @returns A {@link ReactNode} ready to pass to {@link HoverTooltip}.
+ */
+function buildBarTooltip(
+  bucket: TrendBucket,
+  series: readonly ProviderSeries[]
+): ReactNode {
+  // Build a label map for fast lookup (key → human label)
+  const labelMap = new Map<string, string>(series.map((s) => [s.key, s.label]))
+
+  // Collect all providers with non-zero tokens and sort descending
+  const rows = Object.entries(bucket.totals)
+    .filter(([, count]) => count > 0)
+    .sort(([, a], [, b]) => b - a)
+
+  const total = rows.reduce((sum, [, v]) => sum + v, 0)
+
+  const displayLabel = formatBucketLabel(bucket.label)
+
+  return (
+    <>
+      <div className='v9-tip-head'>{displayLabel}</div>
+      {rows.map(([key, count]) => {
+        const providerLabel = labelMap.get(key) ?? key
+        const pct = total > 0 ? ((count / total) * 100).toFixed(0) : '0'
+        const formatted = new Intl.NumberFormat('en-US', {
+          notation: 'compact',
+          maximumFractionDigits: 1,
+        }).format(count)
+        return (
+          <div
+            key={key}
+            className='v9-tip-row'
+            style={{ gridTemplateColumns: 'minmax(0,1fr) auto' }}
+          >
+            <span className='t-model'>{providerLabel}</span>
+            <span className='t-count'>
+              {formatted} ({pct}%)
+            </span>
+          </div>
+        )
+      })}
+      {rows.length === 0 && (
+        <div className='v9-tip-row' style={{ gridTemplateColumns: '1fr' }}>
+          <span className='t-model' style={{ color: 'var(--fg-muted)' }}>
+            no data
+          </span>
+        </div>
+      )}
+    </>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
@@ -102,12 +180,23 @@ export interface TokenTrendChartProps {
 
 /**
  * TokenTrendChart renders a stacked bar chart of token usage over time,
- * grouped by provider, with a legend strip below.
+ * grouped by provider, with a legend strip and bucket label row below.
+ *
+ * Each bar has a hover tooltip (via {@link HoverTooltip}) showing the
+ * bucket label and per-provider token breakdown sorted descending.
+ * A label row underneath each bar displays `MM/DD` (ISO dates) or the
+ * relative label (e.g. `"23h"`) as-is, with every-other-bar skipping
+ * at 24 buckets to prevent text crowding.
  */
 export function TokenTrendChart({
   data,
   series,
 }: TokenTrendChartProps): ReactElement {
+  // Determine whether to show every other label (crowding threshold).
+  // At 24 bars the text would overlap at any practical chart width, so we
+  // skip odd-indexed labels. Below 12 bars all labels can be shown.
+  const skipAlternate = data.length >= 12
+
   return (
     <div
       aria-label='Token usage over time, stacked by provider'
@@ -127,14 +216,20 @@ export function TokenTrendChart({
           width: '100%',
         }}
       >
-        {data.map((bucket) => {
+        {data.map((bucket, idx) => {
           // Compute total tokens for this bucket across all series
           const total = series.reduce(
             (sum, s) => sum + (bucket.totals[s.key] ?? 0),
             0
           )
 
-          return (
+          // Only show tooltip for non-empty bars (at least one provider has tokens)
+          const isEmpty = total === 0
+          const tooltipContent = isEmpty
+            ? null
+            : buildBarTooltip(bucket, series)
+
+          const bar = (
             <div
               key={bucket.label}
               className='trend-bar'
@@ -178,6 +273,83 @@ export function TokenTrendChart({
                   />
                 )
               })}
+            </div>
+          )
+
+          // W28-TrendVisual Track B: wrap non-empty bars in HoverTooltip.
+          // Empty (padding) bars are left unwrapped to avoid spurious tooltip
+          // triggers and keep the DOM minimal.
+          if (isEmpty || tooltipContent === null) {
+            return (
+              <div
+                key={`${bucket.label}-${idx.toString()}`}
+                style={{ flex: 1, minWidth: 0 }}
+              >
+                {bar}
+              </div>
+            )
+          }
+
+          return (
+            <HoverTooltip
+              key={`${bucket.label}-${idx.toString()}`}
+              content={tooltipContent}
+              variant='quota'
+              className='tt-bar-tip-wrap'
+            >
+              {bar}
+            </HoverTooltip>
+          )
+        })}
+      </div>
+
+      {/* W28-TrendVisual Track C: x-axis bucket label row.
+          Labels mirror the bar strip's flex layout (gap: 1px, flex: 1 per
+          bar) so each label is centred under its bar.
+          ISO-8601 labels → MM/DD; relative labels ("Xh") → as-is.
+          Every other label is hidden when data.length >= 12 to prevent
+          crowding at 24-bar density. */}
+      <div
+        className='tt-label-row'
+        style={{
+          display: 'flex',
+          alignItems: 'flex-start',
+          gap: '1px',
+          paddingTop: '3px',
+          paddingLeft: '8px',
+          paddingRight: '8px',
+          width: '100%',
+          boxSizing: 'border-box',
+        }}
+      >
+        {data.map((bucket, idx) => {
+          const displayLabel =
+            skipAlternate && idx % 2 !== 0
+              ? ''
+              : formatBucketLabel(bucket.label)
+
+          return (
+            <div
+              key={`lbl-${bucket.label}-${idx.toString()}`}
+              style={{
+                flex: 1,
+                minWidth: 0,
+                textAlign: 'center',
+                fontFamily: 'var(--font-mono)',
+                fontSize: '8px',
+                color: 'var(--fg-muted)',
+                overflow: 'hidden',
+                whiteSpace: 'nowrap',
+                textOverflow: 'clip',
+                lineHeight: 1.2,
+                letterSpacing: '0.02em',
+                userSelect: 'none',
+                // Visually hidden placeholder for odd-indexed bars at 24-bar density
+                visibility: displayLabel === '' ? 'hidden' : 'visible',
+              }}
+              aria-hidden={displayLabel === '' ? true : undefined}
+            >
+              {displayLabel === '' ? ' ' : displayLabel}
             </div>
           )
         })}
