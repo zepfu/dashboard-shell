@@ -6,6 +6,7 @@
  * re-computation on unrelated renders.
  */
 import { useMemo } from 'react'
+import { canonicalProvider } from '../lib/usage-report-display'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -52,14 +53,17 @@ export function useAnomalyDetection(
   metadata?: AnomalyMetadata
 ): AnomalyFlags {
   return useMemo<AnomalyFlags>(() => {
-    // 1. Group rows by provider
+    // 1. Group rows by provider — canonicalise so that DB aliases (e.g.
+    //    'gemini') are merged under the canonical key ('google') before any
+    //    downstream Map look-ups (Wave 18-A fix; mirrors Wave 15-B.2 pattern).
     const byProvider = new Map<string, HealthRow[]>()
     for (const row of healthRows) {
-      const existing = byProvider.get(row.provider)
+      const key = canonicalProvider(row.provider)
+      const existing = byProvider.get(key)
       if (existing !== undefined) {
         existing.push(row)
       } else {
-        byProvider.set(row.provider, [row])
+        byProvider.set(key, [row])
       }
     }
 
