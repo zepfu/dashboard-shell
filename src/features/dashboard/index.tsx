@@ -16,7 +16,13 @@
  * - Fleet Pulse label updated to "FLEET HEALTH PULSE · 24H · 5m" (audit C23).
  * - Freshness indicator now computes from dataUpdatedAt (audit C24).
  */
-import { useEffect, useMemo, useState, type ReactElement } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactElement,
+} from 'react'
 import { formatDistanceToNow } from 'date-fns'
 import { useQuery } from '@tanstack/react-query'
 import { ConfigDrawer } from '@/components/config-drawer'
@@ -35,6 +41,12 @@ import PhosphorDashboard from './components/phosphor-dashboard'
 import { PhosphorLayout } from './components/phosphor-layout'
 import { PhosphorSidebar } from './components/phosphor-sidebar'
 import { HealthStrip } from './components/primitives/health-strip'
+import {
+  SlicerBar,
+  type SlicerFilters,
+  type SlicerOptions,
+  SLICER_EMPTY_FILTERS,
+} from './components/slicer-bar'
 import { useAlertsFromAnomalies } from './hooks/use-alerts-from-anomalies'
 import { useAnomalyDetection } from './hooks/use-anomaly-detection'
 import { computeFleetErrors } from './lib/usage-report-display'
@@ -140,6 +152,26 @@ export function Dashboard(): ReactElement {
   const [activePeriod, setActivePeriod] = useState<string>('7d')
   // 15-C.4: controlled search input state for client-side row filtering
   const [searchTerm, setSearchTerm] = useState<string>('')
+
+  // 15-D.5: slicer filter state — empty arrays mean "all" (no server-side filter)
+  const [slicerFilters, setSlicerFilters] =
+    useState<SlicerFilters>(SLICER_EMPTY_FILTERS)
+
+  // 15-D.3: slicer options derived from PhosphorDashboard's loaded data
+  const [slicerOptions, setSlicerOptions] = useState<SlicerOptions>({
+    providers: [],
+    repositories: [],
+    clients: [],
+    environments: [],
+    models: [],
+  })
+
+  const handleSlicerOptionsReady = useCallback(
+    (options: SlicerOptions): void => {
+      setSlicerOptions(options)
+    },
+    []
+  )
 
   const handleRangeChange = (
     nextFrom: string,
@@ -466,6 +498,15 @@ export function Dashboard(): ReactElement {
             </div>
           </div>
 
+          {/* 15-D.5: SlicerBar — multi-dimension filter controls, above AnchorBar */}
+          {/* Placed between page-header and AnchorBar for discoverability.        */}
+          {/* Options are populated once PhosphorDashboard's query resolves.       */}
+          <SlicerBar
+            filters={slicerFilters}
+            options={slicerOptions}
+            onChange={setSlicerFilters}
+          />
+
           {/* Anchor bar — flush to page-header via border-top: none */}
           {/* 14-B.1: negative marginTop hack removed — page-header has no card chrome */}
           <AnchorBar
@@ -626,11 +667,14 @@ export function Dashboard(): ReactElement {
 
           {/* Main dashboard content */}
           {/* 15-C.4: searchTerm passed for client-side row filtering */}
+          {/* 15-D.5: filters + onOptionsReady wired for slicer */}
           <PhosphorDashboard
             from={from}
             to={to}
             grain={grain}
             searchTerm={searchTerm}
+            filters={slicerFilters}
+            onOptionsReady={handleSlicerOptionsReady}
           />
         </div>
       }
