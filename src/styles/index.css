@@ -1535,3 +1535,107 @@ tbody tr {
 }
 
 /* End Wave 15-D */
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Wave 18-CSS — pixel-perfect additions (5120 C2/C4/M3 + 2275 #1/#8/#11/⚠12)
+   Sources: wave17-pixel-5120-audit.md (C2, C4, M3)
+            wave17-pixel-2275-audit.md (#1, #8, #11, ⚠12)
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* Wave 18-CSS — 5120 C2: .main-content 20-col grid at ≥3840px
+   .main-content has inline display:'flex' on phosphor-dashboard.tsx L1236.
+   !important is required to beat inline styles (verified: inline is not !important).
+   The 20-column grid enables grid-column / grid-row placements for comparison
+   panel, models, repos, clients, etc. at 4K and 5K viewports. */
+@media (min-width: 3840px) {
+  .main-content {
+    display: grid !important;
+    grid-template-columns: repeat(20, minmax(0, 1fr)) !important;
+    gap: 12px !important;
+  }
+}
+
+/* Wave 18-CSS — 5120 C4: .errors-row-only-5k errors-summary row
+   Default hidden; revealed at ≥5120 as a single-column grid row at the
+   bottom of each .card-pane-right. JSX added by W18-Cards engineer in
+   provider-card.tsx. Color uses --accent-warm per mockup lines 2467 etc. */
+.errors-row-only-5k {
+  display: none;
+}
+@media (min-width: 5120px) {
+  .errors-row-only-5k {
+    display: grid;
+    grid-template-columns: 1fr;
+    padding: 4px 8px;
+    border-top: 1px solid var(--border);
+    font-size: 12px;
+    color: var(--accent-warm);
+  }
+  .errors-row-only-5k .name {
+    font-family: 'IBM Plex Mono', monospace;
+  }
+}
+
+/* Wave 18-CSS — 5120 M3: .col-4k-only and .col-5k-only baseline display:none
+   Mockup lines 627-635 define a baseline display:none so these columns are
+   hidden at sub-4K viewports. Without this, browser default display:table-cell
+   causes both column families to leak into narrow viewports.
+   NOTE: .col-4k-only reveal at ≥3840 already exists at index.css line 255-257
+   (inside the @media (min-width: 3840px) block — no duplication needed).
+   .col-5k-only reveal at ≥5120 is new. */
+.col-4k-only,
+.col-5k-only {
+  display: none;
+}
+@media (min-width: 5120px) {
+  .col-5k-only {
+    display: table-cell !important;
+  }
+}
+
+/* Wave 18-CSS — 2275 ⚠12: @keyframes microFill definition
+   .microbar references animation: microFill 0.6s (index.css L501) but the
+   keyframe was never defined — the CSS engine silently no-ops it. Adding the
+   definition restores the 0% → fill slide-in entrance animation.
+   Variable name is --microbar-fill (matching .microbar's width declaration). */
+@keyframes microFill {
+  from {
+    width: 0%;
+  }
+  to {
+    width: var(--microbar-fill, 100%);
+  }
+}
+
+/* Wave 18-CSS — 2275 #8: .repo-table tbody tr hover background
+   Mockup L1427: .repo-table tbody tr:hover { background: var(--card-2); }
+   Not previously implemented in live. */
+.repo-table tbody tr:hover {
+  background: var(--card-2);
+}
+
+/* Wave 18-CSS — 2275 #11: hide fleet-pulse 24h/now axis labels (not in mockup)
+   Audit §1.34a: mockup fleet-pulse-wrapper has no axis labels. Live
+   HealthStrip orientation='horizontal' always appends a .health-strip-axis
+   div (health-strip.tsx L239-242) with "-24h" and "now" text spans.
+   The element is a sibling of .health-strip-wrapper inside .fleet-pulse-wrapper.
+   Exact selector: .fleet-pulse-wrapper .health-strip-axis
+   Defensive additional selectors retained as fallback for any future refactor. */
+.fleet-pulse-wrapper .health-strip-axis,
+.fleet-pulse-axis,
+.fleet-pulse + .axis-labels,
+.fleet-pulse-strip ~ .axis-labels {
+  display: none !important;
+}
+
+/* Wave 18-CSS — 2275 #1: .provider-card.aggregate .provider-name color
+   Mockup L980-982: aggregate card provider-name should render in var(--fg)
+   (muted foreground), not the amber --accent-chrome used by peer cards.
+   W18-Cards engineer is removing the inline color override from provider-card.tsx;
+   this CSS rule is the cascade fallback (and currently needs !important because
+   the inline style is still present — !important beats inline). */
+.provider-card.aggregate .provider-name {
+  color: var(--fg) !important;
+}
+
+/* End Wave 18-CSS */
