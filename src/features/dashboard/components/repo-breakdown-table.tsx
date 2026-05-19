@@ -1,14 +1,11 @@
 /**
  * RepoBreakdownTable — sortable TanStack Table for per-repository usage.
  *
- * Renders a sortable, sticky-header table with repository, token, cost,
- * request, top model, and sparkline columns. Follows the same patterns as
- * MasterLedgerTable: severity gutter on first cell, metric-cell microbars
- * on numeric columns, and provider-tinted sparkline.
+ * Renders a sortable, sticky-header table with Repository, Tokens, Cost,
+ * Requests, Top Model, and 24h Tok/Hr (sparkline) columns.
  *
  * Wave 11 PR6 (11-n):
  * - Severity gutter on first cell — dynamic color based on row thresholds.
- * - Microbar overlays on Tokens, Cost, Requests columns.
  * - Provider-tinted sparkline via providerColorFor / rowSeverityColor.
  * - Column rename: Traces → Requests, Trend → 24h Tok/Hr.
  * - Amber uppercase thead with letter-spacing 0.05em.
@@ -16,11 +13,15 @@
  * Wave 14-F refactor (14-F.3):
  * - Gutter locked to .gutter-cool (var(--accent-cool)) — mockup spec
  *   §14 line 1440: td:first-child { border-left: 4px solid var(--accent-cool) }
- * - metric-microbar → .microbar class (14-F.1 CSS class system)
  * - .number className added to numeric cells (14-F.1)
  * - th letter-spacing corrected to 0.04em (audit §14 deviation 2)
+ *
+ * Wave 18-Tables (§5.14 / §5.15):
+ * - Removed metric-cell/microbar wrappers from Tokens, Cost, Requests — spec
+ *   renders plain `<td style="text-align: right;">` values (mockup L3152-3154).
+ * - Removed cost severity color thresholds — spec is neutral fg (§5.15).
  */
-import { useMemo, useState, type ReactElement } from 'react'
+import { useState, type ReactElement } from 'react'
 import {
   createColumnHelper,
   flexRender,
@@ -93,122 +94,54 @@ export interface RepoBreakdownTableProps {
 
 /**
  * RepoBreakdownTable renders a sortable, sticky-header table of repository
- * usage metrics with a uniform cool-blue gutter (14-F.3), microbar overlays
- * via .microbar class (14-F.1), and a tinted sparkline trend column.
+ * usage metrics with a uniform cool-blue gutter (14-F.3), plain numeric cells
+ * without microbar overlays (§5.14), and a tinted sparkline trend column.
  */
 export function RepoBreakdownTable({
   rows,
 }: RepoBreakdownTableProps): ReactElement {
   const [sorting, setSorting] = useState<SortingState>([])
 
-  // Compute column-level maxima for microbar scaling
-  const maxTokens = useMemo(
-    () => Math.max(1, ...rows.map((r) => r.tokens)),
-    [rows]
-  )
-  const maxCost = useMemo(
-    () => Math.max(1, ...rows.map((r) => r.cost_usd)),
-    [rows]
-  )
-  const maxTraces = useMemo(
-    () => Math.max(1, ...rows.map((r) => r.traces)),
-    [rows]
-  )
-
-  const columns = useMemo(
-    () => [
-      helper.accessor('repository', {
-        header: 'Repository',
-        cell: (info) => info.getValue() as string,
-      }),
-      helper.accessor('tokens', {
-        header: 'Tokens',
-        cell: (info) => {
-          const val = info.getValue() as number
-          const fillPct = (val / maxTokens) * 100
-          return (
-            <div className='metric-cell'>
-              <span style={{ color: 'var(--accent-cool)' }}>{numFmt(val)}</span>
-              <span
-                className='microbar'
-                style={
-                  {
-                    '--microbar-fill': `${fillPct.toFixed(1)}%`,
-                  } as React.CSSProperties
-                }
-              />
-            </div>
-          )
-        },
-      }),
-      helper.accessor('cost_usd', {
-        header: 'Cost',
-        cell: (info) => {
-          const val = info.getValue() as number
-          const fillPct = (val / maxCost) * 100
-          const costColor =
-            val > 1.0
-              ? 'var(--accent-hot)'
-              : val > 0.5
-                ? 'var(--accent-warm)'
-                : 'var(--accent-cool)'
-          return (
-            <div className='metric-cell'>
-              <span style={{ color: costColor }}>{formatUsd(val)}</span>
-              <span
-                className='microbar'
-                style={
-                  {
-                    '--microbar-fill': `${fillPct.toFixed(1)}%`,
-                  } as React.CSSProperties
-                }
-              />
-            </div>
-          )
-        },
-      }),
-      // C40: renamed from Traces → Requests
-      helper.accessor('traces', {
-        header: 'Requests',
-        cell: (info) => {
-          const val = info.getValue() as number
-          const fillPct = (val / maxTraces) * 100
-          return (
-            <div className='metric-cell'>
-              <span style={{ color: 'var(--accent-cool)' }}>{numFmt(val)}</span>
-              <span
-                className='microbar'
-                style={
-                  {
-                    '--microbar-fill': `${fillPct.toFixed(1)}%`,
-                  } as React.CSSProperties
-                }
-              />
-            </div>
-          )
-        },
-      }),
-      helper.accessor('top_model', {
-        header: 'Top Model',
-        cell: (info) => info.getValue() as string,
-      }),
-      // C40: renamed from Trend → 24h Tok/Hr
-      helper.display({
-        id: 'sparkline',
-        header: '24h Tok/Hr',
-        cell: ({ row }) => {
-          const sparkData = row.original.spark ?? [row.original.tokens]
-          // Tint by provider if hint available, fall back to severity color
-          const sparkColor =
-            (row.original.top_model_provider != null
-              ? providerColorFor(row.original.top_model_provider)
-              : null) ?? rowSeverityColor(row.original)
-          return <Sparkline data={sparkData} color={sparkColor} />
-        },
-      }),
-    ],
-    [maxTokens, maxCost, maxTraces]
-  )
+  const columns = [
+    helper.accessor('repository', {
+      header: 'Repository',
+      cell: (info) => info.getValue() as string,
+    }),
+    // §5.14: plain numeric cell — no microbar wrapper (spec mockup L3152)
+    helper.accessor('tokens', {
+      header: 'Tokens',
+      cell: (info) => numFmt(info.getValue() as number),
+    }),
+    // §5.14 / §5.15: plain numeric cell, neutral fg color — no microbar, no
+    // severity color threshold (spec mockup L3153: plain <td>$124.32</td>)
+    helper.accessor('cost_usd', {
+      header: 'Cost',
+      cell: (info) => formatUsd(info.getValue() as number),
+    }),
+    // C40: renamed from Traces → Requests; §5.14: plain numeric cell — no microbar
+    helper.accessor('traces', {
+      header: 'Requests',
+      cell: (info) => numFmt(info.getValue() as number),
+    }),
+    helper.accessor('top_model', {
+      header: 'Top Model',
+      cell: (info) => info.getValue() as string,
+    }),
+    // C40: renamed from Trend → 24h Tok/Hr
+    helper.display({
+      id: 'sparkline',
+      header: '24h Tok/Hr',
+      cell: ({ row }) => {
+        const sparkData = row.original.spark ?? [row.original.tokens]
+        // Tint by provider if hint available, fall back to severity color
+        const sparkColor =
+          (row.original.top_model_provider != null
+            ? providerColorFor(row.original.top_model_provider)
+            : null) ?? rowSeverityColor(row.original)
+        return <Sparkline data={sparkData} color={sparkColor} />
+      },
+    }),
+  ]
 
   const table = useReactTable({
     data: rows,
