@@ -10,7 +10,7 @@
  * - Strip height: clamp(60px, 4vw, 96px).
  *
  * Wave 11 PR7-lite (audit C27–C29):
- * - Label renames: Cost → Cost (24h), Errors → Errors (24h), P95 → P95 Latency,
+ * - Label renames: Cost → Cost (24h), P95 → P95 Latency,
  *   Toks In → Tokens In, Toks Out → Tokens Out; Requests unchanged.
  * - Added `deltas` optional prop for real delta values; falls back to em-dash.
  * - Microbar fill computed proportionally via CSS --fill custom property.
@@ -131,7 +131,7 @@ function buildTiles(summary: KpiSummary): TileData[] {
       value: formatCount(summary.requests),
     },
     {
-      label: 'Errors (24h)',
+      label: 'Errors',
       key: 'errors',
       rawValue: summary.errors,
       value: formatCount(summary.errors),
@@ -152,7 +152,7 @@ const TILE_LABELS = [
   'Tokens Out',
   'Cost',
   'Requests',
-  'Errors (24h)',
+  'Errors',
   'P95 Latency',
 ]
 

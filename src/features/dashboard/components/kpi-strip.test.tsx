@@ -26,7 +26,7 @@ const KPI_LABELS = [
   'Tokens Out',
   'Cost',
   'Requests',
-  'Errors (24h)',
+  'Errors',
   'P95 Latency',
 ]
 
@@ -37,8 +37,7 @@ test('test_kpi_strip_renders_six_tiles', () => {
   const tiles = container.querySelectorAll('.kpi-tile')
   expect(tiles.length).toBe(6)
 
-  // Each label should be present (use string literal match to avoid regex
-  // special-char issues with parentheses in "Errors (24h)").
+  // Each label should be present (use string literal match for consistency).
   for (const label of KPI_LABELS) {
     const elements = screen.getAllByText((_content, element) => {
       return element?.textContent?.toLowerCase() === label.toLowerCase()
