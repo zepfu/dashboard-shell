@@ -240,7 +240,14 @@ const cacheReasoningColumns = [
   }),
   helper.accessor('reasoning_estimated', {
     id: 'reasoning_estimated',
-    header: 'Reasoning Estimated',
+    // Wave 27 Fix 10: cells render <sup>*</sup> to flag approximation; the
+    // header must match so the asterisk appears in the column title too.
+    header: () => (
+      <>
+        {'Reasoning Estimated'}
+        <sup>*</sup>
+      </>
+    ),
     cell: (info) => {
       const v = info.getValue() as number | undefined
       if (v === undefined) return '—'

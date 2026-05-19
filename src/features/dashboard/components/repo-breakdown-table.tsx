@@ -31,7 +31,7 @@ import {
   type SortingState,
 } from '@tanstack/react-table'
 import {
-  providerBrandHex,
+  modelBrandHex,
   providerColorFor,
   formatUsd,
 } from '../lib/usage-report-display'
@@ -134,7 +134,11 @@ export function RepoBreakdownTable({
       header: 'Top Model',
       cell: (info) => {
         const model = info.getValue() as string
-        const brandColor = providerBrandHex(model)
+        // Wave 27 follow-up: providerBrandHex matches provider *names* only;
+        // top_model is a model name (e.g. claude-opus-4-7, gpt-5.5), so the
+        // raw lookup fell through to var(--fg). modelBrandHex first infers
+        // the provider from the model prefix.
+        const brandColor = modelBrandHex(model)
         return <span style={{ color: brandColor }}>{model}</span>
       },
     }),
