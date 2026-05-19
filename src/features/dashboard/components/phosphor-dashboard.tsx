@@ -779,15 +779,26 @@ function buildModelRows(
   const quotaByProvider = new Map<string, number>()
   for (const q of quotaRows) {
     const p = q.provider.toLowerCase()
-    // Use the most-consumed active quota for this provider row as a
-    // representative percentage (short_active > weekly_active priority).
+    // 18-PhosphorDash: Fix data-audit ✘-2 — iterate all 5 interval types and
+    // take the MAX consumed% across active intervals (previously only checked
+    // short/weekly/monthly with priority fallthrough, silently dropping
+    // special_active / short_special_active and under-reporting quota consumed).
     let consumed: number | null = null
-    if (q.short_active && q.short_remaining_pct !== null) {
-      consumed = Math.max(0, Math.min(100, 100 - q.short_remaining_pct))
-    } else if (q.weekly_active && q.weekly_remaining_pct !== null) {
-      consumed = Math.max(0, Math.min(100, 100 - q.weekly_remaining_pct))
-    } else if (q.monthly_active && q.monthly_remaining_pct !== null) {
-      consumed = Math.max(0, Math.min(100, 100 - q.monthly_remaining_pct))
+    const intervalCandidates = [
+      { active: q.short_active, remainingPct: q.short_remaining_pct },
+      {
+        active: q.short_special_active,
+        remainingPct: q.short_special_remaining_pct,
+      },
+      { active: q.special_active, remainingPct: q.special_remaining_pct },
+      { active: q.weekly_active, remainingPct: q.weekly_remaining_pct },
+      { active: q.monthly_active, remainingPct: q.monthly_remaining_pct },
+    ]
+    for (const iv of intervalCandidates) {
+      if (iv.active && iv.remainingPct !== null) {
+        const c = Math.max(0, Math.min(100, 100 - iv.remainingPct))
+        if (consumed === null || c > consumed) consumed = c
+      }
     }
     if (consumed === null) continue
     // Use provider+model key for model-scoped entries; provider key for
