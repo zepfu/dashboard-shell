@@ -438,9 +438,6 @@ export function UsageReportDashboard() {
     <div className='space-y-3'>
       <div className='grid gap-3 xl:grid-cols-[minmax(0,1fr)_auto] xl:items-start'>
         <div className='min-w-0'>
-          <h1 className='text-2xl font-bold tracking-tight'>
-            General Dashboard
-          </h1>
           <div className='mt-1 flex flex-col gap-2 text-sm text-muted-foreground sm:flex-row sm:flex-wrap sm:items-center'>
             <FreshnessIndicator
               loading={usageReport.isPending}

@@ -275,21 +275,6 @@ export function Dashboard(): ReactElement {
             alignItems: 'center',
           }}
         >
-          {/* Header title */}
-          <div
-            style={{
-              fontSize: 'clamp(11px, 0.6vw, 20px)',
-              color: 'var(--fg-muted)',
-              textTransform: 'uppercase',
-              letterSpacing: '0.1em',
-              fontWeight: 600,
-              whiteSpace: 'nowrap',
-              flexShrink: 0,
-            }}
-          >
-            General Dashboard
-          </div>
-
           {/* KPI strip — dominant header element */}
           {/* B3: deltas prop wired; API does not expose prior-period deltas yet so
               all tiles show em-dash placeholders. When the API adds delta data,
@@ -331,22 +316,8 @@ export function Dashboard(): ReactElement {
               style={{
                 display: 'flex',
                 alignItems: 'center',
-                justifyContent: 'space-between',
               }}
             >
-              <h1
-                className='page-title phosphor-title'
-                style={{
-                  fontFamily: 'var(--font-serif)',
-                  fontSize: 'clamp(18px, 0.9vw, 32px)',
-                  fontStyle: 'italic',
-                  color: 'var(--fg)',
-                  fontWeight: 400,
-                  margin: 0,
-                }}
-              >
-                General Dashboard
-              </h1>
               {/* 14-B.3: search input per mockup — 180px, card-2 bg, mono, 10px */}
               {/* 15-C.4: controlled input — value + onChange wire to searchTerm state */}
               <input
