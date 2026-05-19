@@ -58,9 +58,10 @@ import { computeFleetErrors } from './lib/usage-report-display'
 
 function defaultDateRange(): { from: string; to: string } {
   const now = new Date()
-  // Wave 16-V: default range is yesterday → today (1-day, replaces 7-day default)
+  // Wave 24-Index (operator F3): default range is 30 days back → today (UTC).
+  // Reverts Wave 16-V 1-day default per operator decision.
   const from = new Date(
-    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - 1)
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - 30)
   )
   const to = new Date(
     Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())
