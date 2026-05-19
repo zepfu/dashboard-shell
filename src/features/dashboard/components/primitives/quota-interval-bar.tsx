@@ -106,7 +106,7 @@ export function QuotaIntervalBar({
 
   if (tooltipContent !== undefined) {
     return (
-      <HoverTooltip content={tooltipContent} variant='quota'>
+      <HoverTooltip content={tooltipContent} variant='quota-bar'>
         {bar}
       </HoverTooltip>
     )

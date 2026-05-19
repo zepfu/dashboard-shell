@@ -10,7 +10,13 @@
  * - `default`: tip appears above-right of children.
  * - `health`: tip appears to the LEFT of children (tip-health class).
  *   Use for health-strip cells at the right edge of a provider card.
- * - `quota`: tip appears ABOVE children (tip-quota class).
+ * - `quota`: tip appears ABOVE children (tip-quota class). Wrapper gets
+ *   `height:100%` + `flex:1 1 0%` + column-flex layout so trend bars can
+ *   resolve percentage heights against this element (token-trend-chart).
+ * - `quota-bar`: tip appears ABOVE children (tip-quota class, identical CSS).
+ *   Wrapper uses `display:block` only — NO height/flex stretching. Use this
+ *   for ProviderCard quota rows where the parent is a block container and the
+ *   full-height flex sizing of `quota` would overflow into adjacent rows.
  *
  * ## Structured content subclasses (callers opt-in)
  * - `.v9-tip-head` — heading row (amber, bold, 10px, letter-spacing 0.04em)
@@ -21,7 +27,7 @@
 import { useState, type ReactElement, type ReactNode } from 'react'
 
 /** Supported tooltip positioning variants. */
-type TooltipVariant = 'health' | 'quota' | 'default'
+type TooltipVariant = 'health' | 'quota' | 'quota-bar' | 'default'
 
 /** Props for {@link HoverTooltip}. */
 interface HoverTooltipProps {
@@ -101,7 +107,8 @@ const TOOLTIP_STYLES = `
 
 /** Returns the variant-specific CSS class name(s) for positioning. */
 function variantClass(variant: TooltipVariant): string {
-  if (variant === 'quota') return 'tip-above tip-quota'
+  if (variant === 'quota' || variant === 'quota-bar')
+    return 'tip-above tip-quota'
   if (variant === 'health') return 'tip-health'
   return ''
 }
@@ -146,6 +153,12 @@ export function HoverTooltip({
         //   own percentage height against this element rather than collapsing to
         //   content height (4-7px). Wave 32 fix: mirrors the existing health
         //   treatment. See .analysis/wave32-trend-still-broken.md §5.
+        // quota-bar variant: used in ProviderCard QuotaIntervalBar rows where the
+        //   parent is a block container (NOT a flex container). The full-height flex
+        //   sizing of 'quota' resolves height:100% against the block parent's
+        //   auto-height and overflows 11-20px into the next row, hijacking pointer
+        //   events. quota-bar keeps display:block only — no height/flex stretching.
+        //   See .analysis/wave32-multireset-overlap.md §Secondary finding.
         // health variant: the outer caller (health-strip.tsx) wraps HoverTooltip
         //   in an abs-positioned sizing shell (top:6px/bottom:6px/width:12px).
         //   HoverTooltip then fills that shell via display:block + height:100%.
@@ -153,7 +166,7 @@ export function HoverTooltip({
         //   abs-positioned child, fixing the 0-height collapse. Wave 15-A S11.
         // default: inline-block (unchanged).
         display:
-          variant === 'quota' || variant === 'health'
+          variant === 'quota' || variant === 'health' || variant === 'quota-bar'
             ? 'block'
             : 'inline-block',
         ...(variant === 'health' || variant === 'quota'
@@ -202,7 +215,7 @@ export function HoverTooltip({
           ...(isOpen
             ? { opacity: 1, pointerEvents: 'auto' }
             : { opacity: 0, pointerEvents: 'none' }),
-          ...(variant === 'quota'
+          ...(variant === 'quota' || variant === 'quota-bar'
             ? {
                 width: '240px',
                 bottom: 'calc(100% + 6px)',
