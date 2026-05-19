@@ -27,7 +27,10 @@ const mockRows = [
     error_pct: 0.5,
     cost_usd: 0.1,
     cost_per_1k: 0.05,
-    quota_pct: 25,
+    cache_miss_pct: 12.5,
+    cache_miss_usd_cost: 0.01,
+    reasoning_reported: 500,
+    reasoning_estimated: 600,
   },
   {
     model: 'gpt-4o',
@@ -40,7 +43,10 @@ const mockRows = [
     error_pct: 0.2,
     cost_usd: 0.5,
     cost_per_1k: 0.08,
-    quota_pct: 60,
+    cache_miss_pct: 8.0,
+    cache_miss_usd_cost: 0.02,
+    reasoning_reported: 0,
+    reasoning_estimated: 100,
   },
   {
     model: 'gemini-1.5',
@@ -53,7 +59,10 @@ const mockRows = [
     error_pct: 1.0,
     cost_usd: 0.2,
     cost_per_1k: 0.06,
-    quota_pct: 40,
+    cache_miss_pct: undefined,
+    cache_miss_usd_cost: undefined,
+    reasoning_reported: undefined,
+    reasoning_estimated: undefined,
   },
 ]
 
@@ -64,12 +73,20 @@ const mockRows = [
 test('test_renders_sortable_column_headers', () => {
   render(<MasterLedgerTable rows={mockRows} />)
 
-  // Each sortable header should exist and have aria-sort or data-sortable
-  const sortableHeaders = ['Model', 'Provider', 'Toks In', 'Cost$', 'Quota%']
+  // Each sortable header should exist and have aria-sort or data-sortable.
+  // Wave 26: 'Quota%' removed (F#13); cache/reasoning columns added (F#12).
+  // Use exact-match header names to avoid ambiguity between Cache Miss %/$.
+  const sortableHeaders = [
+    'Model',
+    'Provider',
+    'Toks In',
+    'Cost',
+    'Cache Miss %',
+  ]
 
   for (const header of sortableHeaders) {
     const th = screen.getByRole('columnheader', {
-      name: new RegExp(header, 'i'),
+      name: new RegExp(`^${header}$`, 'i'),
     })
     expect(th).toBeInTheDocument()
 
@@ -80,6 +97,30 @@ test('test_renders_sortable_column_headers', () => {
 
     expect(hasSortAttr).toBe(true)
   }
+})
+
+test('test_quota_column_removed', () => {
+  // Wave 26 (operator F#13): Quota% column must not appear
+  render(<MasterLedgerTable rows={mockRows} />)
+  const quotaHeader = screen.queryByRole('columnheader', { name: /quota/i })
+  expect(quotaHeader).toBeNull()
+})
+
+test('test_cache_reasoning_columns_present', () => {
+  // Wave 26 (operator F#12): new columns must appear
+  render(<MasterLedgerTable rows={mockRows} />)
+  expect(
+    screen.getByRole('columnheader', { name: /cache miss %/i })
+  ).toBeInTheDocument()
+  expect(
+    screen.getByRole('columnheader', { name: /cache miss \$/i })
+  ).toBeInTheDocument()
+  expect(
+    screen.getByRole('columnheader', { name: /reasoning reported/i })
+  ).toBeInTheDocument()
+  expect(
+    screen.getByRole('columnheader', { name: /reasoning estimated/i })
+  ).toBeInTheDocument()
 })
 
 test('test_click_sort_descending', () => {
