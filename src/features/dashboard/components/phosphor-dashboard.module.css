@@ -47,6 +47,16 @@
   }
 }
 
+/* Wave 22-CSS — 5120 C2-residual: collapse .ledger-repo-row wrapper at ≥3840px
+   so its children (section[data-tab='models'] and section[data-tab='repos'])
+   become direct grid children of .main-content and the per-section
+   grid-column / grid-row placements authored in Wave 20-CSS take effect. */
+@media (min-width: 3840px) {
+  .ledger-repo-row {
+    display: contents;
+  }
+}
+
 /* ── Comparison section ─────────────────────────────────────────────────── */
 
 .comparison-section {
