@@ -415,6 +415,7 @@ SELECT
     COALESCE(NULLIF(sh.client_name, ''), 'unknown') AS client_name,
     COALESCE(NULLIF(sh.client_version, ''), '0.0.0') AS client_version,
     MIN(sh.created_at) AS first_seen_at,
+    MAX(sh.created_at) AS last_seen_at,
     COUNT(*)::double precision AS traces,
     SUM(COALESCE(sh.input_tokens, 0)
       + COALESCE(sh.output_tokens, 0)
@@ -783,6 +784,70 @@ ORDER BY s.provider ASC, s.model ASC NULLS FIRST;
   return { sql, values: [] }
 }
 
+function buildQuotaHistoryQuery(searchParams) {
+  const from = parseDateParam(searchParams.get('from'), defaultFromDate)
+  const to = parseDateParam(searchParams.get('to'), defaultToDate)
+
+  const sql = `
+WITH normalized AS (
+    SELECT
+        CASE
+            WHEN lower(COALESCE(ri.provider, 'unknown')) IN ('xai', 'x.ai') THEN 'xai'
+            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'xai/%' THEN 'xai'
+            WHEN lower(COALESCE(ri.provider, 'unknown')) = 'nvidia' THEN 'nvidia_nim'
+            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'nvidia_nim/%' THEN 'nvidia_nim'
+            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'nvidia/%' THEN 'nvidia_nim'
+            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'local/%' THEN 'local'
+            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'local_%' THEN 'local'
+            ELSE COALESCE(ri.provider, 'unknown')
+        END AS provider,
+        CASE
+            WHEN ri.quota_type IN ('monthly', 'requests')
+              AND (
+                  lower(COALESCE(ri.provider, 'unknown')) LIKE 'xai/%'
+                  OR lower(COALESCE(ri.provider, 'unknown')) IN ('xai', 'x.ai')
+              )
+            THEN NULL
+            ELSE NULLIF(ri.model, '')
+        END AS model,
+        CASE
+            WHEN ri.quota_type = 'requests'
+              AND (
+                  lower(COALESCE(ri.provider, 'unknown')) LIKE 'xai/%'
+                  OR lower(COALESCE(ri.provider, 'unknown')) IN ('xai', 'x.ai')
+              )
+            THEN 'monthly'
+            WHEN ri.quota_type = 'weekly_special' THEN 'special'
+            WHEN ri.quota_type = 'short_special' THEN 'short_special'
+            WHEN ri.quota_type = 'requests' THEN 'short'
+            ELSE ri.quota_type
+        END AS quota_type,
+        ri.expected_reset_at,
+        ri.remaining_pct,
+        ri.fromDate AS interval_start
+    FROM public.rate_limit_intervals ri
+    WHERE lower(COALESCE(ri.provider, 'unknown')) NOT LIKE 'openai%'
+      AND ri.quota_type IN ('weekly', 'weekly_special', 'requests', 'monthly')
+      AND ri.expected_reset_at IS NOT NULL
+      AND ri.expected_reset_at >= $1::timestamptz
+      AND ri.expected_reset_at < $2::timestamptz
+)
+SELECT
+    provider,
+    model,
+    quota_type,
+    expected_reset_at,
+    MIN(remaining_pct)::double precision AS min_remaining_pct,
+    MAX(remaining_pct)::double precision AS max_remaining_pct,
+    MIN(interval_start) AS reset_realized
+FROM normalized
+GROUP BY provider, model, quota_type, expected_reset_at
+ORDER BY expected_reset_at DESC;
+`
+
+  return { sql, values: [from, to] }
+}
+
 function buildFreshnessQuery() {
   return {
     sql: 'SELECT MAX(sh.created_at) AS latest_record_at FROM public.session_history sh;',
@@ -852,6 +917,7 @@ function normalizeClientUsageRow(row) {
     client_name: row.client_name ?? 'unknown',
     client_version: row.client_version ?? '0.0.0',
     first_seen_at: row.first_seen_at ?? null,
+    last_seen_at: row.last_seen_at ?? null,
     traces: normalizeNumber(row.traces) ?? 0,
     token_total: normalizeNumber(row.token_total) ?? 0,
     usd_cost: normalizeNumber(row.usd_cost) ?? 0,
@@ -1008,6 +1074,18 @@ function normalizeQuotaRow(row) {
     monthly_usage_breakdown: normalizeUsageBreakdown(
       row.monthly_usage_breakdown
     ),
+  }
+}
+
+function normalizeQuotaHistoryRow(row) {
+  return {
+    provider: row.provider ?? 'unknown',
+    model: row.model ?? null,
+    quota_type: row.quota_type ?? 'unknown',
+    expected_reset_at: row.expected_reset_at ?? null,
+    min_remaining_pct: normalizeNumber(row.min_remaining_pct),
+    max_remaining_pct: normalizeNumber(row.max_remaining_pct),
+    reset_realized: row.reset_realized ?? null,
   }
 }
 
@@ -1293,6 +1371,7 @@ async function handleUsageReport(req, res) {
     const providerLatencyHealthQuery = buildProviderLatencyHealthQuery()
     const providerErrorObservationQuery = buildProviderErrorObservationQuery()
     const providerStatusUsageQuery = buildProviderStatusUsageQuery(requestUrl.searchParams)
+    const quotaHistoryQuery = buildQuotaHistoryQuery(requestUrl.searchParams)
     const quotaReportPromise = loadQuotaReport()
 
     const [
@@ -1303,6 +1382,7 @@ async function handleUsageReport(req, res) {
       providerLatencyHealthResult,
       providerErrorObservationResult,
       providerStatusUsageResult,
+      quotaHistoryResult,
       quotaReport,
     ] = await Promise.all([
       pool.query(sql, values),
@@ -1318,6 +1398,7 @@ async function handleUsageReport(req, res) {
         providerErrorObservationQuery.values
       ),
       pool.query(providerStatusUsageQuery.sql, providerStatusUsageQuery.values),
+      pool.query(quotaHistoryQuery.sql, quotaHistoryQuery.values),
       quotaReportPromise,
     ])
 
@@ -1343,6 +1424,7 @@ async function handleUsageReport(req, res) {
         normalizeProviderStatusUsageRow
       ),
       quotas: quotaReport.quotas,
+      quotaHistory: quotaHistoryResult.rows.map(normalizeQuotaHistoryRow),
       rows,
     }
   })
