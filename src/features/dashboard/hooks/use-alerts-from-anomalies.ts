@@ -6,12 +6,16 @@
  * Converts useAnomalyDetection output → AlertItem[].
  *
  * Wave 10 D4: informational alerts always surface when conditions are
- * modestly true (rate-limit headroom, quota nearing, cache hit ratio,
- * daily budget). Target density: 6–11 items in typical operation.
+ * modestly true (rate-limit headroom, quota nearing, cache hit ratio).
+ * Target density: 6–11 items in typical operation.
  * Wave 10 D20: `warn` type emitted for quota-nearing alerts.
  *
  * Wave 11 PR7-lite (audit C32): always-on per-provider healthy alerts and a
  * "Sync on schedule" info alert raise baseline density to 7-11 items.
+ *
+ * Wave 24-Alerts: budget alerts removed — no budget configuration exists in
+ * this product. Both the critical-threshold ($100) and the always-on daily
+ * budget progress alerts have been deleted.
  */
 import { useMemo } from 'react'
 import type { AlertItem } from '../components/alerts-rail'
@@ -21,9 +25,8 @@ import type { AnomalyFlags } from '../hooks/use-anomaly-detection'
 // Types
 // ---------------------------------------------------------------------------
 
-/** Minimal summary shape needed for budget/rate-limit alerts. */
+/** Minimal summary shape needed for rate-limit and cache alerts. */
 export interface AlertSummaryShape {
-  usd_cost?: number
   traces?: number
   token_in?: number
   token_out?: number
@@ -69,7 +72,7 @@ const CANONICAL_PROVIDERS: ReadonlyArray<string> = [
  * the AlertItem[] format consumed by AlertsRail.
  *
  * @param anomalies - Output from useAnomalyDetection hook.
- * @param summary - Optional usage summary for budget-related alerts.
+ * @param summary - Optional usage summary for rate-limit and cache alerts.
  * @param quotas - Optional quota rows for quota-nearing informational alerts.
  * @returns Memoised AlertItem[] array.
  */
@@ -101,17 +104,6 @@ export function useAlertsFromAnomalies(
       })
     }
 
-    // ── Budget alert (critical threshold) ───────────────────────────── //
-
-    const cost = summary?.usd_cost ?? 0
-    if (cost > 100) {
-      alerts.push({
-        type: 'budget',
-        head: `Budget threshold: $${cost.toFixed(2)}`,
-        sub: 'Cost exceeds $100 for selected period',
-      })
-    }
-
     // ── Rate limit info: high request volume ────────────────────────── //
 
     const traces = summary?.traces ?? 0
@@ -123,17 +115,6 @@ export function useAlertsFromAnomalies(
     }
 
     // ── D4: Informational alerts — always-visible when modestly true ── //
-
-    // Daily budget progress (always show if we have cost data)
-    if (cost > 0) {
-      const dailyBudget = 150 // default daily budget cap assumption
-      const spendPct = Math.round((cost / dailyBudget) * 100)
-      alerts.push({
-        type: 'info',
-        head: `Daily budget: $${cost.toFixed(2)} / $${dailyBudget} (${spendPct}%)`,
-        sub: 'Aggregated spend for selected period',
-      })
-    }
 
     // Cache hit ratio (always show if we have cache data)
     const cacheInput = summary?.token_cache_input ?? 0

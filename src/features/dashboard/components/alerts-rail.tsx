@@ -14,18 +14,16 @@
  *
  * Wave 16-V N1: wrap each alert's leading glyph in span.alert-glyph so the
  * CSS rule added in Wave 15-A (12px fixed-width, text-align:center) applies.
+ *
+ * Wave 24-Alerts: 'budget' type removed from AlertItem union — no budget
+ * configuration exists in this product. Budget alert handlers deleted from
+ * alertItemStyle and alertGlyph.
  */
 import type { ReactElement } from 'react'
 
 /** Discriminated union of supported alert categories. */
 export type AlertItem = {
-  type:
-    | 'rate-limit'
-    | 'budget'
-    | 'early-reset'
-    | 'cache-stale'
-    | 'info'
-    | 'warn'
+  type: 'rate-limit' | 'early-reset' | 'cache-stale' | 'info' | 'warn'
   head: string
   sub?: string
 }
@@ -47,7 +45,6 @@ function alertItemStyle(type: AlertItem['type']): React.CSSProperties {
 
   switch (type) {
     case 'rate-limit':
-    case 'budget':
       return {
         ...base,
         borderLeftColor: 'var(--accent-hot)',
@@ -121,8 +118,6 @@ function alertGlyph(type: AlertItem['type']): string {
   switch (type) {
     case 'rate-limit':
       return '🚫'
-    case 'budget':
-      return '💰'
     case 'early-reset':
       return '⟲'
     case 'cache-stale':
