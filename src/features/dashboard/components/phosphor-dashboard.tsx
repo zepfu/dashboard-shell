@@ -597,6 +597,284 @@ function buildQuotaIntervals(
   return result
 }
 
+/**
+ * Classifies a raw model string into a Google quota class label.
+ *
+ * API quota rows for Google have model names like 'gemini-2.5-pro',
+ * 'gemini-3-pro-preview', 'gemini-2.5-flash', 'gemini-2.5-flash-lite', etc.
+ * The mockup aggregates these into three display classes per F1:
+ *   gemini-*-pro*  → 'gemini-pro'
+ *   gemini-*-flash-lite* → 'gemini-flash-lite'
+ *   gemini-*-flash* → 'gemini-flash'  (must be checked AFTER flash-lite)
+ *
+ * Returns null for non-gemini or unrecognised model strings.
+ */
+function classifyGeminiModel(model: string): string | null {
+  const lower = model.toLowerCase()
+  if (!lower.startsWith('gemini-')) return null
+  if (lower.includes('flash-lite')) return 'gemini-flash-lite'
+  if (lower.includes('flash')) return 'gemini-flash'
+  if (lower.includes('pro')) return 'gemini-pro'
+  return null
+}
+
+/**
+ * Returns the best single remaining-pct from an active interval, given:
+ *   - short  → '5h'
+ *   - weekly → '7d'
+ *   - special → '5h' (same period bucket; takes priority over short when active)
+ *   - short_special → '5h'
+ *   - monthly → 'monthly'
+ *   - short → '24h' (for Google — caller maps intervals to display labels)
+ *
+ * Used by buildQuotaRows to extract single-interval bars per provider.
+ */
+function extractInterval(
+  row: UsageReportQuotaRow,
+  interval: 'short' | 'weekly' | 'special' | 'short_special' | 'monthly'
+): { remainingPct: number; resetAt: string | undefined } | null {
+  switch (interval) {
+    case 'short':
+      if (!row.short_active || row.short_remaining_pct === null) return null
+      return {
+        remainingPct: row.short_remaining_pct,
+        resetAt: row.short_reset_at ?? undefined,
+      }
+    case 'weekly':
+      if (!row.weekly_active || row.weekly_remaining_pct === null) return null
+      return {
+        remainingPct: row.weekly_remaining_pct,
+        resetAt: row.weekly_reset_at ?? undefined,
+      }
+    case 'special':
+      if (!row.special_active || row.special_remaining_pct === null) return null
+      return {
+        remainingPct: row.special_remaining_pct,
+        resetAt: row.special_reset_at ?? undefined,
+      }
+    case 'short_special':
+      if (!row.short_special_active || row.short_special_remaining_pct === null)
+        return null
+      return {
+        remainingPct: row.short_special_remaining_pct,
+        resetAt: row.short_special_reset_at ?? undefined,
+      }
+    case 'monthly':
+      if (!row.monthly_active || row.monthly_remaining_pct === null) return null
+      return {
+        remainingPct: row.monthly_remaining_pct,
+        resetAt: row.monthly_reset_at ?? undefined,
+      }
+    default:
+      return null
+  }
+}
+
+/**
+ * Creates a QuotaBarGroup for a single (label, interval) pair.
+ *
+ * Returns null if the interval is not active on the given row.
+ */
+function makeQuotaBarGroup(
+  label: string,
+  row: UsageReportQuotaRow,
+  interval: 'short' | 'weekly' | 'special' | 'short_special' | 'monthly'
+): QuotaBarGroup | null {
+  const iv = extractInterval(row, interval)
+  if (iv === null) return null
+  const consumedPct = Math.max(0, Math.min(100, 100 - iv.remainingPct))
+  return {
+    label,
+    consumedPct,
+    remainingPct: iv.remainingPct,
+    resetAt: iv.resetAt,
+    segments: buildQuotaSegments(iv.remainingPct),
+  }
+}
+
+/**
+ * Builds per-provider curated QuotaBarGroup[] matching the operator F1 mockup.
+ *
+ * This replaces the raw `buildQuotaIntervals` call at the ProviderCard callsite
+ * so each provider shows only the quota rows relevant to its contract shape.
+ * `buildQuotaIntervals` is preserved for multi-bar rendering compatibility.
+ *
+ * ### Returned shape (QuotaBarGroup[])
+ * Each element has:
+ *   - `label`        — display label per mockup (e.g. `'all · 5h'`, `'gemini-pro · 24h'`)
+ *   - `consumedPct`  — 0–100 (100 − remainingPct, clamped)
+ *   - `remainingPct` — raw API remaining_pct
+ *   - `resetAt?`     — ISO timestamp of next reset if known
+ *   - `segments`     — 12-segment array from buildQuotaSegments
+ *
+ * ### Provider → row mapping (Operator F1)
+ * | provider   | rows included                                                   |
+ * |------------|-----------------------------------------------------------------|
+ * | openai     | all·5h (short), all·7d (weekly), codex-spark·5h, codex-spark·7d|
+ * | anthropic  | all·5h (short), all·7d (weekly), sonnet·5h, sonnet·7d           |
+ * | google     | gemini-pro·24h, gemini-flash·24h, gemini-flash-lite·24h (short) |
+ * | xai        | grok·monthly                                                    |
+ * | nvidia_nim | NIM credits·monthly                                             |
+ * | openrouter | credits·monthly, gemma-4-31b free·monthly, qwen3-coder free·monthly |
+ * | local      | [] (no quotas)                                                  |
+ *
+ * Rows that don't exist in the API response (not active) are silently omitted.
+ *
+ * @param provider - Canonical provider name from CANONICAL_PROVIDERS
+ * @param allQuotaRows - Full quota rows array from /api/shell/reports/quotas
+ */
+function buildQuotaRows(
+  provider: string,
+  allQuotaRows: UsageReportQuotaRow[]
+): QuotaBarGroup[] {
+  const providerLower = provider.toLowerCase()
+
+  // Filter all quota rows to this provider (API returns canonical names for quotas)
+  const providerRows = allQuotaRows.filter(
+    (r) => r.provider.toLowerCase() === providerLower
+  )
+
+  if (providerRows.length === 0 || provider === 'local') return []
+
+  const result: QuotaBarGroup[] = []
+
+  switch (providerLower) {
+    case 'openai': {
+      // Provider-level row (model === null): 'all · 5h' and 'all · 7d'
+      const allRow = providerRows.find((r) => r.model === null)
+      if (allRow !== undefined) {
+        const g5h = makeQuotaBarGroup('all · 5h', allRow, 'short')
+        if (g5h !== null) result.push(g5h)
+        const g7d = makeQuotaBarGroup('all · 7d', allRow, 'weekly')
+        if (g7d !== null) result.push(g7d)
+      }
+      // Model-level row for codex-spark: 'codex-spark · 5h' and 'codex-spark · 7d'
+      const codexRow = providerRows.find(
+        (r) => r.model !== null && r.model.toLowerCase().includes('codex-spark')
+      )
+      if (codexRow !== undefined) {
+        const gc5h = makeQuotaBarGroup('codex-spark · 5h', codexRow, 'short')
+        if (gc5h !== null) result.push(gc5h)
+        const gc7d = makeQuotaBarGroup('codex-spark · 7d', codexRow, 'weekly')
+        if (gc7d !== null) result.push(gc7d)
+      }
+      break
+    }
+
+    case 'anthropic': {
+      // Provider-level row (model === null): 'all · 5h' and 'all · 7d'
+      const allRow = providerRows.find((r) => r.model === null)
+      if (allRow !== undefined) {
+        const g5h = makeQuotaBarGroup('all · 5h', allRow, 'short')
+        if (g5h !== null) result.push(g5h)
+        const g7d = makeQuotaBarGroup('all · 7d', allRow, 'weekly')
+        if (g7d !== null) result.push(g7d)
+      }
+      // Sonnet model row (model matches claude-*-sonnet*): 'sonnet · 5h' and 'sonnet · 7d'
+      const sonnetRow = providerRows.find(
+        (r) => r.model !== null && /claude-.*sonnet/i.test(r.model)
+      )
+      if (sonnetRow !== undefined) {
+        const gs5h = makeQuotaBarGroup('sonnet · 5h', sonnetRow, 'short')
+        if (gs5h !== null) result.push(gs5h)
+        const gs7d = makeQuotaBarGroup('sonnet · 7d', sonnetRow, 'weekly')
+        if (gs7d !== null) result.push(gs7d)
+      }
+      break
+    }
+
+    case 'google': {
+      // Google uses short interval but labels it as '24h' per the mockup.
+      // Aggregate by gemini model class (gemini-pro / gemini-flash / gemini-flash-lite).
+      // When multiple API rows map to the same class, take the first active one
+      // (they share the same rate-limit pool per class in practice).
+      const classSeen = new Set<string>()
+      // Sort so shorter names come first (ensures gemini-2.5-flash-lite is
+      // classified before gemini-2.5-flash on naive iteration).
+      const sortedGoogleRows = [...providerRows].sort((a, b) => {
+        const am = (a.model ?? '').length
+        const bm = (b.model ?? '').length
+        return am - bm
+      })
+      for (const row of sortedGoogleRows) {
+        if (row.model === null) continue
+        const cls = classifyGeminiModel(row.model)
+        if (cls === null || classSeen.has(cls)) continue
+        const g = makeQuotaBarGroup(`${cls} · 24h`, row, 'short')
+        if (g !== null) {
+          classSeen.add(cls)
+          result.push(g)
+        }
+      }
+      break
+    }
+
+    case 'xai': {
+      // All xAI quota rows aggregate under 'grok · monthly'
+      // Take the first active monthly row (usually provider-level, model=null)
+      for (const row of providerRows) {
+        const g = makeQuotaBarGroup('grok · monthly', row, 'monthly')
+        if (g !== null) {
+          result.push(g)
+          break
+        }
+      }
+      break
+    }
+
+    case 'nvidia_nim': {
+      // NIM credits → monthly
+      for (const row of providerRows) {
+        const g = makeQuotaBarGroup('NIM credits · monthly', row, 'monthly')
+        if (g !== null) {
+          result.push(g)
+          break
+        }
+      }
+      break
+    }
+
+    case 'openrouter': {
+      // Provider-level (model === null): 'credits · monthly'
+      const creditsRow = providerRows.find((r) => r.model === null)
+      if (creditsRow !== undefined) {
+        const gc = makeQuotaBarGroup('credits · monthly', creditsRow, 'monthly')
+        if (gc !== null) result.push(gc)
+      }
+      // Free-tier model rows by name
+      const gemmaRow = providerRows.find(
+        (r) => r.model !== null && r.model.toLowerCase().includes('gemma-4-31b')
+      )
+      if (gemmaRow !== undefined) {
+        const gg = makeQuotaBarGroup(
+          'gemma-4-31b free · monthly',
+          gemmaRow,
+          'monthly'
+        )
+        if (gg !== null) result.push(gg)
+      }
+      const qwenRow = providerRows.find(
+        (r) => r.model !== null && r.model.toLowerCase().includes('qwen3-coder')
+      )
+      if (qwenRow !== undefined) {
+        const gq = makeQuotaBarGroup(
+          'qwen3-coder free · monthly',
+          qwenRow,
+          'monthly'
+        )
+        if (gq !== null) result.push(gq)
+      }
+      break
+    }
+
+    default:
+      // Unknown provider: fall back to raw interval rendering
+      return buildQuotaIntervals(allQuotaRows, provider)
+  }
+
+  return result
+}
+
 // ---------------------------------------------------------------------------
 // computeFleetErrors lives in usage-report-display.ts (lib) so the helper
 // can be imported by both phosphor-dashboard and index.tsx without violating
@@ -756,7 +1034,21 @@ function buildModelRows(
   // across all repository buckets.
   // 15-B.2: normalise via canonicalProvider so 'google' rows in report.rows
   // always key as 'google' (not 'gemini'), matching providerStatusUsage keys.
-  const tokensByKey = new Map<string, { token_in: number; token_out: number }>()
+  //
+  // 20-PhosphorDash Fix ⚠-W19-2: also accumulate token_cache_input and
+  // token_cache_creation per provider+model so we can compute cache_pct.
+  // cache_pct = (cache_input + cache_creation) / token_in × 100.
+  // We use token_in (not token_total) as the denominator because cache tokens
+  // are measured relative to input tokens processed.
+  const tokensByKey = new Map<
+    string,
+    {
+      token_in: number
+      token_out: number
+      cache_input: number
+      cache_creation: number
+    }
+  >()
   for (const r of usageRows) {
     const p = canonicalProvider(r.provider ?? '')
     const m = (r.model ?? '').toLowerCase()
@@ -765,11 +1057,20 @@ function buildModelRows(
     const existing = tokensByKey.get(key)
     const tin = r.token_in ?? 0
     const tout = r.token_out ?? 0
+    const ci = r.token_cache_input ?? 0
+    const cc = r.token_cache_creation ?? 0
     if (existing === undefined) {
-      tokensByKey.set(key, { token_in: tin, token_out: tout })
+      tokensByKey.set(key, {
+        token_in: tin,
+        token_out: tout,
+        cache_input: ci,
+        cache_creation: cc,
+      })
     } else {
       existing.token_in += tin
       existing.token_out += tout
+      existing.cache_input += ci
+      existing.cache_creation += cc
     }
   }
 
@@ -878,6 +1179,15 @@ function buildModelRows(
     const tokens_in = tokenAgg?.token_in ?? Math.round(row.token_total * 0.6)
     const tokens_out = tokenAgg?.token_out ?? Math.round(row.token_total * 0.4)
 
+    // 20-PhosphorDash Fix ⚠-W19-2: compute cache_pct from aggregated cache
+    // tokens. Formula: (cache_input + cache_creation) / token_in × 100.
+    // Returns null (rendered as '—') when token_in is zero or data unavailable.
+    let cache_pct: number | null = null
+    if (tokenAgg !== undefined && tokenAgg.token_in > 0) {
+      const cacheTokens = tokenAgg.cache_input + tokenAgg.cache_creation
+      cache_pct = Math.round((cacheTokens / tokenAgg.token_in) * 1000) / 10
+    }
+
     // 15-B.5: look up quota consumed pct — prefer model-scoped key, then
     // provider-only fallback
     const modelQuotaKey = `${providerKey}::${modelKey}`
@@ -900,6 +1210,7 @@ function buildModelRows(
       cost_usd: row.usd_cost,
       cost_per_1k: Math.round(costPer1k * 10000) / 10000,
       quota_pct, // 15-B.5: wired from quota rows
+      cache_pct: cache_pct ?? undefined, // 20-PhosphorDash: null → undefined for optional field
       spark: [row.token_total],
     }
   })
@@ -972,6 +1283,12 @@ function buildTopModels(
   provider: string,
   healthRows: UsageReportProviderLatencyHealthRow[]
 ): TopModelRow[] {
+  // 20-PhosphorDash Fix ⚠-W19-1: canonicalize the target provider so that
+  // callers passing 'google' correctly match health rows stored as 'gemini'.
+  // Without this, all Google top-model .p95 cells render '0ms' despite real
+  // latency data being available in providerLatencyHealth.
+  const targetCanonical = canonicalProvider(provider)
+
   return rows
     .filter((r) => r.provider.toLowerCase() === provider.toLowerCase())
     .sort((a, b) => b.token_total - a.token_total)
@@ -980,11 +1297,12 @@ function buildTopModels(
       // Look up the most-recent health row with a non-null p95 for this
       // provider+model combination. healthRows are ordered bucket_start DESC
       // (newest first per 15-B.1), so the first match is the most recent.
-      const lowerProvider = provider.toLowerCase()
+      // canonicalProvider on the health row's provider handles the
+      // 'gemini' → 'google' alias transparently.
       const lowerModel = r.model.toLowerCase()
       const matchingHealthRow = healthRows.find(
         (h) =>
-          h.provider.toLowerCase() === lowerProvider &&
+          canonicalProvider(h.provider) === targetCanonical &&
           h.model.toLowerCase() === lowerModel &&
           h.upstream_p95_ms !== null
       )
@@ -1299,7 +1617,9 @@ export default function PhosphorDashboard({
                 report?.rows ?? []
               )
               const cells = padHealthCells(healthRows, provider)
-              const quotaIntervals = buildQuotaIntervals(quotaRows, provider)
+              // 20-PhosphorDash Operator F1: use buildQuotaRows for per-provider
+              // curated quota labels (e.g. 'all · 5h', 'gemini-pro · 24h').
+              const quotaIntervals = buildQuotaRows(provider, quotaRows)
               const topModels = buildTopModels(
                 providerStatusUsage,
                 provider,
