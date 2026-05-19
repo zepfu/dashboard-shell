@@ -107,7 +107,9 @@ test('test_quota_column_removed', () => {
 })
 
 test('test_cache_reasoning_columns_present', () => {
-  // Wave 26 (operator F#12): new columns must appear
+  // Wave 26 (operator F#12): cache miss columns must appear.
+  // Wave 29 Fix #7: reasoning_reported + reasoning_estimated consolidated into
+  // single "Reasoning" column; old separate columns must NOT appear.
   render(<MasterLedgerTable rows={mockRows} />)
   expect(
     screen.getByRole('columnheader', { name: /cache miss %/i })
@@ -115,12 +117,17 @@ test('test_cache_reasoning_columns_present', () => {
   expect(
     screen.getByRole('columnheader', { name: /cache miss \$/i })
   ).toBeInTheDocument()
+  // Consolidated Reasoning column
   expect(
-    screen.getByRole('columnheader', { name: /reasoning reported/i })
+    screen.getByRole('columnheader', { name: /^reasoning$/i })
   ).toBeInTheDocument()
+  // Old separate columns must not exist
   expect(
-    screen.getByRole('columnheader', { name: /reasoning estimated/i })
-  ).toBeInTheDocument()
+    screen.queryByRole('columnheader', { name: /reasoning reported/i })
+  ).toBeNull()
+  expect(
+    screen.queryByRole('columnheader', { name: /reasoning estimated/i })
+  ).toBeNull()
 })
 
 test('test_click_sort_descending', () => {
@@ -175,14 +182,12 @@ test('test_sparkline_column_renders_svg', () => {
 })
 
 test('test_renders_sparkline_caption', () => {
-  // Wave 20-Tables F5: mockup L2822 — caption text must match exactly
+  // Wave 29 Fix #9: caption removed per operator direction.
+  // The .table-caption element must NOT be present.
   const { container } = render(<MasterLedgerTable rows={mockRows} />)
 
   const caption = container.querySelector('.table-caption')
-  expect(caption).not.toBeNull()
-  expect(caption?.textContent?.trim()).toBe(
-    'sparkline: 24h hourly trend · tok/hr per model'
-  )
+  expect(caption).toBeNull()
 })
 
 test('test_4k_columns_have_responsive_class', () => {
