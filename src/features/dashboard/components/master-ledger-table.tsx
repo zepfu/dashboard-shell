@@ -18,6 +18,13 @@
  * - gutter color via .gutter-{hot,warm,teal,cool} CSS classes (14-F.2)
  * - .number className on numeric cells (14-F.1)
  * - .microbar class replacing .metric-microbar (14-F.1)
+ *
+ * Wave 18-Tables (§2.16 / §2.17 / §2.18):
+ * - Sparkline column header renamed Trend → 24h Tok/Hr (§2.18 / mockup L2844).
+ * - Quota% moved to col 16 (after fourKColumns, before sparkline) per spec
+ *   mockup L2843 (§2.16). Previously at col 11 in baseColumns.
+ * - Sparkline (24h Tok/Hr) moved to col 17 (before fiveKColumns) per spec
+ *   mockup L2844 (§2.17). Previously last at col 21.
  */
 import { useState, useMemo, type ReactElement } from 'react'
 import {
@@ -134,6 +141,8 @@ function numFmt(n: number, decimals = 0): string {
 // Column definitions
 // ---------------------------------------------------------------------------
 
+// Base columns (cols 1–10): Model … $/1k
+// Quota% is intentionally excluded here; it sits at col 16 per spec mockup L2843.
 const baseColumns = [
   helper.accessor('model', {
     header: 'Model',
@@ -175,6 +184,10 @@ const baseColumns = [
     header: '$/1k',
     cell: (info) => `$${numFmt(info.getValue() as number, 4)}`,
   }),
+]
+
+// Quota% at col 16 — after fourKColumns, before sparkline (mockup L2843)
+const quotaColumn = [
   helper.accessor('quota_pct', {
     header: 'Quota%',
     cell: (info) => `${numFmt(info.getValue() as number, 1)}%`,
@@ -271,18 +284,25 @@ const fiveKColumns = [
 const sparklineColumn = [
   {
     id: 'sparkline',
-    header: 'Trend',
+    header: '24h Tok/Hr',
     enableSorting: false,
     // Cell rendering is handled in MasterLedgerTable body to access severity color
     cell: () => null,
   },
 ]
 
+// Spec column order (mockup L2828-2848):
+//   baseColumns (cols 1–10: Model…$/1k)
+//   → fourKColumns (cols 11–15: $/1k In…Resets, col-4k-only)
+//   → quotaColumn (col 16: Quota%)
+//   → sparklineColumn (col 17: 24h Tok/Hr)
+//   → fiveKColumns (cols 18–21: TOOL/GIT commits/GIT pushes/INVAL, col-5k-only)
 const allColumns = [
   ...baseColumns,
   ...fourKColumns,
-  ...fiveKColumns,
+  ...quotaColumn,
   ...sparklineColumn,
+  ...fiveKColumns,
 ]
 
 // ---------------------------------------------------------------------------
