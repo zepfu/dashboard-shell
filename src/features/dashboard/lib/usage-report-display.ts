@@ -408,36 +408,21 @@ export function formatUsd(usd: number | null | undefined): string {
  *   null/undefined/empty → `—`
  */
 /**
- * Sums real error events across all provider latency health rows.
+ * Count of provider error observations across the API's 14-day window.
  *
- * Wave 15-B.6: replaces the hardcoded `errors: 0` in toKpiSummary (index.tsx).
- * Counts provider_error_events, provider_5xx_events, provider_timeout_events,
- * network_error_events, rate_limit_events (429s), and capacity_events (529s).
+ * Each row in `providerErrorObservations` is one discrete event (one 429, one
+ * 529, etc.) queried with `WHERE observed_at >= now() - interval '14 days'`
+ * and `LIMIT 2000 ORDER BY observed_at DESC`.  This replaces the previous
+ * 24 h-bounded sum over `providerLatencyHealth` aggregation buckets, which
+ * significantly under-counted high-frequency 429/529 storms.
  *
- * Usage in index.tsx (TODO 15-C):
- *   errors: computeFleetErrors(summaryReport?.providerLatencyHealth ?? [])
+ * Usage in index.tsx:
+ *   errors: computeFleetErrors(summaryReport?.providerErrorObservations ?? [])
  */
 export function computeFleetErrors(
-  healthRows: {
-    provider_error_events: number
-    provider_5xx_events: number
-    provider_timeout_events: number
-    network_error_events: number
-    rate_limit_events: number
-    capacity_events: number
-  }[]
+  observations: { observed_at: string | null }[]
 ): number {
-  return healthRows.reduce(
-    (s, r) =>
-      s +
-      r.provider_error_events +
-      r.provider_5xx_events +
-      r.provider_timeout_events +
-      r.network_error_events +
-      r.rate_limit_events +
-      r.capacity_events,
-    0
-  )
+  return observations.length
 }
 
 export function formatResetDistance(iso: string | null | undefined): string {
