@@ -45,6 +45,17 @@ test('test_renders_repository_rows', () => {
   expect(screen.getByText('dashboard-shell')).toBeInTheDocument()
 })
 
+test('test_renders_sparkline_caption', () => {
+  // Wave 20-Tables F5: mockup L3136 — caption text must match exactly
+  const { container } = render(<RepoBreakdownTable rows={mockRepos} />)
+
+  const caption = container.querySelector('.table-caption')
+  expect(caption).not.toBeNull()
+  expect(caption?.textContent?.trim()).toBe(
+    'sparkline: 24h hourly trend · tok/hr per repo'
+  )
+})
+
 test('test_sortable_by_tokens_descending', () => {
   render(<RepoBreakdownTable rows={mockRepos} />)
 
