@@ -1,23 +1,24 @@
 /**
  * ClientBreakdownTable — sortable TanStack Table for per-client usage.
  *
- * Renders a sticky-header, sortable table with Client, Version, Requests,
- * Tokens, Cost, and Sparkline columns. The Client <td> carries a data-client
- * attribute for testability and brand-colour lookups.
+ * Renders a sticky-header, sortable table with exactly 5 columns per spec:
+ * Client, Version, Requests, Tokens, Cost. The Client <td> carries a
+ * data-client attribute for testability and brand-colour lookups.
  *
  * Wave 11 PR6 (11-o):
  * - Client cells colored via CLIENT_BRAND_COLORS (C13).
- * - Metric-cell microbar overlays on Requests, Tokens, Cost (C14).
- * - New sparkline column at end, tinted by client brand color (C14).
  * - Amber uppercase thead with letter-spacing 0.05em.
  *
  * Wave 14-F refactor:
- * - metric-microbar → .microbar class with --microbar-fill var (14-F.1)
- * - Remove inline METRIC_CELL_CSS block (class now in index.css Wave 14-F block)
  * - .number className added to numeric td cells (14-F.1)
  * - th letter-spacing corrected to 0.04em (audit §15 deviation 9)
  * - Client section grid 120px 1fr at ≥1600px handled via index.css .client-section
  *   media query (14-F.4 — parent wrapper in phosphor-dashboard.tsx out of scope)
+ *
+ * Wave 18-Tables (§6.1 / §6.2):
+ * - Removed extra Trend/sparkline column — spec is 5 cols.
+ * - Removed metric-cell/microbar wrappers from Requests, Tokens, Cost — spec
+ *   renders plain numeric <td> values with neutral fg color.
  */
 import { useMemo, useState, type ReactElement } from 'react'
 import {
@@ -30,7 +31,6 @@ import {
 } from '@tanstack/react-table'
 import { CLIENT_BRAND_COLORS } from '../lib/client-brand-colors'
 import { formatUsd } from '../lib/usage-report-display'
-import { Sparkline } from './primitives/sparkline'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -43,8 +43,6 @@ export interface ClientRow {
   requests: number
   tokens: number
   cost_usd: number
-  /** Optional sparkline data points for trend column. */
-  spark?: number[]
 }
 
 // ---------------------------------------------------------------------------
@@ -69,29 +67,19 @@ export interface ClientBreakdownTableProps {
 }
 
 /**
- * ClientBreakdownTable renders a sortable sticky-header table of client
- * usage statistics with brand-colored client cells, microbar overlays via
- * .microbar class (14-F.1), and a sparkline trend column.
+ * ClientBreakdownTable renders a sortable sticky-header table of client usage
+ * statistics with brand-colored client cells and 5 columns per spec:
+ * Client, Version, Requests, Tokens, Cost (§6.1 — no sparkline).
+ * Numeric cells are plain values without microbar overlays (§6.2).
  */
 export function ClientBreakdownTable({
   rows,
 }: ClientBreakdownTableProps): ReactElement {
   const [sorting, setSorting] = useState<SortingState>([])
 
-  // Compute column-level maxima for microbar scaling
-  const maxRequests = useMemo(
-    () => Math.max(1, ...rows.map((r) => r.requests)),
-    [rows]
-  )
-  const maxTokens = useMemo(
-    () => Math.max(1, ...rows.map((r) => r.tokens)),
-    [rows]
-  )
-  const maxCost = useMemo(
-    () => Math.max(1, ...rows.map((r) => r.cost_usd)),
-    [rows]
-  )
-
+  // §6.1: spec is 5 columns — Client, Version, Requests, Tokens, Cost.
+  // §6.2: no microbars on any numeric cell (plain <td> per mockup L3264-3266).
+  // Sparkline/Trend column removed entirely.
   const columns = useMemo(
     () => [
       helper.display({
@@ -114,85 +102,23 @@ export function ClientBreakdownTable({
         header: 'Version',
         cell: (info) => info.getValue() as string,
       }),
+      // §6.2: plain numeric value — no metric-cell/microbar wrapper
       helper.accessor('requests', {
         header: 'Requests',
-        cell: (info) => {
-          const val = info.getValue() as number
-          const fillPct = (val / maxRequests) * 100
-          return (
-            <div className='metric-cell'>
-              <span style={{ color: 'var(--accent-cool)' }}>{numFmt(val)}</span>
-              <span
-                className='microbar'
-                style={
-                  {
-                    '--microbar-fill': `${fillPct.toFixed(1)}%`,
-                  } as React.CSSProperties
-                }
-              />
-            </div>
-          )
-        },
+        cell: (info) => numFmt(info.getValue() as number),
       }),
+      // §6.2: plain numeric value — no metric-cell/microbar wrapper
       helper.accessor('tokens', {
         header: 'Tokens',
-        cell: (info) => {
-          const val = info.getValue() as number
-          const fillPct = (val / maxTokens) * 100
-          return (
-            <div className='metric-cell'>
-              <span style={{ color: 'var(--accent-cool)' }}>{numFmt(val)}</span>
-              <span
-                className='microbar'
-                style={
-                  {
-                    '--microbar-fill': `${fillPct.toFixed(1)}%`,
-                  } as React.CSSProperties
-                }
-              />
-            </div>
-          )
-        },
+        cell: (info) => numFmt(info.getValue() as number),
       }),
+      // §6.2: plain numeric value, neutral color — no metric-cell/microbar/severity
       helper.accessor('cost_usd', {
         header: 'Cost',
-        cell: (info) => {
-          const val = info.getValue() as number
-          const fillPct = (val / maxCost) * 100
-          const costColor =
-            val > 5.0
-              ? 'var(--accent-hot)'
-              : val > 1.0
-                ? 'var(--accent-warm)'
-                : 'var(--accent-cool)'
-          return (
-            <div className='metric-cell'>
-              <span style={{ color: costColor }}>{formatUsd(val)}</span>
-              <span
-                className='microbar'
-                style={
-                  {
-                    '--microbar-fill': `${fillPct.toFixed(1)}%`,
-                  } as React.CSSProperties
-                }
-              />
-            </div>
-          )
-        },
-      }),
-      // Sparkline column — tinted by client brand color
-      helper.display({
-        id: 'sparkline',
-        header: 'Trend',
-        cell: ({ row }) => {
-          const sparkData = row.original.spark ?? [row.original.tokens]
-          const sparkColor =
-            CLIENT_BRAND_COLORS[row.original.client] ?? 'var(--accent-cool)'
-          return <Sparkline data={sparkData} color={sparkColor} />
-        },
+        cell: (info) => formatUsd(info.getValue() as number),
       }),
     ],
-    [maxRequests, maxTokens, maxCost]
+    []
   )
 
   const table = useReactTable({
@@ -307,10 +233,9 @@ export function ClientBreakdownTable({
               {row.getVisibleCells().map((cell) => {
                 // Attach data-client to the <td> for the client column
                 const isClientCol = cell.column.id === 'client'
+                // Text columns (left-aligned, no .number class): client, version
                 const isText =
-                  cell.column.id === 'client' ||
-                  cell.column.id === 'version' ||
-                  cell.column.id === 'sparkline'
+                  cell.column.id === 'client' || cell.column.id === 'version'
 
                 // 14-F.1: .number className on numeric cells
                 const tdClassName = !isText ? 'number' : undefined
