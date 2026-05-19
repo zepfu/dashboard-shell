@@ -646,8 +646,13 @@ export function ProviderCard({
                   quotaBar.tipModels.length > 0
                     ? quotaBar.tipModels.slice(0, 3)
                     : []
+                // HoverTooltip (variant='quota') already wraps content in its
+                // own <div className='v9-tip tip-above tip-quota'>. Pass the
+                // inner elements directly so we don't double-wrap and produce
+                // an empty amber-bordered shell around the real content.
+                // (Critical #3 from .analysis/wave32-principal-deep-audit.md)
                 const tooltipContent = (
-                  <div className='v9-tip tip-quota tip-hover'>
+                  <>
                     {/* Head: "{window} · {pct}% used" */}
                     <div className='v9-tip-head'>{tipHeadLabel}</div>
                     {/* Sub: velocity line e.g. "+5%/30m  ≈  +9%/h" */}
@@ -677,7 +682,7 @@ export function ProviderCard({
                         <span className='t-count'>—</span>
                       </div>
                     )}
-                  </div>
+                  </>
                 )
                 return (
                   <div key={i}>
