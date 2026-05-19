@@ -1275,3 +1275,263 @@ tbody tr {
    defined at line 391-392 (present since Wave 14). S2-1 is already satisfied.   */
 
 /* End Wave 15-A */
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Wave 15-D: SlicerBar — multi-dimension filter controls
+   ═══════════════════════════════════════════════════════════════════════════
+   Phosphor mono/amber aesthetic: compact 10px controls, card-2 backgrounds,
+   accent-chrome for active states, chip pills with × removal.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* ── Slicer bar wrapper ─────────────────────────────────────────────────── */
+.slicer-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 6px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  padding: 6px 10px;
+  position: relative;
+}
+
+.slicer-bar-label {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--fg-muted);
+  align-self: center;
+  opacity: 0.7;
+  margin-right: 2px;
+}
+
+/* ── Individual dimension container ─────────────────────────────────────── */
+.slicer-dimension {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+/* ── Trigger button ──────────────────────────────────────────────────────── */
+.slicer-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--card-2);
+  border: 1px solid var(--border);
+  color: var(--fg-muted);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: 3px 6px;
+  cursor: pointer;
+  transition:
+    border-color 80ms,
+    color 80ms;
+  white-space: nowrap;
+}
+
+.slicer-trigger:hover {
+  border-color: var(--accent-chrome);
+  color: var(--fg);
+}
+
+.slicer-trigger--active {
+  border-color: var(--accent-chrome);
+  color: var(--accent-chrome);
+  border-bottom: 2px solid var(--accent-chrome);
+}
+
+.slicer-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 14px;
+  height: 14px;
+  background: var(--accent-chrome);
+  color: var(--bg);
+  border-radius: 7px;
+  font-size: 8px;
+  font-family: var(--font-mono);
+  padding: 0 3px;
+  font-weight: 700;
+}
+
+.slicer-caret {
+  font-size: 8px;
+  opacity: 0.7;
+}
+
+/* ── Chip row ────────────────────────────────────────────────────────────── */
+.slicer-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  max-width: 200px;
+}
+
+.slicer-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  background: var(--card-2);
+  border: 1px solid var(--border);
+  padding: 1px 5px;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--accent-chrome);
+  text-transform: lowercase;
+  white-space: nowrap;
+  max-width: 120px;
+}
+
+.slicer-chip-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 90px;
+}
+
+.slicer-chip-remove {
+  background: none;
+  border: none;
+  color: var(--fg-muted);
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 1;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  transition: color 80ms;
+}
+
+.slicer-chip-remove:hover {
+  color: var(--accent-hot);
+}
+
+/* ── Dropdown panel ──────────────────────────────────────────────────────── */
+.slicer-dropdown {
+  position: absolute;
+  top: calc(100% + 2px);
+  left: 0;
+  z-index: 200;
+  background: var(--card);
+  border: 1px solid var(--border);
+  min-width: 160px;
+  max-width: 260px;
+  max-height: 220px;
+  overflow-y: auto;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+}
+
+.slicer-dropdown-header {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.slicer-clear-btn {
+  background: none;
+  border: none;
+  color: var(--fg-muted);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  cursor: pointer;
+  padding: 1px 4px;
+  transition: color 80ms;
+}
+
+.slicer-clear-btn:hover:not(:disabled) {
+  color: var(--accent-hot);
+}
+
+.slicer-clear-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.slicer-empty {
+  padding: 8px;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--fg-muted);
+  text-align: center;
+}
+
+/* ── Option list ─────────────────────────────────────────────────────────── */
+.slicer-option-list {
+  list-style: none;
+  margin: 0;
+  padding: 2px 0;
+}
+
+.slicer-option {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--fg-muted);
+  transition:
+    background 60ms,
+    color 60ms;
+}
+
+.slicer-option:hover,
+.slicer-option:focus {
+  background: var(--card-2);
+  color: var(--fg);
+  outline: none;
+}
+
+.slicer-option--selected {
+  color: var(--fg);
+  background: color-mix(in srgb, var(--accent-chrome) 12%, transparent);
+}
+
+.slicer-option-check {
+  font-size: 9px;
+  width: 12px;
+  text-align: center;
+  color: var(--accent-chrome);
+  flex-shrink: 0;
+}
+
+.slicer-option-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── Global clear-all button ─────────────────────────────────────────────── */
+.slicer-clear-all-btn {
+  align-self: center;
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--fg-muted);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 3px 6px;
+  cursor: pointer;
+  transition:
+    border-color 80ms,
+    color 80ms;
+  margin-left: auto;
+}
+
+.slicer-clear-all-btn:hover {
+  border-color: var(--accent-hot);
+  color: var(--accent-hot);
+}
+
+/* End Wave 15-D */
