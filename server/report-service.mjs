@@ -826,8 +826,7 @@ WITH normalized AS (
         ri.remaining_pct,
         ri.fromDate AS interval_start
     FROM public.rate_limit_intervals ri
-    WHERE lower(COALESCE(ri.provider, 'unknown')) NOT LIKE 'openai%'
-      AND ri.quota_type IN ('weekly', 'weekly_special', 'requests', 'monthly')
+    WHERE ri.quota_type IN ('weekly', 'weekly_special', 'requests', 'monthly')
       AND ri.expected_reset_at IS NOT NULL
       AND ri.expected_reset_at >= $1::timestamptz
       AND ri.expected_reset_at < $2::timestamptz
