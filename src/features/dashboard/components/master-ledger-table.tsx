@@ -536,6 +536,10 @@ export function MasterLedgerTable({
     () => Math.max(1, ...rows.map((r) => r.cost_usd)),
     [rows]
   )
+  const maxCacheToks = useMemo(
+    () => Math.max(1, ...rows.map((r) => r.cache_toks ?? 0)),
+    [rows]
+  )
 
   const table = useReactTable({
     data: rows,
@@ -812,6 +816,31 @@ export function MasterLedgerTable({
                           className='microbar'
                           title={`${fillPct.toFixed(1)}% of max tokens out`}
                           aria-label={`${fillPct.toFixed(1)}% of max tokens out`}
+                          style={
+                            {
+                              '--microbar-fill': `${fillPct.toFixed(1)}%`,
+                            } as React.CSSProperties
+                          }
+                        />
+                      </div>
+                    )
+                  } else if (colId === 'cache_toks') {
+                    // ⚠9 fix: microbar proportional to column max (matching sibling token columns)
+                    cellColor = 'var(--accent-cool)'
+                    const fillPct =
+                      ((orig.cache_toks ?? 0) / maxCacheToks) * 100
+                    cellContent = (
+                      <div className='metric-cell'>
+                        <span>
+                          {flexRender(
+                            cell.column.columnDef.cell,
+                            cell.getContext()
+                          )}
+                        </span>
+                        <span
+                          className='microbar'
+                          title={`${fillPct.toFixed(1)}% of max cache toks`}
+                          aria-label={`${fillPct.toFixed(1)}% of max cache toks`}
                           style={
                             {
                               '--microbar-fill': `${fillPct.toFixed(1)}%`,
