@@ -305,13 +305,12 @@ export interface UsageReportQuotasResponse {
 export async function fetchUsageReport(
   params: UsageReportParams
 ): Promise<UsageReportResponse> {
-  // 15-B.9: Increased from 500 to 5000 to reduce row-aggregation undercounting
-  // for ≥30-day periods (audit found ~70 % undercount at limit=500 for 30d).
-  // The server enforces a hard cap of 500 rows per query. To get more data
-  // we would need server-side pagination support. Until that is implemented,
-  // using the server maximum (500) is the best we can do client-side.
-  // TODO(15-B.9): Implement server-side pagination when backend supports it.
-  // For now, 500 is the server-enforced cap; this comment documents the gap.
+  // Wave 24-D30: raised limit from 500 to 50000 to fix 30-day undercounting.
+  // At 30-day daily grain with provider+model+repository groupBy, row count
+  // exceeds 500 causing ~70% undercount in per-row surfaces (Master Ledger,
+  // Repo Breakdown, Slicer Repo Options). The server MAX_LIMIT is now 50000.
+  // Aggregate/KPI surfaces use report.summary and were always correct.
+  // Future work: server-side pagination would be more scalable.
   const searchParams = new URLSearchParams({
     from: params.from,
     to: params.to,
@@ -319,7 +318,7 @@ export async function fetchUsageReport(
     group_by:
       params.groupBy?.join(',') ??
       'environment,client,repository,provider_model',
-    limit: '500',
+    limit: '50000',
     sort: 'period_end',
   })
 

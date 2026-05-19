@@ -24,7 +24,13 @@ const AAWM_TAP_ADMIN_CAPABILITY = envSecret(
   'VITE_TAP_ADMIN_CAPABILITY'
 )
 const DEFAULT_GROUP_BY = ['environment', 'client', 'repository', 'provider_model']
-const MAX_LIMIT = 500
+// Wave 24-D30: raised from 500 to 50000 to fix 30-day undercounting.
+// At 30-day daily grain with provider+model+repository groupBy, row count
+// exceeds 500. The aggregate-level surfaces (KPI strip, Aggregate Card)
+// use report.summary and were always correct; this raise fixes the
+// per-row surfaces (Master Ledger, Repo Breakdown, Slicer Repo Options).
+// Future work: server-side pagination would be more scalable.
+const MAX_LIMIT = 50000
 const MAX_CLIENT_ROWS = 250
 const HEALTH_WINDOW_HOURS = Math.max(
   1,
