@@ -929,6 +929,140 @@ function buildFreshnessQuery() {
   }
 }
 
+// Wave 33: per-(provider, model) tool-activity breakdown.
+// CTE 1 (outer_counts): raw call counts keyed by (provider, model, tool_kind, tool_name).
+// CTE 2 (shell_labels): normalized command labels for tool_kind='command' rows,
+//   skipping noise tokens and stripping flag-only second words.
+// Final SELECT emits two kinds of rows:
+//   kind='outer' — one row per (provider, model, tool_name)
+//   kind='shell' — one row per (provider, model, cmd_label) for command rows
+// Both are filtered to the caller's from/to date window via session_history.created_at.
+function buildToolActivityQuery(searchParams) {
+  const from = parseDateParam(searchParams.get('from'), defaultFromDate)
+  const to = parseDateParam(searchParams.get('to'), defaultToDate)
+  const values = [from, to]
+
+  // Inline the same provider-normalisation CASE that providerDimension uses,
+  // but referenced against sh.provider (the authoritative join column).
+  const providerExpr = `
+CASE
+    WHEN lower(COALESCE(sh.provider, 'unknown')) IN ('google', 'gemini') THEN 'google'
+    WHEN lower(COALESCE(sh.provider, 'unknown')) IN ('xai', 'x.ai') THEN 'xai'
+    WHEN lower(COALESCE(sh.provider, 'unknown')) LIKE 'xai/%' THEN 'xai'
+    WHEN lower(COALESCE(sh.provider, 'unknown')) = 'nvidia' THEN 'nvidia_nim'
+    WHEN lower(COALESCE(sh.provider, 'unknown')) LIKE 'nvidia_nim/%' THEN 'nvidia_nim'
+    WHEN lower(COALESCE(sh.provider, 'unknown')) LIKE 'nvidia/%' THEN 'nvidia_nim'
+    WHEN lower(COALESCE(sh.provider, 'unknown')) LIKE 'local/%' THEN 'local'
+    WHEN lower(COALESCE(sh.provider, 'unknown')) LIKE 'local_%' THEN 'local'
+    ELSE COALESCE(sh.provider, 'unknown')
+END`
+
+  const sql = `
+WITH outer_counts AS (
+    SELECT
+        ${providerExpr} AS provider,
+        COALESCE(sh.model, 'unknown') AS model,
+        COALESCE(a.tool_kind, 'other') AS tool_kind,
+        a.tool_name,
+        COUNT(*)::bigint AS calls
+    FROM public.session_history_tool_activity a
+    JOIN public.session_history sh ON a.litellm_call_id = sh.litellm_call_id
+    WHERE (sh.created_at AT TIME ZONE 'America/New_York')::date >= $1::date
+      AND (sh.created_at AT TIME ZONE 'America/New_York')::date < $2::date
+    GROUP BY
+        ${providerExpr},
+        COALESCE(sh.model, 'unknown'),
+        COALESCE(a.tool_kind, 'other'),
+        a.tool_name
+),
+shell_labels AS (
+    SELECT
+        ${providerExpr} AS provider,
+        COALESCE(sh.model, 'unknown') AS model,
+        trim(
+            CASE
+                WHEN lower(split_part(trim(a.command_text), ' ', 1)) IN (
+                    'git','npm','pnpm','yarn','docker','kubectl','gh','pip',
+                    'poetry','uv','brew','apt','apt-get','systemctl','pytest',
+                    'make','aws','gcloud','terraform'
+                )
+                THEN lower(split_part(trim(a.command_text), ' ', 1))
+                     || ' '
+                     || lower(NULLIF(
+                            regexp_replace(
+                                split_part(trim(a.command_text), ' ', 2),
+                                '^-.*$', '', 'g'
+                            ),
+                            ''
+                        ))
+                ELSE lower(split_part(trim(a.command_text), ' ', 1))
+            END
+        ) AS cmd_label,
+        COUNT(*)::bigint AS calls
+    FROM public.session_history_tool_activity a
+    JOIN public.session_history sh ON a.litellm_call_id = sh.litellm_call_id
+    WHERE (sh.created_at AT TIME ZONE 'America/New_York')::date >= $1::date
+      AND (sh.created_at AT TIME ZONE 'America/New_York')::date < $2::date
+      AND a.tool_kind = 'command'
+      AND a.command_text IS NOT NULL
+      AND a.command_text <> ''
+      AND lower(split_part(trim(a.command_text), ' ', 1)) NOT IN (
+          'cd','pwd','echo',':','true','false','exit'
+      )
+    GROUP BY
+        ${providerExpr},
+        COALESCE(sh.model, 'unknown'),
+        trim(
+            CASE
+                WHEN lower(split_part(trim(a.command_text), ' ', 1)) IN (
+                    'git','npm','pnpm','yarn','docker','kubectl','gh','pip',
+                    'poetry','uv','brew','apt','apt-get','systemctl','pytest',
+                    'make','aws','gcloud','terraform'
+                )
+                THEN lower(split_part(trim(a.command_text), ' ', 1))
+                     || ' '
+                     || lower(NULLIF(
+                            regexp_replace(
+                                split_part(trim(a.command_text), ' ', 2),
+                                '^-.*$', '', 'g'
+                            ),
+                            ''
+                        ))
+                ELSE lower(split_part(trim(a.command_text), ' ', 1))
+            END
+        )
+)
+SELECT
+    provider,
+    model,
+    'outer' AS kind,
+    tool_name AS label,
+    calls
+FROM outer_counts
+UNION ALL
+SELECT
+    provider,
+    model,
+    'shell' AS kind,
+    cmd_label AS label,
+    calls
+FROM shell_labels
+ORDER BY provider ASC, model ASC, kind ASC, calls DESC;
+`
+
+  return { sql, values }
+}
+
+function normalizeToolActivityRow(row) {
+  return {
+    provider: row.provider ?? 'unknown',
+    model: row.model ?? 'unknown',
+    kind: row.kind,
+    label: row.label,
+    calls: normalizeNumber(row.calls) ?? 0,
+  }
+}
+
 async function loadQuotaReport() {
   return cachedReport('quotas', async () => {
     const quotaQuery = buildQuotaQuery()
@@ -1456,6 +1590,7 @@ async function handleUsageReport(req, res) {
     const providerErrorObservationQuery = buildProviderErrorObservationQuery()
     const providerStatusUsageQuery = buildProviderStatusUsageQuery(requestUrl.searchParams)
     const quotaHistoryQuery = buildQuotaHistoryQuery(requestUrl.searchParams)
+    const toolActivityQuery = buildToolActivityQuery(requestUrl.searchParams)
     const quotaReportPromise = loadQuotaReport()
 
     const [
@@ -1467,6 +1602,7 @@ async function handleUsageReport(req, res) {
       providerErrorObservationResult,
       providerStatusUsageResult,
       quotaHistoryResult,
+      toolActivityResult,
       quotaReport,
     ] = await Promise.all([
       pool.query(sql, values),
@@ -1483,6 +1619,7 @@ async function handleUsageReport(req, res) {
       ),
       pool.query(providerStatusUsageQuery.sql, providerStatusUsageQuery.values),
       pool.query(quotaHistoryQuery.sql, quotaHistoryQuery.values),
+      pool.query(toolActivityQuery.sql, toolActivityQuery.values),
       quotaReportPromise,
     ])
 
@@ -1509,6 +1646,7 @@ async function handleUsageReport(req, res) {
       ),
       quotas: quotaReport.quotas,
       quotaHistory: quotaHistoryResult.rows.map(normalizeQuotaHistoryRow),
+      toolActivity: toolActivityResult.rows.map(normalizeToolActivityRow),
       rows,
     }
   })
