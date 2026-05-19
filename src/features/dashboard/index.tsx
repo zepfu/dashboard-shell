@@ -63,8 +63,9 @@ function defaultDateRange(): { from: string; to: string } {
   const from = new Date(
     Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - 30)
   )
+  // Server uses exclusive upper bound `< $2::date`; add 1 day so today's data is included.
   const to = new Date(
-    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1)
   )
   return {
     from: from.toISOString().slice(0, 10),
