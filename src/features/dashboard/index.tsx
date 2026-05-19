@@ -225,10 +225,11 @@ export function Dashboard(): ReactElement {
     [summaryReport?.providerLatencyHealth]
   )
 
-  // 15-C.1: Real error count from all provider health rows (replaces hardcoded 0).
+  // 15-C.1 / Wave 31: Real error count from 14-day per-event observations
+  // (replaces 24 h-bounded providerLatencyHealth aggregate sum).
   const fleetErrors = useMemo(
-    () => computeFleetErrors(summaryReport?.providerLatencyHealth ?? []),
-    [summaryReport?.providerLatencyHealth]
+    () => computeFleetErrors(summaryReport?.providerErrorObservations ?? []),
+    [summaryReport?.providerErrorObservations]
   )
 
   const kpiSummary = useMemo(
