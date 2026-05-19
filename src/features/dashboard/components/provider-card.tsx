@@ -106,6 +106,8 @@ export interface TopModelRow {
   tokens: number
   cost_usd: number
   requests: number
+  /** Upstream P95 latency in ms; null when no matching health row. */
+  p95_ms?: number | null
   sparkline?: number[]
 }
 
@@ -427,11 +429,19 @@ export function ProviderCard({
       {/* Header: provider name
           14-C.1: color is var(--accent-chrome) per mockup line 1047 (not brand hex).
           14-C.2: no fontSize — inherits clamp(10px, 0.55vw, 14px) from .provider-card.
+          18-Cards: aggregate variant uses var(--fg) per mockup L980-982. Omit inline
+          color when aggregate so the CSS rule `.provider-card.aggregate .provider-name
+          { color: var(--fg) !important }` from W18-CSS can take effect.
       */}
       <div
         className='provider-name'
         style={{
-          color: 'var(--accent-chrome)',
+          // Only set the inline accent color for non-aggregate cards.
+          // Aggregate cards have wrapperClassName='aggregate' and mockup L980-982
+          // specifies color: var(--fg) for that variant — handled via CSS class.
+          ...(wrapperClassName !== 'aggregate' && {
+            color: 'var(--accent-chrome)',
+          }),
           fontWeight: 600,
           textTransform: 'uppercase',
           marginBottom: '6px',
@@ -763,10 +773,16 @@ export function ProviderCard({
                   fontSize: '9.5px',
                 }}
               >
-                {m.requests.toLocaleString()}
+                {formatLatency(m.p95_ms ?? 0)}
               </span>
             </div>
           ))}
+          {/* 18-Cards C4: errors-row-only-5k — hidden by default, revealed at ≥5120px
+              via `.errors-row-only-5k { display: none }` + `@media (min-width:5120px)
+              { .errors-row-only-5k { display: grid } }` added by W18-CSS engineer. */}
+          <div className='model-mini-row errors errors-row-only-5k'>
+            <span className='name'>{`${data.errors.toLocaleString()} errors`}</span>
+          </div>
         </div>
       )}
     </div>

@@ -956,6 +956,10 @@ function buildClientRows(
 /**
  * Builds TopModelRow[] for ProviderCard card-pane-right at 4K.
  * Groups providerStatusUsage by provider+model and returns top 3 by tokens.
+ *
+ * Wave 18-Cards C3: populates `p95_ms` from the latest non-null
+ * `upstream_p95_ms` in `healthRows` matching provider+model, fixing the
+ * prior bug where the `.p95` cell displayed request count instead of latency.
  */
 function buildTopModels(
   rows: {
@@ -965,18 +969,33 @@ function buildTopModels(
     usd_cost: number
     traces: number
   }[],
-  provider: string
+  provider: string,
+  healthRows: UsageReportProviderLatencyHealthRow[]
 ): TopModelRow[] {
   return rows
     .filter((r) => r.provider.toLowerCase() === provider.toLowerCase())
     .sort((a, b) => b.token_total - a.token_total)
     .slice(0, 3)
-    .map((r) => ({
-      model: r.model,
-      tokens: r.token_total,
-      cost_usd: r.usd_cost,
-      requests: r.traces,
-    }))
+    .map((r) => {
+      // Look up the most-recent health row with a non-null p95 for this
+      // provider+model combination. healthRows are ordered bucket_start DESC
+      // (newest first per 15-B.1), so the first match is the most recent.
+      const lowerProvider = provider.toLowerCase()
+      const lowerModel = r.model.toLowerCase()
+      const matchingHealthRow = healthRows.find(
+        (h) =>
+          h.provider.toLowerCase() === lowerProvider &&
+          h.model.toLowerCase() === lowerModel &&
+          h.upstream_p95_ms !== null
+      )
+      return {
+        model: r.model,
+        tokens: r.token_total,
+        cost_usd: r.usd_cost,
+        requests: r.traces,
+        p95_ms: matchingHealthRow?.upstream_p95_ms ?? null,
+      }
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1281,7 +1300,11 @@ export default function PhosphorDashboard({
               )
               const cells = padHealthCells(healthRows, provider)
               const quotaIntervals = buildQuotaIntervals(quotaRows, provider)
-              const topModels = buildTopModels(providerStatusUsage, provider)
+              const topModels = buildTopModels(
+                providerStatusUsage,
+                provider,
+                healthRows
+              )
 
               return (
                 <ProviderCard
@@ -1451,7 +1474,11 @@ export default function PhosphorDashboard({
         <SectionTitle id='section-comparison-heading'>
           Provider Comparison
         </SectionTitle>
-        <ComparisonPanel providers={providers} modelRows={modelRows} />
+        <ComparisonPanel
+          providers={providers}
+          modelRows={modelRows}
+          trendBuckets={trendData}
+        />
       </section>
     </div>
   )
