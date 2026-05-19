@@ -16,7 +16,11 @@
  * - F8: .t-model spans in quota tooltip use providerBrandHex() color.
  */
 import { render, screen } from '@testing-library/react'
-import { ProviderCard } from './provider-card'
+import {
+  ProviderCard,
+  type QuotaBarGroup,
+  type QuotaRowConfig,
+} from './provider-card'
 
 // ---------------------------------------------------------------------------
 // Minimal fixtures
@@ -344,31 +348,41 @@ test('test_provider_card_quota_tip_model_has_brand_color', () => {
 })
 
 // ---------------------------------------------------------------------------
-// W32 — historical reset bar tests
+// W32 (full-parity) — historical reset bar tests
 // ---------------------------------------------------------------------------
 
 /**
- * W32: ProviderCard renders additional quota bars for historical resets.
+ * W32 full-parity: ProviderCard renders additional quota bars for historical
+ * resets at IDENTICAL visual weight to current bars — no opacity reduction.
  *
- * When quotas[] includes bars with isHistorical=true (produced by
- * buildHistoryBarsForProvider in phosphor-dashboard), those bars should
- * appear in the quota list alongside the current bar.
+ * Historical bars are produced by buildHistoryBarsForProvider and have the
+ * same 12-segment fill shape as current bars. The `isHistorical` field has
+ * been removed; there is no longer any visual differentiation.
  */
-test('test_provider_card_renders_historical_bars_with_reduced_opacity', () => {
-  const currentBar = {
+test('test_provider_card_renders_historical_bars_identical_to_current', () => {
+  const makeFullSegments = (): QuotaRowConfig[] =>
+    Array.from({ length: 12 }, (_, i) => ({
+      widthPct: 100 / 12,
+      severityClass: i < 10 ? 'iv-50-p' : i === 10 ? 'iv-5-10' : 'iv-0-5',
+      highVelocity: i === 10,
+    }))
+
+  const currentBar: QuotaBarGroup = {
     label: 'all · 7d',
     consumedPct: 40,
     remainingPct: 60,
     resetAt: '2026-05-19T00:00:00Z',
     segments: makeSegments(),
   }
-  const historicalBar = {
+  // Historical bar uses full 12-segment segments (full parity).
+  const historicalBar: QuotaBarGroup = {
     label: 'all · 2026-05-12 00:00',
     consumedPct: 88,
     remainingPct: 12,
     resetAt: '2026-05-12T00:00:00Z',
-    segments: [{ widthPct: 88, severityClass: 'iv-50-p', highVelocity: false }],
-    isHistorical: true,
+    segments: makeFullSegments(),
+    tipWindow: 'Sun 5/11 → Sun 5/18',
+    tipModels: [{ model: 'claude-3-5-sonnet', costDelta: '$4.20' }],
   }
 
   const { container } = render(
@@ -381,22 +395,34 @@ test('test_provider_card_renders_historical_bars_with_reduced_opacity', () => {
   )
 
   // Should render 2 quota bars total (1 current + 1 historical).
-  // Each QuotaBarGroup renders one .quota-row-bar.
   const bars = container.querySelectorAll('.quota-row-bar')
   expect(bars.length).toBe(2)
+
+  // Historical bar wrapper must have no inline opacity style.
+  const wrappers = container.querySelectorAll('.quota-row')
+  const opacitySet = Array.from(wrappers).some(
+    (el) => (el as HTMLElement).style.opacity !== ''
+  )
+  expect(opacitySet).toBe(false)
 })
 
-test('test_provider_card_historical_bar_single_segment', () => {
-  // Historical bars use a single fill segment (not 12-segment gradient).
-  const historicalBar = {
+test('test_provider_card_historical_bar_uses_12_segments', () => {
+  // Full-parity: historical bars must render 12 quota-interval segments,
+  // identical to current bars produced by buildQuotaSegments().
+  const makeFullSegments = (): QuotaRowConfig[] =>
+    Array.from({ length: 12 }, (_, i) => ({
+      widthPct: 100 / 12,
+      severityClass: i < 6 ? 'iv-50-p' : i === 6 ? 'iv-5-10' : 'iv-0-5',
+      highVelocity: i === 6,
+    }))
+
+  const historicalBar: QuotaBarGroup = {
     label: 'all · 2026-05-12 00:00',
     consumedPct: 75,
     remainingPct: 25,
     resetAt: '2026-05-12T00:00:00Z',
-    segments: [
-      { widthPct: 75, severityClass: 'iv-25-50', highVelocity: false },
-    ],
-    isHistorical: true,
+    segments: makeFullSegments(),
+    tipWindow: 'Sun 5/11 → Sun 5/18',
   }
 
   const { container } = render(
@@ -408,9 +434,9 @@ test('test_provider_card_historical_bar_single_segment', () => {
     />
   )
 
-  // Exactly 1 quota-interval element inside the single bar.
+  // Exactly 12 quota-interval elements — same as a current bar.
   const intervals = container.querySelectorAll('.quota-interval')
-  expect(intervals.length).toBe(1)
+  expect(intervals.length).toBe(12)
 })
 
 test('test_provider_card_historical_bars_do_not_break_empty_quotaHistory', () => {
