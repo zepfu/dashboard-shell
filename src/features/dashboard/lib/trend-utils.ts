@@ -6,6 +6,7 @@
  */
 import type { UsageReportTrendRow } from '../api/usage-report'
 import type { TrendBucket } from '../components/token-trend-chart'
+import { canonicalProvider } from './usage-report-display'
 
 // ---------------------------------------------------------------------------
 // normalizeTrendData
@@ -17,6 +18,13 @@ const TREND_BUCKET_COUNT = 24
 /**
  * normalizeTrendData groups UsageReportTrendRow records by bucket_start,
  * summing per-provider token counts into a totals map per bucket.
+ *
+ * Provider names are normalised through {@link canonicalProvider} before keying
+ * into the totals map so that raw API variants such as `'x.ai'`, `'gemini'`, or
+ * `'nvidia'` are collapsed to their canonical forms (`'xai'`, `'google'`,
+ * `'nvidia_nim'`). This ensures that the chart series keys always find their
+ * matching entries in `TrendBucket.totals` regardless of which variant the
+ * upstream data source emits.
  *
  * The result is always padded (or truncated) to exactly {@link TREND_BUCKET_COUNT}
  * buckets so that the TokenTrendChart always renders ~24 narrow bars regardless
@@ -37,11 +45,15 @@ export function normalizeTrendData(rows: UsageReportTrendRow[]): TrendBucket[] {
 
   for (const row of rows) {
     const key = row.bucket
+    // Normalise provider name so variant spellings ('x.ai', 'gemini', 'nvidia')
+    // collapse to their canonical forms ('xai', 'google', 'nvidia_nim') and
+    // match the keys used in PROVIDER_SERIES / TokenTrendChart.
+    const provider = canonicalProvider(row.provider)
     const existing = bucketMap.get(key)
     if (existing === undefined) {
-      bucketMap.set(key, { [row.provider]: row.token_total })
+      bucketMap.set(key, { [provider]: row.token_total })
     } else {
-      existing[row.provider] = (existing[row.provider] ?? 0) + row.token_total
+      existing[provider] = (existing[provider] ?? 0) + row.token_total
     }
   }
 

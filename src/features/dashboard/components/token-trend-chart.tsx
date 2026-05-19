@@ -14,9 +14,60 @@
  * - .tt-slice: removed inline `background` override — color applied exclusively
  *   via CSS class (audit §12 deviation 3).
  *
+ * Wave 24 — operator F8 fixes:
+ * - F8a: PROVIDER_COLOR_MAP added as the canonical fallback palette so bars
+ *   never render white when a CSS class carries no/wrong background. The map
+ *   covers every provider the API can emit and uses PROVIDER_BRAND_HEX values.
+ *   Inline `background` is applied via `resolveSliceColor` as a secondary
+ *   source of truth alongside the CSS class — the CSS class retains priority
+ *   through specificity, but the inline value catches any class with no rule.
+ * - F8b: normalizeTrendData (trend-utils.ts) now canonicalises provider names
+ *   before keying into TrendBucket.totals, ensuring xai rows are never lost.
+ *
  * Accessibility: the outer container carries a descriptive aria-label.
  */
-import type { ReactElement } from 'react'
+import type { CSSProperties, ReactElement } from 'react'
+import { PROVIDER_BRAND_HEX } from '../lib/usage-report-display'
+
+// ---------------------------------------------------------------------------
+// Provider colour map
+// ---------------------------------------------------------------------------
+
+/**
+ * Canonical provider→hex map used as a fallback when the CSS class for a
+ * series key carries no (or an incorrect) background rule.
+ *
+ * Values are sourced from {@link PROVIDER_BRAND_HEX} — the single source of
+ * truth for provider brand colours across the dashboard — supplemented with
+ * aliases that the trend API may emit (`gemini`, `local_llm`, `local_embed`).
+ *
+ * Every provider name that `providerDimension` in report-service.mjs can
+ * produce must have an entry here so that bars are never rendered white:
+ *   anthropic, openai, google (+ gemini alias), xai, nvidia_nim, openrouter,
+ *   local (+ local_llm / local_embed aliases).
+ *
+ * Not exported: this is an implementation detail of {@link resolveSliceColor}.
+ * Consumer code that needs provider colours should import {@link PROVIDER_BRAND_HEX}
+ * directly from `../lib/usage-report-display`.
+ */
+const PROVIDER_COLOR_MAP: Readonly<Record<string, string>> = {
+  ...PROVIDER_BRAND_HEX,
+  // Alias: Google/Gemini — same brand colour
+  gemini: PROVIDER_BRAND_HEX.google ?? '#4285f4',
+  // Aliases: local sub-variants
+  local_llm: PROVIDER_BRAND_HEX.local ?? '#64748b',
+  local_embed: PROVIDER_BRAND_HEX.local ?? '#64748b',
+}
+
+/**
+ * Returns the resolved hex color for a series key, preferring the explicit
+ * `color` prop then falling back to {@link PROVIDER_COLOR_MAP} then to a
+ * mid-grey so bars are never invisible.
+ */
+function resolveSliceColor(key: string, color: string): string {
+  if (color && color !== '') return color
+  return PROVIDER_COLOR_MAP[key] ?? '#94a3b8'
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -106,18 +157,24 @@ export function TokenTrendChart({
 
                 const pct = total > 0 ? (tokens / total) * 100 : 0
 
+                // F8a: resolve bar color — prefer the explicit prop value then
+                // fall back to PROVIDER_COLOR_MAP so bars are never white.
+                const sliceStyle: CSSProperties = {
+                  flexBasis: `${pct.toFixed(4)}%`,
+                  flexShrink: 0,
+                  minHeight: '1px',
+                  width: '100%',
+                  // Inline background is the second source of truth after the
+                  // CSS class. It catches providers whose .tt-* rule is absent
+                  // or carries an incorrect near-white value (e.g. old tt-xai).
+                  background: resolveSliceColor(s.key, s.color),
+                }
+
                 return (
                   <div
                     key={s.key}
-                    // 14-F.5: color applied via CSS class only (audit §12 deviation 3)
-                    // Inline background removed — .tt-anthropic etc. define the color
                     className={`tt-slice ${s.cssClass}`}
-                    style={{
-                      flexBasis: `${pct.toFixed(4)}%`,
-                      flexShrink: 0,
-                      minHeight: '1px',
-                      width: '100%',
-                    }}
+                    style={sliceStyle}
                   />
                 )
               })}
@@ -151,7 +208,6 @@ export function TokenTrendChart({
             }}
           >
             <span
-              // 14-F.5: swatch color applied via CSS class only
               className={`tt-swatch ${s.cssClass}`}
               style={{
                 display: 'inline-block',
@@ -159,6 +215,9 @@ export function TokenTrendChart({
                 height: '10px',
                 border: '1px solid var(--border)',
                 flexShrink: 0,
+                // F8a: same fallback approach as .tt-slice — inline background
+                // ensures legend swatches always show the correct brand color.
+                background: resolveSliceColor(s.key, s.color),
               }}
             />
             {s.label}
