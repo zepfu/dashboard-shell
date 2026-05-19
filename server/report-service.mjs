@@ -31,7 +31,13 @@ const DEFAULT_GROUP_BY = ['environment', 'client', 'repository', 'provider_model
 // per-row surfaces (Master Ledger, Repo Breakdown, Slicer Repo Options).
 // Future work: server-side pagination would be more scalable.
 const MAX_LIMIT = 50000
-const MAX_CLIENT_ROWS = 250
+// Wave 28-ServerCap: raised from 250 to 5000.
+// At 30-day windows, deployments with many distinct (client_name,
+// client_version) pairs were silently truncated, causing the Client
+// Adoption surface to show an incomplete list. 5000 matches the order
+// of magnitude of MAX_LIMIT and is safe for memory given that client
+// rows are a small aggregate (6 columns per pair).
+const MAX_CLIENT_ROWS = 5000
 const HEALTH_WINDOW_HOURS = Math.max(
   1,
   Math.min(Number(process.env.SHELL_REPORT_HEALTH_WINDOW_HOURS ?? 24), 336)
@@ -510,7 +516,18 @@ LIMIT $1;
   return { sql, values: [MAX_PROVIDER_ERROR_ROWS] }
 }
 
-function buildProviderStatusUsageQuery() {
+// Wave 28-ServerCap: added searchParams parameter to thread the user's
+// selected date range (from/to) into the WHERE clause.
+// Previously this query hardcoded `now() - interval '24 hours'`, which
+// caused the Model Ledger to always display only the last 24 h of
+// provider/model data regardless of the operator's selected period
+// (operator F#11). Now uses the same parameterised from/to pattern as
+// buildClientUsageQuery and buildSummaryQuery, keyed on start_time for
+// consistency with the rest of the providerStatusUsage surface.
+function buildProviderStatusUsageQuery(searchParams) {
+  const { values, whereParts } = buildFilteredWhere(searchParams)
+  values.push(MAX_PROVIDER_STATUS_ROWS)
+
   const sql = `
 SELECT
     ${providerDimension} AS provider,
@@ -526,18 +543,17 @@ SELECT
     MIN(COALESCE(sh.start_time, sh.created_at)) AS period_start,
     MAX(COALESCE(sh.end_time, sh.start_time, sh.created_at)) AS period_end
 FROM public.session_history sh
-WHERE COALESCE(sh.start_time, sh.created_at) >= now() - interval '24 hours'
-  AND COALESCE(sh.start_time, sh.created_at) < now()
+WHERE ${whereParts.join('\n  AND ')}
 GROUP BY
     ${providerDimension},
     COALESCE(sh.model, 'unknown')
 ORDER BY
     ${providerDimension} ASC,
     token_total DESC
-LIMIT $1;
+LIMIT $${values.length};
 `
 
-  return { sql, values: [MAX_PROVIDER_STATUS_ROWS] }
+  return { sql, values }
 }
 
 function buildQuotaQuery() {
@@ -1276,7 +1292,7 @@ async function handleUsageReport(req, res) {
     const clientUsageQuery = buildClientUsageQuery(requestUrl.searchParams)
     const providerLatencyHealthQuery = buildProviderLatencyHealthQuery()
     const providerErrorObservationQuery = buildProviderErrorObservationQuery()
-    const providerStatusUsageQuery = buildProviderStatusUsageQuery()
+    const providerStatusUsageQuery = buildProviderStatusUsageQuery(requestUrl.searchParams)
     const quotaReportPromise = loadQuotaReport()
 
     const [
