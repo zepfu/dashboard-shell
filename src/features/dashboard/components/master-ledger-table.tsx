@@ -646,6 +646,8 @@ export function MasterLedgerTable({
                         </span>
                         <span
                           className='microbar'
+                          title={`${fillPct.toFixed(1)}% of max cost`}
+                          aria-label={`${fillPct.toFixed(1)}% of max cost`}
                           style={
                             {
                               '--microbar-fill': `${fillPct.toFixed(1)}%`,
@@ -675,6 +677,8 @@ export function MasterLedgerTable({
                         </span>
                         <span
                           className='microbar'
+                          title={`${fillPct.toFixed(1)}% of max tokens in`}
+                          aria-label={`${fillPct.toFixed(1)}% of max tokens in`}
                           style={
                             {
                               '--microbar-fill': `${fillPct.toFixed(1)}%`,
@@ -697,6 +701,8 @@ export function MasterLedgerTable({
                         </span>
                         <span
                           className='microbar'
+                          title={`${fillPct.toFixed(1)}% of max tokens out`}
+                          aria-label={`${fillPct.toFixed(1)}% of max tokens out`}
                           style={
                             {
                               '--microbar-fill': `${fillPct.toFixed(1)}%`,
@@ -719,6 +725,8 @@ export function MasterLedgerTable({
                         </span>
                         <span
                           className='microbar'
+                          title={`${fillPct.toFixed(1)}% of max requests`}
+                          aria-label={`${fillPct.toFixed(1)}% of max requests`}
                           style={
                             {
                               '--microbar-fill': `${fillPct.toFixed(1)}%`,
