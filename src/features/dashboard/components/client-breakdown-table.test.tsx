@@ -90,3 +90,41 @@ test('test_client_table_uses_row_color_field_over_legacy_map', () => {
   expect(span).not.toBeNull()
   expect((span as HTMLElement).style.color).toBe('rgb(217, 119, 87)')
 })
+
+// ---------------------------------------------------------------------------
+// W32 — Last Seen column tests
+// ---------------------------------------------------------------------------
+
+/**
+ * W32: ClientBreakdownTable renders a "Last Seen" column header.
+ */
+test('test_client_table_renders_last_seen_column_header', () => {
+  render(<ClientBreakdownTable rows={mockClients} />)
+
+  const lastSeenHeader = screen.getByRole('columnheader', {
+    name: /last seen/i,
+  })
+  expect(lastSeenHeader).toBeInTheDocument()
+})
+
+/**
+ * W32: ClientBreakdownTable displays the last_seen date value when provided.
+ */
+test('test_client_table_displays_last_seen_date', () => {
+  const rows = [
+    {
+      client: 'claude-code',
+      version: '1.2.3',
+      requests: 200,
+      tokens: 50000,
+      cost_usd: 2.5,
+      first_seen: '2026-01-01',
+      last_seen: '2026-05-17',
+    },
+  ]
+
+  render(<ClientBreakdownTable rows={rows} />)
+
+  // The last_seen date should be visible in the table.
+  expect(screen.getByText('2026-05-17')).toBeInTheDocument()
+})

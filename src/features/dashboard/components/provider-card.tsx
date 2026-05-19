@@ -148,6 +148,12 @@ export interface QuotaBarGroup {
    * TODO(w20): wire from buildQuotaIntervals.
    */
   tipModels?: QuotaTipModel[]
+  /**
+   * W32: when true this bar represents a past reset window from quotaHistory[]
+   * rather than the current live interval. Visual treatment: reduced opacity
+   * and a "past" label suffix.
+   */
+  isHistorical?: boolean
 }
 
 /** Per-model mini-row for card-pane-right at ≥3840px. */
@@ -680,7 +686,16 @@ export function ProviderCard({
                   </div>
                 )
                 return (
-                  <div key={i}>
+                  <div
+                    key={i}
+                    // W32: historical bars render at reduced opacity to visually
+                    // distinguish past reset windows from the current live bar.
+                    style={
+                      quotaBar.isHistorical === true
+                        ? { opacity: 0.6 }
+                        : undefined
+                    }
+                  >
                     <div
                       className='quota-row'
                       style={{
