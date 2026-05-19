@@ -557,14 +557,131 @@ test('test_health_strip_tip_health_empty_events_shows_placeholder', () => {
   expect(errSpan?.textContent).toContain('5 events')
 })
 
-test('test_health_strip_tip_health_undefined_events_shows_no_detail', () => {
-  // events is undefined → single row with "no event detail"
+test('test_health_strip_tip_health_undefined_events_no_breakdown_shows_head_only', () => {
+  // Wave 29-E2: events is undefined AND no rawErrorBreakdown → head only.
+  // The old "no event detail" placeholder is dropped to avoid misleading users
+  // on error-free buckets.
   const cells = [
     {
       color: 'var(--card-2)',
       bucketStart: new Date(Date.now() - 14 * 3600 * 1000).toISOString(),
       eventCount: 0,
-      // events intentionally omitted
+      // events intentionally omitted; rawErrorBreakdown intentionally omitted
+    },
+    ...Array.from({ length: 287 }, () => ({ color: 'var(--card-2)' })),
+  ]
+
+  const { container } = render(
+    <HealthStrip cells={cells} orientation='vertical' />
+  )
+
+  // Head should be present
+  const head = container.querySelector('.v9-tip-head')
+  expect(head).not.toBeNull()
+
+  // No body rows — bucket is error-free, nothing to enumerate
+  const rows = container.querySelectorAll('.v9-tip-row')
+  expect(rows.length).toBe(0)
+})
+
+// ---------------------------------------------------------------------------
+// Wave 29-E2 — rawErrorBreakdown tooltip rows (Track 6)
+// ---------------------------------------------------------------------------
+
+test('test_health_strip_tip_health_raw_error_breakdown_renders_nonzero_rows', () => {
+  // rawErrorBreakdown with some non-zero fields → one v9-tip-row per non-zero type
+  const cells = [
+    {
+      color: 'var(--card-2)',
+      bucketStart: new Date(Date.now() - 14 * 3600 * 1000).toISOString(),
+      eventCount: 7,
+      rawErrorBreakdown: {
+        provider_error_events: 2,
+        provider_5xx_events: 3,
+        provider_timeout_events: 0,
+        network_error_events: 0,
+        rate_limit_events: 1,
+        capacity_events: 1,
+      },
+    },
+    ...Array.from({ length: 287 }, () => ({ color: 'var(--card-2)' })),
+  ]
+
+  const { container } = render(
+    <HealthStrip cells={cells} orientation='vertical' />
+  )
+
+  // Should have one row per non-zero field (4 non-zero: provider_error, 5xx, rate_limit, capacity)
+  const rows = container.querySelectorAll('.v9-tip-row')
+  expect(rows.length).toBe(4)
+
+  // Verify labels and counts
+  const errSpans = Array.from(rows).map(
+    (r) => r.querySelector('.t-err')?.textContent
+  )
+  expect(errSpans).toContain('Provider errors')
+  expect(errSpans).toContain('5xx errors')
+  expect(errSpans).toContain('Rate limits')
+  expect(errSpans).toContain('Capacity limits')
+  // Zero-count types must be absent
+  expect(errSpans).not.toContain('Timeouts')
+  expect(errSpans).not.toContain('Network errors')
+
+  const countSpans = Array.from(rows).map(
+    (r) => r.querySelector('.t-count')?.textContent
+  )
+  expect(countSpans).toContain('2')
+  expect(countSpans).toContain('3')
+  expect(countSpans).toContain('1')
+})
+
+test('test_health_strip_tip_health_raw_error_breakdown_all_zero_shows_head_only', () => {
+  // rawErrorBreakdown present but all zero → error-free bucket → head only
+  const cells = [
+    {
+      color: 'var(--card-2)',
+      bucketStart: new Date(Date.now() - 14 * 3600 * 1000).toISOString(),
+      eventCount: 0,
+      rawErrorBreakdown: {
+        provider_error_events: 0,
+        provider_5xx_events: 0,
+        provider_timeout_events: 0,
+        network_error_events: 0,
+        rate_limit_events: 0,
+        capacity_events: 0,
+      },
+    },
+    ...Array.from({ length: 287 }, () => ({ color: 'var(--card-2)' })),
+  ]
+
+  const { container } = render(
+    <HealthStrip cells={cells} orientation='vertical' />
+  )
+
+  const head = container.querySelector('.v9-tip-head')
+  expect(head).not.toBeNull()
+  expect(head?.textContent).toContain('0 events')
+
+  const rows = container.querySelectorAll('.v9-tip-row')
+  expect(rows.length).toBe(0)
+})
+
+test('test_health_strip_tip_health_raw_error_breakdown_display_order', () => {
+  // Error types must appear in canonical display order:
+  // Provider errors → 5xx → Timeouts → Network → Rate limits → Capacity
+  const cells = [
+    {
+      color: 'var(--card-2)',
+      bucketStart: new Date(Date.now() - 1 * 3600 * 1000).toISOString(),
+      eventCount: 6,
+      rawErrorBreakdown: {
+        provider_error_events: 1,
+        provider_5xx_events: 1,
+        provider_timeout_events: 1,
+        network_error_events: 1,
+        rate_limit_events: 1,
+        capacity_events: 1,
+      },
     },
     ...Array.from({ length: 287 }, () => ({ color: 'var(--card-2)' })),
   ]
@@ -574,8 +691,17 @@ test('test_health_strip_tip_health_undefined_events_shows_no_detail', () => {
   )
 
   const rows = container.querySelectorAll('.v9-tip-row')
-  expect(rows.length).toBe(1)
+  expect(rows.length).toBe(6)
 
-  const errSpan = rows[0].querySelector('.t-err')
-  expect(errSpan?.textContent).toBe('no event detail')
+  const labels = Array.from(rows).map(
+    (r) => r.querySelector('.t-err')?.textContent
+  )
+  expect(labels).toEqual([
+    'Provider errors',
+    '5xx errors',
+    'Timeouts',
+    'Network errors',
+    'Rate limits',
+    'Capacity limits',
+  ])
 })
