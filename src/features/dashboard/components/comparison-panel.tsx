@@ -7,9 +7,8 @@
  * per mockup lines 3318-3327 and audit item §C4a.
  *
  * Delta (Δ) columns show period-over-period change vs the prior window.
- * TODO: wire prior-period data via a dedicated `priorStats` prop (or a second
- * `useUsageReportFromRange` query scoped to [now-14d, now-7d]). Until that data
- * is available, delta cells render `—` as a clear placeholder.
+ * When `priorStats` is provided the Δ cells show a signed percentage change
+ * vs the prior window; when absent they fall back to `—`.
  *
  * The Trend column is a 24-bucket SVG polyline of the provider's hourly token
  * totals, derived from the `trendBuckets` prop (same data as TokenTrendChart).
@@ -22,6 +21,10 @@
  * ⚠-W19-3 fix: the hardcoded `/ 7` divisor silently mis-reported daily spend
  * for any window other than 7 days; the default 1-day window (index.tsx
  * Wave 16-V) produced values 7× too low.
+ *
+ * Wave 32-Deltas: `priorStats` prop added. PhosphorDashboard fetches a second
+ * usage report for the prior window (same span, shifted back by periodDays)
+ * and passes the aggregated stats here for Δ column rendering.
  *
  * Design choice: `periodDays` is optional and defaults to 1.
  * — This keeps the parent call site (phosphor-dashboard.tsx) unchanged: the
@@ -37,6 +40,22 @@ import type { TrendBucket } from './token-trend-chart'
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
+
+/**
+ * Aggregated stats per provider for one time window.
+ * Exported so PhosphorDashboard can build the same shape for the prior window
+ * and pass it as the `priorStats` prop.
+ */
+export interface ProviderCurrentStats {
+  provider: string
+  totalCost: number
+  totalTokens: number
+  avgP95: number
+  avgErrPct: number
+  avgCachePct: number
+  /** Burn = avg daily spend = totalCost / periodDays. */
+  burn: number
+}
 
 /** Props for ComparisonPanel. */
 interface ComparisonPanelProps {
@@ -69,22 +88,16 @@ interface ComparisonPanelProps {
    *   )
    */
   periodDays?: number
-}
-
-// ---------------------------------------------------------------------------
-// Internal types
-// ---------------------------------------------------------------------------
-
-/** Aggregated current-period stats per provider. */
-interface ProviderCurrentStats {
-  provider: string
-  totalCost: number
-  totalTokens: number
-  avgP95: number
-  avgErrPct: number
-  avgCachePct: number
-  /** Burn = avg daily spend = totalCost / periodDays. */
-  burn: number
+  /**
+   * Aggregated stats for the prior window (same span, shifted back by
+   * periodDays). When provided, Δ columns render signed percentage change
+   * vs the prior window. When absent (or a provider is missing from the array),
+   * the corresponding delta cells fall back to `—`.
+   *
+   * Built by PhosphorDashboard from a second `useQuery` call with shifted
+   * `from`/`to` parameters. See Wave 32-Deltas implementation.
+   */
+  priorStats?: ProviderCurrentStats[]
 }
 
 // ---------------------------------------------------------------------------
@@ -97,7 +110,7 @@ function fmtCompact(n: number): string {
   return String(n)
 }
 
-function buildCurrentStats(
+export function buildCurrentStats(
   providers: string[],
   modelRows: ModelRow[],
   periodDays: number
@@ -145,6 +158,41 @@ function buildCurrentStats(
       burn,
     }
   })
+}
+
+// ---------------------------------------------------------------------------
+// Delta helpers (Wave 32-Deltas)
+// ---------------------------------------------------------------------------
+
+/**
+ * Computes a signed percentage change: ((current - prior) / prior) * 100.
+ * Returns `null` when prior is zero or either value is not finite, which
+ * causes the caller to render `—` instead of a misleading Infinity/NaN.
+ */
+export function computeDeltaPct(current: number, prior: number): number | null {
+  if (!isFinite(prior) || !isFinite(current) || prior === 0) return null
+  return ((current - prior) / prior) * 100
+}
+
+/**
+ * Formats a signed percentage delta for display: `+N.N%` or `-N.N%`.
+ * Returns `—` when `delta` is `null` (no prior data or division by zero).
+ */
+export function formatDeltaPct(delta: number | null): string {
+  if (delta === null) return '—'
+  const sign = delta >= 0 ? '+' : ''
+  return `${sign}${delta.toFixed(1)}%`
+}
+
+/**
+ * Returns the CSS color token for a delta value.
+ *
+ * For cost / tokens / latency / error metrics a positive delta (increase) is
+ * hot (bad) and a negative delta (decrease) is cool (good). Zero stays neutral.
+ */
+export function deltaColor(delta: number | null): string {
+  if (delta === null || delta === 0) return 'var(--fg-muted)'
+  return delta > 0 ? 'var(--accent-hot)' : 'var(--accent-teal)'
 }
 
 /**
@@ -269,6 +317,7 @@ export function ComparisonPanel({
   modelRows,
   trendBuckets,
   periodDays = 1,
+  priorStats,
 }: ComparisonPanelProps): ReactElement {
   const stats = buildCurrentStats(providers, modelRows, periodDays)
 
@@ -347,6 +396,28 @@ export function ComparisonPanel({
             const sparkPoints = providerSparkPoints(stat.provider, trendBuckets)
             const providerColor = 'var(--accent-cool)'
 
+            // Wave 32-Deltas: look up the matching prior-window entry.
+            const prior = priorStats?.find(
+              (p) => p.provider.toLowerCase() === stat.provider.toLowerCase()
+            )
+
+            const deltaCost =
+              prior !== undefined
+                ? computeDeltaPct(stat.totalCost, prior.totalCost)
+                : null
+            const deltaTok =
+              prior !== undefined
+                ? computeDeltaPct(stat.totalTokens, prior.totalTokens)
+                : null
+            const deltaP95 =
+              prior !== undefined
+                ? computeDeltaPct(stat.avgP95, prior.avgP95)
+                : null
+            const deltaErr =
+              prior !== undefined
+                ? computeDeltaPct(stat.avgErrPct, prior.avgErrPct)
+                : null
+
             return (
               <tr
                 key={stat.provider}
@@ -366,64 +437,76 @@ export function ComparisonPanel({
                   {stat.provider.toUpperCase()}
                 </td>
 
-                {/* Δ Cost — placeholder until prior-period data wired */}
-                {/* TODO: render (currentCost − priorCost) when priorStats prop available */}
+                {/* Δ Cost — signed % change vs prior window */}
                 <td
                   style={{
                     padding: '5px 6px',
                     textAlign: 'right',
                     borderRight: '1px solid var(--border)',
-                    color: 'var(--fg-muted)',
+                    color: deltaColor(deltaCost),
                     whiteSpace: 'nowrap',
                   }}
-                  title={`Current period cost: ${formatUsd(stat.totalCost)}`}
+                  title={
+                    prior !== undefined
+                      ? `Current: ${formatUsd(stat.totalCost)} · Prior: ${formatUsd(prior.totalCost)}`
+                      : `Current period cost: ${formatUsd(stat.totalCost)}`
+                  }
                 >
-                  —
+                  {formatDeltaPct(deltaCost)}
                 </td>
 
-                {/* Δ Tok — placeholder until prior-period data wired */}
-                {/* TODO: render (currentTokens − priorTokens) when priorStats prop available */}
+                {/* Δ Tok — signed % change vs prior window */}
                 <td
                   style={{
                     padding: '5px 6px',
                     textAlign: 'right',
                     borderRight: '1px solid var(--border)',
-                    color: 'var(--fg-muted)',
+                    color: deltaColor(deltaTok),
                     whiteSpace: 'nowrap',
                   }}
-                  title={`Current period tokens: ${fmtCompact(stat.totalTokens)}`}
+                  title={
+                    prior !== undefined
+                      ? `Current: ${fmtCompact(stat.totalTokens)} · Prior: ${fmtCompact(prior.totalTokens)}`
+                      : `Current period tokens: ${fmtCompact(stat.totalTokens)}`
+                  }
                 >
-                  —
+                  {formatDeltaPct(deltaTok)}
                 </td>
 
-                {/* Δ p95 — placeholder until prior-period data wired */}
-                {/* TODO: render (currentP95 − priorP95) when priorStats prop available */}
+                {/* Δ p95 — signed % change vs prior window */}
                 <td
                   style={{
                     padding: '5px 6px',
                     textAlign: 'right',
                     borderRight: '1px solid var(--border)',
-                    color: 'var(--fg-muted)',
+                    color: deltaColor(deltaP95),
                     whiteSpace: 'nowrap',
                   }}
-                  title={`Current period p95: ${formatLatency(stat.avgP95)}`}
+                  title={
+                    prior !== undefined
+                      ? `Current: ${formatLatency(stat.avgP95)} · Prior: ${formatLatency(prior.avgP95)}`
+                      : `Current period p95: ${formatLatency(stat.avgP95)}`
+                  }
                 >
-                  —
+                  {formatDeltaPct(deltaP95)}
                 </td>
 
-                {/* Δ Err — placeholder until prior-period data wired */}
-                {/* TODO: render (currentErrPct − priorErrPct) when priorStats prop available */}
+                {/* Δ Err — signed % change vs prior window */}
                 <td
                   style={{
                     padding: '5px 6px',
                     textAlign: 'right',
                     borderRight: '1px solid var(--border)',
-                    color: 'var(--fg-muted)',
+                    color: deltaColor(deltaErr),
                     whiteSpace: 'nowrap',
                   }}
-                  title={`Current period err%: ${stat.avgErrPct.toFixed(1)}%`}
+                  title={
+                    prior !== undefined
+                      ? `Current: ${stat.avgErrPct.toFixed(1)}% · Prior: ${prior.avgErrPct.toFixed(1)}%`
+                      : `Current period err%: ${stat.avgErrPct.toFixed(1)}%`
+                  }
                 >
-                  —
+                  {formatDeltaPct(deltaErr)}
                 </td>
 
                 {/* Cache % — current-period prompt-cache hit ratio */}
