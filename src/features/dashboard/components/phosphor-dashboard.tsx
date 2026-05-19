@@ -53,7 +53,11 @@ import {
 } from '../lib/usage-report-display'
 import { AggregateCard } from './aggregate-card'
 import { ClientBreakdownTable, type ClientRow } from './client-breakdown-table'
-import { ComparisonPanel } from './comparison-panel'
+import {
+  buildCurrentStats,
+  ComparisonPanel,
+  type ProviderCurrentStats,
+} from './comparison-panel'
 import { DonutChart, type SliceConfig } from './donut-chart'
 import { MasterLedgerTable, type ModelRow } from './master-ledger-table'
 import styles from './phosphor-dashboard.module.css'
@@ -2442,6 +2446,62 @@ export default function PhosphorDashboard({
     [resolvedFrom, resolvedTo]
   )
 
+  // Wave 32-Deltas: prior-window bounds — same span length, shifted back by
+  // periodDays. priorTo = resolvedFrom; priorFrom = resolvedFrom − periodDays.
+  const priorTo = resolvedFrom
+  const priorFrom = useMemo(() => {
+    const ms = new Date(resolvedFrom).getTime() - periodDays * 86_400_000
+    return new Date(ms).toISOString().slice(0, 10)
+  }, [resolvedFrom, periodDays])
+
+  // Wave 32-Deltas: second useQuery for the prior window. Disabled until the
+  // current report has loaded to avoid a redundant fetch on the initial render.
+  // Reuses the same fetchUsageReport helper and filter params as the current
+  // query so the prior-window data is structurally identical.
+  const { data: priorReport } = useQuery({
+    queryKey: [
+      'usage-report-phosphor-prior',
+      priorFrom,
+      priorTo,
+      resolvedGrain,
+      filters?.providers,
+      filters?.repositories,
+      filters?.clients,
+      filters?.environments,
+      filters?.models,
+    ],
+    queryFn: () =>
+      fetchUsageReport({
+        from: priorFrom,
+        to: priorTo,
+        grain: resolvedGrain,
+        groupBy: ['provider', 'model', 'repository'],
+        provider: filters?.providers,
+        repository: filters?.repositories,
+        client: filters?.clients,
+        environment: filters?.environments,
+        model: filters?.models,
+      }),
+    // Only fire once the current report is available so both fetches don't
+    // compete on the initial page load.
+    enabled: !reportLoading && report !== undefined,
+  })
+
+  // Wave 32-Deltas: build prior-window ProviderCurrentStats from priorReport,
+  // using the same providers list and the same aggregation as the current window.
+  const priorStats = useMemo((): ProviderCurrentStats[] | undefined => {
+    if (priorReport === undefined) return undefined
+    const priorModelRows = buildModelRows(
+      priorReport.providerStatusUsage ?? [],
+      priorReport.providerLatencyHealth ?? [],
+      priorReport.rows ?? [],
+      // Quota rows are not relevant for delta computation; pass empty array.
+      [],
+      priorReport.trend ?? []
+    )
+    return buildCurrentStats(providers, priorModelRows, periodDays)
+  }, [priorReport, providers, periodDays])
+
   return (
     <div
       className='phosphor-dashboard main-content'
@@ -2652,6 +2712,7 @@ export default function PhosphorDashboard({
           modelRows={modelRows}
           trendBuckets={trendData}
           periodDays={periodDays}
+          priorStats={priorStats}
         />
       </section>
     </div>
