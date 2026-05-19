@@ -48,16 +48,24 @@ import {
   useReactTable,
   type SortingState,
 } from '@tanstack/react-table'
+import { type UsageReportProviderErrorObservationRow } from '../api/usage-report'
 import {
   providerBrandHex,
   formatLatency,
   formatUsd,
 } from '../lib/usage-report-display'
+import { HoverTooltip } from './primitives/hover-tooltip'
 import { Sparkline } from './primitives/sparkline'
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
+
+/**
+ * Re-export of the API error observation type under a short name for
+ * internal use.  The canonical definition lives in `../api/usage-report`.
+ */
+export type ProviderErrorObservation = UsageReportProviderErrorObservationRow
 
 /** One row in the master ledger table. */
 export interface ModelRow {
@@ -143,6 +151,36 @@ function errorPctColor(pct: number): string {
   if (pct >= 2) return 'var(--accent-hot)'
   if (pct >= 0.5) return 'var(--accent-warm)'
   return 'var(--accent-teal)'
+}
+
+/** Maximum number of recent error events shown in the Err% hover tooltip. */
+const MAX_ERROR_HOVER_ROWS = 10
+
+/**
+ * Formats an ISO timestamp as a compact "N ago" string for the error hover
+ * tooltip.  Returns `'—'` for null/invalid inputs.
+ *
+ * Q8 (Wave 31): used to show how long ago each error observation occurred in
+ * the Model Ledger Err% hover panel.
+ */
+function formatObservedAgo(iso: string | null | undefined): string {
+  if (!iso) return '—'
+  try {
+    const date = new Date(iso)
+    if (Number.isNaN(date.getTime())) return '—'
+    const diffMs = Date.now() - date.getTime()
+    if (diffMs < 0) return 'just now'
+    const totalMins = Math.floor(diffMs / 60_000)
+    const days = Math.floor(totalMins / 1440)
+    const hours = Math.floor((totalMins % 1440) / 60)
+    const mins = totalMins % 60
+    if (days > 0) return `${days.toString()}d ${hours.toString()}h ago`
+    if (hours > 0) return `${hours.toString()}h ${mins.toString()}m ago`
+    if (mins > 0) return `${mins.toString()}m ago`
+    return 'just now'
+  } catch {
+    return '—'
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -457,6 +495,14 @@ const allColumns = [
 
 export interface MasterLedgerTableProps {
   rows: ModelRow[]
+  /**
+   * Raw per-event error observations from the API (`report.providerErrorObservations`).
+   * When provided, non-zero Err% cells will show a hover tooltip listing the
+   * most recent matching events for that row's provider+model pair.
+   *
+   * Q8 (Wave 31): wired from `PhosphorDashboard` → `report?.providerErrorObservations`.
+   */
+  errorObservations?: ProviderErrorObservation[]
 }
 
 /**
@@ -469,6 +515,7 @@ export interface MasterLedgerTableProps {
  */
 export function MasterLedgerTable({
   rows,
+  errorObservations = [],
 }: MasterLedgerTableProps): ReactElement {
   const [sorting, setSorting] = useState<SortingState>([])
 
@@ -659,10 +706,72 @@ export function MasterLedgerTable({
                   } else if (colId === 'error_pct') {
                     // C7: err% severity color
                     cellColor = errorPctColor(orig.error_pct)
-                    cellContent = flexRender(
+                    const pct = orig.error_pct
+                    const rowProvider = orig.provider.toLowerCase()
+                    const rowModel = orig.model.toLowerCase()
+                    // Q8 (Wave 31): filter observations to this row's provider+model,
+                    // sort newest-first and cap at MAX_ERROR_HOVER_ROWS.
+                    const rowObs =
+                      pct > 0
+                        ? errorObservations
+                            .filter(
+                              (o) =>
+                                o.provider.toLowerCase() === rowProvider &&
+                                o.model.toLowerCase() === rowModel
+                            )
+                            .sort((a, b) => {
+                              const aMs = a.observed_at
+                                ? new Date(a.observed_at).getTime()
+                                : 0
+                              const bMs = b.observed_at
+                                ? new Date(b.observed_at).getTime()
+                                : 0
+                              return bMs - aMs
+                            })
+                            .slice(0, MAX_ERROR_HOVER_ROWS)
+                        : []
+                    const baseLabel = flexRender(
                       cell.column.columnDef.cell,
                       cell.getContext()
                     ) as ReactElement | string
+                    if (pct > 0 && rowObs.length > 0) {
+                      const tooltipContent = (
+                        <div>
+                          <div
+                            className='v9-tip-head'
+                            style={{ marginBottom: '4px' }}
+                          >
+                            {rowObs.length} most recent error
+                            {rowObs.length === 1 ? '' : 's'}:
+                          </div>
+                          {rowObs.map((e, idx) => (
+                            <div
+                              key={`${e.observed_at ?? 'null'}-${(e.status_code ?? 0).toString()}-${e.error_class}-${idx.toString()}`}
+                              style={{
+                                fontSize: '9px',
+                                padding: '1px 0',
+                                lineHeight: 1.5,
+                                color: 'var(--fg, #e2e8f0)',
+                              }}
+                            >
+                              {formatObservedAgo(e.observed_at)}
+                              {' · '}
+                              {e.status_code !== null
+                                ? e.status_code.toString()
+                                : '???'}{' '}
+                              {e.error_class} ({e.error_code})
+                            </div>
+                          ))}
+                        </div>
+                      )
+                      cellContent = (
+                        <HoverTooltip content={tooltipContent}>
+                          {baseLabel}
+                        </HoverTooltip>
+                      )
+                    } else {
+                      cellContent = baseLabel
+                    }
                   } else if (colId === 'tokens_in') {
                     // C5: microbar proportional to column max (14-F.1 .microbar class)
                     cellColor = 'var(--accent-cool)'
