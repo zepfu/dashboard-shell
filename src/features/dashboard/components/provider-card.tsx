@@ -20,6 +20,15 @@
  * - Reasoning labels lowercase: reported/estimated/no-reasoning calls.
  * - est-mark asterisk on estimated value.
  * - no-reasoning calls wired to integer.
+ *
+ * Wave 20 changes (F2 / F3 / F6):
+ * - F2: TOKEN CACHE + REASONING sections moved ABOVE Quotas per mockup line 2434.
+ * - F3: Quota tooltip restructured: v9-tip-head (window · pct used),
+ *       v9-tip-sub (velocity line), v9-tip-row × 3 (t-model / t-count).
+ *       Data fields window/velocity/tipModels added to QuotaBarGroup as optional;
+ *       missing fields render '—' placeholders (TODO(w20) comments for wiring).
+ * - F6: cost cell in card-pane-right switched to toLocaleString() for comma
+ *       formatting on values ≥ $1,000.
  */
 import type { ReactElement, ReactNode } from 'react'
 import {
@@ -81,11 +90,27 @@ export interface QuotaRowConfig {
 }
 
 /**
+ * A single top-model entry for quota tooltip v9-tip-row rows.
+ *
+ * Wave 20 F3: mirrors mockup v9-tip-row structure (t-model / t-count).
+ * TODO(w20): wire from phosphor-dashboard buildQuotaIntervals.
+ */
+export interface QuotaTipModel {
+  model: string
+  /** Signed dollar delta string, e.g. '+$24'. */
+  costDelta: string
+}
+
+/**
  * A single quota-type bar (weekly / short / special / monthly) with its
  * pre-built N=12 segment array.
  *
  * Wave 11 PR3 (11-h, 11-i): replaces the old flat QuotaRowConfig[] prop so
  * the card can render multi-segment bars with per-bar label + tooltip.
+ *
+ * Wave 20 F3: added optional tooltip data fields (window, velocity, tipModels)
+ * to support the mockup quota tooltip structure. Missing fields render '—'.
+ * TODO(w20): populate these from buildQuotaIntervals in phosphor-dashboard.tsx.
  */
 export interface QuotaBarGroup {
   /** Human-readable quota type: 'Weekly' | 'Short' | 'Special' | 'Monthly'. */
@@ -98,6 +123,21 @@ export interface QuotaBarGroup {
   resetAt?: string
   /** N=12 equal-width segments; all share the same severityClass. */
   segments: QuotaRowConfig[]
+  /**
+   * Human-readable window label for tooltip head, e.g. '−30m → now'.
+   * TODO(w20): wire from buildQuotaIntervals.
+   */
+  tipWindow?: string
+  /**
+   * Velocity line for tooltip sub, e.g. '+5%/30m  ≈  +9%/h'.
+   * TODO(w20): wire from buildQuotaIntervals.
+   */
+  tipVelocity?: string
+  /**
+   * Top 3 contributing models for tooltip rows.
+   * TODO(w20): wire from buildQuotaIntervals.
+   */
+  tipModels?: QuotaTipModel[]
 }
 
 /** Per-model mini-row for card-pane-right at ≥3840px. */
@@ -343,10 +383,16 @@ export interface ProviderCardProps {
 /**
  * ProviderCard renders a Phosphor Atlas provider metrics panel.
  *
- * Layout:
+ * Layout (mockup line 2421-2469 order):
  *  - Absolutely positioned vertical HealthStrip at right edge (v9w1 update)
- *  - card-pane-left: metrics, quota, TOKEN CACHE, REASONING
+ *  - card-pane-left:
+ *      1. 9 provider-metric rows (Requests → Status)
+ *      2. TOKEN CACHE sub-section (pc-sub-title + pc-mini-table)
+ *      3. REASONING sub-section (pc-sub-title + pc-mini-table)
+ *      4. Quotas section title + quota-list
  *  - card-pane-right (≥3840px): per-model mini-table
+ *
+ * Wave 20 F2: TOKEN CACHE + REASONING moved above Quotas per mockup.
  */
 export function ProviderCard({
   config,
@@ -514,7 +560,66 @@ export function ProviderCard({
           <span style={{ color: statusColor }}>{statusGlyph}</span>
         </ProviderMetric>
 
-        {/* QUOTAS section — Wave 11 PR3 (11-i): each bar uses 12 segments */}
+        {/*
+         * TOKEN CACHE sub-section
+         * 14-C.5: lowercase labels: in / create / miss / miss $
+         * 14-C.6: miss $ row uses cache_miss_usd (dollar cost, not token count)
+         *         displayed with formatUsd() and valueMod='cost' for amber color.
+         * Wave 20 F2: moved ABOVE Quotas per mockup line 2434 order.
+         */}
+        <PcSubTitle title='TOKEN CACHE' />
+        <div className='pc-mini-table'>
+          <PcMiniRow label='in' value={fmtCompact(data.cache_input)} />
+          <PcMiniRow label='create' value={fmtCompact(data.cache_creation)} />
+          <PcMiniRow
+            label='miss'
+            value={fmtCompact(cacheMiss)}
+            valueMod='muted'
+          />
+          <PcMiniRow
+            label='miss $'
+            value={formatUsd(data.cache_miss_usd)}
+            valueMod='cost'
+          />
+        </div>
+
+        {/*
+         * REASONING sub-section
+         * 14-C.7: lowercase labels: reported / estimated / no-reasoning calls
+         * 14-C.8: estimated value has est-mark asterisk appended.
+         * 14-C.9: no-reasoning calls wired to integer (no_reasoning_calls field).
+         * Wave 20 F2: moved ABOVE Quotas per mockup line 2434 order.
+         */}
+        <PcSubTitle title='REASONING' />
+        <div className='pc-mini-table'>
+          <PcMiniRow
+            label='reported'
+            value={fmtCompact(data.reasoning_reported)}
+          />
+          <PcMiniRow
+            label='estimated'
+            value={
+              <>
+                {fmtCompact(data.reasoning_estimated)}
+                <span className='est-mark'>*</span>
+              </>
+            }
+          />
+          <PcMiniRow
+            label='no-reasoning calls'
+            value={fmtCompact(data.no_reasoning_calls)}
+          />
+        </div>
+
+        {/*
+         * QUOTAS section — Wave 11 PR3 (11-i): each bar uses 12 segments.
+         * Wave 20 F2: moved BELOW Token Cache + Reasoning per mockup line 2434.
+         * Wave 20 F3: tooltip restructured to match mockup v9-tip-quota structure:
+         *   v9-tip-head: '{window} · {pct}% used'
+         *   v9-tip-sub:  velocity line
+         *   v9-tip-row × 3: top models with $delta
+         *   Missing data fields render '—' until TODO(w20) wiring is complete.
+         */}
         {quotas.length > 0 && (
           <>
             <QuotaSectionTitle title='Quotas' />
@@ -523,20 +628,40 @@ export function ProviderCard({
               style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}
             >
               {quotas.map((quotaBar, i) => {
+                // Wave 20 F3: build tooltip matching mockup v9-tip-quota structure.
+                // tipWindow / tipVelocity / tipModels are optional on QuotaBarGroup;
+                // render '—' placeholders when not yet wired.
+                const tipWindowStr = quotaBar.tipWindow ?? '—'
+                const tipHeadLabel = `${tipWindowStr} · ${quotaBar.consumedPct.toFixed(0)}% used`
+                const tipVelocityStr = quotaBar.tipVelocity ?? '—'
+                // Top 3 model rows; fall back to empty if not populated.
+                const tipModelRows =
+                  quotaBar.tipModels !== undefined &&
+                  quotaBar.tipModels.length > 0
+                    ? quotaBar.tipModels.slice(0, 3)
+                    : []
                 const tooltipContent = (
-                  <>
-                    <div className='v9-tip-head'>{quotaBar.label}</div>
-                    <div className='v9-tip-row'>
-                      <span>Used</span>
-                      <span>{quotaBar.consumedPct.toFixed(0)}%</span>
-                      <span />
-                    </div>
-                    <div className='v9-tip-row'>
-                      <span>Resets</span>
-                      <span>{formatResetDistance(quotaBar.resetAt)}</span>
-                      <span />
-                    </div>
-                  </>
+                  <div className='v9-tip tip-quota tip-hover'>
+                    {/* Head: "{window} · {pct}% used" */}
+                    <div className='v9-tip-head'>{tipHeadLabel}</div>
+                    {/* Sub: velocity line e.g. "+5%/30m  ≈  +9%/h" */}
+                    <div className='v9-tip-sub'>{tipVelocityStr}</div>
+                    {/* Rows: top 3 contributing models with $delta */}
+                    {tipModelRows.map((tm, mi) => (
+                      <div key={mi} className='v9-tip-row'>
+                        <span className='t-model'>{tm.model}</span>
+                        <span className='t-count'>{tm.costDelta}</span>
+                      </div>
+                    ))}
+                    {/* Placeholder rows when tipModels not yet wired */}
+                    {tipModelRows.length === 0 && (
+                      <div className='v9-tip-row'>
+                        {/* TODO(w20): wire tipModels from buildQuotaIntervals */}
+                        <span className='t-model'>—</span>
+                        <span className='t-count'>—</span>
+                      </div>
+                    )}
+                  </div>
                 )
                 return (
                   <div key={i}>
@@ -644,55 +769,6 @@ export function ProviderCard({
           </>
         )}
 
-        {/*
-         * TOKEN CACHE sub-section
-         * 14-C.5: lowercase labels: in / create / miss / miss $
-         * 14-C.6: miss $ row uses cache_miss_usd (dollar cost, not token count)
-         *         displayed with formatUsd() and valueMod='cost' for amber color.
-         */}
-        <PcSubTitle title='TOKEN CACHE' />
-        <div className='pc-mini-table'>
-          <PcMiniRow label='in' value={fmtCompact(data.cache_input)} />
-          <PcMiniRow label='create' value={fmtCompact(data.cache_creation)} />
-          <PcMiniRow
-            label='miss'
-            value={fmtCompact(cacheMiss)}
-            valueMod='muted'
-          />
-          <PcMiniRow
-            label='miss $'
-            value={formatUsd(data.cache_miss_usd)}
-            valueMod='cost'
-          />
-        </div>
-
-        {/*
-         * REASONING sub-section
-         * 14-C.7: lowercase labels: reported / estimated / no-reasoning calls
-         * 14-C.8: estimated value has est-mark asterisk appended.
-         * 14-C.9: no-reasoning calls wired to integer (no_reasoning_calls field).
-         */}
-        <PcSubTitle title='REASONING' />
-        <div className='pc-mini-table'>
-          <PcMiniRow
-            label='reported'
-            value={fmtCompact(data.reasoning_reported)}
-          />
-          <PcMiniRow
-            label='estimated'
-            value={
-              <>
-                {fmtCompact(data.reasoning_estimated)}
-                <span className='est-mark'>*</span>
-              </>
-            }
-          />
-          <PcMiniRow
-            label='no-reasoning calls'
-            value={fmtCompact(data.no_reasoning_calls)}
-          />
-        </div>
-
         {/* Extra pane-left content injected by subclasses (e.g. AggregateCard FLEET ACTIVITY) */}
         {extraPaneLeft}
       </div>
@@ -755,6 +831,10 @@ export function ProviderCard({
               >
                 {fmtCompact(m.tokens)}
               </span>
+              {/*
+               * Wave 20 F6: use toLocaleString() so values ≥ $1,000 render
+               * with comma grouping (e.g. $1,284.00 not $1284.00).
+               */}
               <span
                 className='cost'
                 style={{
@@ -763,7 +843,11 @@ export function ProviderCard({
                   fontSize: '9.5px',
                 }}
               >
-                ${m.cost_usd.toFixed(2)}
+                $
+                {m.cost_usd.toLocaleString('en-US', {
+                  minimumFractionDigits: 2,
+                  maximumFractionDigits: 2,
+                })}
               </span>
               <span
                 className='p95'
