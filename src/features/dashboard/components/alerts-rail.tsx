@@ -11,6 +11,9 @@
  *
  * The container is marked aria-live="polite" so screen readers announce
  * new alerts automatically.
+ *
+ * Wave 16-V N1: wrap each alert's leading glyph in span.alert-glyph so the
+ * CSS rule added in Wave 15-A (12px fixed-width, text-align:center) applies.
  */
 import type { ReactElement } from 'react'
 
@@ -109,6 +112,29 @@ function alertClassNames(type: AlertItem['type']): string {
 }
 
 /**
+ * Returns the leading glyph character for each alert type.
+ *
+ * N1 (Wave 16-V): glyphs are wrapped in span.alert-glyph so the fixed-width
+ * CSS rule from Wave 15-A applies correctly.
+ */
+function alertGlyph(type: AlertItem['type']): string {
+  switch (type) {
+    case 'rate-limit':
+      return '🚫'
+    case 'budget':
+      return '💰'
+    case 'early-reset':
+      return '⟲'
+    case 'cache-stale':
+      return '⚠'
+    case 'info':
+      return 'ℹ'
+    case 'warn':
+      return '⚠'
+  }
+}
+
+/**
  * AlertsRail renders a stack of alert items with live-region semantics and
  * the v9.7 reference panel styling.
  */
@@ -173,6 +199,8 @@ export function AlertsRail({ alerts }: AlertsRailProps): ReactElement {
                   letterSpacing: '0.02em',
                 }}
               >
+                {/* N1: leading glyph wrapped in span.alert-glyph for 12px fixed-width column */}
+                <span className='alert-glyph'>{alertGlyph(alert.type)}</span>
                 {alert.head}
               </div>
               {alert.sub !== undefined && (
