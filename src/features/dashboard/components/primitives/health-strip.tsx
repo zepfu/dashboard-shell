@@ -189,6 +189,29 @@ export interface CellDef {
    * When absent, a summary-only tooltip is shown.
    */
   events?: HealthStripEvent[]
+
+  /**
+   * Raw error-type breakdown for the bucket, sourced from the health row.
+   * When present and any field > 0, `buildCellTooltip` emits one
+   * `.v9-tip-row` per non-zero error type instead of the legacy placeholder.
+   *
+   * Wave 29-E2 (Track 6): added to power per-type error summaries in hover
+   * tooltips without requiring per-event JSON from the API.
+   */
+  rawErrorBreakdown?: {
+    /** Provider-level errors (4xx/4xx-class from the upstream provider). */
+    provider_error_events: number
+    /** Provider 5xx errors (upstream 500-range responses). */
+    provider_5xx_events: number
+    /** Provider timeout events. */
+    provider_timeout_events: number
+    /** Network-layer errors (DNS, TCP, TLS). */
+    network_error_events: number
+    /** Rate-limit events (429 / quota exhausted). */
+    rate_limit_events: number
+    /** Capacity errors (503 capacity / overload). */
+    capacity_events: number
+  }
 }
 
 export interface HealthStripProps {
@@ -442,6 +465,24 @@ function formatRelTime(offsetSec: number): string {
 }
 
 /**
+ * Error-type label map used by `buildCellTooltip` when rendering
+ * `rawErrorBreakdown` rows.
+ *
+ * Wave 29-E2 (Track 6): keyed by the `rawErrorBreakdown` field name so the
+ * rendering loop can iterate in display order without string manipulation.
+ */
+const ERROR_BREAKDOWN_LABELS: ReadonlyArray<
+  [keyof NonNullable<CellDef['rawErrorBreakdown']>, string]
+> = [
+  ['provider_error_events', 'Provider errors'],
+  ['provider_5xx_events', '5xx errors'],
+  ['provider_timeout_events', 'Timeouts'],
+  ['network_error_events', 'Network errors'],
+  ['rate_limit_events', 'Rate limits'],
+  ['capacity_events', 'Capacity limits'],
+]
+
+/**
  * Builds the `tip-health` tooltip ReactNode for a given cell, following the
  * Wave 20 mockup structure:
  *
@@ -455,11 +496,17 @@ function formatRelTime(offsetSec: number): string {
  * </div>
  * ```
  *
- * Rendering rules (Wave 24):
- * - `events` array with ≥1 entries: one `v9-tip-row` per event (fully wired).
+ * Rendering rules (Wave 29-E2 Track 6):
+ * - `rawErrorBreakdown` present AND any field > 0: head + one `.v9-tip-row`
+ *   per non-zero error type ("Provider errors / N", etc.).
+ * - `rawErrorBreakdown` present but all fields = 0 (error-free bucket): head
+ *   only — no body rows. The head already shows "0 events".
+ * - `events` array with ≥1 entries: one `v9-tip-row` per event (legacy path,
+ *   still honoured for callers that supply per-event JSON).
  * - `events` array with 0 entries but `eventCount > 0`: head + placeholder row
  *   showing the aggregate count (upstream sent count but no detail rows yet).
- * - `events` undefined: head + single row with "no event detail" message.
+ * - No `rawErrorBreakdown` and `events` undefined: head only (no misleading
+ *   "no event detail" message for error-free buckets).
  * - `bucketStart` absent: head falls back to `—` time display.
  */
 function buildCellTooltip(cell: CellDef, now: Date): ReactNode {
@@ -484,13 +531,34 @@ function buildCellTooltip(cell: CellDef, now: Date): ReactNode {
     headText = n > 0 ? `— · ${n.toString()} ${noun}` : '— no data'
   }
 
-  // --- Rows: per-event entries ---------------------------------------------
-  let rows: ReactNode
+  // --- Rows: error breakdown (Wave 29-E2 Track 6) -------------------------
+  // Priority 1: rawErrorBreakdown with at least one non-zero field → emit one
+  // row per error type using short human-readable labels.
+  if (cell.rawErrorBreakdown != null) {
+    const bd = cell.rawErrorBreakdown
+    const breakdownRows = ERROR_BREAKDOWN_LABELS.filter(
+      ([key]) => bd[key] > 0
+    ).map(([key, label]) => (
+      <div key={key} className='v9-tip-row'>
+        <span className='t-err'>{label}</span>
+        <span className='t-count'>{bd[key].toString()}</span>
+      </div>
+    ))
 
+    // Error-free bucket: show head only (no misleading rows).
+    return (
+      <>
+        <div className='v9-tip-head'>{headText}</div>
+        {breakdownRows}
+      </>
+    )
+  }
+
+  // --- Rows: legacy per-event entries (Wave 24 path) ----------------------
   if (cell.events != null && cell.events.length > 0) {
     // Fully wired: one row per event (Wave 24 — bucketStart/events wired by
     // W24-PhosphorDash upstream).
-    rows = cell.events.map((ev, idx) => (
+    const rows = cell.events.map((ev, idx) => (
       <div key={idx} className='v9-tip-row'>
         <span className='t-time'>{ev.time}</span>
         <span className='t-model'>{ev.model}</span>
@@ -498,38 +566,36 @@ function buildCellTooltip(cell: CellDef, now: Date): ReactNode {
         <span className='t-count'>x{ev.count.toString()}</span>
       </div>
     ))
-  } else if (cell.events != null && cell.events.length === 0) {
-    // Upstream provided an empty events array but eventCount > 0 — show a
-    // placeholder row with the aggregate count while detail is unavailable.
-    const count = cell.eventCount ?? 0
-    rows = (
-      <div className='v9-tip-row'>
-        <span className='t-time'>—</span>
-        <span className='t-model'>—</span>
-        <span className='t-err'>
-          {count > 0 ? `${count.toString()} events` : 'ok'}
-        </span>
-        <span className='t-count' />
-      </div>
-    )
-  } else {
-    // events is undefined — no per-event detail available from upstream.
-    rows = (
-      <div className='v9-tip-row'>
-        <span className='t-time'>—</span>
-        <span className='t-model'>—</span>
-        <span className='t-err'>no event detail</span>
-        <span className='t-count' />
-      </div>
+    return (
+      <>
+        <div className='v9-tip-head'>{headText}</div>
+        {rows}
+      </>
     )
   }
 
-  return (
-    <>
-      <div className='v9-tip-head'>{headText}</div>
-      {rows}
-    </>
-  )
+  if (cell.events != null && cell.events.length === 0) {
+    // Upstream provided an empty events array but eventCount > 0 — show a
+    // placeholder row with the aggregate count while detail is unavailable.
+    const count = cell.eventCount ?? 0
+    return (
+      <>
+        <div className='v9-tip-head'>{headText}</div>
+        <div className='v9-tip-row'>
+          <span className='t-time'>—</span>
+          <span className='t-model'>—</span>
+          <span className='t-err'>
+            {count > 0 ? `${count.toString()} events` : 'ok'}
+          </span>
+          <span className='t-count' />
+        </div>
+      </>
+    )
+  }
+
+  // events is undefined and no rawErrorBreakdown — head only (no misleading
+  // "no event detail" message; the bucket may simply be error-free).
+  return <div className='v9-tip-head'>{headText}</div>
 }
 
 /**
