@@ -39,6 +39,8 @@ services:
       SHELL_REPORT_PORT: "3010"
     expose:
       - "3010"
+    volumes:
+      - ./server:/app/server:ro
     healthcheck:
       test:
         [
