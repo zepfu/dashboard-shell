@@ -412,7 +412,7 @@ export function formatUsd(usd: number | null | undefined): string {
  *
  * Wave 15-B.6: replaces the hardcoded `errors: 0` in toKpiSummary (index.tsx).
  * Counts provider_error_events, provider_5xx_events, provider_timeout_events,
- * and network_error_events.
+ * network_error_events, rate_limit_events (429s), and capacity_events (529s).
  *
  * Usage in index.tsx (TODO 15-C):
  *   errors: computeFleetErrors(summaryReport?.providerLatencyHealth ?? [])
@@ -423,6 +423,8 @@ export function computeFleetErrors(
     provider_5xx_events: number
     provider_timeout_events: number
     network_error_events: number
+    rate_limit_events: number
+    capacity_events: number
   }[]
 ): number {
   return healthRows.reduce(
@@ -431,7 +433,9 @@ export function computeFleetErrors(
       r.provider_error_events +
       r.provider_5xx_events +
       r.provider_timeout_events +
-      r.network_error_events,
+      r.network_error_events +
+      r.rate_limit_events +
+      r.capacity_events,
     0
   )
 }
