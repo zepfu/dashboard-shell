@@ -101,6 +101,39 @@ test('test_no_cache_stale_when_false', () => {
   expect(result.current.cacheStale).toBe(false)
 })
 
+test('test_gemini_rows_surface_under_google_key', () => {
+  // Regression: Wave 18-A — DB stores Google rows as 'gemini'.
+  // ProviderCard queries earlyReset.has('google'), which was always false
+  // before canonicalProvider was applied to the Map key.
+  const healthRows: HealthRow[] = [
+    {
+      provider: 'gemini', // raw DB value
+      model: 'gemini-1.5-flash',
+      bucket_start: '2024-01-15T08:00:00Z',
+      next_expected_reset_at: '2024-01-15T12:00:00Z',
+    },
+    {
+      provider: 'gemini', // raw DB value
+      model: 'gemini-1.5-flash',
+      bucket_start: '2024-01-15T09:00:00Z',
+      next_expected_reset_at: '2024-01-15T10:00:00Z', // earlier → early reset
+    },
+  ]
+
+  const { result } = renderHook(() =>
+    useAnomalyDetection(healthRows, { latestRecordStale: false })
+  )
+
+  // Must surface under canonical 'google', NOT raw 'gemini'
+  expect(result.current.earlyReset.has('google')).toBe(true)
+  expect(result.current.earlyReset.has('gemini')).toBe(false)
+
+  const entry = result.current.earlyReset.get('google')
+  expect(entry).toBeDefined()
+  expect(entry!.prior).toContain('12:00')
+  expect(entry!.current).toContain('10:00')
+})
+
 test('test_sorts_rows_by_bucket_start_before_scanning', () => {
   // Rows OUT OF ORDER: row1 bucket 10:00, row2 bucket 08:00
   // If sorted correctly: 08:00 reset stays same or increases (08:00→10:00 is fine)
