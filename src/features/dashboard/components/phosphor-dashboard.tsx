@@ -740,44 +740,48 @@ function buildQuotaRows(
 
   switch (providerLower) {
     case 'openai': {
-      // Provider-level row (model === null): 'all · 5h' and 'all · 7d'
+      // 22-PhosphorDash Fix ⚠-W21-1: the live API encodes codex-spark quotas in
+      // the special_* and short_special_* columns of the model=null row — there is
+      // no separate model-scoped row for codex-spark.  Read all 4 bars from the
+      // single provider-level row:
+      //   short          → 'all · 5h'
+      //   weekly         → 'all · 7d'
+      //   short_special  → 'codex-spark · 5h'
+      //   special        → 'codex-spark · 7d'
       const allRow = providerRows.find((r) => r.model === null)
       if (allRow !== undefined) {
         const g5h = makeQuotaBarGroup('all · 5h', allRow, 'short')
         if (g5h !== null) result.push(g5h)
         const g7d = makeQuotaBarGroup('all · 7d', allRow, 'weekly')
         if (g7d !== null) result.push(g7d)
-      }
-      // Model-level row for codex-spark: 'codex-spark · 5h' and 'codex-spark · 7d'
-      const codexRow = providerRows.find(
-        (r) => r.model !== null && r.model.toLowerCase().includes('codex-spark')
-      )
-      if (codexRow !== undefined) {
-        const gc5h = makeQuotaBarGroup('codex-spark · 5h', codexRow, 'short')
+        const gc5h = makeQuotaBarGroup(
+          'codex-spark · 5h',
+          allRow,
+          'short_special'
+        )
         if (gc5h !== null) result.push(gc5h)
-        const gc7d = makeQuotaBarGroup('codex-spark · 7d', codexRow, 'weekly')
+        const gc7d = makeQuotaBarGroup('codex-spark · 7d', allRow, 'special')
         if (gc7d !== null) result.push(gc7d)
       }
       break
     }
 
     case 'anthropic': {
-      // Provider-level row (model === null): 'all · 5h' and 'all · 7d'
+      // 22-PhosphorDash Fix ⚠-W21-1: same pattern as OpenAI — sonnet quotas live
+      // in the special_* / short_special_* columns of the model=null row.
+      //   short          → 'all · 5h'
+      //   weekly         → 'all · 7d'
+      //   short_special  → 'sonnet · 5h'
+      //   special        → 'sonnet · 7d'
       const allRow = providerRows.find((r) => r.model === null)
       if (allRow !== undefined) {
         const g5h = makeQuotaBarGroup('all · 5h', allRow, 'short')
         if (g5h !== null) result.push(g5h)
         const g7d = makeQuotaBarGroup('all · 7d', allRow, 'weekly')
         if (g7d !== null) result.push(g7d)
-      }
-      // Sonnet model row (model matches claude-*-sonnet*): 'sonnet · 5h' and 'sonnet · 7d'
-      const sonnetRow = providerRows.find(
-        (r) => r.model !== null && /claude-.*sonnet/i.test(r.model)
-      )
-      if (sonnetRow !== undefined) {
-        const gs5h = makeQuotaBarGroup('sonnet · 5h', sonnetRow, 'short')
+        const gs5h = makeQuotaBarGroup('sonnet · 5h', allRow, 'short_special')
         if (gs5h !== null) result.push(gs5h)
-        const gs7d = makeQuotaBarGroup('sonnet · 7d', sonnetRow, 'weekly')
+        const gs7d = makeQuotaBarGroup('sonnet · 7d', allRow, 'special')
         if (gs7d !== null) result.push(gs7d)
       }
       break
@@ -788,9 +792,20 @@ function buildQuotaRows(
       // Aggregate by gemini model class (gemini-pro / gemini-flash / gemini-flash-lite).
       // When multiple API rows map to the same class, take the first active one
       // (they share the same rate-limit pool per class in practice).
-      const classSeen = new Set<string>()
-      // Sort so shorter names come first (ensures gemini-2.5-flash-lite is
-      // classified before gemini-2.5-flash on naive iteration).
+      //
+      // 22-PhosphorDash Fix ⚠-W21-2275-#1: emit in mockup order
+      // (gemini-flash · 24h, gemini-pro · 24h, gemini-flash-lite · 24h).
+      // See mockup 06-phosphor-atlas.html L2533–2548.  We collect the best row
+      // per class first (sorting by name length so shorter names are preferred),
+      // then emit rows in the canonical class order.
+      const GOOGLE_CLASS_ORDER: Record<string, number> = {
+        'gemini-flash': 0,
+        'gemini-pro': 1,
+        'gemini-flash-lite': 2,
+      }
+
+      // Collect best row per class (prefer shorter model names as a tiebreak)
+      const bestRowByClass = new Map<string, UsageReportQuotaRow>()
       const sortedGoogleRows = [...providerRows].sort((a, b) => {
         const am = (a.model ?? '').length
         const bm = (b.model ?? '').length
@@ -799,12 +814,19 @@ function buildQuotaRows(
       for (const row of sortedGoogleRows) {
         if (row.model === null) continue
         const cls = classifyGeminiModel(row.model)
-        if (cls === null || classSeen.has(cls)) continue
+        if (cls === null || bestRowByClass.has(cls)) continue
+        bestRowByClass.set(cls, row)
+      }
+
+      // Emit in mockup order
+      const orderedClasses = [...bestRowByClass.keys()].sort(
+        (a, b) => (GOOGLE_CLASS_ORDER[a] ?? 99) - (GOOGLE_CLASS_ORDER[b] ?? 99)
+      )
+      for (const cls of orderedClasses) {
+        const row = bestRowByClass.get(cls)
+        if (row === undefined) continue
         const g = makeQuotaBarGroup(`${cls} · 24h`, row, 'short')
-        if (g !== null) {
-          classSeen.add(cls)
-          result.push(g)
-        }
+        if (g !== null) result.push(g)
       }
       break
     }
@@ -1077,24 +1099,46 @@ function buildModelRows(
   // 15-B.5: Pre-compute consumed quota % per provider (provider-level quotas).
   // For model-scoped quota rows use provider+model key; for provider-scoped
   // rows (model === null) use provider key as fallback.
+  //
+  // 22-PhosphorDash Fix ⚠-W21-2: the provider-level fallback key (model=null,
+  // stored as `${p}::`) must NOT include special / short_special intervals.
+  // Those intervals are model-specific sub-quotas (e.g. codex-spark, sonnet)
+  // that happen to be stored on the provider row.  Including them caused the
+  // codex-spark exhaustion (short_special_remaining_pct=0) to broadcast
+  // quota_pct=100 onto every OpenAI model row via the fallback chain.
+  //
+  // Strategy (option a from the audit): when processing a model=null row, only
+  // consider short / weekly / monthly for the provider-level fallback key.
+  // special / short_special are included only for model-scoped keys
+  // (q.model !== null) — though in practice the live API encodes those on the
+  // model=null row and the display is handled separately by buildQuotaRows.
   const quotaByProvider = new Map<string, number>()
   for (const q of quotaRows) {
     const p = q.provider.toLowerCase()
-    // 18-PhosphorDash: Fix data-audit ✘-2 — iterate all 5 interval types and
-    // take the MAX consumed% across active intervals (previously only checked
-    // short/weekly/monthly with priority fallthrough, silently dropping
-    // special_active / short_special_active and under-reporting quota consumed).
+    const isProviderLevel = q.model === null
+
+    // 18-PhosphorDash: Fix data-audit ✘-2 — iterate all interval types and
+    // take the MAX consumed% across active intervals.
+    // 22-PhosphorDash: for provider-level rows (model=null) restrict to the
+    // main fleet intervals (short/weekly/monthly) so sub-quota exhaustion
+    // (special/short_special) does not pollute the provider fallback key.
     let consumed: number | null = null
-    const intervalCandidates = [
-      { active: q.short_active, remainingPct: q.short_remaining_pct },
-      {
-        active: q.short_special_active,
-        remainingPct: q.short_special_remaining_pct,
-      },
-      { active: q.special_active, remainingPct: q.special_remaining_pct },
-      { active: q.weekly_active, remainingPct: q.weekly_remaining_pct },
-      { active: q.monthly_active, remainingPct: q.monthly_remaining_pct },
-    ]
+    const intervalCandidates = isProviderLevel
+      ? [
+          { active: q.short_active, remainingPct: q.short_remaining_pct },
+          { active: q.weekly_active, remainingPct: q.weekly_remaining_pct },
+          { active: q.monthly_active, remainingPct: q.monthly_remaining_pct },
+        ]
+      : [
+          { active: q.short_active, remainingPct: q.short_remaining_pct },
+          {
+            active: q.short_special_active,
+            remainingPct: q.short_special_remaining_pct,
+          },
+          { active: q.special_active, remainingPct: q.special_remaining_pct },
+          { active: q.weekly_active, remainingPct: q.weekly_remaining_pct },
+          { active: q.monthly_active, remainingPct: q.monthly_remaining_pct },
+        ]
     for (const iv of intervalCandidates) {
       if (iv.active && iv.remainingPct !== null) {
         const c = Math.max(0, Math.min(100, 100 - iv.remainingPct))
