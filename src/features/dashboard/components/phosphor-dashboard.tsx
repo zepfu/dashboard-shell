@@ -1237,8 +1237,22 @@ function buildRepoRows(
     usd_cost: number | null
     traces: number | null
     model?: string
-  }[]
+  }[],
+  trendRows: UsageReportTrendRow[]
 ): RepoRow[] {
+  // Build per-repository sparkline series from trend data (24h buckets).
+  // Sort chronologically so the polyline reads left-to-right oldest-to-newest.
+  const sortedTrend = [...trendRows].sort((a, b) =>
+    a.bucket < b.bucket ? -1 : a.bucket > b.bucket ? 1 : 0
+  )
+  const sparkByRepo = new Map<string, number[]>()
+  for (const t of sortedTrend) {
+    const repo = t.repository ?? '(unknown)'
+    const arr = sparkByRepo.get(repo) ?? []
+    arr.push(t.token_total)
+    sparkByRepo.set(repo, arr)
+  }
+
   // 15-B.7: Track per-repo model token sums so we can pick the genuine top
   // model (max token_total) instead of the last-iterated model.
   const repoMap = new Map<
@@ -1309,6 +1323,7 @@ function buildRepoRows(
         cost_usd: data.cost,
         traces: data.traces,
         top_model: topModel,
+        spark: sparkByRepo.get(repository) ?? [data.tokens],
       }
     })
 }
@@ -1333,7 +1348,8 @@ function buildModelRows(
   }[],
   healthRows: UsageReportProviderLatencyHealthRow[],
   usageRows: UsageReportRow[],
-  quotaRows: UsageReportQuotaRow[]
+  quotaRows: UsageReportQuotaRow[],
+  trendRows: UsageReportTrendRow[]
 ): ModelRow[] {
   // 15-B.3: Aggregate real token_in / token_out from report.rows by provider+model.
   // providerStatusUsage (the `rows` param) lacks per-direction token fields;
@@ -1398,6 +1414,23 @@ function buildModelRows(
   // quotaRows param retained in signature for backward compat with call-sites
   // but quota_pct column removed (Wave 26, operator F#13).
   void quotaRows
+
+  // Build per-(provider, model) sparkline series from trend data (24h buckets).
+  // Sort chronologically so the polyline reads left-to-right oldest-to-newest.
+  // Key mirrors tokensByKey: canonicalProvider + model lowercase.
+  const sortedTrendRows = [...trendRows].sort((a, b) =>
+    a.bucket < b.bucket ? -1 : a.bucket > b.bucket ? 1 : 0
+  )
+  const sparkByKey = new Map<string, number[]>()
+  for (const t of sortedTrendRows) {
+    const p = canonicalProvider(t.provider ?? '')
+    const m = (t.model ?? '').toLowerCase()
+    if (!p || !m) continue
+    const sparkKey = `${p}::${m}`
+    const arr = sparkByKey.get(sparkKey) ?? []
+    arr.push(t.token_total)
+    sparkByKey.set(sparkKey, arr)
+  }
 
   // Group health data by provider+model for latency lookups
   // 15-B.4: also accumulate upstream_p50_ms (previously always left null)
@@ -1515,7 +1548,9 @@ function buildModelRows(
         reasoning_reported !== undefined ? reasoning_reported : undefined,
       reasoning_estimated:
         reasoning_estimated !== undefined ? reasoning_estimated : undefined,
-      spark: [row.token_total],
+      spark: sparkByKey.get(
+        `${canonicalProvider(row.provider)}::${modelKey}`
+      ) ?? [row.token_total],
     }
   })
 }
@@ -1906,8 +1941,8 @@ export default function PhosphorDashboard({
   )
 
   const repoRows = useMemo(
-    () => buildRepoRows(report?.rows ?? []),
-    [report?.rows]
+    () => buildRepoRows(report?.rows ?? [], report?.trend ?? []),
+    [report?.rows, report?.trend]
   )
 
   const modelRows = useMemo(
@@ -1916,13 +1951,15 @@ export default function PhosphorDashboard({
         report?.providerStatusUsage ?? [],
         report?.providerLatencyHealth ?? [],
         report?.rows ?? [], // 15-B.3: real token_in/token_out
-        quotaRows // 15-B.5: quota_pct from quota rows
+        quotaRows, // 15-B.5: quota_pct from quota rows
+        report?.trend ?? [] // Wave 30 Track 4: real 24h sparkline data
       ),
     [
       report?.providerStatusUsage,
       report?.providerLatencyHealth,
       report?.rows,
       quotaRows,
+      report?.trend,
     ]
   )
 
