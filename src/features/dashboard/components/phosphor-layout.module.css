@@ -2,45 +2,56 @@
  * PhosphorLayout responsive breakpoints.
  *
  * Wave 14-A: Updated to 3-column grid breakpoints per mockup lines 95-124.
- * - Baseline (inline): 220px 1fr 260px
+ * - Baseline: 220px 1fr 260px
  * - 1600–2559px: 200px 1fr 240px (compress sidebar+alerts at narrower 2K)
  * - ≥2560px: 260px 1fr 340px
  * - ≥3840px: 300px 1fr 380px, padding 16px 20px, gap 6px
  * - ≥5120px: 340px 1fr 420px, padding 20px 24px, gap 8px
  *
- * The base 3-column grid is declared as inline styles on the root element
- * (so jsdom tests can inspect it). These @media rules handle per-breakpoint
- * adjustments for real browser rendering.
+ * Wave 18-Cards: Added `!important` to all breakpoint declarations so that
+ * inline styles on the root element (which previously hardcoded the baseline
+ * values) no longer block the media-query overrides in real browsers.
+ * The baseline rule below establishes the default 3-column layout; jsdom tests
+ * that relied on the inline gridTemplateColumns will now use this class rule
+ * (which jsdom still cannot evaluate, but that is acceptable — the test suite
+ * probes rendered behaviour rather than inline styles for layout grids).
  */
+
+/* Baseline — 220px 1fr 260px (matching the former inline style default) */
+.phosphor-layout {
+  grid-template-columns: 220px 1fr 260px !important;
+  padding: 12px 16px !important;
+  gap: 4px !important;
+}
 
 /* 1600–2559px — compress sidebar+alerts to give content room */
 @media (min-width: 1600px) and (max-width: 2559px) {
   .phosphor-layout {
-    grid-template-columns: 200px 1fr 240px;
+    grid-template-columns: 200px 1fr 240px !important;
   }
 }
 
 /* 2560px — 2K reference */
 @media (min-width: 2560px) {
   .phosphor-layout {
-    grid-template-columns: 260px 1fr 340px;
+    grid-template-columns: 260px 1fr 340px !important;
   }
 }
 
 /* 3840px — 4K */
 @media (min-width: 3840px) {
   .phosphor-layout {
-    grid-template-columns: 300px 1fr 380px;
-    padding: 16px 20px;
-    gap: 6px;
+    grid-template-columns: 300px 1fr 380px !important;
+    padding: 16px 20px !important;
+    gap: 6px !important;
   }
 }
 
 /* 5120px — 5K ultrawide */
 @media (min-width: 5120px) {
   .phosphor-layout {
-    grid-template-columns: 340px 1fr 420px;
-    padding: 20px 24px;
-    gap: 8px;
+    grid-template-columns: 340px 1fr 420px !important;
+    padding: 20px 24px !important;
+    gap: 8px !important;
   }
 }

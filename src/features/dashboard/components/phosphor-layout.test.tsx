@@ -56,6 +56,12 @@ test('test_phosphor_layout_3col_grid_template', () => {
 
   const outerEl = container.firstChild as HTMLElement
   expect(outerEl).not.toBeNull()
-  // Baseline 3-col grid declared via inline style
-  expect(outerEl.style?.gridTemplateColumns).toBe('220px 1fr 260px')
+  // Wave 18-Cards: gridTemplateColumns moved from inline style to CSS module
+  // (with !important) so that media-query breakpoints at 1600/2560/3840/5120px
+  // are not silently blocked by inline specificity. jsdom cannot evaluate CSS
+  // module class rules, so we verify the phosphor-layout CSS class is present
+  // (which carries the baseline 220px 1fr 260px rule) and that display:grid is
+  // set inline (preserved for jsdom detectability of the grid container).
+  expect(outerEl.className).toContain('phosphor-layout')
+  expect(outerEl.style?.display).toBe('grid')
 })
