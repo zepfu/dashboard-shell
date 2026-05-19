@@ -157,7 +157,17 @@ export function HoverTooltip({
             ? 'block'
             : 'inline-block',
         ...(variant === 'health' || variant === 'quota'
-          ? { height: '100%', flex: '1 1 0%' }
+          ? {
+              height: '100%',
+              flex: '1 1 0%',
+              // Override display:'block' above so the inner .trend-bar child
+              // is flex-positioned at the BOTTOM of this full-height wrapper.
+              // Without this, percentage-height bars grow top→down leaving
+              // empty space below (Wave 32-G fix).
+              display: 'flex',
+              flexDirection: 'column' as const,
+              justifyContent: 'flex-end',
+            }
           : {}),
       }}
       onPointerEnter={() => {
