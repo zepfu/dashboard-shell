@@ -31,6 +31,13 @@
  * - reasoning_reported + reasoning_estimated consolidated into single "Reasoning"
  *   column (col 8). Sorts on combined value. Estimated shown as "(+N*)" suffix
  *   only when reasoning_estimated > 0.
+ *
+ * Wave 30 operator reorder:
+ * - Columns reordered per operator spec.
+ * - New "Cache toks" column added at position 6 (cache_input + cache_creation).
+ * - Cache miss $, Reasoning moved up before latency columns.
+ * - Cache Miss % relocated after $/1k (cost group).
+ * - 24h Tok/Hr sparkline moved to last position.
  */
 import { useState, useMemo, type ReactElement } from 'react'
 import {
@@ -79,6 +86,9 @@ export interface ModelRow {
   reasoning_reported?: number
   /** Reasoning tokens estimated (may be approximate). */
   reasoning_estimated?: number
+  // Wave 30 operator reorder — total cache tokens (cache_input + cache_creation)
+  /** Total cache tokens used: token_cache_input + token_cache_creation. */
+  cache_toks?: number
   // 5K-only optional fields
   tool?: number
   git_commits?: number
@@ -172,10 +182,34 @@ function formatPercent(pct: number): string {
 // Column definitions
 // ---------------------------------------------------------------------------
 
-// Base columns (cols 1–10): Model … $/1k
-// Quota% is intentionally excluded here; it sits at col 16 per spec mockup L2843.
-// Wave 29 Fix #7: Requests moved to col 3 (right after Provider).
-const baseColumns = [
+// Wave 30 operator-specified column order (24 columns):
+//   1.  Model
+//   2.  Provider
+//   3.  Requests
+//   4.  Toks In
+//   5.  Toks Out
+//   6.  Cache toks  ← NEW (cache_input + cache_creation)
+//   7.  Cache Miss $
+//   8.  Reasoning
+//   9.  p50ms
+//   10. p95ms
+//   11. Err%
+//   12. Cost
+//   13. $/1k
+//   14. Cache Miss %
+//   15. $/1k In    (col-4k-only)
+//   16. $/1k Out   (col-4k-only)
+//   17. Cache%     (col-4k-only)
+//   18. Queue      (col-4k-only)
+//   19. Resets     (col-4k-only)
+//   20. TOOL       (col-5k-only)
+//   21. GIT commits (col-5k-only)
+//   22. GIT pushes (col-5k-only)
+//   23. INVAL      (col-5k-only)
+//   24. 24h Tok/Hr (sparkline, last)
+
+// Cols 1–5: identity + volume
+const baseVolumeColumns = [
   helper.accessor('model', {
     header: 'Model',
     cell: (info) => info.getValue() as string,
@@ -196,42 +230,27 @@ const baseColumns = [
     header: 'Toks Out',
     cell: (info) => numFmt(info.getValue() as number),
   }),
-  helper.accessor('p50_ms', {
-    header: 'p50ms',
-    cell: (info) => formatLatency(info.getValue() as number),
-  }),
-  helper.accessor('p95_ms', {
-    header: 'p95ms',
-    cell: (info) => formatLatency(info.getValue() as number),
-  }),
-  helper.accessor('error_pct', {
-    header: 'Err%',
-    cell: (info) => `${numFmt(info.getValue() as number, 1)}%`,
-  }),
-  helper.accessor('cost_usd', {
-    header: 'Cost',
-    cell: (info) => formatUsd(info.getValue() as number),
-  }),
-  helper.accessor('cost_per_1k', {
-    header: '$/1k',
-    cell: (info) => `$${numFmt(info.getValue() as number, 4)}`,
+]
+
+// Col 6: Cache toks — NEW (token_cache_input + token_cache_creation)
+// Sortable numeric descending (same behaviour as Toks In/Out).
+const cacheToksColumn = [
+  helper.accessor('cache_toks', {
+    id: 'cache_toks',
+    header: 'Cache toks',
+    cell: (info) => {
+      const v = info.getValue() as number | undefined
+      return v !== undefined ? numFmt(v) : '—'
+    },
   }),
 ]
 
-// Wave 26 — new cache/reasoning columns (operator F#12, F#13)
-// Positioned after fourKColumns, before sparkline (replacing removed Quota%).
+// Cols 7–8: Cache Miss $ + Reasoning (moved up before latency)
+// Wave 26 — cache/reasoning columns (operator F#12, F#13).
 // Wave 29 Fix #7: reasoning_reported + reasoning_estimated consolidated into
 // a single "Reasoning" column. Sorts on combined value. Estimated shown as
 // "(+N*)" suffix only when reasoning_estimated > 0.
-const cacheReasoningColumns = [
-  helper.accessor('cache_miss_pct', {
-    id: 'cache_miss_pct',
-    header: 'Cache Miss %',
-    cell: (info) => {
-      const v = info.getValue() as number | undefined
-      return v !== undefined ? formatPercent(v) : '—'
-    },
-  }),
+const cacheMissDollarAndReasoningColumns = [
   helper.accessor('cache_miss_usd_cost', {
     id: 'cache_miss_usd_cost',
     header: 'Cache Miss $',
@@ -276,6 +295,43 @@ const cacheReasoningColumns = [
   }),
 ]
 
+// Cols 9–13: latency + error + cost group
+const latencyCostColumns = [
+  helper.accessor('p50_ms', {
+    header: 'p50ms',
+    cell: (info) => formatLatency(info.getValue() as number),
+  }),
+  helper.accessor('p95_ms', {
+    header: 'p95ms',
+    cell: (info) => formatLatency(info.getValue() as number),
+  }),
+  helper.accessor('error_pct', {
+    header: 'Err%',
+    cell: (info) => `${numFmt(info.getValue() as number, 1)}%`,
+  }),
+  helper.accessor('cost_usd', {
+    header: 'Cost',
+    cell: (info) => formatUsd(info.getValue() as number),
+  }),
+  helper.accessor('cost_per_1k', {
+    header: '$/1k',
+    cell: (info) => `$${numFmt(info.getValue() as number, 4)}`,
+  }),
+]
+
+// Col 14: Cache Miss % — stays in cost group (relocated from col 11)
+const cacheMissPctColumn = [
+  helper.accessor('cache_miss_pct', {
+    id: 'cache_miss_pct',
+    header: 'Cache Miss %',
+    cell: (info) => {
+      const v = info.getValue() as number | undefined
+      return v !== undefined ? formatPercent(v) : '—'
+    },
+  }),
+]
+
+// Cols 15–19: 4K-only columns
 const fourKColumns = [
   helper.accessor('cost_per_1k_in', {
     id: 'cost_per_1k_in',
@@ -324,6 +380,7 @@ const fourKColumns = [
   }),
 ]
 
+// Cols 20–23: 5K-only columns
 const fiveKColumns = [
   helper.accessor('tool', {
     id: 'tool',
@@ -363,6 +420,7 @@ const fiveKColumns = [
   }),
 ]
 
+// Col 24: sparkline — last per Wave 30 operator spec
 const sparklineColumn = [
   {
     id: 'sparkline',
@@ -373,18 +431,24 @@ const sparklineColumn = [
   },
 ]
 
-// Wave 29 column order (Fix #7: Requests moved to col 3; Reasoning consolidated):
-//   baseColumns (cols 1–10: Model, Provider, Requests, Toks In, Toks Out, p50, p95, Err%, Cost, $/1k)
-//   → cacheReasoningColumns (cols 11–13: Cache Miss %, Cache Miss $, Reasoning)
-//   → fourKColumns (cols 14–18: $/1k In…Resets, col-4k-only)
-//   → sparklineColumn (col 19: 24h Tok/Hr)
-//   → fiveKColumns (cols 20–23: TOOL/GIT commits/GIT pushes/INVAL, col-5k-only)
+// Wave 30 column order (operator-specified, 24 columns):
+//   baseVolumeColumns (1–5: Model, Provider, Requests, Toks In, Toks Out)
+//   → cacheToksColumn (6: Cache toks)
+//   → cacheMissDollarAndReasoningColumns (7–8: Cache Miss $, Reasoning)
+//   → latencyCostColumns (9–13: p50ms, p95ms, Err%, Cost, $/1k)
+//   → cacheMissPctColumn (14: Cache Miss %)
+//   → fourKColumns (15–19: $/1k In, $/1k Out, Cache%, Queue, Resets; col-4k-only)
+//   → fiveKColumns (20–23: TOOL, GIT commits, GIT pushes, INVAL; col-5k-only)
+//   → sparklineColumn (24: 24h Tok/Hr)
 const allColumns = [
-  ...baseColumns,
-  ...cacheReasoningColumns,
+  ...baseVolumeColumns,
+  ...cacheToksColumn,
+  ...cacheMissDollarAndReasoningColumns,
+  ...latencyCostColumns,
+  ...cacheMissPctColumn,
   ...fourKColumns,
-  ...sparklineColumn,
   ...fiveKColumns,
+  ...sparklineColumn,
 ]
 
 // ---------------------------------------------------------------------------
