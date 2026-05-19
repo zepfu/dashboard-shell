@@ -72,7 +72,11 @@ dashboard should query live report data. Set `AAWM_TAP_API_KEY` here, not in the
 remote browser bundle, when TAP requires `X-API-Key`. The static shell, remote,
 and report service all join `aawm-tap_default`; the report service also joins
 `aawm_default` so a host-published database URL such as `127.0.0.1:5434` can be
-rewritten to the internal `aawm-postgres18:5432` endpoint.
+rewritten to the internal `aawm-postgres18:5432` endpoint. The local static
+compose report service bind-mounts `./server` into the container, so
+`server/report-service.mjs` edits need a report-service restart, not an image
+rebuild. Dependency changes under `server/package.json` still require rebuilding
+the report image.
 
 The shell defaults to loading the remote through
 `/modules/aawm-tap/remoteEntry.js`, which `nginx.conf` proxies to the
