@@ -139,8 +139,13 @@ export function HoverTooltip({
       className={className}
       style={{
         position: 'relative',
-        // quota variant wraps a full-width bar — use block so width:100% resolves
-        // correctly.
+        // quota variant wraps a full-width trend bar inside a flex container
+        //   (token-trend-chart, height:80px, align-items:flex-end). The wrapper
+        //   must participate as a flex item (flex:'1 1 0%') AND have a definite
+        //   height (height:'100%') so that the inner .trend-bar can resolve its
+        //   own percentage height against this element rather than collapsing to
+        //   content height (4-7px). Wave 32 fix: mirrors the existing health
+        //   treatment. See .analysis/wave32-trend-still-broken.md §5.
         // health variant: the outer caller (health-strip.tsx) wraps HoverTooltip
         //   in an abs-positioned sizing shell (top:6px/bottom:6px/width:12px).
         //   HoverTooltip then fills that shell via display:block + height:100%.
@@ -151,7 +156,9 @@ export function HoverTooltip({
           variant === 'quota' || variant === 'health'
             ? 'block'
             : 'inline-block',
-        ...(variant === 'health' ? { height: '100%' } : {}),
+        ...(variant === 'health' || variant === 'quota'
+          ? { height: '100%', flex: '1 1 0%' }
+          : {}),
       }}
       onPointerEnter={() => {
         setIsOpen(true)
