@@ -21,7 +21,7 @@
  *   renders plain `<td style="text-align: right;">` values (mockup L3152-3154).
  * - Removed cost severity color thresholds — spec is neutral fg (§5.15).
  */
-import { useState, Fragment, type ReactElement } from 'react'
+import { useState, type ReactElement } from 'react'
 import {
   createColumnHelper,
   flexRender,
@@ -101,8 +101,8 @@ export interface RepoBreakdownTableProps {
  * usage metrics with a uniform cool-blue gutter (14-F.3), plain numeric cells
  * without microbar overlays (§5.14), and a tinted sparkline trend column.
  *
- * Wave 20-Tables (F5): caption rendered from inside the component so the
- * mockup-spec text is guaranteed regardless of parent caption text.
+ * Wave 20-Tables (F5): caption rendered from inside the component.
+ * Wave 29 Fix #9: caption removed per operator direction.
  */
 export function RepoBreakdownTable({
   rows,
@@ -169,162 +169,146 @@ export function RepoBreakdownTable({
   })
 
   return (
-    <Fragment>
-      {/* F5 (Wave 20-Tables): mockup L3136 — sparkline trend caption */}
-      <div
-        className='table-caption'
-        style={{
-          whiteSpace: 'nowrap',
-          overflow: 'hidden',
-          textOverflow: 'ellipsis',
-        }}
-      >
-        sparkline: 24h hourly trend · tok/hr per repo
-      </div>
-      <div
-        className='repo-table-wrapper'
+    <div
+      className='repo-table-wrapper'
+      style={{
+        width: '100%',
+        overflowX: 'auto',
+        overflowY: 'auto',
+        maxHeight: '240px',
+        background: 'var(--card)',
+        border: '1px solid var(--border)',
+        marginBottom: '8px',
+      }}
+    >
+      <table
+        aria-label='Repository usage breakdown'
+        className='repo-table'
         style={{
           width: '100%',
-          overflowX: 'auto',
-          overflowY: 'auto',
-          maxHeight: '240px',
-          background: 'var(--card)',
-          border: '1px solid var(--border)',
-          marginBottom: '8px',
+          borderCollapse: 'collapse',
+          fontSize: '10px',
+          fontFamily: 'var(--font-mono)',
         }}
       >
-        <table
-          aria-label='Repository usage breakdown'
-          className='repo-table'
+        <thead
           style={{
-            width: '100%',
-            borderCollapse: 'collapse',
-            fontSize: '10px',
-            fontFamily: 'var(--font-mono)',
+            position: 'sticky',
+            top: 0,
+            zIndex: 10,
+            background: 'var(--card-2)',
+            borderBottom: '1px solid rgba(245,158,11,0.25)',
           }}
         >
-          <thead
-            style={{
-              position: 'sticky',
-              top: 0,
-              zIndex: 10,
-              background: 'var(--card-2)',
-              borderBottom: '1px solid rgba(245,158,11,0.25)',
-            }}
-          >
-            {table.getHeaderGroups().map((headerGroup) => (
-              <tr key={headerGroup.id}>
-                {headerGroup.headers.map((header) => {
-                  const sortDir = header.column.getIsSorted()
-                  const isSortable = header.column.getCanSort()
-                  let ariaSort: 'ascending' | 'descending' | 'none' | undefined
-                  if (isSortable) {
-                    ariaSort =
-                      sortDir === 'asc'
-                        ? 'ascending'
-                        : sortDir === 'desc'
-                          ? 'descending'
-                          : 'none'
-                  }
-
-                  /* 14-H.4: data-sort-dir drives CSS ::after pseudo (⇅/↑/↓ + amber) */
-                  const sortDirAttr =
+          {table.getHeaderGroups().map((headerGroup) => (
+            <tr key={headerGroup.id}>
+              {headerGroup.headers.map((header) => {
+                const sortDir = header.column.getIsSorted()
+                const isSortable = header.column.getCanSort()
+                let ariaSort: 'ascending' | 'descending' | 'none' | undefined
+                if (isSortable) {
+                  ariaSort =
                     sortDir === 'asc'
-                      ? 'asc'
+                      ? 'ascending'
                       : sortDir === 'desc'
-                        ? 'desc'
+                        ? 'descending'
+                        : 'none'
+                }
+
+                /* 14-H.4: data-sort-dir drives CSS ::after pseudo (⇅/↑/↓ + amber) */
+                const sortDirAttr =
+                  sortDir === 'asc'
+                    ? 'asc'
+                    : sortDir === 'desc'
+                      ? 'desc'
+                      : undefined
+
+                return (
+                  <th
+                    key={header.id}
+                    aria-sort={ariaSort}
+                    data-sortable={isSortable ? 'true' : undefined}
+                    data-sort-dir={sortDirAttr}
+                    onClick={
+                      isSortable
+                        ? header.column.getToggleSortingHandler()
                         : undefined
+                    }
+                    style={{
+                      padding: '4px 6px',
+                      textAlign: 'left',
+                      fontWeight: 600,
+                      color: 'var(--accent-chrome)',
+                      background: 'var(--card-2)',
+                      fontSize: '9px',
+                      textTransform: 'uppercase',
+                      // 14-F.3 incidental fix: corrected to 0.04em per mockup §14 audit
+                      letterSpacing: '0.04em',
+                      borderRight: '1px solid var(--border)',
+                      borderBottom: '1px solid rgba(245, 158, 11, 0.25)',
+                      cursor: isSortable ? 'pointer' : 'default',
+                      userSelect: 'none',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {flexRender(
+                      header.column.columnDef.header,
+                      header.getContext()
+                    )}
+                  </th>
+                )
+              })}
+            </tr>
+          ))}
+        </thead>
 
-                  return (
-                    <th
-                      key={header.id}
-                      aria-sort={ariaSort}
-                      data-sortable={isSortable ? 'true' : undefined}
-                      data-sort-dir={sortDirAttr}
-                      onClick={
-                        isSortable
-                          ? header.column.getToggleSortingHandler()
-                          : undefined
-                      }
-                      style={{
-                        padding: '4px 6px',
-                        textAlign: 'left',
-                        fontWeight: 600,
-                        color: 'var(--accent-chrome)',
-                        background: 'var(--card-2)',
-                        fontSize: '9px',
-                        textTransform: 'uppercase',
-                        // 14-F.3 incidental fix: corrected to 0.04em per mockup §14 audit
-                        letterSpacing: '0.04em',
-                        borderRight: '1px solid var(--border)',
-                        borderBottom: '1px solid rgba(245, 158, 11, 0.25)',
-                        cursor: isSortable ? 'pointer' : 'default',
-                        userSelect: 'none',
-                        whiteSpace: 'nowrap',
-                      }}
-                    >
-                      {flexRender(
-                        header.column.columnDef.header,
-                        header.getContext()
-                      )}
-                    </th>
-                  )
-                })}
-              </tr>
-            ))}
-          </thead>
+        <tbody>
+          {table.getRowModel().rows.map((row) => (
+            <tr
+              key={row.id}
+              style={{ borderBottom: '1px solid var(--border)' }}
+            >
+              {row.getVisibleCells().map((cell, cellIdx) => {
+                const isFirst = cellIdx === 0
+                const isText =
+                  cell.column.id === 'repository' ||
+                  cell.column.id === 'top_model' ||
+                  cell.column.id === 'sparkline'
 
-          <tbody>
-            {table.getRowModel().rows.map((row) => (
-              <tr
-                key={row.id}
-                style={{ borderBottom: '1px solid var(--border)' }}
-              >
-                {row.getVisibleCells().map((cell, cellIdx) => {
-                  const isFirst = cellIdx === 0
-                  const isText =
-                    cell.column.id === 'repository' ||
-                    cell.column.id === 'top_model' ||
-                    cell.column.id === 'sparkline'
+                // 14-F.1: add .number class to numeric cells; .gutter-cool on first cell
+                const tdClassName =
+                  [
+                    isFirst ? 'gutter-cool' : undefined,
+                    !isText ? 'number' : undefined,
+                  ]
+                    .filter(Boolean)
+                    .join(' ') || undefined
 
-                  // 14-F.1: add .number class to numeric cells; .gutter-cool on first cell
-                  const tdClassName =
-                    [
-                      isFirst ? 'gutter-cool' : undefined,
-                      !isText ? 'number' : undefined,
-                    ]
-                      .filter(Boolean)
-                      .join(' ') || undefined
-
-                  return (
-                    <td
-                      key={cell.id}
-                      className={tdClassName}
-                      style={{
-                        padding: '4px 6px',
-                        fontFamily: 'var(--font-mono)',
-                        color: isText ? 'var(--fg)' : 'var(--accent-cool)',
-                        borderRight: '1px solid var(--border)',
-                        // 14-F.3: always cool — gutter color from .gutter-cool class
-                        borderLeft: isFirst ? '4px solid' : undefined,
-                        paddingLeft: isFirst ? '6px' : undefined,
-                        textAlign: isText ? 'left' : 'right',
-                        whiteSpace: 'nowrap',
-                        verticalAlign: 'top',
-                      }}
-                    >
-                      {flexRender(
-                        cell.column.columnDef.cell,
-                        cell.getContext()
-                      )}
-                    </td>
-                  )
-                })}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </Fragment>
+                return (
+                  <td
+                    key={cell.id}
+                    className={tdClassName}
+                    style={{
+                      padding: '4px 6px',
+                      fontFamily: 'var(--font-mono)',
+                      color: isText ? 'var(--fg)' : 'var(--accent-cool)',
+                      borderRight: '1px solid var(--border)',
+                      // 14-F.3: always cool — gutter color from .gutter-cool class
+                      borderLeft: isFirst ? '4px solid' : undefined,
+                      paddingLeft: isFirst ? '6px' : undefined,
+                      textAlign: isText ? 'left' : 'right',
+                      whiteSpace: 'nowrap',
+                      verticalAlign: 'top',
+                    }}
+                  >
+                    {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                  </td>
+                )
+              })}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   )
 }

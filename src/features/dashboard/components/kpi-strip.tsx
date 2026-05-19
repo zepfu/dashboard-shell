@@ -14,6 +14,9 @@
  *   Toks In → Tokens In, Toks Out → Tokens Out; Requests unchanged.
  * - Added `deltas` optional prop for real delta values; falls back to em-dash.
  * - Microbar fill computed proportionally via CSS --fill custom property.
+ *
+ * Wave 29 Fix #6:
+ * - Label rename: Cost (24h) → Cost (operator direction change).
  */
 import type { ReactElement } from 'react'
 
@@ -116,7 +119,7 @@ function buildTiles(summary: KpiSummary): TileData[] {
       value: fmtCompact(summary.token_out),
     },
     {
-      label: 'Cost (24h)',
+      label: 'Cost',
       key: 'cost_usd',
       rawValue: summary.cost_usd,
       value: formatCost(summary.cost_usd),
@@ -147,7 +150,7 @@ function buildTiles(summary: KpiSummary): TileData[] {
 const TILE_LABELS = [
   'Tokens In',
   'Tokens Out',
-  'Cost (24h)',
+  'Cost',
   'Requests',
   'Errors (24h)',
   'P95 Latency',

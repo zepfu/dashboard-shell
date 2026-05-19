@@ -46,14 +46,12 @@ test('test_renders_repository_rows', () => {
 })
 
 test('test_renders_sparkline_caption', () => {
-  // Wave 20-Tables F5: mockup L3136 — caption text must match exactly
+  // Wave 29 Fix #9: caption removed per operator direction.
+  // The .table-caption element must NOT be present.
   const { container } = render(<RepoBreakdownTable rows={mockRepos} />)
 
   const caption = container.querySelector('.table-caption')
-  expect(caption).not.toBeNull()
-  expect(caption?.textContent?.trim()).toBe(
-    'sparkline: 24h hourly trend · tok/hr per repo'
-  )
+  expect(caption).toBeNull()
 })
 
 test('test_sortable_by_tokens_descending', () => {
