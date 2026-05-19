@@ -268,6 +268,11 @@
   }
 }
 .pulse-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent-cool);
   animation: pulse-dot 1s infinite;
 }
 
