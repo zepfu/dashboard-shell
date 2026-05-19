@@ -442,7 +442,6 @@ export function UsageReportDashboard() {
             General Dashboard
           </h1>
           <div className='mt-1 flex flex-col gap-2 text-sm text-muted-foreground sm:flex-row sm:flex-wrap sm:items-center'>
-            <span>LiteLLM usage, quota, cost, and repository activity</span>
             <FreshnessIndicator
               loading={usageReport.isPending}
               metadata={usageReport.data?.metadata}

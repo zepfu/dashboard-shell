@@ -262,6 +262,22 @@ function padHealthCells(
       row.rate_limit_events +
       row.capacity_events
 
+    // Wave 29-E2 (Track 6): pass the per-type breakdown to CellDef so
+    // buildCellTooltip can render labeled rows instead of the generic placeholder.
+    // Undefined when no errors occurred in the bucket (avoids an empty breakdown
+    // object reaching the tooltip renderer for clean error-free buckets).
+    const rawErrorBreakdown: CellDef['rawErrorBreakdown'] =
+      eventCount > 0
+        ? {
+            provider_error_events: row.provider_error_events,
+            provider_5xx_events: row.provider_5xx_events,
+            provider_timeout_events: row.provider_timeout_events,
+            network_error_events: row.network_error_events,
+            rate_limit_events: row.rate_limit_events,
+            capacity_events: row.capacity_events,
+          }
+        : undefined
+
     return {
       // Wave 25-PhosphorDash (F#11): neutral fallback color; deriveCellStyle
       // path-2 now drives coloring from rawP95Ms / rawErrorCount via the W24
@@ -283,6 +299,8 @@ function padHealthCells(
       // Wave 25-PhosphorDash (F#11): wire raw error count for the amber trigger
       // in deriveCellStyle (any error event → amber regardless of p95).
       rawErrorCount: eventCount > 0 ? eventCount : 0,
+      // Wave 29-E2 (Track 6): per-type error breakdown for hover tooltip.
+      rawErrorBreakdown,
     }
   })
 
