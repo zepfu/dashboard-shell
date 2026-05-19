@@ -58,13 +58,21 @@ export interface ModelRow {
   error_pct: number
   cost_usd: number
   cost_per_1k: number
-  quota_pct: number
   // 4K-only optional fields
   cost_per_1k_in?: number
   cost_per_1k_out?: number
   cache_pct?: number
   queue?: number
   resets?: number
+  // Wave 26 — new cache/reasoning columns (operator F#12)
+  /** Percentage of cache misses relative to total tokens (0–100). */
+  cache_miss_pct?: number
+  /** Dollar cost attributed to cache misses. */
+  cache_miss_usd_cost?: number
+  /** Reasoning tokens as reported by the provider. */
+  reasoning_reported?: number
+  /** Reasoning tokens estimated (may be approximate). */
+  reasoning_estimated?: number
   // 5K-only optional fields
   tool?: number
   git_commits?: number
@@ -80,14 +88,16 @@ export interface ModelRow {
 
 /**
  * Returns the CSS gutter class name representing the severity of a row,
- * derived from error_pct, quota_pct, and cost_usd thresholds.
+ * derived from error_pct and cost_usd thresholds.
  *
  * 14-F.2: Maps severity to .gutter-* class names from the Wave 14-F CSS
  * class system instead of inline color values.
+ *
+ * Wave 26 (F#13): quota_pct removed; severity now based on error_pct + cost.
  */
 function rowSeverityClass(row: ModelRow): string {
   if (row.error_pct >= 2) return 'gutter-hot'
-  if (row.error_pct >= 0.5 || row.quota_pct >= 75) return 'gutter-warm'
+  if (row.error_pct >= 0.5) return 'gutter-warm'
   if (row.cost_usd >= 1) return 'gutter-teal'
   return 'gutter-cool'
 }
@@ -95,10 +105,12 @@ function rowSeverityClass(row: ModelRow): string {
 /**
  * Returns the CSS color variable for sparkline tinting (still needed for
  * Sparkline color prop which accepts a color string, not a class name).
+ *
+ * Wave 26 (F#13): quota_pct removed from severity computation.
  */
 function rowSeverityColor(row: ModelRow): string {
   if (row.error_pct >= 2) return 'var(--accent-hot)'
-  if (row.error_pct >= 0.5 || row.quota_pct >= 75) return 'var(--accent-warm)'
+  if (row.error_pct >= 0.5) return 'var(--accent-warm)'
   if (row.cost_usd >= 1) return 'var(--accent-teal)'
   return 'var(--accent-cool)'
 }
@@ -117,13 +129,6 @@ function errorPctColor(pct: number): string {
   return 'var(--accent-teal)'
 }
 
-/** Returns quota-pct cell color based on quota_pct severity thresholds (C8). */
-function quotaPctColor(pct: number): string {
-  if (pct >= 90) return 'var(--accent-hot)'
-  if (pct >= 75) return 'var(--accent-warm)'
-  return 'var(--accent-cool)'
-}
-
 // ---------------------------------------------------------------------------
 // Column helper
 // ---------------------------------------------------------------------------
@@ -135,6 +140,26 @@ function numFmt(n: number, decimals = 0): string {
     minimumFractionDigits: decimals,
     maximumFractionDigits: decimals,
   })
+}
+
+/**
+ * Compact B/M/K formatter for token counts (operator F#12).
+ *
+ * Thresholds: ≥1e9 → B, ≥1e6 → M, ≥1e3 → K, else as-is.
+ */
+function fmtCompact(n: number): string {
+  if (n >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(1)}B`
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`
+  return String(n)
+}
+
+/**
+ * Percent formatter: renders a ratio (0–100) as "XX.X%".
+ * Used for cache_miss_pct column (operator F#12).
+ */
+function formatPercent(pct: number): string {
+  return `${pct.toFixed(1)}%`
 }
 
 // ---------------------------------------------------------------------------
@@ -186,11 +211,46 @@ const baseColumns = [
   }),
 ]
 
-// Quota% at col 16 — after fourKColumns, before sparkline (mockup L2843)
-const quotaColumn = [
-  helper.accessor('quota_pct', {
-    header: 'Quota%',
-    cell: (info) => `${numFmt(info.getValue() as number, 1)}%`,
+// Wave 26 — new cache/reasoning columns (operator F#12, F#13)
+// Positioned after fourKColumns, before sparkline (replacing removed Quota%).
+const cacheReasoningColumns = [
+  helper.accessor('cache_miss_pct', {
+    id: 'cache_miss_pct',
+    header: 'Cache Miss %',
+    cell: (info) => {
+      const v = info.getValue() as number | undefined
+      return v !== undefined ? formatPercent(v) : '—'
+    },
+  }),
+  helper.accessor('cache_miss_usd_cost', {
+    id: 'cache_miss_usd_cost',
+    header: 'Cache Miss $',
+    cell: (info) => {
+      const v = info.getValue() as number | undefined
+      return v !== undefined ? formatUsd(v) : '—'
+    },
+  }),
+  helper.accessor('reasoning_reported', {
+    id: 'reasoning_reported',
+    header: 'Reasoning Reported',
+    cell: (info) => {
+      const v = info.getValue() as number | undefined
+      return v !== undefined ? fmtCompact(v) : '—'
+    },
+  }),
+  helper.accessor('reasoning_estimated', {
+    id: 'reasoning_estimated',
+    header: 'Reasoning Estimated',
+    cell: (info) => {
+      const v = info.getValue() as number | undefined
+      if (v === undefined) return '—'
+      return (
+        <>
+          {fmtCompact(v)}
+          <sup>*</sup>
+        </>
+      )
+    },
   }),
 ]
 
@@ -291,16 +351,16 @@ const sparklineColumn = [
   },
 ]
 
-// Spec column order (mockup L2828-2848):
+// Wave 26 column order (operator F#12, F#13 — Quota% removed, cache/reasoning added):
 //   baseColumns (cols 1–10: Model…$/1k)
 //   → fourKColumns (cols 11–15: $/1k In…Resets, col-4k-only)
-//   → quotaColumn (col 16: Quota%)
-//   → sparklineColumn (col 17: 24h Tok/Hr)
-//   → fiveKColumns (cols 18–21: TOOL/GIT commits/GIT pushes/INVAL, col-5k-only)
+//   → cacheReasoningColumns (cols 16–19: Cache Miss %/$ + Reasoning Reported/Estimated)
+//   → sparklineColumn (col 20: 24h Tok/Hr)
+//   → fiveKColumns (cols 21–24: TOOL/GIT commits/GIT pushes/INVAL, col-5k-only)
 const allColumns = [
   ...baseColumns,
   ...fourKColumns,
-  ...quotaColumn,
+  ...cacheReasoningColumns,
   ...sparklineColumn,
   ...fiveKColumns,
 ]
@@ -337,10 +397,6 @@ export function MasterLedgerTable({
   )
   const maxRequests = useMemo(
     () => Math.max(1, ...rows.map((r) => r.requests)),
-    [rows]
-  )
-  const maxQuotaPct = useMemo(
-    () => Math.max(1, ...rows.map((r) => r.quota_pct)),
     [rows]
   )
   const maxCostUsd = useMemo(
@@ -531,28 +587,6 @@ export function MasterLedgerTable({
                         cell.column.columnDef.cell,
                         cell.getContext()
                       ) as ReactElement | string
-                    } else if (colId === 'quota_pct') {
-                      // C8: quota% severity color + microbar (14-F.1 .microbar class)
-                      cellColor = quotaPctColor(orig.quota_pct)
-                      const fillPct = (orig.quota_pct / maxQuotaPct) * 100
-                      cellContent = (
-                        <div className='metric-cell'>
-                          <span>
-                            {flexRender(
-                              cell.column.columnDef.cell,
-                              cell.getContext()
-                            )}
-                          </span>
-                          <span
-                            className='microbar'
-                            style={
-                              {
-                                '--microbar-fill': `${fillPct.toFixed(1)}%`,
-                              } as React.CSSProperties
-                            }
-                          />
-                        </div>
-                      )
                     } else if (colId === 'tokens_in') {
                       // C5: microbar proportional to column max (14-F.1 .microbar class)
                       cellColor = 'var(--accent-cool)'

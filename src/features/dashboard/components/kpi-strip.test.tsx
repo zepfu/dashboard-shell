@@ -46,19 +46,39 @@ test('test_kpi_strip_renders_six_tiles', () => {
   }
 })
 
-test('test_kpi_strip_formats_large_numbers_compact', () => {
+test('test_kpi_strip_formats_large_numbers_compact_M', () => {
   const { container } = render(
     <KpiStrip summary={{ ...mockSummary, token_in: 1_200_000 }} />
   )
 
-  // The Toks In tile should show compact format "1.2M"
-  // Allow either "1.2M" or "1.2 M"
+  // The Tokens In tile should show compact format "1.2M"
   const toksInTile = container.querySelector('.kpi-tile')
   expect(toksInTile).not.toBeNull()
 
-  // Find the element that contains the compact number
   const compactText = screen.getByText(/1\.2\s?M/i)
   expect(compactText).toBeInTheDocument()
+})
+
+test('test_kpi_strip_formats_large_numbers_compact_B', () => {
+  // Values ≥ 1e9 should use B suffix (operator F#9)
+  render(<KpiStrip summary={{ ...mockSummary, token_in: 19_471_800_848 }} />)
+  const compactText = screen.getByText(/19\.\d\s?B/i)
+  expect(compactText).toBeInTheDocument()
+})
+
+test('test_kpi_strip_formats_large_numbers_compact_K', () => {
+  // Values ≥ 1e3 but < 1e6 should use K suffix (operator F#9)
+  render(<KpiStrip summary={{ ...mockSummary, token_in: 587_234 }} />)
+  const compactText = screen.getByText(/587\.\d\s?K/i)
+  expect(compactText).toBeInTheDocument()
+})
+
+test('test_kpi_strip_formats_cost_with_comma_separators', () => {
+  // Cost ≥ $1000 should render with comma thousand-separators (operator F#10)
+  render(<KpiStrip summary={{ ...mockSummary, cost_usd: 7196.6 }} />)
+  // Should show "$7,196.60" not "$7196.60"
+  const costText = screen.getByText(/\$7,196\.60/)
+  expect(costText).toBeInTheDocument()
 })
 
 test('test_kpi_strip_loading_shows_skeletons', () => {
