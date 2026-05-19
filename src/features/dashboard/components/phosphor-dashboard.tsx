@@ -79,6 +79,13 @@ const HEALTH_CELL_COUNT = 288
 /**
  * Ordered provider series for TokenTrendChart.
  * Colors match the Phosphor design palette reference hex values.
+ *
+ * Wave 25-PhosphorDash (F#9, F#10): added 'chatgpt' and 'unknown' entries to
+ * capture tokens the live API emits under those provider names. Without these
+ * entries the corresponding bar segments were silently dropped, causing bars to
+ * appear 20–30% shorter than the mockup ("white space" operator report).
+ *   chatgpt: #10a37f — OpenAI brand green (ChatGPT is an OpenAI product).
+ *   unknown: #64748b — neutral slate matching the existing local series color.
  */
 const PROVIDER_SERIES: ProviderSeries[] = [
   {
@@ -92,6 +99,12 @@ const PROVIDER_SERIES: ProviderSeries[] = [
     label: 'OpenAI',
     color: '#10a37f',
     cssClass: 'tt-openai',
+  },
+  {
+    key: 'chatgpt',
+    label: 'ChatGPT',
+    color: '#10a37f',
+    cssClass: 'tt-chatgpt',
   },
   {
     key: 'google',
@@ -122,6 +135,12 @@ const PROVIDER_SERIES: ProviderSeries[] = [
     label: 'Local',
     color: '#94a3b8',
     cssClass: 'tt-local',
+  },
+  {
+    key: 'unknown',
+    label: 'Unknown',
+    color: '#64748b',
+    cssClass: 'tt-unknown',
   },
 ]
 
@@ -241,7 +260,11 @@ function padHealthCells(
       row.capacity_events
 
     return {
-      color: healthCellColor(row),
+      // Wave 25-PhosphorDash (F#11): neutral fallback color; deriveCellStyle
+      // path-2 now drives coloring from rawP95Ms / rawErrorCount via the W24
+      // percentile recalibration. healthCellColor(row) applied absolute 5s/10s
+      // thresholds that mis-classify OpenAI's normal ~18–20 s p95 as amber/red.
+      color: 'var(--card-2)',
       // F1a: bucket_start drives the relative-time header in buildCellTooltip.
       bucketStart: row.bucket_start ?? undefined,
       // F1a: total events in this bucket (errors + timeouts + rate-limits + capacity).
@@ -249,6 +272,14 @@ function padHealthCells(
       // F1a: no per-event JSON available at health-row granularity; pass empty
       // array so W24-HealthStrip's buildCellTooltip renders a summary-only tooltip.
       events: emptyEvents,
+      // Wave 25-PhosphorDash (F#11): wire upstream p95 so deriveCellStyle path-2
+      // (percentile-relative thresholds) is activated instead of falling through
+      // to the legacy color fallback. row.upstream_p95_ms is null when the bucket
+      // has no latency data, which deriveCellStyle handles as a cat-miss cell.
+      rawP95Ms: row.upstream_p95_ms ?? null,
+      // Wave 25-PhosphorDash (F#11): wire raw error count for the amber trigger
+      // in deriveCellStyle (any error event → amber regardless of p95).
+      rawErrorCount: eventCount > 0 ? eventCount : 0,
     }
   })
 
@@ -270,8 +301,16 @@ function padHealthCells(
  * upstream P95 latency, provider error counts, and attribution gaps.
  *
  * Wave 10 D16: cat-miss teal cells for attribution-gap rows.
+ *
+ * @deprecated Wave 25-PhosphorDash (F#11): padHealthCells now wires rawP95Ms
+ * and rawErrorCount so deriveCellStyle path-2 (percentile-relative thresholds)
+ * is used instead. This function's absolute 5 s / 10 s thresholds incorrectly
+ * classify OpenAI's normal ~18–20 s p95 as amber/red. Do not delete until all
+ * callers are confirmed to use the raw-metrics wiring path.
  */
-function healthCellColor(row: UsageReportProviderLatencyHealthRow): string {
+export function healthCellColor(
+  row: UsageReportProviderLatencyHealthRow
+): string {
   // D16: attribution-gap cells — no upstream latency data and no requests
   if (row.requests === 0 || row.missing_upstream_latency > 0) {
     return 'rgba(20, 184, 166, 0.6)' // cat-miss teal
@@ -1595,10 +1634,14 @@ function buildClientSlices(
  * from token_total so the sparkline column renders a baseline. When time-series
  * data becomes available, replace [c.token_total] with the real array.
  *
- * Wave 24-PhosphorDash (operator F7): aggregates raw client_name variants into
- * canonical families before building rows, matching the donut chart grouping.
- * The `version` field is left empty for aggregated family rows since individual
- * client versions may vary across the collapsed variants.
+ * Wave 24-PhosphorDash (operator F7): previously aggregated raw client_name
+ * variants into canonical families before building rows. The donut chart
+ * (buildClientSlices) retains that family-collapsed behavior.
+ *
+ * Wave 25-PhosphorDash (operator F#12): the breakout TABLE now emits one row
+ * per (client_name, client_version) tuple from the raw API response so
+ * individual versions are visible. Each row is still colored by its resolved
+ * CLIENT_FAMILY_MAP provider so the visual grouping is preserved.
  */
 function buildClientRows(
   clients: {
@@ -1609,19 +1652,26 @@ function buildClientRows(
     usd_cost: number
   }[]
 ): ClientRow[] {
-  const families = aggregateByClientFamily(clients)
-  return families
+  return clients
+    .slice()
     .sort((a, b) => b.token_total - a.token_total)
-    .map((f) => ({
-      client: f.family,
-      // Version is meaningless after family aggregation; leave blank.
-      version: '',
-      requests: f.traces,
-      tokens: f.token_total,
-      cost_usd: f.usd_cost,
-      // Degenerate spark: single point placeholder until time-series is wired
-      spark: [f.token_total],
-    }))
+    .map((c) => {
+      const key = normalizeClientKey(c.client_name)
+      const mapping = CLIENT_FAMILY_MAP[key]
+      return {
+        client: c.client_name,
+        version: c.client_version,
+        requests: c.traces,
+        tokens: c.token_total,
+        cost_usd: c.usd_cost,
+        // Degenerate spark: single point placeholder until time-series is wired
+        spark: [c.token_total],
+        // Color by family provider so visual grouping survives the un-collapse.
+        color: clientFamilyColor(c.client_name, mapping?.provider),
+        // family exposed for tests / W25-ClientTable consumption.
+        family: mapping?.family ?? c.client_name,
+      }
+    })
 }
 
 /**
