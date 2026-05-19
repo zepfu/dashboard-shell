@@ -31,6 +31,7 @@ import { useQuery } from '@tanstack/react-query'
 import {
   fetchUsageReport,
   fetchUsageReportQuotas,
+  type UsageReportProviderErrorObservationRow,
   type UsageReportProviderLatencyHealthRow,
   type UsageReportQuotaRow,
   type UsageReportQuotaUsageBreakdown,
@@ -857,8 +858,16 @@ function formatTipWindow(
   // For time-bounded intervals, compute the elapsed span and render relative.
   if (intervalStart !== null && intervalEnd !== null) {
     const startMs = new Date(intervalStart).getTime()
-    const endMs = new Date(intervalEnd).getTime()
-    if (!Number.isNaN(startMs) && !Number.isNaN(endMs)) {
+    const endDate = new Date(intervalEnd)
+    const endMs = endDate.getTime()
+    // Sentinel guard: the API uses year 9999 (e.g. "9999-12-31T00:00:00.000Z")
+    // to mean "no fixed end". Treating it literally yields ~2.9M days. Fall
+    // through to the type-based label below instead of computing that span.
+    if (
+      !Number.isNaN(startMs) &&
+      !Number.isNaN(endMs) &&
+      endDate.getUTCFullYear() <= 9000
+    ) {
       const spanMs = endMs - startMs
       const spanH = spanMs / 3_600_000
       // Round to nearest sensible unit for display.
@@ -887,6 +896,17 @@ function formatTipWindow(
       return '—'
   }
 }
+
+/**
+ * Test-only re-export of {@link formatTipWindow}.
+ *
+ * Prefixed with `_` and suffixed with `ForTest` to signal that this export
+ * exists solely to enable unit tests.  Do not use in production code paths
+ * outside of this module.
+ *
+ * @internal
+ */
+export { formatTipWindow as _formatTipWindowForTest }
 
 /**
  * Derives top-3 tipModels from a UsageReportQuotaUsageBreakdown array.
@@ -2118,6 +2138,12 @@ export default function PhosphorDashboard({
         : modelRows.filter((r) => r.model.toLowerCase().includes(lowerSearch)),
     [modelRows, lowerSearch]
   )
+
+  const providerErrorObservations = useMemo(
+    (): UsageReportProviderErrorObservationRow[] =>
+      report?.providerErrorObservations ?? [],
+    [report?.providerErrorObservations]
+  )
   const filteredRepoRows = useMemo(
     () =>
       lowerSearch === ''
@@ -2298,7 +2324,11 @@ export default function PhosphorDashboard({
             <SectionSkeleton height={200} />
           ) : (
             // 15-C.4: use filteredModelRows to apply searchTerm filter
-            <MasterLedgerTable rows={filteredModelRows} />
+            // Q8: pass providerErrorObservations for Err% hover tooltip
+            <MasterLedgerTable
+              rows={filteredModelRows}
+              errorObservations={providerErrorObservations}
+            />
           )}
         </section>
 
