@@ -892,6 +892,70 @@ function makeQuotaBarGroup(
 }
 
 /**
+ * Like makeQuotaBarGroup but ALWAYS emits a bar — never returns null.
+ *
+ * Wave 28 fix: openai and anthropic must always render 4 quota bars so the
+ * operator card layout is stable even when an interval is not currently active
+ * (e.g. `short_special_active=false` for anthropic's sonnet · 5h bar).
+ *
+ * When the underlying interval is inactive or its remaining_pct is null, this
+ * function returns a zero-consumed bar (`consumedPct=0, remainingPct=100`)
+ * using the interval's timestamp fallback labels via `formatTipWindow`.
+ *
+ * Only used for the openai and anthropic provider branches in buildQuotaRows.
+ * All other providers continue to use makeQuotaBarGroup (null → omit).
+ */
+function makeQuotaBarGroupAlways(
+  label: string,
+  row: UsageReportQuotaRow,
+  interval: 'short' | 'weekly' | 'special' | 'short_special' | 'monthly'
+): QuotaBarGroup {
+  const existing = makeQuotaBarGroup(label, row, interval)
+  if (existing !== null) return existing
+
+  // Interval is inactive or pct is null — emit a 0%-consumed placeholder bar.
+  let intervalStart: string | null = null
+  let intervalEnd: string | null = null
+  let breakdown: UsageReportQuotaUsageBreakdown[] = []
+  switch (interval) {
+    case 'short':
+      intervalStart = row.short_interval_start
+      intervalEnd = row.short_interval_end
+      breakdown = row.short_usage_breakdown
+      break
+    case 'weekly':
+      intervalStart = row.weekly_interval_start
+      intervalEnd = row.weekly_interval_end
+      breakdown = row.weekly_usage_breakdown
+      break
+    case 'special':
+      intervalStart = row.special_interval_start
+      intervalEnd = row.special_interval_end
+      breakdown = row.special_usage_breakdown
+      break
+    case 'short_special':
+      intervalStart = row.short_special_interval_start
+      intervalEnd = row.short_special_interval_end
+      breakdown = row.short_special_usage_breakdown
+      break
+    case 'monthly':
+      intervalStart = row.monthly_interval_start
+      intervalEnd = row.monthly_interval_end
+      breakdown = row.monthly_usage_breakdown
+      break
+  }
+
+  return {
+    label,
+    consumedPct: 0,
+    remainingPct: 100,
+    segments: buildQuotaSegments(100),
+    tipWindow: formatTipWindow(interval, intervalStart, intervalEnd),
+    tipModels: tipModelsFromBreakdown(breakdown),
+  }
+}
+
+/**
  * Builds per-provider curated QuotaBarGroup[] matching the operator F1 mockup.
  *
  * This replaces the raw `buildQuotaIntervals` call at the ProviderCard callsite
@@ -917,7 +981,8 @@ function makeQuotaBarGroup(
  * | openrouter | credits·monthly, gemma-4-31b free·monthly, qwen3-coder free·monthly |
  * | local      | [] (no quotas)                                                  |
  *
- * Rows that don't exist in the API response (not active) are silently omitted.
+ * openai and anthropic always emit exactly 4 bars (inactive intervals render
+ * at 0% consumed). All other providers silently omit inactive intervals.
  *
  * @param provider - Canonical provider name from CANONICAL_PROVIDERS
  * @param allQuotaRows - Full quota rows array from /api/shell/reports/quotas
@@ -947,20 +1012,19 @@ function buildQuotaRows(
       //   weekly         → 'all · 7d'
       //   short_special  → 'codex-spark · 5h'
       //   special        → 'codex-spark · 7d'
+      //
+      // W28: always emit all 4 bars (inactive → 0% consumed) via
+      // makeQuotaBarGroupAlways so the card layout is stable.
       const allRow = providerRows.find((r) => r.model === null)
       if (allRow !== undefined) {
-        const g5h = makeQuotaBarGroup('all · 5h', allRow, 'short')
-        if (g5h !== null) result.push(g5h)
-        const g7d = makeQuotaBarGroup('all · 7d', allRow, 'weekly')
-        if (g7d !== null) result.push(g7d)
-        const gc5h = makeQuotaBarGroup(
-          'codex-spark · 5h',
-          allRow,
-          'short_special'
+        result.push(makeQuotaBarGroupAlways('all · 5h', allRow, 'short'))
+        result.push(makeQuotaBarGroupAlways('all · 7d', allRow, 'weekly'))
+        result.push(
+          makeQuotaBarGroupAlways('codex-spark · 5h', allRow, 'short_special')
         )
-        if (gc5h !== null) result.push(gc5h)
-        const gc7d = makeQuotaBarGroup('codex-spark · 7d', allRow, 'special')
-        if (gc7d !== null) result.push(gc7d)
+        result.push(
+          makeQuotaBarGroupAlways('codex-spark · 7d', allRow, 'special')
+        )
       }
       break
     }
@@ -972,16 +1036,17 @@ function buildQuotaRows(
       //   weekly         → 'all · 7d'
       //   short_special  → 'sonnet · 5h'
       //   special        → 'sonnet · 7d'
+      //
+      // W28: always emit all 4 bars (inactive → 0% consumed) via
+      // makeQuotaBarGroupAlways so the card layout is stable.
       const allRow = providerRows.find((r) => r.model === null)
       if (allRow !== undefined) {
-        const g5h = makeQuotaBarGroup('all · 5h', allRow, 'short')
-        if (g5h !== null) result.push(g5h)
-        const g7d = makeQuotaBarGroup('all · 7d', allRow, 'weekly')
-        if (g7d !== null) result.push(g7d)
-        const gs5h = makeQuotaBarGroup('sonnet · 5h', allRow, 'short_special')
-        if (gs5h !== null) result.push(gs5h)
-        const gs7d = makeQuotaBarGroup('sonnet · 7d', allRow, 'special')
-        if (gs7d !== null) result.push(gs7d)
+        result.push(makeQuotaBarGroupAlways('all · 5h', allRow, 'short'))
+        result.push(makeQuotaBarGroupAlways('all · 7d', allRow, 'weekly'))
+        result.push(
+          makeQuotaBarGroupAlways('sonnet · 5h', allRow, 'short_special')
+        )
+        result.push(makeQuotaBarGroupAlways('sonnet · 7d', allRow, 'special'))
       }
       break
     }
