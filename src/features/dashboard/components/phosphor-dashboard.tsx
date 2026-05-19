@@ -26,7 +26,7 @@
  * Data is fetched via fetchUsageReport + fetchUsageReportQuotas; anomaly
  * flags come from useAnomalyDetection.
  */
-import { useMemo, type ReactElement } from 'react'
+import { useEffect, useMemo, type ReactElement } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import {
   fetchUsageReport,
@@ -61,6 +61,7 @@ import {
   type TopModelRow,
 } from './provider-card'
 import { RepoBreakdownTable, type RepoRow } from './repo-breakdown-table'
+import { type SlicerFilters, type SlicerOptions } from './slicer-bar'
 import { TokenTrendChart, type ProviderSeries } from './token-trend-chart'
 
 // ---------------------------------------------------------------------------
@@ -136,6 +137,18 @@ export interface PhosphorDashboardProps {
    * and client name fields in the rendered tables.
    */
   searchTerm?: string
+  /**
+   * 15-D.4: Multi-dimension server-side filters sent to fetchUsageReport.
+   * Updating filters changes the queryKey, triggering a refetch.
+   * Empty arrays per dimension mean "all values" (no filter).
+   */
+  filters?: SlicerFilters
+  /**
+   * 15-D.3: Callback invoked after data loads so the parent can obtain the
+   * current universe of option values for each slicer dimension.
+   * Called with options derived from the fetched report.
+   */
+  onOptionsReady?: (options: SlicerOptions) => void
 }
 
 // ---------------------------------------------------------------------------
@@ -988,6 +1001,8 @@ export default function PhosphorDashboard({
   to,
   grain,
   searchTerm = '',
+  filters,
+  onOptionsReady,
 }: PhosphorDashboardProps): ReactElement {
   const defaults = useMemo(() => defaultDateRange(), [])
   const resolvedFrom = from ?? defaults.from
@@ -995,11 +1010,19 @@ export default function PhosphorDashboard({
   const resolvedGrain = (grain ?? 'day') as UsageReportGrain
 
   const { data: report, isLoading: reportLoading } = useQuery({
+    // 15-D.4: Include filter arrays directly in queryKey so React Query creates
+    // a distinct cache entry for every unique slicer selection. Arrays are
+    // JSON-serialised by React Query's key hashing.
     queryKey: [
       'usage-report-phosphor',
       resolvedFrom,
       resolvedTo,
       resolvedGrain,
+      filters?.providers,
+      filters?.repositories,
+      filters?.clients,
+      filters?.environments,
+      filters?.models,
     ],
     queryFn: () =>
       fetchUsageReport({
@@ -1007,6 +1030,12 @@ export default function PhosphorDashboard({
         to: resolvedTo,
         grain: resolvedGrain,
         groupBy: ['provider', 'model', 'repository'],
+        // 15-D.4: pass multi-value filter arrays; empty array = no filter
+        provider: filters?.providers,
+        repository: filters?.repositories,
+        client: filters?.clients,
+        environment: filters?.environments,
+        model: filters?.models,
       }),
   })
 
@@ -1082,6 +1111,50 @@ export default function PhosphorDashboard({
     () => buildClientRows(report?.clients ?? []),
     [report?.clients]
   )
+
+  // 15-D.3: Derive slicer option universes from the current report data.
+  // Providers:    distinct canonical provider names from providerLatencyHealth
+  // Repositories: distinct repository strings from report.rows
+  // Clients:      distinct client_name strings from report.clients
+  // Environments: distinct environment strings from providerLatencyHealth
+  // Models:       distinct model strings from providerStatusUsage
+  const slicerOptions: SlicerOptions = useMemo(() => {
+    const rows = report?.rows ?? []
+    const healthRows = report?.providerLatencyHealth ?? []
+    const clientData = report?.clients ?? []
+    const statusUsage = report?.providerStatusUsage ?? []
+
+    const uniqueSorted = (arr: string[]): string[] =>
+      [...new Set(arr.filter(Boolean))].sort()
+
+    return {
+      providers: uniqueSorted(
+        healthRows.map((r) => canonicalProvider(r.provider)).filter(Boolean)
+      ),
+      repositories: uniqueSorted(
+        rows.map((r) => r.repository ?? '').filter(Boolean)
+      ),
+      clients: uniqueSorted(
+        clientData.map((c) => c.client_name).filter(Boolean)
+      ),
+      environments: uniqueSorted(
+        healthRows.map((r) => r.environment).filter(Boolean)
+      ),
+      models: uniqueSorted(statusUsage.map((r) => r.model).filter(Boolean)),
+    }
+  }, [
+    report?.rows,
+    report?.providerLatencyHealth,
+    report?.clients,
+    report?.providerStatusUsage,
+  ])
+
+  // 15-D.3: Notify parent of available slicer options whenever they change.
+  useEffect(() => {
+    if (onOptionsReady !== undefined) {
+      onOptionsReady(slicerOptions)
+    }
+  }, [slicerOptions, onOptionsReady])
 
   // 15-C.4: Client-side search filtering for Model Ledger, Repo Breakdown,
   // and Client Usage tables. Case-insensitive substring match on the primary
