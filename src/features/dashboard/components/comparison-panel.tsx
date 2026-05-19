@@ -1,12 +1,12 @@
 /**
- * ComparisonPanel — provider-vs-provider rolling-7-day comparison table at ≥3840px.
+ * ComparisonPanel — provider-vs-provider comparison table at ≥3840px.
  *
  * Wave 18-Cards C4a rewrite: column set changed from the static snapshot
  * (Provider/Toks In/Toks Out/Cost/Requests/Avg P95/Err%) to the mockup-spec
  * delta comparison (Provider/Δ Cost/Δ Tok/Δ p95/Δ Err/Cache %/Burn/Trend)
  * per mockup lines 3318-3327 and audit item §C4a.
  *
- * Delta (Δ) columns show period-over-period change vs the prior 7-day window.
+ * Delta (Δ) columns show period-over-period change vs the prior window.
  * TODO: wire prior-period data via a dedicated `priorStats` prop (or a second
  * `useUsageReportFromRange` query scoped to [now-14d, now-7d]). Until that data
  * is available, delta cells render `—` as a clear placeholder.
@@ -16,6 +16,18 @@
  *
  * Structure per v9.7 reference HTML — data-tab="comparison" section,
  * grid-column: 14/21, grid-row: 7 at 4K. Display: none below 3840px.
+ *
+ * Wave 20-Comparison: `periodDays` prop added (optional, defaults to 1) so
+ * burn = totalCost / periodDays reflects the user-selected date range.
+ * ⚠-W19-3 fix: the hardcoded `/ 7` divisor silently mis-reported daily spend
+ * for any window other than 7 days; the default 1-day window (index.tsx
+ * Wave 16-V) produced values 7× too low.
+ *
+ * Design choice: `periodDays` is optional and defaults to 1.
+ * — This keeps the parent call site (phosphor-dashboard.tsx) unchanged: the
+ *   W20-PhosphorDash engineer will add `periodDays={rangeDays}` in their pass.
+ * — Default=1 is mathematically sound: burn = totalCost / 1 = raw total cost,
+ *   which is the correct daily burn rate for a 1-day window.
  */
 import type { CSSProperties, ReactElement } from 'react'
 import { formatLatency, formatUsd } from '../lib/usage-report-display'
@@ -38,6 +50,25 @@ interface ComparisonPanelProps {
    * Optional: when absent the Trend column renders an empty sparkline.
    */
   trendBuckets?: TrendBucket[]
+  /**
+   * Number of calendar days covered by the current date-range selection.
+   * Used as the divisor for the Burn column: burn = totalCost / periodDays.
+   *
+   * Defaults to 1 (= the Wave 16-V default 1-day window in index.tsx).
+   * The W20-PhosphorDash engineer will pass the computed range value once
+   * phosphor-dashboard.tsx resolvedFrom/resolvedTo are threaded through.
+   *
+   * Computing periodDays from resolvedFrom and resolvedTo (ISO YYYY-MM-DD):
+   *   const msPerDay = 86_400_000
+   *   const periodDays = Math.max(
+   *     1,
+   *     Math.round(
+   *       (new Date(resolvedTo).getTime() - new Date(resolvedFrom).getTime())
+   *       / msPerDay
+   *     )
+   *   )
+   */
+  periodDays?: number
 }
 
 // ---------------------------------------------------------------------------
@@ -52,7 +83,7 @@ interface ProviderCurrentStats {
   avgP95: number
   avgErrPct: number
   avgCachePct: number
-  /** Burn = avg daily spend over the 7-day window. Derived from totalCost / 7. */
+  /** Burn = avg daily spend = totalCost / periodDays. */
   burn: number
 }
 
@@ -68,7 +99,8 @@ function fmtCompact(n: number): string {
 
 function buildCurrentStats(
   providers: string[],
-  modelRows: ModelRow[]
+  modelRows: ModelRow[],
+  periodDays: number
 ): ProviderCurrentStats[] {
   return providers.map((provider) => {
     const rows = modelRows.filter(
@@ -97,8 +129,11 @@ function buildCurrentStats(
         ? cachePcts.reduce((s, v) => s + v, 0) / cachePcts.length
         : 0
 
-    // Burn = avg daily spend. Period is rolling 7-day; divide by 7.
-    const burn = totalCost / 7
+    // Burn = avg daily spend. Divide by the actual window length so the value
+    // is correct regardless of the user-selected date range. When periodDays=1
+    // (the default 1-day window), burn equals totalCost (i.e. the raw daily
+    // spend for that single day).
+    const burn = totalCost / periodDays
 
     return {
       provider,
@@ -220,18 +255,26 @@ const COLUMN_HEADERS = [
 // ---------------------------------------------------------------------------
 
 /**
- * ComparisonPanel renders a rolling-7-day provider comparison table.
+ * ComparisonPanel renders a provider comparison table (4K+ only).
  * Only shown at ≥3840px via CSS (parent section has display:none below 4K).
  *
  * Delta columns (Δ Cost, Δ Tok, Δ p95, Δ Err) show period-over-period change
- * vs the prior 7-day window. These render `—` until prior-period data is wired.
+ * vs the prior window. These render `—` until prior-period data is wired.
+ *
+ * The Burn column shows avg daily spend = totalCost / periodDays.
+ * Pass `periodDays` to reflect the user-selected date range; defaults to 1.
  */
 export function ComparisonPanel({
   providers,
   modelRows,
   trendBuckets,
+  periodDays = 1,
 }: ComparisonPanelProps): ReactElement {
-  const stats = buildCurrentStats(providers, modelRows)
+  const stats = buildCurrentStats(providers, modelRows, periodDays)
+
+  /** Derive title label from actual period length. */
+  const periodLabel =
+    periodDays === 1 ? '1-day' : `${periodDays.toString()}-day`
 
   /** Common TH style */
   const thStyle: CSSProperties = {
@@ -269,12 +312,12 @@ export function ComparisonPanel({
           borderBottom: '1px solid var(--border)',
         }}
       >
-        Provider Comparison (rolling 7-day)
+        {`Provider Comparison (${periodLabel})`}
       </div>
 
       <table
         className='comparison-table'
-        aria-label='Provider comparison (rolling 7-day)'
+        aria-label={`Provider comparison (${periodLabel})`}
         style={{
           width: '100%',
           borderCollapse: 'collapse',
@@ -401,7 +444,7 @@ export function ComparisonPanel({
                     : '—'}
                 </td>
 
-                {/* Burn — avg daily spend (totalCost / 7 for rolling 7-day) */}
+                {/* Burn — avg daily spend (totalCost / periodDays) */}
                 <td
                   style={{
                     padding: '5px 6px',
@@ -441,7 +484,7 @@ export function ComparisonPanel({
           color: 'var(--fg-muted)',
         }}
       >
-        Δ vs prior 7d · burn = avg daily spend · cache = prompt-cache hit ratio
+        {`Δ vs prior ${periodLabel} · burn = avg daily spend · cache = prompt-cache hit ratio`}
       </div>
     </div>
   )
