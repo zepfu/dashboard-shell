@@ -39,20 +39,38 @@ interface KpiStripProps {
   deltas?: Partial<Record<KpiKey, number>>
 }
 
-/** Format a token count with compact SI suffixes (k / M). */
-function formatCompact(n: number): string {
+/**
+ * Format a large number with compact B/M/K suffixes (operator F#9).
+ *
+ * Thresholds:
+ *   ≥ 1e9 → B (billions)
+ *   ≥ 1e6 → M (millions)
+ *   ≥ 1e3 → K (thousands)
+ *   else  → as-is integer string
+ *
+ * Examples: 19_471_800_848 → "19.5B", 587_234 → "587.2K", 1_200_000 → "1.2M"
+ */
+function fmtCompact(n: number): string {
+  if (n >= 1_000_000_000) {
+    return `${(n / 1_000_000_000).toFixed(1)}B`
+  }
   if (n >= 1_000_000) {
     return `${(n / 1_000_000).toFixed(1)}M`
   }
   if (n >= 1_000) {
-    return `${(n / 1_000).toFixed(1)}k`
+    return `${(n / 1_000).toFixed(1)}K`
   }
   return String(n)
 }
 
-/** Format a cost value as a dollar string with two decimal places. */
+/**
+ * Format a cost value as a dollar string with two decimal places and
+ * thousand-separator commas for values ≥ $1000 (operator F#10).
+ *
+ * Examples: 7196.60 → "$7,196.60", 0.50 → "$0.50"
+ */
 function formatCost(n: number): string {
-  return `$${n.toFixed(2)}`
+  return `$${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 }
 
 /** Format an integer with thousand-separator commas. */
@@ -89,13 +107,13 @@ function buildTiles(summary: KpiSummary): TileData[] {
       label: 'Tokens In',
       key: 'token_in',
       rawValue: summary.token_in,
-      value: formatCompact(summary.token_in),
+      value: fmtCompact(summary.token_in),
     },
     {
       label: 'Tokens Out',
       key: 'token_out',
       rawValue: summary.token_out,
-      value: formatCompact(summary.token_out),
+      value: fmtCompact(summary.token_out),
     },
     {
       label: 'Cost (24h)',
