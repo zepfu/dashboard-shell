@@ -271,9 +271,14 @@ export function TokenTrendChart({
               key={bucket.label}
               className='trend-bar'
               style={{
-                flex: 1,
-                // Volume-proportional height replaces the former `height: '100%'`.
-                // flex:1 is kept for width distribution — that part was correct.
+                // flex: '0 0 auto' — no grow, no shrink, height-driven sizing.
+                // Inside the column-flex wrapper, flex: 1 (= flex: 1 1 0%) was
+                // forcing this child to consume all main-axis (height) space,
+                // making the inline height: N% inert. Width distribution across
+                // the 24 bars is handled by the wrapper's own flex: 1 1 0%
+                // (set in hover-tooltip.tsx), so we don't need flex growth here.
+                flex: '0 0 auto',
+                width: '100%',
                 height: `${pctHeight.toFixed(1)}%`,
                 display: 'flex',
                 flexDirection: 'column-reverse',
