@@ -977,15 +977,16 @@ function makeQuotaBarGroupAlways(
  * | provider   | rows included                                                   |
  * |------------|-----------------------------------------------------------------|
  * | openai     | all·5h (short), all·7d (weekly), codex-spark·5h, codex-spark·7d|
- * | anthropic  | all·5h (short), all·7d (weekly), sonnet·5h, sonnet·7d           |
+ * | anthropic  | all·5h (short), all·7d (weekly), sonnet·7d (W29: sonnet·5h dropped)|
  * | google     | gemini-pro·24h, gemini-flash·24h, gemini-flash-lite·24h (short) |
  * | xai        | grok·monthly                                                    |
  * | nvidia_nim | NIM credits·monthly                                             |
  * | openrouter | credits·monthly, gemma-4-31b free·monthly, qwen3-coder free·monthly |
  * | local      | [] (no quotas)                                                  |
  *
- * openai and anthropic always emit exactly 4 bars (inactive intervals render
- * at 0% consumed). All other providers silently omit inactive intervals.
+ * openai always emits exactly 4 bars (inactive intervals render at 0% consumed).
+ * anthropic emits 3 bars (sonnet·5h dropped in W29 Fix #3).
+ * All other providers silently omit inactive intervals.
  *
  * @param provider - Canonical provider name from CANONICAL_PROVIDERS
  * @param allQuotaRows - Full quota rows array from /api/shell/reports/quotas
@@ -1037,19 +1038,18 @@ function buildQuotaRows(
       // in the special_* / short_special_* columns of the model=null row.
       //   short          → 'all · 5h'
       //   weekly         → 'all · 7d'
-      //   short_special  → 'sonnet · 5h'
       //   special        → 'sonnet · 7d'
       //
-      // W28: always emit all 4 bars (inactive → 0% consumed) via
-      // makeQuotaBarGroupAlways so the card layout is stable.
+      // W29 Fix #3: operator dropped the sonnet·5h bar — emit 3 bars only.
+      // short_special (sonnet·5h) is omitted entirely.
       const allRow = providerRows.find((r) => r.model === null)
       if (allRow !== undefined) {
-        result.push(makeQuotaBarGroupAlways('all · 5h', allRow, 'short'))
-        result.push(makeQuotaBarGroupAlways('all · 7d', allRow, 'weekly'))
-        result.push(
-          makeQuotaBarGroupAlways('sonnet · 5h', allRow, 'short_special')
-        )
-        result.push(makeQuotaBarGroupAlways('sonnet · 7d', allRow, 'special'))
+        const g5h = makeQuotaBarGroup('all · 5h', allRow, 'short')
+        if (g5h !== null) result.push(g5h)
+        const g7d = makeQuotaBarGroup('all · 7d', allRow, 'weekly')
+        if (g7d !== null) result.push(g7d)
+        const gs7d = makeQuotaBarGroup('sonnet · 7d', allRow, 'special')
+        if (gs7d !== null) result.push(gs7d)
       }
       break
     }

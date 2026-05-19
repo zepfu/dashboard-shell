@@ -20,10 +20,11 @@ const mockSummary = {
 }
 
 // Wave 11 PR7-lite: labels updated per audit C27.
+// Wave 29 Fix #6: 'Cost (24h)' renamed to 'Cost'.
 const KPI_LABELS = [
   'Tokens In',
   'Tokens Out',
-  'Cost (24h)',
+  'Cost',
   'Requests',
   'Errors (24h)',
   'P95 Latency',
@@ -37,7 +38,7 @@ test('test_kpi_strip_renders_six_tiles', () => {
   expect(tiles.length).toBe(6)
 
   // Each label should be present (use string literal match to avoid regex
-  // special-char issues with parentheses in "Cost (24h)", "Errors (24h)").
+  // special-char issues with parentheses in "Errors (24h)").
   for (const label of KPI_LABELS) {
     const elements = screen.getAllByText((_content, element) => {
       return element?.textContent?.toLowerCase() === label.toLowerCase()
