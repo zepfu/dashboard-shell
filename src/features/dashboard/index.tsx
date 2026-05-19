@@ -36,6 +36,7 @@ import {
 } from './api/usage-report'
 import { AlertsRail } from './components/alerts-rail'
 import AnchorBar from './components/anchor-bar'
+import { DateControls } from './components/date-controls'
 import { KpiStrip } from './components/kpi-strip'
 import PhosphorDashboard from './components/phosphor-dashboard'
 import { PhosphorLayout } from './components/phosphor-layout'
@@ -57,11 +58,12 @@ import { computeFleetErrors } from './lib/usage-report-display'
 
 function defaultDateRange(): { from: string; to: string } {
   const now = new Date()
+  // Wave 16-V: default range is yesterday → today (1-day, replaces 7-day default)
   const from = new Date(
-    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - 6)
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - 1)
   )
   const to = new Date(
-    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1)
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())
   )
   return {
     from: from.toISOString().slice(0, 10),
@@ -147,9 +149,8 @@ export function Dashboard(): ReactElement {
   const defaults = useMemo(() => defaultDateRange(), [])
   const [from, setFrom] = useState(defaults.from)
   const [to, setTo] = useState(defaults.to)
-  const [grain, setGrain] = useState<UsageReportGrain>('day')
-  // 15-C.3: initial activePeriod aligned with the 7-day default date range
-  const [activePeriod, setActivePeriod] = useState<string>('7d')
+  // Wave 16-V: grain hardcoded to 'day'; per-visual grain logic in PhosphorDashboard untouched
+  const grain: UsageReportGrain = 'day'
   // 15-C.4: controlled search input state for client-side row filtering
   const [searchTerm, setSearchTerm] = useState<string>('')
 
@@ -173,42 +174,9 @@ export function Dashboard(): ReactElement {
     []
   )
 
-  const handleRangeChange = (
-    nextFrom: string,
-    nextTo: string,
-    nextGrain: string
-  ): void => {
+  const handleRangeChange = (nextFrom: string, nextTo: string): void => {
     setFrom(nextFrom)
     setTo(nextTo)
-    setGrain(nextGrain as UsageReportGrain)
-  }
-
-  const handlePeriodBtn = (period: string): void => {
-    setActivePeriod(period)
-    const now = new Date()
-    const toStr = now.toISOString().slice(0, 10)
-
-    // 15-C.2: YTD sets Jan 1 of current year → today, day grain
-    if (period === 'YTD') {
-      const ytdFrom = new Date(now.getFullYear(), 0, 1)
-        .toISOString()
-        .slice(0, 10)
-      handleRangeChange(ytdFrom, toStr, 'day')
-      return
-    }
-
-    const days: Record<string, number> = {
-      '24h': 1,
-      '7d': 7,
-      '30d': 30,
-      '90d': 90,
-    }
-    const d = days[period]
-    if (d !== undefined) {
-      const f = new Date(now)
-      f.setDate(f.getDate() - d)
-      handleRangeChange(f.toISOString().slice(0, 10), toStr, grain)
-    }
   }
 
   const {
@@ -498,15 +466,6 @@ export function Dashboard(): ReactElement {
             </div>
           </div>
 
-          {/* 15-D.5: SlicerBar — multi-dimension filter controls, above AnchorBar */}
-          {/* Placed between page-header and AnchorBar for discoverability.        */}
-          {/* Options are populated once PhosphorDashboard's query resolves.       */}
-          <SlicerBar
-            filters={slicerFilters}
-            options={slicerOptions}
-            onChange={setSlicerFilters}
-          />
-
           {/* Anchor bar — flush to page-header via border-top: none */}
           {/* 14-B.1: negative marginTop hack removed — page-header has no card chrome */}
           <AnchorBar
@@ -514,7 +473,8 @@ export function Dashboard(): ReactElement {
             onSectionChange={setActiveSection}
           />
 
-          {/* Controls bar — date range + period selector */}
+          {/* Wave 16-V controls row: SlicerBar left, DateControls right (inline) */}
+          {/* Period buttons + grain selector removed per operator decision.        */}
           <div
             className='controls'
             style={{
@@ -527,142 +487,18 @@ export function Dashboard(): ReactElement {
               fontSize: '10px',
             }}
           >
-            {/* 14-H.1: label display:contents so parent gap governs spacing (audit §6 #1) */}
-            {/* 14-H.1: date-input width 100px per mockup line 789 (was 110px) (audit §6 #2) */}
-            <label
-              htmlFor='ctrl-from'
-              style={{
-                display: 'contents',
-                color: 'var(--fg-muted)',
-                fontSize: '10px',
-              }}
-            >
-              <span style={{ color: 'var(--fg-muted)', fontSize: '10px' }}>
-                From
-              </span>
-              <input
-                id='ctrl-from'
-                type='date'
-                value={from}
-                onChange={(e) => {
-                  handleRangeChange(e.target.value, to, grain)
-                }}
-                style={{
-                  background: 'var(--card-2)',
-                  border: '1px solid var(--border)',
-                  borderBottom: '2px solid var(--accent-cool)',
-                  color: 'var(--fg)',
-                  padding: '3px 6px',
-                  fontFamily: 'var(--font-mono)',
-                  fontSize: '10px',
-                  width: '100px',
-                }}
-              />
-            </label>
-            <label
-              htmlFor='ctrl-to'
-              style={{
-                display: 'contents',
-                color: 'var(--fg-muted)',
-                fontSize: '10px',
-              }}
-            >
-              <span style={{ color: 'var(--fg-muted)', fontSize: '10px' }}>
-                To
-              </span>
-              <input
-                id='ctrl-to'
-                type='date'
-                value={to}
-                onChange={(e) => {
-                  handleRangeChange(from, e.target.value, grain)
-                }}
-                style={{
-                  background: 'var(--card-2)',
-                  border: '1px solid var(--border)',
-                  borderBottom: '2px solid var(--accent-cool)',
-                  color: 'var(--fg)',
-                  padding: '3px 6px',
-                  fontFamily: 'var(--font-mono)',
-                  fontSize: '10px',
-                  width: '100px',
-                }}
-              />
-            </label>
-
-            {/* 15-C.3: Grain selector — wired to grain state, triggers refetch via queryKey */}
-            <label
-              htmlFor='ctrl-grain'
-              style={{
-                display: 'contents',
-                color: 'var(--fg-muted)',
-                fontSize: '10px',
-              }}
-            >
-              <span style={{ color: 'var(--fg-muted)', fontSize: '10px' }}>
-                Grain
-              </span>
-              <select
-                id='ctrl-grain'
-                value={grain}
-                onChange={(e) => {
-                  handleRangeChange(from, to, e.target.value)
-                }}
-                style={{
-                  background: 'var(--card-2)',
-                  border: '1px solid var(--border)',
-                  borderBottom: '2px solid var(--accent-cool)',
-                  color: 'var(--fg)',
-                  padding: '3px 6px',
-                  fontFamily: 'var(--font-mono)',
-                  fontSize: '10px',
-                }}
-              >
-                <option value='day'>day</option>
-                <option value='week'>week</option>
-                <option value='month'>month</option>
-              </select>
-            </label>
-
-            {/* Period selector — right-aligned */}
-            <div
-              className='period-selector'
-              style={{ display: 'flex', gap: '1px', marginLeft: 'auto' }}
-            >
-              {['24h', '7d', '30d', '90d', 'YTD'].map((period) => (
-                <button
-                  key={period}
-                  type='button'
-                  className={['period-btn', activePeriod === period && 'active']
-                    .filter(Boolean)
-                    .join(' ')}
-                  onClick={() => {
-                    handlePeriodBtn(period)
-                  }}
-                  style={{
-                    background:
-                      activePeriod === period
-                        ? 'var(--accent-chrome)'
-                        : 'var(--card-2)',
-                    border: '1px solid var(--border)',
-                    borderColor:
-                      activePeriod === period
-                        ? 'var(--accent-chrome)'
-                        : 'var(--border)',
-                    color:
-                      activePeriod === period ? 'var(--bg)' : 'var(--fg-muted)',
-                    padding: '3px 6px',
-                    cursor: 'pointer',
-                    fontSize: '9px',
-                    textTransform: 'uppercase',
-                    fontFamily: 'var(--font-mono)',
-                    transition: 'all 50ms',
-                  }}
-                >
-                  {period}
-                </button>
-              ))}
-            </div>
+            {/* 15-D.5: SlicerBar inline with DateControls (Wave 16-V reposition) */}
+            <SlicerBar
+              filters={slicerFilters}
+              options={slicerOptions}
+              onChange={setSlicerFilters}
+            />
+            {/* DateControls: From/To inputs + Apply — period buttons removed (Wave 16-V) */}
+            <DateControls
+              initialFrom={from}
+              initialTo={to}
+              onRangeChange={handleRangeChange}
+            />
           </div>
 
           {/* Main dashboard content */}
