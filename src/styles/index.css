@@ -156,7 +156,7 @@
    ───────────────────────────────────────────────────────────────── */
 .quota-interval {
   flex: 1 1 0;
-  border-right: 1px solid var(--card-2);
+  border-right: none;
 }
 .quota-interval:last-child {
   border-right: none;
@@ -1113,9 +1113,6 @@
 .quota-intervals {
   gap: 2px;
 }
-.quota-interval {
-  border-right: none;
-}
 
 /* ── §10 #8: quota anomaly icon colors via class only (remove inline dup) ── */
 /* Class rules already in Wave 14-E; inline styles removed in component.       */
@@ -1171,14 +1168,6 @@
   opacity: 0.4;
 }
 
-/* ── §12 #2: trend-bar hover opacity via CSS (not JS) per mockup line 1331 ─ */
-/* Also adds transition: opacity 50ms per mockup line 1326.                    */
-.trend-bar {
-  transition: opacity 50ms;
-}
-.trend-bar:hover {
-  opacity: 1 !important;
-}
 
 /* ── §13 #7: table caption clamp font-size per mockup lines 1281-1287 ──────  */
 .table-caption {
