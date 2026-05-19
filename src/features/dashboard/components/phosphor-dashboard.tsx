@@ -239,6 +239,15 @@ function defaultDateRange(): { from: string; to: string } {
  * `bucketStart` from health row bucket_start, `eventCount` from aggregate
  * error/timeout/rate-limit/capacity counts, and `events: []` (no per-event
  * detail is available at health-row granularity from the API).
+ *
+ * Wave 30-Track5: The API returns multiple rows per 5-minute bucket (one per
+ * environment × model × model_group tuple). Prior code mapped every row to its
+ * own cell, inflating the cell count and causing the tail-slice to discard the
+ * newest buckets. Fix: collapse rows by bucket_start first (Step 1), then emit
+ * one CellDef per bucket using max p95 / summed error counts (Step 2). The
+ * resulting array is reversed to ASC order (oldest → newest) so that the strip
+ * renders correctly with the oldest cell on the left (-24h) and the newest on
+ * the right (now).
  */
 function padHealthCells(
   rows: UsageReportProviderLatencyHealthRow[],
@@ -252,15 +261,66 @@ function padHealthCells(
   // Satisfy the HealthStripEvent[] type even though we have no per-event data.
   const emptyEvents: HealthStripEvent[] = []
 
-  const cells: CellDef[] = providerRows.map((row) => {
-    // F1a: total event count = all error-class counters for this 5-min bucket.
+  // Wave 30-Track5 Step 1: group rows by bucket_start.
+  // The API arrives bucket_start DESC (newest first); Map insertion order
+  // preserves that ordering within each group.
+  // Rows with null/undefined bucket_start get a synthetic key so they are
+  // not incorrectly merged with each other or with valid buckets.
+  const bucketMap = new Map<string, UsageReportProviderLatencyHealthRow[]>()
+  providerRows.forEach((row, idx) => {
+    const key =
+      row.bucket_start != null
+        ? String(row.bucket_start)
+        : `__missing_${idx.toString()}__`
+    const group = bucketMap.get(key)
+    if (group !== undefined) {
+      group.push(row)
+    } else {
+      bucketMap.set(key, [row])
+    }
+  })
+
+  // Wave 30-Track5 Step 2: emit one CellDef per bucket group.
+  // Aggregation rules:
+  //   rawP95Ms      = max non-null upstream_p95_ms across group (null if all null)
+  //   eventCount    = sum of all error-class counters (undefined when total = 0)
+  //   rawErrorCount = same numeric total, defaults to 0 (not undefined)
+  //   rawErrorBreakdown = per-class sums (undefined when eventCount = 0)
+  // Ordering: bucketMap iterates in insertion order = DESC (newest first).
+  const cellsDesc: CellDef[] = Array.from(bucketMap.values()).map((group) => {
+    // Max non-null p95 across all tuples in this bucket.
+    let maxP95: number | null = null
+    for (const r of group) {
+      if (r.upstream_p95_ms !== null) {
+        maxP95 =
+          maxP95 === null
+            ? r.upstream_p95_ms
+            : Math.max(maxP95, r.upstream_p95_ms)
+      }
+    }
+
+    // Summed error-class counters.
+    let sumProviderError = 0
+    let sum5xx = 0
+    let sumTimeout = 0
+    let sumNetwork = 0
+    let sumRateLimit = 0
+    let sumCapacity = 0
+    for (const r of group) {
+      sumProviderError += r.provider_error_events
+      sum5xx += r.provider_5xx_events
+      sumTimeout += r.provider_timeout_events
+      sumNetwork += r.network_error_events
+      sumRateLimit += r.rate_limit_events
+      sumCapacity += r.capacity_events
+    }
     const eventCount =
-      row.provider_error_events +
-      row.provider_5xx_events +
-      row.provider_timeout_events +
-      row.network_error_events +
-      row.rate_limit_events +
-      row.capacity_events
+      sumProviderError +
+      sum5xx +
+      sumTimeout +
+      sumNetwork +
+      sumRateLimit +
+      sumCapacity
 
     // Wave 29-E2 (Track 6): pass the per-type breakdown to CellDef so
     // buildCellTooltip can render labeled rows instead of the generic placeholder.
@@ -269,14 +329,18 @@ function padHealthCells(
     const rawErrorBreakdown: CellDef['rawErrorBreakdown'] =
       eventCount > 0
         ? {
-            provider_error_events: row.provider_error_events,
-            provider_5xx_events: row.provider_5xx_events,
-            provider_timeout_events: row.provider_timeout_events,
-            network_error_events: row.network_error_events,
-            rate_limit_events: row.rate_limit_events,
-            capacity_events: row.capacity_events,
+            provider_error_events: sumProviderError,
+            provider_5xx_events: sum5xx,
+            provider_timeout_events: sumTimeout,
+            network_error_events: sumNetwork,
+            rate_limit_events: sumRateLimit,
+            capacity_events: sumCapacity,
           }
         : undefined
+
+    // First non-null bucket_start in the group (all rows in the group share
+    // the same bucket_start when the key is not synthetic).
+    const bucketStart = group.find((r) => r.bucket_start != null)?.bucket_start
 
     return {
       // Wave 25-PhosphorDash (F#11): neutral fallback color; deriveCellStyle
@@ -285,7 +349,7 @@ function padHealthCells(
       // thresholds that mis-classify OpenAI's normal ~18–20 s p95 as amber/red.
       color: 'var(--card-2)',
       // F1a: bucket_start drives the relative-time header in buildCellTooltip.
-      bucketStart: row.bucket_start ?? undefined,
+      bucketStart: bucketStart ?? undefined,
       // F1a: total events in this bucket (errors + timeouts + rate-limits + capacity).
       eventCount: eventCount > 0 ? eventCount : undefined,
       // F1a: no per-event JSON available at health-row granularity; pass empty
@@ -293,9 +357,9 @@ function padHealthCells(
       events: emptyEvents,
       // Wave 25-PhosphorDash (F#11): wire upstream p95 so deriveCellStyle path-2
       // (percentile-relative thresholds) is activated instead of falling through
-      // to the legacy color fallback. row.upstream_p95_ms is null when the bucket
-      // has no latency data, which deriveCellStyle handles as a cat-miss cell.
-      rawP95Ms: row.upstream_p95_ms ?? null,
+      // to the legacy color fallback. null when the bucket has no latency data,
+      // which deriveCellStyle handles as a cat-miss cell.
+      rawP95Ms: maxP95,
       // Wave 25-PhosphorDash (F#11): wire raw error count for the amber trigger
       // in deriveCellStyle (any error event → amber regardless of p95).
       rawErrorCount: eventCount > 0 ? eventCount : 0,
@@ -303,6 +367,13 @@ function padHealthCells(
       rawErrorBreakdown,
     }
   })
+
+  // Wave 30-Track5: rows arrived DESC (newest first); reverse to ASC so that
+  // cells[0] = oldest bucket (left / top of strip, labelled "-24h") and
+  // cells[N-1] = newest bucket (right / bottom, labelled "now"). This ensures
+  // the tail-slice below keeps the newest HEALTH_CELL_COUNT buckets and the
+  // strip's left-to-right / top-to-bottom axis matches the time direction.
+  const cells = cellsDesc.reverse()
 
   if (cells.length >= HEALTH_CELL_COUNT) {
     return cells.slice(cells.length - HEALTH_CELL_COUNT)
