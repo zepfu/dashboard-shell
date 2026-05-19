@@ -1819,6 +1819,7 @@ function buildClientRows(
   clients: {
     client_name: string
     client_version: string
+    first_seen_at?: string | null
     traces: number
     token_total: number
     usd_cost: number
@@ -1830,9 +1831,16 @@ function buildClientRows(
     .map((c) => {
       const key = normalizeClientKey(c.client_name)
       const mapping = CLIENT_FAMILY_MAP[key]
+      // W31: Parse first_seen_at ISO string → YYYY-MM-DD compact date.
+      // Null / undefined / unparseable → empty string (cell renders blank).
+      const firstSeen =
+        c.first_seen_at != null
+          ? new Date(c.first_seen_at).toISOString().slice(0, 10)
+          : ''
       return {
         client: c.client_name,
         version: c.client_version,
+        first_seen: firstSeen,
         requests: c.traces,
         tokens: c.token_total,
         cost_usd: c.usd_cost,

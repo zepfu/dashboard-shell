@@ -1,9 +1,9 @@
 /**
  * ClientBreakdownTable — sortable TanStack Table for per-client usage.
  *
- * Renders a sticky-header, sortable table with exactly 5 columns per spec:
- * Client, Version, Requests, Tokens, Cost. The Client <td> carries a
- * data-client attribute for testability and brand-colour lookups.
+ * Renders a sticky-header, sortable table with exactly 6 columns per spec:
+ * Client, Version, First Seen, Requests, Tokens, Cost. The Client <td> carries
+ * a data-client attribute for testability and brand-colour lookups.
  *
  * Wave 11 PR6 (11-o):
  * - Client cells colored via CLIENT_BRAND_COLORS (C13).
@@ -19,6 +19,10 @@
  * - Removed extra Trend/sparkline column — spec is 5 cols.
  * - Removed metric-cell/microbar wrappers from Requests, Tokens, Cost — spec
  *   renders plain numeric <td> values with neutral fg color.
+ *
+ * Wave 31:
+ * - Added "First Seen" column (between Version and Requests) wired from
+ *   first_seen_at API field, formatted as YYYY-MM-DD.
  */
 import { useMemo, useState, type ReactElement } from 'react'
 import {
@@ -40,6 +44,8 @@ import { formatUsd } from '../lib/usage-report-display'
 export interface ClientRow {
   client: string
   version: string
+  /** W31: date the client was first seen, formatted YYYY-MM-DD. Empty string when unknown. */
+  first_seen?: string
   requests: number
   tokens: number
   cost_usd: number
@@ -72,8 +78,8 @@ export interface ClientBreakdownTableProps {
 
 /**
  * ClientBreakdownTable renders a sortable sticky-header table of client usage
- * statistics with brand-colored client cells and 5 columns per spec:
- * Client, Version, Requests, Tokens, Cost (§6.1 — no sparkline).
+ * statistics with brand-colored client cells and 6 columns per spec:
+ * Client, Version, First Seen, Requests, Tokens, Cost (§6.1 — no sparkline).
  * Numeric cells are plain values without microbar overlays (§6.2).
  */
 export function ClientBreakdownTable({
@@ -81,9 +87,10 @@ export function ClientBreakdownTable({
 }: ClientBreakdownTableProps): ReactElement {
   const [sorting, setSorting] = useState<SortingState>([])
 
-  // §6.1: spec is 5 columns — Client, Version, Requests, Tokens, Cost.
+  // §6.1: 6 columns — Client, Version, First Seen, Requests, Tokens, Cost.
   // §6.2: no microbars on any numeric cell (plain <td> per mockup L3264-3266).
   // Sparkline/Trend column removed entirely.
+  // W31: "First Seen" inserted between Version and Requests, sorted by ISO string.
   const columns = useMemo(
     () => [
       helper.display({
@@ -107,6 +114,15 @@ export function ClientBreakdownTable({
       helper.accessor('version', {
         header: 'Version',
         cell: (info) => info.getValue() as string,
+      }),
+      // W31: "First Seen" column — YYYY-MM-DD compact date, sorted ASC (oldest first)
+      // by ISO string comparison. sortDescFirst is overridden to false so clicking
+      // the header starts ascending (oldest client first).
+      helper.accessor('first_seen', {
+        header: 'First Seen',
+        sortDescFirst: false,
+        sortUndefined: 1,
+        cell: (info) => (info.getValue() as string | undefined) ?? '',
       }),
       // §6.2: plain numeric value — no metric-cell/microbar wrapper
       helper.accessor('requests', {
@@ -239,9 +255,11 @@ export function ClientBreakdownTable({
               {row.getVisibleCells().map((cell) => {
                 // Attach data-client to the <td> for the client column
                 const isClientCol = cell.column.id === 'client'
-                // Text columns (left-aligned, no .number class): client, version
+                // Text columns (left-aligned, no .number class): client, version, first_seen
                 const isText =
-                  cell.column.id === 'client' || cell.column.id === 'version'
+                  cell.column.id === 'client' ||
+                  cell.column.id === 'version' ||
+                  cell.column.id === 'first_seen'
 
                 // 14-F.1: .number className on numeric cells
                 const tdClassName = !isText ? 'number' : undefined
