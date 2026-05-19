@@ -1157,6 +1157,15 @@
   height: clamp(0.8px, 100%, 1.8px);
 }
 
+/* Wave 22-CSS — cat-miss missing-bucket cell (W21-2275 ⚠-#2)
+   HealthStrip emits <div class="health-strip-cell cat-miss"> for missing-data
+   buckets. Without this rule those cells render as transparent voids.
+   Uses card background at reduced opacity to indicate data absence visually. */
+.health-strip-cell.cat-miss {
+  background: var(--card);
+  opacity: 0.4;
+}
+
 /* ── §12 #2: trend-bar hover opacity via CSS (not JS) per mockup line 1331 ─ */
 /* Also adds transition: opacity 50ms per mockup line 1326.                    */
 .trend-bar {
