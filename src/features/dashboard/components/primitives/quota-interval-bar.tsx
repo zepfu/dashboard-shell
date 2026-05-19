@@ -66,6 +66,7 @@ export function QuotaIntervalBar({
           height: '6px',
           background: 'var(--card-2)',
           border: '1px solid var(--border)',
+          boxSizing: 'border-box',
           overflow: 'visible',
         }}
       >
