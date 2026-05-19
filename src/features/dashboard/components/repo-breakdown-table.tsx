@@ -159,7 +159,14 @@ export function RepoBreakdownTable({
   return (
     <Fragment>
       {/* F5 (Wave 20-Tables): mockup L3136 — sparkline trend caption */}
-      <div className='table-caption'>
+      <div
+        className='table-caption'
+        style={{
+          whiteSpace: 'nowrap',
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+        }}
+      >
         sparkline: 24h hourly trend · tok/hr per repo
       </div>
       <div
