@@ -44,7 +44,7 @@ const HEALTH_WINDOW_HOURS = Math.max(
 )
 const MAX_HEALTH_ROWS = Math.max(
   100,
-  Math.min(Number(process.env.SHELL_REPORT_HEALTH_MAX_ROWS ?? 1_500), 20_000)
+  Math.min(Number(process.env.SHELL_REPORT_HEALTH_MAX_ROWS ?? 8_000), 20_000)
 )
 const MAX_PROVIDER_ERROR_ROWS = 2_000
 const MAX_PROVIDER_STATUS_ROWS = 500
