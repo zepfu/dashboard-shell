@@ -133,6 +133,17 @@ test('test_sparkline_column_renders_svg', () => {
   }
 })
 
+test('test_renders_sparkline_caption', () => {
+  // Wave 20-Tables F5: mockup L2822 — caption text must match exactly
+  const { container } = render(<MasterLedgerTable rows={mockRows} />)
+
+  const caption = container.querySelector('.table-caption')
+  expect(caption).not.toBeNull()
+  expect(caption?.textContent?.trim()).toBe(
+    'sparkline: 24h hourly trend · tok/hr per model'
+  )
+})
+
 test('test_4k_columns_have_responsive_class', () => {
   const { container } = render(<MasterLedgerTable rows={mockRows} />)
 
