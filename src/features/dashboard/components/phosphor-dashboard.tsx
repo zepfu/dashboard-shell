@@ -1550,16 +1550,26 @@ function buildRepoRows(
   trendRows: UsageReportTrendRow[]
 ): RepoRow[] {
   // Build per-repository sparkline series from trend data (24h buckets).
-  // Sort chronologically so the polyline reads left-to-right oldest-to-newest.
-  const sortedTrend = [...trendRows].sort((a, b) =>
-    a.bucket < b.bucket ? -1 : a.bucket > b.bucket ? 1 : 0
-  )
-  const sparkByRepo = new Map<string, number[]>()
-  for (const t of sortedTrend) {
+  // Each bucket can have multiple rows (one per provider+model combination for
+  // that repository). Aggregate token_total per (repository, bucket) first so
+  // each sparkline point represents the full repository output for that bucket,
+  // then sort chronologically so the polyline reads left-to-right oldest-to-newest.
+  const bucketSumByRepo = new Map<string, Map<string, number>>()
+  for (const t of trendRows) {
     const repo = t.repository ?? '(unknown)'
-    const arr = sparkByRepo.get(repo) ?? []
-    arr.push(t.token_total)
-    sparkByRepo.set(repo, arr)
+    const bucketMap = bucketSumByRepo.get(repo) ?? new Map<string, number>()
+    bucketMap.set(t.bucket, (bucketMap.get(t.bucket) ?? 0) + t.token_total)
+    bucketSumByRepo.set(repo, bucketMap)
+  }
+  const sparkByRepo = new Map<string, number[]>()
+  for (const [repo, bucketMap] of bucketSumByRepo) {
+    const sortedBuckets = [...bucketMap.entries()].sort(([a], [b]) =>
+      a < b ? -1 : a > b ? 1 : 0
+    )
+    sparkByRepo.set(
+      repo,
+      sortedBuckets.map(([, sum]) => sum)
+    )
   }
 
   // 15-B.7: Track per-repo model token sums so we can pick the genuine top
