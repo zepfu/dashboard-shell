@@ -91,7 +91,7 @@ const CLIENT_AUTH_HEADERS = new Set([
 const pool = DATABASE_URL
   ? new Pool({
       connectionString: DATABASE_URL,
-      max: Number(process.env.SHELL_REPORT_DB_POOL_MAX ?? 5),
+      max: Number(process.env.SHELL_REPORT_DB_POOL_MAX ?? 12),
       idleTimeoutMillis: 30_000,
       connectionTimeoutMillis: 10_000,
     })
@@ -216,6 +216,10 @@ const sortColumns = {
   usd_cost: 'usd_cost',
   token_total: 'token_total',
 }
+const createdAtDateRangeWhere = [
+  "sh.created_at >= ($1::date::timestamp AT TIME ZONE 'America/New_York')",
+  "sh.created_at < ($2::date::timestamp AT TIME ZONE 'America/New_York')",
+]
 
 function sendJson(res, status, body) {
   const payload = JSON.stringify(body)
@@ -333,10 +337,7 @@ function buildFilteredWhere(searchParams) {
   const from = parseDateParam(searchParams.get('from'), defaultFromDate)
   const to = parseDateParam(searchParams.get('to'), defaultToDate)
   const values = [from, to]
-  const whereParts = [
-    `${createdAtEastern}::date >= $1::date`,
-    `${createdAtEastern}::date < $2::date`,
-  ]
+  const whereParts = [...createdAtDateRangeWhere]
 
   for (const key of Object.keys(filterColumns)) {
     appendMultiValueFilter(searchParams, key, whereParts, values)
@@ -1026,8 +1027,7 @@ WITH outer_counts AS (
         COUNT(*)::bigint AS calls
     FROM public.session_history_tool_activity a
     JOIN public.session_history sh ON a.litellm_call_id = sh.litellm_call_id
-    WHERE (sh.created_at AT TIME ZONE 'America/New_York')::date >= $1::date
-      AND (sh.created_at AT TIME ZONE 'America/New_York')::date < $2::date
+    WHERE ${createdAtDateRangeWhere.join('\n      AND ')}
     GROUP BY
         ${providerExpr},
         COALESCE(sh.model, 'unknown'),
@@ -1060,8 +1060,7 @@ shell_labels AS (
         COUNT(*)::bigint AS calls
     FROM public.session_history_tool_activity a
     JOIN public.session_history sh ON a.litellm_call_id = sh.litellm_call_id
-    WHERE (sh.created_at AT TIME ZONE 'America/New_York')::date >= $1::date
-      AND (sh.created_at AT TIME ZONE 'America/New_York')::date < $2::date
+    WHERE ${createdAtDateRangeWhere.join('\n      AND ')}
       AND a.tool_kind = 'command'
       AND a.command_text IS NOT NULL
       AND a.command_text <> ''
@@ -1480,10 +1479,7 @@ function buildUsageQuery(searchParams) {
     searchParams.get('direction')?.toLowerCase() === 'asc' ? 'ASC' : 'DESC'
 
   const values = [from, to]
-  const whereParts = [
-    `${createdAtEastern}::date >= $1::date`,
-    `${createdAtEastern}::date < $2::date`,
-  ]
+  const whereParts = [...createdAtDateRangeWhere]
 
   for (const key of Object.keys(filterColumns)) {
     appendMultiValueFilter(searchParams, key, whereParts, values)
