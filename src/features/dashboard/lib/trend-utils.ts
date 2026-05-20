@@ -122,39 +122,3 @@ export function formatBucketLabel(rawLabel: string): string {
   const day = datePart.slice(8, 10) // "DD"
   return `${month}/${day}`
 }
-
-// ---------------------------------------------------------------------------
-// computeSparklinePoints
-// ---------------------------------------------------------------------------
-
-/**
- * computeSparklinePoints converts a numeric series into an SVG polyline
- * points string, normalised to the given viewBox dimensions with 2px padding.
- *
- * Mirrors the logic inside the Sparkline component for reuse outside React.
- *
- * @param data   - Input numeric series (must be non-empty).
- * @param width  - SVG viewport width (default 60).
- * @param height - SVG viewport height (default 20).
- * @returns SVG `points` attribute string, e.g. `"0,18 30,10 60,2"`.
- *          Returns an empty string for empty input.
- */
-export function computeSparklinePoints(
-  data: number[],
-  width = 60,
-  height = 20
-): string {
-  if (data.length === 0) return ''
-
-  const min = Math.min(...data)
-  const max = Math.max(...data)
-  const range = max - min || 1
-
-  return data
-    .map((value, i) => {
-      const x = data.length === 1 ? width / 2 : (i / (data.length - 1)) * width
-      const y = height - 2 - ((value - min) / range) * (height - 4)
-      return `${x.toFixed(2)},${y.toFixed(2)}`
-    })
-    .join(' ')
-}

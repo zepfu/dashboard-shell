@@ -26,7 +26,7 @@
  * - F3: Quota tooltip restructured: v9-tip-head (window · pct used),
  *       v9-tip-sub (velocity line), v9-tip-row × 3 (t-model / t-count).
  *       Data fields window/velocity/tipModels added to QuotaBarGroup as optional;
- *       missing fields render '—' placeholders (TODO(w20) comments for wiring).
+ *       missing fields render '—' placeholders when not yet populated.
  * - F6: cost cell in card-pane-right switched to toLocaleString() for comma
  *       formatting on values ≥ $1,000.
  *
@@ -104,7 +104,6 @@ export interface QuotaRowConfig {
  * A single top-model entry for quota tooltip v9-tip-row rows.
  *
  * Wave 20 F3: mirrors mockup v9-tip-row structure (t-model / t-count).
- * TODO(w20): wire from phosphor-dashboard buildQuotaIntervals.
  */
 export interface QuotaTipModel {
   model: string
@@ -121,7 +120,6 @@ export interface QuotaTipModel {
  *
  * Wave 20 F3: added optional tooltip data fields (window, velocity, tipModels)
  * to support the mockup quota tooltip structure. Missing fields render '—'.
- * TODO(w20): populate these from buildQuotaIntervals in phosphor-dashboard.tsx.
  */
 export interface QuotaBarGroup {
   /** Human-readable quota type: 'Weekly' | 'Short' | 'Special' | 'Monthly'. */
@@ -136,17 +134,17 @@ export interface QuotaBarGroup {
   segments: QuotaRowConfig[]
   /**
    * Human-readable window label for tooltip head, e.g. '−30m → now'.
-   * TODO(w20): wire from buildQuotaIntervals.
+   * Wired from buildQuotaIntervals (W24/W35). Optional: renders '—' when absent.
    */
   tipWindow?: string
   /**
    * Velocity line for tooltip sub, e.g. '+5%/30m  ≈  +9%/h'.
-   * TODO(w20): wire from buildQuotaIntervals.
+   * Wired from buildQuotaIntervals (W24/W35). Omitted entirely when absent (W35 S4).
    */
   tipVelocity?: string
   /**
    * Top 3 contributing models for tooltip rows.
-   * TODO(w20): wire from buildQuotaIntervals.
+   * Wired from buildQuotaIntervals (W24/W35). Optional: falls back to empty placeholder.
    */
   tipModels?: QuotaTipModel[]
 }
@@ -618,7 +616,7 @@ export function ProviderCard({
          *   v9-tip-head: '{window} · {pct}% used'
          *   v9-tip-sub:  velocity line
          *   v9-tip-row × 3: top models with $delta
-         *   Missing data fields render '—' until TODO(w20) wiring is complete.
+         *   Optional data fields render '—' when not yet populated.
          */}
         {quotas.length > 0 && (
           <>
@@ -673,10 +671,9 @@ export function ProviderCard({
                         <span className='t-count'>{tm.costDelta}</span>
                       </div>
                     ))}
-                    {/* Placeholder rows when tipModels not yet wired */}
+                    {/* Placeholder rows when tipModels not populated */}
                     {tipModelRows.length === 0 && (
                       <div className='v9-tip-row'>
-                        {/* TODO(w20): wire tipModels from buildQuotaIntervals */}
                         <span className='t-model'>—</span>
                         <span className='t-count'>—</span>
                       </div>
