@@ -38,11 +38,14 @@
   gap: 4px;
 }
 
-/** ≥1600px: side-by-side 8fr (Model Ledger) / 4fr (Repository Breakdown). */
+/** ≥1600px: side-by-side 8fr (Model Ledger) / 4fr (Repository Breakdown).
+    minmax(0, Xfr) prevents grid items from overflowing their tracks when
+    content (e.g. RepoBreakdownTable) has a wide intrinsic width — mirrors
+    the minmax(0, 1fr) pattern used in .provider-summary-grid (W35-M1). */
 @media (min-width: 1600px) {
   .ledger-repo-row {
     display: grid;
-    grid-template-columns: 8fr 4fr;
+    grid-template-columns: minmax(0, 8fr) minmax(0, 4fr);
     gap: 4px;
   }
 }
