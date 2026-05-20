@@ -2,7 +2,7 @@
  * RepoBreakdownTable — sortable TanStack Table for per-repository usage.
  *
  * Renders a sortable, sticky-header table with Repository, Tokens, Cost,
- * Requests, Top Model, and 24h Tok/Hr (sparkline) columns.
+ * Requests, Top Model, and Tokens Trend (sparkline) columns.
  *
  * Wave 11 PR6 (11-n):
  * - Severity gutter on first cell — dynamic color based on row thresholds.
@@ -136,10 +136,11 @@ export function RepoBreakdownTable({
         return <span style={{ color: brandColor }}>{model}</span>
       },
     }),
-    // C40: renamed from Trend → 24h Tok/Hr
+    // C40: renamed from Trend → 24h Tok/Hr; W35 ⚠-3: corrected to Tokens Trend
+    // (data is 30-day daily totals, not a 24-hour hourly rate).
     helper.display({
       id: 'sparkline',
-      header: '24h Tok/Hr',
+      header: 'Tokens Trend',
       cell: ({ row }) => {
         const sparkData = row.original.spark ?? [row.original.tokens]
         // Tint by provider if hint available, fall back to severity color

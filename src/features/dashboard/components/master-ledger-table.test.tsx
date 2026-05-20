@@ -529,3 +529,81 @@ test('test_tool_cell_renders_count_when_tool_scalar_is_set', () => {
   // when tool !== undefined, which formats 460 as "460".
   expect(toolCellText).not.toBe('—')
 })
+
+// ---------------------------------------------------------------------------
+// Wave 35 cycle-2 — ⚠-3: sparkline column header renamed to "Tokens Trend"
+// ---------------------------------------------------------------------------
+
+test('test_sparkline_column_header_is_tokens_trend', () => {
+  // W35 ⚠-3: "24h Tok/Hr" was inaccurate — the data is 30-day daily totals,
+  // not a per-hour rate. The header must now read "Tokens Trend".
+  render(<MasterLedgerTable rows={mockRows} />)
+
+  // New header must be present.
+  const trendHeader = screen.getByRole('columnheader', {
+    name: /tokens trend/i,
+  })
+  expect(trendHeader).toBeInTheDocument()
+
+  // Old misleading header must NOT exist.
+  const oldHeader = screen.queryByRole('columnheader', { name: /24h tok\/hr/i })
+  expect(oldHeader).toBeNull()
+})
+
+// ---------------------------------------------------------------------------
+// Wave 35 cycle-2 — ⚠-9: MCP subRows sorted by calls desc before cap
+// ---------------------------------------------------------------------------
+
+test('test_buildToolActivity_mcp_subrows_sorted_by_calls_descending', () => {
+  // W35 ⚠-9: subRows must be sorted calls DESC regardless of server arrival
+  // order. Simulate out-of-order server rows (low call count arrives first).
+  const rows: UsageReportToolActivityRow[] = [
+    makeToolActivityRow('mcp__aawm__memory_save', 'outer', 5), // low — arrives first
+    makeToolActivityRow('mcp__aawm__search', 'outer', 120), // high
+    makeToolActivityRow('mcp__aawm__tristore_add', 'outer', 80), // medium
+    makeToolActivityRow('mcp__aawm__stage', 'outer', 40), // low-medium
+  ]
+
+  const result = buildToolActivity(rows)
+  const mcpRow = result.leftRows.find((r) => r.label === 'MCP: aawm')
+  expect(mcpRow).toBeDefined()
+  expect(mcpRow?.subRows).toBeDefined()
+
+  // SubRows must arrive in descending call order regardless of push order.
+  const subRows = mcpRow?.subRows ?? []
+  for (let i = 0; i < subRows.length - 1; i++) {
+    expect(subRows[i].calls).toBeGreaterThanOrEqual(subRows[i + 1].calls)
+  }
+
+  // The highest-call subtool (search, 120) must be first.
+  expect(subRows[0].label).toBe('search')
+  expect(subRows[0].calls).toBe(120)
+})
+
+test('test_buildToolActivity_mcp_subrows_cap_shows_top3_by_calls', () => {
+  // W35 ⚠-9: when the renderer slices subRows to 3, those 3 must be the
+  // highest-call sub-tools (not simply the first 3 in push order).
+  // This test verifies the sort happens before any slice in the renderer would
+  // apply — by checking that subRows[0..2] are the top-3 by calls.
+  const rows: UsageReportToolActivityRow[] = [
+    makeToolActivityRow('mcp__fs__write', 'outer', 2), // 4th highest
+    makeToolActivityRow('mcp__fs__read', 'outer', 300), // 1st
+    makeToolActivityRow('mcp__fs__delete', 'outer', 10), // 3rd
+    makeToolActivityRow('mcp__fs__list', 'outer', 150), // 2nd
+  ]
+
+  const result = buildToolActivity(rows)
+  const mcpRow = result.leftRows.find((r) => r.label === 'MCP: fs')
+  expect(mcpRow).toBeDefined()
+
+  const subRows = mcpRow?.subRows ?? []
+  // After sort, top-3 in order: read(300), list(150), delete(10)
+  expect(subRows[0].label).toBe('read')
+  expect(subRows[0].calls).toBe(300)
+  expect(subRows[1].label).toBe('list')
+  expect(subRows[1].calls).toBe(150)
+  expect(subRows[2].label).toBe('delete')
+  expect(subRows[2].calls).toBe(10)
+  // The cap (slice(0, 3)) in the renderer will correctly exclude write(2).
+  expect(subRows.length).toBe(4) // all 4 subRows present; renderer slices to 3
+})

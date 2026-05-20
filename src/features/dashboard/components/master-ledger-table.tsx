@@ -38,6 +38,11 @@
  * - Cache miss $, Reasoning moved up before latency columns.
  * - Cache Miss % relocated after $/1k (cost group).
  * - 24h Tok/Hr sparkline moved to last position.
+ *
+ * Wave 35 cycle-2 (⚠-3):
+ * - Sparkline column header corrected from "24h Tok/Hr" → "Tokens Trend".
+ *   The column visualises 30-day daily token totals (not an hourly rate).
+ *   "24h" and "Tok/Hr" were both inaccurate labels.
  */
 import { useState, useMemo, type ReactElement } from 'react'
 import {
@@ -137,6 +142,11 @@ export interface ModelToolActivity {
  * This pure function is exported so it can be unit-tested directly without
  * rendering the full component.
  *
+ * MCP sub-rows ({@link ToolLeftRow.subRows}) are sorted by `calls` descending
+ * before being attached, providing a defensive guarantee independent of the
+ * server's ORDER BY.  This ensures the slice-to-3 cap in the renderer always
+ * shows the highest-call sub-tools even if API ordering changes (W35 ⚠-9).
+ *
  * @param rows - All `toolActivity` rows for one (provider, model) pair.
  *   Both `kind === 'outer'` and `kind === 'shell'` rows are expected.
  */
@@ -202,14 +212,25 @@ export function buildToolActivity(
   const leftTruncated = leftTotalCount > LEFT_COL_CAP
   const capped = combinedLeft.slice(0, LEFT_COL_CAP)
 
-  const leftRows: ToolLeftRow[] = capped.map((item) => ({
-    label: item.label,
-    calls: item.calls,
-    pct: totalCalls > 0 ? Math.round((item.calls / totalCalls) * 1000) / 10 : 0,
-    subRows: item.isMcp
-      ? mcpServerMap.get(item.label.slice('MCP: '.length))?.subRows
-      : undefined,
-  }))
+  const leftRows: ToolLeftRow[] = capped.map((item) => {
+    let subRows: { label: string; calls: number }[] | undefined
+    if (item.isMcp) {
+      const mcpData = mcpServerMap.get(item.label.slice('MCP: '.length))
+      if (mcpData !== undefined) {
+        // W35 ⚠-9: Sort sub-rows by calls descending before the slice-to-3 cap
+        // in the renderer. Defensive against API ordering changes — the server
+        // emits calls DESC but we must not rely on push-order being stable.
+        subRows = [...mcpData.subRows].sort((a, b) => b.calls - a.calls)
+      }
+    }
+    return {
+      label: item.label,
+      calls: item.calls,
+      pct:
+        totalCalls > 0 ? Math.round((item.calls / totalCalls) * 1000) / 10 : 0,
+      subRows,
+    }
+  })
 
   // Right-column: shell command rows sorted by calls desc, capped
   const sortedShell = [...shellRows].sort((a, b) => b.calls - a.calls)
@@ -251,7 +272,8 @@ export interface ModelRow {
   queue?: number
   resets?: number
   // Wave 26 — new cache/reasoning columns (operator F#12)
-  /** Percentage of cache misses relative to total tokens (0–100). */
+  /** Percentage of total row USD cost attributed to cache miss premium
+   *  (cache_miss_usd_cost / usd_cost × 100). Range 0–100. */
   cache_miss_pct?: number
   /** Dollar cost attributed to cache misses. */
   cache_miss_usd_cost?: number
@@ -409,7 +431,7 @@ function formatPercent(pct: number): string {
 //   21. GIT commits (col-5k-only)
 //   22. GIT pushes (col-5k-only)
 //   23. INVAL      (col-5k-only)
-//   24. 24h Tok/Hr (sparkline, last)
+//   24. Tokens Trend (sparkline, last)
 
 // Cols 1–5: identity + volume
 const baseVolumeColumns = [
@@ -610,10 +632,12 @@ const fiveKColumns = [
 ]
 
 // Col 24: sparkline — last per Wave 30 operator spec
+// W35 ⚠-3: header renamed from "24h Tok/Hr" to "Tokens Trend".
+// The data is 30-day daily token totals, not a 24-hour hourly rate.
 const sparklineColumn = [
   {
     id: 'sparkline',
-    header: '24h Tok/Hr',
+    header: 'Tokens Trend',
     enableSorting: false,
     // Cell rendering is handled in MasterLedgerTable body to access severity color
     cell: () => null,
@@ -628,7 +652,7 @@ const sparklineColumn = [
 //   → cacheMissPctColumn (14: Cache Miss %)
 //   → fourKColumns (15–19: $/1k In, $/1k Out, Cache%, Queue, Resets; col-4k-only)
 //   → fiveKColumns (20–23: TOOL, GIT commits, GIT pushes, INVAL; col-5k-only)
-//   → sparklineColumn (24: 24h Tok/Hr)
+//   → sparklineColumn (24: Tokens Trend)
 const allColumns = [
   ...baseVolumeColumns,
   ...cacheToksColumn,
