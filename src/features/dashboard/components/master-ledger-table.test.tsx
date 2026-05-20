@@ -483,3 +483,49 @@ test('test_tool_cell_hover_tooltip_rendered_when_tool_activity_present', () => {
   // Tool names in the left column should be visible in the tooltip DOM.
   expect(screen.getByText('Read')).toBeInTheDocument()
 })
+
+// ---------------------------------------------------------------------------
+// Wave 34 — TOOL cell scalar renders count (Critical #4 fix)
+// ---------------------------------------------------------------------------
+
+test('test_tool_cell_renders_count_when_tool_scalar_is_set', () => {
+  // Wave 34 fix (wave34-data-flow-audit Critical #4): buildModelRows now sets
+  // the scalar `tool` field to toolActivity.totalCalls. The TOOL cell must
+  // render the numeric count (not '—') when tool > 0.
+  const totalCalls = 460
+  const toolActivity = buildToolActivity([
+    makeToolActivityRow('Read', 'outer', 245),
+    makeToolActivityRow('Edit', 'outer', 135),
+    makeToolActivityRow('Bash', 'outer', 80),
+  ])
+
+  const toolRow = {
+    model: 'claude-haiku-4-5-20251001',
+    provider: 'anthropic',
+    tokens_in: 5000,
+    tokens_out: 2000,
+    requests: 200,
+    p50_ms: 150,
+    p95_ms: 400,
+    error_pct: 0,
+    cost_usd: 1.0,
+    cost_per_1k: 0.05,
+    // Scalar `tool` mirrors toolActivity.totalCalls as produced by buildModelRows
+    tool: totalCalls,
+    toolActivity,
+  }
+
+  const { container } = render(<MasterLedgerTable rows={[toolRow]} />)
+
+  // Locate the TOOL column cell — it should display the numeric count, not '—'.
+  // The count (460) must appear as text within the table body.
+  const cells = container.querySelectorAll('tbody td')
+  const cellTexts = Array.from(cells).map((c) => (c as HTMLElement).textContent)
+  const toolCellText = cellTexts.find((t) => t?.includes('460'))
+  expect(toolCellText).toBeDefined()
+
+  // Ensure the em-dash placeholder is NOT the content of the TOOL cell for this row.
+  // We verify by checking the count appears — the TOOL cell renderer returns numFmt
+  // when tool !== undefined, which formats 460 as "460".
+  expect(toolCellText).not.toBe('—')
+})
