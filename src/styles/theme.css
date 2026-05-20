@@ -24,6 +24,10 @@ body::before {
   --bg: #0a0d12;
   --card: #111722;
   --card-2: #1a2233;
+  /* --card-3: shimmer highlight midpoint — slightly lighter than --card-2.
+     Used by .skeleton-block gradient in index.css to give the sweep a
+     visible "bright" centre. Without this the gradient fades to transparent. */
+  --card-3: #223050;
   --border: #2a3547;
   --fg: #c8d8f0;
   --fg-muted: #5a7090;

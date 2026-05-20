@@ -122,6 +122,23 @@ test('test_phosphor_border_radius_zero', () => {
   expect(['0px', '0rem', '0']).toContain(radius)
 })
 
+test('test_card3_token_defined_and_distinct_from_card2', () => {
+  /**
+   * --card-3 must be defined and must differ from --card-2.
+   *
+   * Wave 37 SF-3: the skeleton-block shimmer gradient references var(--card-3)
+   * as the midpoint highlight.  When undefined the property resolves to the
+   * CSS initial value (empty / transparent), making the shimmer look broken.
+   * Adding the token to theme.css fixes the gradient; this test guards against
+   * future accidental removal.
+   */
+  const card2 = getCssVar('--card-2')
+  const card3 = getCssVar('--card-3')
+
+  expect(card3).not.toBe('')
+  expect(card3).not.toBe(card2)
+})
+
 test('test_ibm_plex_mono_in_font_family', () => {
   /**
    * Phosphor Atlas specifies IBM Plex Mono as the monospace typeface.
