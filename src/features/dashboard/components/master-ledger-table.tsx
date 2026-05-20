@@ -48,7 +48,10 @@ import {
   useReactTable,
   type SortingState,
 } from '@tanstack/react-table'
-import { type UsageReportProviderErrorObservationRow } from '../api/usage-report'
+import {
+  type UsageReportProviderErrorObservationRow,
+  type UsageReportToolActivityRow,
+} from '../api/usage-report'
 import {
   providerBrandHex,
   formatLatency,
@@ -66,6 +69,167 @@ import { Sparkline } from './primitives/sparkline'
  * internal use.  The canonical definition lives in `../api/usage-report`.
  */
 export type ProviderErrorObservation = UsageReportProviderErrorObservationRow
+
+// ---------------------------------------------------------------------------
+// W33 Tool Activity — types and constants
+// ---------------------------------------------------------------------------
+
+/**
+ * Shell-class tool names that are NOT shown in the left TOOLS column.
+ * They are instead aggregated into the right SHELL column header count.
+ * Must stay in sync with the server's shell-classification list.
+ */
+export const SHELL_CLASS_TOOL_NAMES = new Set([
+  'Bash',
+  'exec_command',
+  'run_terminal_command',
+  'run_command',
+  'run_shell_command',
+  'code_execution:run_command',
+])
+
+/** Maximum non-MCP tool rows shown in the left column. */
+const LEFT_COL_CAP = 12
+
+/** Maximum shell command rows shown in the right column. */
+const RIGHT_COL_CAP = 14
+
+/** A single row in the rendered left TOOLS column (post-rollup). */
+export interface ToolLeftRow {
+  /** Display label: plain tool name or `MCP: <server>`. */
+  label: string
+  calls: number
+  /** Percentage of total tool calls (left + right combined), 0–100. */
+  pct: number
+  /** Sub-rows for MCP server rollup entries. `undefined` for plain tools. */
+  subRows?: { label: string; calls: number }[]
+}
+
+/**
+ * Pre-processed tool activity data attached to each ModelRow.
+ * Computed in `buildModelRows` (phosphor-dashboard) and consumed by the TOOL
+ * cell renderer in `MasterLedgerTable`.
+ */
+export interface ModelToolActivity {
+  /** Total call count across ALL outer rows (left + shell-class). */
+  totalCalls: number
+  /** Total calls attributed to shell-class tools (Bash, exec_command, …). */
+  shellTotalCalls: number
+  /** Left-column rows (plain tools + MCP rollups), capped at LEFT_COL_CAP. */
+  leftRows: ToolLeftRow[]
+  /** Whether leftRows was truncated (more rows exist beyond the cap). */
+  leftTruncated: boolean
+  /** Original count of non-truncated left rows (used for "+N more" display). */
+  leftTotalCount: number
+  /** Right-column shell command rows, capped at RIGHT_COL_CAP. */
+  shellRows: { label: string; calls: number }[]
+  /** Whether shellRows was truncated. */
+  shellTruncated: boolean
+  /** Original count of non-truncated shell rows (for "+N more" display). */
+  shellTotalCount: number
+}
+
+/**
+ * Builds pre-processed {@link ModelToolActivity} from raw `toolActivity` rows
+ * for a single (provider, model) pair.
+ *
+ * This pure function is exported so it can be unit-tested directly without
+ * rendering the full component.
+ *
+ * @param rows - All `toolActivity` rows for one (provider, model) pair.
+ *   Both `kind === 'outer'` and `kind === 'shell'` rows are expected.
+ */
+export function buildToolActivity(
+  rows: UsageReportToolActivityRow[]
+): ModelToolActivity {
+  // Split by kind
+  const outerRows = rows.filter((r) => r.kind === 'outer')
+  const shellRows = rows.filter((r) => r.kind === 'shell')
+
+  // Compute total shell calls from outer rows that match shell-class names
+  const shellTotalCalls = outerRows
+    .filter((r) => SHELL_CLASS_TOOL_NAMES.has(r.label))
+    .reduce((s, r) => s + r.calls, 0)
+
+  // Total calls = sum of ALL outer rows (includes shell-class outer rows)
+  const totalCalls = outerRows.reduce((s, r) => s + r.calls, 0)
+
+  // Build left-column rows: exclude shell-class outer rows, group MCP names
+  // MCP: label starts with 'mcp__' → group by split('__')[1] (server name)
+  const mcpServerMap = new Map<
+    string,
+    { calls: number; subRows: { label: string; calls: number }[] }
+  >()
+  const plainToolRows: { label: string; calls: number }[] = []
+
+  for (const r of outerRows) {
+    if (SHELL_CLASS_TOOL_NAMES.has(r.label)) continue // excluded from left col
+
+    if (r.label.startsWith('mcp__')) {
+      const parts = r.label.split('__')
+      const server = parts[1] ?? 'unknown'
+      const subLabel = parts.slice(2).join('__') || r.label
+      const existing = mcpServerMap.get(server)
+      if (existing === undefined) {
+        mcpServerMap.set(server, {
+          calls: r.calls,
+          subRows: [{ label: subLabel, calls: r.calls }],
+        })
+      } else {
+        existing.calls += r.calls
+        existing.subRows.push({ label: subLabel, calls: r.calls })
+      }
+    } else {
+      plainToolRows.push({ label: r.label, calls: r.calls })
+    }
+  }
+
+  // Combine plain tools + MCP server entries into a single sortable list
+  const combinedLeft: { label: string; calls: number; isMcp: boolean }[] = [
+    ...plainToolRows.map((r) => ({ ...r, isMcp: false })),
+    ...[...mcpServerMap.entries()].map(([server, data]) => ({
+      label: `MCP: ${server}`,
+      calls: data.calls,
+      isMcp: true,
+    })),
+  ]
+
+  // Sort descending by total call count
+  combinedLeft.sort((a, b) => b.calls - a.calls)
+
+  const leftTotalCount = combinedLeft.length
+  const leftTruncated = leftTotalCount > LEFT_COL_CAP
+  const capped = combinedLeft.slice(0, LEFT_COL_CAP)
+
+  const leftRows: ToolLeftRow[] = capped.map((item) => ({
+    label: item.label,
+    calls: item.calls,
+    pct: totalCalls > 0 ? Math.round((item.calls / totalCalls) * 1000) / 10 : 0,
+    subRows: item.isMcp
+      ? mcpServerMap.get(item.label.slice('MCP: '.length))?.subRows
+      : undefined,
+  }))
+
+  // Right-column: shell command rows sorted by calls desc, capped
+  const sortedShell = [...shellRows].sort((a, b) => b.calls - a.calls)
+  const shellTotalCount = sortedShell.length
+  const shellTruncated = shellTotalCount > RIGHT_COL_CAP
+  const shellRowsCapped = sortedShell.slice(0, RIGHT_COL_CAP).map((r) => ({
+    label: r.label,
+    calls: r.calls,
+  }))
+
+  return {
+    totalCalls,
+    shellTotalCalls,
+    leftRows,
+    leftTruncated,
+    leftTotalCount,
+    shellRows: shellRowsCapped,
+    shellTruncated,
+    shellTotalCount,
+  }
+}
 
 /** One row in the master ledger table. */
 export interface ModelRow {
@@ -104,6 +268,8 @@ export interface ModelRow {
   inval?: number
   // Sparkline data
   spark?: number[]
+  // W33: pre-processed tool activity for TOOL cell hover tooltip
+  toolActivity?: ModelToolActivity
 }
 
 // ---------------------------------------------------------------------------
@@ -434,8 +600,9 @@ const fiveKColumns = [
     id: 'tool',
     header: 'TOOL',
     meta: { className: 'col-5k-only' },
-    cell: (info) =>
-      fmtOrDash(info.getValue() as number | null | undefined, numFmt),
+    // W33: cell rendering is handled in MasterLedgerTable body so we can access
+    // the full row's toolActivity field to build the 2-column hover tooltip.
+    cell: () => null,
   }),
   helper.accessor('git_commits', {
     id: 'git_commits',
@@ -895,6 +1062,197 @@ export function MasterLedgerTable({
                       ) : (
                         '—'
                       )
+                  } else if (colId === 'tool') {
+                    // W33: TOOL cell — plain count + optional 2-column hover breakdown
+                    cellColor = 'var(--accent-cool)'
+                    const toolCount = orig.tool
+                    const toolLabel =
+                      toolCount !== undefined ? numFmt(toolCount) : '—'
+                    const ta = orig.toolActivity
+                    if (ta !== undefined && ta.totalCalls > 0) {
+                      // Build 2-column hover tooltip
+                      const tooltipContent = (
+                        <div
+                          style={{
+                            display: 'grid',
+                            gridTemplateColumns: '1fr 1fr',
+                            columnGap: '12px',
+                            minWidth: '340px',
+                          }}
+                        >
+                          {/* LEFT: TOOLS column */}
+                          <div>
+                            <div
+                              className='v9-tip-head'
+                              style={{ marginBottom: '4px' }}
+                            >
+                              {orig.model} — tool breakdown
+                            </div>
+                            {/* Left column sub-header */}
+                            <div
+                              style={{
+                                fontSize: '9px',
+                                color: 'var(--accent-chrome, #94a3b8)',
+                                fontWeight: 700,
+                                letterSpacing: '0.04em',
+                                marginBottom: '2px',
+                                textTransform: 'uppercase',
+                              }}
+                            >
+                              Tools
+                            </div>
+                            {ta.leftRows.map((lr) => (
+                              <div key={lr.label}>
+                                <div
+                                  style={{
+                                    display: 'flex',
+                                    justifyContent: 'space-between',
+                                    gap: '4px',
+                                    fontSize: '9px',
+                                    color: 'var(--fg, #e2e8f0)',
+                                    padding: '1px 0',
+                                    lineHeight: 1.5,
+                                  }}
+                                >
+                                  <span
+                                    style={{
+                                      overflow: 'hidden',
+                                      textOverflow: 'ellipsis',
+                                      whiteSpace: 'nowrap',
+                                      maxWidth: '100px',
+                                    }}
+                                  >
+                                    {lr.label}
+                                  </span>
+                                  <span style={{ whiteSpace: 'nowrap' }}>
+                                    {numFmt(lr.calls)}
+                                    {'  '}
+                                    {lr.pct.toFixed(0)}%
+                                  </span>
+                                </div>
+                                {/* MCP sub-rows */}
+                                {lr.subRows !== undefined &&
+                                  lr.subRows.length > 0 && (
+                                    <div
+                                      style={{
+                                        paddingLeft: '8px',
+                                        fontSize: '8px',
+                                        color: 'var(--fg-muted, #94a3b8)',
+                                      }}
+                                    >
+                                      {lr.subRows
+                                        .slice(0, 3)
+                                        .map((sr, srIdx, arr) => {
+                                          const isLast =
+                                            srIdx === arr.length - 1
+                                          const prefix = isLast ? '└─' : '├─'
+                                          return (
+                                            <div
+                                              key={sr.label}
+                                              style={{ padding: '0.5px 0' }}
+                                            >
+                                              {prefix} {sr.label}{' '}
+                                              {numFmt(sr.calls)}
+                                            </div>
+                                          )
+                                        })}
+                                      {lr.subRows.length > 3 && (
+                                        <div>
+                                          {`+${(lr.subRows.length - 3).toString()} more`}
+                                        </div>
+                                      )}
+                                    </div>
+                                  )}
+                              </div>
+                            ))}
+                            {ta.leftTruncated && (
+                              <div
+                                style={{
+                                  fontSize: '9px',
+                                  color: 'var(--fg-muted, #94a3b8)',
+                                  fontStyle: 'italic',
+                                  padding: '1px 0',
+                                }}
+                              >
+                                {`+${(ta.leftTotalCount - LEFT_COL_CAP).toString()} more`}
+                              </div>
+                            )}
+                          </div>
+
+                          {/* RIGHT: SHELL column */}
+                          <div>
+                            <div
+                              className='v9-tip-head'
+                              style={{ marginBottom: '4px' }}
+                            >
+                              &nbsp;
+                            </div>
+                            {/* Right column sub-header */}
+                            <div
+                              style={{
+                                fontSize: '9px',
+                                color: 'var(--accent-chrome, #94a3b8)',
+                                fontWeight: 700,
+                                letterSpacing: '0.04em',
+                                marginBottom: '2px',
+                                textTransform: 'uppercase',
+                              }}
+                            >
+                              {`Shell (${numFmt(ta.shellTotalCalls)} calls)`}
+                            </div>
+                            {ta.shellRows.map((sr) => (
+                              <div
+                                key={sr.label}
+                                style={{
+                                  display: 'flex',
+                                  justifyContent: 'space-between',
+                                  gap: '4px',
+                                  fontSize: '9px',
+                                  color: 'var(--fg, #e2e8f0)',
+                                  padding: '1px 0',
+                                  lineHeight: 1.5,
+                                }}
+                              >
+                                <span
+                                  style={{
+                                    overflow: 'hidden',
+                                    textOverflow: 'ellipsis',
+                                    whiteSpace: 'nowrap',
+                                    maxWidth: '100px',
+                                  }}
+                                >
+                                  {sr.label}
+                                </span>
+                                <span>{numFmt(sr.calls)}</span>
+                              </div>
+                            ))}
+                            {ta.shellTruncated && (
+                              <div
+                                style={{
+                                  fontSize: '9px',
+                                  color: 'var(--fg-muted, #94a3b8)',
+                                  fontStyle: 'italic',
+                                  padding: '1px 0',
+                                }}
+                              >
+                                {`+${(ta.shellTotalCount - RIGHT_COL_CAP).toString()} more`}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      )
+                      cellContent = (
+                        <HoverTooltip
+                          variant='quota-bar'
+                          content={tooltipContent}
+                        >
+                          {toolLabel}
+                        </HoverTooltip>
+                      )
+                    } else {
+                      // Zero tool calls or no toolActivity data: no hover
+                      cellContent = toolLabel
+                    }
                   } else if (colId === 'model') {
                     // Model name: default foreground
                     cellColor = 'var(--fg)'
