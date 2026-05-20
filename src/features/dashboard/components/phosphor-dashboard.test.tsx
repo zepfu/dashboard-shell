@@ -716,6 +716,224 @@ describe('Wave 41 — buildProviderLanes', () => {
 })
 
 // ---------------------------------------------------------------------------
+// Wave 47 — buildProviderLanes prior-bar dedup with future reset slots
+//
+// Regression coverage for the scenario where:
+//   1. The history API returns rows for the CURRENT window (expected_reset_at
+//      matches the live quota row's resetAt) — these must be deduplicated away.
+//   2. The history API returns rows for PRIOR slots that sit in the near-future
+//      relative to today (e.g. a weekly cycle that reset on May 24 while today
+//      is May 20 — the server window was expanded to 2× interval_hours so these
+//      rows now appear in the history response).
+//   3. Multiple poll-jitter duplicates for the same prior slot collapse to one
+//      bar via the 30-min rounding + seen-Set dedup.
+//
+// Expected: 1 current bar + 2 prior bars (one per unique prior slot).
+// Observed before server fix (bcbe5c7): 1 current bar + 1 prior bar (the 5/24
+//   slot was excluded because the server upper bound was 0.5× instead of 2×;
+//   after bcbe5c7 the server sends all rows correctly, so these tests guard
+//   the client-side ±30-min dedup path remains correct for future slots).
+// ---------------------------------------------------------------------------
+
+describe('Wave 47 — buildProviderLanes future-slot prior bar dedup', () => {
+  /**
+   * Builds a minimal OpenAI quota row with weekly, special, short, and
+   * short_special all active — matching the live production data shape.
+   */
+  function makeOpenAIQuotaRow(
+    overrides: Partial<UsageReportQuotaRow> = {}
+  ): UsageReportQuotaRow {
+    return {
+      provider: 'openai',
+      model: null,
+      // Weekly: current reset 2026-05-26T18:33 → rounds to 18:30
+      weekly_remaining_pct: 84,
+      weekly_reset_at: '2026-05-26T18:33:13.000Z',
+      weekly_interval_start: '2026-05-20T17:23:48.000Z',
+      weekly_interval_end: '9999-12-31T00:00:00.000Z',
+      weekly_active: true,
+      weekly_usage_tokens: 1281094598,
+      weekly_usage_breakdown: [],
+      // Short: current reset 2026-05-20T19:22 → rounds to 19:30
+      short_remaining_pct: 93,
+      short_reset_at: '2026-05-20T19:22:26.000Z',
+      short_interval_start: '2026-05-20T17:40:30.000Z',
+      short_interval_end: '9999-12-31T00:00:00.000Z',
+      short_active: true,
+      short_usage_tokens: 145618271,
+      short_usage_breakdown: [],
+      // Special (codex-spark · 7d): current reset 2026-05-26T19:44 → rounds to 19:30
+      special_remaining_pct: 40,
+      special_reset_at: '2026-05-26T19:44:29.000Z',
+      special_interval_start: '2026-05-20T17:23:48.000Z',
+      special_interval_end: '9999-12-31T00:00:00.000Z',
+      special_active: true,
+      special_usage_tokens: 500000000,
+      special_usage_breakdown: [],
+      // short_special (codex-spark · 5hr): current reset 2026-05-20T23:10 → rounds to 23:00
+      short_special_remaining_pct: 91,
+      short_special_reset_at: '2026-05-20T23:10:48.000Z',
+      short_special_interval_start: '2026-05-20T18:10:49.000Z',
+      short_special_interval_end: '9999-12-31T00:00:00.000Z',
+      short_special_active: true,
+      short_special_usage_tokens: 23026788,
+      short_special_usage_breakdown: [],
+      monthly_remaining_pct: null,
+      monthly_reset_at: null,
+      monthly_interval_start: null,
+      monthly_interval_end: null,
+      monthly_active: false,
+      monthly_usage_tokens: 0,
+      monthly_usage_breakdown: [],
+      ...overrides,
+    }
+  }
+
+  /** Creates a minimal weekly history row for openai. */
+  function makeWeeklyHistoryRow(
+    expected_reset_at: string,
+    min_remaining_pct: number
+  ): UsageReportQuotaHistoryRow {
+    return {
+      provider: 'openai',
+      model: null,
+      quota_type: 'weekly',
+      expected_reset_at,
+      interval_start: null,
+      interval_end: expected_reset_at,
+      min_remaining_pct,
+      max_remaining_pct: 99,
+      usage_tokens: 1000000,
+      usage_breakdown: [],
+    }
+  }
+
+  /** Creates a minimal special history row for openai. */
+  function makeSpecialHistoryRow(
+    expected_reset_at: string,
+    min_remaining_pct: number
+  ): UsageReportQuotaHistoryRow {
+    return {
+      provider: 'openai',
+      model: null,
+      quota_type: 'special',
+      expected_reset_at,
+      interval_start: null,
+      interval_end: expected_reset_at,
+      min_remaining_pct,
+      max_remaining_pct: 99,
+      usage_tokens: 500000,
+      usage_breakdown: [],
+    }
+  }
+
+  test('test_openai_weekly_lane_shows_2_prior_bars_when_server_includes_current_slot', () => {
+    // Mirrors the live data shape after bcbe5c7 server fix:
+    // 7 history rows — 1 matching the current window's resetAt (5/26 18:33)
+    // and 3 poll-jitter duplicates for each of two prior slots (5/24, 5/19).
+    // The current window row must be deduplicated; the two prior slots must
+    // each yield exactly 1 prior bar → 2 prior bars total.
+    const openaiRow = makeOpenAIQuotaRow()
+    const historyRows: UsageReportQuotaHistoryRow[] = [
+      // Current window row — must be filtered by ±30min dedup (resetAt=18:33 → slot 18:30)
+      makeWeeklyHistoryRow('2026-05-26T18:33:13.000Z', 84),
+      // Prior slot 5/24 14:00 — 3 poll-jitter duplicates all round to 14:00
+      makeWeeklyHistoryRow('2026-05-24T13:47:48.000Z', 80),
+      makeWeeklyHistoryRow('2026-05-24T13:47:47.000Z', 80),
+      makeWeeklyHistoryRow('2026-05-24T13:47:46.000Z', 76),
+      // Prior slot 5/19 00:00 — 3 poll-jitter duplicates all round to 00:00
+      makeWeeklyHistoryRow('2026-05-19T00:04:56.000Z', 39),
+      makeWeeklyHistoryRow('2026-05-19T00:04:54.000Z', 4),
+      makeWeeklyHistoryRow('2026-05-19T00:04:53.000Z', 2),
+    ]
+    const lanes = _buildProviderLanesForTest('openai', [openaiRow], historyRows)
+    const weeklyLane = lanes.find((l) => l.laneKey === 'openai/weekly')
+    expect(weeklyLane).toBeDefined()
+    // Current bar: pct = 100 − 84 = 16% consumed
+    expect(weeklyLane!.currentBar).not.toBeNull()
+    expect(weeklyLane!.currentBar!.consumedPct).toBeCloseTo(16, 0)
+    // Exactly 2 prior bars: 5/24 slot + 5/19 slot (jitter rows deduped)
+    expect(weeklyLane!.priorBars).toHaveLength(2)
+    // Newest prior bar first: 5/24 slot, min_remaining_pct=80 → consumed=20
+    expect(weeklyLane!.priorBars[0]!.consumedPct).toBeCloseTo(20, 0)
+    // Oldest prior bar second: 5/19 slot, min_remaining_pct=39 → consumed=61
+    expect(weeklyLane!.priorBars[1]!.consumedPct).toBeCloseTo(61, 0)
+  })
+
+  test('test_openai_special_lane_shows_2_prior_bars_when_server_includes_current_slot', () => {
+    // Same regression pattern for the codex-spark · 7d (special) lane.
+    // 4 history rows: 1 current (5/26 19:44), 2 duplicates for 5/24, 1 for 5/18.
+    const openaiRow = makeOpenAIQuotaRow()
+    const historyRows: UsageReportQuotaHistoryRow[] = [
+      // Current window (5/26 19:44 → slot 19:30) — must be filtered
+      makeSpecialHistoryRow('2026-05-26T19:44:29.000Z', 40),
+      // Prior slot 5/24 14:00 — 2 poll-jitter duplicates
+      makeSpecialHistoryRow('2026-05-24T13:47:57.000Z', 80),
+      makeSpecialHistoryRow('2026-05-24T13:47:56.000Z', 75),
+      // Prior slot 5/18 15:00 — single row
+      makeSpecialHistoryRow('2026-05-18T15:08:42.000Z', 0),
+    ]
+    const lanes = _buildProviderLanesForTest('openai', [openaiRow], historyRows)
+    const specialLane = lanes.find((l) => l.laneKey === 'openai/special')
+    expect(specialLane).toBeDefined()
+    expect(specialLane!.currentBar).not.toBeNull()
+    // pct = 100 − 40 = 60% consumed
+    expect(specialLane!.currentBar!.consumedPct).toBeCloseTo(60, 0)
+    // 2 prior bars: 5/24 slot + 5/18 slot
+    expect(specialLane!.priorBars).toHaveLength(2)
+    // Newest prior first: 5/24 slot, min_remaining_pct=80 → consumed=20
+    expect(specialLane!.priorBars[0]!.consumedPct).toBeCloseTo(20, 0)
+    // Oldest prior second: 5/18 slot, min_remaining_pct=0 → consumed=100
+    expect(specialLane!.priorBars[1]!.consumedPct).toBeCloseTo(100, 0)
+  })
+
+  test('test_weekly_current_slot_deduplicated_even_when_reset_at_is_in_future', () => {
+    // Regression guard: when the current bar's resetAt is in the FUTURE
+    // (e.g. weekly reset on May 26 while today is May 20), the ±30-min check
+    // must still filter history rows that share the same rounded slot.
+    const openaiRow = makeOpenAIQuotaRow()
+    const historyRows: UsageReportQuotaHistoryRow[] = [
+      // Exact match of current weekly resetAt — must be deduplicated
+      makeWeeklyHistoryRow('2026-05-26T18:33:13.000Z', 84),
+      // Only one prior slot — should become the single prior bar
+      makeWeeklyHistoryRow('2026-05-19T00:04:56.000Z', 39),
+    ]
+    const lanes = _buildProviderLanesForTest('openai', [openaiRow], historyRows)
+    const weeklyLane = lanes.find((l) => l.laneKey === 'openai/weekly')
+    expect(weeklyLane!.priorBars).toHaveLength(1)
+    // min_remaining_pct=39 → consumed=61
+    expect(weeklyLane!.priorBars[0]!.consumedPct).toBeCloseTo(61, 0)
+  })
+
+  test('test_per_lane_dedup_does_not_cross_contaminate_between_quota_types', () => {
+    // Guard the per-lane isolation of buildProviderLanes: the ±30-min dedup
+    // for the weekly lane must compare only against the weekly current bar's
+    // resetAt, NOT against other lanes' current bars (e.g. special or short).
+    //
+    // Scenario: weekly current reset at 18:33 (→ slot 18:30) and special
+    // current reset at 19:44 (→ slot 19:30). A weekly history row at 14:00
+    // on 5/24 is >30min from 18:30 and must NOT be dropped, even though
+    // buildHistoryBarsForProvider's cross-provider path would check all resets.
+    const openaiRow = makeOpenAIQuotaRow({
+      weekly_reset_at: '2026-05-26T18:33:13.000Z',
+      special_reset_at: '2026-05-26T19:44:29.000Z',
+    })
+    const historyRows: UsageReportQuotaHistoryRow[] = [
+      // Current weekly window — filtered against weekly's 18:30 slot
+      makeWeeklyHistoryRow('2026-05-26T18:33:13.000Z', 84),
+      // Prior slot at 5/24 14:00 — must NOT be filtered (>30min from 18:30)
+      makeWeeklyHistoryRow('2026-05-24T14:00:00.000Z', 60),
+    ]
+    const lanes = _buildProviderLanesForTest('openai', [openaiRow], historyRows)
+    const weeklyLane = lanes.find((l) => l.laneKey === 'openai/weekly')
+    // 1 prior bar — not cross-filtered by the special lane's reset at 19:30
+    expect(weeklyLane!.priorBars).toHaveLength(1)
+    // min_remaining_pct=60 → consumed=40
+    expect(weeklyLane!.priorBars[0]!.consumedPct).toBeCloseTo(40, 0)
+  })
+})
+
+// ---------------------------------------------------------------------------
 // Wave 43 — fmtIntervalCompact helper tests
 // ---------------------------------------------------------------------------
 
