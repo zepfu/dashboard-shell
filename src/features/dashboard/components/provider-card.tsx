@@ -686,10 +686,15 @@ export function ProviderCard({
          *   Optional data fields render '—' when not yet populated.
          *
          * Wave 41 lane-based redesign (replaces Wave 40 flat list approach):
-         * - When `lanes` prop is provided, each lane renders as a horizontal
-         *   row: [lane label] | [current bar] [prior bar 1] [prior bar 2] ...
-         * - Lane label on the left (e.g., "All Models · 5hr", "Sonnet · 7d").
-         * - Current bar is first (animated), prior bars follow (static).
+         * - When `lanes` prop is provided, each lane renders as a vertical stack:
+         *   [lane label]
+         *   [current bar — full width, animated]
+         *   [prior bar 1 — full width, static, "Xh ago" label]
+         *   [prior bar 2 — full width, static, "Xd ago" label]
+         *   ...
+         * - Lane label on the top (e.g., "All Models · 5hr", "Sonnet · 7d").
+         * - Current bar is first (animated), prior bars follow beneath (static).
+         * - Prior bars have subtle left accent line + indent for visual hierarchy.
          * - Anomaly icons only on current bar.
          * - Falls back to legacy flat `quotas` list when `lanes` is not provided.
          */}
@@ -739,15 +744,13 @@ export function ProviderCard({
                       >
                         {lane.laneLabel}
                       </div>
-                      {/* Horizontal bar row: current bar + prior bars side-by-side */}
+                      {/* Stacked bar rows: current bar first, then each prior bar as its own full-width row */}
                       <div
                         className='quota-lane-bars'
                         style={{
                           display: 'flex',
-                          flexDirection: 'row',
-                          gap: '4px',
-                          alignItems: 'stretch',
-                          flexWrap: 'nowrap',
+                          flexDirection: 'column',
+                          gap: '3px',
                         }}
                       >
                         {allBars.map(({ bar: quotaBar, isPrior }, barIdx) => {
@@ -786,7 +789,7 @@ export function ProviderCard({
                               )}
                             </>
                           )
-                          // Time display: current → "resets in Xh Ym"; prior → "Xd ago"
+                          // Time display: current → "resets in Xh Ym"; prior → "Xh ago" / "Xd ago"
                           const resetDisplay =
                             isPrior && quotaBar.timeAgoLabel !== undefined
                               ? quotaBar.timeAgoLabel
@@ -797,12 +800,19 @@ export function ProviderCard({
                               key={barIdx}
                               className={`quota-bar-slot ${isPrior ? 'is-prior-slot' : 'is-current-slot'}`}
                               style={{
-                                flex: isPrior ? '0 0 auto' : '1 1 auto',
-                                minWidth: isPrior ? '36px' : '0',
-                                maxWidth: isPrior ? '52px' : 'none',
+                                /* Full-width row for every bar — current and prior alike */
                                 display: 'flex',
                                 flexDirection: 'column',
                                 gap: '1px',
+                                /* Prior bars: subtle left accent line + indent to signal hierarchy */
+                                ...(isPrior
+                                  ? {
+                                      paddingLeft: '6px',
+                                      borderLeft:
+                                        '2px solid var(--accent-chrome, rgba(255,255,255,0.12))',
+                                      opacity: 0.72,
+                                    }
+                                  : {}),
                               }}
                             >
                               {/* Pct + reset time header above bar */}
@@ -860,7 +870,7 @@ export function ProviderCard({
                                   </span>
                                 )}
                               </div>
-                              {/* The actual quota bar */}
+                              {/* The actual quota bar — full width for both current and prior */}
                               <QuotaIntervalBar
                                 intervals={quotaBar.segments}
                                 tooltipContent={tooltipContent}
