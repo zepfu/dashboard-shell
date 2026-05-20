@@ -18,6 +18,8 @@ import { render, act } from '@testing-library/react'
 import { http, HttpResponse } from 'msw'
 import { server } from '../../../test/setup'
 import type {
+  UsageReportQuotaHistoryRow,
+  UsageReportQuotaRow,
   UsageReportQuotaUsageBreakdown,
   UsageReportResponse,
 } from '../api/usage-report'
@@ -26,6 +28,8 @@ import PhosphorDashboard, {
   _quotaTypeToPeriodTypeForTest,
   _tipModelsGoogleForTest,
   _tipModelsSingleLabelForTest,
+  _buildProviderLanesForTest,
+  _classifyGeminiModelForTest,
 } from './phosphor-dashboard'
 
 // ---------------------------------------------------------------------------
@@ -408,5 +412,294 @@ describe('Wave 40 — tipModelsFromBreakdownSingleLabel', () => {
     )
     expect(result![0].model).toBe('codex-spark')
     expect(result![0].costDelta).toBe('$7.50')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Wave 41 — classifyGeminiModel
+// ---------------------------------------------------------------------------
+
+describe('Wave 41 — classifyGeminiModel', () => {
+  test('test_classify_flash_lite_before_flash', () => {
+    // flash-lite must be returned for models containing 'flash-lite', not 'flash'.
+    expect(_classifyGeminiModelForTest('gemini-2.5-flash-lite')).toBe(
+      'gemini-flash-lite'
+    )
+    expect(_classifyGeminiModelForTest('gemini-3.1-flash-lite-preview')).toBe(
+      'gemini-flash-lite'
+    )
+  })
+
+  test('test_classify_flash', () => {
+    expect(_classifyGeminiModelForTest('gemini-2.5-flash')).toBe('gemini-flash')
+    expect(_classifyGeminiModelForTest('gemini-3-flash-preview')).toBe(
+      'gemini-flash'
+    )
+  })
+
+  test('test_classify_pro', () => {
+    expect(_classifyGeminiModelForTest('gemini-2.5-pro')).toBe('gemini-pro')
+    expect(_classifyGeminiModelForTest('gemini-3-pro-preview')).toBe(
+      'gemini-pro'
+    )
+  })
+
+  test('test_classify_non_gemini_returns_null', () => {
+    expect(_classifyGeminiModelForTest('gpt-4o')).toBeNull()
+    expect(
+      _classifyGeminiModelForTest(
+        'google_code_assist_requests:daily_request_pool'
+      )
+    ).toBeNull()
+    expect(_classifyGeminiModelForTest('')).toBeNull()
+  })
+
+  test('test_classify_gemini_no_known_class_returns_null', () => {
+    expect(_classifyGeminiModelForTest('gemini-unknown-model')).toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Wave 41 — buildProviderLanes
+// ---------------------------------------------------------------------------
+
+describe('Wave 41 — buildProviderLanes', () => {
+  /**
+   * Minimal QuotaRow factory for Anthropic with all relevant quota types active.
+   */
+  function makeAnthropicQuotaRow(
+    overrides: Partial<UsageReportQuotaRow> = {}
+  ): UsageReportQuotaRow {
+    return {
+      provider: 'anthropic',
+      model: null,
+      weekly_remaining_pct: 57,
+      weekly_reset_at: '2026-05-21T15:00:00Z',
+      weekly_interval_start: '2026-05-14T15:00:00Z',
+      weekly_interval_end: '2026-05-21T15:00:00Z',
+      weekly_active: true,
+      weekly_usage_tokens: 1000,
+      weekly_usage_breakdown: [],
+      short_remaining_pct: 99,
+      short_reset_at: '2026-05-20T21:00:00Z',
+      short_interval_start: '2026-05-20T16:00:00Z',
+      short_interval_end: '2026-05-20T21:00:00Z',
+      short_active: true,
+      short_usage_tokens: 10,
+      short_usage_breakdown: [],
+      special_remaining_pct: 65,
+      special_reset_at: '2026-05-21T15:00:00Z',
+      special_interval_start: '2026-05-14T15:00:00Z',
+      special_interval_end: '2026-05-21T15:00:00Z',
+      special_active: true,
+      special_usage_tokens: 500,
+      special_usage_breakdown: [],
+      short_special_remaining_pct: null,
+      short_special_reset_at: null,
+      short_special_interval_start: null,
+      short_special_interval_end: null,
+      short_special_active: false,
+      short_special_usage_tokens: 0,
+      short_special_usage_breakdown: [],
+      monthly_remaining_pct: null,
+      monthly_reset_at: null,
+      monthly_interval_start: null,
+      monthly_interval_end: null,
+      monthly_active: false,
+      monthly_usage_tokens: 0,
+      monthly_usage_breakdown: [],
+      ...overrides,
+    }
+  }
+
+  function makeHistoryRow(
+    overrides: Partial<UsageReportQuotaHistoryRow> = {}
+  ): UsageReportQuotaHistoryRow {
+    return {
+      provider: 'anthropic',
+      model: null,
+      quota_type: 'short',
+      expected_reset_at: '2026-05-20T11:00:00Z',
+      interval_start: '2026-05-20T06:00:00Z',
+      interval_end: '2026-05-20T11:00:00Z',
+      min_remaining_pct: 50,
+      max_remaining_pct: 100,
+      usage_tokens: 200,
+      usage_breakdown: [],
+      ...overrides,
+    }
+  }
+
+  test('test_anthropic_has_3_lanes', () => {
+    const quotaRows = [makeAnthropicQuotaRow()]
+    const lanes = _buildProviderLanesForTest('anthropic', quotaRows, [])
+    // Lanes that have a current bar or prior bars: all 3 have current bars.
+    expect(lanes.length).toBe(3)
+    const keys = lanes.map((l) => l.laneKey)
+    expect(keys).toContain('anthropic/short')
+    expect(keys).toContain('anthropic/special')
+    expect(keys).toContain('anthropic/weekly')
+  })
+
+  test('test_anthropic_lane_order_short_special_weekly', () => {
+    const quotaRows = [makeAnthropicQuotaRow()]
+    const lanes = _buildProviderLanesForTest('anthropic', quotaRows, [])
+    expect(lanes[0].laneKey).toBe('anthropic/short')
+    expect(lanes[1].laneKey).toBe('anthropic/special')
+    expect(lanes[2].laneKey).toBe('anthropic/weekly')
+  })
+
+  test('test_anthropic_short_lane_has_current_bar', () => {
+    const quotaRows = [makeAnthropicQuotaRow()]
+    const lanes = _buildProviderLanesForTest('anthropic', quotaRows, [])
+    const shortLane = lanes.find((l) => l.laneKey === 'anthropic/short')
+    expect(shortLane).toBeDefined()
+    expect(shortLane!.currentBar).not.toBeNull()
+    expect(shortLane!.currentBar!.consumedPct).toBeCloseTo(1, 0) // 100 − 99 = 1
+  })
+
+  test('test_anthropic_prior_bars_from_history', () => {
+    const quotaRows = [makeAnthropicQuotaRow()]
+    const historyRows: UsageReportQuotaHistoryRow[] = [
+      makeHistoryRow({
+        expected_reset_at: '2026-05-20T11:00:00Z',
+        min_remaining_pct: 40,
+      }),
+      makeHistoryRow({
+        expected_reset_at: '2026-05-20T06:00:00Z',
+        min_remaining_pct: 60,
+      }),
+    ]
+    const lanes = _buildProviderLanesForTest(
+      'anthropic',
+      quotaRows,
+      historyRows
+    )
+    const shortLane = lanes.find((l) => l.laneKey === 'anthropic/short')
+    expect(shortLane!.priorBars).toHaveLength(2)
+  })
+
+  test('test_anthropic_prior_bars_deduped_against_current', () => {
+    // A history row whose expected_reset_at rounds to the same slot as the
+    // current bar's resetAt must be excluded from priorBars.
+    const quotaRows = [makeAnthropicQuotaRow()]
+    const historyRows: UsageReportQuotaHistoryRow[] = [
+      makeHistoryRow({
+        // Same rounded slot as the current bar's short_reset_at (05-20T21:00)
+        expected_reset_at: '2026-05-20T21:00:00Z',
+        min_remaining_pct: 10,
+      }),
+    ]
+    const lanes = _buildProviderLanesForTest(
+      'anthropic',
+      quotaRows,
+      historyRows
+    )
+    const shortLane = lanes.find((l) => l.laneKey === 'anthropic/short')
+    // Should be 0 prior bars since the only history row matches current.
+    expect(shortLane!.priorBars).toHaveLength(0)
+  })
+
+  test('test_openai_has_4_lanes', () => {
+    const openaiRow: UsageReportQuotaRow = {
+      ...makeAnthropicQuotaRow(),
+      provider: 'openai',
+      short_special_remaining_pct: 75,
+      short_special_reset_at: '2026-05-20T14:33:00Z',
+      short_special_interval_start: '2026-05-20T09:33:00Z',
+      short_special_interval_end: '2026-05-20T14:33:00Z',
+      short_special_active: true,
+      short_special_usage_tokens: 50,
+    }
+    const lanes = _buildProviderLanesForTest('openai', [openaiRow], [])
+    expect(lanes.length).toBe(4)
+    const keys = lanes.map((l) => l.laneKey)
+    expect(keys).toContain('openai/short')
+    expect(keys).toContain('openai/short_special')
+    expect(keys).toContain('openai/weekly')
+    expect(keys).toContain('openai/special')
+  })
+
+  test('test_google_has_3_lanes_for_known_classes', () => {
+    const makeGoogleRow = (
+      model: string,
+      shortPct: number
+    ): UsageReportQuotaRow => ({
+      ...makeAnthropicQuotaRow(),
+      provider: 'google',
+      model,
+      short_remaining_pct: shortPct,
+      short_active: true,
+      weekly_remaining_pct: null,
+      weekly_active: false,
+      special_remaining_pct: null,
+      special_active: false,
+    })
+    const quotaRows = [
+      makeGoogleRow('gemini-2.5-flash', 98),
+      makeGoogleRow('gemini-2.5-flash-lite', 58),
+      makeGoogleRow('gemini-2.5-pro', 99),
+    ]
+    const lanes = _buildProviderLanesForTest('google', quotaRows, [])
+    expect(lanes.length).toBe(3)
+    const keys = lanes.map((l) => l.laneKey)
+    expect(keys).toContain('google/flash-lite')
+    expect(keys).toContain('google/flash')
+    expect(keys).toContain('google/pro')
+  })
+
+  test('test_google_excludes_code_assist_model', () => {
+    const makeGoogleRow = (
+      model: string,
+      shortPct: number
+    ): UsageReportQuotaRow => ({
+      ...makeAnthropicQuotaRow(),
+      provider: 'google',
+      model,
+      short_remaining_pct: shortPct,
+      short_active: true,
+      weekly_remaining_pct: null,
+      weekly_active: false,
+      special_remaining_pct: null,
+      special_active: false,
+    })
+    const quotaRows = [
+      makeGoogleRow('gemini-2.5-flash', 98),
+      // This model should be excluded (not flash/flash-lite/pro).
+      makeGoogleRow('google_code_assist_requests:daily_request_pool', 0),
+    ]
+    const lanes = _buildProviderLanesForTest('google', quotaRows, [])
+    // Only flash lane (flash-lite and pro have no rows).
+    expect(lanes.length).toBe(1)
+    expect(lanes[0].laneKey).toBe('google/flash')
+  })
+
+  test('test_xai_has_1_monthly_lane', () => {
+    const xaiRow: UsageReportQuotaRow = {
+      ...makeAnthropicQuotaRow(),
+      provider: 'xai',
+      model: null,
+      monthly_remaining_pct: 0,
+      monthly_reset_at: '2026-06-01T00:00:00Z',
+      monthly_interval_start: '2026-05-01T00:00:00Z',
+      monthly_interval_end: '2026-06-01T00:00:00Z',
+      monthly_active: true,
+      monthly_usage_tokens: 100,
+      weekly_remaining_pct: null,
+      weekly_active: false,
+      short_remaining_pct: null,
+      short_active: false,
+      special_remaining_pct: null,
+      special_active: false,
+    }
+    const lanes = _buildProviderLanesForTest('xai', [xaiRow], [])
+    expect(lanes.length).toBe(1)
+    expect(lanes[0].laneKey).toBe('xai/monthly')
+    expect(lanes[0].laneLabel).toBe('All Models · 30d')
+  })
+
+  test('test_unknown_provider_returns_empty_lanes', () => {
+    const lanes = _buildProviderLanesForTest('nvidia_nim', [], [])
+    expect(lanes).toHaveLength(0)
   })
 })

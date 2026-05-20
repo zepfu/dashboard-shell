@@ -75,6 +75,7 @@ import {
   type ProviderCardConfig,
   type ProviderMetrics,
   type QuotaBarGroup,
+  type QuotaLane,
   type QuotaRowConfig,
   type QuotaTipModel,
   type TopModelRow,
@@ -954,7 +955,7 @@ export { formatTipWindow as _formatTipWindowForTest }
 export { formatTipVelocity as _formatTipVelocityForTest }
 
 /**
- * Test-only re-exports for Wave 40 multi-quota redesign helpers.
+ * Test-only re-exports for Wave 40/41 multi-quota redesign helpers.
  * Do not use in production code paths outside this module.
  *
  * @internal
@@ -964,6 +965,8 @@ export {
   quotaTypeToPeriodType as _quotaTypeToPeriodTypeForTest,
   tipModelsFromBreakdownGoogleAggregated as _tipModelsGoogleForTest,
   tipModelsFromBreakdownSingleLabel as _tipModelsSingleLabelForTest,
+  buildProviderLanes as _buildProviderLanesForTest,
+  classifyGeminiModel as _classifyGeminiModelForTest,
 }
 
 /**
@@ -1746,6 +1749,386 @@ function buildHistoryBarsForProvider(
   })
 
   return result
+}
+
+// ---------------------------------------------------------------------------
+// Lane key constants — maps quota_type normalised values to lane identifiers.
+// ---------------------------------------------------------------------------
+
+/**
+ * Maps a normalised quota_type to its canonical lane key suffix.
+ * These keys match the lane definitions in PROVIDER_LANE_DEFS below.
+ */
+function quotaTypeToLaneKey(quotaType: string): string {
+  switch (quotaType.toLowerCase()) {
+    case 'short':
+      return 'short'
+    case 'weekly':
+      return 'weekly'
+    case 'special':
+      return 'special'
+    case 'short_special':
+      return 'short_special'
+    case 'monthly':
+      return 'monthly'
+    default:
+      return quotaType.toLowerCase()
+  }
+}
+
+/**
+ * Maps a normalised quota_type to the `QuotaBarGroup['periodType']` so that
+ * lane-based priorBars use the correct type tag (kept for tooltip reuse).
+ */
+function quotaTypeToBarPeriodType(
+  quotaType: string
+): QuotaBarGroup['periodType'] {
+  switch (quotaType.toLowerCase()) {
+    case 'short':
+    case 'short_special':
+      return '5hr'
+    case 'weekly':
+      return 'weekly'
+    case 'special':
+      return 'special'
+    case 'monthly':
+      return 'monthly'
+    default:
+      return 'weekly'
+  }
+}
+
+/**
+ * Per-provider lane definitions.
+ *
+ * Wave 41: each entry describes one quota lane for a provider.
+ *   laneKey  — stable ID used to group current + prior bars
+ *   laneLabel — human-readable label shown on the left of the lane row
+ *   quotaType — the normalised quota_type value from quotaHistory / quotaRows
+ *               that feeds this lane
+ *   googleClass — (Google only) the classifyGeminiModel class that feeds
+ *                 this lane (null for non-Google providers)
+ *
+ * Anthropic: 3 lanes — all·5h (short), all·7d (weekly), sonnet·7d (special)
+ * OpenAI:    4 lanes — all·5h (short), all·7d (weekly),
+ *                      codex-spark·5h (short_special), codex-spark·7d (special)
+ * Google:    3 lanes — flash·24h, flash-lite·24h, pro·24h (all short, per-class)
+ * xAI:       1 lane  — all·monthly (monthly)
+ */
+interface LaneDef {
+  laneKey: string
+  laneLabel: string
+  quotaType: string
+  googleClass: string | null
+}
+
+const ANTHROPIC_LANE_DEFS: LaneDef[] = [
+  {
+    laneKey: 'anthropic/short',
+    laneLabel: 'All Models · 5hr',
+    quotaType: 'short',
+    googleClass: null,
+  },
+  {
+    laneKey: 'anthropic/special',
+    laneLabel: 'Sonnet · 7d',
+    quotaType: 'special',
+    googleClass: null,
+  },
+  {
+    laneKey: 'anthropic/weekly',
+    laneLabel: 'All Models · 7d',
+    quotaType: 'weekly',
+    googleClass: null,
+  },
+]
+
+const OPENAI_LANE_DEFS: LaneDef[] = [
+  {
+    laneKey: 'openai/short',
+    laneLabel: 'All Models · 5hr',
+    quotaType: 'short',
+    googleClass: null,
+  },
+  {
+    laneKey: 'openai/short_special',
+    laneLabel: 'codex-spark · 5hr',
+    quotaType: 'short_special',
+    googleClass: null,
+  },
+  {
+    laneKey: 'openai/weekly',
+    laneLabel: 'All Models · 7d',
+    quotaType: 'weekly',
+    googleClass: null,
+  },
+  {
+    laneKey: 'openai/special',
+    laneLabel: 'codex-spark · 7d',
+    quotaType: 'special',
+    googleClass: null,
+  },
+]
+
+const GOOGLE_LANE_DEFS: LaneDef[] = [
+  // flash-lite MUST be checked before flash (substring containment).
+  {
+    laneKey: 'google/flash-lite',
+    laneLabel: 'Flash-Lite · 24h',
+    quotaType: 'short',
+    googleClass: 'gemini-flash-lite',
+  },
+  {
+    laneKey: 'google/flash',
+    laneLabel: 'Flash · 24h',
+    quotaType: 'short',
+    googleClass: 'gemini-flash',
+  },
+  {
+    laneKey: 'google/pro',
+    laneLabel: 'Pro · 24h',
+    quotaType: 'short',
+    googleClass: 'gemini-pro',
+  },
+]
+
+const XAI_LANE_DEFS: LaneDef[] = [
+  {
+    laneKey: 'xai/monthly',
+    laneLabel: 'All Models · 30d',
+    quotaType: 'monthly',
+    googleClass: null,
+  },
+]
+
+const PROVIDER_LANE_DEFS: Readonly<Record<string, LaneDef[]>> = {
+  anthropic: ANTHROPIC_LANE_DEFS,
+  openai: OPENAI_LANE_DEFS,
+  google: GOOGLE_LANE_DEFS,
+  xai: XAI_LANE_DEFS,
+}
+
+/**
+ * Builds a QuotaBarGroup for a single history row in a lane.
+ *
+ * Wave 41: all prior bars use the same 12-segment fill as current bars.
+ * The `timeAgoLabel` is derived from roundToNearest30Min(expected_reset_at).
+ * The `periodType` is set for legacy compat but lanes don't need it.
+ */
+function buildPriorBarFromHistory(
+  h: UsageReportQuotaHistoryRow,
+  provider: string
+): QuotaBarGroup {
+  const quotaTypeLower = h.quota_type.toLowerCase()
+  const roundedSlotDate =
+    h.expected_reset_at !== null
+      ? roundToNearest30Min(h.expected_reset_at)
+      : null
+  const timeAgoLabel =
+    roundedSlotDate !== null ? formatTimeAgo(roundedSlotDate) : '—'
+
+  const remainingPct = h.min_remaining_pct ?? 0
+  const consumedPct = Math.max(0, Math.min(100, 100 - remainingPct))
+
+  let tipModels: QuotaTipModel[] | undefined
+  const providerLower = provider.toLowerCase()
+  if (providerLower === 'google') {
+    tipModels = tipModelsFromBreakdownGoogleAggregated(h.usage_breakdown)
+  } else if (
+    providerLower === 'anthropic' &&
+    (quotaTypeLower === 'weekly' || quotaTypeLower === 'special')
+  ) {
+    tipModels = tipModelsFromBreakdownSingleLabel(h.usage_breakdown, 'sonnet')
+  } else if (
+    providerLower === 'openai' &&
+    (quotaTypeLower === 'weekly' || quotaTypeLower === 'special')
+  ) {
+    tipModels = tipModelsFromBreakdownSingleLabel(
+      h.usage_breakdown,
+      'codex-spark'
+    )
+  } else {
+    tipModels = tipModelsFromBreakdown(h.usage_breakdown)
+  }
+
+  return {
+    label: timeAgoLabel,
+    consumedPct,
+    remainingPct,
+    resetAt: h.expected_reset_at ?? undefined,
+    segments: buildQuotaSegments(remainingPct),
+    tipWindow: fmtIntervalForHistory(h.interval_start, h.interval_end),
+    tipModels,
+    timeAgoLabel,
+    periodType: quotaTypeToBarPeriodType(quotaTypeLower),
+  }
+}
+
+/**
+ * Builds `QuotaLane[]` for a single provider by combining current quota rows
+ * with history rows. Each lane = one quota type, current bar + prior bars.
+ *
+ * Wave 41 multi-reset redesign (replaces Wave 40 flat list):
+ *
+ * For each lane defined in PROVIDER_LANE_DEFS[provider]:
+ * 1. Find the current bar from `allQuotaRows` using the existing `buildQuotaRows`
+ *    (single-bar) logic per quota type.
+ * 2. Find all matching history rows for this lane's quota_type (and Google
+ *    model class) from `historyRows`, deduplicate by 30-min slot, and sort
+ *    newest-first.
+ * 3. Return a `QuotaLane` with `currentBar` + `priorBars`.
+ *
+ * Only lanes defined in PROVIDER_LANE_DEFS are rendered; unknown providers
+ * fall back to the old `buildQuotaRows` flat-list path (no lanes prop passed).
+ *
+ * @param provider    — canonical provider name (lowercase)
+ * @param allQuotaRows — full quotas[] from /api/shell/reports/quotas
+ * @param historyRows  — full quotaHistory[] from the usage report
+ */
+function buildProviderLanes(
+  provider: string,
+  allQuotaRows: UsageReportQuotaRow[],
+  historyRows: UsageReportQuotaHistoryRow[]
+): QuotaLane[] {
+  const providerLower = provider.toLowerCase()
+  const laneDefs = PROVIDER_LANE_DEFS[providerLower]
+  if (laneDefs === undefined || laneDefs.length === 0) return []
+
+  // Pre-filter quota rows to this provider.
+  const providerQuotas = allQuotaRows.filter(
+    (r) => r.provider.toLowerCase() === providerLower
+  )
+
+  // Pre-filter history rows to this provider (handle aliases e.g. gemini→google).
+  const aliases = providerAliases(providerLower)
+  const providerHistory = historyRows.filter((h) =>
+    aliases.includes(h.provider.toLowerCase())
+  )
+
+  const result: QuotaLane[] = []
+
+  for (const def of laneDefs) {
+    // ── 1. Build current bar ────────────────────────────────────────────────
+    let currentBar: QuotaBarGroup | null = null
+
+    if (providerLower === 'google' && def.googleClass !== null) {
+      // Google: find the best row for this model class.
+      // Sort by model name length (shorter = more generic = preferred).
+      const sorted = [...providerQuotas].sort((a, b) => {
+        const am = (a.model ?? '').length
+        const bm = (b.model ?? '').length
+        return am - bm
+      })
+      for (const row of sorted) {
+        if (row.model === null) continue
+        const cls = classifyGeminiModel(row.model)
+        if (cls !== def.googleClass) continue
+        const g = makeQuotaBarGroup(`${def.laneLabel}`, row, 'short')
+        if (g !== null) {
+          currentBar = { ...g, label: def.laneLabel }
+          break
+        }
+      }
+    } else if (providerLower === 'xai') {
+      // xAI: aggregate all rows under monthly.
+      for (const row of providerQuotas) {
+        const g = makeQuotaBarGroup(def.laneLabel, row, 'monthly')
+        if (g !== null) {
+          currentBar = g
+          break
+        }
+      }
+    } else {
+      // Anthropic / OpenAI: all quota data lives in the model=null row.
+      const allRow = providerQuotas.find((r) => r.model === null)
+      if (allRow !== undefined) {
+        const interval = ((): Parameters<typeof makeQuotaBarGroup>[2] => {
+          switch (def.quotaType) {
+            case 'short':
+              return 'short'
+            case 'weekly':
+              return 'weekly'
+            case 'special':
+              return 'special'
+            case 'short_special':
+              return 'short_special'
+            case 'monthly':
+              return 'monthly'
+            default:
+              return 'weekly'
+          }
+        })()
+        const g =
+          providerLower === 'openai'
+            ? makeQuotaBarGroupAlways(def.laneLabel, allRow, interval)
+            : makeQuotaBarGroup(def.laneLabel, allRow, interval)
+        if (g !== null) {
+          currentBar = g
+        }
+      }
+    }
+
+    // ── 2. Build prior bars ─────────────────────────────────────────────────
+    // Filter history rows to this lane's quota_type (+ Google class).
+    const laneHistory = providerHistory.filter((h) => {
+      const htLower = h.quota_type.toLowerCase()
+      if (htLower !== quotaTypeToLaneKey(def.quotaType)) return false
+      // Google: additionally filter by model class.
+      if (providerLower === 'google' && def.googleClass !== null) {
+        if (h.model === null) return false
+        const cls = classifyGeminiModel(h.model)
+        return cls === def.googleClass
+      }
+      return true
+    })
+
+    // Deduplicate by (rounded-30min slot) — suppress current reset window.
+    const currentRoundedResetTimes = new Set<string>(
+      currentBar?.resetAt !== undefined
+        ? [roundToNearest30Min(currentBar.resetAt).toISOString()]
+        : []
+    )
+    const seen = new Set<string>()
+    const priorBars: QuotaBarGroup[] = []
+
+    // Sort by expected_reset_at DESC so newest prior is first.
+    const sortedHistory = [...laneHistory].sort((a, b) => {
+      const ad = a.expected_reset_at ?? ''
+      const bd = b.expected_reset_at ?? ''
+      return bd < ad ? -1 : bd > ad ? 1 : 0
+    })
+
+    for (const h of sortedHistory) {
+      if (h.min_remaining_pct === null) continue
+
+      const roundedSlotDate =
+        h.expected_reset_at !== null
+          ? roundToNearest30Min(h.expected_reset_at)
+          : null
+      const roundedSlot =
+        roundedSlotDate !== null ? roundedSlotDate.toISOString() : ''
+
+      // Skip if this slot matches the current bar's reset time.
+      if (roundedSlot !== '' && currentRoundedResetTimes.has(roundedSlot))
+        continue
+
+      // Dedup within the same 30-min slot.
+      if (seen.has(roundedSlot)) continue
+      seen.add(roundedSlot)
+
+      priorBars.push(buildPriorBarFromHistory(h, providerLower))
+    }
+
+    result.push({
+      laneKey: def.laneKey,
+      laneLabel: def.laneLabel,
+      currentBar,
+      priorBars,
+    })
+  }
+
+  // Return only lanes that have at least a current bar OR prior bars.
+  return result.filter((l) => l.currentBar !== null || l.priorBars.length > 0)
 }
 
 // ---------------------------------------------------------------------------
@@ -2884,18 +3267,29 @@ export default function PhosphorDashboard({
                 report?.rows ?? []
               )
               const cells = padHealthCells(healthRows, provider)
-              // 20-PhosphorDash Operator F1: use buildQuotaRows for per-provider
-              // curated quota labels (e.g. 'all · 5h', 'gemini-pro · 24h').
-              const currentBars = buildQuotaRows(provider, quotaRows)
-              // W32: append historical reset bars from quotaHistory[].
-              // History bars are appended after current bars so current state is
-              // always visible first; historical windows follow in reverse chrono order.
-              const historyBars = buildHistoryBarsForProvider(
+              // Wave 41: build structured QuotaLane[] for providers with lane
+              // definitions (anthropic, openai, google, xai). Each lane groups
+              // the current bar + prior bars for a single quota type side-by-side.
+              // Providers without lane defs (nvidia_nim, openrouter, local) fall
+              // back to the flat quotaIntervals path via quotas prop.
+              const lanes = buildProviderLanes(
                 provider,
-                report?.quotaHistory ?? [],
-                currentBars
+                quotaRows,
+                report?.quotaHistory ?? []
               )
-              const quotaIntervals = [...currentBars, ...historyBars]
+              // Flat quota list is still needed for providers without lane defs.
+              const currentBars =
+                lanes.length === 0 ? buildQuotaRows(provider, quotaRows) : []
+              const historyBars =
+                lanes.length === 0
+                  ? buildHistoryBarsForProvider(
+                      provider,
+                      report?.quotaHistory ?? [],
+                      currentBars
+                    )
+                  : []
+              const quotaIntervals =
+                lanes.length === 0 ? [...currentBars, ...historyBars] : []
               const topModels = buildTopModels(
                 providerStatusUsage,
                 provider,
@@ -2909,6 +3303,7 @@ export default function PhosphorDashboard({
                   data={metrics}
                   healthCells={cells}
                   quotas={quotaIntervals}
+                  lanes={lanes.length > 0 ? lanes : undefined}
                   anomalies={anomalies}
                   topModels={topModels}
                 />

@@ -13,6 +13,14 @@
  *
  * Wave 14-G: added `.qbar-fill`, `.quota-row-velocity`, `.quota-anomaly-icon`
  * structural class names per v9.7 mockup lines 1690–1742 and 412–436.
+ *
+ * Wave 41 spectral-animation scoping fix:
+ * - Added `isPrior` prop. When true, the `.is-prior` class is added to the
+ *   `.quota-row-bar` wrapper so the CSS can suppress all `high-velocity`
+ *   animation on prior (history) bars.
+ * - `overflow: hidden` added to `.quota-row-bar` so the Layer B sweeping
+ *   sheen (::before) is clipped to the bar boundary and cannot bleed into
+ *   adjacent provider card rows.
  */
 import type { ReactElement, ReactNode } from 'react'
 import { HoverTooltip } from './hover-tooltip'
@@ -39,6 +47,13 @@ interface QuotaIntervalBarProps {
    */
   velocityLabel?: string
   velocityTier?: VelocityTier
+  /**
+   * Wave 41: when true, marks this bar as a prior (history) bar.
+   * Adds `.is-prior` to the `.quota-row-bar` wrapper so CSS suppresses
+   * all spectral/velocity animation on this element. Prior bars are
+   * always static — only the current active bar animates.
+   */
+  isPrior?: boolean
 }
 
 /**
@@ -54,11 +69,16 @@ export function QuotaIntervalBar({
   tooltipContent,
   velocityLabel,
   velocityTier = 'steady',
+  isPrior = false,
 }: QuotaIntervalBarProps): ReactElement {
+  const barClassName = ['quota-row-bar', isPrior ? 'is-prior' : '']
+    .filter(Boolean)
+    .join(' ')
+
   const bar = (
     <>
       <div
-        className='quota-row-bar'
+        className={barClassName}
         style={{
           position: 'relative',
           display: 'flex',
@@ -67,7 +87,10 @@ export function QuotaIntervalBar({
           background: 'var(--card-2)',
           border: '1px solid var(--border)',
           boxSizing: 'border-box',
-          overflow: 'visible',
+          /* overflow:hidden clips the Layer B sweeping sheen (::before) and
+             the Layer A ::after glow strictly to the bar boundary, preventing
+             any visual bleed into adjacent rows or provider cards. */
+          overflow: 'hidden',
         }}
       >
         {intervals.map((interval, i) => (

@@ -123,6 +123,9 @@ export interface QuotaTipModel {
  *
  * Wave 40 multi-quota redesign: added `periodType` for stacked-lane grouping
  * and `timeAgoLabel` for "Xd ago" display on prior-reset history bars.
+ *
+ * Wave 41: `periodType` and `timeAgoLabel` preserved for backward compat with
+ * existing tests; new lane rendering uses `QuotaLane` instead.
  */
 export interface QuotaBarGroup {
   /** Human-readable quota type: 'Weekly' | 'Short' | 'Special' | 'Monthly'. */
@@ -167,6 +170,40 @@ export interface QuotaBarGroup {
    * Wave 40: derived from the 30-min-snapped period_start of each history row.
    */
   timeAgoLabel?: string
+}
+
+/**
+ * A single quota lane — one row in the provider card's quota section.
+ *
+ * Wave 41 multi-reset redesign: each lane represents one bucket of quota for
+ * the provider (e.g., "All Models · 5hr", "Sonnet · 7d"). The lane holds:
+ *   - `currentBar`: the currently-active reset bar, or null if not active.
+ *   - `priorBars`: historical reset bars within the 1.5× lookback window,
+ *     sorted newest-first. These bars are static (no animation).
+ *
+ * Rendered as a horizontal row: [lane label] [current bar] [prior bar...].
+ */
+export interface QuotaLane {
+  /**
+   * Stable identifier for this lane, e.g. 'anthropic/short' or
+   * 'google/flash-lite'. Used as React key.
+   */
+  laneKey: string
+  /**
+   * Human-readable label displayed to the left of the bar row,
+   * e.g. 'All Models · 5hr', 'Sonnet · 7d', 'Flash · 24h'.
+   */
+  laneLabel: string
+  /**
+   * The current active reset bar for this lane, or null when no active
+   * interval is present (e.g. quota not yet reset or not observed).
+   */
+  currentBar: QuotaBarGroup | null
+  /**
+   * Prior reset bars for this lane, sorted newest-first.
+   * Empty array when no history exists within the lookback window.
+   */
+  priorBars: QuotaBarGroup[]
 }
 
 /** Per-model mini-row for card-pane-right at ≥3840px. */
@@ -386,6 +423,13 @@ export interface ProviderCardProps {
   healthCells: { color: string }[]
   /** Wave 11 PR3 (11-i): each entry is one quota-type bar with 12 segments. */
   quotas: QuotaBarGroup[]
+  /**
+   * Wave 41 multi-reset redesign: structured lane data for the quota section.
+   * When provided, `lanes` takes precedence over `quotas` for rendering.
+   * Each lane is one quota type (e.g. "All Models · 5hr") and contains
+   * the current bar plus any prior reset bars for that type.
+   */
+  lanes?: QuotaLane[]
   anomalies?: AnomalyFlags
   /** Per-model mini-table rows shown in card-pane-right at ≥3840px. */
   topModels?: TopModelRow[]
@@ -416,16 +460,19 @@ export interface ProviderCardProps {
  *      4. TOKENS section (pc-sub-title + pc-mini-table):
  *         in / out / cost / cache in / cache creation / cache miss $ /
  *         reasoning reported / reasoning estimated*
- *      5. Quotas section title + quota-list
+ *      5. Quotas section title + quota lanes (Wave 41) or quota-list (legacy)
  *  - card-pane-right (≥3840px): per-model mini-table
  *
  * Wave 26 F8: quota tip .t-model spans colored with providerBrandHex().
+ * Wave 41: when `lanes` prop is supplied, renders structured lane rows with
+ *   current + prior bars side-by-side per quota type instead of a flat list.
  */
 export function ProviderCard({
   config,
   data,
   healthCells,
   quotas,
+  lanes,
   anomalies,
   topModels = [],
   wrapperClassName,
@@ -638,270 +685,428 @@ export function ProviderCard({
          *   v9-tip-row × 3: top models with $delta
          *   Optional data fields render '—' when not yet populated.
          *
-         * Wave 40 multi-quota redesign:
-         * - Current bars (periodType undefined) rendered first, ungrouped.
-         * - Prior history bars grouped by periodType into stacked lanes:
-         *   '5hr' lane (teal label) → short/short_special resets
-         *   'weekly' lane → weekly resets
-         *   'special' lane → weekly_special resets
-         *   'monthly' lane → monthly resets
-         * - timeAgoLabel displayed in the reset cell for prior bars.
-         * - Anomaly icons suppressed on prior history bars.
+         * Wave 41 lane-based redesign (replaces Wave 40 flat list approach):
+         * - When `lanes` prop is provided, each lane renders as a horizontal
+         *   row: [lane label] | [current bar] [prior bar 1] [prior bar 2] ...
+         * - Lane label on the left (e.g., "All Models · 5hr", "Sonnet · 7d").
+         * - Current bar is first (animated), prior bars follow (static).
+         * - Anomaly icons only on current bar.
+         * - Falls back to legacy flat `quotas` list when `lanes` is not provided.
          */}
-        {quotas.length > 0 && (
+        {(lanes !== undefined ? lanes.length > 0 : quotas.length > 0) && (
           <>
             <QuotaSectionTitle title='Quotas' />
-            {(() => {
-              // Partition into current (no periodType) vs prior history bars.
-              const currentQuotas = quotas.filter(
-                (q) => q.periodType === undefined
-              )
-              const historyQuotas = quotas.filter(
-                (q) => q.periodType !== undefined
-              )
+            {lanes !== undefined ? (
+              /* ── Wave 41: structured lane rendering ── */
+              <div
+                className='quota-lanes'
+                style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}
+              >
+                {lanes.map((lane) => {
+                  const allBars: Array<{
+                    bar: QuotaBarGroup
+                    isPrior: boolean
+                  }> = []
+                  if (lane.currentBar !== null) {
+                    allBars.push({ bar: lane.currentBar, isPrior: false })
+                  }
+                  for (const pb of lane.priorBars) {
+                    allBars.push({ bar: pb, isPrior: true })
+                  }
+                  if (allBars.length === 0) return null
 
-              // Ordered lanes for prior-reset display.
-              const LANE_ORDER: ReadonlyArray<QuotaBarGroup['periodType']> = [
-                '5hr',
-                'weekly',
-                'special',
-                'monthly',
-              ]
-              const LANE_LABEL: Readonly<Record<string, string>> = {
-                '5hr': '5hr resets',
-                weekly: 'weekly resets',
-                special: 'special resets',
-                monthly: 'monthly resets',
-              }
-
-              /**
-               * Renders a single quota bar row (label + pct + reset + bar).
-               * isPrior=true: suppresses anomaly icons; uses timeAgoLabel.
-               */
-              const renderBar = (
-                quotaBar: QuotaBarGroup,
-                i: number,
-                isPrior: boolean
-              ): ReactElement => {
-                const tipWindowStr = quotaBar.tipWindow ?? '—'
-                const tipHeadLabel = `${tipWindowStr} · ${quotaBar.consumedPct.toFixed(0)}% used`
-                // Wave 35 S4: suppress velocity line when undefined.
-                const tipVelocity = quotaBar.tipVelocity
-                const tipModelRows =
-                  quotaBar.tipModels !== undefined &&
-                  quotaBar.tipModels.length > 0
-                    ? quotaBar.tipModels.slice(0, 3)
-                    : []
-                // HoverTooltip (variant='quota') wraps content in its own
-                // v9-tip shell — pass inner elements directly.
-                // (Critical #3 from .analysis/wave32-principal-deep-audit.md)
-                const tooltipContent = (
-                  <>
-                    <div className='v9-tip-head'>{tipHeadLabel}</div>
-                    {tipVelocity !== undefined && (
-                      <div className='v9-tip-sub'>{tipVelocity}</div>
-                    )}
-                    {/* Wave 26 F8: .t-model colored via modelBrandHex */}
-                    {tipModelRows.map((tm, mi) => (
-                      <div key={mi} className='v9-tip-row'>
-                        <span
-                          className='t-model'
-                          style={{ color: modelBrandHex(tm.model) }}
-                        >
-                          {tm.model}
-                        </span>
-                        <span className='t-count'>{tm.costDelta}</span>
-                      </div>
-                    ))}
-                    {tipModelRows.length === 0 && (
-                      <div className='v9-tip-row'>
-                        <span className='t-model'>—</span>
-                        <span className='t-count'>—</span>
-                      </div>
-                    )}
-                  </>
-                )
-                // Wave 40: prior bars use timeAgoLabel ("2d ago"); current bars
-                // use formatResetDistance ("in 3h 14m").
-                const resetDisplay =
-                  isPrior && quotaBar.timeAgoLabel !== undefined
-                    ? quotaBar.timeAgoLabel
-                    : formatResetDistance(quotaBar.resetAt)
-                return (
-                  <div key={i}>
+                  return (
                     <div
-                      className='quota-row'
-                      style={{
-                        display: 'grid',
-                        gridTemplateColumns: 'minmax(0, 1fr) 28px 38px',
-                        columnGap: '6px',
-                        alignItems: 'center',
-                        fontFamily: 'var(--font-mono)',
-                        fontSize: '10px',
-                        color: 'var(--fg-muted)',
-                        lineHeight: '1.15',
-                      }}
+                      key={lane.laneKey}
+                      className='quota-lane-row'
+                      style={{ marginTop: '2px' }}
                     >
-                      {/* Label + anomaly icons (11-i: icons moved here from header).
-                          Wave 40: icons suppressed on prior history bars. */}
+                      {/* Lane label: subtle, monospace, left-aligned */}
                       <div
-                        className='quota-row-label'
+                        className='quota-lane-label'
                         style={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: '3px',
+                          fontFamily: 'var(--font-mono)',
+                          fontSize: '8.5px',
+                          color: 'var(--accent-chrome)',
+                          textTransform: 'uppercase',
+                          letterSpacing: '0.07em',
+                          opacity: 0.7,
+                          marginBottom: '2px',
                           whiteSpace: 'nowrap',
                           overflow: 'hidden',
                           textOverflow: 'ellipsis',
                         }}
                       >
-                        <span
+                        {lane.laneLabel}
+                      </div>
+                      {/* Horizontal bar row: current bar + prior bars side-by-side */}
+                      <div
+                        className='quota-lane-bars'
+                        style={{
+                          display: 'flex',
+                          flexDirection: 'row',
+                          gap: '4px',
+                          alignItems: 'stretch',
+                          flexWrap: 'nowrap',
+                        }}
+                      >
+                        {allBars.map(({ bar: quotaBar, isPrior }, barIdx) => {
+                          const tipWindowStr = quotaBar.tipWindow ?? '—'
+                          const tipHeadLabel = `${tipWindowStr} · ${quotaBar.consumedPct.toFixed(0)}% used`
+                          const tipVelocity = quotaBar.tipVelocity
+                          const tipModelRows =
+                            quotaBar.tipModels !== undefined &&
+                            quotaBar.tipModels.length > 0
+                              ? quotaBar.tipModels.slice(0, 3)
+                              : []
+                          const tooltipContent = (
+                            <>
+                              <div className='v9-tip-head'>{tipHeadLabel}</div>
+                              {tipVelocity !== undefined && (
+                                <div className='v9-tip-sub'>{tipVelocity}</div>
+                              )}
+                              {tipModelRows.map((tm, mi) => (
+                                <div key={mi} className='v9-tip-row'>
+                                  <span
+                                    className='t-model'
+                                    style={{ color: modelBrandHex(tm.model) }}
+                                  >
+                                    {tm.model}
+                                  </span>
+                                  <span className='t-count'>
+                                    {tm.costDelta}
+                                  </span>
+                                </div>
+                              ))}
+                              {tipModelRows.length === 0 && (
+                                <div className='v9-tip-row'>
+                                  <span className='t-model'>—</span>
+                                  <span className='t-count'>—</span>
+                                </div>
+                              )}
+                            </>
+                          )
+                          // Time display: current → "resets in Xh Ym"; prior → "Xd ago"
+                          const resetDisplay =
+                            isPrior && quotaBar.timeAgoLabel !== undefined
+                              ? quotaBar.timeAgoLabel
+                              : formatResetDistance(quotaBar.resetAt)
+
+                          return (
+                            <div
+                              key={barIdx}
+                              className={`quota-bar-slot${isPrior ? 'is-prior-slot' : 'is-current-slot'}`}
+                              style={{
+                                flex: isPrior ? '0 0 auto' : '1 1 auto',
+                                minWidth: isPrior ? '36px' : '0',
+                                maxWidth: isPrior ? '52px' : 'none',
+                                display: 'flex',
+                                flexDirection: 'column',
+                                gap: '1px',
+                              }}
+                            >
+                              {/* Pct + reset time header above bar */}
+                              <div
+                                style={{
+                                  display: 'flex',
+                                  justifyContent: 'space-between',
+                                  alignItems: 'baseline',
+                                  fontFamily: 'var(--font-mono)',
+                                  fontSize: '8px',
+                                  color: 'var(--fg-muted)',
+                                  lineHeight: '1.2',
+                                  gap: '2px',
+                                }}
+                              >
+                                <span
+                                  className={`quota-row-pct ${pctSeverityClass(quotaBar.consumedPct)}`}
+                                  style={{ fontVariantNumeric: 'tabular-nums' }}
+                                >
+                                  {quotaBar.consumedPct.toFixed(0)}%
+                                </span>
+                                <span
+                                  className='quota-row-reset'
+                                  style={{
+                                    fontSize: '7.5px',
+                                    color: 'var(--fg-muted)',
+                                    opacity: 0.7,
+                                    whiteSpace: 'nowrap',
+                                    overflow: 'hidden',
+                                    textOverflow: 'ellipsis',
+                                    flexShrink: 1,
+                                  }}
+                                >
+                                  {resetDisplay}
+                                </span>
+                                {/* Anomaly icons only on current bar */}
+                                {!isPrior && showEarlyReset && (
+                                  <span
+                                    className='quota-anomaly-icon icon-reset'
+                                    aria-label='early reset'
+                                    title='Early quota reset detected'
+                                    style={{ fontSize: '8px' }}
+                                  >
+                                    ⟲
+                                  </span>
+                                )}
+                                {!isPrior && showCacheStale && (
+                                  <span
+                                    className='quota-anomaly-icon icon-cache'
+                                    aria-label='cache stale'
+                                    title='Cache data is stale'
+                                    style={{ fontSize: '8px' }}
+                                  >
+                                    ⚠
+                                  </span>
+                                )}
+                              </div>
+                              {/* The actual quota bar */}
+                              <QuotaIntervalBar
+                                intervals={quotaBar.segments}
+                                tooltipContent={tooltipContent}
+                                isPrior={isPrior}
+                              />
+                            </div>
+                          )
+                        })}
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            ) : (
+              /* ── Legacy flat quotas[] rendering (backward compat for tests) ── */
+              (() => {
+                // Partition into current (no periodType) vs prior history bars.
+                const currentQuotas = quotas.filter(
+                  (q) => q.periodType === undefined
+                )
+                const historyQuotas = quotas.filter(
+                  (q) => q.periodType !== undefined
+                )
+
+                // Ordered lanes for prior-reset display.
+                const LEGACY_LANE_ORDER: ReadonlyArray<
+                  QuotaBarGroup['periodType']
+                > = ['5hr', 'weekly', 'special', 'monthly']
+                const LEGACY_LANE_LABEL: Readonly<Record<string, string>> = {
+                  '5hr': '5hr resets',
+                  weekly: 'weekly resets',
+                  special: 'special resets',
+                  monthly: 'monthly resets',
+                }
+
+                const renderLegacyBar = (
+                  quotaBar: QuotaBarGroup,
+                  i: number,
+                  isPrior: boolean
+                ): ReactElement => {
+                  const tipWindowStr = quotaBar.tipWindow ?? '—'
+                  const tipHeadLabel = `${tipWindowStr} · ${quotaBar.consumedPct.toFixed(0)}% used`
+                  const tipVelocity = quotaBar.tipVelocity
+                  const tipModelRows =
+                    quotaBar.tipModels !== undefined &&
+                    quotaBar.tipModels.length > 0
+                      ? quotaBar.tipModels.slice(0, 3)
+                      : []
+                  const tooltipContent = (
+                    <>
+                      <div className='v9-tip-head'>{tipHeadLabel}</div>
+                      {tipVelocity !== undefined && (
+                        <div className='v9-tip-sub'>{tipVelocity}</div>
+                      )}
+                      {tipModelRows.map((tm, mi) => (
+                        <div key={mi} className='v9-tip-row'>
+                          <span
+                            className='t-model'
+                            style={{ color: modelBrandHex(tm.model) }}
+                          >
+                            {tm.model}
+                          </span>
+                          <span className='t-count'>{tm.costDelta}</span>
+                        </div>
+                      ))}
+                      {tipModelRows.length === 0 && (
+                        <div className='v9-tip-row'>
+                          <span className='t-model'>—</span>
+                          <span className='t-count'>—</span>
+                        </div>
+                      )}
+                    </>
+                  )
+                  const resetDisplay =
+                    isPrior && quotaBar.timeAgoLabel !== undefined
+                      ? quotaBar.timeAgoLabel
+                      : formatResetDistance(quotaBar.resetAt)
+                  return (
+                    <div key={i}>
+                      <div
+                        className='quota-row'
+                        style={{
+                          display: 'grid',
+                          gridTemplateColumns: 'minmax(0, 1fr) 28px 38px',
+                          columnGap: '6px',
+                          alignItems: 'center',
+                          fontFamily: 'var(--font-mono)',
+                          fontSize: '10px',
+                          color: 'var(--fg-muted)',
+                          lineHeight: '1.15',
+                        }}
+                      >
+                        <div
+                          className='quota-row-label'
                           style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '3px',
+                            whiteSpace: 'nowrap',
                             overflow: 'hidden',
                             textOverflow: 'ellipsis',
                           }}
                         >
-                          {quotaBar.label}
-                        </span>
-                        {!isPrior && showEarlyReset && (
                           <span
-                            className='quota-anomaly-icon icon-reset'
-                            aria-label='early reset'
-                            title='Early quota reset detected'
+                            style={{
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                            }}
                           >
-                            ⟲
+                            {quotaBar.label}
                           </span>
-                        )}
-                        {!isPrior && showCacheStale && (
-                          <span
-                            className='quota-anomaly-icon icon-cache'
-                            aria-label='cache stale'
-                            title='Cache data is stale'
-                          >
-                            ⚠
+                          {!isPrior && showEarlyReset && (
+                            <span
+                              className='quota-anomaly-icon icon-reset'
+                              aria-label='early reset'
+                              title='Early quota reset detected'
+                            >
+                              ⟲
+                            </span>
+                          )}
+                          {!isPrior && showCacheStale && (
+                            <span
+                              className='quota-anomaly-icon icon-cache'
+                              aria-label='cache stale'
+                              title='Cache data is stale'
+                            >
+                              ⚠
+                            </span>
+                          )}
+                        </div>
+                        <span
+                          className={`quota-row-pct ${pctSeverityClass(quotaBar.consumedPct)}`}
+                          style={{
+                            textAlign: 'right',
+                            fontVariantNumeric: 'tabular-nums',
+                          }}
+                        >
+                          {quotaBar.consumedPct.toFixed(0)}%
+                        </span>
+                        <span
+                          className='quota-row-reset'
+                          style={{
+                            textAlign: 'right',
+                            fontSize: '9px',
+                            color: 'var(--fg-muted)',
+                          }}
+                        >
+                          {resetDisplay}
+                        </span>
+                        {!isPrior && (showEarlyReset || showCacheStale) && (
+                          <span className='quota-anomaly-sub'>
+                            {showEarlyReset && (
+                              <>
+                                <span className='anomaly-glyph-reset'>⟲</span>
+                                {'early reset '}
+                              </>
+                            )}
+                            {showEarlyReset && showCacheStale && ' · '}
+                            {showCacheStale && (
+                              <>
+                                <span className='anomaly-glyph-cache'>⚠</span>
+                                {'cache stale'}
+                              </>
+                            )}
                           </span>
                         )}
                       </div>
-                      {/* 14-E.1: display consumed% (not remaining%) per mockup line 2438
-                          14-E.2: severity class colors pct text per consumption tier */}
-                      <span
-                        className={`quota-row-pct ${pctSeverityClass(quotaBar.consumedPct)}`}
-                        style={{
-                          textAlign: 'right',
-                          fontVariantNumeric: 'tabular-nums',
-                        }}
-                      >
-                        {quotaBar.consumedPct.toFixed(0)}%
-                      </span>
-                      {/* Wave 40: time-ago for prior; reset distance for current */}
-                      <span
-                        className='quota-row-reset'
-                        style={{
-                          textAlign: 'right',
-                          fontSize: '9px',
-                          color: 'var(--fg-muted)',
-                        }}
-                      >
-                        {resetDisplay}
-                      </span>
-                      {/* 14-E.3: anomaly-sub only for current bars */}
-                      {!isPrior && (showEarlyReset || showCacheStale) && (
-                        <span className='quota-anomaly-sub'>
-                          {showEarlyReset && (
-                            <>
-                              <span className='anomaly-glyph-reset'>⟲</span>
-                              {'early reset '}
-                            </>
-                          )}
-                          {showEarlyReset && showCacheStale && ' · '}
-                          {showCacheStale && (
-                            <>
-                              <span className='anomaly-glyph-cache'>⚠</span>
-                              {'cache stale'}
-                            </>
-                          )}
-                        </span>
-                      )}
+                      <QuotaIntervalBar
+                        intervals={quotaBar.segments}
+                        tooltipContent={tooltipContent}
+                        isPrior={isPrior}
+                      />
                     </div>
-                    <QuotaIntervalBar
-                      intervals={quotaBar.segments}
-                      tooltipContent={tooltipContent}
-                    />
-                  </div>
+                  )
+                }
+
+                return (
+                  <>
+                    {currentQuotas.length > 0 && (
+                      <div
+                        className='quota-list quota-list-current'
+                        style={{
+                          display: 'flex',
+                          flexDirection: 'column',
+                          gap: '3px',
+                        }}
+                      >
+                        {currentQuotas.map((qb, i) =>
+                          renderLegacyBar(qb, i, false)
+                        )}
+                      </div>
+                    )}
+                    {historyQuotas.length > 0 && (
+                      <div
+                        className='quota-history-lanes'
+                        style={{ marginTop: '4px' }}
+                      >
+                        {LEGACY_LANE_ORDER.map((lane) => {
+                          const laneBars = historyQuotas.filter(
+                            (q) => q.periodType === lane
+                          )
+                          if (laneBars.length === 0) return null
+                          return (
+                            <div
+                              key={lane}
+                              className={`quota-lane quota-lane-${lane ?? ''}`}
+                            >
+                              <div
+                                className='quota-lane-label'
+                                style={{
+                                  fontFamily: 'var(--font-mono)',
+                                  fontSize: '8px',
+                                  color:
+                                    lane === '5hr'
+                                      ? 'var(--accent-teal, #2dd4bf)'
+                                      : 'var(--fg-muted)',
+                                  textTransform: 'uppercase',
+                                  letterSpacing: '0.08em',
+                                  opacity: lane === '5hr' ? 0.85 : 0.55,
+                                  marginTop: '4px',
+                                  marginBottom: '2px',
+                                }}
+                              >
+                                {LEGACY_LANE_LABEL[lane ?? ''] ?? lane}
+                              </div>
+                              <div
+                                className='quota-list quota-list-history'
+                                style={{
+                                  display: 'flex',
+                                  flexDirection: 'column',
+                                  gap: '3px',
+                                }}
+                              >
+                                {laneBars.map((qb, i) =>
+                                  renderLegacyBar(qb, i, true)
+                                )}
+                              </div>
+                            </div>
+                          )
+                        })}
+                      </div>
+                    )}
+                  </>
                 )
-              }
-
-              return (
-                <>
-                  {/* Current active bars — rendered ungrouped above history */}
-                  {currentQuotas.length > 0 && (
-                    <div
-                      className='quota-list quota-list-current'
-                      style={{
-                        display: 'flex',
-                        flexDirection: 'column',
-                        gap: '3px',
-                      }}
-                    >
-                      {currentQuotas.map((qb, i) => renderBar(qb, i, false))}
-                    </div>
-                  )}
-
-                  {/* Prior reset bars — stacked into period-type lanes */}
-                  {historyQuotas.length > 0 && (
-                    <div
-                      className='quota-history-lanes'
-                      style={{ marginTop: '4px' }}
-                    >
-                      {LANE_ORDER.map((lane) => {
-                        const laneBars = historyQuotas.filter(
-                          (q) => q.periodType === lane
-                        )
-                        if (laneBars.length === 0) return null
-                        return (
-                          <div
-                            key={lane}
-                            className={`quota-lane quota-lane-${lane ?? ''}`}
-                          >
-                            {/* Subtle lane header distinguishing the period type.
-                                5hr lanes get teal accent to stand out from
-                                weekly lanes at a glance. */}
-                            <div
-                              className='quota-lane-label'
-                              style={{
-                                fontFamily: 'var(--font-mono)',
-                                fontSize: '8px',
-                                color:
-                                  lane === '5hr'
-                                    ? 'var(--accent-teal, #2dd4bf)'
-                                    : 'var(--fg-muted)',
-                                textTransform: 'uppercase',
-                                letterSpacing: '0.08em',
-                                opacity: lane === '5hr' ? 0.85 : 0.55,
-                                marginTop: '4px',
-                                marginBottom: '2px',
-                              }}
-                            >
-                              {LANE_LABEL[lane ?? ''] ?? lane}
-                            </div>
-                            <div
-                              className='quota-list quota-list-history'
-                              style={{
-                                display: 'flex',
-                                flexDirection: 'column',
-                                gap: '3px',
-                              }}
-                            >
-                              {laneBars.map((qb, i) => renderBar(qb, i, true))}
-                            </div>
-                          </div>
-                        )
-                      })}
-                    </div>
-                  )}
-                </>
-              )
-            })()}
+              })()
+            )}
           </>
         )}
 
