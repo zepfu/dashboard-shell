@@ -2045,14 +2045,32 @@ function buildProviderLanes(
         const bm = (b.model ?? '').length
         return am - bm
       })
+      let bestRow: UsageReportQuotaRow | null = null
       for (const row of sorted) {
         if (row.model === null) continue
-        const cls = classifyGeminiModel(row.model)
-        if (cls !== def.googleClass) continue
-        const g = makeQuotaBarGroup(`${def.laneLabel}`, row, 'short')
+        if (classifyGeminiModel(row.model) !== def.googleClass) continue
+        if (bestRow === null) bestRow = row
+      }
+      if (bestRow !== null) {
+        const g = makeQuotaBarGroup(`${def.laneLabel}`, bestRow, 'short')
         if (g !== null) {
-          currentBar = { ...g, label: def.laneLabel }
-          break
+          // Aggregate short_usage_breakdown across ALL same-class rows so that
+          // split quota rows (e.g. gemini-2.5-flash-lite vs gemini-3.1-flash-lite-preview)
+          // are merged into one class-bucket tooltip instead of showing "— —".
+          const mergedBreakdown = providerQuotas
+            .filter(
+              (r) =>
+                r.model !== null &&
+                classifyGeminiModel(r.model) === def.googleClass
+            )
+            .flatMap((r) => r.short_usage_breakdown)
+          const aggregatedTipModels =
+            tipModelsFromBreakdownGoogleAggregated(mergedBreakdown)
+          currentBar = {
+            ...g,
+            label: def.laneLabel,
+            tipModels: aggregatedTipModels,
+          }
         }
       }
     } else if (providerLower === 'xai') {
