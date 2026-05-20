@@ -52,6 +52,7 @@ import {
   type UsageReportProviderErrorObservationRow,
   type UsageReportToolActivityRow,
 } from '../api/usage-report'
+import { fmtCompact, numFmt } from '../lib/format-utils'
 import {
   providerBrandHex,
   formatLatency,
@@ -355,13 +356,6 @@ function formatObservedAgo(iso: string | null | undefined): string {
 
 const helper = createColumnHelper<ModelRow>()
 
-function numFmt(n: number, decimals = 0): string {
-  return n.toLocaleString(undefined, {
-    minimumFractionDigits: decimals,
-    maximumFractionDigits: decimals,
-  })
-}
-
 /**
  * Returns a formatted string for a value, or the em-dash placeholder `—`
  * when the value is null or undefined.  Uses `== null` to catch both
@@ -377,18 +371,6 @@ function fmtOrDash<T>(
 ): string {
   if (value == null) return '—'
   return formatter ? formatter(value) : String(value)
-}
-
-/**
- * Compact B/M/K formatter for token counts (operator F#12).
- *
- * Thresholds: ≥1e9 → B, ≥1e6 → M, ≥1e3 → K, else as-is.
- */
-function fmtCompact(n: number): string {
-  if (n >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(1)}B`
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`
-  return String(n)
 }
 
 /**
