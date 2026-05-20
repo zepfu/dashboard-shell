@@ -72,3 +72,34 @@ test('test_quota_interval_bar_no_projection_when_omitted', () => {
 
   expect(projectionEl).toBeNull()
 })
+
+// ---------------------------------------------------------------------------
+// Wave 41 — isPrior prop tests
+// ---------------------------------------------------------------------------
+
+test('test_quota_interval_bar_is_prior_adds_class', () => {
+  // When isPrior=true, the wrapper .quota-row-bar must carry .is-prior.
+  const { container } = render(
+    <QuotaIntervalBar intervals={makeIntervals(12)} isPrior={true} />
+  )
+  const bar = container.querySelector('.quota-row-bar')
+  expect(bar).not.toBeNull()
+  expect(bar!.classList.contains('is-prior')).toBe(true)
+})
+
+test('test_quota_interval_bar_no_is_prior_by_default', () => {
+  // Default: isPrior=false → no .is-prior class on the wrapper.
+  const { container } = render(
+    <QuotaIntervalBar intervals={makeIntervals(12)} />
+  )
+  const bar = container.querySelector('.quota-row-bar')
+  expect(bar!.classList.contains('is-prior')).toBe(false)
+})
+
+test('test_quota_interval_bar_is_prior_false_does_not_add_class', () => {
+  const { container } = render(
+    <QuotaIntervalBar intervals={makeIntervals(12)} isPrior={false} />
+  )
+  const bar = container.querySelector('.quota-row-bar')
+  expect(bar!.classList.contains('is-prior')).toBe(false)
+})

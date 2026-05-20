@@ -19,6 +19,7 @@ import { render, screen } from '@testing-library/react'
 import {
   ProviderCard,
   type QuotaBarGroup,
+  type QuotaLane,
   type QuotaRowConfig,
 } from './provider-card'
 
@@ -456,4 +457,165 @@ test('test_provider_card_historical_bars_do_not_break_empty_quotaHistory', () =>
   // Still renders exactly 12 intervals (1 bar × 12 segments).
   const intervals = container.querySelectorAll('.quota-interval')
   expect(intervals.length).toBe(12)
+})
+
+// ---------------------------------------------------------------------------
+// Wave 41 — QuotaLane rendering tests
+// ---------------------------------------------------------------------------
+
+describe('Wave 41 — QuotaLane structured lane rendering', () => {
+  const makeFullSegments = (): QuotaRowConfig[] =>
+    Array.from({ length: 12 }, (_, i) => ({
+      widthPct: 100 / 12,
+      severityClass: i < 8 ? 'iv-50-p' : i === 8 ? 'iv-5-10' : 'iv-0-5',
+      highVelocity: i === 8,
+    }))
+
+  const currentBar: QuotaBarGroup = {
+    label: 'All Models · 5hr',
+    consumedPct: 67,
+    remainingPct: 33,
+    resetAt: '2026-05-20T21:00:00Z',
+    segments: makeFullSegments(),
+    tipWindow: '−5h → now',
+    tipVelocity: '+13.4%/h',
+  }
+
+  const priorBar1: QuotaBarGroup = {
+    label: '5h ago',
+    consumedPct: 43,
+    remainingPct: 57,
+    resetAt: '2026-05-20T16:00:00Z',
+    segments: makeFullSegments(),
+    timeAgoLabel: '5h ago',
+  }
+
+  const priorBar2: QuotaBarGroup = {
+    label: '10h ago',
+    consumedPct: 88,
+    remainingPct: 12,
+    resetAt: '2026-05-20T11:00:00Z',
+    segments: makeFullSegments(),
+    timeAgoLabel: '10h ago',
+  }
+
+  const testLane: QuotaLane = {
+    laneKey: 'anthropic/short',
+    laneLabel: 'All Models · 5hr',
+    currentBar,
+    priorBars: [priorBar1, priorBar2],
+  }
+
+  test('test_provider_card_lane_renders_quota_section_title', () => {
+    const { container } = render(
+      <ProviderCard
+        config={anthropicConfig}
+        data={mockData}
+        healthCells={mockHealthCells}
+        quotas={[]}
+        lanes={[testLane]}
+      />
+    )
+    expect(container.querySelector('.quota-section-title')).not.toBeNull()
+  })
+
+  test('test_provider_card_lane_renders_lane_label', () => {
+    const { container } = render(
+      <ProviderCard
+        config={anthropicConfig}
+        data={mockData}
+        healthCells={mockHealthCells}
+        quotas={[]}
+        lanes={[testLane]}
+      />
+    )
+    const labels = container.querySelectorAll('.quota-lane-label')
+    expect(labels.length).toBeGreaterThanOrEqual(1)
+    // textTransform:uppercase is CSS — jsdom won't capitalise; check source text.
+    const labelText = Array.from(labels).some((el) =>
+      el.textContent?.toLowerCase().includes('all models')
+    )
+    expect(labelText).toBe(true)
+  })
+
+  test('test_provider_card_lane_renders_3_bars_total', () => {
+    // 1 current + 2 prior = 3 bars total = 3 × 12 = 36 intervals.
+    const { container } = render(
+      <ProviderCard
+        config={anthropicConfig}
+        data={mockData}
+        healthCells={mockHealthCells}
+        quotas={[]}
+        lanes={[testLane]}
+      />
+    )
+    const bars = container.querySelectorAll('.quota-row-bar')
+    expect(bars.length).toBe(3)
+  })
+
+  test('test_provider_card_current_bar_not_marked_is_prior', () => {
+    const { container } = render(
+      <ProviderCard
+        config={anthropicConfig}
+        data={mockData}
+        healthCells={mockHealthCells}
+        quotas={[]}
+        lanes={[testLane]}
+      />
+    )
+    const bars = container.querySelectorAll('.quota-row-bar')
+    // First bar (current) must NOT have .is-prior class.
+    expect(bars[0].classList.contains('is-prior')).toBe(false)
+  })
+
+  test('test_provider_card_prior_bars_marked_is_prior', () => {
+    const { container } = render(
+      <ProviderCard
+        config={anthropicConfig}
+        data={mockData}
+        healthCells={mockHealthCells}
+        quotas={[]}
+        lanes={[testLane]}
+      />
+    )
+    const bars = container.querySelectorAll('.quota-row-bar')
+    // Prior bars (index 1 and 2) MUST have .is-prior class.
+    expect(bars[1].classList.contains('is-prior')).toBe(true)
+    expect(bars[2].classList.contains('is-prior')).toBe(true)
+  })
+
+  test('test_provider_card_multiple_lanes_render_separate_rows', () => {
+    const lane2: QuotaLane = {
+      laneKey: 'anthropic/weekly',
+      laneLabel: 'All Models · 7d',
+      currentBar: { ...currentBar, label: 'All Models · 7d' },
+      priorBars: [],
+    }
+    const { container } = render(
+      <ProviderCard
+        config={anthropicConfig}
+        data={mockData}
+        healthCells={mockHealthCells}
+        quotas={[]}
+        lanes={[testLane, lane2]}
+      />
+    )
+    const laneRows = container.querySelectorAll('.quota-lane-row')
+    expect(laneRows.length).toBe(2)
+  })
+
+  test('test_provider_card_empty_lanes_falls_back_to_quotas', () => {
+    // When lanes=undefined, the legacy quotas[] rendering is used.
+    const { container } = render(
+      <ProviderCard
+        config={anthropicConfig}
+        data={mockData}
+        healthCells={mockHealthCells}
+        quotas={[currentBar]}
+      />
+    )
+    // Legacy path renders .quota-row-bar (not .quota-lane-row).
+    expect(container.querySelectorAll('.quota-row-bar').length).toBe(1)
+    expect(container.querySelectorAll('.quota-lane-row').length).toBe(0)
+  })
 })
