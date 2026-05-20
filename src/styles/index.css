@@ -1080,7 +1080,9 @@
 }
 
 /* ── §7 #1: grid-auto-rows: 1fr at 1280+ per mockup lines 987,994 ─────────  */
-@media (min-width: 1280px) {
+/* max-width: 1599px cap prevents this 2-col rule from overriding the 4-col   */
+/* rule defined at (min-width: 1600px) in L194 — cascade regression fix.      */
+@media (min-width: 1280px) and (max-width: 1599px) {
   .provider-summary {
     grid-template-columns: repeat(2, minmax(0, 1fr));
     grid-auto-rows: 1fr;
@@ -1107,10 +1109,11 @@
   }
 }
 
-/* ── §10 #6: quota-intervals gap: 2px instead of border-right ────────────── */
+/* ── §10 #6: quota-row-bar gap: 2px instead of border-right ─────────────── */
 /* Removes the 1px border-right separator and uses a transparent gap instead  */
-/* per mockup line 2124: `.quota-intervals { gap: 2px; }`.                    */
-.quota-intervals {
+/* per mockup line 2124. Selector corrected from .quota-intervals (dead) to   */
+/* .quota-row-bar — the actual className emitted by quota-interval-bar.tsx:61 */
+.quota-row-bar {
   gap: 2px;
 }
 
@@ -1255,6 +1258,16 @@ tbody tr {
 .tt-slice.tt-local,
 .tt-swatch.tt-local {
   background: #94a3b8;
+}
+/* Wave 25 additions: chatgpt + unknown were missing from the Wave 15-A block. */
+/* Colors from PROVIDER_SERIES in phosphor-dashboard.tsx lines 118,157.        */
+.tt-slice.tt-chatgpt,
+.tt-swatch.tt-chatgpt {
+  background: #10a37f;
+}
+.tt-slice.tt-unknown,
+.tt-swatch.tt-unknown {
+  background: #64748b;
 }
 
 /* ── S16 MEDIUM: .alert-glyph 12px centered span ────────────────────────────
