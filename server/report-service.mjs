@@ -1306,10 +1306,17 @@ WITH
 -- hard-coded expectation (e.g. Google short=24h vs Anthropic short=5h).
 -- Step 1: compute per-row gap (hours) between consecutive expected_reset_at
 -- timestamps for each (provider, quota_key) pair.
+-- Sub-minute gaps (< 1 h) arise when multiple rapid observations land in the
+-- same reset window with slightly different timestamps (e.g. 1-2 s apart).
+-- These near-zero gaps must be excluded BEFORE the percentile computation;
+-- otherwise, when a key has many same-window duplicates, the median falls
+-- in the near-zero bucket and the computed interval collapses to ~0 h
+-- (floored to 1 h), producing a ~1.5 h lookback for a weekly key.
 quota_key_gaps AS (
     SELECT
         provider,
         quota_key,
+        quota_type,
         EXTRACT(EPOCH FROM (
             expected_reset_at
             - LAG(expected_reset_at) OVER (
@@ -1318,26 +1325,27 @@ quota_key_gaps AS (
             )
         )) / 3600.0 AS gap_hours
     FROM (
-        SELECT DISTINCT provider, quota_key, expected_reset_at
+        SELECT DISTINCT provider, quota_key, quota_type, expected_reset_at
         FROM public.rate_limit_intervals
         WHERE quota_type IN ('weekly', 'weekly_special', 'short', 'short_special', 'requests', 'monthly')
           AND expected_reset_at IS NOT NULL
     ) distinct_resets
 ),
 -- Step 2: aggregate to the median gap per (provider, quota_key).
--- Median is robust against multi-day silent gaps or rapid back-to-back changes
--- that would skew a simple MIN/AVG.  Floor at 1 h so the window is never vacuous.
+-- Only gaps >= 1 h are considered — this excludes sub-minute noise from
+-- rapid duplicate observations within the same reset window.
+-- We also track gap_count so the caller can require >= 2 qualifying samples
+-- before trusting the median (fewer samples → fall back to quota_type default).
 quota_key_interval_hours AS (
     SELECT
         provider,
         quota_key,
-        GREATEST(
-            PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY gap_hours),
-            1.0
-        ) AS interval_hours
+        quota_type,
+        PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY gap_hours) AS interval_hours,
+        COUNT(*) AS gap_count
     FROM quota_key_gaps
-    WHERE gap_hours IS NOT NULL   -- first row per partition has NULL gap; skip it
-    GROUP BY provider, quota_key
+    WHERE gap_hours >= 1.0   -- skip first-row NULLs and sub-minute noise gaps
+    GROUP BY provider, quota_key, quota_type
 ),
 normalized AS (
     SELECT
@@ -1377,10 +1385,17 @@ normalized AS (
         ri.fromDate AS interval_start,
         -- interval_hours drives all lookback/upper-bound arithmetic below so
         -- that every provider × quota_key uses its own actual reset cadence.
-        -- Fallback: if a quota_key is brand-new (only 1 distinct reset seen so
-        -- far, so no gap can be computed), use a safe type-based default.
+        -- Two-tier fallback strategy:
+        --   1. Use the median observed gap when >= 2 qualifying (>= 1 h) gaps
+        --      exist — this is robust for both well-sampled and sparse keys.
+        --   2. Fall back to a hardcoded quota_type-based default otherwise
+        --      (brand-new key with 0-1 qualifying gaps, e.g. first week of a
+        --      weekly quota that has only one real reset observed so far, or
+        --      a key whose median was dominated by sub-minute noise gaps).
+        -- The CASE WHEN gap_count >= 2 guard ensures we never use a median
+        -- derived from a single data point, which could be an outlier.
         COALESCE(
-            kh.interval_hours,
+            CASE WHEN kh.gap_count >= 2 THEN kh.interval_hours END,
             CASE
                 WHEN ri.quota_type IN ('short', 'short_special') THEN 5.0
                 WHEN ri.quota_type IN ('weekly', 'weekly_special') THEN 168.0
@@ -1404,7 +1419,7 @@ normalized AS (
       AND ri.expected_reset_at IS NOT NULL
       AND ri.expected_reset_at >= now() - (
               COALESCE(
-                  kh.interval_hours,
+                  CASE WHEN kh.gap_count >= 2 THEN kh.interval_hours END,
                   CASE
                       WHEN ri.quota_type IN ('short', 'short_special') THEN 5.0
                       WHEN ri.quota_type IN ('weekly', 'weekly_special') THEN 168.0
@@ -1415,7 +1430,7 @@ normalized AS (
           )
       AND ri.expected_reset_at < now() + (
               COALESCE(
-                  kh.interval_hours,
+                  CASE WHEN kh.gap_count >= 2 THEN kh.interval_hours END,
                   CASE
                       WHEN ri.quota_type IN ('short', 'short_special') THEN 5.0
                       WHEN ri.quota_type IN ('weekly', 'weekly_special') THEN 168.0
