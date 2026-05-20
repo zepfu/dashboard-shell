@@ -38,10 +38,10 @@ const MAX_LIMIT = 50000
 // of magnitude of MAX_LIMIT and is safe for memory given that client
 // rows are a small aggregate (6 columns per pair).
 const MAX_CLIENT_ROWS = 5000
-const HEALTH_WINDOW_HOURS = Math.max(
-  1,
-  Math.min(Number(process.env.SHELL_REPORT_HEALTH_WINDOW_HOURS ?? 24), 336)
-)
+// Wave 38-1: HEALTH_WINDOW_HOURS removed — buildProviderLatencyHealthQuery()
+// now accepts searchParams and applies the caller-supplied from/to window
+// (same pattern as buildProviderErrorObservationQuery). The env-override
+// SHELL_REPORT_HEALTH_WINDOW_HOURS is no longer in use.
 // Wave 35-C2: raised default from 8_000 to 20_000.
 // At scale (many providers × models × environments) the 8k cap truncated the
 // oldest fleet-pulse buckets silently; at current traffic (~2,529 rows) this
@@ -450,7 +450,17 @@ LIMIT $${values.length};
   return { sql, values }
 }
 
-function buildProviderLatencyHealthQuery() {
+// Wave 38-1 (⚠-W38-1): Accept searchParams and scope health rows to the
+// caller-supplied from/to window instead of the previous fixed rolling window
+// (`now() - HEALTH_WINDOW_HOURS`). This mirrors the pattern introduced in
+// W35-M5 for buildProviderErrorObservationQuery. Without this fix the
+// prior-period /usage request returns identical live health rows to the
+// current-period request, causing priorP95 === currentP95 always and
+// rendering the KPI P95 delta permanently 0% (or never shown).
+function buildProviderLatencyHealthQuery(searchParams) {
+  const from = parseDateParam(searchParams.get('from'), defaultFromDate)
+  const to = parseDateParam(searchParams.get('to'), defaultToDate)
+
   const sql = `
 SELECT
     bucket_start,
@@ -496,12 +506,13 @@ SELECT
     request_period_start,
     request_period_end
 FROM public.provider_latency_health_5m
-WHERE bucket_start >= now() - ($2::double precision * interval '1 hour')
+WHERE bucket_start >= $2::timestamptz
+  AND bucket_start < $3::timestamptz
 ORDER BY bucket_start DESC, environment, provider, model
 LIMIT $1;
 `
 
-  return { sql, values: [MAX_HEALTH_ROWS, HEALTH_WINDOW_HOURS] }
+  return { sql, values: [MAX_HEALTH_ROWS, from, to] }
 }
 
 // Wave 35-C2 (⚠-1): accept searchParams and scope observations to the
@@ -1614,7 +1625,7 @@ async function handleUsageReport(req, res) {
     const summaryQuery = buildSummaryQuery(requestUrl.searchParams)
     const trendQuery = buildTrendQuery(requestUrl.searchParams)
     const clientUsageQuery = buildClientUsageQuery(requestUrl.searchParams)
-    const providerLatencyHealthQuery = buildProviderLatencyHealthQuery()
+    const providerLatencyHealthQuery = buildProviderLatencyHealthQuery(requestUrl.searchParams)
     const providerErrorObservationQuery = buildProviderErrorObservationQuery(requestUrl.searchParams)
     const providerStatusUsageQuery = buildProviderStatusUsageQuery(requestUrl.searchParams)
     const quotaHistoryQuery = buildQuotaHistoryQuery(requestUrl.searchParams)
