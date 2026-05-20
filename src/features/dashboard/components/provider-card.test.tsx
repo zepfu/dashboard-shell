@@ -618,4 +618,134 @@ describe('Wave 41 — QuotaLane structured lane rendering', () => {
     expect(container.querySelectorAll('.quota-row-bar').length).toBe(1)
     expect(container.querySelectorAll('.quota-lane-row').length).toBe(0)
   })
+
+  // -------------------------------------------------------------------------
+  // Wave 43 — dateRangeLabel rendering on prior bars
+  // -------------------------------------------------------------------------
+
+  test('test_provider_card_prior_bar_renders_date_range_label', () => {
+    // A prior bar with dateRangeLabel set must render a .quota-row-date-range element.
+    const priorWithRange: QuotaBarGroup = {
+      label: '5h ago',
+      consumedPct: 43,
+      remainingPct: 57,
+      resetAt: '2026-05-20T16:00:00Z',
+      segments: makeFullSegments(),
+      timeAgoLabel: '5h ago',
+      dateRangeLabel: '5/20 11:00 → 5/20 16:00',
+    }
+    const lane: QuotaLane = {
+      laneKey: 'anthropic/short',
+      laneLabel: 'All Models · 5hr',
+      currentBar,
+      priorBars: [priorWithRange],
+    }
+    const { container } = render(
+      <ProviderCard
+        config={anthropicConfig}
+        data={mockData}
+        healthCells={mockHealthCells}
+        quotas={[]}
+        lanes={[lane]}
+      />
+    )
+    const rangeLabels = container.querySelectorAll('.quota-row-date-range')
+    expect(rangeLabels.length).toBe(1)
+    expect(rangeLabels[0].textContent).toBe('5/20 11:00 → 5/20 16:00')
+  })
+
+  test('test_provider_card_current_bar_does_not_render_date_range_label', () => {
+    // Current bar must never render .quota-row-date-range even if dateRangeLabel
+    // were accidentally set — the condition gates on isPrior.
+    const currentWithRange: QuotaBarGroup = {
+      ...currentBar,
+      dateRangeLabel: 'should-not-appear',
+    }
+    const lane: QuotaLane = {
+      laneKey: 'anthropic/short',
+      laneLabel: 'All Models · 5hr',
+      currentBar: currentWithRange,
+      priorBars: [],
+    }
+    const { container } = render(
+      <ProviderCard
+        config={anthropicConfig}
+        data={mockData}
+        healthCells={mockHealthCells}
+        quotas={[]}
+        lanes={[lane]}
+      />
+    )
+    expect(container.querySelectorAll('.quota-row-date-range').length).toBe(0)
+  })
+
+  test('test_provider_card_prior_bar_without_date_range_label_renders_no_range_element', () => {
+    // Prior bars without dateRangeLabel must not render the sub-label element.
+    const priorNoRange: QuotaBarGroup = {
+      label: '5h ago',
+      consumedPct: 43,
+      remainingPct: 57,
+      resetAt: '2026-05-20T16:00:00Z',
+      segments: makeFullSegments(),
+      timeAgoLabel: '5h ago',
+      // dateRangeLabel intentionally absent
+    }
+    const lane: QuotaLane = {
+      laneKey: 'anthropic/short',
+      laneLabel: 'All Models · 5hr',
+      currentBar,
+      priorBars: [priorNoRange],
+    }
+    const { container } = render(
+      <ProviderCard
+        config={anthropicConfig}
+        data={mockData}
+        healthCells={mockHealthCells}
+        quotas={[]}
+        lanes={[lane]}
+      />
+    )
+    expect(container.querySelectorAll('.quota-row-date-range').length).toBe(0)
+  })
+
+  test('test_provider_card_multiple_prior_bars_each_render_date_range_label', () => {
+    // Multiple prior bars in the same lane must each render their own range label.
+    const prior1: QuotaBarGroup = {
+      label: '5h ago',
+      consumedPct: 43,
+      remainingPct: 57,
+      resetAt: '2026-05-20T16:00:00Z',
+      segments: makeFullSegments(),
+      timeAgoLabel: '5h ago',
+      dateRangeLabel: '5/20 11:00 → 5/20 16:00',
+    }
+    const prior2: QuotaBarGroup = {
+      label: '10h ago',
+      consumedPct: 88,
+      remainingPct: 12,
+      resetAt: '2026-05-20T11:00:00Z',
+      segments: makeFullSegments(),
+      timeAgoLabel: '10h ago',
+      dateRangeLabel: '5/20 06:00 → 5/20 11:00',
+    }
+    const lane: QuotaLane = {
+      laneKey: 'anthropic/short',
+      laneLabel: 'All Models · 5hr',
+      currentBar,
+      priorBars: [prior1, prior2],
+    }
+    const { container } = render(
+      <ProviderCard
+        config={anthropicConfig}
+        data={mockData}
+        healthCells={mockHealthCells}
+        quotas={[]}
+        lanes={[lane]}
+      />
+    )
+    const rangeLabels = container.querySelectorAll('.quota-row-date-range')
+    expect(rangeLabels.length).toBe(2)
+    expect(rangeLabels[0].textContent).toBe('5/20 11:00 → 5/20 16:00')
+    expect(rangeLabels[1].textContent).toBe('5/20 06:00 → 5/20 11:00')
+  })
 })
