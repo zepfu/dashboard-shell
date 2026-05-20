@@ -1,17 +1,18 @@
 /**
- * Wave 4 — AggregateCard red-phase tests.
+ * AggregateCard tests.
  *
  * Component path: src/features/dashboard/components/aggregate-card.tsx
  * Expected export: AggregateCard (named)
  * Extends ProviderCard with fleetActivity prop.
  *
- * All tests expected to FAIL (red) — source file does not exist yet.
+ * Wave 32 (⚠12): AggregateCard no longer accepts a `quotas` prop — the
+ * aggregate card is intentionally quota-less. Tests updated to match.
  */
 import { render, screen } from '@testing-library/react'
 import { AggregateCard } from './aggregate-card'
 
 // ---------------------------------------------------------------------------
-// Fixtures (same as provider-card, plus fleetActivity)
+// Fixtures
 // ---------------------------------------------------------------------------
 
 const mockData = {
@@ -39,23 +40,6 @@ const mockHealthCells = Array.from({ length: 288 }, () => ({
   color: 'var(--card-2)',
 }))
 
-// Wave 11 PR3 (11-h/11-i): QuotaBarGroup[] — each entry is a quota-type bar
-// with pre-built 12-segment array matching the new ProviderCard quota contract.
-const makeSegments = () =>
-  Array.from({ length: 12 }, (_, i) => ({
-    widthPct: 100 / 12,
-    severityClass: 'iv-ok',
-    highVelocity: i === 0,
-  }))
-
-const mockQuotas = Array.from({ length: 2 }, (_, i) => ({
-  label: i === 0 ? 'Weekly' : 'Short',
-  consumedPct: 30,
-  remainingPct: 70,
-  resetAt: '2026-05-19',
-  segments: makeSegments(),
-}))
-
 const baseFleetActivity = {
   toolCalls: 42,
   gitCommits: 7,
@@ -73,7 +57,6 @@ test('test_aggregate_card_renders_fleet_activity_section', () => {
       config={aggregateConfig}
       data={mockData}
       healthCells={mockHealthCells}
-      quotas={mockQuotas}
       fleetActivity={baseFleetActivity}
     />
   )
@@ -101,7 +84,6 @@ test('test_aggregate_card_invalid_tool_calls_red', () => {
       config={aggregateConfig}
       data={mockData}
       healthCells={mockHealthCells}
-      quotas={mockQuotas}
       fleetActivity={{ ...baseFleetActivity, invalidToolCalls: 5 }}
     />
   )
@@ -134,7 +116,6 @@ test('test_aggregate_card_pulse_dot_present_when_invalid_tool_calls', () => {
       config={aggregateConfig}
       data={mockData}
       healthCells={mockHealthCells}
-      quotas={mockQuotas}
       fleetActivity={{ ...baseFleetActivity, invalidToolCalls: 142 }}
     />
   )
@@ -152,11 +133,28 @@ test('test_aggregate_card_no_pulse_when_zero_invalid_tool_calls', () => {
       config={aggregateConfig}
       data={mockData}
       healthCells={mockHealthCells}
-      quotas={mockQuotas}
       fleetActivity={{ ...baseFleetActivity, invalidToolCalls: 0 }}
     />
   )
 
   const pulseDot = container.querySelector('.pulse-dot')
   expect(pulseDot).toBeNull()
+})
+
+test('test_aggregate_card_no_quotas_section_rendered', () => {
+  // Wave 32 ⚠12: AggregateCard is intentionally quota-less. The Quotas section
+  // title and quota-list container must never appear regardless of what the
+  // parent passes — the component hardcodes quotas={[]} internally.
+  const { container } = render(
+    <AggregateCard
+      config={aggregateConfig}
+      data={mockData}
+      healthCells={mockHealthCells}
+      fleetActivity={baseFleetActivity}
+    />
+  )
+
+  // Neither the section title div nor the quota-list container should render.
+  expect(container.querySelector('.quota-section-title')).toBeNull()
+  expect(container.querySelector('.quota-list')).toBeNull()
 })
