@@ -42,9 +42,16 @@ const HEALTH_WINDOW_HOURS = Math.max(
   1,
   Math.min(Number(process.env.SHELL_REPORT_HEALTH_WINDOW_HOURS ?? 24), 336)
 )
+// Wave 35-C2: raised default from 8_000 to 20_000.
+// At scale (many providers × models × environments) the 8k cap truncated the
+// oldest fleet-pulse buckets silently; at current traffic (~2,529 rows) this
+// was safe, but headroom was shrinking. The hard upper bound via env-override
+// remains 20_000 — operators can lower it via SHELL_REPORT_HEALTH_MAX_ROWS.
+// A >75% capacity warning is emitted at query time to surface truncation risk
+// before it becomes a silent data loss.
 const MAX_HEALTH_ROWS = Math.max(
   100,
-  Math.min(Number(process.env.SHELL_REPORT_HEALTH_MAX_ROWS ?? 8_000), 20_000)
+  Math.min(Number(process.env.SHELL_REPORT_HEALTH_MAX_ROWS ?? 20_000), 20_000)
 )
 const MAX_PROVIDER_ERROR_ROWS = 2_000
 const MAX_PROVIDER_STATUS_ROWS = 500
@@ -493,7 +500,18 @@ LIMIT $1;
   return { sql, values: [MAX_HEALTH_ROWS, HEALTH_WINDOW_HOURS] }
 }
 
-function buildProviderErrorObservationQuery() {
+// Wave 35-C2 (⚠-1): accept searchParams and scope observations to the
+// user-selected date window instead of a hardcoded 14-day lookback.
+// W34-C made computeFleetErrors() window-aware client-side, but the server
+// was still capping at "now() - 14 days", causing silent under-counting for
+// any window > 14d (e.g. the default 30-day view). Now mirrors the same
+// from/to parameterisation used by buildSummaryQuery / buildClientUsageQuery.
+// MAX_PROVIDER_ERROR_ROWS remains 2_000 — at daily grain a 30-day window
+// with typical error rates stays well below this cap.
+function buildProviderErrorObservationQuery(searchParams) {
+  const from = parseDateParam(searchParams.get('from'), defaultFromDate)
+  const to = parseDateParam(searchParams.get('to'), defaultToDate)
+
   const sql = `
 SELECT
     observed_at,
@@ -509,12 +527,13 @@ SELECT
     retry_after_seconds,
     expected_reset_at
 FROM public.provider_error_observations
-WHERE observed_at >= now() - interval '14 days'
+WHERE observed_at >= $2::timestamptz
+  AND observed_at < $3::timestamptz
 ORDER BY observed_at DESC
 LIMIT $1;
 `
 
-  return { sql, values: [MAX_PROVIDER_ERROR_ROWS] }
+  return { sql, values: [MAX_PROVIDER_ERROR_ROWS, from, to] }
 }
 
 // Wave 28-ServerCap: added searchParams parameter to thread the user's
@@ -875,8 +894,13 @@ per_model_usage AS (
                   ELSE COALESCE(sh.provider, 'unknown')
               END
           ) = wb.provider
-      AND sh.created_at >= wb.interval_start
-      AND sh.created_at < wb.expected_reset_at
+      -- Wave 35-C2 (⚠-7): use start_time (with created_at fallback) to match
+      -- the live quota query (buildQuotaQuery), which also anchors on
+      -- sh.start_time. Using created_at here caused sessions near quota-reset
+      -- boundaries to appear in the wrong historical interval because
+      -- created_at (record persistence time) can lag start_time by minutes.
+      AND COALESCE(sh.start_time, sh.created_at) >= wb.interval_start
+      AND COALESCE(sh.start_time, sh.created_at) < wb.expected_reset_at
       AND (wb.model IS NULL OR sh.model = wb.model)
     GROUP BY wb.provider, wb.model, wb.quota_type, wb.expected_reset_at, COALESCE(sh.model, 'unknown')
 )
@@ -1587,7 +1611,7 @@ async function handleUsageReport(req, res) {
     const trendQuery = buildTrendQuery(requestUrl.searchParams)
     const clientUsageQuery = buildClientUsageQuery(requestUrl.searchParams)
     const providerLatencyHealthQuery = buildProviderLatencyHealthQuery()
-    const providerErrorObservationQuery = buildProviderErrorObservationQuery()
+    const providerErrorObservationQuery = buildProviderErrorObservationQuery(requestUrl.searchParams)
     const providerStatusUsageQuery = buildProviderStatusUsageQuery(requestUrl.searchParams)
     const quotaHistoryQuery = buildQuotaHistoryQuery(requestUrl.searchParams)
     const toolActivityQuery = buildToolActivityQuery(requestUrl.searchParams)
@@ -1625,6 +1649,19 @@ async function handleUsageReport(req, res) {
 
     const rows = result.rows.map(normalizeRow)
     const summary = normalizeSummary(firstRow(summaryResult))
+
+    // Wave 35-C2 (⚠-8): warn when health rows approach MAX_HEALTH_ROWS cap.
+    // At >75% utilisation the oldest fleet-pulse buckets risk silent truncation
+    // as provider/model diversity grows. Surface this before it becomes data loss.
+    const healthRowCount = providerLatencyHealthResult.rows.length
+    if (healthRowCount > MAX_HEALTH_ROWS * 0.75) {
+      process.stderr.write(
+        `[report-service] WARN: providerLatencyHealth returned ${healthRowCount} rows` +
+          ` (${Math.round((healthRowCount / MAX_HEALTH_ROWS) * 100)}% of MAX_HEALTH_ROWS=${MAX_HEALTH_ROWS}).` +
+          ` Oldest fleet-pulse buckets may be truncated.` +
+          ` Raise SHELL_REPORT_HEALTH_MAX_ROWS env var to increase the cap (hard max 20000).\n`
+      )
+    }
 
     return {
       metadata: {
