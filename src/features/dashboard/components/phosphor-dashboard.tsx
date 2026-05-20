@@ -36,6 +36,7 @@ import {
   type UsageReportQuotaHistoryRow,
   type UsageReportQuotaRow,
   type UsageReportQuotaUsageBreakdown,
+  type UsageReportResponse,
   type UsageReportRow,
   type UsageReportSummary,
   type UsageReportToolActivityRow,
@@ -194,6 +195,27 @@ export interface PhosphorDashboardProps {
    * or when the prior report is unavailable.
    */
   onPriorSummaryReady?: (summary: UsageReportSummary | undefined) => void
+  /**
+   * Wave 36 Fix 1: The pre-fetched /usage report data from the parent
+   * (index.tsx). Hoisting the query eliminates the duplicate HTTP request that
+   * arose when both index.tsx and PhosphorDashboard fired separate useQuery
+   * calls with slightly different queryKeys (filter arrays appended here but
+   * not in index.tsx), causing React Query to treat them as distinct entries.
+   * When provided, the internal useQuery is bypassed.
+   */
+  report?: UsageReportResponse
+  /**
+   * Wave 36 Fix 1: Loading state for the hoisted report query. When true (and
+   * `report` is undefined), section skeletons are shown.
+   */
+  reportLoading?: boolean
+  /**
+   * Wave 36 Fix 4: Whether the ComparisonPanel is visible (viewport ≥3840px).
+   * Controls the `enabled` flag on the priorReport useQuery so that the prior-
+   * period API call is only made when the panel is actually rendered.
+   * Defaults to false (safe: prior-report query skipped on sub-4K viewports).
+   */
+  showComparison?: boolean
 }
 
 // ---------------------------------------------------------------------------
@@ -2260,13 +2282,21 @@ export default function PhosphorDashboard({
   filters,
   onOptionsReady,
   onPriorSummaryReady,
+  report: reportProp,
+  reportLoading: reportLoadingProp = false,
+  showComparison = false,
 }: PhosphorDashboardProps): ReactElement {
   const defaults = useMemo(() => _localFallbackRange(), [])
   const resolvedFrom = from ?? defaults.from
   const resolvedTo = to ?? defaults.to
   const resolvedGrain: UsageReportGrain = grain ?? 'day'
 
-  const { data: report, isLoading: reportLoading } = useQuery({
+  // Wave 36 Fix 1: the /usage query is hoisted to index.tsx so a single HTTP
+  // request is shared across the whole dashboard. This internal query is ONLY
+  // used when PhosphorDashboard is rendered in isolation (e.g. Storybook, tests)
+  // without a parent supplying `report` + `reportLoading` props.
+  const internalQueryEnabled = reportProp === undefined
+  const { data: internalReport, isLoading: internalLoading } = useQuery({
     // 15-D.4: Include filter arrays directly in queryKey so React Query creates
     // a distinct cache entry for every unique slicer selection. Arrays are
     // JSON-serialised by React Query's key hashing.
@@ -2294,7 +2324,16 @@ export default function PhosphorDashboard({
         environment: filters?.environments,
         model: filters?.models,
       }),
+    // Skip when the parent has already provided the report data.
+    enabled: internalQueryEnabled,
   })
+
+  // Resolve the effective report + loading state: prefer parent-supplied values
+  // (Fix 1 dedup); fall back to the internal query for standalone usage.
+  const report = reportProp ?? internalReport
+  const reportLoading = internalQueryEnabled
+    ? internalLoading
+    : reportLoadingProp
 
   // 15-C.5: Include resolvedFrom/resolvedTo in the queryKey so the quotas query
   // re-fetches when the user changes the date range. The /api/shell/reports/quotas
@@ -2528,9 +2567,11 @@ export default function PhosphorDashboard({
         environment: filters?.environments,
         model: filters?.models,
       }),
-    // Only fire once the current report is available so both fetches don't
-    // compete on the initial page load.
-    enabled: !reportLoading && report !== undefined,
+    // Only fire once the current report is available AND the ComparisonPanel is
+    // visible (viewport ≥3840px). At 2275 and 5120 the panel is hidden so the
+    // prior-window DB query is skipped entirely, saving a sequential waterfall
+    // that previously added 20–30 s to the cold-load experience.
+    enabled: !reportLoading && report !== undefined && showComparison,
   })
 
   // Wave 32-Deltas: build prior-window ProviderCurrentStats from priorReport,
