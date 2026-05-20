@@ -1280,15 +1280,66 @@ ORDER BY s.provider ASC, s.model ASC NULLS FIRST;
 }
 
 function buildQuotaHistoryQuery(_searchParams) {
-  // Wave 40: lookback is now interval-multiplier-driven (1.5× the reset period),
+  // Wave 40: lookback is interval-multiplier-driven (1.5× the reset period),
   // not dashboard date-range-driven. The from/to search params are intentionally
-  // ignored — each (provider, quota_type) pair looks back exactly 1.5× its own
-  // reset period from now(), so short intervals (5 hr) and weekly intervals
-  // (7 day) each get a proportional, sensible history window regardless of what
-  // the operator has selected as their reporting date range.
+  // ignored — each (provider, quota_key) pair looks back exactly 1.5× its own
+  // actual reset cadence from now(), so short intervals (5 hr), weekly intervals
+  // (7 day), and daily intervals (24 h) each get a proportional, sensible history
+  // window regardless of what the operator has selected as their reporting date range.
+  //
+  // Bug fix: the previous implementation derived lookback from quota_type labels
+  // (e.g. 'short' → 7.5 h), which was wrong for Google whose 'short' (requests)
+  // quota resets every 24 h, not every 5 h like Anthropic/OpenAI short quotas.
+  // Now interval_hours is computed from the median gap between consecutive
+  // expected_reset_at values per (provider, quota_key), making lookback
+  // proportional to the actual cadence rather than the type label.
 
   const sql = `
-WITH normalized AS (
+WITH
+-- Derive the canonical interval duration for each (provider, quota_key) by
+-- computing the gap between consecutive expected_reset_at timestamps.  We
+-- use the MEDIAN of observed gaps (PERCENTILE_CONT 0.5) so that anomalous
+-- back-to-back changes or multi-day silent gaps don't skew the window.
+-- The result drives the 1.5× lookback rule per-row instead of relying on
+-- quota_type string matching, which broke for providers (e.g. Google) that
+-- share a quota_type label but use a different reset cadence from the
+-- hard-coded expectation (e.g. Google short=24h vs Anthropic short=5h).
+-- Step 1: compute per-row gap (hours) between consecutive expected_reset_at
+-- timestamps for each (provider, quota_key) pair.
+quota_key_gaps AS (
+    SELECT
+        provider,
+        quota_key,
+        EXTRACT(EPOCH FROM (
+            expected_reset_at
+            - LAG(expected_reset_at) OVER (
+                PARTITION BY provider, quota_key
+                ORDER BY expected_reset_at
+            )
+        )) / 3600.0 AS gap_hours
+    FROM (
+        SELECT DISTINCT provider, quota_key, expected_reset_at
+        FROM public.rate_limit_intervals
+        WHERE quota_type IN ('weekly', 'weekly_special', 'short', 'short_special', 'requests', 'monthly')
+          AND expected_reset_at IS NOT NULL
+    ) distinct_resets
+),
+-- Step 2: aggregate to the median gap per (provider, quota_key).
+-- Median is robust against multi-day silent gaps or rapid back-to-back changes
+-- that would skew a simple MIN/AVG.  Floor at 1 h so the window is never vacuous.
+quota_key_interval_hours AS (
+    SELECT
+        provider,
+        quota_key,
+        GREATEST(
+            PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY gap_hours),
+            1.0
+        ) AS interval_hours
+    FROM quota_key_gaps
+    WHERE gap_hours IS NOT NULL   -- first row per partition has NULL gap; skip it
+    GROUP BY provider, quota_key
+),
+normalized AS (
     SELECT
         CASE
             WHEN lower(COALESCE(ri.provider, 'unknown')) IN ('xai', 'x.ai') THEN 'xai'
@@ -1323,28 +1374,56 @@ WITH normalized AS (
         END AS quota_type,
         ri.expected_reset_at,
         ri.remaining_pct,
-        ri.fromDate AS interval_start
+        ri.fromDate AS interval_start,
+        -- interval_hours drives all lookback/upper-bound arithmetic below so
+        -- that every provider × quota_key uses its own actual reset cadence.
+        -- Fallback: if a quota_key is brand-new (only 1 distinct reset seen so
+        -- far, so no gap can be computed), use a safe type-based default.
+        COALESCE(
+            kh.interval_hours,
+            CASE
+                WHEN ri.quota_type IN ('short', 'short_special') THEN 5.0
+                WHEN ri.quota_type IN ('weekly', 'weekly_special') THEN 168.0
+                WHEN ri.quota_type = 'monthly'                    THEN 720.0
+                ELSE                                                   168.0
+            END
+        ) AS interval_hours
     FROM public.rate_limit_intervals ri
-    -- 1.5x-interval lookback rule: each reset tier's lookback window equals
-    -- 1.5× its own period duration, anchored at now(). This keeps the bar
-    -- history proportional and sensible across tiers of very different lengths:
-    --   short / short_special (5 hr period) → look back 7.5 hours
-    --   weekly / weekly_special (7 day period) → look back 10.5 days
-    --   monthly (30 day period) → look back 45 days
-    -- The upper bound is also per-type to capture the currently-active interval
-    -- whose expected_reset_at may be in the near future.
+    LEFT JOIN quota_key_interval_hours kh
+           ON kh.provider  = ri.provider
+          AND kh.quota_key = ri.quota_key
+    -- 1.5× per-row interval lookback: each bar window is sized to 1.5× its own
+    -- actual reset cadence, regardless of quota_type label.  Examples:
+    --   Anthropic short (5 h)  → look back  7.5 h
+    --   Anthropic weekly (7 d) → look back 10.5 d
+    --   Google short (24 h)    → look back 36 h   ← was broken at 10.5 d
+    --   xAI monthly (30 d)     → look back 45 d
+    -- Upper bound: allow up to 0.5× interval_hours into the future so that
+    -- the currently-active bar (whose expected_reset_at is imminent) is included.
     WHERE ri.quota_type IN ('weekly', 'weekly_special', 'short', 'short_special', 'requests', 'monthly')
       AND ri.expected_reset_at IS NOT NULL
-      AND ri.expected_reset_at >= now() - CASE
-          WHEN ri.quota_type IN ('short', 'short_special') THEN INTERVAL '7.5 hours'
-          WHEN ri.quota_type IN ('weekly', 'weekly_special') THEN INTERVAL '10.5 days'
-          WHEN ri.quota_type = 'monthly' THEN INTERVAL '45 days'
-          ELSE INTERVAL '10.5 days'
-      END
-      AND ri.expected_reset_at < now() + CASE
-          WHEN ri.quota_type IN ('short', 'short_special') THEN INTERVAL '6 hours'
-          ELSE INTERVAL '8 days'
-      END
+      AND ri.expected_reset_at >= now() - (
+              COALESCE(
+                  kh.interval_hours,
+                  CASE
+                      WHEN ri.quota_type IN ('short', 'short_special') THEN 5.0
+                      WHEN ri.quota_type IN ('weekly', 'weekly_special') THEN 168.0
+                      WHEN ri.quota_type = 'monthly'                    THEN 720.0
+                      ELSE                                                   168.0
+                  END
+              ) * 1.5 * INTERVAL '1 hour'
+          )
+      AND ri.expected_reset_at < now() + (
+              COALESCE(
+                  kh.interval_hours,
+                  CASE
+                      WHEN ri.quota_type IN ('short', 'short_special') THEN 5.0
+                      WHEN ri.quota_type IN ('weekly', 'weekly_special') THEN 168.0
+                      WHEN ri.quota_type = 'monthly'                    THEN 720.0
+                      ELSE                                                   168.0
+                  END
+              ) * 0.5 * INTERVAL '1 hour'
+          )
 ),
 window_bounds AS (
     SELECT
