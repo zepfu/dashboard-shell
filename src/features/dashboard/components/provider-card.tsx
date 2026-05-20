@@ -120,6 +120,9 @@ export interface QuotaTipModel {
  *
  * Wave 20 F3: added optional tooltip data fields (window, velocity, tipModels)
  * to support the mockup quota tooltip structure. Missing fields render '—'.
+ *
+ * Wave 40 multi-quota redesign: added `periodType` for stacked-lane grouping
+ * and `timeAgoLabel` for "Xd ago" display on prior-reset history bars.
  */
 export interface QuotaBarGroup {
   /** Human-readable quota type: 'Weekly' | 'Short' | 'Special' | 'Monthly'. */
@@ -147,6 +150,23 @@ export interface QuotaBarGroup {
    * Wired from buildQuotaIntervals (W24/W35). Optional: falls back to empty placeholder.
    */
   tipModels?: QuotaTipModel[]
+  /**
+   * Period type for prior-reset history bars used to group them into stacked
+   * display lanes within the ProviderCard quota section.
+   * Undefined for current active bars (rendered first, ungrouped).
+   *
+   * Wave 40: '5hr' maps to short/short_special; 'weekly' to weekly;
+   * 'special' to weekly_special; 'monthly' to monthly.
+   */
+  periodType?: '5hr' | 'weekly' | 'special' | 'monthly'
+  /**
+   * Time-ago label for prior-reset history bars, e.g. '2d ago', '3h ago'.
+   * When present, replaces formatResetDistance(resetAt) in the quota-row-reset
+   * cell so past bars do not incorrectly display "now".
+   *
+   * Wave 40: derived from the 30-min-snapped period_start of each history row.
+   */
+  timeAgoLabel?: string
 }
 
 /** Per-model mini-row for card-pane-right at ≥3840px. */
@@ -617,49 +637,71 @@ export function ProviderCard({
          *   v9-tip-sub:  velocity line
          *   v9-tip-row × 3: top models with $delta
          *   Optional data fields render '—' when not yet populated.
+         *
+         * Wave 40 multi-quota redesign:
+         * - Current bars (periodType undefined) rendered first, ungrouped.
+         * - Prior history bars grouped by periodType into stacked lanes:
+         *   '5hr' lane (teal label) → short/short_special resets
+         *   'weekly' lane → weekly resets
+         *   'special' lane → weekly_special resets
+         *   'monthly' lane → monthly resets
+         * - timeAgoLabel displayed in the reset cell for prior bars.
+         * - Anomaly icons suppressed on prior history bars.
          */}
         {quotas.length > 0 && (
           <>
             <QuotaSectionTitle title='Quotas' />
-            <div
-              className='quota-list'
-              style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}
-            >
-              {quotas.map((quotaBar, i) => {
-                // Wave 20 F3: build tooltip matching mockup v9-tip-quota structure.
-                // tipWindow / tipVelocity / tipModels are optional on QuotaBarGroup.
+            {(() => {
+              // Partition into current (no periodType) vs prior history bars.
+              const currentQuotas = quotas.filter(
+                (q) => q.periodType === undefined
+              )
+              const historyQuotas = quotas.filter(
+                (q) => q.periodType !== undefined
+              )
+
+              // Ordered lanes for prior-reset display.
+              const LANE_ORDER: ReadonlyArray<QuotaBarGroup['periodType']> = [
+                '5hr',
+                'weekly',
+                'special',
+                'monthly',
+              ]
+              const LANE_LABEL: Readonly<Record<string, string>> = {
+                '5hr': '5hr resets',
+                weekly: 'weekly resets',
+                special: 'special resets',
+                monthly: 'monthly resets',
+              }
+
+              /**
+               * Renders a single quota bar row (label + pct + reset + bar).
+               * isPrior=true: suppresses anomaly icons; uses timeAgoLabel.
+               */
+              const renderBar = (
+                quotaBar: QuotaBarGroup,
+                i: number,
+                isPrior: boolean
+              ): ReactElement => {
                 const tipWindowStr = quotaBar.tipWindow ?? '—'
                 const tipHeadLabel = `${tipWindowStr} · ${quotaBar.consumedPct.toFixed(0)}% used`
-                // Wave 35 S4: suppress the velocity sub-line when tipVelocity is
-                // undefined rather than rendering a '—' placeholder. The line is
-                // omitted entirely so quota tooltips are clean even before the API
-                // supplies time-series data (Option B per wave35-visual-audit.md S4).
+                // Wave 35 S4: suppress velocity line when undefined.
                 const tipVelocity = quotaBar.tipVelocity
-                // Top 3 model rows; fall back to empty if not populated.
                 const tipModelRows =
                   quotaBar.tipModels !== undefined &&
                   quotaBar.tipModels.length > 0
                     ? quotaBar.tipModels.slice(0, 3)
                     : []
-                // HoverTooltip (variant='quota') already wraps content in its
-                // own <div className='v9-tip tip-above tip-quota'>. Pass the
-                // inner elements directly so we don't double-wrap and produce
-                // an empty amber-bordered shell around the real content.
+                // HoverTooltip (variant='quota') wraps content in its own
+                // v9-tip shell — pass inner elements directly.
                 // (Critical #3 from .analysis/wave32-principal-deep-audit.md)
                 const tooltipContent = (
                   <>
-                    {/* Head: "{window} · {pct}% used" */}
                     <div className='v9-tip-head'>{tipHeadLabel}</div>
-                    {/* Sub: velocity line — only rendered when tipVelocity is defined */}
                     {tipVelocity !== undefined && (
                       <div className='v9-tip-sub'>{tipVelocity}</div>
                     )}
-                    {/* Rows: top 3 contributing models with $delta */}
-                    {/* Wave 26 F8 / Wave 27 follow-up: .t-model colored by the
-                        model's provider brand hex. providerBrandHex only
-                        matches provider *names*; tm.model is a *model* name
-                        (e.g. claude-opus-4-7) so we must first infer the
-                        provider via modelBrandHex. */}
+                    {/* Wave 26 F8: .t-model colored via modelBrandHex */}
                     {tipModelRows.map((tm, mi) => (
                       <div key={mi} className='v9-tip-row'>
                         <span
@@ -671,7 +713,6 @@ export function ProviderCard({
                         <span className='t-count'>{tm.costDelta}</span>
                       </div>
                     ))}
-                    {/* Placeholder rows when tipModels not populated */}
                     {tipModelRows.length === 0 && (
                       <div className='v9-tip-row'>
                         <span className='t-model'>—</span>
@@ -680,6 +721,12 @@ export function ProviderCard({
                     )}
                   </>
                 )
+                // Wave 40: prior bars use timeAgoLabel ("2d ago"); current bars
+                // use formatResetDistance ("in 3h 14m").
+                const resetDisplay =
+                  isPrior && quotaBar.timeAgoLabel !== undefined
+                    ? quotaBar.timeAgoLabel
+                    : formatResetDistance(quotaBar.resetAt)
                 return (
                   <div key={i}>
                     <div
@@ -695,7 +742,8 @@ export function ProviderCard({
                         lineHeight: '1.15',
                       }}
                     >
-                      {/* Label + anomaly icons (11-i: icons moved here from header) */}
+                      {/* Label + anomaly icons (11-i: icons moved here from header).
+                          Wave 40: icons suppressed on prior history bars. */}
                       <div
                         className='quota-row-label'
                         style={{
@@ -715,7 +763,7 @@ export function ProviderCard({
                         >
                           {quotaBar.label}
                         </span>
-                        {showEarlyReset && (
+                        {!isPrior && showEarlyReset && (
                           <span
                             className='quota-anomaly-icon icon-reset'
                             aria-label='early reset'
@@ -724,7 +772,7 @@ export function ProviderCard({
                             ⟲
                           </span>
                         )}
-                        {showCacheStale && (
+                        {!isPrior && showCacheStale && (
                           <span
                             className='quota-anomaly-icon icon-cache'
                             aria-label='cache stale'
@@ -745,6 +793,7 @@ export function ProviderCard({
                       >
                         {quotaBar.consumedPct.toFixed(0)}%
                       </span>
+                      {/* Wave 40: time-ago for prior; reset distance for current */}
                       <span
                         className='quota-row-reset'
                         style={{
@@ -753,11 +802,10 @@ export function ProviderCard({
                           color: 'var(--fg-muted)',
                         }}
                       >
-                        {formatResetDistance(quotaBar.resetAt)}
+                        {resetDisplay}
                       </span>
-                      {/* 14-E.3: quota-anomaly-sub row spanning all 3 cols per
-                          mockup line 425-436. Rendered only when anomalies exist. */}
-                      {(showEarlyReset || showCacheStale) && (
+                      {/* 14-E.3: anomaly-sub only for current bars */}
+                      {!isPrior && (showEarlyReset || showCacheStale) && (
                         <span className='quota-anomaly-sub'>
                           {showEarlyReset && (
                             <>
@@ -781,8 +829,79 @@ export function ProviderCard({
                     />
                   </div>
                 )
-              })}
-            </div>
+              }
+
+              return (
+                <>
+                  {/* Current active bars — rendered ungrouped above history */}
+                  {currentQuotas.length > 0 && (
+                    <div
+                      className='quota-list quota-list-current'
+                      style={{
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '3px',
+                      }}
+                    >
+                      {currentQuotas.map((qb, i) => renderBar(qb, i, false))}
+                    </div>
+                  )}
+
+                  {/* Prior reset bars — stacked into period-type lanes */}
+                  {historyQuotas.length > 0 && (
+                    <div
+                      className='quota-history-lanes'
+                      style={{ marginTop: '4px' }}
+                    >
+                      {LANE_ORDER.map((lane) => {
+                        const laneBars = historyQuotas.filter(
+                          (q) => q.periodType === lane
+                        )
+                        if (laneBars.length === 0) return null
+                        return (
+                          <div
+                            key={lane}
+                            className={`quota-lane quota-lane-${lane ?? ''}`}
+                          >
+                            {/* Subtle lane header distinguishing the period type.
+                                5hr lanes get teal accent to stand out from
+                                weekly lanes at a glance. */}
+                            <div
+                              className='quota-lane-label'
+                              style={{
+                                fontFamily: 'var(--font-mono)',
+                                fontSize: '8px',
+                                color:
+                                  lane === '5hr'
+                                    ? 'var(--accent-teal, #2dd4bf)'
+                                    : 'var(--fg-muted)',
+                                textTransform: 'uppercase',
+                                letterSpacing: '0.08em',
+                                opacity: lane === '5hr' ? 0.85 : 0.55,
+                                marginTop: '4px',
+                                marginBottom: '2px',
+                              }}
+                            >
+                              {LANE_LABEL[lane ?? ''] ?? lane}
+                            </div>
+                            <div
+                              className='quota-list quota-list-history'
+                              style={{
+                                display: 'flex',
+                                flexDirection: 'column',
+                                gap: '3px',
+                              }}
+                            >
+                              {laneBars.map((qb, i) => renderBar(qb, i, true))}
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  )}
+                </>
+              )
+            })()}
           </>
         )}
 
