@@ -7,7 +7,7 @@
  * - Page-header: Playfair Display italic page title, freshness indicator,
  *   fleet-pulse strip (reused horizontal HealthStrip), attribution legend.
  * - DateControls promoted to live state (operator decision 4).
- * - Controls bar styled per reference (control-input, period-btn).
+ * - Controls bar styled per reference (control-input).
  * - Alerts wired via useAlertsFromAnomalies hook (operator decision 3).
  * - Body topographic overlay added in theme.css (operator decision 8).
  *
@@ -392,6 +392,15 @@ export function Dashboard(): ReactElement {
     []
   )
 
+  // W38-3: Viewport gating note — kpiDeltas only populates when priorSummary is
+  // defined, which only happens at ≥3840px viewports. The `showComparison` flag
+  // (derived from a matchMedia for min-width: 3840px) gates the priorReport query
+  // inside PhosphorDashboard; at narrower viewports the query is disabled, so
+  // onPriorSummaryReady never fires and priorSummary stays undefined. As a result
+  // all 6 delta arrows always render "—" at 2K viewports. This is intentional —
+  // the ComparisonPanel that consumes prior data is only mounted at ≥3840px, so
+  // there is no need to pay for the prior-period API call at smaller viewports.
+  //
   // Compute signed-fractional deltas for each KPI key (format: 0.124 = +12.4%).
   // Uses computeDeltaPct (returns signed %, e.g. 12.4) divided by 100 so the
   // KpiStrip's renderDelta (which multiplies by 100) displays the correct value.
