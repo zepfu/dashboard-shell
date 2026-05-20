@@ -348,6 +348,31 @@ export function computeFleetErrors(
 }
 
 /**
+ * Computes fleet-wide P95 latency (ms) from all provider latency health rows.
+ *
+ * Uses a requests-weighted average so that low-sample tail buckets (e.g. a
+ * single anthropic/claude-opus-4-7 bucket with 3 requests and 282 s latency)
+ * do not dominate the headline KPI. Mirrors the `computeFleetP95` helper in
+ * `index.tsx` but lives here so both index.tsx and phosphor-dashboard.tsx can
+ * share the same implementation without duplicating logic.
+ *
+ * Wave 37 SF-4: extracted to lib so phosphor-dashboard.tsx can compute the
+ * prior-window P95 and pass it back to index.tsx via `onPriorHealthReady`.
+ */
+export function computeFleetP95(
+  healthRows: { upstream_p95_ms: number | null; requests: number }[]
+): number {
+  let weightedSum = 0
+  let totalRequests = 0
+  for (const r of healthRows) {
+    if (r.upstream_p95_ms === null) continue
+    weightedSum += r.upstream_p95_ms * r.requests
+    totalRequests += r.requests
+  }
+  return totalRequests > 0 ? weightedSum / totalRequests : 0
+}
+
+/**
  * Formats an ISO reset-at timestamp as a short relative distance string.
  *
  * Wave 12 Fix 4: resolves the regression where the full ISO string
