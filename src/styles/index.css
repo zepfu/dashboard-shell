@@ -61,7 +61,6 @@
   @apply after:pointer-events-none after:absolute after:start-0 after:bottom-0 after:hidden after:h-32 after:w-full after:rounded-b-2xl after:bg-[linear-gradient(180deg,transparent_10%,var(--background)_70%)] md:after:block;
 }
 
-/* styles.css */
 .CollapsibleContent {
   overflow: hidden;
 }
@@ -72,82 +71,6 @@
   animation: slideUp 300ms ease-out;
 }
 
-@media (min-width: 1280px) {
-  .usage-report-layout {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-
-  .usage-report-provider-card {
-    grid-column: 1 / -1;
-  }
-
-  .usage-report-token-card {
-    grid-column: 1 / -1;
-  }
-}
-
-@media (min-width: 2200px) {
-  .usage-report-layout {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-  }
-
-  .usage-report-token-card {
-    grid-column: 1 / -1;
-  }
-}
-
-.provider-status-grid {
-  display: grid;
-  gap: 0.75rem;
-}
-
-.provider-status-span {
-  grid-column: 1 / -1;
-}
-
-@media (min-width: 640px) {
-  .provider-status-grid {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-}
-
-@media (min-width: 1280px) {
-  .provider-status-grid {
-    grid-template-columns: repeat(8, minmax(0, 1fr));
-    grid-template-rows: repeat(2, minmax(0, 1fr));
-    align-items: stretch;
-  }
-
-  .provider-status-grid [data-provider-status='openai'] {
-    grid-column: 1 / span 3;
-    grid-row: span 2;
-  }
-
-  .provider-status-grid [data-provider-status='anthropic'] {
-    grid-column: 4 / span 3;
-    grid-row: 1;
-  }
-
-  .provider-status-grid [data-provider-status='google'] {
-    grid-column: 4 / span 3;
-    grid-row: 2;
-  }
-
-  .provider-status-grid [data-provider-status='xai'] {
-    grid-column: 7;
-    grid-row: 1;
-  }
-
-  .provider-status-grid [data-provider-status='nvidia_nim'] {
-    grid-column: 7;
-    grid-row: 2;
-  }
-
-  .provider-status-grid [data-provider-status='local'] {
-    grid-column: 8;
-    grid-row: 1;
-  }
-}
 
 /* ─────────────────────────────────────────────────────────────────
    Phosphor Atlas v9.7 — quota interval bar threshold colors.
@@ -194,6 +117,7 @@
 @media (min-width: 1600px) {
   .provider-summary {
     grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-auto-rows: 1fr;
   }
 }
 
@@ -206,12 +130,8 @@
   }
 }
 
-/* Wave 11 PR2: aggregate card styling */
-/* Dashed amber border to distinguish the Σ Aggregate Totals card from peers. */
-/* Hidden below 2100px — no room for an 8th card at narrower widths.          */
-/* Wave 12 Fix 3: added !important to beat inline style={{ display: 'flex' }} */
-/* on the ProviderCard root, which had equal specificity and was winning the   */
-/* cascade, causing the aggregate card to always render regardless of width.   */
+/* Aggregate card: dashed amber border; hidden below 2100px (no room for 8th card).
+   !important beats inline style={{ display: 'flex' }} on ProviderCard root. */
 .provider-card.aggregate {
   border: 1px dashed var(--accent-chrome) !important;
   display: none !important;
@@ -221,7 +141,6 @@
     display: flex !important;
   }
 }
-/* End Wave 11 PR2 */
 
 @media (min-width: 3840px) {
   .provider-summary {
@@ -853,7 +772,6 @@
   margin-left: 2px;
 }
 
-/* End Wave 14-C */
 
 /* ─────────────────────────────────────────────────────────────────────────── */
 /* Wave 14-D: aggregate card variant — fleet activity 3-col grid + health tint */
@@ -927,7 +845,6 @@
   filter: saturate(0.95) brightness(1.02);
 }
 
-/* End Wave 14-D */
 
 /* ─────────────────────────────────────────────────────────────────────────── */
 /* Wave 14-E: quota consumed% severity classes + animation rewrites           */
@@ -977,7 +894,6 @@
   margin-right: 3px;
 }
 
-/* End Wave 14-E */
 
 /* ─────────────────────────────────────────────────────────────────────────── */
 /*  Wave 14-H — LOW-severity catch-up (final pixel-polish pass)               */
@@ -1074,10 +990,6 @@
   }
 }
 
-/* ── §6 #6: .period-btn hover state per mockup line 816-818 ──────────────── */
-.period-btn:hover {
-  background: var(--card) !important;
-}
 
 /* ── §7 #1: grid-auto-rows: 1fr at 1280+ per mockup lines 987,994 ─────────  */
 /* max-width: 1599px cap prevents this 2-col rule from overriding the 4-col   */
@@ -1197,12 +1109,6 @@
   }
 }
 
-/* ── §15 #5: client-section grid 120px at 1600+ per mockup lines 1835-1839 ─ */
-@media (min-width: 1600px) {
-  .client-section {
-    grid-template-columns: 120px 1fr;
-  }
-}
 
 /* ── §18 #3: body line-height: 1.4 per mockup line 32 ──────────────────────  */
 /* §18 #4: html/body height: 100% per mockup lines 33-35.                     */
@@ -1225,7 +1131,6 @@ tbody tr {
   }
 }
 
-/* End Wave 14-H */
 
 /* ═══════════════════════════════════════════════════════════════════════════
    Wave 15-A: Visual regression fixes
@@ -1683,11 +1588,10 @@ tbody tr {
 /* Wave 18-CSS — 2275 #1: .provider-card.aggregate .provider-name color
    Mockup L980-982: aggregate card provider-name should render in var(--fg)
    (muted foreground), not the amber --accent-chrome used by peer cards.
-   W18-Cards engineer is removing the inline color override from provider-card.tsx;
-   this CSS rule is the cascade fallback (and currently needs !important because
-   the inline style is still present — !important beats inline). */
+   W32-W removed the conditional inline color for aggregate cards in
+   provider-card.tsx, so !important is no longer needed here. */
 .provider-card.aggregate .provider-name {
-  color: var(--fg) !important;
+  color: var(--fg);
 }
 
 /* End Wave 18-CSS */
