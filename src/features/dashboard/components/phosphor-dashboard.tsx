@@ -356,8 +356,7 @@ function padHealthCells(
     return {
       // Wave 25-PhosphorDash (F#11): neutral fallback color; deriveCellStyle
       // path-2 now drives coloring from rawP95Ms / rawErrorCount via the W24
-      // percentile recalibration. healthCellColor(row) applied absolute 5s/10s
-      // thresholds that mis-classify OpenAI's normal ~18–20 s p95 as amber/red.
+      // percentile recalibration (absolute-threshold function removed W34).
       color: 'var(--card-2)',
       // F1a: bucket_start drives the relative-time header in buildCellTooltip.
       bucketStart: bucketStart ?? undefined,
@@ -397,41 +396,6 @@ function padHealthCells(
     events: emptyEvents,
   })
   return [...pad, ...cells]
-}
-
-/**
- * Determines the health cell color for a single latency health row based on
- * upstream P95 latency, provider error counts, and attribution gaps.
- *
- * Wave 10 D16: cat-miss teal cells for attribution-gap rows.
- *
- * @deprecated Wave 25-PhosphorDash (F#11): padHealthCells now wires rawP95Ms
- * and rawErrorCount so deriveCellStyle path-2 (percentile-relative thresholds)
- * is used instead. This function's absolute 5 s / 10 s thresholds incorrectly
- * classify OpenAI's normal ~18–20 s p95 as amber/red. Do not delete until all
- * callers are confirmed to use the raw-metrics wiring path.
- */
-export function healthCellColor(
-  row: UsageReportProviderLatencyHealthRow
-): string {
-  // D16: attribution-gap cells — no upstream latency data and no requests
-  if (row.requests === 0 || row.missing_upstream_latency > 0) {
-    return 'rgba(20, 184, 166, 0.6)' // cat-miss teal
-  }
-
-  const errorCount =
-    row.provider_error_events +
-    row.provider_5xx_events +
-    row.provider_timeout_events +
-    row.network_error_events
-  if (errorCount > 0) return 'var(--accent-hot)'
-
-  const p95 = row.upstream_p95_ms
-  if (p95 === null) return 'var(--card-2)'
-  if (p95 > 10_000) return 'var(--accent-hot)'
-  if (p95 > 5_000) return 'var(--accent-warm)'
-  if (p95 > 2_000) return 'var(--fg-muted)'
-  return 'var(--accent-cool)'
 }
 
 /**
@@ -1870,6 +1834,15 @@ function buildModelRows(
     const reasoning_estimated =
       tokenAgg !== undefined ? tokenAgg.reasoning_estimated : undefined
 
+    // W33: pre-processed tool activity for the TOOL cell hover tooltip.
+    // buildToolActivity returns a zero-calls result when no rows are found,
+    // so undefined is only stored when the lookup is empty (no API data).
+    // W34: also derive the scalar `tool` field from totalCalls so the TOOL
+    // cell renders the count instead of '—' (wave34-data-flow-audit Critical #4).
+    const rowToolActivity = toolActivityByKey.has(key)
+      ? buildToolActivity(toolActivityByKey.get(key) ?? [])
+      : undefined
+
     return {
       model: row.model,
       provider: row.provider,
@@ -1899,12 +1872,8 @@ function buildModelRows(
       spark: sparkByKey.get(
         `${canonicalProvider(row.provider)}::${modelKey}`
       ) ?? [row.token_total],
-      // W33: pre-processed tool activity for the TOOL cell hover tooltip.
-      // buildToolActivity returns a zero-calls result when no rows are found,
-      // so undefined is only stored when the lookup is empty (no API data).
-      toolActivity: toolActivityByKey.has(key)
-        ? buildToolActivity(toolActivityByKey.get(key) ?? [])
-        : undefined,
+      tool: rowToolActivity?.totalCalls,
+      toolActivity: rowToolActivity,
     }
   })
 }
