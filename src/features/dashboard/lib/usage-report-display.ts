@@ -9,7 +9,7 @@
  * health side). This map lets callers expand a canonical key to all its DB
  * aliases before filtering health rows.
  */
-export const PROVIDER_ALIASES: Record<string, readonly string[]> = {
+const PROVIDER_ALIASES: Record<string, readonly string[]> = {
   google: ['google', 'gemini'],
 }
 
@@ -202,19 +202,7 @@ const providerColors = [
   '#475569',
 ]
 
-export const modelColors = [
-  '#2563eb',
-  '#7c3aed',
-  '#0891b2',
-  '#4f46e5',
-  '#c026d3',
-  '#0369a1',
-  '#6d28d9',
-  '#475569',
-  '#0e7490',
-]
-
-export const clientColors = [
+const clientColors = [
   '#2563eb',
   '#7c3aed',
   '#0891b2',
