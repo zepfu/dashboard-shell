@@ -197,6 +197,23 @@ function numFmt(n: number, decimals = 0): string {
 }
 
 /**
+ * Returns a formatted string for a value, or the em-dash placeholder `—`
+ * when the value is null or undefined.  Uses `== null` to catch both
+ * null and undefined without treating `0` or `false` as missing.
+ *
+ * @param value - The value to format.
+ * @param formatter - Optional formatter applied when value is non-null.
+ * @returns Formatted string or `'—'`.
+ */
+function fmtOrDash<T>(
+  value: T | null | undefined,
+  formatter?: (v: T) => string
+): string {
+  if (value == null) return '—'
+  return formatter ? formatter(value) : String(value)
+}
+
+/**
  * Compact B/M/K formatter for token counts (operator F#12).
  *
  * Thresholds: ≥1e9 → B, ≥1e6 → M, ≥1e3 → K, else as-is.
@@ -276,10 +293,8 @@ const cacheToksColumn = [
   helper.accessor('cache_toks', {
     id: 'cache_toks',
     header: 'Cache toks',
-    cell: (info) => {
-      const v = info.getValue() as number | undefined
-      return v !== undefined ? numFmt(v) : '—'
-    },
+    cell: (info) =>
+      fmtOrDash(info.getValue() as number | null | undefined, numFmt),
   }),
 ]
 
@@ -292,10 +307,8 @@ const cacheMissDollarAndReasoningColumns = [
   helper.accessor('cache_miss_usd_cost', {
     id: 'cache_miss_usd_cost',
     header: 'Cache Miss $',
-    cell: (info) => {
-      const v = info.getValue() as number | undefined
-      return v !== undefined ? formatUsd(v) : '—'
-    },
+    cell: (info) =>
+      fmtOrDash(info.getValue() as number | null | undefined, formatUsd),
   }),
   // Consolidated Reasoning column: reported + estimated in one cell.
   // sortingFn uses combined value (reported + estimated).
@@ -362,10 +375,8 @@ const cacheMissPctColumn = [
   helper.accessor('cache_miss_pct', {
     id: 'cache_miss_pct',
     header: 'Cache Miss %',
-    cell: (info) => {
-      const v = info.getValue() as number | undefined
-      return v !== undefined ? formatPercent(v) : '—'
-    },
+    cell: (info) =>
+      fmtOrDash(info.getValue() as number | null | undefined, formatPercent),
   }),
 ]
 
@@ -375,46 +386,45 @@ const fourKColumns = [
     id: 'cost_per_1k_in',
     header: '$/1k In',
     meta: { className: 'col-4k-only' },
-    cell: (info) => {
-      const v = info.getValue() as number | undefined
-      return v !== undefined ? `$${numFmt(v, 4)}` : '—'
-    },
+    cell: (info) =>
+      fmtOrDash(
+        info.getValue() as number | null | undefined,
+        (v) => `$${numFmt(v, 4)}`
+      ),
   }),
   helper.accessor('cost_per_1k_out', {
     id: 'cost_per_1k_out',
     header: '$/1k Out',
     meta: { className: 'col-4k-only' },
-    cell: (info) => {
-      const v = info.getValue() as number | undefined
-      return v !== undefined ? `$${numFmt(v, 4)}` : '—'
-    },
+    cell: (info) =>
+      fmtOrDash(
+        info.getValue() as number | null | undefined,
+        (v) => `$${numFmt(v, 4)}`
+      ),
   }),
   helper.accessor('cache_pct', {
     id: 'cache_pct',
     header: 'Cache%',
     meta: { className: 'col-4k-only' },
-    cell: (info) => {
-      const v = info.getValue() as number | undefined
-      return v !== undefined ? `${numFmt(v, 1)}%` : '—'
-    },
+    cell: (info) =>
+      fmtOrDash(
+        info.getValue() as number | null | undefined,
+        (v) => `${numFmt(v, 1)}%`
+      ),
   }),
   helper.accessor('queue', {
     id: 'queue',
     header: 'Queue',
     meta: { className: 'col-4k-only' },
-    cell: (info) => {
-      const v = info.getValue() as number | undefined
-      return v !== undefined ? numFmt(v) : '—'
-    },
+    cell: (info) =>
+      fmtOrDash(info.getValue() as number | null | undefined, numFmt),
   }),
   helper.accessor('resets', {
     id: 'resets',
     header: 'Resets',
     meta: { className: 'col-4k-only' },
-    cell: (info) => {
-      const v = info.getValue() as number | undefined
-      return v !== undefined ? numFmt(v) : '—'
-    },
+    cell: (info) =>
+      fmtOrDash(info.getValue() as number | null | undefined, numFmt),
   }),
 ]
 
@@ -424,37 +434,29 @@ const fiveKColumns = [
     id: 'tool',
     header: 'TOOL',
     meta: { className: 'col-5k-only' },
-    cell: (info) => {
-      const v = info.getValue() as number | undefined
-      return v !== undefined ? numFmt(v) : '—'
-    },
+    cell: (info) =>
+      fmtOrDash(info.getValue() as number | null | undefined, numFmt),
   }),
   helper.accessor('git_commits', {
     id: 'git_commits',
     header: 'GIT commits',
     meta: { className: 'col-5k-only' },
-    cell: (info) => {
-      const v = info.getValue() as number | undefined
-      return v !== undefined ? numFmt(v) : '—'
-    },
+    cell: (info) =>
+      fmtOrDash(info.getValue() as number | null | undefined, numFmt),
   }),
   helper.accessor('git_pushes', {
     id: 'git_pushes',
     header: 'GIT pushes',
     meta: { className: 'col-5k-only' },
-    cell: (info) => {
-      const v = info.getValue() as number | undefined
-      return v !== undefined ? numFmt(v) : '—'
-    },
+    cell: (info) =>
+      fmtOrDash(info.getValue() as number | null | undefined, numFmt),
   }),
   helper.accessor('inval', {
     id: 'inval',
     header: 'INVAL',
     meta: { className: 'col-5k-only' },
-    cell: (info) => {
-      const v = info.getValue() as number | undefined
-      return v !== undefined ? numFmt(v) : '—'
-    },
+    cell: (info) =>
+      fmtOrDash(info.getValue() as number | null | undefined, numFmt),
   }),
 ]
 
@@ -874,12 +876,25 @@ export function MasterLedgerTable({
                       </div>
                     )
                   } else if (colId === 'sparkline') {
-                    // C9: sparkline tinted by row severity
+                    // C9: sparkline tinted by row severity.
+                    // ⚠10 fix: an empty spark array causes Sparkline to return
+                    // null, which renders as "" in text content.  Guard: treat
+                    // undefined and [] the same — fall back to tokens_in when
+                    // the array is non-empty, else render the em-dash placeholder.
                     cellColor = 'var(--fg)'
-                    const sparkData = orig.spark ?? [orig.tokens_in]
-                    cellContent = (
-                      <Sparkline data={sparkData} color={severityColor} />
-                    )
+                    const sparkRaw = orig.spark
+                    const sparkData =
+                      sparkRaw != null && sparkRaw.length > 0
+                        ? sparkRaw
+                        : orig.tokens_in > 0
+                          ? [orig.tokens_in]
+                          : null
+                    cellContent =
+                      sparkData != null ? (
+                        <Sparkline data={sparkData} color={severityColor} />
+                      ) : (
+                        '—'
+                      )
                   } else if (colId === 'model') {
                     // Model name: default foreground
                     cellColor = 'var(--fg)'
