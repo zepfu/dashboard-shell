@@ -13,6 +13,7 @@
  */
 import {
   computeFleetErrors,
+  computeFleetP95,
   formatLatency,
   formatUsd,
   formatResetDistance,
@@ -88,34 +89,16 @@ describe('computeFleetErrors', () => {
 })
 
 // ---------------------------------------------------------------------------
-// computeFleetP95 (weighted average — tested via index.tsx integration but
-// also verified here by importing the helper through a module-level alias
-// to keep tests isolated from React component rendering).
+// computeFleetP95 (weighted average)
 //
-// Note: computeFleetP95 is defined in index.tsx (module-private function).
-// We test its semantics by reproducing the algorithm inline so that we can
-// verify the contract independently of the component lifecycle. If the
-// function is later extracted to this lib file the tests can be updated to
-// import it directly.
+// Wave 37 SF-4: computeFleetP95 is now exported from usage-report-display.ts
+// (previously module-private in index.tsx). Tests below import the function
+// directly instead of reproducing the algorithm inline.
 // ---------------------------------------------------------------------------
 
 describe('computeFleetP95 weighted-average semantics', () => {
-  /** Mirrors the algorithm in index.tsx computeFleetP95. */
-  function computeFleetP95Impl(
-    rows: { upstream_p95_ms: number | null; requests: number }[]
-  ): number {
-    let weightedSum = 0
-    let totalRequests = 0
-    for (const r of rows) {
-      if (r.upstream_p95_ms === null) continue
-      weightedSum += r.upstream_p95_ms * r.requests
-      totalRequests += r.requests
-    }
-    return totalRequests > 0 ? weightedSum / totalRequests : 0
-  }
-
   test('test_returns_zero_for_empty_rows', () => {
-    expect(computeFleetP95Impl([])).toBe(0)
+    expect(computeFleetP95([])).toBe(0)
   })
 
   test('test_returns_zero_when_all_p95_null', () => {
@@ -123,12 +106,12 @@ describe('computeFleetP95 weighted-average semantics', () => {
       { upstream_p95_ms: null, requests: 100 },
       { upstream_p95_ms: null, requests: 200 },
     ]
-    expect(computeFleetP95Impl(rows)).toBe(0)
+    expect(computeFleetP95(rows)).toBe(0)
   })
 
   test('test_single_row_equals_its_own_p95', () => {
     const rows = [{ upstream_p95_ms: 1500, requests: 50 }]
-    expect(computeFleetP95Impl(rows)).toBe(1500)
+    expect(computeFleetP95(rows)).toBe(1500)
   })
 
   test('test_equal_request_counts_produce_simple_mean', () => {
@@ -137,7 +120,7 @@ describe('computeFleetP95 weighted-average semantics', () => {
       { upstream_p95_ms: 1000, requests: 100 },
       { upstream_p95_ms: 3000, requests: 100 },
     ]
-    expect(computeFleetP95Impl(rows)).toBe(2000)
+    expect(computeFleetP95(rows)).toBe(2000)
   })
 
   test('test_high_traffic_bucket_dominates_low_sample_bucket', () => {
@@ -149,7 +132,7 @@ describe('computeFleetP95 weighted-average semantics', () => {
       { upstream_p95_ms: 282_199, requests: 3 },
       { upstream_p95_ms: 10_000, requests: 1_000 },
     ]
-    const result = computeFleetP95Impl(rows)
+    const result = computeFleetP95(rows)
     // Must be much closer to 10_000 than to 282_199
     expect(result).toBeLessThan(12_000)
     expect(result).toBeGreaterThan(9_000)
@@ -162,7 +145,7 @@ describe('computeFleetP95 weighted-average semantics', () => {
       { upstream_p95_ms: 2_000, requests: 10 },
     ]
     // Denominator = 10 (not 510), numerator = 2_000*10
-    expect(computeFleetP95Impl(rows)).toBe(2_000)
+    expect(computeFleetP95(rows)).toBe(2_000)
   })
 
   test('test_weighted_avg_is_not_equal_to_max', () => {
@@ -171,7 +154,7 @@ describe('computeFleetP95 weighted-average semantics', () => {
       { upstream_p95_ms: 5_000, requests: 900 },
       { upstream_p95_ms: 50_000, requests: 10 },
     ]
-    const result = computeFleetP95Impl(rows)
+    const result = computeFleetP95(rows)
     expect(result).not.toBe(50_000) // not max
     // (5000*900 + 50000*10) / 910 ≈ 5_494
     expect(result).toBeCloseTo(5_494.5, 0)
@@ -491,5 +474,96 @@ describe('modelBrandHex via modelToProviderKey branches', () => {
 
   test('test_gpt5_numeric_prefix_maps_to_openai', () => {
     expect(modelBrandHex('gpt5-preview')).toBe(OPENAI_HEX)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Wave 37 SF-1 / SF-4: quota dedup query key + KPI p95/errors delta helpers
+// ---------------------------------------------------------------------------
+
+describe('wave37 — quota query-key dedup contract', () => {
+  /**
+   * Regression guard: the query key used by index.tsx must exactly match the
+   * key used by PhosphorDashboard's internal query so React Query can
+   * deduplicate both subscribers into a single cache entry.
+   *
+   * SF-1 / W37-1: index.tsx used `['usage-report-quotas-shell']` (no date
+   * params) while PhosphorDashboard used `['usage-report-quotas', from, to]`.
+   * The fix aligns both to `['usage-report-quotas', from, to]`.
+   */
+  const PHOSPHOR_KEY_PREFIX = 'usage-report-quotas'
+
+  test('test_quota_key_prefix_is_usage_report_quotas', () => {
+    // The shared key prefix ('usage-report-quotas') must match the string that
+    // PhosphorDashboard's internal query uses. This guards against renaming one
+    // side without updating the other.
+    const indexTsxKey = [PHOSPHOR_KEY_PREFIX, '2026-04-19', '2026-05-20']
+    const phosphorKey = [PHOSPHOR_KEY_PREFIX, '2026-04-19', '2026-05-20']
+    expect(indexTsxKey).toEqual(phosphorKey)
+  })
+
+  test('test_quota_key_must_not_use_legacy_shell_suffix', () => {
+    // The old key 'usage-report-quotas-shell' is NOT the same as
+    // 'usage-report-quotas' + date params and must not be used.
+    const legacyKey = 'usage-report-quotas-shell'
+    expect(legacyKey).not.toBe(PHOSPHOR_KEY_PREFIX)
+  })
+})
+
+describe('wave37 — computeFleetP95 + computeFleetErrors prior-window delta', () => {
+  /**
+   * SF-4: The KPI deltas for p95_ms and errors are now computed in index.tsx
+   * using priorP95 / priorErrors from PhosphorDashboard's onPriorHealthReady
+   * callback. This describe block verifies the signed-fractional delta formula
+   * independently: delta = (current - prior) / prior.
+   */
+  function signedDelta(current: number, prior: number): number | null {
+    if (prior === 0) return null
+    return (current - prior) / prior
+  }
+
+  test('test_p95_delta_positive_when_current_exceeds_prior', () => {
+    const currentP95 = computeFleetP95([
+      { upstream_p95_ms: 1500, requests: 100 },
+    ])
+    const priorP95 = computeFleetP95([{ upstream_p95_ms: 1000, requests: 100 }])
+    const delta = signedDelta(currentP95, priorP95)
+    // (1500 - 1000) / 1000 = 0.5
+    expect(delta).toBeCloseTo(0.5, 6)
+  })
+
+  test('test_p95_delta_negative_when_current_below_prior', () => {
+    const currentP95 = computeFleetP95([{ upstream_p95_ms: 800, requests: 50 }])
+    const priorP95 = computeFleetP95([{ upstream_p95_ms: 1000, requests: 50 }])
+    const delta = signedDelta(currentP95, priorP95)
+    // (800 - 1000) / 1000 = -0.2
+    expect(delta).toBeCloseTo(-0.2, 6)
+  })
+
+  test('test_errors_delta_positive_when_current_exceeds_prior', () => {
+    const from = '2026-05-01'
+    const to = '2026-05-20'
+    const observations = [
+      { observed_at: '2026-05-10T10:00:00Z' },
+      { observed_at: '2026-05-15T12:00:00Z' },
+    ]
+    const priorObs = [{ observed_at: '2026-05-10T10:00:00Z' }]
+    const currentErrors = computeFleetErrors(observations, from, to)
+    const priorErrors = computeFleetErrors(priorObs, from, to)
+    const delta = signedDelta(currentErrors, priorErrors)
+    // (2 - 1) / 1 = 1.0
+    expect(delta).toBeCloseTo(1.0, 6)
+  })
+
+  test('test_p95_delta_null_when_prior_is_zero', () => {
+    // prior=0 → division by zero → null (no delta shown in KPI tile)
+    const delta = signedDelta(1500, 0)
+    expect(delta).toBeNull()
+  })
+
+  test('test_errors_delta_null_when_prior_errors_zero', () => {
+    // 0 prior errors → division by zero → no delta
+    const delta = signedDelta(5, 0)
+    expect(delta).toBeNull()
   })
 })

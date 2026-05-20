@@ -49,6 +49,8 @@ import { normalizeTrendData } from '../lib/trend-utils'
 import {
   canonicalProvider,
   clientColorFor,
+  computeFleetErrors,
+  computeFleetP95,
   PROVIDER_BRAND_HEX,
   providerAliases,
   providerBrandHex,
@@ -196,6 +198,16 @@ export interface PhosphorDashboardProps {
    */
   onPriorSummaryReady?: (summary: UsageReportSummary | undefined) => void
   /**
+   * Wave 37 SF-4: Callback invoked whenever the prior-period derived health
+   * metrics (fleet P95 and fleet errors) change. Enables index.tsx to compute
+   * KPI strip deltas for the `p95_ms` and `errors` tiles, which are derived
+   * from health rows (not present in UsageReportSummary). Called with
+   * `undefined` while the prior-window query is loading or unavailable.
+   */
+  onPriorHealthReady?: (
+    data: { priorP95: number; priorErrors: number } | undefined
+  ) => void
+  /**
    * Wave 36 Fix 1: The pre-fetched /usage report data from the parent
    * (index.tsx). Hoisting the query eliminates the duplicate HTTP request that
    * arose when both index.tsx and PhosphorDashboard fired separate useQuery
@@ -216,6 +228,14 @@ export interface PhosphorDashboardProps {
    * Defaults to false (safe: prior-report query skipped on sub-4K viewports).
    */
   showComparison?: boolean
+  /**
+   * Wave 37 SF-1: Pre-fetched quota rows from the parent (index.tsx).
+   * Hoisting the /quotas query to index.tsx with the same queryKey shape
+   * (`['usage-report-quotas', from, to]`) eliminates the duplicate HTTP request
+   * that arose from the key mismatch between index.tsx and PhosphorDashboard.
+   * When provided, the internal quotas useQuery is bypassed.
+   */
+  quotas?: UsageReportQuotaRow[]
 }
 
 // ---------------------------------------------------------------------------
@@ -2282,9 +2302,11 @@ export default function PhosphorDashboard({
   filters,
   onOptionsReady,
   onPriorSummaryReady,
+  onPriorHealthReady,
   report: reportProp,
   reportLoading: reportLoadingProp = false,
   showComparison = false,
+  quotas: quotasProp,
 }: PhosphorDashboardProps): ReactElement {
   const defaults = useMemo(() => _localFallbackRange(), [])
   const resolvedFrom = from ?? defaults.from
@@ -2335,17 +2357,23 @@ export default function PhosphorDashboard({
     ? internalLoading
     : reportLoadingProp
 
-  // 15-C.5: Include resolvedFrom/resolvedTo in the queryKey so the quotas query
-  // re-fetches when the user changes the date range. The /api/shell/reports/quotas
-  // endpoint does not currently accept from/to parameters (server-side it is a
-  // live snapshot from rate_limit_intervals). This wiring ensures the query
-  // invalidates on period changes, ready for when the API supports date-scoped
-  // quotas. The visual effect today: quotas panel refreshes on range change.
-  // TODO(15-C.5): Pass from/to to fetchUsageReportQuotas once the server
-  // endpoint supports date-scoped quota queries.
+  // 15-C.5 / Wave 37 SF-1: Include resolvedFrom/resolvedTo in the queryKey so
+  // the quotas query re-fetches when the user changes the date range. The
+  // /api/shell/reports/quotas endpoint does not currently accept from/to params
+  // (server-side it is a live snapshot from rate_limit_intervals). This wiring
+  // ensures the query invalidates on period changes, ready for when the API
+  // supports date-scoped quotas.
+  //
+  // Wave 37 SF-1: this query is ONLY used when PhosphorDashboard is rendered
+  // in isolation (e.g. Storybook, tests) without a parent supplying `quotas`.
+  // index.tsx now hoists this query with the same key shape so React Query
+  // deduplicates both subscribers into a single cache entry.
+  const internalQuotasEnabled = quotasProp === undefined
   const { data: quotasData } = useQuery({
     queryKey: ['usage-report-quotas', resolvedFrom, resolvedTo],
     queryFn: fetchUsageReportQuotas,
+    // Skip when the parent has already provided quota rows.
+    enabled: internalQuotasEnabled,
   })
 
   const anomalies = useAnomalyDetection(
@@ -2362,9 +2390,11 @@ export default function PhosphorDashboard({
 
   const providers = useMemo(() => deriveProviders(), [])
 
+  // Wave 37 SF-1: prefer parent-supplied quotas (dedup fix); fall back to the
+  // internal quotasData query result (standalone usage) then report?.quotas.
   const quotaRows = useMemo(
-    () => quotasData?.quotas ?? report?.quotas ?? [],
-    [quotasData?.quotas, report?.quotas]
+    () => quotasProp ?? quotasData?.quotas ?? report?.quotas ?? [],
+    [quotasProp, quotasData?.quotas, report?.quotas]
   )
 
   const repoRows = useMemo(
@@ -2596,6 +2626,22 @@ export default function PhosphorDashboard({
   useEffect(() => {
     onPriorSummaryReady?.(priorReport?.summary)
   }, [onPriorSummaryReady, priorReport?.summary])
+
+  // Wave 37 SF-4: compute prior-window fleet P95 and fleet errors from the
+  // prior-period health rows, using the same helpers as the current-window KPI
+  // computation in index.tsx. Notify the parent so it can wire all 6 KPI tiles.
+  useEffect(() => {
+    if (priorReport === undefined) {
+      onPriorHealthReady?.(undefined)
+      return
+    }
+    const priorHealthRows = priorReport.providerLatencyHealth ?? []
+    const priorErrorObs = priorReport.providerErrorObservations ?? []
+    onPriorHealthReady?.({
+      priorP95: computeFleetP95(priorHealthRows),
+      priorErrors: computeFleetErrors(priorErrorObs, priorFrom, priorTo),
+    })
+  }, [onPriorHealthReady, priorReport, priorFrom, priorTo])
 
   return (
     <div
