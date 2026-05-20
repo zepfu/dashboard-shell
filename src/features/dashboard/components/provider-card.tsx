@@ -629,11 +629,14 @@ export function ProviderCard({
             >
               {quotas.map((quotaBar, i) => {
                 // Wave 20 F3: build tooltip matching mockup v9-tip-quota structure.
-                // tipWindow / tipVelocity / tipModels are optional on QuotaBarGroup;
-                // render '—' placeholders when not yet wired.
+                // tipWindow / tipVelocity / tipModels are optional on QuotaBarGroup.
                 const tipWindowStr = quotaBar.tipWindow ?? '—'
                 const tipHeadLabel = `${tipWindowStr} · ${quotaBar.consumedPct.toFixed(0)}% used`
-                const tipVelocityStr = quotaBar.tipVelocity ?? '—'
+                // Wave 35 S4: suppress the velocity sub-line when tipVelocity is
+                // undefined rather than rendering a '—' placeholder. The line is
+                // omitted entirely so quota tooltips are clean even before the API
+                // supplies time-series data (Option B per wave35-visual-audit.md S4).
+                const tipVelocity = quotaBar.tipVelocity
                 // Top 3 model rows; fall back to empty if not populated.
                 const tipModelRows =
                   quotaBar.tipModels !== undefined &&
@@ -649,8 +652,10 @@ export function ProviderCard({
                   <>
                     {/* Head: "{window} · {pct}% used" */}
                     <div className='v9-tip-head'>{tipHeadLabel}</div>
-                    {/* Sub: velocity line e.g. "+5%/30m  ≈  +9%/h" */}
-                    <div className='v9-tip-sub'>{tipVelocityStr}</div>
+                    {/* Sub: velocity line — only rendered when tipVelocity is defined */}
+                    {tipVelocity !== undefined && (
+                      <div className='v9-tip-sub'>{tipVelocity}</div>
+                    )}
                     {/* Rows: top 3 contributing models with $delta */}
                     {/* Wave 26 F8 / Wave 27 follow-up: .t-model colored by the
                         model's provider brand hex. providerBrandHex only
