@@ -41,7 +41,7 @@ import { KpiStrip } from './components/kpi-strip'
 import PhosphorDashboard from './components/phosphor-dashboard'
 import { PhosphorLayout } from './components/phosphor-layout'
 import { PhosphorSidebar } from './components/phosphor-sidebar'
-import { HealthStrip } from './components/primitives/health-strip'
+import { type CellDef, HealthStrip } from './components/primitives/health-strip'
 import {
   SlicerBar,
   type SlicerFilters,
@@ -111,29 +111,107 @@ function toKpiSummary(
 
 /**
  * Computes fleet-wide P95 latency (ms) from all provider latency health rows.
- * Uses the same max-P95 aggregation as buildProviderMetrics() in phosphor-dashboard.
+ *
+ * B3 fix (wave34-data-flow-audit ✘-3): uses a requests-weighted average
+ * instead of the former `Math.max` aggregation. The max was dominated by a
+ * single low-sample anthropic/claude-opus-4-7 bucket (3 requests, 282 s)
+ * which made the headline KPI misleading for SLO tracking. The weighted
+ * average yields a value representative of actual traffic distribution.
  */
 function computeFleetP95(
   healthRows: UsageReportProviderLatencyHealthRow[]
 ): number {
-  const values = healthRows
-    .map((r) => r.upstream_p95_ms)
-    .filter((v): v is number => v !== null)
-  return values.length > 0 ? Math.max(...values) : 0
+  let weightedSum = 0
+  let totalRequests = 0
+  for (const r of healthRows) {
+    if (r.upstream_p95_ms === null) continue
+    weightedSum += r.upstream_p95_ms * r.requests
+    totalRequests += r.requests
+  }
+  return totalRequests > 0 ? weightedSum / totalRequests : 0
 }
 
 // ---------------------------------------------------------------------------
 // Fleet pulse data (aggregate health cells for horizontal strip)
 // ---------------------------------------------------------------------------
 
-const FLEET_PULSE_CELLS = Array.from({ length: 288 }, (_, i) => ({
-  color:
-    i % 24 < 2
-      ? 'var(--accent-hot)'
-      : i % 12 < 1
-        ? 'var(--accent-warm)'
-        : 'var(--accent-cool)',
-}))
+/** Number of 5-minute buckets in a 24-hour health window (24 × 12). */
+const FLEET_PULSE_CELL_COUNT = 288
+
+/**
+ * Derives fleet-wide health cells from `providerLatencyHealth` rows by
+ * collapsing all providers into one cell per 5-minute bucket.
+ *
+ * B1 fix (wave34-data-flow-audit ✘-1): replaces the hardcoded static color
+ * pattern with data-driven aggregation using the worst-status rule:
+ *   red > orange > blue > green
+ * where red = errors + no p95 (service down), orange = errors present,
+ * blue = no p95 data, green = normal.
+ *
+ * Mirrors the per-bucket collapse logic in phosphor-dashboard's padHealthCells
+ * without the provider filter, then pads/truncates to exactly 288 cells.
+ */
+function deriveFleetPulseCells(
+  healthRows: UsageReportProviderLatencyHealthRow[]
+): CellDef[] {
+  // Group all rows by bucket_start (newest first, matching API order DESC).
+  const bucketMap = new Map<string, UsageReportProviderLatencyHealthRow[]>()
+  healthRows.forEach((row, idx) => {
+    const key =
+      row.bucket_start != null
+        ? String(row.bucket_start)
+        : `__missing_${idx.toString()}__`
+    const group = bucketMap.get(key)
+    if (group !== undefined) {
+      group.push(row)
+    } else {
+      bucketMap.set(key, [row])
+    }
+  })
+
+  // Emit one CellDef per bucket: aggregate p95 (max) and error counts (sum).
+  const cellsDesc: CellDef[] = Array.from(bucketMap.values()).map((group) => {
+    let maxP95: number | null = null
+    let totalErrors = 0
+    for (const r of group) {
+      if (r.upstream_p95_ms !== null) {
+        maxP95 =
+          maxP95 === null
+            ? r.upstream_p95_ms
+            : Math.max(maxP95, r.upstream_p95_ms)
+      }
+      totalErrors +=
+        r.provider_error_events +
+        r.provider_5xx_events +
+        r.provider_timeout_events +
+        r.network_error_events +
+        r.rate_limit_events +
+        r.capacity_events
+    }
+    const bucketStart = group.find((r) => r.bucket_start != null)?.bucket_start
+
+    return {
+      color: 'var(--card-2)',
+      bucketStart: bucketStart ?? undefined,
+      rawP95Ms: maxP95,
+      rawErrorCount: totalErrors,
+    }
+  })
+
+  // Reverse DESC → ASC so oldest is left (−24h) and newest is right (now).
+  const cells = cellsDesc.reverse()
+
+  if (cells.length >= FLEET_PULSE_CELL_COUNT) {
+    return cells.slice(cells.length - FLEET_PULSE_CELL_COUNT)
+  }
+
+  const pad = Array.from<CellDef>({
+    length: FLEET_PULSE_CELL_COUNT - cells.length,
+  }).fill({
+    color: 'var(--card-2)',
+  })
+  return [...pad, ...cells]
+}
 
 // ---------------------------------------------------------------------------
 // Dashboard
@@ -218,19 +296,32 @@ export function Dashboard(): ReactElement {
     }
   }, [dataUpdatedAt])
 
-  // B4: Compute fleet-wide P95 from all provider latency health rows.
-  // The API does not expose p95 on the summary object, so we derive it here
-  // using the same max-P95 aggregation as phosphor-dashboard's buildProviderMetrics().
+  // B3 fix: Compute fleet-wide P95 from all provider latency health rows
+  // using a requests-weighted average (replaces the former Math.max that was
+  // skewed by low-sample anthropic/claude-opus-4-7 buckets).
   const fleetP95Ms = useMemo(
     () => computeFleetP95(summaryReport?.providerLatencyHealth ?? []),
     [summaryReport?.providerLatencyHealth]
   )
 
-  // 15-C.1 / Wave 31: Real error count from 14-day per-event observations
-  // (replaces 24 h-bounded providerLatencyHealth aggregate sum).
+  // 15-C.1 / Wave 31: Real error count from 14-day per-event observations.
+  // B2 fix: pass from/to so the Errors KPI tile aligns with the user's
+  // selected date range (instead of always counting the full 14-day window).
   const fleetErrors = useMemo(
-    () => computeFleetErrors(summaryReport?.providerErrorObservations ?? []),
-    [summaryReport?.providerErrorObservations]
+    () =>
+      computeFleetErrors(
+        summaryReport?.providerErrorObservations ?? [],
+        from,
+        to
+      ),
+    [summaryReport?.providerErrorObservations, from, to]
+  )
+
+  // B1 fix: Derive fleet-wide health cells from real providerLatencyHealth data
+  // (replaces the hardcoded static color pattern per wave34-data-flow-audit ✘-1).
+  const fleetPulseCells = useMemo(
+    () => deriveFleetPulseCells(summaryReport?.providerLatencyHealth ?? []),
+    [summaryReport?.providerLatencyHealth]
   )
 
   const kpiSummary = useMemo(
@@ -381,7 +472,7 @@ export function Dashboard(): ReactElement {
               >
                 FLEET HEALTH PULSE · 24H · 5m
               </div>
-              <HealthStrip cells={FLEET_PULSE_CELLS} orientation='horizontal' />
+              <HealthStrip cells={fleetPulseCells} orientation='horizontal' />
             </div>
 
             {/* Attribution legend — 14-B.5 per mockup lines 1951-1986, 2386 */}
