@@ -39,6 +39,7 @@ import {
   type SortingState,
 } from '@tanstack/react-table'
 import { CLIENT_BRAND_COLORS } from '../lib/client-brand-colors'
+import { numFmt } from '../lib/format-utils'
 import { formatUsd } from '../lib/usage-report-display'
 
 // ---------------------------------------------------------------------------
@@ -67,13 +68,6 @@ export interface ClientRow {
 // ---------------------------------------------------------------------------
 
 const helper = createColumnHelper<ClientRow>()
-
-function numFmt(n: number, decimals = 0): string {
-  return n.toLocaleString(undefined, {
-    minimumFractionDigits: decimals,
-    maximumFractionDigits: decimals,
-  })
-}
 
 // ---------------------------------------------------------------------------
 // ClientBreakdownTable

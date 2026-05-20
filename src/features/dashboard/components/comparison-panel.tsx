@@ -33,6 +33,7 @@
  *   which is the correct daily burn rate for a 1-day window.
  */
 import type { CSSProperties, ReactElement } from 'react'
+import { fmtCompact } from '../lib/format-utils'
 import { formatLatency, formatUsd } from '../lib/usage-report-display'
 import type { ModelRow } from './master-ledger-table'
 import type { TrendBucket } from './token-trend-chart'
@@ -103,12 +104,6 @@ interface ComparisonPanelProps {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-function fmtCompact(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`
-  return String(n)
-}
 
 export function buildCurrentStats(
   providers: string[],
