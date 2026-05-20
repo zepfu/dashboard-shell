@@ -65,9 +65,22 @@ services:
       SHELL_REPORT_DATABASE_HOST_REWRITE: "${SHELL_REPORT_DATABASE_HOST_REWRITE:-aawm-postgres18}"
       SHELL_REPORT_DATABASE_PORT_REWRITE: "${SHELL_REPORT_DATABASE_PORT_REWRITE:-5432}"
       SHELL_REPORT_DB_POOL_MAX: "${SHELL_REPORT_DB_POOL_MAX:-12}"
+      SHELL_REPORT_DB_DISABLE_PARALLELISM: "${SHELL_REPORT_DB_DISABLE_PARALLELISM:-true}"
+      SHELL_REPORT_SQL_FANOUT_CONCURRENCY: "${SHELL_REPORT_SQL_FANOUT_CONCURRENCY:-2}"
       SHELL_REPORT_PORT: "${SHELL_REPORT_PORT:-3010}"
+      SHELL_REPORT_REDIS_URL: "${SHELL_REPORT_REDIS_URL:-redis://dashboard-shell-redis:6379}"
+      SHELL_REPORT_CACHE_PREFIX: "${SHELL_REPORT_CACHE_PREFIX:-dashboard-shell:reports}"
+      SHELL_REPORT_CACHE_STALE_TTL_MS: "${SHELL_REPORT_CACHE_STALE_TTL_MS:-86400000}"
+      SHELL_REPORT_CACHE_LOCK_TTL_MS: "${SHELL_REPORT_CACHE_LOCK_TTL_MS:-1800000}"
+      SHELL_REPORT_CACHE_LOCK_WAIT_MS: "${SHELL_REPORT_CACHE_LOCK_WAIT_MS:-60000}"
+      SHELL_REPORT_CACHE_PREWARM: "${SHELL_REPORT_CACHE_PREWARM:-true}"
+      SHELL_REPORT_CACHE_PREWARM_INTERVAL_MS: "${SHELL_REPORT_CACHE_PREWARM_INTERVAL_MS:-900000}"
+      SHELL_REPORT_CACHE_PREWARM_LOCK_TTL_MS: "${SHELL_REPORT_CACHE_PREWARM_LOCK_TTL_MS:-7200000}"
     expose:
       - "${SHELL_REPORT_PORT:-3010}"
+    depends_on:
+      dashboard-shell-redis:
+        condition: service_healthy
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:
@@ -96,6 +109,32 @@ services:
       timeout: 5s
       start_period: 20s
       retries: 5
+
+  dashboard-shell-redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command:
+      [
+        "redis-server",
+        "--save",
+        "",
+        "--appendonly",
+        "no",
+        "--maxmemory",
+        "${SHELL_REPORT_REDIS_MAXMEMORY:-512mb}",
+        "--maxmemory-policy",
+        "allkeys-lru",
+      ]
+    expose:
+      - "6379"
+    networks:
+      - aawm_tap
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 5s
+      start_period: 5s
+      retries: 3
 
   aawm-tap-dashboard-dev:
     image: node:22-alpine
