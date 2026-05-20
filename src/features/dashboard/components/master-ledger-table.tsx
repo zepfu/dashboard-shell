@@ -43,6 +43,14 @@
  * - Sparkline column header corrected from "24h Tok/Hr" → "Tokens Trend".
  *   The column visualises 30-day daily token totals (not an hourly rate).
  *   "24h" and "Tok/Hr" were both inaccurate labels.
+ *
+ * W36-fix (tool-call surfacing audit):
+ * - TOOL column: removed col-5k-only meta class — column was hidden at all
+ *   viewports below 5120px (display:none), making tool-call data invisible to
+ *   virtually all users. Column is now always visible on all display sizes.
+ * - TOOL cell: formatter changed from numFmt → fmtCompact per W33 spec.
+ *   Zero/null/undefined tool counts now render '—' (no hover) matching the
+ *   fmtOrDash contract used by all other optional numeric columns.
  */
 import { useState, useMemo, type ReactElement } from 'react'
 import {
@@ -427,7 +435,7 @@ function formatPercent(pct: number): string {
 //   17. Cache%     (col-4k-only)
 //   18. Queue      (col-4k-only)
 //   19. Resets     (col-4k-only)
-//   20. TOOL       (col-5k-only)
+//   20. TOOL       (always visible — W36-fix: was col-5k-only, now ungated)
 //   21. GIT commits (col-5k-only)
 //   22. GIT pushes (col-5k-only)
 //   23. INVAL      (col-5k-only)
@@ -599,11 +607,16 @@ const fourKColumns = [
 ]
 
 // Cols 20–23: 5K-only columns
+// W33/W36-fix: TOOL column has no responsive-class guard — it is always visible.
+// The col-5k-only guard was the primary reason the TOOL column never appeared:
+// display:none below 5120px meant virtually no user ever saw it. The column is
+// intentionally ungated so it shows on 1080p/1440p/4K displays alongside the
+// rest of the base ledger. GIT/INVAL columns remain col-5k-only (rarely needed).
 const fiveKColumns = [
   helper.accessor('tool', {
     id: 'tool',
     header: 'TOOL',
-    meta: { className: 'col-5k-only' },
+    // No meta className — column is always visible (not 5K-gated).
     // W33: cell rendering is handled in MasterLedgerTable body so we can access
     // the full row's toolActivity field to build the 2-column hover tooltip.
     cell: () => null,
@@ -651,8 +664,11 @@ const sparklineColumn = [
 //   → latencyCostColumns (9–13: p50ms, p95ms, Err%, Cost, $/1k)
 //   → cacheMissPctColumn (14: Cache Miss %)
 //   → fourKColumns (15–19: $/1k In, $/1k Out, Cache%, Queue, Resets; col-4k-only)
-//   → fiveKColumns (20–23: TOOL, GIT commits, GIT pushes, INVAL; col-5k-only)
+//   → fiveKColumns (20: TOOL [always visible]; 21–23: GIT commits, GIT pushes,
+//                   INVAL [col-5k-only])
 //   → sparklineColumn (24: Tokens Trend)
+// W36-fix: TOOL column ungated — col-5k-only removed so it renders at all
+// viewport widths. GIT commits, GIT pushes, INVAL remain col-5k-only.
 const allColumns = [
   ...baseVolumeColumns,
   ...cacheToksColumn,
@@ -1068,11 +1084,16 @@ export function MasterLedgerTable({
                         '—'
                       )
                   } else if (colId === 'tool') {
-                    // W33: TOOL cell — plain count + optional 2-column hover breakdown
+                    // W33: TOOL cell — plain count + optional 2-column hover breakdown.
+                    // W36-fix: use fmtCompact per spec; fmtOrDash handles null/undefined
+                    // and zero-call rows (renders em-dash, no hover trigger).
                     cellColor = 'var(--accent-cool)'
                     const toolCount = orig.tool
+                    // Render '—' for undefined/null; for 0 also render '—' (no calls).
                     const toolLabel =
-                      toolCount !== undefined ? numFmt(toolCount) : '—'
+                      toolCount != null && toolCount > 0
+                        ? fmtCompact(toolCount)
+                        : '—'
                     const ta = orig.toolActivity
                     if (ta !== undefined && ta.totalCalls > 0) {
                       // Build 2-column hover tooltip

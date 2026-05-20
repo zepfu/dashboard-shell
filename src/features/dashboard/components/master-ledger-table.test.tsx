@@ -525,8 +525,8 @@ test('test_tool_cell_renders_count_when_tool_scalar_is_set', () => {
   expect(toolCellText).toBeDefined()
 
   // Ensure the em-dash placeholder is NOT the content of the TOOL cell for this row.
-  // We verify by checking the count appears — the TOOL cell renderer returns numFmt
-  // when tool !== undefined, which formats 460 as "460".
+  // W36-fix: the TOOL cell renderer now uses fmtCompact (was numFmt).
+  // fmtCompact(460) → "460" (below 1000 threshold, no K suffix).
   expect(toolCellText).not.toBe('—')
 })
 
@@ -606,4 +606,60 @@ test('test_buildToolActivity_mcp_subrows_cap_shows_top3_by_calls', () => {
   expect(subRows[2].calls).toBe(10)
   // The cap (slice(0, 3)) in the renderer will correctly exclude write(2).
   expect(subRows.length).toBe(4) // all 4 subRows present; renderer slices to 3
+})
+
+// ---------------------------------------------------------------------------
+// W36-fix — TOOL column ungated from col-5k-only
+// ---------------------------------------------------------------------------
+
+test('test_tool_column_header_present_and_not_5k_only', () => {
+  // W36-fix: TOOL column must be visible at all viewport widths — the col-5k-only
+  // class (display:none below 5120px) has been removed from the column definition.
+  // Regression guard: verify the TOOL header exists AND does not carry col-5k-only.
+  const { container } = render(<MasterLedgerTable rows={mockRows} />)
+
+  const toolHeader = screen.getByRole('columnheader', { name: /^tool$/i })
+  expect(toolHeader).toBeInTheDocument()
+  // Must NOT have col-5k-only class (the former hidden-column guard).
+  expect(toolHeader.classList.contains('col-5k-only')).toBe(false)
+
+  // The TOOL td cells should also lack col-5k-only class (cell inherits from column meta).
+  const toolCells = container.querySelectorAll('tbody td.col-5k-only')
+  // GIT commits, GIT pushes, INVAL still use col-5k-only (3 cols × 3 rows = 9 cells).
+  // TOOL cells must NOT be among them — verify no col-5k-only cell contains a
+  // numeric tool count. For rows without tool data, TOOL renders '—' plain text.
+  // This is a structural guard: if tool had col-5k-only, the header itself would too.
+  expect(toolCells.length).toBe(9) // 3 5k-only columns × 3 rows = 9 cells
+})
+
+test('test_tool_cell_renders_fmtCompact_value', () => {
+  // W36-fix: TOOL cell now uses fmtCompact instead of numFmt.
+  // For values >= 1000 this changes the display: numFmt would give "1,200",
+  // fmtCompact gives "1.2K". Verify the formatter produces the compact form.
+  const toolRow = {
+    model: 'claude-opus-4-7',
+    provider: 'anthropic',
+    tokens_in: 1000,
+    tokens_out: 500,
+    requests: 50,
+    p50_ms: 200,
+    p95_ms: 500,
+    error_pct: 0,
+    cost_usd: 0.1,
+    cost_per_1k: 0.05,
+    tool: 1200,
+    toolActivity: buildToolActivity([
+      makeToolActivityRow('Read', 'outer', 1200),
+    ]),
+  }
+
+  const { container } = render(<MasterLedgerTable rows={[toolRow]} />)
+
+  const cells = container.querySelectorAll('tbody td')
+  const cellTexts = Array.from(cells).map((c) => (c as HTMLElement).textContent)
+
+  // fmtCompact(1200) → "1.2K" (not "1,200")
+  expect(cellTexts.some((t) => t?.includes('1.2K'))).toBe(true)
+  // numFmt form must NOT appear for the tool cell
+  expect(cellTexts.some((t) => t === '1,200')).toBe(false)
 })
