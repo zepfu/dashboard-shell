@@ -795,7 +795,7 @@ export function ProviderCard({
                           return (
                             <div
                               key={barIdx}
-                              className={`quota-bar-slot${isPrior ? 'is-prior-slot' : 'is-current-slot'}`}
+                              className={`quota-bar-slot ${isPrior ? 'is-prior-slot' : 'is-current-slot'}`}
                               style={{
                                 flex: isPrior ? '0 0 auto' : '1 1 auto',
                                 minWidth: isPrior ? '36px' : '0',
