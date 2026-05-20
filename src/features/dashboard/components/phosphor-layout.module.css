@@ -2,11 +2,15 @@
  * PhosphorLayout responsive breakpoints.
  *
  * Wave 14-A: Updated to 3-column grid breakpoints per mockup lines 95-124.
- * - Baseline: 220px 1fr 260px
- * - 1600–2559px: 200px 1fr 240px (compress sidebar+alerts at narrower 2K)
- * - ≥2560px: 260px 1fr 340px
- * - ≥3840px: 300px 1fr 380px, padding 16px 20px, gap 6px
- * - ≥5120px: 340px 1fr 420px, padding 20px 24px, gap 8px
+ * Wave 35 cycle-2: Changed middle column from `1fr` to `minmax(0, 1fr)` to
+ * prevent content overflow — CSS Grid `1fr` resolves to `minmax(auto, 1fr)`
+ * which allows min-content to expand the column beyond viewport bounds when
+ * provider-summary renders 4+ wide cards.
+ * - Baseline: 220px minmax(0,1fr) 260px
+ * - 1600–2559px: 200px minmax(0,1fr) 240px (compress sidebar+alerts at narrower 2K)
+ * - ≥2560px: 260px minmax(0,1fr) 340px
+ * - ≥3840px: 300px minmax(0,1fr) 380px, padding 16px 20px, gap 6px
+ * - ≥5120px: 340px minmax(0,1fr) 420px, padding 20px 24px, gap 8px
  *
  * Wave 18-Cards: Added `!important` to all breakpoint declarations so that
  * inline styles on the root element (which previously hardcoded the baseline
@@ -17,9 +21,11 @@
  * probes rendered behaviour rather than inline styles for layout grids).
  */
 
-/* Baseline — 220px 1fr 260px (matching the former inline style default) */
+/* Baseline — 220px minmax(0,1fr) 260px (matching the former inline style default).
+   minmax(0,1fr) prevents the middle column from expanding beyond available space
+   when grid children have wide content (provider-summary 4-col grid at 1600px). */
 .phosphor-layout {
-  grid-template-columns: 220px 1fr 260px !important;
+  grid-template-columns: 220px minmax(0, 1fr) 260px !important;
   padding: 12px 16px !important;
   gap: 4px !important;
 }
@@ -27,21 +33,21 @@
 /* 1600–2559px — compress sidebar+alerts to give content room */
 @media (min-width: 1600px) and (max-width: 2559px) {
   .phosphor-layout {
-    grid-template-columns: 200px 1fr 240px !important;
+    grid-template-columns: 200px minmax(0, 1fr) 240px !important;
   }
 }
 
 /* 2560px — 2K reference */
 @media (min-width: 2560px) {
   .phosphor-layout {
-    grid-template-columns: 260px 1fr 340px !important;
+    grid-template-columns: 260px minmax(0, 1fr) 340px !important;
   }
 }
 
 /* 3840px — 4K */
 @media (min-width: 3840px) {
   .phosphor-layout {
-    grid-template-columns: 300px 1fr 380px !important;
+    grid-template-columns: 300px minmax(0, 1fr) 380px !important;
     padding: 16px 20px !important;
     gap: 6px !important;
   }
@@ -50,7 +56,7 @@
 /* 5120px — 5K ultrawide */
 @media (min-width: 5120px) {
   .phosphor-layout {
-    grid-template-columns: 340px 1fr 420px !important;
+    grid-template-columns: 340px minmax(0, 1fr) 420px !important;
     padding: 20px 24px !important;
     gap: 8px !important;
   }
