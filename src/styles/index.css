@@ -934,18 +934,8 @@
   color: var(--accent-chrome);
 }
 
-/* ── §3 #10 / §20 #5: keyframe name parity — add alias `pulse` matching spec */
-/* Mockup uses `animation: pulse 1s infinite` (line 683-688). We keep         */
-/* pulse-dot for existing usage and add pulse as the spec-named alias.        */
-@keyframes pulse {
-  0%,
-  100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.3;
-  }
-}
+/* C-3: @keyframes pulse removed — SectionSkeleton now uses skeleton-shimmer
+   (same sweep used by the page-level skeleton). No remaining consumers. */
 
 /* Fleet-activity pulse-dot variant: 6×6 hot red, larger animation per §9 #7-9 */
 /* Scoped to .fleet-activity-list so it overrides the freshness-indicator dot  */

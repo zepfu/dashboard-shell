@@ -265,6 +265,21 @@ describe('formatUsd', () => {
 // ---------------------------------------------------------------------------
 
 describe('formatResetDistance', () => {
+  // SF-1: Pin Date.now() to a fixed epoch so that all relative-distance fixtures
+  // are computed against a deterministic reference. Without this, tests that sit
+  // exactly on bucket boundaries (e.g. 3d 1h = 4380 min) can drop to 4379 min on
+  // sub-millisecond timing jitter and land in the wrong bucket.
+  const FIXED_NOW = new Date('2026-01-01T00:00:00Z')
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.setSystemTime(FIXED_NOW)
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
   test('test_null_returns_em_dash', () => {
     expect(formatResetDistance(null)).toBe('—')
   })
@@ -287,38 +302,40 @@ describe('formatResetDistance', () => {
   })
 
   test('test_future_days_and_hours_format', () => {
-    // 3 days + 1 hour from now
-    const future = new Date(Date.now() + 3 * 86_400_000 + 1 * 3_600_000)
+    // 3 days + 1 hour from fixed now → always exactly 4380 min in the correct bucket
+    const future = new Date(
+      FIXED_NOW.getTime() + 3 * 86_400_000 + 1 * 3_600_000
+    )
     expect(formatResetDistance(future.toISOString())).toBe('in 3d 1h')
   })
 
   test('test_future_hours_and_minutes_format', () => {
-    // 2 hours + 30 minutes from now
-    const future = new Date(Date.now() + 2 * 3_600_000 + 30 * 60_000)
+    // 2 hours + 30 minutes from fixed now
+    const future = new Date(FIXED_NOW.getTime() + 2 * 3_600_000 + 30 * 60_000)
     expect(formatResetDistance(future.toISOString())).toBe('in 2h 30m')
   })
 
   test('test_future_minutes_only_format', () => {
-    // 45 minutes from now
-    const future = new Date(Date.now() + 45 * 60_000)
+    // 45 minutes from fixed now
+    const future = new Date(FIXED_NOW.getTime() + 45 * 60_000)
     expect(formatResetDistance(future.toISOString())).toBe('in 45m')
   })
 
   test('test_exactly_zero_minutes_returns_now', () => {
-    // Exactly Date.now() → diffMs=0 → returns 'now'
-    expect(formatResetDistance(new Date(Date.now() - 1).toISOString())).toBe(
-      'now'
-    )
+    // 1 ms before fixed now → diffMs=-1 → returns 'now'
+    expect(
+      formatResetDistance(new Date(FIXED_NOW.getTime() - 1).toISOString())
+    ).toBe('now')
   })
 
   test('test_one_minute_future_format', () => {
-    const future = new Date(Date.now() + 60_000)
+    const future = new Date(FIXED_NOW.getTime() + 60_000)
     expect(formatResetDistance(future.toISOString())).toBe('in 1m')
   })
 
   test('test_days_with_zero_hours_still_shows_0h', () => {
     // 1 day exactly → '1d 0h'
-    const future = new Date(Date.now() + 86_400_000)
+    const future = new Date(FIXED_NOW.getTime() + 86_400_000)
     expect(formatResetDistance(future.toISOString())).toBe('in 1d 0h')
   })
 })
