@@ -2512,6 +2512,26 @@ export default function PhosphorDashboard({
         gap: '8px',
       }}
     >
+      {/* ── TOKENS ────────────────────────────────────────────────────── */}
+      {/* Wave 35 C3 fix: moved above STATUS so the trend chart appears   */}
+      {/* within the visible viewport at 2275×1280 without scrolling.     */}
+      {/* Previously at y=1314px (34px below the 1280px fold) because the */}
+      {/* 920px-tall provider-card row pushed it fully below the fold.     */}
+      <section
+        id='tokens'
+        data-tab='tokens'
+        aria-labelledby='section-tokens-heading'
+      >
+        <SectionTitle id='section-tokens-heading'>
+          Token Trend · Stacked by Provider · 24h
+        </SectionTitle>
+        {reportLoading ? (
+          <SectionSkeleton height={120} />
+        ) : (
+          <TokenTrendChart data={trendData} series={PROVIDER_SERIES} />
+        )}
+      </section>
+
       {/* ── STATUS (Provider Health Summary) ─────────────────────────── */}
       {/* Wave 11 PR1 (11-b): provider cards move here from #models.     */}
       {/* D3: AggregateCard injected as the last peer in the grid;       */}
@@ -2594,22 +2614,6 @@ export default function PhosphorDashboard({
               anomalies={anomalies}
             />
           </div>
-        )}
-      </section>
-
-      {/* ── TOKENS ────────────────────────────────────────────────────── */}
-      <section
-        id='tokens'
-        data-tab='tokens'
-        aria-labelledby='section-tokens-heading'
-      >
-        <SectionTitle id='section-tokens-heading'>
-          Token Trend · Stacked by Provider · 24h
-        </SectionTitle>
-        {reportLoading ? (
-          <SectionSkeleton height={120} />
-        ) : (
-          <TokenTrendChart data={trendData} series={PROVIDER_SERIES} />
         )}
       </section>
 
