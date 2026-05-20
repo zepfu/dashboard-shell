@@ -20,6 +20,11 @@
  * - Removed metric-cell/microbar wrappers from Requests, Tokens, Cost — spec
  *   renders plain numeric <td> values with neutral fg color.
  *
+ * Wave 35 cycle-2 (⚠-4):
+ * - Removed `spark` field from ClientRow interface: the sparkline column was
+ *   deleted in Wave 18. The field was dead code and its degenerate single-point
+ *   value in buildClientRows was misleading. Removed from type + builder.
+ *
  * Wave 31:
  * - Added "First Seen" column (between Version and Requests) wired from
  *   first_seen_at API field, formatted as YYYY-MM-DD.

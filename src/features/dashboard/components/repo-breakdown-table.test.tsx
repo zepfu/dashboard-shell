@@ -57,7 +57,10 @@ test('test_renders_sparkline_caption', () => {
 test('test_sortable_by_tokens_descending', () => {
   render(<RepoBreakdownTable rows={mockRepos} />)
 
-  const tokensHeader = screen.getByRole('columnheader', { name: /tokens/i })
+  // Use exact name to avoid matching "Tokens Trend" (sparkline column renamed W35 ⚠-3).
+  const tokensHeader = screen.getByRole('columnheader', {
+    name: /^tokens$/i,
+  })
   fireEvent.click(tokensHeader)
 
   // After clicking: descending sort → aawm-project (5000) first

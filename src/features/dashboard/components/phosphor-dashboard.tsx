@@ -2051,10 +2051,6 @@ function buildClientSlices(
 /**
  * Builds ClientRow[] for ClientBreakdownTable from API client rows.
  *
- * Wave 11 PR6 (11-o): populates `spark` as a degenerate single-point series
- * from token_total so the sparkline column renders a baseline. When time-series
- * data becomes available, replace [c.token_total] with the real array.
- *
  * Wave 24-PhosphorDash (operator F7): previously aggregated raw client_name
  * variants into canonical families before building rows. The donut chart
  * (buildClientSlices) retains that family-collapsed behavior.
@@ -2063,6 +2059,11 @@ function buildClientSlices(
  * per (client_name, client_version) tuple from the raw API response so
  * individual versions are visible. Each row is still colored by its resolved
  * CLIENT_FAMILY_MAP provider so the visual grouping is preserved.
+ *
+ * Wave 35 cycle-2 (⚠-4): removed degenerate `spark: [c.token_total]` field.
+ * The sparkline column was removed from ClientBreakdownTable in Wave 18 (§6.1).
+ * The `spark` field was dead code — ClientRow does not include it and the column
+ * was never rendered. Removed to eliminate the misleading placeholder.
  */
 function buildClientRows(
   clients: {
@@ -2101,8 +2102,6 @@ function buildClientRows(
         requests: c.traces,
         tokens: c.token_total,
         cost_usd: c.usd_cost,
-        // Degenerate spark: single point placeholder until time-series is wired
-        spark: [c.token_total],
         // Color by family provider so visual grouping survives the un-collapse.
         color: clientFamilyColor(c.client_name, mapping?.provider),
         // family exposed for tests / W25-ClientTable consumption.
