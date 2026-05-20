@@ -38,6 +38,7 @@ import {
   type UsageReportQuotaUsageBreakdown,
   type UsageReportRow,
   type UsageReportSummary,
+  type UsageReportToolActivityRow,
   type UsageReportTrendRow,
   type UsageReportGrain,
 } from '../api/usage-report'
@@ -59,7 +60,11 @@ import {
   type ProviderCurrentStats,
 } from './comparison-panel'
 import { DonutChart, type SliceConfig } from './donut-chart'
-import { MasterLedgerTable, type ModelRow } from './master-ledger-table'
+import {
+  buildToolActivity,
+  MasterLedgerTable,
+  type ModelRow,
+} from './master-ledger-table'
 import styles from './phosphor-dashboard.module.css'
 import { type CellDef, type HealthStripEvent } from './primitives/health-strip'
 import {
@@ -1672,7 +1677,8 @@ function buildModelRows(
   healthRows: UsageReportProviderLatencyHealthRow[],
   usageRows: UsageReportRow[],
   quotaRows: UsageReportQuotaRow[],
-  trendRows: UsageReportTrendRow[]
+  trendRows: UsageReportTrendRow[],
+  toolActivityRows: UsageReportToolActivityRow[] = []
 ): ModelRow[] {
   // 15-B.3: Aggregate real token_in / token_out from report.rows by provider+model.
   // providerStatusUsage (the `rows` param) lacks per-direction token fields;
@@ -1804,6 +1810,20 @@ function buildModelRows(
     }
   }
 
+  // W33: Build a lookup of toolActivity rows indexed by "provider::model" so
+  // each ModelRow can quickly retrieve its pre-processed tool activity data.
+  // Keys use lowercase provider + model to match tokensByKey and healthByKey.
+  const toolActivityByKey = new Map<string, UsageReportToolActivityRow[]>()
+  for (const ta of toolActivityRows) {
+    const taKey = `${ta.provider.toLowerCase()}::${ta.model.toLowerCase()}`
+    const existing = toolActivityByKey.get(taKey)
+    if (existing === undefined) {
+      toolActivityByKey.set(taKey, [ta])
+    } else {
+      existing.push(ta)
+    }
+  }
+
   return rows.map((row) => {
     const providerKey = row.provider.toLowerCase()
     const modelKey = row.model.toLowerCase()
@@ -1879,6 +1899,12 @@ function buildModelRows(
       spark: sparkByKey.get(
         `${canonicalProvider(row.provider)}::${modelKey}`
       ) ?? [row.token_total],
+      // W33: pre-processed tool activity for the TOOL cell hover tooltip.
+      // buildToolActivity returns a zero-calls result when no rows are found,
+      // so undefined is only stored when the lookup is empty (no API data).
+      toolActivity: toolActivityByKey.has(key)
+        ? buildToolActivity(toolActivityByKey.get(key) ?? [])
+        : undefined,
     }
   })
 }
@@ -2296,7 +2322,8 @@ export default function PhosphorDashboard({
         report?.providerLatencyHealth ?? [],
         report?.rows ?? [], // 15-B.3: real token_in/token_out
         quotaRows, // 15-B.5: quota_pct from quota rows
-        report?.trend ?? [] // Wave 30 Track 4: real 24h sparkline data
+        report?.trend ?? [], // Wave 30 Track 4: real 24h sparkline data
+        report?.toolActivity ?? [] // W33: tool activity for TOOL cell hover
       ),
     [
       report?.providerStatusUsage,
@@ -2304,6 +2331,7 @@ export default function PhosphorDashboard({
       report?.rows,
       quotaRows,
       report?.trend,
+      report?.toolActivity,
     ]
   )
 
@@ -2497,7 +2525,9 @@ export default function PhosphorDashboard({
       priorReport.rows ?? [],
       // Quota rows are not relevant for delta computation; pass empty array.
       [],
-      priorReport.trend ?? []
+      priorReport.trend ?? [],
+      // Tool activity not needed for delta computation; pass empty array.
+      []
     )
     return buildCurrentStats(providers, priorModelRows, periodDays)
   }, [priorReport, providers, periodDays])

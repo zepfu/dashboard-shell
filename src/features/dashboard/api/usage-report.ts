@@ -302,6 +302,25 @@ export interface UsageReportQuotaHistoryRow {
   usage_breakdown: UsageReportQuotaUsageBreakdown[]
 }
 
+/**
+ * W33: One row from the toolActivity[] field in the usage report.
+ *
+ * Rows are ordered `provider ASC, model ASC, kind ASC, calls DESC`.
+ * - `kind === 'outer'`: per-tool_name call counts (includes MCP tool names like
+ *   `mcp__aawm__search` and shell-class names like `Bash`).
+ * - `kind === 'shell'`: command-label sub-rollup rows (e.g. `git commit`,
+ *   `npm test`) recorded when shell-class tools are invoked.
+ */
+export interface UsageReportToolActivityRow {
+  provider: string
+  model: string
+  /** 'outer' = per tool_name count; 'shell' = command-label sub-rollup. */
+  kind: 'outer' | 'shell'
+  /** Tool name (outer rows) or command label (shell rows). */
+  label: string
+  calls: number
+}
+
 export interface UsageReportResponse {
   metadata: {
     from: string
@@ -324,6 +343,8 @@ export interface UsageReportResponse {
   quotas: UsageReportQuotaRow[]
   /** W32: flat list of past reset windows per (provider, quota_type). */
   quotaHistory: UsageReportQuotaHistoryRow[]
+  /** W33: per-tool and per-command-label call counts for the TOOL cell hover. */
+  toolActivity: UsageReportToolActivityRow[]
   rows: UsageReportRow[]
 }
 

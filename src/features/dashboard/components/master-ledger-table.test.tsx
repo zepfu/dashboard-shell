@@ -10,10 +10,16 @@
  *
  * Wave 31 additions:
  * - Q8: Err% hover tooltip when providerErrorObservations are provided.
+ *
+ * Wave 33 additions:
+ * - TOOL cell hover: MCP rollup logic, shell-class filtering, empty-state.
  */
 import { render, screen, fireEvent } from '@testing-library/react'
+import { type UsageReportToolActivityRow } from '../api/usage-report'
 import {
+  buildToolActivity,
   MasterLedgerTable,
+  SHELL_CLASS_TOOL_NAMES,
   type ProviderErrorObservation,
 } from './master-ledger-table'
 
@@ -354,4 +360,126 @@ test('test_err_pct_tooltip_caps_at_ten_rows', () => {
   expect(screen.getByText(/10 most recent errors/i)).toBeInTheDocument()
   // "12 most recent" must NOT appear.
   expect(screen.queryByText(/12 most recent/i)).toBeNull()
+})
+
+// ---------------------------------------------------------------------------
+// Wave 33 — TOOL cell hover: buildToolActivity unit tests
+// ---------------------------------------------------------------------------
+
+/** Helper to build a UsageReportToolActivityRow fixture. */
+function makeToolActivityRow(
+  label: string,
+  kind: 'outer' | 'shell',
+  calls: number,
+  provider = 'anthropic',
+  model = 'claude-opus-4-7'
+): UsageReportToolActivityRow {
+  return { provider, model, kind, label, calls }
+}
+
+test('test_buildToolActivity_mcp_rollup_groups_by_server', () => {
+  // mcp__aawm__search (35 calls) and mcp__aawm__tristore_add (18 calls) should
+  // be rolled up into a single "MCP: aawm" entry with calls = 53.
+  const rows: UsageReportToolActivityRow[] = [
+    makeToolActivityRow('mcp__aawm__search', 'outer', 35),
+    makeToolActivityRow('mcp__aawm__tristore_add', 'outer', 18),
+    makeToolActivityRow('Read', 'outer', 245),
+  ]
+  const result = buildToolActivity(rows)
+
+  // Should have 2 left rows: Read (245) and MCP: aawm (53)
+  expect(result.leftRows).toHaveLength(2)
+
+  // Sorted descending by calls → Read first, then MCP: aawm
+  const readRow = result.leftRows.find((r) => r.label === 'Read')
+  expect(readRow).toBeDefined()
+  expect(readRow?.calls).toBe(245)
+
+  const mcpRow = result.leftRows.find((r) => r.label === 'MCP: aawm')
+  expect(mcpRow).toBeDefined()
+  expect(mcpRow?.calls).toBe(53)
+
+  // MCP row should have subRows listing individual tools
+  expect(mcpRow?.subRows).toHaveLength(2)
+  const subLabels = mcpRow?.subRows?.map((s) => s.label) ?? []
+  expect(subLabels).toContain('search')
+  expect(subLabels).toContain('tristore_add')
+})
+
+test('test_buildToolActivity_shell_class_excluded_from_left_column', () => {
+  // All SHELL_CLASS_TOOL_NAMES entries must NOT appear in leftRows.
+  // They should only contribute to shellTotalCalls.
+  const shellClassNames = [...SHELL_CLASS_TOOL_NAMES]
+  const rows: UsageReportToolActivityRow[] = [
+    ...shellClassNames.map((name, i) =>
+      makeToolActivityRow(name, 'outer', (i + 1) * 10)
+    ),
+    makeToolActivityRow('Read', 'outer', 100),
+    makeToolActivityRow('git commit', 'shell', 45),
+    makeToolActivityRow('npm test', 'shell', 30),
+  ]
+
+  const result = buildToolActivity(rows)
+
+  // Left rows must only contain 'Read' — no shell-class names
+  const leftLabels = result.leftRows.map((r) => r.label)
+  for (const shellName of shellClassNames) {
+    expect(leftLabels).not.toContain(shellName)
+  }
+  expect(leftLabels).toContain('Read')
+
+  // shellTotalCalls should be the sum of all shell-class outer rows
+  const expectedShellTotal = shellClassNames.reduce(
+    (s, _name, i) => s + (i + 1) * 10,
+    0
+  )
+  expect(result.shellTotalCalls).toBe(expectedShellTotal)
+
+  // Shell command rows should be captured
+  expect(result.shellRows).toHaveLength(2)
+  expect(result.shellRows[0].label).toBe('git commit')
+  expect(result.shellRows[0].calls).toBe(45)
+})
+
+test('test_buildToolActivity_empty_state_zero_calls', () => {
+  // Empty input → totalCalls is 0 → TOOL cell should suppress the hover.
+  const result = buildToolActivity([])
+
+  expect(result.totalCalls).toBe(0)
+  expect(result.leftRows).toHaveLength(0)
+  expect(result.shellRows).toHaveLength(0)
+  expect(result.shellTotalCalls).toBe(0)
+})
+
+test('test_tool_cell_hover_tooltip_rendered_when_tool_activity_present', () => {
+  // When toolActivity with non-zero totalCalls is attached to the ModelRow,
+  // the TOOL cell should render the HoverTooltip with the shell breakdown header.
+  const toolRow = {
+    model: 'claude-opus-4-7',
+    provider: 'anthropic',
+    tokens_in: 1000,
+    tokens_out: 2000,
+    requests: 100,
+    p50_ms: 200,
+    p95_ms: 500,
+    error_pct: 0,
+    cost_usd: 0.5,
+    cost_per_1k: 0.05,
+    tool: 380,
+    toolActivity: buildToolActivity([
+      makeToolActivityRow('Read', 'outer', 245),
+      makeToolActivityRow('Edit', 'outer', 135),
+      makeToolActivityRow('Bash', 'outer', 80),
+      makeToolActivityRow('git commit', 'shell', 45),
+      makeToolActivityRow('npm test', 'shell', 30),
+    ]),
+  }
+
+  render(<MasterLedgerTable rows={[toolRow]} />)
+
+  // The shell header text should be present in the (hidden) tooltip DOM.
+  // Pattern matches "SHELL (80 calls)" — Bash contributes 80 to shellTotalCalls.
+  expect(screen.getByText(/shell.*80.*calls/i)).toBeInTheDocument()
+  // Tool names in the left column should be visible in the tooltip DOM.
+  expect(screen.getByText('Read')).toBeInTheDocument()
 })
