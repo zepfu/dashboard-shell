@@ -30,6 +30,8 @@ import PhosphorDashboard, {
   _tipModelsSingleLabelForTest,
   _buildProviderLanesForTest,
   _classifyGeminiModelForTest,
+  _fmtIntervalCompactForTest,
+  _buildPriorBarFromHistoryForTest,
 } from './phosphor-dashboard'
 
 // ---------------------------------------------------------------------------
@@ -710,5 +712,131 @@ describe('Wave 41 — buildProviderLanes', () => {
   test('test_unknown_provider_returns_empty_lanes', () => {
     const lanes = _buildProviderLanesForTest('nvidia_nim', [], [])
     expect(lanes).toHaveLength(0)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Wave 43 — fmtIntervalCompact helper tests
+// ---------------------------------------------------------------------------
+
+describe('Wave 43 — fmtIntervalCompact', () => {
+  test('test_fmt_interval_compact_formats_snapped_range', () => {
+    // 2026-05-19T10:00:00Z → 2026-05-20T10:00:00Z (already on 30-min boundary)
+    const result = _fmtIntervalCompactForTest(
+      '2026-05-19T10:00:00Z',
+      '2026-05-20T10:00:00Z'
+    )
+    expect(result).toBe('5/19 10:00 → 5/20 10:00')
+  })
+
+  test('test_fmt_interval_compact_snaps_to_nearest_30min', () => {
+    // 2026-05-20T09:44:00Z: nearest 30-min boundary is 09:30 (44m → round down)
+    // 2026-05-20T14:52:00Z: nearest 30-min boundary is 15:00 (52m → round up)
+    const result = _fmtIntervalCompactForTest(
+      '2026-05-20T09:44:00Z',
+      '2026-05-20T14:52:00Z'
+    )
+    expect(result).toBe('5/20 09:30 → 5/20 15:00')
+  })
+
+  test('test_fmt_interval_compact_returns_dash_on_null_start', () => {
+    const result = _fmtIntervalCompactForTest(null, '2026-05-20T10:00:00Z')
+    expect(result).toBe('—')
+  })
+
+  test('test_fmt_interval_compact_returns_dash_on_null_end', () => {
+    const result = _fmtIntervalCompactForTest('2026-05-19T10:00:00Z', null)
+    expect(result).toBe('—')
+  })
+
+  test('test_fmt_interval_compact_pads_hours_and_minutes', () => {
+    // 2026-05-03T01:00:00Z — single-digit month and day, leading-zero hour
+    const result = _fmtIntervalCompactForTest(
+      '2026-05-03T01:00:00Z',
+      '2026-05-03T06:00:00Z'
+    )
+    expect(result).toBe('5/3 01:00 → 5/3 06:00')
+  })
+
+  test('test_fmt_interval_compact_crosses_month_boundary', () => {
+    const result = _fmtIntervalCompactForTest(
+      '2026-04-30T22:00:00Z',
+      '2026-05-01T04:00:00Z'
+    )
+    expect(result).toBe('4/30 22:00 → 5/1 04:00')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Wave 43 — buildPriorBarFromHistory populates dateRangeLabel
+// ---------------------------------------------------------------------------
+
+describe('Wave 43 — buildPriorBarFromHistory dateRangeLabel', () => {
+  function makeHistoryRow(
+    overrides: Partial<UsageReportQuotaHistoryRow> = {}
+  ): UsageReportQuotaHistoryRow {
+    return {
+      provider: 'anthropic',
+      model: null,
+      quota_type: 'short',
+      expected_reset_at: '2026-05-20T11:00:00Z',
+      interval_start: '2026-05-20T06:00:00Z',
+      interval_end: '2026-05-20T11:00:00Z',
+      min_remaining_pct: 50,
+      max_remaining_pct: 100,
+      usage_tokens: 200,
+      usage_breakdown: [],
+      ...overrides,
+    }
+  }
+
+  test('test_prior_bar_dateRangeLabel_populated_from_interval_start_and_expected_reset_at', () => {
+    const h = makeHistoryRow({
+      interval_start: '2026-05-19T10:00:00Z',
+      expected_reset_at: '2026-05-20T10:00:00Z',
+    })
+    const bar = _buildPriorBarFromHistoryForTest(h, 'anthropic')
+    expect(bar.dateRangeLabel).toBe('5/19 10:00 → 5/20 10:00')
+  })
+
+  test('test_prior_bar_dateRangeLabel_uses_snapped_boundaries', () => {
+    // interval_start with sub-30-min offset — snapped to nearest slot
+    const h = makeHistoryRow({
+      interval_start: '2026-05-19T09:46:00Z',
+      expected_reset_at: '2026-05-20T09:53:00Z',
+    })
+    const bar = _buildPriorBarFromHistoryForTest(h, 'anthropic')
+    // Both snap to :00 of the hour
+    expect(bar.dateRangeLabel).toBe('5/19 10:00 → 5/20 10:00')
+  })
+
+  test('test_prior_bar_dateRangeLabel_undefined_when_interval_start_is_null', () => {
+    const h = makeHistoryRow({
+      interval_start: null,
+      expected_reset_at: '2026-05-20T10:00:00Z',
+    })
+    const bar = _buildPriorBarFromHistoryForTest(h, 'anthropic')
+    // fmtIntervalCompact returns '—' for null start; field is still set
+    expect(bar.dateRangeLabel).toBe('—')
+  })
+
+  test('test_prior_bar_dateRangeLabel_undefined_when_expected_reset_at_is_null', () => {
+    const h = makeHistoryRow({
+      interval_start: '2026-05-19T10:00:00Z',
+      expected_reset_at: null,
+    })
+    const bar = _buildPriorBarFromHistoryForTest(h, 'anthropic')
+    expect(bar.dateRangeLabel).toBe('—')
+  })
+
+  test('test_prior_bar_timeAgoLabel_and_dateRangeLabel_both_set', () => {
+    const h = makeHistoryRow({
+      interval_start: '2026-05-19T10:00:00Z',
+      expected_reset_at: '2026-05-20T10:00:00Z',
+    })
+    const bar = _buildPriorBarFromHistoryForTest(h, 'anthropic')
+    expect(bar.timeAgoLabel).toBeDefined()
+    expect(bar.dateRangeLabel).toBeDefined()
+    expect(bar.dateRangeLabel).toContain('→')
   })
 })

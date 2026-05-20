@@ -170,6 +170,16 @@ export interface QuotaBarGroup {
    * Wave 40: derived from the 30-min-snapped period_start of each history row.
    */
   timeAgoLabel?: string
+  /**
+   * Compact date-range label for prior-reset history bars, e.g.
+   * '5/19 10:00 → 5/20 10:00'. Shown as a subordinate sub-label below the
+   * timeAgoLabel so operators can see the exact reset-window boundaries.
+   *
+   * Wave 43: derived from roundToNearest30Min(interval_start) →
+   * roundToNearest30Min(expected_reset_at) in buildPriorBarFromHistory.
+   * Undefined for current active bars.
+   */
+  dateRangeLabel?: string
 }
 
 /**
@@ -870,6 +880,26 @@ export function ProviderCard({
                                   </span>
                                 )}
                               </div>
+                              {/* Date-range sub-label: prior bars only — shows exact window boundaries */}
+                              {isPrior &&
+                                quotaBar.dateRangeLabel !== undefined && (
+                                  <span
+                                    className='quota-row-date-range'
+                                    style={{
+                                      fontFamily: 'var(--font-mono)',
+                                      fontSize: '6.5px',
+                                      color: 'var(--fg-muted)',
+                                      opacity: 0.55,
+                                      whiteSpace: 'nowrap',
+                                      overflow: 'hidden',
+                                      textOverflow: 'ellipsis',
+                                      lineHeight: '1.2',
+                                      letterSpacing: '0.02em',
+                                    }}
+                                  >
+                                    {quotaBar.dateRangeLabel}
+                                  </span>
+                                )}
                               {/* The actual quota bar — full width for both current and prior */}
                               <QuotaIntervalBar
                                 intervals={quotaBar.segments}
