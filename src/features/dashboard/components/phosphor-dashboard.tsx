@@ -2578,7 +2578,6 @@ export default function PhosphorDashboard({
               config={aggregateConfig}
               data={aggregateMetrics}
               healthCells={aggregateHealthCells}
-              quotas={[]}
               fleetActivity={{
                 toolCalls: summary?.tool_calls ?? 0,
                 gitCommits: summary?.git_commit ?? 0,

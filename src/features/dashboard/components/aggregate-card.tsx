@@ -24,6 +24,12 @@
  * - Pulse-dot moved inline inside the "Invalid Tool Calls" label per mockup L2766.
  *   Trigger changed from `recentErrors > 0` to `invalidToolCalls > 0`.
  *
+ * Wave 32 (⚠12 resolution):
+ * - `quotas` prop removed from AggregateCardProps. The aggregate card is
+ *   intentionally quota-less — quotas are per-provider and do not aggregate
+ *   meaningfully across providers. ProviderCard is always called with
+ *   `quotas={[]}` so the Quotas section is unconditionally suppressed.
+ *
  * Implementation note: fleet activity rows use a semantic `<dl>` description
  * list where each label is a `<dt>` and each value+sublabel are `<dd>` elements.
  * Tests query labels with `{ exact: true }` to avoid substring ambiguity between
@@ -34,7 +40,6 @@ import {
   ProviderCard,
   type ProviderCardConfig,
   type ProviderMetrics,
-  type QuotaBarGroup,
   type AnomalyFlags,
 } from './provider-card'
 
@@ -55,8 +60,6 @@ export interface AggregateCardProps {
   config: ProviderCardConfig
   data: ProviderMetrics
   healthCells: { color: string }[]
-  /** Wave 11 PR3 (11-i): each entry is one quota-type bar with 12 segments. */
-  quotas: QuotaBarGroup[]
   fleetActivity: FleetActivity
   anomalies?: AnomalyFlags
 }
@@ -119,12 +122,16 @@ function FleetRow({
  *  - FLEET ACTIVITY sub-section inside card-pane-left (pc-sub-title pattern)
  *  - Inline pulse-dot inside the "invalid tool calls" label when `invalidToolCalls > 0`
  *    (mockup L2766; trigger is `invalidToolCalls > 0`, not `recentErrors > 0`)
+ *
+ * The aggregate card is intentionally quota-less — quotas are per-provider
+ * and do not aggregate meaningfully across providers. The Quotas section is
+ * always suppressed by passing an empty array to ProviderCard.
+ * (wave32-principal-deep-audit.md ⚠12 resolution)
  */
 export function AggregateCard({
   config,
   data,
   healthCells,
-  quotas,
   fleetActivity,
   anomalies,
 }: AggregateCardProps): ReactElement {
@@ -211,7 +218,7 @@ export function AggregateCard({
       config={config}
       data={data}
       healthCells={healthCells}
-      quotas={quotas}
+      quotas={[]}
       anomalies={anomalies}
       wrapperClassName='aggregate'
       extraPaneLeft={fleetActivitySection}
