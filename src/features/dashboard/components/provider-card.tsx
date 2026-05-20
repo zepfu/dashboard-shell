@@ -40,6 +40,7 @@
  * - F8: Quota hover .t-model spans colored with providerBrandHex() for brand color.
  */
 import type { ReactElement, ReactNode } from 'react'
+import { fmtCompact } from '../lib/format-utils'
 import {
   formatLatency,
   formatUsd,
@@ -181,13 +182,6 @@ function hasEarlyReset(
   provider: string
 ): boolean {
   return earlyReset.has(provider)
-}
-
-/** Format a compact token/cost value. */
-function fmtCompact(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`
-  return String(n)
 }
 
 /** Format packet loss percentage as string. Returns '—' when null. */

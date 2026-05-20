@@ -30,6 +30,7 @@ import {
   useReactTable,
   type SortingState,
 } from '@tanstack/react-table'
+import { numFmt } from '../lib/format-utils'
 import {
   modelBrandHex,
   providerColorFor,
@@ -80,13 +81,6 @@ function rowSeverityColor(row: RepoRow): string {
 // ---------------------------------------------------------------------------
 
 const helper = createColumnHelper<RepoRow>()
-
-function numFmt(n: number, decimals = 0): string {
-  return n.toLocaleString(undefined, {
-    minimumFractionDigits: decimals,
-    maximumFractionDigits: decimals,
-  })
-}
 
 // ---------------------------------------------------------------------------
 // RepoBreakdownTable
