@@ -375,17 +375,19 @@
   pointer-events: none;
 }
 
-/* Layer B: full-bar sweeping sheen — only on CURRENT bars.
-   overflow:hidden on .quota-row-bar (set above) ensures the translateX sheen
-   is clipped to the bar boundary and cannot bleed into adjacent rows. */
-.quota-row-bar:not(.is-prior):has(.high-velocity)::before {
+/* Layer B: per-segment sweeping sheen — only on CURRENT bars.
+   Moved from the bar-level ::before to the segment-level ::before so the
+   sheen traverses the segment width instead of the full bar width.
+   overflow:hidden on .quota-interval.high-velocity (set above) clips the
+   translateX sheen to the segment boundary. */
+.quota-row-bar:not(.is-prior) .quota-interval.high-velocity::before {
   content: '';
   position: absolute;
   top: 0;
   left: 0;
   width: 100%;
   height: 100%;
-  /* Narrow diagonal sheen band that sweeps across the full bar */
+  /* Narrow diagonal sheen band that sweeps across the segment */
   background: linear-gradient(
     105deg,
     transparent 30%,
@@ -404,7 +406,7 @@
   .quota-row-bar:not(.is-prior) .quota-interval.high-velocity::after {
     animation: spectral-shimmer 3.2s linear infinite;
   }
-  .quota-row-bar:not(.is-prior):has(.high-velocity)::before {
+  .quota-row-bar:not(.is-prior) .quota-interval.high-velocity::before {
     animation: velocity-bar-sheen 2.4s ease-in-out infinite;
   }
 }
@@ -416,7 +418,7 @@
     opacity: 0.45;
     animation: none;
   }
-  .quota-row-bar:not(.is-prior):has(.high-velocity)::before {
+  .quota-row-bar:not(.is-prior) .quota-interval.high-velocity::before {
     animation: none;
     display: none;
   }
