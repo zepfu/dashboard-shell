@@ -1,9 +1,15 @@
+import crypto from 'node:crypto'
 import http from 'node:http'
 import process from 'node:process'
 import { URL } from 'node:url'
+import { promisify } from 'node:util'
+import { gzip as gzipCallback, gunzip as gunzipCallback } from 'node:zlib'
 import pg from 'pg'
+import { createClient } from 'redis'
 
 const { Pool } = pg
+const gzip = promisify(gzipCallback)
+const gunzip = promisify(gunzipCallback)
 
 const PORT = Number(process.env.SHELL_REPORT_PORT ?? 3010)
 const DATABASE_URL = normalizeDatabaseUrl(process.env.DATABASE_URL)
@@ -56,6 +62,13 @@ const MAX_HEALTH_ROWS = Math.max(
 const MAX_PROVIDER_ERROR_ROWS = 2_000
 const MAX_PROVIDER_STATUS_ROWS = 500
 const STALE_RECORD_THRESHOLD_MINUTES = 120
+const REPORT_DB_DISABLE_PARALLELISM =
+  (process.env.SHELL_REPORT_DB_DISABLE_PARALLELISM ?? 'true').toLowerCase() !==
+  'false'
+const REPORT_SQL_FANOUT_CONCURRENCY = Math.max(
+  1,
+  Math.min(Number(process.env.SHELL_REPORT_SQL_FANOUT_CONCURRENCY ?? 2), 10)
+)
 // Cache up to 5 min — dashboard refreshes don't need real-time precision,
 // and the cold DB query is too expensive to repeat (10–54 s observed at
 // 2275×1280). A 30 s TTL meant every dashboard refresh hit the cold path.
@@ -63,6 +76,36 @@ const STALE_RECORD_THRESHOLD_MINUTES = 120
 const REPORT_CACHE_TTL_MS = Math.max(
   0,
   Number(process.env.SHELL_REPORT_CACHE_TTL_MS ?? 5 * 60 * 1000)
+)
+const REPORT_CACHE_STALE_TTL_MS = Math.max(
+  0,
+  Number(process.env.SHELL_REPORT_CACHE_STALE_TTL_MS ?? 24 * 60 * 60 * 1000)
+)
+const REPORT_CACHE_REDIS_URL = process.env.SHELL_REPORT_REDIS_URL
+const REPORT_CACHE_PREFIX =
+  process.env.SHELL_REPORT_CACHE_PREFIX ?? 'dashboard-shell:reports'
+const REPORT_CACHE_VERSION = process.env.SHELL_REPORT_CACHE_VERSION ?? 'v2'
+const REPORT_CACHE_LOCK_TTL_MS = Math.max(
+  1_000,
+  Number(process.env.SHELL_REPORT_CACHE_LOCK_TTL_MS ?? 30 * 60 * 1000)
+)
+const REPORT_CACHE_LOCK_WAIT_MS = Math.max(
+  0,
+  Number(process.env.SHELL_REPORT_CACHE_LOCK_WAIT_MS ?? 60 * 1000)
+)
+const REPORT_CACHE_LOCK_POLL_MS = Math.max(
+  100,
+  Number(process.env.SHELL_REPORT_CACHE_LOCK_POLL_MS ?? 500)
+)
+const REPORT_CACHE_PREWARM =
+  (process.env.SHELL_REPORT_CACHE_PREWARM ?? 'true').toLowerCase() !== 'false'
+const REPORT_CACHE_PREWARM_INTERVAL_MS = Math.max(
+  0,
+  Number(process.env.SHELL_REPORT_CACHE_PREWARM_INTERVAL_MS ?? 15 * 60 * 1000)
+)
+const REPORT_CACHE_PREWARM_LOCK_TTL_MS = Math.max(
+  60_000,
+  Number(process.env.SHELL_REPORT_CACHE_PREWARM_LOCK_TTL_MS ?? 2 * 60 * 60 * 1000)
 )
 const MAX_REPORT_CACHE_ENTRIES = 20
 const UPSTREAM_FETCH_TIMEOUT_MS = Number(
@@ -94,39 +137,456 @@ const pool = DATABASE_URL
       max: Number(process.env.SHELL_REPORT_DB_POOL_MAX ?? 12),
       idleTimeoutMillis: 30_000,
       connectionTimeoutMillis: 10_000,
+      options: REPORT_DB_DISABLE_PARALLELISM
+        ? '-c max_parallel_workers_per_gather=0'
+        : undefined,
     })
   : null
 const reportCache = new Map()
+const releaseCacheLockScript = `
+if redis.call("GET", KEYS[1]) == ARGV[1] then
+  return redis.call("DEL", KEYS[1])
+end
+return 0
+`
 
-async function cachedReport(key, load) {
-  if (REPORT_CACHE_TTL_MS <= 0) return load()
+const redisClient = REPORT_CACHE_REDIS_URL
+  ? createClient({
+      url: REPORT_CACHE_REDIS_URL,
+      socket: {
+        reconnectStrategy: (retries) => Math.min(retries * 100, 5_000),
+      },
+    })
+  : null
+let prewarmTimer = null
+let prewarmPromise = null
+
+if (redisClient) {
+  redisClient.on('error', (error) => {
+    process.stderr.write(
+      `[report-service] WARN: Redis cache error: ${formatError(error)}\n`
+    )
+  })
+}
+
+async function connectRedisCache() {
+  if (!redisClient || redisClient.isOpen) return
+
+  try {
+    await redisClient.connect()
+    process.stdout.write(
+      `[report-service] Redis report cache connected at ${REPORT_CACHE_REDIS_URL}\n`
+    )
+  } catch (error) {
+    process.stderr.write(
+      `[report-service] WARN: Redis report cache unavailable; falling back to SQL/local cache: ${formatError(error)}\n`
+    )
+  }
+}
+
+async function cachedReport(scope, load, options = {}) {
+  const identity = buildReportCacheIdentity(scope, options.searchParams)
+  const decorateMetadata = options.decorateMetadata !== false
+
+  if (REPORT_CACHE_TTL_MS <= 0) {
+    const value = await load()
+    return maybeDecorateCacheMetadata(value, {
+      ...identity,
+      backend: 'sql',
+      status: 'bypass',
+    }, decorateMetadata)
+  }
+
+  const redisEntry = await readRedisCacheEntry(identity)
+  if (redisEntry.status === 'fresh') {
+    setLocalReportCache(identity.cacheKey, redisEntry.entry)
+    return maybeDecorateCacheMetadata(
+      redisEntry.entry.payload,
+      {
+        ...identity,
+        backend: 'redis',
+        status: 'hit',
+        entry: redisEntry.entry,
+      },
+      decorateMetadata
+    )
+  }
+
+  if (redisEntry.status === 'stale') {
+    setLocalReportCache(identity.cacheKey, redisEntry.entry)
+    refreshReportCache(identity, load).catch((error) => {
+      process.stderr.write(
+        `[report-service] WARN: background cache refresh failed for ${identity.scope}:${identity.hash}: ${formatError(error)}\n`
+      )
+    })
+    return maybeDecorateCacheMetadata(
+      redisEntry.entry.payload,
+      {
+        ...identity,
+        backend: 'redis',
+        status: 'stale',
+        refreshing: true,
+        entry: redisEntry.entry,
+      },
+      decorateMetadata
+    )
+  }
+
+  if (redisEntry.status === 'error' || redisEntry.status === 'unavailable') {
+    const localEntry = readLocalReportCache(identity.cacheKey)
+    if (localEntry?.status === 'fresh' || localEntry?.status === 'stale') {
+      if (localEntry.status === 'stale') {
+        refreshReportCache(identity, load, { useRedis: false }).catch((error) => {
+          process.stderr.write(
+            `[report-service] WARN: local cache refresh failed for ${identity.scope}:${identity.hash}: ${formatError(error)}\n`
+          )
+        })
+      }
+      return maybeDecorateCacheMetadata(
+        localEntry.entry.payload,
+        {
+          ...identity,
+          backend: 'local',
+          status: redisEntry.status === 'error' ? 'redis_error' : 'local_hit',
+          refreshing: localEntry.status === 'stale',
+          entry: localEntry.entry,
+        },
+        decorateMetadata
+      )
+    }
+  }
+
+  const refreshResult = await refreshReportCache(identity, load)
+  return maybeDecorateCacheMetadata(
+    refreshResult.entry.payload,
+    {
+      ...identity,
+      backend: refreshResult.backend,
+      status: refreshResult.status,
+      entry: refreshResult.entry,
+    },
+    decorateMetadata
+  )
+}
+
+function buildReportCacheIdentity(scope, searchParams) {
+  const canonicalParams = searchParams
+    ? canonicalizeSearchParams(searchParams)
+    : ''
+  const hash = crypto
+    .createHash('sha256')
+    .update(`${scope}\n${canonicalParams}`)
+    .digest('hex')
+
+  return {
+    scope,
+    canonicalParams,
+    hash,
+    cacheKey: `${REPORT_CACHE_PREFIX}:${REPORT_CACHE_VERSION}:${scope}:${hash}`,
+    lockKey: `${REPORT_CACHE_PREFIX}:${REPORT_CACHE_VERSION}:${scope}:${hash}:lock`,
+  }
+}
+
+function canonicalizeSearchParams(searchParams) {
+  const entries = []
+  const keys = [...new Set([...searchParams.keys()])].sort()
+
+  for (const key of keys) {
+    for (const value of searchParams.getAll(key)) {
+      entries.push([key, value.trim()])
+    }
+  }
+
+  return new URLSearchParams(entries).toString()
+}
+
+function readLocalReportCache(cacheKey) {
+  const cached = reportCache.get(cacheKey)
+  if (!cached?.entry) return null
+
+  const status = classifyCacheEntry(cached.entry)
+  if (status === 'fresh' || status === 'stale') {
+    return { status, entry: cached.entry }
+  }
+
+  return null
+}
+
+function setLocalReportCache(cacheKey, entry) {
+  const existing = reportCache.get(cacheKey)
+  reportCache.set(cacheKey, {
+    ...existing,
+    entry,
+  })
+  pruneReportCache()
+}
+
+function buildReportCacheEntry(payload) {
+  const now = Date.now()
+  const freshUntil = now + REPORT_CACHE_TTL_MS
+  const staleUntil = freshUntil + REPORT_CACHE_STALE_TTL_MS
+
+  return {
+    cacheVersion: REPORT_CACHE_VERSION,
+    generatedAt: new Date(now).toISOString(),
+    freshUntil,
+    staleUntil,
+    payload,
+  }
+}
+
+function classifyCacheEntry(entry) {
+  if (!entry || entry.cacheVersion !== REPORT_CACHE_VERSION) return 'invalid'
+  if (!Number.isFinite(entry.freshUntil) || !Number.isFinite(entry.staleUntil)) {
+    return 'invalid'
+  }
 
   const now = Date.now()
-  const cached = reportCache.get(key)
-  if (cached?.value !== undefined && cached.expiresAt > now) {
-    return cached.value
-  }
-  if (cached?.promise) return cached.promise
+  if (entry.freshUntil > now) return 'fresh'
+  if (entry.staleUntil > now) return 'stale'
+  return 'expired'
+}
 
-  const promise = load()
-    .then((value) => {
-      reportCache.set(key, {
-        value,
-        expiresAt: Date.now() + REPORT_CACHE_TTL_MS,
-      })
-      pruneReportCache()
-      return value
-    })
+async function readRedisCacheEntry(identity) {
+  if (!redisClient) return { status: 'unavailable' }
+  if (!redisClient.isReady) return { status: 'unavailable' }
+
+  try {
+    const encoded = await redisClient.get(identity.cacheKey)
+    if (!encoded) return { status: 'miss' }
+
+    const entry = JSON.parse(
+      (await gunzip(Buffer.from(encoded, 'base64'))).toString('utf8')
+    )
+    const status = classifyCacheEntry(entry)
+    if (status === 'fresh' || status === 'stale') return { status, entry }
+
+    redisClient.del(identity.cacheKey).catch(() => {})
+    return { status }
+  } catch (error) {
+    process.stderr.write(
+      `[report-service] WARN: Redis cache read failed for ${identity.scope}:${identity.hash}: ${formatError(error)}\n`
+    )
+    return { status: 'error', error }
+  }
+}
+
+async function writeRedisCacheEntry(identity, entry) {
+  if (!redisClient?.isReady) return false
+
+  const ttlMs = Math.max(1_000, entry.staleUntil - Date.now())
+  const encoded = (await gzip(Buffer.from(JSON.stringify(entry)))).toString(
+    'base64'
+  )
+
+  await redisClient.set(identity.cacheKey, encoded, {
+    expiration: { type: 'PX', value: ttlMs },
+  })
+  return true
+}
+
+async function refreshReportCache(identity, load, options = {}) {
+  const existing = reportCache.get(identity.cacheKey)
+  if (existing?.promise) return existing.promise
+
+  const promise = refreshReportCacheUnshared(identity, load, options)
     .catch((error) => {
-      if (reportCache.get(key)?.promise === promise) {
-        reportCache.delete(key)
+      if (reportCache.get(identity.cacheKey)?.promise === promise) {
+        reportCache.delete(identity.cacheKey)
       }
       throw error
     })
 
-  reportCache.set(key, { promise, expiresAt: 0 })
+  reportCache.set(identity.cacheKey, { ...existing, promise })
   pruneReportCache()
   return promise
+}
+
+async function refreshReportCacheUnshared(identity, load, options) {
+  const useRedis = options.useRedis !== false && Boolean(redisClient?.isReady)
+  let lockToken = null
+
+  try {
+    if (useRedis) {
+      lockToken = await acquireRedisCacheLock(identity)
+      if (!lockToken) {
+        if (options.skipSqlOnLockMiss) {
+          return {
+            backend: 'redis',
+            status: 'skipped',
+            entry: null,
+          }
+        }
+        const waitedEntry = await waitForRedisCacheEntry(identity)
+        if (waitedEntry) {
+          setLocalReportCache(identity.cacheKey, waitedEntry.entry)
+          return {
+            backend: 'redis',
+            status: waitedEntry.status === 'fresh' ? 'hit' : 'stale',
+            entry: waitedEntry.entry,
+          }
+        }
+      }
+    }
+
+    const payload = await load()
+    const entry = buildReportCacheEntry(payload)
+    setLocalReportCache(identity.cacheKey, entry)
+
+    let backend = 'sql'
+    if (useRedis && lockToken) {
+      try {
+        if (redisClient?.isReady) {
+          await writeRedisCacheEntry(identity, entry)
+          backend = 'redis'
+        }
+      } catch (error) {
+        backend = 'sql'
+        process.stderr.write(
+          `[report-service] WARN: Redis cache write failed for ${identity.scope}:${identity.hash}: ${formatError(error)}\n`
+        )
+      }
+    }
+
+    return { backend, status: 'miss', entry }
+  } finally {
+    if (lockToken) {
+      await releaseRedisCacheLock(identity, lockToken)
+    }
+
+    const cached = reportCache.get(identity.cacheKey)
+    if (cached?.promise) {
+      delete cached.promise
+      reportCache.set(identity.cacheKey, cached)
+    }
+  }
+}
+
+async function acquireRedisCacheLock(identity) {
+  return acquireRedisNamedLock(
+    identity.lockKey,
+    REPORT_CACHE_LOCK_TTL_MS,
+    `${identity.scope}:${identity.hash}`
+  )
+}
+
+async function acquireRedisNamedLock(lockKey, ttlMs, label) {
+  if (!redisClient?.isReady) return null
+
+  const token = crypto.randomUUID()
+  try {
+    const response = await redisClient.set(lockKey, token, {
+      expiration: { type: 'PX', value: ttlMs },
+      condition: 'NX',
+    })
+    return response === 'OK' ? token : null
+  } catch (error) {
+    process.stderr.write(
+      `[report-service] WARN: Redis cache lock failed for ${label}: ${formatError(error)}\n`
+    )
+    return null
+  }
+}
+
+async function releaseRedisCacheLock(identity, token) {
+  await releaseRedisNamedLock(
+    identity.lockKey,
+    token,
+    `${identity.scope}:${identity.hash}`
+  )
+}
+
+async function releaseRedisNamedLock(lockKey, token, label) {
+  if (!redisClient?.isReady) return
+
+  try {
+    await redisClient.eval(releaseCacheLockScript, {
+      keys: [lockKey],
+      arguments: [token],
+    })
+  } catch (error) {
+    process.stderr.write(
+      `[report-service] WARN: Redis cache lock release failed for ${label}: ${formatError(error)}\n`
+    )
+  }
+}
+
+async function waitForRedisCacheEntry(identity) {
+  if (!redisClient?.isReady || REPORT_CACHE_LOCK_WAIT_MS <= 0) return null
+
+  const deadline = Date.now() + REPORT_CACHE_LOCK_WAIT_MS
+  while (Date.now() < deadline) {
+    await sleep(Math.min(REPORT_CACHE_LOCK_POLL_MS, deadline - Date.now()))
+    const redisEntry = await readRedisCacheEntry(identity)
+    if (redisEntry.status === 'fresh' || redisEntry.status === 'stale') {
+      return redisEntry
+    }
+  }
+
+  process.stderr.write(
+    `[report-service] WARN: timed out waiting for Redis cache refresh for ${identity.scope}:${identity.hash}; falling back to SQL.\n`
+  )
+  return null
+}
+
+function maybeDecorateCacheMetadata(value, cacheDetails, decorateMetadata) {
+  if (
+    !decorateMetadata ||
+    value === null ||
+    typeof value !== 'object' ||
+    Array.isArray(value)
+  ) {
+    return value
+  }
+
+  const metadata =
+    value.metadata && typeof value.metadata === 'object' && !Array.isArray(value.metadata)
+      ? value.metadata
+      : {}
+
+  return {
+    ...value,
+    metadata: {
+      ...metadata,
+      cacheBackend: cacheDetails.backend,
+      cacheFreshUntil: cacheDetails.entry
+        ? new Date(cacheDetails.entry.freshUntil).toISOString()
+        : null,
+      cacheGeneratedAt: cacheDetails.entry?.generatedAt ?? null,
+      cacheKeyHash: cacheDetails.hash,
+      cacheScope: cacheDetails.scope,
+      cacheStaleUntil: cacheDetails.entry
+        ? new Date(cacheDetails.entry.staleUntil).toISOString()
+        : null,
+      cacheStatus: cacheDetails.status,
+      cacheRefreshing: Boolean(cacheDetails.refreshing),
+    },
+  }
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+async function runTasksWithConcurrency(tasks, concurrency) {
+  const results = new Array(tasks.length)
+  let nextIndex = 0
+
+  async function worker() {
+    while (nextIndex < tasks.length) {
+      const currentIndex = nextIndex
+      nextIndex += 1
+      results[currentIndex] = await tasks[currentIndex]()
+    }
+  }
+
+  const workerCount = Math.min(concurrency, tasks.length)
+  await Promise.all(Array.from({ length: workerCount }, () => worker()))
+  return results
+}
+
+function formatError(error) {
+  return error instanceof Error && error.message ? error.message : String(error)
 }
 
 function pruneReportCache() {
@@ -1121,26 +1581,30 @@ function normalizeToolActivityRow(row) {
   }
 }
 
-async function loadQuotaReport() {
-  return cachedReport('quotas', async () => {
-    const quotaQuery = buildQuotaQuery()
-    const freshnessQuery = buildFreshnessQuery()
-    const [quotaResult, freshnessResult] = await Promise.all([
-      pool.query(quotaQuery.sql, quotaQuery.values),
-      pool.query(freshnessQuery.sql, freshnessQuery.values),
-    ])
-    const freshness = buildFreshnessMetadata(
-      firstRow(freshnessResult).latest_record_at
-    )
-
-    return {
-      metadata: {
-        ...freshness,
-        staleRecordThresholdMinutes: STALE_RECORD_THRESHOLD_MINUTES,
-      },
-      quotas: quotaResult.rows.map(normalizeQuotaRow),
-    }
+async function loadQuotaReport(options = {}) {
+  return cachedReport('quotas', loadQuotaReportFromDatabase, {
+    decorateMetadata: options.decorateMetadata,
   })
+}
+
+async function loadQuotaReportFromDatabase() {
+  const quotaQuery = buildQuotaQuery()
+  const freshnessQuery = buildFreshnessQuery()
+  const [quotaResult, freshnessResult] = await Promise.all([
+    pool.query(quotaQuery.sql, quotaQuery.values),
+    pool.query(freshnessQuery.sql, freshnessQuery.values),
+  ])
+  const freshness = buildFreshnessMetadata(
+    firstRow(freshnessResult).latest_record_at
+  )
+
+  return {
+    metadata: {
+      ...freshness,
+      staleRecordThresholdMinutes: STALE_RECORD_THRESHOLD_MINUTES,
+    },
+    quotas: quotaResult.rows.map(normalizeQuotaRow),
+  }
 }
 
 function normalizeSummary(row) {
@@ -1627,6 +2091,94 @@ LIMIT $${values.length};
   return { sql, values, metadata: { from, to, grain, groupBy, limit } }
 }
 
+async function loadUsageReport(searchParams) {
+  const { sql, values, metadata } = buildUsageQuery(searchParams)
+  const summaryQuery = buildSummaryQuery(searchParams)
+  const trendQuery = buildTrendQuery(searchParams)
+  const clientUsageQuery = buildClientUsageQuery(searchParams)
+  const providerLatencyHealthQuery = buildProviderLatencyHealthQuery(searchParams)
+  const providerErrorObservationQuery =
+    buildProviderErrorObservationQuery(searchParams)
+  const providerStatusUsageQuery = buildProviderStatusUsageQuery(searchParams)
+  const quotaHistoryQuery = buildQuotaHistoryQuery(searchParams)
+  const toolActivityQuery = buildToolActivityQuery(searchParams)
+
+  const [
+    result,
+    summaryResult,
+    trendResult,
+    clientUsageResult,
+    providerLatencyHealthResult,
+    providerErrorObservationResult,
+    providerStatusUsageResult,
+    quotaHistoryResult,
+    toolActivityResult,
+    quotaReport,
+  ] = await runTasksWithConcurrency(
+    [
+      () => pool.query(sql, values),
+      () => pool.query(summaryQuery.sql, summaryQuery.values),
+      () => pool.query(trendQuery.sql, trendQuery.values),
+      () => pool.query(clientUsageQuery.sql, clientUsageQuery.values),
+      () =>
+        pool.query(
+          providerLatencyHealthQuery.sql,
+          providerLatencyHealthQuery.values
+        ),
+      () =>
+        pool.query(
+          providerErrorObservationQuery.sql,
+          providerErrorObservationQuery.values
+        ),
+      () => pool.query(providerStatusUsageQuery.sql, providerStatusUsageQuery.values),
+      () => pool.query(quotaHistoryQuery.sql, quotaHistoryQuery.values),
+      () => pool.query(toolActivityQuery.sql, toolActivityQuery.values),
+      () => loadQuotaReport({ decorateMetadata: false }),
+    ],
+    REPORT_SQL_FANOUT_CONCURRENCY
+  )
+
+  const rows = result.rows.map(normalizeRow)
+  const summary = normalizeSummary(firstRow(summaryResult))
+
+  // Wave 35-C2 (⚠-8): warn when health rows approach MAX_HEALTH_ROWS cap.
+  // At >75% utilisation the oldest fleet-pulse buckets risk silent truncation
+  // as provider/model diversity grows. Surface this before it becomes data loss.
+  const healthRowCount = providerLatencyHealthResult.rows.length
+  if (healthRowCount > MAX_HEALTH_ROWS * 0.75) {
+    process.stderr.write(
+      `[report-service] WARN: providerLatencyHealth returned ${healthRowCount} rows` +
+        ` (${Math.round((healthRowCount / MAX_HEALTH_ROWS) * 100)}% of MAX_HEALTH_ROWS=${MAX_HEALTH_ROWS}).` +
+        ` Oldest fleet-pulse buckets may be truncated.` +
+        ` Raise SHELL_REPORT_HEALTH_MAX_ROWS env var to increase the cap (hard max 20000).\n`
+    )
+  }
+
+  return {
+    metadata: {
+      ...metadata,
+      ...quotaReport.metadata,
+      staleRecordThresholdMinutes: STALE_RECORD_THRESHOLD_MINUTES,
+    },
+    summary,
+    trend: trendResult.rows.map(normalizeTrendRow),
+    clients: clientUsageResult.rows.map(normalizeClientUsageRow),
+    providerLatencyHealth: providerLatencyHealthResult.rows.map(
+      normalizeProviderLatencyHealthRow
+    ),
+    providerErrorObservations: providerErrorObservationResult.rows.map(
+      normalizeProviderErrorObservationRow
+    ),
+    providerStatusUsage: providerStatusUsageResult.rows.map(
+      normalizeProviderStatusUsageRow
+    ),
+    quotas: quotaReport.quotas,
+    quotaHistory: quotaHistoryResult.rows.map(normalizeQuotaHistoryRow),
+    toolActivity: toolActivityResult.rows.map(normalizeToolActivityRow),
+    rows,
+  }
+}
+
 async function handleUsageReport(req, res) {
   if (!pool) {
     sendJson(res, 503, {
@@ -1636,87 +2188,8 @@ async function handleUsageReport(req, res) {
   }
 
   const requestUrl = new URL(req.url, `http://${req.headers.host}`)
-  const body = await cachedReport(`usage:${requestUrl.search}`, async () => {
-    const { sql, values, metadata } = buildUsageQuery(requestUrl.searchParams)
-    const summaryQuery = buildSummaryQuery(requestUrl.searchParams)
-    const trendQuery = buildTrendQuery(requestUrl.searchParams)
-    const clientUsageQuery = buildClientUsageQuery(requestUrl.searchParams)
-    const providerLatencyHealthQuery = buildProviderLatencyHealthQuery(requestUrl.searchParams)
-    const providerErrorObservationQuery = buildProviderErrorObservationQuery(requestUrl.searchParams)
-    const providerStatusUsageQuery = buildProviderStatusUsageQuery(requestUrl.searchParams)
-    const quotaHistoryQuery = buildQuotaHistoryQuery(requestUrl.searchParams)
-    const toolActivityQuery = buildToolActivityQuery(requestUrl.searchParams)
-    const quotaReportPromise = loadQuotaReport()
-
-    const [
-      result,
-      summaryResult,
-      trendResult,
-      clientUsageResult,
-      providerLatencyHealthResult,
-      providerErrorObservationResult,
-      providerStatusUsageResult,
-      quotaHistoryResult,
-      toolActivityResult,
-      quotaReport,
-    ] = await Promise.all([
-      pool.query(sql, values),
-      pool.query(summaryQuery.sql, summaryQuery.values),
-      pool.query(trendQuery.sql, trendQuery.values),
-      pool.query(clientUsageQuery.sql, clientUsageQuery.values),
-      pool.query(
-        providerLatencyHealthQuery.sql,
-        providerLatencyHealthQuery.values
-      ),
-      pool.query(
-        providerErrorObservationQuery.sql,
-        providerErrorObservationQuery.values
-      ),
-      pool.query(providerStatusUsageQuery.sql, providerStatusUsageQuery.values),
-      pool.query(quotaHistoryQuery.sql, quotaHistoryQuery.values),
-      pool.query(toolActivityQuery.sql, toolActivityQuery.values),
-      quotaReportPromise,
-    ])
-
-    const rows = result.rows.map(normalizeRow)
-    const summary = normalizeSummary(firstRow(summaryResult))
-
-    // Wave 35-C2 (⚠-8): warn when health rows approach MAX_HEALTH_ROWS cap.
-    // At >75% utilisation the oldest fleet-pulse buckets risk silent truncation
-    // as provider/model diversity grows. Surface this before it becomes data loss.
-    const healthRowCount = providerLatencyHealthResult.rows.length
-    if (healthRowCount > MAX_HEALTH_ROWS * 0.75) {
-      process.stderr.write(
-        `[report-service] WARN: providerLatencyHealth returned ${healthRowCount} rows` +
-          ` (${Math.round((healthRowCount / MAX_HEALTH_ROWS) * 100)}% of MAX_HEALTH_ROWS=${MAX_HEALTH_ROWS}).` +
-          ` Oldest fleet-pulse buckets may be truncated.` +
-          ` Raise SHELL_REPORT_HEALTH_MAX_ROWS env var to increase the cap (hard max 20000).\n`
-      )
-    }
-
-    return {
-      metadata: {
-        ...metadata,
-        ...quotaReport.metadata,
-        staleRecordThresholdMinutes: STALE_RECORD_THRESHOLD_MINUTES,
-      },
-      summary,
-      trend: trendResult.rows.map(normalizeTrendRow),
-      clients: clientUsageResult.rows.map(normalizeClientUsageRow),
-      providerLatencyHealth: providerLatencyHealthResult.rows.map(
-        normalizeProviderLatencyHealthRow
-      ),
-      providerErrorObservations: providerErrorObservationResult.rows.map(
-        normalizeProviderErrorObservationRow
-      ),
-      providerStatusUsage: providerStatusUsageResult.rows.map(
-        normalizeProviderStatusUsageRow
-      ),
-      quotas: quotaReport.quotas,
-      quotaHistory: quotaHistoryResult.rows.map(normalizeQuotaHistoryRow),
-      toolActivity: toolActivityResult.rows.map(normalizeToolActivityRow),
-      rows,
-    }
+  const body = await cachedReport('usage', () => loadUsageReport(requestUrl.searchParams), {
+    searchParams: requestUrl.searchParams,
   })
 
   sendJson(res, 200, body)
@@ -1731,6 +2204,158 @@ async function handleUsageQuotas(_req, res) {
   }
 
   sendJson(res, 200, await loadQuotaReport())
+}
+
+function startReportCachePrewarm() {
+  if (!pool || !redisClient || !REPORT_CACHE_PREWARM || prewarmTimer) return
+
+  const run = () => {
+    if (prewarmPromise) return
+    prewarmPromise = prewarmReportCaches()
+      .catch((error) => {
+        process.stderr.write(
+          `[report-service] WARN: Redis report cache prewarm failed: ${formatError(error)}\n`
+        )
+      })
+      .finally(() => {
+        prewarmPromise = null
+      })
+  }
+
+  const firstRun = setTimeout(run, 1_000)
+  firstRun.unref?.()
+
+  if (REPORT_CACHE_PREWARM_INTERVAL_MS > 0) {
+    prewarmTimer = setInterval(run, REPORT_CACHE_PREWARM_INTERVAL_MS)
+    prewarmTimer.unref?.()
+  }
+}
+
+async function prewarmReportCaches() {
+  if (!redisClient?.isReady) return
+
+  const lockKey = `${REPORT_CACHE_PREFIX}:${REPORT_CACHE_VERSION}:prewarm:lock`
+  const lockToken = await acquireRedisNamedLock(
+    lockKey,
+    REPORT_CACHE_PREWARM_LOCK_TTL_MS,
+    'prewarm'
+  )
+  if (!lockToken) {
+    process.stdout.write(
+      '[report-service] Redis report cache prewarm skipped; another report service owns the prewarm lock\n'
+    )
+    return
+  }
+
+  try {
+    const windows = buildPrewarmUsageWindows()
+    process.stdout.write(
+      `[report-service] prewarming Redis report cache for ${windows.length} usage windows\n`
+    )
+
+    for (const window of windows) {
+      try {
+        const searchParams = buildPrewarmUsageSearchParams(window.from, window.to)
+        const status = await prewarmCachedReport('usage', searchParams, () =>
+          loadUsageReport(searchParams)
+        )
+        process.stdout.write(
+          `[report-service] prewarm usage cache window=${window.name} status=${status} from=${window.from} to=${window.to}\n`
+        )
+      } catch (error) {
+        process.stderr.write(
+          `[report-service] WARN: prewarm usage cache failed window=${window.name} from=${window.from} to=${window.to}: ${formatError(error)}\n`
+        )
+        break
+      }
+    }
+
+    try {
+      const quotaStatus = await prewarmCachedReport(
+        'quotas',
+        undefined,
+        loadQuotaReportFromDatabase
+      )
+      process.stdout.write(
+        `[report-service] prewarm quota cache status=${quotaStatus}\n`
+      )
+    } catch (error) {
+      process.stderr.write(
+        `[report-service] WARN: prewarm quota cache failed: ${formatError(error)}\n`
+      )
+    }
+  } finally {
+    await releaseRedisNamedLock(lockKey, lockToken, 'prewarm')
+  }
+}
+
+async function prewarmCachedReport(scope, searchParams, load) {
+  const identity = buildReportCacheIdentity(scope, searchParams)
+  const redisEntry = await readRedisCacheEntry(identity)
+  if (redisEntry.status === 'fresh') return 'fresh'
+
+  const result = await refreshReportCache(identity, load, {
+    skipSqlOnLockMiss: true,
+  })
+  return result.status
+}
+
+function buildPrewarmUsageWindows() {
+  const today = utcDateOnly(new Date())
+  const tomorrow = addUtcDays(today, 1)
+  const yearStart = new Date(Date.UTC(today.getUTCFullYear(), 0, 1))
+  const twoYearStart = new Date(today)
+  twoYearStart.setUTCFullYear(today.getUTCFullYear() - 2)
+
+  return [
+    {
+      name: 'last-7-days',
+      from: toDateParam(addUtcDays(today, -6)),
+      to: toDateParam(tomorrow),
+    },
+    {
+      name: 'last-30-days',
+      from: toDateParam(addUtcDays(today, -30)),
+      to: toDateParam(tomorrow),
+    },
+    {
+      name: 'ytd',
+      from: toDateParam(yearStart),
+      to: toDateParam(tomorrow),
+    },
+    {
+      name: 'trailing-2-years',
+      from: toDateParam(twoYearStart),
+      to: toDateParam(tomorrow),
+    },
+  ]
+}
+
+function buildPrewarmUsageSearchParams(from, to) {
+  return new URLSearchParams({
+    from,
+    to,
+    grain: 'day',
+    group_by: 'provider,model,repository',
+    limit: String(MAX_LIMIT),
+    sort: 'period_end',
+  })
+}
+
+function utcDateOnly(date) {
+  return new Date(
+    Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate())
+  )
+}
+
+function addUtcDays(date, days) {
+  const next = new Date(date)
+  next.setUTCDate(next.getUTCDate() + days)
+  return next
+}
+
+function toDateParam(date) {
+  return date.toISOString().slice(0, 10)
 }
 
 async function handleAawmTapProxy(req, res) {
@@ -1771,6 +2396,8 @@ async function handleRequest(req, res) {
     sendJson(res, 200, {
       ok: true,
       databaseConfigured: Boolean(pool),
+      redisConfigured: Boolean(redisClient),
+      redisReady: Boolean(redisClient?.isReady),
     })
     return
   }
@@ -1811,9 +2438,23 @@ const server = http.createServer((req, res) => {
 
 server.listen(PORT, '0.0.0.0', () => {
   process.stdout.write(`dashboard-shell report service listening on ${PORT}\n`)
+  connectRedisCache()
+    .then(startReportCachePrewarm)
+    .catch((error) => {
+      process.stderr.write(
+        `[report-service] WARN: Redis startup failed: ${formatError(error)}\n`
+      )
+    })
 })
 
 async function shutdown() {
+  if (prewarmTimer) {
+    clearInterval(prewarmTimer)
+    prewarmTimer = null
+  }
+  if (redisClient?.isOpen) {
+    await redisClient.quit()
+  }
   await pool?.end()
   server.close(() => process.exit(0))
 }
