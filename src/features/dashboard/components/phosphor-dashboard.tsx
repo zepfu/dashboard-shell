@@ -874,14 +874,20 @@ function extractInterval(
 /**
  * Formats a quota tooltip window label from interval start/end ISO strings.
  *
- * Wave 24-PhosphorDash (operator F1b): produces relative labels like
- * `−30m → now` (short/5h), `−12h → now` (weekly/7d), `−24h → now` (Google
- * 24h short), `this month` (monthly).  Falls back to `—` when timestamps are
- * unavailable.
+ * Wave 45 (operator request): emits absolute date+time rather than a relative
+ * span so the tooltip header shows the exact window boundaries.  Format is
+ * `M/D HH:MM → M/D HH:MM` (both endpoints 30-min snapped via
+ * {@link fmtIntervalCompact}).  Monthly quotas still display `this month`.
+ *
+ * Sentinel guard: the API uses year 9999 (e.g. "9999-12-31T00:00:00.000Z") to
+ * mean "no fixed end" for ongoing intervals (i.e. the current active window).
+ * For such bars the window end IS "now", so we substitute `new Date()` so the
+ * tooltip displays the actual current moment (30-min snapped) rather than the
+ * far-future sentinel year.
  *
  * @param intervalType - Which quota interval produced this bar.
  * @param intervalStart - ISO string for interval start, or null.
- * @param intervalEnd   - ISO string for interval end (≈ now), or null.
+ * @param intervalEnd   - ISO string for interval end (≈ now or sentinel), or null.
  */
 function formatTipWindow(
   intervalType: 'short' | 'weekly' | 'special' | 'short_special' | 'monthly',
@@ -891,46 +897,18 @@ function formatTipWindow(
   // Monthly quotas: simple label; exact dates rarely meaningful in the tooltip.
   if (intervalType === 'monthly') return 'this month'
 
-  // For time-bounded intervals, compute the elapsed span and render relative.
-  if (intervalStart !== null && intervalEnd !== null) {
-    const startMs = new Date(intervalStart).getTime()
-    const endDate = new Date(intervalEnd)
-    const endMs = endDate.getTime()
-    // Sentinel guard: the API uses year 9999 (e.g. "9999-12-31T00:00:00.000Z")
-    // to mean "no fixed end". Treating it literally yields ~2.9M days. Fall
-    // through to the type-based label below instead of computing that span.
-    if (
-      !Number.isNaN(startMs) &&
-      !Number.isNaN(endMs) &&
-      endDate.getUTCFullYear() <= 9000
-    ) {
-      const spanMs = endMs - startMs
-      const spanH = spanMs / 3_600_000
-      // Round to nearest sensible unit for display.
-      if (spanH <= 1) {
-        const spanM = Math.round(spanMs / 60_000)
-        return `−${spanM.toString()}m → now`
-      }
-      if (spanH <= 36) {
-        const rounded = Math.round(spanH)
-        return `−${rounded.toString()}h → now`
-      }
-      const spanD = Math.round(spanH / 24)
-      return `−${spanD.toString()}d → now`
-    }
-  }
+  // Sentinel guard: the API uses year 9999 to mean "no fixed end" (ongoing
+  // interval).  Current bars always end at "now", so substitute the current
+  // timestamp in place of the sentinel so the tooltip shows an accurate bound.
+  const effectiveEnd =
+    intervalEnd !== null &&
+    !Number.isNaN(new Date(intervalEnd).getTime()) &&
+    new Date(intervalEnd).getUTCFullYear() > 9000
+      ? new Date().toISOString()
+      : intervalEnd
 
-  // Fallback by interval type when timestamps are absent.
-  switch (intervalType) {
-    case 'short':
-    case 'short_special':
-      return '−5h → now'
-    case 'weekly':
-    case 'special':
-      return '−7d → now'
-    default:
-      return '—'
-  }
+  // Emit absolute date+time using the shared compact formatter (30-min snapped).
+  return fmtIntervalCompact(intervalStart, effectiveEnd)
 }
 
 /**
@@ -1531,29 +1509,6 @@ function roundToNearest30Min(iso: string): Date {
 }
 
 /**
- * Formats a compact interval label for the history bar tipWindow, e.g.
- * `Sun 5/11 → Sun 5/18`. Used in place of the live '−7d → now' style.
- * Falls back to '—' when either bound is null/unparseable.
- */
-function fmtIntervalForHistory(
-  start: string | null,
-  end: string | null
-): string {
-  if (start === null || end === null) return '—'
-  const s = new Date(start)
-  const e = new Date(end)
-  if (Number.isNaN(s.getTime()) || Number.isNaN(e.getTime())) return '—'
-  const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
-  const fmt = (d: Date): string => {
-    const day = dayNames[d.getUTCDay()]
-    const m = d.getUTCMonth() + 1
-    const dd = d.getUTCDate()
-    return `${day} ${m.toString()}/${dd.toString()}`
-  }
-  return `${fmt(s)} → ${fmt(e)}`
-}
-
-/**
  * Formats a compact inline date-range label for prior-bar row display, e.g.
  * `5/19 10:00 → 5/20 10:00`. Both bounds are 30-min snapped before formatting
  * so the displayed range matches the snapped slot used for time-ago.
@@ -1781,7 +1736,7 @@ function buildHistoryBarsForProvider(
       remainingPct,
       resetAt: h.expected_reset_at ?? undefined,
       segments: buildQuotaSegments(remainingPct),
-      tipWindow: fmtIntervalForHistory(h.interval_start, h.interval_end),
+      tipWindow: fmtIntervalCompact(h.interval_start, h.interval_end),
       tipModels,
       // Wave 40 #3: no slice — all history bars returned (1.5× lookback from server).
       // Wave 40 #4/#5: time-ago label for the reset cell.
@@ -2012,7 +1967,7 @@ function buildPriorBarFromHistory(
     remainingPct,
     resetAt: h.expected_reset_at ?? undefined,
     segments: buildQuotaSegments(remainingPct),
-    tipWindow: fmtIntervalForHistory(h.interval_start, h.interval_end),
+    tipWindow: fmtIntervalCompact(h.interval_start, h.interval_end),
     tipModels,
     timeAgoLabel,
     dateRangeLabel,
