@@ -954,6 +954,19 @@ export { formatTipWindow as _formatTipWindowForTest }
 export { formatTipVelocity as _formatTipVelocityForTest }
 
 /**
+ * Test-only re-exports for Wave 40 multi-quota redesign helpers.
+ * Do not use in production code paths outside this module.
+ *
+ * @internal
+ */
+export {
+  formatTimeAgo as _formatTimeAgoForTest,
+  quotaTypeToPeriodType as _quotaTypeToPeriodTypeForTest,
+  tipModelsFromBreakdownGoogleAggregated as _tipModelsGoogleForTest,
+  tipModelsFromBreakdownSingleLabel as _tipModelsSingleLabelForTest,
+}
+
+/**
  * Derives a velocity string from `consumedPct` and `intervalStart`.
  *
  * Wave 35 S4: computes `consumedPct / hoursElapsed` where
@@ -1015,6 +1028,120 @@ function tipModelsFromBreakdown(
       model,
       costDelta: `$${cost.toFixed(2)}`,
     }))
+}
+
+/**
+ * Google-specific variant of tipModelsFromBreakdown for prior history bars.
+ *
+ * Wave 40 item #1: instead of showing raw model names (e.g. gemini-2.5-flash-001,
+ * gemini-2.5-flash-preview), aggregates the usage_breakdown into Gemini model
+ * class buckets: 'flash-lite', 'flash', 'pro', 'other'. Cost is summed per class
+ * and the top 3 classes by cost are returned. This keeps history tooltips concise
+ * and avoids overwhelming the operator with individual version names.
+ */
+function tipModelsFromBreakdownGoogleAggregated(
+  breakdown: UsageReportQuotaUsageBreakdown[]
+): QuotaTipModel[] | undefined {
+  if (breakdown.length === 0) return undefined
+
+  // Aggregate cost into Gemini class buckets.
+  const costByClass = new Map<string, number>()
+  for (const entry of breakdown) {
+    if (!entry.model) continue
+    const lower = entry.model.toLowerCase()
+    let cls: string
+    // Order of checks matters: flash-lite before flash.
+    if (lower.includes('flash-lite')) {
+      cls = 'flash-lite'
+    } else if (lower.includes('flash')) {
+      cls = 'flash'
+    } else if (lower.includes('pro')) {
+      cls = 'pro'
+    } else {
+      cls = 'other'
+    }
+    costByClass.set(cls, (costByClass.get(cls) ?? 0) + entry.cost)
+  }
+  if (costByClass.size === 0) return undefined
+
+  return [...costByClass.entries()]
+    .sort(([, a], [, b]) => b - a)
+    .slice(0, 3)
+    .map(([cls, cost]) => ({
+      model: cls,
+      costDelta: `$${cost.toFixed(2)}`,
+    }))
+}
+
+/**
+ * Anthropic/OpenAI weekly-tier variant of tipModelsFromBreakdown for prior bars.
+ *
+ * Wave 40 item #2: for Anthropic weekly + weekly_special tiers, collapses all
+ * model breakdown entries into a single 'sonnet' label. For OpenAI weekly +
+ * weekly_special, collapses to 'codex-spark'. Returns undefined when breakdown
+ * is empty.
+ *
+ * Interpretation: the operator wants the *tier display name* as a single label
+ * in history tooltips — the same name used in the current active bar label —
+ * rather than per-model granularity.
+ */
+function tipModelsFromBreakdownSingleLabel(
+  breakdown: UsageReportQuotaUsageBreakdown[],
+  displayLabel: string
+): QuotaTipModel[] | undefined {
+  if (breakdown.length === 0) return undefined
+  const totalCost = breakdown.reduce((s, e) => s + e.cost, 0)
+  return [{ model: displayLabel, costDelta: `$${totalCost.toFixed(2)}` }]
+}
+
+/**
+ * Formats a "time ago" string for a prior reset bar relative to now.
+ *
+ * Wave 40 item #5: uses the 30-min-rounded period_start timestamp as the base
+ * for calculation so the displayed age is consistent with the snapped date shown
+ * in the bar label. Falls back to '—' when input is null or unparseable.
+ *
+ * Output format (compact, one unit of precision):
+ *   < 1h  → "45m ago"
+ *   < 24h → "3h ago"
+ *   < 14d → "2d ago"
+ *   ≥ 14d → "2w ago"
+ */
+function formatTimeAgo(roundedDate: Date): string {
+  const diffMs = Date.now() - roundedDate.getTime()
+  if (diffMs < 0) return 'now' // future — shouldn't occur for prior bars
+  const totalMins = Math.floor(diffMs / 60_000)
+  const hours = Math.floor(totalMins / 60)
+  const days = Math.floor(hours / 24)
+  const weeks = Math.floor(days / 7)
+  if (totalMins < 60) return `${totalMins.toString()}m ago`
+  if (hours < 24) return `${hours.toString()}h ago`
+  if (days < 14) return `${days.toString()}d ago`
+  return `${weeks.toString()}w ago`
+}
+
+/**
+ * Maps a quota_type string to the QuotaBarGroup periodType used for stacked
+ * lane grouping in provider-card.tsx.
+ *
+ * Wave 40 item #3: returns '5hr' for short/short_special, 'weekly' for weekly,
+ * 'special' for special/weekly_special, 'monthly' for monthly.
+ */
+function quotaTypeToPeriodType(quotaType: string): QuotaBarGroup['periodType'] {
+  switch (quotaType.toLowerCase()) {
+    case 'short':
+    case 'short_special':
+      return '5hr'
+    case 'weekly':
+      return 'weekly'
+    case 'special':
+    case 'weekly_special':
+      return 'special'
+    case 'monthly':
+      return 'monthly'
+    default:
+      return 'weekly'
+  }
 }
 
 /**
@@ -1384,23 +1511,6 @@ function roundToNearest30Min(iso: string): Date {
 }
 
 /**
- * Formats a compact YYYY-MM-DD HH:MM label for a history bar, using the
- * timestamp rounded to the nearest 30-minute boundary.  The format matches the
- * previous raw-minute formatter (no UTC suffix) so existing label patterns are
- * preserved while sub-minute jitter is suppressed.
- * Returns '—' when the input is null or unparseable.
- */
-function fmtHistoryDateRounded(iso: string | null): string {
-  if (iso === null) return '—'
-  const d = new Date(iso)
-  if (Number.isNaN(d.getTime())) return '—'
-  const r = roundToNearest30Min(iso)
-  const ymd = r.toISOString().slice(0, 10) // YYYY-MM-DD
-  const hm = r.toISOString().slice(11, 16) // HH:MM
-  return `${ymd} ${hm}`
-}
-
-/**
  * Formats a compact interval label for the history bar tipWindow, e.g.
  * `Sun 5/11 → Sun 5/18`. Used in place of the live '−7d → now' style.
  * Falls back to '—' when either bound is null/unparseable.
@@ -1427,7 +1537,36 @@ function fmtIntervalForHistory(
  * Builds QuotaBarGroup[] for past reset windows from quotaHistory[] for a
  * single provider. Full parity with current bars: identical 12-segment fills,
  * per-model tooltip content, and visual weight. Only the label heading differs
- * (reset date instead of duration tag).
+ * (model prefix · time-ago instead of model prefix · duration tag).
+ *
+ * Wave 40 multi-quota redesign changes:
+ *
+ * #1 Google model-class aggregation (prior bars only):
+ *   Raw model names (gemini-2.5-flash-001, gemini-2.5-flash-preview, …) are
+ *   aggregated into class buckets: flash-lite / flash / pro / other. The
+ *   tooltip shows the class name, not individual model names. The current
+ *   active bar (built by buildQuotaRows) is NOT changed.
+ *
+ * #2 Anthropic/OpenAI weekly-tier display names:
+ *   For Anthropic weekly + special quota types: tooltip displays 'sonnet'.
+ *   For OpenAI weekly + special quota types: tooltip displays 'codex-spark'.
+ *   Short/5hr bars use the standard tipModelsFromBreakdown (per-model).
+ *
+ * #3 Render ALL history bars (no fixed-count slice):
+ *   The 1.5× lookback server change (Engineer A, W40) extends the window.
+ *   All returned bars are rendered; the operator can always see the full
+ *   1.5× interval history for each tier.
+ *
+ * #4 30-min snapped period_start for time-ago base:
+ *   timeAgoLabel is derived from roundToNearest30Min(expected_reset_at) so
+ *   the displayed age matches the bar's rounded date label.
+ *
+ * #5 Time-ago in label and reset cell:
+ *   Label format changed from 'prefix · YYYY-MM-DD HH:MM' to 'prefix · Xd ago'
+ *   (time-ago of the rounded expected_reset_at). The same string populates
+ *   timeAgoLabel for the reset cell in provider-card.tsx.
+ *
+ * #6 periodType set on all history bars for stacked-lane grouping.
  *
  * Dedup: history rows whose expected_reset_at matches the resetAt of any
  * current bar (same live window) are skipped.
@@ -1445,6 +1584,7 @@ function buildHistoryBarsForProvider(
   currentBars: QuotaBarGroup[]
 ): QuotaBarGroup[] {
   const aliases = providerAliases(provider)
+  const providerLower = provider.toLowerCase()
 
   // Filter history to this provider (handle aliases like 'gemini' → 'google').
   const relevant = historyRows.filter((h) =>
@@ -1511,10 +1651,12 @@ function buildHistoryBarsForProvider(
     // Skip rows without usable data.
     if (h.min_remaining_pct === null) continue
 
-    const roundedSlot =
+    const roundedSlotDate =
       h.expected_reset_at !== null
-        ? roundToNearest30Min(h.expected_reset_at).toISOString()
-        : ''
+        ? roundToNearest30Min(h.expected_reset_at)
+        : null
+    const roundedSlot =
+      roundedSlotDate !== null ? roundedSlotDate.toISOString() : ''
 
     // Dedup against current bars (rounded comparison suppresses history rows
     // within 30 minutes of any live reset window).
@@ -1527,20 +1669,53 @@ function buildHistoryBarsForProvider(
     if (seen.has(dedupeKey)) continue
     seen.add(dedupeKey)
 
-    // Build the display label: '<model-prefix> · <reset-date YYYY-MM-DD HH:MM>'
-    // Use the rounded date so visually identical bars can never be produced by
-    // sub-minute poll-jitter.  Append '(quota_type)' when multiple quota types
-    // share the same rounded slot to keep adjacent bars distinguishable.
     const quotaTypeLower = h.quota_type.toLowerCase()
+
+    // Wave 40 #5: time-ago label derived from the 30-min-snapped reset time.
+    // Used in both the bar label (replaces YYYY-MM-DD HH:MM) and the reset cell.
+    const timeAgoLabel =
+      roundedSlotDate !== null ? formatTimeAgo(roundedSlotDate) : '—'
+
+    // Build the display label: '<model-prefix> · <time-ago>[(quota_type)]'
+    // The time-ago replaces the previous absolute date string so the operator
+    // sees "flash · 2d ago" instead of "flash · 2026-05-18 00:00".
     const modelPrefix =
       modelPrefixByQuotaType.get(quotaTypeLower) ??
       (h.model !== null ? h.model : 'all')
-    const dateStr = fmtHistoryDateRounded(h.expected_reset_at)
     const disambig =
       roundedSlot !== '' && (quotaTypesPerSlot.get(roundedSlot)?.size ?? 0) > 1
         ? ` (${quotaTypeLower})`
         : ''
-    const label = `${modelPrefix} · ${dateStr}${disambig}`
+    const label = `${modelPrefix} · ${timeAgoLabel}${disambig}`
+
+    // Wave 40 #6: determine periodType for stacked-lane grouping.
+    const periodType = quotaTypeToPeriodType(quotaTypeLower)
+
+    // Wave 40 #1/#2: choose the correct tipModels builder based on provider
+    // and quota type.
+    let tipModels: QuotaTipModel[] | undefined
+    if (providerLower === 'google') {
+      // #1: Google history bars → aggregate by model class (flash-lite/flash/pro/other)
+      tipModels = tipModelsFromBreakdownGoogleAggregated(h.usage_breakdown)
+    } else if (
+      providerLower === 'anthropic' &&
+      (quotaTypeLower === 'weekly' || quotaTypeLower === 'special')
+    ) {
+      // #2: Anthropic weekly-tier bars → single 'sonnet' label
+      tipModels = tipModelsFromBreakdownSingleLabel(h.usage_breakdown, 'sonnet')
+    } else if (
+      providerLower === 'openai' &&
+      (quotaTypeLower === 'weekly' || quotaTypeLower === 'special')
+    ) {
+      // #2: OpenAI weekly-tier bars → single 'codex-spark' label
+      tipModels = tipModelsFromBreakdownSingleLabel(
+        h.usage_breakdown,
+        'codex-spark'
+      )
+    } else {
+      // All other providers/tiers: standard per-model breakdown
+      tipModels = tipModelsFromBreakdown(h.usage_breakdown)
+    }
 
     // Full-parity 12-segment render using the same buildQuotaSegments function
     // as current bars. Use min_remaining_pct (peak consumption).
@@ -1554,7 +1729,12 @@ function buildHistoryBarsForProvider(
       resetAt: h.expected_reset_at ?? undefined,
       segments: buildQuotaSegments(remainingPct),
       tipWindow: fmtIntervalForHistory(h.interval_start, h.interval_end),
-      tipModels: tipModelsFromBreakdown(h.usage_breakdown),
+      tipModels,
+      // Wave 40 #3: no slice — all history bars returned (1.5× lookback from server).
+      // Wave 40 #4/#5: time-ago label for the reset cell.
+      timeAgoLabel,
+      // Wave 40 #6: stacked-lane grouping by period type.
+      periodType,
     })
   }
 
