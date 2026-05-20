@@ -92,3 +92,58 @@ test('test_kpi_strip_loading_shows_skeletons', () => {
 
   expect(skeletons).toBeGreaterThan(0)
 })
+
+// Wave 35 (⚠-5 R-B): KPI delta rendering tests
+
+test('test_kpi_strip_renders_signed_percent_when_prior_data_exists', () => {
+  // Fractional deltas: 0.124 = +12.4%, -0.05 = -5.0%
+  const deltas = {
+    cost_usd: 0.124,
+    requests: -0.05,
+    token_in: 0.3,
+    token_out: -0.1,
+  }
+  render(<KpiStrip summary={mockSummary} deltas={deltas} />)
+
+  // ↑ direction for positive delta (cost_usd = +12.4%)
+  expect(screen.getByText('↑ 12.4%')).toBeInTheDocument()
+
+  // ↓ direction for negative delta (requests = -5.0%)
+  expect(screen.getByText('↓ 5.0%')).toBeInTheDocument()
+})
+
+test('test_kpi_strip_renders_em_dash_when_no_deltas_provided', () => {
+  render(<KpiStrip summary={mockSummary} deltas={{}} />)
+
+  // All 6 delta cells should show em-dash when deltas map is empty
+  const deltaCells = screen.getAllByText('—')
+  expect(deltaCells.length).toBe(6)
+})
+
+test('test_kpi_strip_renders_em_dash_when_deltas_prop_absent', () => {
+  render(<KpiStrip summary={mockSummary} />)
+
+  // All 6 delta cells should show em-dash when deltas prop is not provided
+  const deltaCells = screen.getAllByText('—')
+  expect(deltaCells.length).toBe(6)
+})
+
+test('test_kpi_strip_applies_classname_to_wrapper', () => {
+  const { container } = render(
+    <KpiStrip summary={mockSummary} className='kpi-strip' />
+  )
+
+  // The outermost element must carry the class (Wave 35 S1)
+  const strip = container.querySelector('.kpi-strip')
+  expect(strip).not.toBeNull()
+})
+
+test('test_kpi_strip_applies_classname_to_loading_wrapper', () => {
+  const { container } = render(
+    <KpiStrip summary={undefined} loading={true} className='kpi-strip' />
+  )
+
+  // className must also apply in loading state
+  const strip = container.querySelector('.kpi-strip')
+  expect(strip).not.toBeNull()
+})

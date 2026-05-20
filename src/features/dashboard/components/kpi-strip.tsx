@@ -41,6 +41,12 @@ interface KpiStripProps {
    * When present, rendered as ↑/↓ percentage; when absent, shows em-dash.
    */
   deltas?: Partial<Record<KpiKey, number>>
+  /**
+   * Optional className applied to the outermost wrapper element.
+   * Wave 35 (S1): pass 'kpi-strip' so probe/E2E selectors targeting
+   * `.kpi-strip` resolve correctly.
+   */
+  className?: string
 }
 
 /**
@@ -143,6 +149,7 @@ export function KpiStrip({
   summary,
   loading = false,
   deltas,
+  className,
 }: KpiStripProps): ReactElement {
   const isLoading = loading || summary === undefined
 
@@ -159,7 +166,7 @@ export function KpiStrip({
 
   if (isLoading) {
     return (
-      <div style={stripStyle}>
+      <div className={className} style={stripStyle}>
         {TILE_LABELS.map((label, i) => (
           <div
             key={label}
@@ -211,7 +218,7 @@ export function KpiStrip({
   const maxRaw = Math.max(...tiles.map((t) => t.rawValue), 1)
 
   return (
-    <div style={stripStyle}>
+    <div className={className} style={stripStyle}>
       {tiles.map(({ label, key, rawValue, value, isError }, i) => {
         const deltaVal = deltas?.[key]
         const deltaStr = renderDelta(deltaVal)
