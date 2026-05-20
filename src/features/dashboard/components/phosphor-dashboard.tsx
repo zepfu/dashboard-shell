@@ -1112,7 +1112,22 @@ function tipModelsFromBreakdownSingleLabel(
  */
 function formatTimeAgo(roundedDate: Date): string {
   const diffMs = Date.now() - roundedDate.getTime()
-  if (diffMs < 0) return 'now' // future — shouldn't occur for prior bars
+  // Treat slightly-future timestamps (rounding artefacts ≤ 30 min) as their
+  // absolute distance so the label is sensible rather than "now".
+  const absDiffMs = Math.abs(diffMs)
+  if (diffMs < -60_000) {
+    // More than a minute in the future — use absolute distance with "ago" label
+    // so rounding artefacts still produce readable output (e.g. "30m ago").
+    const totalMins = Math.floor(absDiffMs / 60_000)
+    const hours = Math.floor(totalMins / 60)
+    const days = Math.floor(hours / 24)
+    const weeks = Math.floor(days / 7)
+    if (totalMins < 60) return `${totalMins.toString()}m ago`
+    if (hours < 24) return `${hours.toString()}h ago`
+    if (days < 14) return `${days.toString()}d ago`
+    return `${weeks.toString()}w ago`
+  }
+  if (diffMs < 0) return 'just now' // within 1 minute in future — truly at boundary
   const totalMins = Math.floor(diffMs / 60_000)
   const hours = Math.floor(totalMins / 60)
   const days = Math.floor(hours / 24)
@@ -1598,14 +1613,21 @@ function buildHistoryBarsForProvider(
   // If no current bars exist the provider has no active quotas — skip history.
   if (currentBars.length === 0) return []
 
-  // Build a Set of rounded resetAt timestamps from current bars so we can
-  // dedup history rows that fall within 30 minutes of a live reset window.
-  const currentRoundedResetTimes = new Set<string>(
-    currentBars
-      .map((b) => b.resetAt)
-      .filter((r): r is string => r !== undefined)
-      .map((r) => roundToNearest30Min(r).toISOString())
-  )
+  // Build an array of numeric timestamps (ms) from current bars' rounded reset
+  // times.  We use numeric comparison for ±30 min proximity so that rounding
+  // artefacts from Math.round (which can push a past reset into the future
+  // slot) don't slip through an exact ISO-string match.
+  const THIRTY_MIN_MS_H = 30 * 60 * 1000
+  const currentRoundedResetMsList: number[] = currentBars
+    .map((b) => b.resetAt)
+    .filter((r): r is string => r !== undefined)
+    .map((r) => roundToNearest30Min(r).getTime())
+
+  /** Returns true if slotMs is within ±30 min of any current bar's reset. */
+  const isNearCurrentReset = (slotMs: number): boolean =>
+    currentRoundedResetMsList.some(
+      (cur) => Math.abs(cur - slotMs) <= THIRTY_MIN_MS_H
+    )
 
   // Build a lookup: quota_type → model-prefix from current bar labels.
   // e.g. 'all · 7d' for quota_type='weekly' gives prefix='all'.
@@ -1635,8 +1657,9 @@ function buildHistoryBarsForProvider(
   for (const h of relevant) {
     if (h.min_remaining_pct === null) continue
     if (h.expected_reset_at === null) continue
-    const slot = roundToNearest30Min(h.expected_reset_at).toISOString()
-    if (currentRoundedResetTimes.has(slot)) continue
+    const slotDate = roundToNearest30Min(h.expected_reset_at)
+    if (isNearCurrentReset(slotDate.getTime())) continue
+    const slot = slotDate.toISOString()
     let types = quotaTypesPerSlot.get(slot)
     if (types === undefined) {
       types = new Set<string>()
@@ -1661,9 +1684,12 @@ function buildHistoryBarsForProvider(
     const roundedSlot =
       roundedSlotDate !== null ? roundedSlotDate.toISOString() : ''
 
-    // Dedup against current bars (rounded comparison suppresses history rows
-    // within 30 minutes of any live reset window).
-    if (roundedSlot !== '' && currentRoundedResetTimes.has(roundedSlot)) {
+    // Dedup against current bars — skip if within ±30 min of any live reset
+    // window (proximity check absorbs Math.round artefacts).
+    if (
+      roundedSlotDate !== null &&
+      isNearCurrentReset(roundedSlotDate.getTime())
+    ) {
       continue
     }
 
@@ -2083,11 +2109,13 @@ function buildProviderLanes(
     })
 
     // Deduplicate by (rounded-30min slot) — suppress current reset window.
-    const currentRoundedResetTimes = new Set<string>(
+    // Use a numeric timestamp for ±30 min proximity comparison to handle
+    // rounding artefacts where Math.round pushes a past reset into the future.
+    const THIRTY_MIN_MS = 30 * 60 * 1000
+    const currentRoundedResetMs: number | null =
       currentBar?.resetAt !== undefined
-        ? [roundToNearest30Min(currentBar.resetAt).toISOString()]
-        : []
-    )
+        ? roundToNearest30Min(currentBar.resetAt).getTime()
+        : null
     const seen = new Set<string>()
     const priorBars: QuotaBarGroup[] = []
 
@@ -2108,8 +2136,16 @@ function buildProviderLanes(
       const roundedSlot =
         roundedSlotDate !== null ? roundedSlotDate.toISOString() : ''
 
-      // Skip if this slot matches the current bar's reset time.
-      if (roundedSlot !== '' && currentRoundedResetTimes.has(roundedSlot))
+      // Skip if this slot is within ±30 min of the current bar's reset time.
+      // The ±30 min window absorbs rounding artefacts from Math.round that can
+      // push a history row's slot to the next 30-min boundary, making an exact
+      // ISO-string match miss rows that belong to the live reset window.
+      if (
+        roundedSlotDate !== null &&
+        currentRoundedResetMs !== null &&
+        Math.abs(currentRoundedResetMs - roundedSlotDate.getTime()) <=
+          THIRTY_MIN_MS
+      )
         continue
 
       // Dedup within the same 30-min slot.
