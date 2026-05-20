@@ -1413,8 +1413,18 @@ normalized AS (
     --   Anthropic weekly (7 d) → look back 10.5 d
     --   Google short (24 h)    → look back 36 h   ← was broken at 10.5 d
     --   xAI monthly (30 d)     → look back 45 d
-    -- Upper bound: allow up to 0.5× interval_hours into the future so that
-    -- the currently-active bar (whose expected_reset_at is imminent) is included.
+    -- Upper bound: allow up to 2.0× interval_hours into the future.  This is
+    -- intentionally generous so that prior-interval rows whose expected_reset_at
+    -- sits in the near-future (e.g. a weekly cycle whose reset got pushed out
+    -- from May 24 → May 26 while observations still carry the May 24 timestamp)
+    -- are captured as prior bars.  The current bar is sourced from the live
+    -- buildQuotaQuery() result, not from this history query; the client-side
+    -- ±30 min dedup against the live current bar's reset time prevents any
+    -- overlap from appearing as a spurious extra bar.
+    --   Anthropic short (5 h)   → upper +10 h
+    --   OpenAI/Anthropic weekly → upper +14 d
+    --   Google short (24 h)     → upper +48 h
+    --   xAI monthly (30 d)      → upper +60 d
     WHERE ri.quota_type IN ('weekly', 'weekly_special', 'short', 'short_special', 'requests', 'monthly')
       AND ri.expected_reset_at IS NOT NULL
       AND ri.expected_reset_at >= now() - (
@@ -1437,7 +1447,7 @@ normalized AS (
                       WHEN ri.quota_type = 'monthly'                    THEN 720.0
                       ELSE                                                   168.0
                   END
-              ) * 0.5 * INTERVAL '1 hour'
+              ) * 2.0 * INTERVAL '1 hour'
           )
 ),
 window_bounds AS (
