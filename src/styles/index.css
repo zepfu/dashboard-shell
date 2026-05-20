@@ -1595,3 +1595,32 @@ tbody tr {
 }
 
 /* End Wave 18-CSS */
+
+/* Wave 36 Fix 3 — Dashboard loading skeleton
+   Renders a shimmer placeholder during the initial /usage fetch so users see
+   structured feedback instead of a blank main area (10–35 s cold-load path). */
+.dashboard-loading-skeleton {
+  padding: 20px;
+}
+
+.skeleton-block {
+  background: linear-gradient(
+    90deg,
+    var(--card-2) 0%,
+    var(--card-3) 50%,
+    var(--card-2) 100%
+  );
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 2s infinite;
+  border-radius: 4px;
+}
+
+@keyframes skeleton-shimmer {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}
+/* End Wave 36 Fix 3 */
