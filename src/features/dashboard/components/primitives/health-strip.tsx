@@ -777,13 +777,22 @@ export function HealthStrip({
       height: '100%',
     }
 
-    /** Shared positioning shell — anchors to the provider card (position:relative). */
+    /**
+     * Shared positioning shell — anchors to the provider card (position:relative).
+     *
+     * Wave 35 S2: `pointerEvents: 'none'` on the shell prevents the absolutely
+     * positioned strip from inadvertently intercepting pointer events over the
+     * quota-bar area.  The HoverTooltip wrapper inside the shell opts back in via
+     * an explicit `pointerEvents: 'auto'` wrapper so the health tooltip still fires
+     * when the user hovers the 12px strip itself.
+     */
     const shellStyle: CSSProperties = {
       position: 'absolute',
       top: '6px',
       right: '6px',
       bottom: '6px',
       width: '12px',
+      pointerEvents: 'none',
     }
 
     if (resolvedTooltip !== undefined) {
@@ -798,11 +807,14 @@ export function HealthStrip({
        */
       return (
         <div aria-hidden='true' style={shellStyle}>
-          <HoverTooltip content={resolvedTooltip} variant='health'>
-            <div className='health-strip-wrapper' style={stripWrapperStyle}>
-              {stripInner}
-            </div>
-          </HoverTooltip>
+          {/* Wave 35 S2: restore pointer events for the strip's interactive zone only. */}
+          <div style={{ pointerEvents: 'auto', height: '100%' }}>
+            <HoverTooltip content={resolvedTooltip} variant='health'>
+              <div className='health-strip-wrapper' style={stripWrapperStyle}>
+                {stripInner}
+              </div>
+            </HoverTooltip>
+          </div>
         </div>
       )
     }
