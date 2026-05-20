@@ -967,6 +967,8 @@ export {
   tipModelsFromBreakdownSingleLabel as _tipModelsSingleLabelForTest,
   buildProviderLanes as _buildProviderLanesForTest,
   classifyGeminiModel as _classifyGeminiModelForTest,
+  fmtIntervalCompact as _fmtIntervalCompactForTest,
+  buildPriorBarFromHistory as _buildPriorBarFromHistoryForTest,
 }
 
 /**
@@ -1552,6 +1554,28 @@ function fmtIntervalForHistory(
 }
 
 /**
+ * Formats a compact inline date-range label for prior-bar row display, e.g.
+ * `5/19 10:00 → 5/20 10:00`. Both bounds are 30-min snapped before formatting
+ * so the displayed range matches the snapped slot used for time-ago.
+ *
+ * Falls back to '—' when either bound is null/unparseable.
+ */
+function fmtIntervalCompact(start: string | null, end: string | null): string {
+  if (start === null || end === null) return '—'
+  const s = roundToNearest30Min(start)
+  const e = roundToNearest30Min(end)
+  if (Number.isNaN(s.getTime()) || Number.isNaN(e.getTime())) return '—'
+  const fmt = (d: Date): string => {
+    const m = d.getUTCMonth() + 1
+    const dd = d.getUTCDate()
+    const hh = d.getUTCHours().toString().padStart(2, '0')
+    const mm = d.getUTCMinutes().toString().padStart(2, '0')
+    return `${m.toString()}/${dd.toString()} ${hh}:${mm}`
+  }
+  return `${fmt(s)} → ${fmt(e)}`
+}
+
+/**
  * Builds QuotaBarGroup[] for past reset windows from quotaHistory[] for a
  * single provider. Full parity with current bars: identical 12-segment fills,
  * per-model tooltip content, and visual weight. Only the label heading differs
@@ -1977,6 +2001,11 @@ function buildPriorBarFromHistory(
     tipModels = tipModelsFromBreakdown(h.usage_breakdown)
   }
 
+  const dateRangeLabel = fmtIntervalCompact(
+    h.interval_start,
+    h.expected_reset_at
+  )
+
   return {
     label: timeAgoLabel,
     consumedPct,
@@ -1986,6 +2015,7 @@ function buildPriorBarFromHistory(
     tipWindow: fmtIntervalForHistory(h.interval_start, h.interval_end),
     tipModels,
     timeAgoLabel,
+    dateRangeLabel,
     periodType: quotaTypeToBarPeriodType(quotaTypeLower),
   }
 }
