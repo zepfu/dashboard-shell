@@ -728,7 +728,6 @@ export function MasterLedgerTable({
         width: '100%',
         overflowX: 'auto',
         overflowY: 'auto',
-        maxHeight: '400px',
         background: 'var(--card)',
         border: '1px solid var(--border)',
       }}

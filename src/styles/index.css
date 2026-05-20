@@ -1186,7 +1186,11 @@
   height: clamp(16px, 1.1vw, 28px);
 }
 
-/* ── §13 #9: table-wrapper max-height 320px at 1600+ per mockup line 1288 ── */
+/* ── §13 #9: table-wrapper max-height — base 400px; 320px at 1600+ per mockup line 1288 ── */
+/* Base rule replaces the former inline maxHeight:'400px' (wave34-code-css-audit ✘-3). */
+.table-wrapper {
+  max-height: 400px;
+}
 @media (min-width: 1600px) {
   .table-wrapper {
     max-height: 320px;
