@@ -168,7 +168,7 @@ export interface PhosphorDashboardProps {
   /** ISO date string for the range end (YYYY-MM-DD). */
   to?: string
   /** Aggregation grain: 'day' | 'week' | 'month'. */
-  grain?: string
+  grain?: UsageReportGrain
   /**
    * 15-C.4: Optional search term for client-side row filtering.
    * Applied as a case-insensitive substring match against model, repo,
@@ -187,6 +187,13 @@ export interface PhosphorDashboardProps {
    * Called with options derived from the fetched report.
    */
   onOptionsReady?: (options: SlicerOptions) => void
+  /**
+   * Wave 35: Callback invoked whenever the prior-period summary changes.
+   * Used by index.tsx to compute KPI strip signed-% deltas without duplicating
+   * the prior-window query. Called with `undefined` while the query is loading
+   * or when the prior report is unavailable.
+   */
+  onPriorSummaryReady?: (summary: UsageReportSummary | undefined) => void
 }
 
 // ---------------------------------------------------------------------------
@@ -226,12 +233,16 @@ function SectionTitle({
 // ---------------------------------------------------------------------------
 
 /**
- * Returns a default date range of the last 7 days through tomorrow.
+ * Local fallback date range when PhosphorDashboard is rendered without
+ * from/to props (e.g. in isolation / Storybook). Returns the last 30 days
+ * through tomorrow — matching the operator-approved Wave 24-Index F3 default
+ * in index.tsx. The previous 7-day value here was an undocumented divergence
+ * (wave35-code-css-audit ⚠-7).
  */
-function defaultDateRange(): { from: string; to: string } {
+function _localFallbackRange(): { from: string; to: string } {
   const now = new Date()
   const from = new Date(
-    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - 6)
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - 30)
   )
   const to = new Date(
     Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1)
@@ -1468,8 +1479,6 @@ function buildHistoryBarsForProvider(
 // computeFleetErrors lives in usage-report-display.ts (lib) so the helper
 // can be imported by both phosphor-dashboard and index.tsx without violating
 // the react-refresh/only-export-components constraint.
-// TODO (15-C): in index.tsx toKpiSummary replace `errors: 0` with:
-//   errors: computeFleetErrors(summaryReport?.providerLatencyHealth ?? [])
 // ---------------------------------------------------------------------------
 
 /**
@@ -1496,15 +1505,8 @@ const CANONICAL_PROVIDERS = [
  * Wave 11 PR2 (11-f): replaces the old dynamic derivation that only returned
  * providers present in the API response. This ensures `local` (and any other
  * provider the mock API omits) always appears in the grid with zeroed metrics.
- *
- * The `healthRows` and `trendRows` parameters are retained for API
- * compatibility with existing useMemo call sites; they are no longer used for
- * provider discovery.
  */
-function deriveProviders(
-  _healthRows: UsageReportProviderLatencyHealthRow[],
-  _trendRows: UsageReportTrendRow[]
-): string[] {
+function deriveProviders(): string[] {
   return [...CANONICAL_PROVIDERS]
 }
 
@@ -2207,11 +2209,12 @@ export default function PhosphorDashboard({
   searchTerm = '',
   filters,
   onOptionsReady,
+  onPriorSummaryReady,
 }: PhosphorDashboardProps): ReactElement {
-  const defaults = useMemo(() => defaultDateRange(), [])
+  const defaults = useMemo(() => _localFallbackRange(), [])
   const resolvedFrom = from ?? defaults.from
   const resolvedTo = to ?? defaults.to
-  const resolvedGrain = (grain ?? 'day') as UsageReportGrain
+  const resolvedGrain: UsageReportGrain = grain ?? 'day'
 
   const { data: report, isLoading: reportLoading } = useQuery({
     // 15-D.4: Include filter arrays directly in queryKey so React Query creates
@@ -2268,11 +2271,7 @@ export default function PhosphorDashboard({
     [report?.trend]
   )
 
-  const providers = useMemo(
-    () =>
-      deriveProviders(report?.providerLatencyHealth ?? [], report?.trend ?? []),
-    [report?.providerLatencyHealth, report?.trend]
-  )
+  const providers = useMemo(() => deriveProviders(), [])
 
   const quotaRows = useMemo(
     () => quotasData?.quotas ?? report?.quotas ?? [],
@@ -2500,6 +2499,12 @@ export default function PhosphorDashboard({
     )
     return buildCurrentStats(providers, priorModelRows, periodDays)
   }, [priorReport, providers, periodDays])
+
+  // Wave 35: notify parent whenever the prior-period summary changes so index.tsx
+  // can compute KPI strip signed-% deltas without duplicating the prior-window query.
+  useEffect(() => {
+    onPriorSummaryReady?.(priorReport?.summary)
+  }, [onPriorSummaryReady, priorReport?.summary])
 
   return (
     <div

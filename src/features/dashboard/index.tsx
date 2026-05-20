@@ -33,9 +33,11 @@ import {
   fetchUsageReportQuotas,
   type UsageReportGrain,
   type UsageReportProviderLatencyHealthRow,
+  type UsageReportSummary,
 } from './api/usage-report'
 import { AlertsRail } from './components/alerts-rail'
 import AnchorBar from './components/anchor-bar'
+import { computeDeltaPct } from './components/comparison-panel'
 import { DateControls } from './components/date-controls'
 import { KpiStrip } from './components/kpi-strip'
 import PhosphorDashboard from './components/phosphor-dashboard'
@@ -277,6 +279,11 @@ export function Dashboard(): ReactElement {
   // 14-B.2: freshness format per mockup line 2384:
   //   "FETCHED HH:MM:SS UTC · Xs ago"
   // Re-evaluate every 10 s so relative time stays current.
+  //
+  // Wave 35 (wave35-data-flow-audit ⚠-6): use metadata.latestRecordAt as the
+  // displayed timestamp so the operator sees when the most recent data event
+  // arrived (server max created_at), not when the browser fetch landed.
+  // Fall back to dataUpdatedAt if latestRecordAt is null/undefined.
   const [freshnessStr, setFreshnessStr] = useState<string>('Loading…')
   useEffect(() => {
     const compute = (): void => {
@@ -284,9 +291,17 @@ export function Dashboard(): ReactElement {
         setFreshnessStr('Loading…')
         return
       }
-      const d = new Date(dataUpdatedAt)
-      const timeUTC = d.toUTCString().split(' ')[4] ?? ''
-      const distance = formatDistanceToNow(d)
+      const latestRecordAt = summaryReport?.metadata?.latestRecordAt
+      // Use latestRecordAt (data recency) for the timestamp display; fall back
+      // to the browser-side dataUpdatedAt when the server value is unavailable.
+      const displayDate =
+        latestRecordAt != null
+          ? new Date(latestRecordAt)
+          : new Date(dataUpdatedAt)
+      const timeUTC = displayDate.toUTCString().split(' ')[4] ?? ''
+      // Always use current time for the relative "Xm ago" distance so it stays
+      // accurate on the 10 s interval regardless of which date is displayed.
+      const distance = formatDistanceToNow(displayDate)
       setFreshnessStr(`FETCHED ${timeUTC} UTC · ${distance} ago`)
     }
     compute()
@@ -294,7 +309,7 @@ export function Dashboard(): ReactElement {
     return () => {
       clearInterval(id)
     }
-  }, [dataUpdatedAt])
+  }, [dataUpdatedAt, summaryReport?.metadata?.latestRecordAt])
 
   // B3 fix: Compute fleet-wide P95 from all provider latency health rows
   // using a requests-weighted average (replaces the former Math.max that was
@@ -328,6 +343,44 @@ export function Dashboard(): ReactElement {
     () => toKpiSummary(summaryReport?.summary, fleetP95Ms, fleetErrors),
     [summaryReport?.summary, fleetP95Ms, fleetErrors]
   )
+
+  // Wave 35 (wave35-data-flow-audit ⚠-5): receive the prior-period summary from
+  // PhosphorDashboard (which owns the priorReport query) so we can compute signed
+  // % deltas for the KPI strip without duplicating the query in index.tsx.
+  const [priorSummary, setPriorSummary] = useState<
+    UsageReportSummary | undefined
+  >(undefined)
+  const handlePriorSummaryReady = useCallback(
+    (summary: UsageReportSummary | undefined): void => {
+      setPriorSummary(summary)
+    },
+    []
+  )
+
+  // Compute signed-fractional deltas for each KPI key (format: 0.124 = +12.4%).
+  // Uses computeDeltaPct (returns signed %, e.g. 12.4) divided by 100 so the
+  // KpiStrip's renderDelta (which multiplies by 100) displays the correct value.
+  // Returns undefined for a key when prior data is unavailable or prior is zero.
+  const kpiDeltas = useMemo((): Partial<
+    Record<keyof KpiSummaryShape, number>
+  > => {
+    if (kpiSummary === undefined || priorSummary === undefined) {
+      return {}
+    }
+    const raw = {
+      cost_usd: computeDeltaPct(kpiSummary.cost_usd, priorSummary.usd_cost),
+      requests: computeDeltaPct(kpiSummary.requests, priorSummary.traces),
+      token_in: computeDeltaPct(kpiSummary.token_in, priorSummary.token_in),
+      token_out: computeDeltaPct(kpiSummary.token_out, priorSummary.token_out),
+    }
+    const result: Partial<Record<keyof KpiSummaryShape, number>> = {}
+    for (const [key, val] of Object.entries(raw)) {
+      if (val !== null) {
+        result[key as keyof KpiSummaryShape] = val / 100
+      }
+    }
+    return result
+  }, [kpiSummary, priorSummary])
 
   const anomalies = useAnomalyDetection(
     (summaryReport?.providerLatencyHealth ?? []).filter(
@@ -368,11 +421,15 @@ export function Dashboard(): ReactElement {
           }}
         >
           {/* KPI strip — dominant header element */}
-          {/* B3: deltas prop wired; API does not expose prior-period deltas yet so
-              all tiles show em-dash placeholders. When the API adds delta data,
-              populate the Record<KpiKey, number> here (e.g. from report.deltas).
-              TODO: API does not expose deltas yet */}
-          <KpiStrip summary={kpiSummary} loading={summaryLoading} deltas={{}} />
+          {/* Wave 35 (⚠-5 R-B): deltas wired from priorReport.summary via
+              onPriorSummaryReady callback. Signed-fractional format (0.124 = +12.4%).
+              Wave 35 (S1): className='kpi-strip' added for probe/test selector parity. */}
+          <KpiStrip
+            summary={kpiSummary}
+            loading={summaryLoading}
+            deltas={kpiDeltas}
+            className='kpi-strip'
+          />
 
           {/* Header actions */}
           <div
@@ -569,6 +626,7 @@ export function Dashboard(): ReactElement {
           {/* Main dashboard content */}
           {/* 15-C.4: searchTerm passed for client-side row filtering */}
           {/* 15-D.5: filters + onOptionsReady wired for slicer */}
+          {/* Wave 35: onPriorSummaryReady wired to receive prior-period summary for KPI deltas */}
           <PhosphorDashboard
             from={from}
             to={to}
@@ -576,6 +634,7 @@ export function Dashboard(): ReactElement {
             searchTerm={searchTerm}
             filters={slicerFilters}
             onOptionsReady={handleSlicerOptionsReady}
+            onPriorSummaryReady={handlePriorSummaryReady}
           />
         </div>
       }
