@@ -2268,12 +2268,8 @@ function SectionSkeleton({ height = 80 }: SectionSkeletonProps): ReactElement {
   return (
     <div
       aria-hidden='true'
-      style={{
-        height,
-        background: 'var(--card-2)',
-        borderRadius: 0,
-        animation: 'pulse 1.5s ease-in-out infinite',
-      }}
+      className='skeleton-block'
+      style={{ height, borderRadius: 0 }}
     />
   )
 }
@@ -2374,6 +2370,10 @@ export default function PhosphorDashboard({
     queryFn: fetchUsageReportQuotas,
     // Skip when the parent has already provided quota rows.
     enabled: internalQuotasEnabled,
+    // W38-2: match the staleTime override used by index.tsx so Storybook /
+    // standalone behaviour is consistent with production (index.tsx sets
+    // staleTime: 5 * 60 * 1000 on its hoisted copy of this query).
+    staleTime: 5 * 60 * 1000,
   })
 
   const anomalies = useAnomalyDetection(
