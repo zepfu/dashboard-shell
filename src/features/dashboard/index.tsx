@@ -261,20 +261,58 @@ export function Dashboard(): ReactElement {
     setTo(nextTo)
   }
 
+  // Wave 36 Fix 1: queryKey now matches PhosphorDashboard's key shape exactly
+  // (includes filter arrays) so React Query deduplicates both subscribers into a
+  // single cache entry and fires only ONE HTTP request per page load.
   const {
     data: summaryReport,
     isLoading: summaryLoading,
     dataUpdatedAt,
   } = useQuery({
-    queryKey: ['usage-report-phosphor', from, to, grain],
+    queryKey: [
+      'usage-report-phosphor',
+      from,
+      to,
+      grain,
+      slicerFilters.providers,
+      slicerFilters.repositories,
+      slicerFilters.clients,
+      slicerFilters.environments,
+      slicerFilters.models,
+    ],
     queryFn: () =>
       fetchUsageReport({
         from,
         to,
         grain,
         groupBy: ['provider', 'model', 'repository'],
+        provider: slicerFilters.providers,
+        repository: slicerFilters.repositories,
+        client: slicerFilters.clients,
+        environment: slicerFilters.environments,
+        model: slicerFilters.models,
       }),
   })
+
+  // Wave 36 Fix 4: showComparison gates the priorReport query in PhosphorDashboard
+  // so the prior-window API call is only made when the ComparisonPanel is visible
+  // (viewport ≥3840px). Initialised synchronously to avoid a false-trigger flash.
+  const [showComparison, setShowComparison] = useState(() =>
+    typeof window === 'undefined'
+      ? false
+      : window.matchMedia('(min-width: 3840px)').matches
+  )
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const mq = window.matchMedia('(min-width: 3840px)')
+    const onChange = (e: MediaQueryListEvent): void => {
+      setShowComparison(e.matches)
+    }
+    mq.addEventListener('change', onChange)
+    return () => {
+      mq.removeEventListener('change', onChange)
+    }
+  }, [])
 
   // 14-B.2: freshness format per mockup line 2384:
   //   "FETCHED HH:MM:SS UTC · Xs ago"
@@ -627,15 +665,70 @@ export function Dashboard(): ReactElement {
           {/* 15-C.4: searchTerm passed for client-side row filtering */}
           {/* 15-D.5: filters + onOptionsReady wired for slicer */}
           {/* Wave 35: onPriorSummaryReady wired to receive prior-period summary for KPI deltas */}
-          <PhosphorDashboard
-            from={from}
-            to={to}
-            grain={grain}
-            searchTerm={searchTerm}
-            filters={slicerFilters}
-            onOptionsReady={handleSlicerOptionsReady}
-            onPriorSummaryReady={handlePriorSummaryReady}
-          />
+          {/* Wave 36 Fix 1: report + reportLoading hoisted from index.tsx query (dedup). */}
+          {/* Wave 36 Fix 3: skeleton rendered when loading and no data yet (see below). */}
+          {/* Wave 36 Fix 4: showComparison gates priorReport query to ≥3840px viewports. */}
+          {summaryLoading && summaryReport === undefined ? (
+            <div
+              className='dashboard-loading-skeleton'
+              aria-busy='true'
+              aria-label='Loading dashboard'
+            >
+              {/* Header bar placeholder */}
+              <div
+                className='skeleton-block'
+                style={{ height: '32px', marginBottom: '16px', width: '40%' }}
+              />
+              {/* KPI tile row placeholder (6 tiles) */}
+              <div
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(6, 1fr)',
+                  gap: '8px',
+                  marginBottom: '16px',
+                }}
+              >
+                {Array.from({ length: 6 }).map((_, i) => (
+                  // Index key is safe: static placeholder, no state or reorder
+                  <div
+                    key={i}
+                    className='skeleton-block'
+                    style={{ height: '64px' }}
+                  />
+                ))}
+              </div>
+              {/* Provider card grid placeholder (~8 cards) */}
+              <div
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))',
+                  gap: '8px',
+                }}
+              >
+                {Array.from({ length: 8 }).map((_, i) => (
+                  // Index key is safe: static placeholder, no state or reorder
+                  <div
+                    key={i}
+                    className='skeleton-block'
+                    style={{ height: '160px' }}
+                  />
+                ))}
+              </div>
+            </div>
+          ) : (
+            <PhosphorDashboard
+              from={from}
+              to={to}
+              grain={grain}
+              searchTerm={searchTerm}
+              filters={slicerFilters}
+              onOptionsReady={handleSlicerOptionsReady}
+              onPriorSummaryReady={handlePriorSummaryReady}
+              report={summaryReport}
+              reportLoading={summaryLoading}
+              showComparison={showComparison}
+            />
+          )}
         </div>
       }
       alerts={<AlertsRail alerts={alerts} />}

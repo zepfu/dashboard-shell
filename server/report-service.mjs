@@ -56,9 +56,13 @@ const MAX_HEALTH_ROWS = Math.max(
 const MAX_PROVIDER_ERROR_ROWS = 2_000
 const MAX_PROVIDER_STATUS_ROWS = 500
 const STALE_RECORD_THRESHOLD_MINUTES = 120
+// Cache up to 5 min — dashboard refreshes don't need real-time precision,
+// and the cold DB query is too expensive to repeat (10–54 s observed at
+// 2275×1280). A 30 s TTL meant every dashboard refresh hit the cold path.
+// Operators can lower via SHELL_REPORT_CACHE_TTL_MS env-override if needed.
 const REPORT_CACHE_TTL_MS = Math.max(
   0,
-  Number(process.env.SHELL_REPORT_CACHE_TTL_MS ?? 30_000)
+  Number(process.env.SHELL_REPORT_CACHE_TTL_MS ?? 5 * 60 * 1000)
 )
 const MAX_REPORT_CACHE_ENTRIES = 20
 const UPSTREAM_FETCH_TIMEOUT_MS = Number(
