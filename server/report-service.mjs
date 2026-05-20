@@ -818,9 +818,13 @@ ORDER BY s.provider ASC, s.model ASC NULLS FIRST;
   return { sql, values: [] }
 }
 
-function buildQuotaHistoryQuery(searchParams) {
-  const from = parseDateParam(searchParams.get('from'), defaultFromDate)
-  const to = parseDateParam(searchParams.get('to'), defaultToDate)
+function buildQuotaHistoryQuery(_searchParams) {
+  // Wave 40: lookback is now interval-multiplier-driven (1.5× the reset period),
+  // not dashboard date-range-driven. The from/to search params are intentionally
+  // ignored — each (provider, quota_type) pair looks back exactly 1.5× its own
+  // reset period from now(), so short intervals (5 hr) and weekly intervals
+  // (7 day) each get a proportional, sensible history window regardless of what
+  // the operator has selected as their reporting date range.
 
   const sql = `
 WITH normalized AS (
@@ -860,10 +864,26 @@ WITH normalized AS (
         ri.remaining_pct,
         ri.fromDate AS interval_start
     FROM public.rate_limit_intervals ri
-    WHERE ri.quota_type IN ('weekly', 'weekly_special', 'requests', 'monthly')
+    -- 1.5x-interval lookback rule: each reset tier's lookback window equals
+    -- 1.5× its own period duration, anchored at now(). This keeps the bar
+    -- history proportional and sensible across tiers of very different lengths:
+    --   short / short_special (5 hr period) → look back 7.5 hours
+    --   weekly / weekly_special (7 day period) → look back 10.5 days
+    --   monthly (30 day period) → look back 45 days
+    -- The upper bound is also per-type to capture the currently-active interval
+    -- whose expected_reset_at may be in the near future.
+    WHERE ri.quota_type IN ('weekly', 'weekly_special', 'short', 'short_special', 'requests', 'monthly')
       AND ri.expected_reset_at IS NOT NULL
-      AND ri.expected_reset_at >= $1::timestamptz
-      AND ri.expected_reset_at < $2::timestamptz
+      AND ri.expected_reset_at >= now() - CASE
+          WHEN ri.quota_type IN ('short', 'short_special') THEN INTERVAL '7.5 hours'
+          WHEN ri.quota_type IN ('weekly', 'weekly_special') THEN INTERVAL '10.5 days'
+          WHEN ri.quota_type = 'monthly' THEN INTERVAL '45 days'
+          ELSE INTERVAL '10.5 days'
+      END
+      AND ri.expected_reset_at < now() + CASE
+          WHEN ri.quota_type IN ('short', 'short_special') THEN INTERVAL '6 hours'
+          ELSE INTERVAL '8 days'
+      END
 ),
 window_bounds AS (
     SELECT
@@ -958,7 +978,7 @@ GROUP BY
 ORDER BY wb.expected_reset_at DESC;
 `
 
-  return { sql, values: [from, to] }
+  return { sql, values: [] }
 }
 
 function buildFreshnessQuery() {
