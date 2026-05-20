@@ -17,8 +17,16 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render, act } from '@testing-library/react'
 import { http, HttpResponse } from 'msw'
 import { server } from '../../../test/setup'
-import type { UsageReportResponse } from '../api/usage-report'
-import PhosphorDashboard from './phosphor-dashboard'
+import type {
+  UsageReportQuotaUsageBreakdown,
+  UsageReportResponse,
+} from '../api/usage-report'
+import PhosphorDashboard, {
+  _formatTimeAgoForTest,
+  _quotaTypeToPeriodTypeForTest,
+  _tipModelsGoogleForTest,
+  _tipModelsSingleLabelForTest,
+} from './phosphor-dashboard'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -253,5 +261,152 @@ describe('PhosphorDashboard — TCG-3: prior-report query skipped when showCompa
     // Prior-window query fires after current resolves (showComparison=true).
     // Total: at least 1 (current), potentially 2 (current + prior).
     expect(usageCallCount).toBeGreaterThanOrEqual(1)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Wave 40 multi-quota redesign — unit tests for new helper functions
+// ---------------------------------------------------------------------------
+
+describe('Wave 40 — formatTimeAgo', () => {
+  const now = Date.now()
+
+  test('test_format_time_ago_minutes', () => {
+    const d = new Date(now - 45 * 60_000) // 45 minutes ago
+    expect(_formatTimeAgoForTest(d)).toBe('45m ago')
+  })
+
+  test('test_format_time_ago_hours', () => {
+    const d = new Date(now - 3 * 60 * 60_000) // 3 hours ago
+    expect(_formatTimeAgoForTest(d)).toBe('3h ago')
+  })
+
+  test('test_format_time_ago_days', () => {
+    const d = new Date(now - 2 * 24 * 60 * 60_000) // 2 days ago
+    expect(_formatTimeAgoForTest(d)).toBe('2d ago')
+  })
+
+  test('test_format_time_ago_weeks', () => {
+    const d = new Date(now - 15 * 24 * 60 * 60_000) // 15 days ago → 2w
+    expect(_formatTimeAgoForTest(d)).toBe('2w ago')
+  })
+
+  test('test_format_time_ago_future_returns_now', () => {
+    const d = new Date(now + 60_000) // 1 minute in the future
+    expect(_formatTimeAgoForTest(d)).toBe('now')
+  })
+})
+
+describe('Wave 40 — quotaTypeToPeriodType', () => {
+  test('test_quota_type_short_maps_to_5hr', () => {
+    expect(_quotaTypeToPeriodTypeForTest('short')).toBe('5hr')
+  })
+
+  test('test_quota_type_short_special_maps_to_5hr', () => {
+    expect(_quotaTypeToPeriodTypeForTest('short_special')).toBe('5hr')
+  })
+
+  test('test_quota_type_weekly_maps_to_weekly', () => {
+    expect(_quotaTypeToPeriodTypeForTest('weekly')).toBe('weekly')
+  })
+
+  test('test_quota_type_special_maps_to_special', () => {
+    expect(_quotaTypeToPeriodTypeForTest('special')).toBe('special')
+  })
+
+  test('test_quota_type_monthly_maps_to_monthly', () => {
+    expect(_quotaTypeToPeriodTypeForTest('monthly')).toBe('monthly')
+  })
+
+  test('test_quota_type_unknown_defaults_to_weekly', () => {
+    expect(_quotaTypeToPeriodTypeForTest('requests')).toBe('weekly')
+  })
+})
+
+describe('Wave 40 — tipModelsFromBreakdownGoogleAggregated', () => {
+  const makeBreakdown = (
+    entries: ReadonlyArray<{ model: string; cost: number }>
+  ): UsageReportQuotaUsageBreakdown[] =>
+    entries.map(({ model, cost }) => ({ model, cost, tokens: 0, traces: 0 }))
+
+  test('test_google_aggregated_empty_returns_undefined', () => {
+    expect(_tipModelsGoogleForTest([])).toBeUndefined()
+  })
+
+  test('test_google_aggregated_flash_lite_bucket', () => {
+    const result = _tipModelsGoogleForTest(
+      makeBreakdown([{ model: 'gemini-2.5-flash-lite', cost: 10 }])
+    )
+    expect(result).toHaveLength(1)
+    expect(result![0].model).toBe('flash-lite')
+  })
+
+  test('test_google_aggregated_flash_bucket_excludes_flash_lite', () => {
+    const result = _tipModelsGoogleForTest(
+      makeBreakdown([
+        { model: 'gemini-2.5-flash-lite', cost: 5 },
+        { model: 'gemini-2.0-flash', cost: 8 },
+      ])
+    )
+    // Should have flash-lite: 5 and flash: 8
+    expect(result).toHaveLength(2)
+    const flashLite = result!.find((r) => r.model === 'flash-lite')
+    const flash = result!.find((r) => r.model === 'flash')
+    expect(flashLite?.costDelta).toBe('$5.00')
+    expect(flash?.costDelta).toBe('$8.00')
+  })
+
+  test('test_google_aggregated_pro_bucket', () => {
+    const result = _tipModelsGoogleForTest(
+      makeBreakdown([{ model: 'gemini-2.5-pro', cost: 20 }])
+    )
+    expect(result![0].model).toBe('pro')
+    expect(result![0].costDelta).toBe('$20.00')
+  })
+
+  test('test_google_aggregated_sums_costs_within_class', () => {
+    const result = _tipModelsGoogleForTest(
+      makeBreakdown([
+        { model: 'gemini-2.0-flash-001', cost: 3 },
+        { model: 'gemini-2.5-flash-preview', cost: 5 },
+      ])
+    )
+    // Both map to 'flash'; combined cost = 8
+    expect(result).toHaveLength(1)
+    expect(result![0].model).toBe('flash')
+    expect(result![0].costDelta).toBe('$8.00')
+  })
+})
+
+describe('Wave 40 — tipModelsFromBreakdownSingleLabel', () => {
+  const makeBreakdown = (
+    entries: ReadonlyArray<{ model: string; cost: number }>
+  ): UsageReportQuotaUsageBreakdown[] =>
+    entries.map(({ model, cost }) => ({ model, cost, tokens: 0, traces: 0 }))
+
+  test('test_single_label_empty_returns_undefined', () => {
+    expect(_tipModelsSingleLabelForTest([], 'sonnet')).toBeUndefined()
+  })
+
+  test('test_single_label_returns_one_entry_with_display_label', () => {
+    const result = _tipModelsSingleLabelForTest(
+      makeBreakdown([
+        { model: 'claude-sonnet-4-6', cost: 10 },
+        { model: 'claude-opus-4-7', cost: 5 },
+      ]),
+      'sonnet'
+    )
+    expect(result).toHaveLength(1)
+    expect(result![0].model).toBe('sonnet')
+    expect(result![0].costDelta).toBe('$15.00')
+  })
+
+  test('test_single_label_codex_spark_for_openai', () => {
+    const result = _tipModelsSingleLabelForTest(
+      makeBreakdown([{ model: 'gpt-4o', cost: 7.5 }]),
+      'codex-spark'
+    )
+    expect(result![0].model).toBe('codex-spark')
+    expect(result![0].costDelta).toBe('$7.50')
   })
 })
