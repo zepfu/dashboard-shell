@@ -19,6 +19,7 @@
  * - Label rename: Cost (24h) → Cost (operator direction change).
  */
 import type { ReactElement } from 'react'
+import { fmtCompact } from '../lib/format-utils'
 
 interface KpiSummary {
   token_in: number
@@ -40,30 +41,6 @@ interface KpiStripProps {
    * When present, rendered as ↑/↓ percentage; when absent, shows em-dash.
    */
   deltas?: Partial<Record<KpiKey, number>>
-}
-
-/**
- * Format a large number with compact B/M/K suffixes (operator F#9).
- *
- * Thresholds:
- *   ≥ 1e9 → B (billions)
- *   ≥ 1e6 → M (millions)
- *   ≥ 1e3 → K (thousands)
- *   else  → as-is integer string
- *
- * Examples: 19_471_800_848 → "19.5B", 587_234 → "587.2K", 1_200_000 → "1.2M"
- */
-function fmtCompact(n: number): string {
-  if (n >= 1_000_000_000) {
-    return `${(n / 1_000_000_000).toFixed(1)}B`
-  }
-  if (n >= 1_000_000) {
-    return `${(n / 1_000_000).toFixed(1)}M`
-  }
-  if (n >= 1_000) {
-    return `${(n / 1_000).toFixed(1)}K`
-  }
-  return String(n)
 }
 
 /**
