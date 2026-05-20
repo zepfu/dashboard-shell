@@ -295,9 +295,18 @@ describe('Wave 40 — formatTimeAgo', () => {
     expect(_formatTimeAgoForTest(d)).toBe('2w ago')
   })
 
-  test('test_format_time_ago_future_returns_now', () => {
-    const d = new Date(now + 60_000) // 1 minute in the future
-    expect(_formatTimeAgoForTest(d)).toBe('now')
+  test('test_format_time_ago_future_within_1min_returns_just_now', () => {
+    // Within 1 minute in the future → boundary label (rounding artefact safe)
+    const d = new Date(now + 60_000) // exactly 1 minute in the future
+    expect(_formatTimeAgoForTest(d)).toBe('just now')
+  })
+
+  test('test_format_time_ago_future_over_1min_returns_time_label', () => {
+    // > 1 minute in the future → use absolute distance so UI shows a sensible
+    // label rather than "now" for rounding artefacts (e.g. 30m-ago rounded up).
+    // We use 2h+30s future so sub-second timing jitter doesn't affect floor().
+    const d = new Date(Date.now() + 2 * 60 * 60_000 + 30_000) // ~2h 30s in the future
+    expect(_formatTimeAgoForTest(d)).toBe('2h ago')
   })
 })
 
