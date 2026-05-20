@@ -408,21 +408,33 @@ export function formatUsd(usd: number | null | undefined): string {
  *   null/undefined/empty → `—`
  */
 /**
- * Count of provider error observations across the API's 14-day window.
+ * Count of provider error observations within a dashboard date window.
  *
  * Each row in `providerErrorObservations` is one discrete event (one 429, one
- * 529, etc.) queried with `WHERE observed_at >= now() - interval '14 days'`
- * and `LIMIT 2000 ORDER BY observed_at DESC`.  This replaces the previous
- * 24 h-bounded sum over `providerLatencyHealth` aggregation buckets, which
- * significantly under-counted high-frequency 429/529 storms.
+ * 529, etc.) queried server-side with a fixed 14-day window. Passing `from` /
+ * `to` (ISO-8601 date strings) filters to only observations whose
+ * `observed_at` falls within `[from, to)`, aligning the Errors KPI tile with
+ * the user-selected date range used by all other KPI tiles.
+ *
+ * When `from` / `to` are absent the full observation array length is returned
+ * (backward-compatible behaviour for callers without a date window).
  *
  * Usage in index.tsx:
- *   errors: computeFleetErrors(summaryReport?.providerErrorObservations ?? [])
+ *   errors: computeFleetErrors(summaryReport?.providerErrorObservations ?? [], from, to)
  */
 export function computeFleetErrors(
-  observations: { observed_at: string | null }[]
+  observations: { observed_at: string | null }[],
+  from?: string,
+  to?: string
 ): number {
-  return observations.length
+  if (!from || !to) return observations.length
+  const fromMs = new Date(from).getTime()
+  const toMs = new Date(to).getTime()
+  return observations.filter((o) => {
+    if (!o.observed_at) return false
+    const t = new Date(o.observed_at).getTime()
+    return t >= fromMs && t < toMs
+  }).length
 }
 
 export function formatResetDistance(iso: string | null | undefined): string {
