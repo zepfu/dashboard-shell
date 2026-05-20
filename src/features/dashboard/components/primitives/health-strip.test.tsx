@@ -705,3 +705,44 @@ test('test_health_strip_tip_health_raw_error_breakdown_display_order', () => {
     'Capacity limits',
   ])
 })
+
+test('test_health_strip_vertical_shell_has_pointer_events_none', () => {
+  // Wave 35 S2: the absolutely-positioned shell div must have pointer-events:none
+  // to prevent it from intercepting hover events on quota bars that sit at the same
+  // vertical position as the strip (the strip is only 12px wide but spans the card
+  // height and can capture events outside its visible area in certain browsers).
+  const cells = Array.from({ length: 288 }, () => ({ color: 'var(--card-2)' }))
+  const { container } = render(
+    <HealthStrip
+      cells={cells}
+      orientation='vertical'
+      tooltipContent={<span>tip</span>}
+    />
+  )
+
+  // The shell is the outermost element — aria-hidden, position:absolute.
+  const shell = container.firstChild as HTMLElement | null
+  expect(shell).not.toBeNull()
+  expect(shell?.style.pointerEvents).toBe('none')
+})
+
+test('test_health_strip_vertical_hover_zone_restores_pointer_events', () => {
+  // Wave 35 S2: the inner wrapper that contains HoverTooltip must have
+  // pointer-events:auto so the health tooltip itself is still reachable.
+  const cells = Array.from({ length: 288 }, () => ({ color: 'var(--card-2)' }))
+  const { container } = render(
+    <HealthStrip
+      cells={cells}
+      orientation='vertical'
+      tooltipContent={<span>tip</span>}
+    />
+  )
+
+  const shell = container.firstChild as HTMLElement | null
+  expect(shell).not.toBeNull()
+
+  // The first child of the shell is the pointer-events:auto restore div.
+  const hoverZone = shell?.firstChild as HTMLElement | null
+  expect(hoverZone).not.toBeNull()
+  expect(hoverZone?.style.pointerEvents).toBe('auto')
+})

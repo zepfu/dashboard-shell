@@ -23,6 +23,13 @@
  * - `.v9-tip-row`  — data row (4-column grid: 38px label / value / 70px / auto)
  * - `.v9-tip-foot` — footer row (9px, italic, muted, dashed border-top)
  * - `.v9-tip-sub`  — subtitle row inside tip-quota (9px, muted)
+ *
+ * ## Style source of truth
+ * All `.v9-tip*` CSS rules live exclusively in `src/styles/index.css`.
+ * Wave 35-✘-2: the `TOOLTIP_STYLES` injected `<style>` tag was removed to
+ * eliminate the cascade conflict where the runtime-injected rules (appended
+ * after bundled CSS) silently overrode `index.css` rules for equal-specificity
+ * selectors. `index.css` is now the single authoritative source.
  */
 import { useState, type ReactElement, type ReactNode } from 'react'
 
@@ -41,89 +48,12 @@ interface HoverTooltipProps {
   className?: string
 }
 
-/**
- * Scoped styles injected once into the document for subclass structure rules.
- * Wave 14-G: updated to match v9.7 mockup lines 2011–2089 verbatim.
- * - .v9-tip-head: font-size 10px, letter-spacing 0.04em, border-bottom dashed
- * - .v9-tip-row: font-size 9px, grid 38px 1fr 70px auto, col-gap 5px
- * - .v9-tip-foot: font-style italic, 3px margin/padding, dashed border-top
- * - .tip-health: right calc(100% + 8px), width 280px
- * - .tip-quota: width 240px, right 0 left auto
- */
-const TOOLTIP_STYLES = `
-.v9-tip .v9-tip-head {
-  display: block;
-  font-size: 10px;
-  font-weight: 700;
-  color: var(--accent-warm, #f59e0b);
-  letter-spacing: 0.04em;
-  margin-bottom: 4px;
-  padding-bottom: 3px;
-  border-bottom: 1px dashed rgba(245, 158, 11, 0.4);
-}
-.v9-tip .v9-tip-row {
-  display: grid;
-  grid-template-columns: 38px minmax(0, 1fr) 70px auto;
-  column-gap: 5px;
-  font-size: 9px;
-  color: var(--fg, #e2e8f0);
-  padding: 1px 0;
-  line-height: 1.6;
-}
-.v9-tip .v9-tip-foot {
-  display: block;
-  font-size: 9px;
-  color: var(--fg-muted, #94a3b8);
-  font-style: italic;
-  margin-top: 3px;
-  padding-top: 3px;
-  border-top: 1px dashed rgba(42, 53, 71, 0.6);
-}
-.v9-tip.tip-health {
-  width: 280px;
-  right: calc(100% + 8px);
-  left: auto;
-  top: 50%;
-  transform: translateY(-50%);
-  max-width: none;
-}
-.v9-tip.tip-quota {
-  width: 240px;
-  bottom: calc(100% + 6px);
-  top: auto;
-  right: 0;
-  left: auto;
-  max-width: calc(100% + 40px);
-}
-.v9-tip.tip-quota .v9-tip-sub {
-  font-size: 9px;
-  color: var(--fg-muted, #94a3b8);
-  margin-bottom: 3px;
-}
-.v9-tip.tip-quota .v9-tip-row {
-  grid-template-columns: minmax(0, 1fr) auto;
-}
-`
-
 /** Returns the variant-specific CSS class name(s) for positioning. */
 function variantClass(variant: TooltipVariant): string {
   if (variant === 'quota' || variant === 'quota-bar')
     return 'tip-above tip-quota'
   if (variant === 'health') return 'tip-health'
   return ''
-}
-
-let stylesInjected = false
-
-/** Injects scoped tooltip styles once per document lifecycle. */
-function ensureStyles(): void {
-  if (stylesInjected) return
-  stylesInjected = true
-  if (typeof document === 'undefined') return
-  const el = document.createElement('style')
-  el.setAttribute('data-v9-tooltip', '')
-  el.textContent = TOOLTIP_STYLES
-  document.head.appendChild(el)
 }
 
 /**
@@ -136,7 +66,6 @@ export function HoverTooltip({
   children,
   className,
 }: HoverTooltipProps): ReactElement {
-  ensureStyles()
   const [isOpen, setIsOpen] = useState(false)
 
   const extraClass = variantClass(variant)

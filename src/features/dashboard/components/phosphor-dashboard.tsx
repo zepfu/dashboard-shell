@@ -690,6 +690,7 @@ function buildQuotaIntervals(
   for (const row of providerQuotas) {
     // F-QB-1 / 15-B.10: Added short_special so openai's exhausted
     // short_special_remaining_pct=0 (and similar) is rendered.
+    // Wave 35 S4: include intervalStart so tipVelocity can be derived.
     const candidates = [
       {
         remainingPct: row.weekly_remaining_pct,
@@ -697,6 +698,7 @@ function buildQuotaIntervals(
         label: 'Weekly',
         resetAt: row.weekly_reset_at ?? undefined,
         usedTokens: row.weekly_usage_tokens,
+        intervalStart: row.weekly_interval_start,
       },
       {
         remainingPct: row.short_remaining_pct,
@@ -704,6 +706,7 @@ function buildQuotaIntervals(
         label: 'Short',
         resetAt: row.short_reset_at ?? undefined,
         usedTokens: row.short_usage_tokens,
+        intervalStart: row.short_interval_start,
       },
       {
         remainingPct: row.special_remaining_pct,
@@ -711,6 +714,7 @@ function buildQuotaIntervals(
         label: 'Special',
         resetAt: row.special_reset_at ?? undefined,
         usedTokens: row.special_usage_tokens,
+        intervalStart: row.special_interval_start,
       },
       {
         remainingPct: row.short_special_remaining_pct,
@@ -718,6 +722,7 @@ function buildQuotaIntervals(
         label: 'Short-Special',
         resetAt: row.short_special_reset_at ?? undefined,
         usedTokens: row.short_special_usage_tokens,
+        intervalStart: row.short_special_interval_start,
       },
       {
         remainingPct: row.monthly_remaining_pct,
@@ -725,6 +730,7 @@ function buildQuotaIntervals(
         label: 'Monthly',
         resetAt: row.monthly_reset_at ?? undefined,
         usedTokens: row.monthly_usage_tokens,
+        intervalStart: row.monthly_interval_start,
       },
     ]
 
@@ -740,6 +746,8 @@ function buildQuotaIntervals(
         remainingPct: candidate.remainingPct,
         resetAt: candidate.resetAt,
         segments: buildQuotaSegments(candidate.remainingPct),
+        // Wave 35 S4: derive velocity from (consumedPct / hoursElapsed).
+        tipVelocity: formatTipVelocity(consumedPct, candidate.intervalStart),
       })
     }
   }
@@ -894,6 +902,48 @@ function formatTipWindow(
 export { formatTipWindow as _formatTipWindowForTest }
 
 /**
+ * Test-only re-export of {@link formatTipVelocity}.
+ *
+ * Wave 35 S4: exported solely to support unit tests of the velocity
+ * computation. Do not use in production code paths outside of this module.
+ *
+ * @internal
+ */
+export { formatTipVelocity as _formatTipVelocityForTest }
+
+/**
+ * Derives a velocity string from `consumedPct` and `intervalStart`.
+ *
+ * Wave 35 S4: computes `consumedPct / hoursElapsed` where
+ * `hoursElapsed = (Date.now() − intervalStart) / 3_600_000`.
+ *
+ * Returns `undefined` when:
+ * - `intervalStart` is null / invalid
+ * - `hoursElapsed ≤ 0` (clock skew or future start)
+ * - `consumedPct === 0` (nothing consumed yet — velocity is meaningless)
+ *
+ * Format: `"+X.X%/h"` (one decimal place).
+ *
+ * @param consumedPct   - Percentage of quota consumed (0–100).
+ * @param intervalStart - ISO-8601 start timestamp of the interval, or null.
+ */
+function formatTipVelocity(
+  consumedPct: number,
+  intervalStart: string | null
+): string | undefined {
+  if (intervalStart === null || consumedPct === 0) return undefined
+
+  const startMs = new Date(intervalStart).getTime()
+  if (Number.isNaN(startMs)) return undefined
+
+  const hoursElapsed = (Date.now() - startMs) / 3_600_000
+  if (hoursElapsed <= 0) return undefined
+
+  const pctPerHour = consumedPct / hoursElapsed
+  return `+${pctPerHour.toFixed(1)}%/h`
+}
+
+/**
  * Derives top-3 tipModels from a UsageReportQuotaUsageBreakdown array.
  *
  * Wave 24-PhosphorDash (operator F1b): aggregates cost per model, picks the
@@ -983,7 +1033,8 @@ function makeQuotaBarGroup(
     segments: buildQuotaSegments(iv.remainingPct),
     // F1b: computed tip fields.
     tipWindow: formatTipWindow(interval, intervalStart, intervalEnd),
-    // tipVelocity: no time-series data available; omit so tooltip shows '—'.
+    // Wave 35 S4: derive velocity from (consumedPct / hoursElapsed).
+    tipVelocity: formatTipVelocity(consumedPct, intervalStart),
     tipModels: tipModelsFromBreakdown(breakdown),
   }
 }

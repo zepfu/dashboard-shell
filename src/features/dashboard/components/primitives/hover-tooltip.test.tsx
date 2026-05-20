@@ -85,3 +85,17 @@ test('test_hover_tooltip_quota_variant_positions_above', () => {
   // Accept either class-based or inline-style-based positioning
   expect(hasAboveClass || hasAboveStyle).toBe(true)
 })
+
+test('test_hover_tooltip_does_not_inject_style_tag', () => {
+  // Wave 35 ✘-2: ensureStyles() was removed so the component no longer injects
+  // a <style data-v9-tooltip> tag at runtime. CSS in index.css is the sole source
+  // of truth for .v9-tip* rules, eliminating the cascade override risk.
+  render(
+    <HoverTooltip content={<span>Tooltip content</span>}>
+      <button type='button'>Hover me</button>
+    </HoverTooltip>
+  )
+
+  const injectedStyle = document.head.querySelector('[data-v9-tooltip]')
+  expect(injectedStyle).toBeNull()
+})
