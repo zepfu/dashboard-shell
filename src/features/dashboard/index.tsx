@@ -52,7 +52,7 @@ import {
 } from './components/slicer-bar'
 import { useAlertsFromAnomalies } from './hooks/use-alerts-from-anomalies'
 import { useAnomalyDetection } from './hooks/use-anomaly-detection'
-import { computeFleetErrors } from './lib/usage-report-display'
+import { computeFleetErrors, computeFleetP95 } from './lib/usage-report-display'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -109,28 +109,6 @@ function toKpiSummary(
     errors: fleetErrors,
     p95_ms: fleetP95Ms,
   }
-}
-
-/**
- * Computes fleet-wide P95 latency (ms) from all provider latency health rows.
- *
- * B3 fix (wave34-data-flow-audit ✘-3): uses a requests-weighted average
- * instead of the former `Math.max` aggregation. The max was dominated by a
- * single low-sample anthropic/claude-opus-4-7 bucket (3 requests, 282 s)
- * which made the headline KPI misleading for SLO tracking. The weighted
- * average yields a value representative of actual traffic distribution.
- */
-function computeFleetP95(
-  healthRows: UsageReportProviderLatencyHealthRow[]
-): number {
-  let weightedSum = 0
-  let totalRequests = 0
-  for (const r of healthRows) {
-    if (r.upstream_p95_ms === null) continue
-    weightedSum += r.upstream_p95_ms * r.requests
-    totalRequests += r.requests
-  }
-  return totalRequests > 0 ? weightedSum / totalRequests : 0
 }
 
 // ---------------------------------------------------------------------------
@@ -292,6 +270,11 @@ export function Dashboard(): ReactElement {
         environment: slicerFilters.environments,
         model: slicerFilters.models,
       }),
+    // Wave 37 W37-2: align client staleTime with server REPORT_CACHE_TTL_MS
+    // (5 min). Without this, React Query marks data stale after the global
+    // default (10 s) and refetches on every tab-focus event even though the
+    // server returns cached responses for the full 5-minute window.
+    staleTime: 5 * 60 * 1000,
   })
 
   // Wave 36 Fix 4: showComparison gates the priorReport query in PhosphorDashboard
@@ -395,10 +378,26 @@ export function Dashboard(): ReactElement {
     []
   )
 
+  // Wave 37 SF-4: receive prior-window fleet P95 and fleet errors from
+  // PhosphorDashboard so all 6 KPI tiles can show a delta arrow.
+  // `p95_ms` and `errors` are derived from health rows (not present in
+  // UsageReportSummary), so they are passed via a dedicated callback.
+  const [priorHealth, setPriorHealth] = useState<
+    { priorP95: number; priorErrors: number } | undefined
+  >(undefined)
+  const handlePriorHealthReady = useCallback(
+    (data: { priorP95: number; priorErrors: number } | undefined): void => {
+      setPriorHealth(data)
+    },
+    []
+  )
+
   // Compute signed-fractional deltas for each KPI key (format: 0.124 = +12.4%).
   // Uses computeDeltaPct (returns signed %, e.g. 12.4) divided by 100 so the
   // KpiStrip's renderDelta (which multiplies by 100) displays the correct value.
   // Returns undefined for a key when prior data is unavailable or prior is zero.
+  // Wave 37 SF-4: p95_ms and errors deltas now wired via priorHealth from
+  // PhosphorDashboard's onPriorHealthReady callback.
   const kpiDeltas = useMemo((): Partial<
     Record<keyof KpiSummaryShape, number>
   > => {
@@ -410,6 +409,16 @@ export function Dashboard(): ReactElement {
       requests: computeDeltaPct(kpiSummary.requests, priorSummary.traces),
       token_in: computeDeltaPct(kpiSummary.token_in, priorSummary.token_in),
       token_out: computeDeltaPct(kpiSummary.token_out, priorSummary.token_out),
+      // p95_ms and errors: derived from prior health rows (not in UsageReportSummary).
+      // Available only when showComparison is true (priorReport query fires at ≥3840px).
+      p95_ms:
+        priorHealth !== undefined && priorHealth.priorP95 !== 0
+          ? computeDeltaPct(kpiSummary.p95_ms, priorHealth.priorP95)
+          : null,
+      errors:
+        priorHealth !== undefined && priorHealth.priorErrors !== 0
+          ? computeDeltaPct(kpiSummary.errors, priorHealth.priorErrors)
+          : null,
     }
     const result: Partial<Record<keyof KpiSummaryShape, number>> = {}
     for (const [key, val] of Object.entries(raw)) {
@@ -418,7 +427,7 @@ export function Dashboard(): ReactElement {
       }
     }
     return result
-  }, [kpiSummary, priorSummary])
+  }, [kpiSummary, priorSummary, priorHealth])
 
   const anomalies = useAnomalyDetection(
     (summaryReport?.providerLatencyHealth ?? []).filter(
@@ -427,9 +436,16 @@ export function Dashboard(): ReactElement {
     summaryReport?.metadata
   )
 
+  // Wave 37 SF-1 / W37-1: queryKey now matches PhosphorDashboard's key shape
+  // exactly (`['usage-report-quotas', from, to]`) so React Query deduplicates
+  // both subscribers into a single cache entry and fires only ONE HTTP request
+  // per load. The previous key `['usage-report-quotas-shell']` differed in
+  // shape and could never hash to the same entry as PhosphorDashboard's key.
+  // Wave 37 W37-2: staleTime aligned with server REPORT_CACHE_TTL_MS (5 min).
   const { data: quotasData } = useQuery({
-    queryKey: ['usage-report-quotas-shell'],
+    queryKey: ['usage-report-quotas', from, to],
     queryFn: fetchUsageReportQuotas,
+    staleTime: 5 * 60 * 1000,
   })
 
   const quotaRows = useMemo(
@@ -724,9 +740,11 @@ export function Dashboard(): ReactElement {
               filters={slicerFilters}
               onOptionsReady={handleSlicerOptionsReady}
               onPriorSummaryReady={handlePriorSummaryReady}
+              onPriorHealthReady={handlePriorHealthReady}
               report={summaryReport}
               reportLoading={summaryLoading}
               showComparison={showComparison}
+              quotas={quotasData?.quotas}
             />
           )}
         </div>
