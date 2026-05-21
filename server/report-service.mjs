@@ -13,22 +13,37 @@ const gunzip = promisify(gunzipCallback)
 
 const PORT = Number(process.env.SHELL_REPORT_PORT ?? 3010)
 const DATABASE_URL = normalizeDatabaseUrl(process.env.DATABASE_URL)
-const AAWM_TAP_API_TARGET =
-  process.env.AAWM_TAP_API_TARGET ?? 'http://127.0.0.1:8000'
-const AAWM_TAP_API_KEY = envSecret(
-  'AAWM_TAP_API_KEY',
-  'VITE_TAP_API_KEY',
-  'VITE_API_KEY'
-)
-const AAWM_TAP_ACCESS_TOKEN = envSecret(
-  'AAWM_TAP_ACCESS_TOKEN',
-  'VITE_TAP_ACCESS_TOKEN',
-  'VITE_ACCESS_TOKEN'
-)
-const AAWM_TAP_ADMIN_CAPABILITY = envSecret(
-  'AAWM_TAP_ADMIN_CAPABILITY',
-  'VITE_TAP_ADMIN_CAPABILITY'
-)
+const UPSTREAM_API_PROXIES = [
+  {
+    prefix: '/api/aawm-tap',
+    displayName: 'AAWM TAP',
+    target: process.env.AAWM_TAP_API_TARGET ?? 'http://127.0.0.1:8000',
+    apiKey: envSecret('AAWM_TAP_API_KEY', 'VITE_TAP_API_KEY', 'VITE_API_KEY'),
+    accessToken: envSecret(
+      'AAWM_TAP_ACCESS_TOKEN',
+      'VITE_TAP_ACCESS_TOKEN',
+      'VITE_ACCESS_TOKEN'
+    ),
+    adminCapability: envSecret(
+      'AAWM_TAP_ADMIN_CAPABILITY',
+      'VITE_TAP_ADMIN_CAPABILITY'
+    ),
+  },
+  {
+    prefix: '/api/aegis',
+    displayName: 'Aegis',
+    target:
+      process.env.AEGIS_API_TARGET ?? 'http://host.docker.internal:8001/api/v1',
+    accessToken: envSecret('AEGIS_ACCESS_TOKEN', 'AEGIS_API_TOKEN'),
+  },
+  {
+    prefix: '/api/sluice',
+    displayName: 'Sluice',
+    target:
+      process.env.SLUICE_API_TARGET ?? 'http://host.docker.internal:8000/api/v1',
+    accessToken: envSecret('SLUICE_ACCESS_TOKEN', 'SLUICE_API_TOKEN'),
+  },
+]
 const DEFAULT_GROUP_BY = ['environment', 'client', 'repository', 'provider_model']
 // Wave 24-D30: raised from 500 to 50000 to fix 30-day undercounting.
 // At 30-day daily grain with provider+model+repository groupBy, row count
@@ -1958,13 +1973,18 @@ function buildFreshnessMetadata(latestRecordAt) {
   }
 }
 
-function proxyTargetUrl(req) {
+function proxyTargetUrl(req, proxyConfig) {
   const requestUrl = new URL(req.url, `http://${req.headers.host}`)
-  const base = new URL(AAWM_TAP_API_TARGET)
-  const rewrittenPath = requestUrl.pathname.replace(/^\/api\/aawm-tap\/?/, '/')
+  const base = new URL(proxyConfig.target)
+  const prefixPattern = new RegExp(`^${escapeRegExp(proxyConfig.prefix)}\\/?`)
+  const rewrittenPath = requestUrl.pathname.replace(prefixPattern, '/')
   base.pathname = joinUrlPath(base.pathname, rewrittenPath)
   base.search = requestUrl.search
   return base
+}
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
 function joinUrlPath(basePath, requestPath) {
@@ -1977,7 +1997,7 @@ function joinUrlPath(basePath, requestPath) {
   return `${normalizedBase}${normalizedRequest}`
 }
 
-function proxyHeaders(req) {
+function proxyHeaders(req, proxyConfig) {
   const headers = {}
   for (const [key, value] of Object.entries(req.headers)) {
     const lowerKey = key.toLowerCase()
@@ -1991,18 +2011,18 @@ function proxyHeaders(req) {
     }
   }
 
-  if (AAWM_TAP_API_KEY) {
-    headers['X-API-Key'] = AAWM_TAP_API_KEY
+  if (proxyConfig.apiKey) {
+    headers['X-API-Key'] = proxyConfig.apiKey
   }
-  if (AAWM_TAP_ACCESS_TOKEN) {
-    headers.Authorization = AAWM_TAP_ACCESS_TOKEN.toLowerCase().startsWith(
+  if (proxyConfig.accessToken) {
+    headers.Authorization = proxyConfig.accessToken.toLowerCase().startsWith(
       'bearer '
     )
-      ? AAWM_TAP_ACCESS_TOKEN
-      : `Bearer ${AAWM_TAP_ACCESS_TOKEN}`
+      ? proxyConfig.accessToken
+      : `Bearer ${proxyConfig.accessToken}`
   }
-  if (AAWM_TAP_ADMIN_CAPABILITY) {
-    headers['X-Admin-Capability'] = AAWM_TAP_ADMIN_CAPABILITY
+  if (proxyConfig.adminCapability) {
+    headers['X-Admin-Capability'] = proxyConfig.adminCapability
   }
 
   return headers
@@ -2462,14 +2482,22 @@ function toDateParam(date) {
   return date.toISOString().slice(0, 10)
 }
 
-async function handleAawmTapProxy(req, res) {
+function findUpstreamApiProxy(pathname) {
+  return UPSTREAM_API_PROXIES.find(
+    (proxyConfig) =>
+      pathname === proxyConfig.prefix ||
+      pathname.startsWith(`${proxyConfig.prefix}/`)
+  )
+}
+
+async function handleUpstreamApiProxy(req, res, proxyConfig) {
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), UPSTREAM_FETCH_TIMEOUT_MS)
   let upstreamResponse
   try {
-    upstreamResponse = await fetch(proxyTargetUrl(req), {
+    upstreamResponse = await fetch(proxyTargetUrl(req, proxyConfig), {
       method: req.method,
-      headers: proxyHeaders(req),
+      headers: proxyHeaders(req, proxyConfig),
       signal: controller.signal,
       body:
         req.method === 'GET' || req.method === 'HEAD'
@@ -2479,7 +2507,7 @@ async function handleAawmTapProxy(req, res) {
   } catch (error) {
     if (error instanceof Error && error.name === 'AbortError') {
       sendJson(res, 504, {
-        error: `AAWM TAP upstream timed out after ${UPSTREAM_FETCH_TIMEOUT_MS}ms.`,
+        error: `${proxyConfig.displayName} upstream timed out after ${UPSTREAM_FETCH_TIMEOUT_MS}ms.`,
       })
       return
     }
@@ -2522,8 +2550,9 @@ async function handleRequest(req, res) {
     return
   }
 
-  if (requestUrl.pathname.startsWith('/api/aawm-tap')) {
-    await handleAawmTapProxy(req, res)
+  const upstreamApiProxy = findUpstreamApiProxy(requestUrl.pathname)
+  if (upstreamApiProxy !== undefined) {
+    await handleUpstreamApiProxy(req, res, upstreamApiProxy)
     return
   }
 

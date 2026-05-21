@@ -1,8 +1,12 @@
 import {
+  hostDashboardTeam,
+  remoteDashboardConfigs,
+  remoteDashboardHref,
+} from '@/shell/remote-dashboard-registry'
+import {
   Construction,
   LayoutDashboard,
   Monitor,
-  Activity,
   Bug,
   ListTodo,
   FileX,
@@ -11,7 +15,6 @@ import {
   Bell,
   Package,
   Palette,
-  Search,
   ServerOff,
   Settings,
   Wrench,
@@ -20,82 +23,40 @@ import {
   Users,
   MessagesSquare,
   ShieldCheck,
-  Database,
-  GitBranch,
-  Command,
 } from 'lucide-react'
 import { ClerkLogo } from '@/assets/clerk-logo'
 import { type SidebarData } from '../types'
 
-const aawmTapAccentColor = 'hsl(220 70% 50%)'
+const remoteDashboardTeams = remoteDashboardConfigs.map((dashboard) => ({
+  name: dashboard.name,
+  logo: dashboard.icon,
+  plan: 'Remote Module',
+  basePath: dashboard.basePath,
+  accentColor: dashboard.accentColor,
+}))
+
+const remoteDashboardNavItems = remoteDashboardConfigs.map((dashboard) => ({
+  title: dashboard.name,
+  icon: dashboard.icon,
+  accentColor: dashboard.accentColor,
+  items: dashboard.navItems.map((navItem) => ({
+    title: navItem.label,
+    url: remoteDashboardHref(dashboard, navItem.path),
+    icon: navItem.icon,
+    accentColor: dashboard.accentColor,
+  })),
+}))
 
 export const sidebarData: SidebarData = {
   user: {
     name: 'Dashboard Shell',
     email: 'local dashboard',
   },
-  teams: [
-    {
-      name: 'Dashboard Shell',
-      logo: Command,
-      plan: 'Host App',
-      basePath: '/',
-    },
-    {
-      name: 'AAWM TAP',
-      logo: LayoutDashboard,
-      plan: 'Remote Module',
-      basePath: '/aawm-tap',
-      accentColor: aawmTapAccentColor,
-    },
-  ],
+  teams: [hostDashboardTeam, ...remoteDashboardTeams],
   navGroups: [
     {
       title: 'Dashboards',
-      items: [
-        {
-          title: 'AAWM TAP',
-          icon: LayoutDashboard,
-          accentColor: aawmTapAccentColor,
-          items: [
-            {
-              title: 'Overview',
-              url: '/aawm-tap/overview',
-              icon: LayoutDashboard,
-            },
-            {
-              title: 'Processes',
-              url: '/aawm-tap/processes',
-              icon: ListTodo,
-            },
-            {
-              title: 'Watchlist',
-              url: '/aawm-tap/watchlist',
-              icon: ShieldCheck,
-            },
-            {
-              title: 'Sources',
-              url: '/aawm-tap/sources',
-              icon: Database,
-            },
-            {
-              title: 'Search',
-              url: '/aawm-tap/search',
-              icon: Search,
-            },
-            {
-              title: 'Graph',
-              url: '/aawm-tap/graph',
-              icon: GitBranch,
-            },
-            {
-              title: 'Admin',
-              url: '/aawm-tap/admin',
-              icon: Activity,
-            },
-          ],
-        },
-      ],
+      items: remoteDashboardNavItems,
     },
     {
       title: 'General',

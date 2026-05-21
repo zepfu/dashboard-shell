@@ -10,7 +10,11 @@ services:
     depends_on:
       aawm-tap-dashboard:
         condition: service_healthy
+      aegis-dashboard:
+        condition: service_healthy
       dashboard-shell-reports:
+        condition: service_healthy
+      sluice-dashboard:
         condition: service_healthy
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -28,6 +32,10 @@ services:
       AAWM_TAP_ACCESS_TOKEN: "${AAWM_TAP_ACCESS_TOKEN:-}"
       AAWM_TAP_ADMIN_CAPABILITY: "${AAWM_TAP_ADMIN_CAPABILITY:-}"
       AAWM_TAP_API_TARGET: "${AAWM_TAP_API_TARGET:-http://host.docker.internal:8010}"
+      AEGIS_ACCESS_TOKEN: "${AEGIS_ACCESS_TOKEN:-}"
+      AEGIS_API_TARGET: "${AEGIS_API_TARGET:-http://host.docker.internal:8001/api/v1}"
+      SLUICE_ACCESS_TOKEN: "${SLUICE_ACCESS_TOKEN:-}"
+      SLUICE_API_TARGET: "${SLUICE_API_TARGET:-http://host.docker.internal:8000/api/v1}"
       VITE_API_KEY: "${VITE_API_KEY:-}"
       VITE_ACCESS_TOKEN: "${VITE_ACCESS_TOKEN:-}"
       VITE_TAP_ACCESS_TOKEN: "${VITE_TAP_ACCESS_TOKEN:-}"
@@ -104,6 +112,40 @@ services:
       context: ../aawm-tap-dashboard
       dockerfile: Dockerfile
     image: aawm-tap-dashboard:local
+    expose:
+      - "80"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/remoteEntry.js >/dev/null"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    networks:
+      - aawm_tap
+
+  aegis-dashboard:
+    restart: unless-stopped
+    build:
+      context: ../aegis-dashboard
+      dockerfile: Dockerfile
+    image: aegis-dashboard-remote:local
+    expose:
+      - "80"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/remoteEntry.js >/dev/null"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    networks:
+      - aawm_tap
+
+  sluice-dashboard:
+    restart: unless-stopped
+    build:
+      context: ../sluice-dashboard
+      dockerfile: Dockerfile
+    image: sluice-dashboard-remote:local
     expose:
       - "80"
     healthcheck:

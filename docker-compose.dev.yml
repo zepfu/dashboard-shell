@@ -7,14 +7,22 @@ services:
     depends_on:
       aawm-tap-dashboard-dev:
         condition: service_healthy
+      aegis-dashboard-dev:
+        condition: service_healthy
       dashboard-shell-reports-dev:
+        condition: service_healthy
+      sluice-dashboard-dev:
         condition: service_healthy
     environment:
       AAWM_TAP_REMOTE_ENTRY: "http://localhost:${AAWM_TAP_REMOTE_DEV_PORT:-5173}/remoteEntry.js"
       AAWM_TAP_REMOTE_ENTRY_TYPE: "module"
+      AEGIS_REMOTE_ENTRY: "http://localhost:${AEGIS_REMOTE_DEV_PORT:-5174}/remoteEntry.js"
+      AEGIS_REMOTE_ENTRY_TYPE: "module"
       CHOKIDAR_USEPOLLING: "${CHOKIDAR_USEPOLLING:-true}"
       DASHBOARD_SHELL_DEV_PORT: "${DASHBOARD_SHELL_DEV_PORT:-3006}"
       SHELL_REPORT_API_TARGET: "http://dashboard-shell-reports-dev:${SHELL_REPORT_PORT:-3010}"
+      SLUICE_REMOTE_ENTRY: "http://localhost:${SLUICE_REMOTE_DEV_PORT:-5175}/remoteEntry.js"
+      SLUICE_REMOTE_ENTRY_TYPE: "module"
       WATCHPACK_POLLING: "${WATCHPACK_POLLING:-true}"
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -57,6 +65,10 @@ services:
       AAWM_TAP_ACCESS_TOKEN: "${AAWM_TAP_ACCESS_TOKEN:-}"
       AAWM_TAP_ADMIN_CAPABILITY: "${AAWM_TAP_ADMIN_CAPABILITY:-}"
       AAWM_TAP_API_TARGET: "${AAWM_TAP_API_TARGET:-http://host.docker.internal:8010}"
+      AEGIS_ACCESS_TOKEN: "${AEGIS_ACCESS_TOKEN:-}"
+      AEGIS_API_TARGET: "${AEGIS_API_TARGET:-http://host.docker.internal:8001/api/v1}"
+      SLUICE_ACCESS_TOKEN: "${SLUICE_ACCESS_TOKEN:-}"
+      SLUICE_API_TARGET: "${SLUICE_API_TARGET:-http://host.docker.internal:8000/api/v1}"
       VITE_API_KEY: "${VITE_API_KEY:-}"
       VITE_ACCESS_TOKEN: "${VITE_ACCESS_TOKEN:-}"
       VITE_TAP_ACCESS_TOKEN: "${VITE_TAP_ACCESS_TOKEN:-}"
@@ -174,13 +186,85 @@ services:
       start_period: 30s
       retries: 5
 
+  aegis-dashboard-dev:
+    image: node:22-alpine
+    container_name: dashboard-shell-aegis-dashboard-dev
+    restart: unless-stopped
+    working_dir: /workspace/aegis-dashboard
+    environment:
+      AEGIS_REMOTE_DEV_PORT: "${AEGIS_REMOTE_DEV_PORT:-5174}"
+      CHOKIDAR_USEPOLLING: "${CHOKIDAR_USEPOLLING:-true}"
+      WATCHPACK_POLLING: "${WATCHPACK_POLLING:-true}"
+    ports:
+      - "${AEGIS_REMOTE_DEV_PORT:-5174}:${AEGIS_REMOTE_DEV_PORT:-5174}"
+    networks:
+      - aawm_tap
+    volumes:
+      - ../aegis-dashboard:/workspace/aegis-dashboard
+      - aegis_dashboard_dev_node_modules:/workspace/aegis-dashboard/node_modules
+      - aegis_dashboard_dev_npm_cache:/root/.npm
+    command:
+      - sh
+      - -lc
+      - |
+        npm ci
+        npm run dev -- --host 0.0.0.0 --port "$${AEGIS_REMOTE_DEV_PORT:-5174}" --strictPort --cors
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "wget -qO- http://127.0.0.1:$${AEGIS_REMOTE_DEV_PORT:-5174}/remoteEntry.js >/dev/null",
+        ]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 5
+
+  sluice-dashboard-dev:
+    image: node:22-alpine
+    container_name: dashboard-shell-sluice-dashboard-dev
+    restart: unless-stopped
+    working_dir: /workspace/sluice-dashboard
+    environment:
+      CHOKIDAR_USEPOLLING: "${CHOKIDAR_USEPOLLING:-true}"
+      SLUICE_REMOTE_DEV_PORT: "${SLUICE_REMOTE_DEV_PORT:-5175}"
+      WATCHPACK_POLLING: "${WATCHPACK_POLLING:-true}"
+    ports:
+      - "${SLUICE_REMOTE_DEV_PORT:-5175}:${SLUICE_REMOTE_DEV_PORT:-5175}"
+    networks:
+      - aawm_tap
+    volumes:
+      - ../sluice-dashboard:/workspace/sluice-dashboard
+      - sluice_dashboard_dev_node_modules:/workspace/sluice-dashboard/node_modules
+      - sluice_dashboard_dev_npm_cache:/root/.npm
+    command:
+      - sh
+      - -lc
+      - |
+        npm ci
+        npm run dev -- --host 0.0.0.0 --port "$${SLUICE_REMOTE_DEV_PORT:-5175}" --strictPort --cors
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "wget -qO- http://127.0.0.1:$${SLUICE_REMOTE_DEV_PORT:-5175}/remoteEntry.js >/dev/null",
+        ]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 5
+
 volumes:
   aawm_tap_dashboard_dev_node_modules:
   aawm_tap_dashboard_dev_npm_cache:
+  aegis_dashboard_dev_node_modules:
+  aegis_dashboard_dev_npm_cache:
   dashboard_shell_dev_node_modules:
   dashboard_shell_dev_pnpm_store:
   dashboard_shell_reports_dev_node_modules:
   dashboard_shell_reports_dev_pnpm_store:
+  sluice_dashboard_dev_node_modules:
+  sluice_dashboard_dev_npm_cache:
 
 networks:
   aawm_tap:
