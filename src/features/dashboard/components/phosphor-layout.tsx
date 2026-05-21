@@ -28,7 +28,7 @@ interface PhosphorLayoutProps {
   sidebar: ReactNode
   header: ReactNode
   main: ReactNode
-  alerts: ReactNode
+  alerts?: ReactNode
 }
 
 /**
@@ -47,9 +47,17 @@ export function PhosphorLayout({
   main,
   alerts,
 }: PhosphorLayoutProps): ReactElement {
+  const hasAlerts = alerts !== undefined && alerts !== null
+
   return (
     <div
-      className={`phosphor-layout grid ${styles['phosphor-layout'] ?? ''}`}
+      className={[
+        'phosphor-layout grid',
+        styles['phosphor-layout'] ?? '',
+        !hasAlerts ? (styles['phosphor-layout-no-alerts'] ?? '') : '',
+      ]
+        .filter(Boolean)
+        .join(' ')}
       style={{
         // display:'grid' kept inline so jsdom tests can detect the grid container
         // without evaluating CSS module class rules.
@@ -69,7 +77,9 @@ export function PhosphorLayout({
       </aside>
       <header style={{ gridRow: '1', gridColumn: '2' }}>{header}</header>
       <main style={{ gridRow: '2', gridColumn: '2' }}>{main}</main>
-      <aside style={{ gridRow: '1 / -1', gridColumn: '3' }}>{alerts}</aside>
+      {hasAlerts && (
+        <aside style={{ gridRow: '1 / -1', gridColumn: '3' }}>{alerts}</aside>
+      )}
     </div>
   )
 }

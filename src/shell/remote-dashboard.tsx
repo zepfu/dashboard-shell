@@ -16,6 +16,8 @@ import { Main } from '@/components/layout/main'
 import { TopNav } from '@/components/layout/top-nav'
 import { ProfileDropdown } from '@/components/profile-dropdown'
 import { Search } from '@/components/search'
+import { PhosphorLayout } from '@/features/dashboard/components/phosphor-layout'
+import { PhosphorSidebar } from '@/features/dashboard/components/phosphor-sidebar'
 import {
   normalizeRemoteRoutePath,
   remoteDashboardConfigByKey,
@@ -38,9 +40,20 @@ type RemoteModuleViewProps = {
   routePath: string
 }
 
+type RemoteHeaderModule = {
+  name: string
+  description: string
+  icon: ProjectModule['icon']
+  basePath: string
+  accentColor?: string
+  navItems: ProjectModule['navItems']
+  routes?: RemoteRouteConfig[]
+}
+
 type BoundaryProps = {
   children: ReactNode
   config: RemoteDashboardRegistryEntry
+  routePath: string
 }
 
 type BoundaryState = {
@@ -57,16 +70,22 @@ class RemoteModuleBoundary extends Component<BoundaryProps, BoundaryState> {
   render() {
     if (this.state.error !== null) {
       return (
-        <Main>
-          <Alert variant='destructive'>
-            <AlertTriangle className='size-4' />
-            <AlertTitle>Dashboard module failed to load</AlertTitle>
-            <AlertDescription>
-              Check that the {this.props.config.moduleId} remote is running and
-              that `remoteEntry.js` is reachable from the shell.
-            </AlertDescription>
-          </Alert>
-        </Main>
+        <RemoteDashboardFrame
+          module={this.props.config}
+          routePath={this.props.routePath}
+          main={
+            <Main>
+              <Alert variant='destructive'>
+                <AlertTriangle className='size-4' />
+                <AlertTitle>Dashboard module failed to load</AlertTitle>
+                <AlertDescription>
+                  Check that the {this.props.config.moduleId} remote is running
+                  and that `remoteEntry.js` is reachable from the shell.
+                </AlertDescription>
+              </Alert>
+            </Main>
+          }
+        />
       )
     }
 
@@ -98,8 +117,16 @@ export function RemoteDashboardRoute({
   const RemoteModuleView = remoteModuleViews[moduleKey]
 
   return (
-    <RemoteModuleBoundary config={config}>
-      <Suspense fallback={<RemoteLoadingState />}>
+    <RemoteModuleBoundary config={config} routePath={routePath}>
+      <Suspense
+        fallback={
+          <RemoteDashboardFrame
+            module={config}
+            routePath={routePath}
+            main={<RemoteLoadingState />}
+          />
+        }
+      >
         <RemoteModuleView routePath={routePath} />
       </Suspense>
     </RemoteModuleBoundary>
@@ -130,16 +157,37 @@ function createRemoteModuleView(
     )
 
     return (
-      <>
-        <RemoteHeader module={module} routePath={routeMatch.route.path} />
-        <Main fluid className='min-h-[calc(100svh-4rem)]'>
-          <Suspense fallback={<RemoteLoadingState compact />}>
-            <Component {...routeProps} />
-          </Suspense>
-        </Main>
-      </>
+      <RemoteDashboardFrame
+        module={module}
+        routePath={routeMatch.route.path}
+        main={
+          <Main fluid className='min-h-[calc(100svh-4rem)]'>
+            <Suspense fallback={<RemoteLoadingState compact />}>
+              <Component {...routeProps} />
+            </Suspense>
+          </Main>
+        }
+      />
     )
   }
+}
+
+function RemoteDashboardFrame({
+  module,
+  routePath,
+  main,
+}: {
+  module: RemoteHeaderModule
+  routePath: string
+  main: ReactNode
+}) {
+  return (
+    <PhosphorLayout
+      sidebar={<PhosphorSidebar />}
+      header={<RemoteHeader module={module} routePath={routePath} />}
+      main={main}
+    />
+  )
 }
 
 function findRemoteRouteMatch(routes: RemoteRouteConfig[], routePath: string) {
@@ -214,13 +262,13 @@ function RemoteHeader({
   module,
   routePath,
 }: {
-  module: ProjectModule
+  module: RemoteHeaderModule
   routePath: string
 }) {
   const moduleNavItems =
     module.navItems.length > 0
       ? module.navItems
-      : module.routes.map((route) => ({
+      : (module.routes ?? []).map((route) => ({
           label: titleFromPath(route.path),
           path: route.path,
           icon: module.icon,
@@ -290,18 +338,21 @@ function RemoteRouteNotFound({
   routePath: string
 }) {
   return (
-    <>
-      <RemoteHeader module={module} routePath='' />
-      <Main>
-        <Alert>
-          <AlertTriangle className='size-4' />
-          <AlertTitle>Unknown dashboard route</AlertTitle>
-          <AlertDescription>
-            `{routePath}` is not exposed by the {module.name} module.
-          </AlertDescription>
-        </Alert>
-      </Main>
-    </>
+    <RemoteDashboardFrame
+      module={module}
+      routePath=''
+      main={
+        <Main>
+          <Alert>
+            <AlertTriangle className='size-4' />
+            <AlertTitle>Unknown dashboard route</AlertTitle>
+            <AlertDescription>
+              `{routePath}` is not exposed by the {module.name} module.
+            </AlertDescription>
+          </Alert>
+        </Main>
+      }
+    />
   )
 }
 
