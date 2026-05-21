@@ -65,3 +65,17 @@ test('test_phosphor_layout_3col_grid_template', () => {
   expect(outerEl.className).toContain('phosphor-layout')
   expect(outerEl.style?.display).toBe('grid')
 })
+
+test('test_phosphor_layout_can_render_without_alerts_column', () => {
+  const { container, queryByText } = render(
+    <PhosphorLayout
+      sidebar={<div>SB</div>}
+      header={<div>HD</div>}
+      main={<div>MN</div>}
+    />
+  )
+
+  const outerEl = container.firstChild as HTMLElement
+  expect(outerEl.className).toContain('phosphor-layout-no-alerts')
+  expect(queryByText('AL')).not.toBeInTheDocument()
+})
