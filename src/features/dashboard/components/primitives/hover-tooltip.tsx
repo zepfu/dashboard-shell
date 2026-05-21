@@ -200,15 +200,30 @@ export function HoverTooltip({
     }
 
     // Variant-specific sizing / alignment (matches previous absolute layout).
+    // All portalled panels use `width: max-content` so the bordered background
+    // grows to enclose content rather than clipping or overflowing it.
+    // `maxWidth: min(Xpx, calc(100vw - 16px))` caps growth so the panel never
+    // escapes the viewport on small screens. `100%` was dropped because on a
+    // portalled `position:fixed` element it resolves to `document.body` width,
+    // producing an unexpectedly wide cap.
     if (variant === 'quota' || variant === 'quota-bar') {
       Object.assign(base, {
-        width: '240px',
-        maxWidth: 'calc(100vw - 16px)',
+        minWidth: '240px',
+        maxWidth: 'min(360px, calc(100vw - 16px))',
+        width: 'max-content',
       } satisfies CSSProperties)
     } else if (variant === 'health') {
       Object.assign(base, {
-        width: '280px',
-        maxWidth: 'none',
+        minWidth: '280px',
+        maxWidth: 'min(360px, calc(100vw - 16px))',
+        width: 'max-content',
+      } satisfies CSSProperties)
+    } else {
+      // default variant: grow to content but respect viewport and keep minWidth.
+      Object.assign(base, {
+        maxWidth: 'min(360px, calc(100vw - 16px))',
+        width: 'max-content',
+        whiteSpace: 'normal',
       } satisfies CSSProperties)
     }
 
