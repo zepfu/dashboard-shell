@@ -1,33 +1,21 @@
 /**
- * PhosphorSidebar — route-scoped flat sidebar for Phosphor Atlas dashboard.
+ * PhosphorSidebar — route-scoped flat sidebar for the Phosphor dashboard.
  *
- * Wave 14-A: NEW component.
- *
- * Renders a flat `<aside class="sidebar">` matching mockup lines 127-193 and
- * 2264-2298 verbatim. This component is ONLY used on the dashboard route.
- * All other routes continue to use the host AppSidebar.
- *
- * Structure (per mockup lines 2264-2298):
- * - sidebar-team-switcher (team name)
- * - sidebar-section × 4: Dashboards, General, Pages, Other
- * - sidebar-footer (user display)
- *
- * Routing: items are TanStack Router <Link> elements pointing to the same
- * URLs as the host AppSidebar. Active item is detected via useLocation().
- *
- * CSS rules for .sidebar, .sidebar-section, etc. live in src/styles/index.css
- * in the "Wave 14-A: Phosphor sidebar" block.
+ * This component is used by the dashboard route's PhosphorLayout. It owns the
+ * Phosphor visual sidebar treatment, while dashboard module entries come from
+ * the shared remote-dashboard metadata so they stay aligned with shell routing.
  */
 import type { ReactElement } from 'react'
 import { Link, useLocation } from '@tanstack/react-router'
-
-// ---------------------------------------------------------------------------
-// Nav data matching mockup lines 2264-2298
-// ---------------------------------------------------------------------------
+import {
+  remoteDashboardHref,
+  remoteDashboardMetadata,
+} from '@/shell/remote-dashboard-metadata'
 
 interface NavItem {
   readonly label: string
   readonly href: string
+  readonly activePrefix?: string
 }
 
 interface NavSection {
@@ -35,14 +23,17 @@ interface NavSection {
   readonly items: readonly NavItem[]
 }
 
+const REMOTE_DASHBOARD_NAV_ITEMS: readonly NavItem[] =
+  remoteDashboardMetadata.map((dashboard) => ({
+    label: dashboard.name,
+    href: remoteDashboardHref(dashboard, dashboard.defaultRoutePath),
+    activePrefix: dashboard.basePath,
+  }))
+
 const NAV_SECTIONS: readonly NavSection[] = [
   {
     title: 'Dashboards',
-    items: [
-      { label: 'Overview', href: '/aawm-tap/overview' },
-      { label: 'Processes', href: '/aawm-tap/processes' },
-      { label: 'Watchlist', href: '/aawm-tap/watchlist' },
-    ],
+    items: REMOTE_DASHBOARD_NAV_ITEMS,
   },
   {
     title: 'General',
@@ -70,16 +61,6 @@ const NAV_SECTIONS: readonly NavSection[] = [
   },
 ] as const
 
-// ---------------------------------------------------------------------------
-// Component
-// ---------------------------------------------------------------------------
-
-/**
- * PhosphorSidebar renders the Phosphor Atlas flat left sidebar.
- *
- * Used exclusively on the dashboard (`/`) route. The host AppSidebar is
- * suppressed on this route via AuthenticatedLayout's isDashboard check.
- */
 export function PhosphorSidebar(): ReactElement {
   const location = useLocation()
   const pathname = location.pathname
@@ -92,10 +73,7 @@ export function PhosphorSidebar(): ReactElement {
         <div key={section.title} className='sidebar-section'>
           <div className='sidebar-group-title'>{section.title}</div>
           {section.items.map((item) => {
-            const isActive =
-              item.href === '/'
-                ? pathname === '/'
-                : pathname.startsWith(item.href)
+            const isActive = isNavItemActive(pathname, item)
             return (
               <Link
                 key={item.href}
@@ -111,7 +89,14 @@ export function PhosphorSidebar(): ReactElement {
         </div>
       ))}
 
-      <div className='sidebar-footer'>👤 Local User</div>
+      <div className='sidebar-footer'>Local User</div>
     </>
   )
+}
+
+function isNavItemActive(pathname: string, item: NavItem) {
+  if (item.href === '/') return pathname === '/'
+
+  const activePrefix = item.activePrefix ?? item.href
+  return pathname === activePrefix || pathname.startsWith(`${activePrefix}/`)
 }

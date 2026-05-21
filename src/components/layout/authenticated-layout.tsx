@@ -13,9 +13,6 @@ type AuthenticatedLayoutProps = {
 
 export function AuthenticatedLayout({ children }: AuthenticatedLayoutProps) {
   const defaultOpen = getCookie('sidebar_state') !== 'false'
-  // Wave 14-A: suppress the host AppSidebar on the dashboard route (`/`).
-  // The dashboard route renders PhosphorSidebar inside PhosphorLayout's sidebar
-  // slot. All other routes continue to use the host AppSidebar normally.
   const location = useLocation()
   const isDashboard = location.pathname === '/'
   return (
