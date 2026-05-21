@@ -1,8 +1,18 @@
 /// <reference types="vite/client" />
 
-declare module 'aawm-tap-dashboard/module' {
-  import type { ProjectModule } from './shell/types'
+type ProjectModule = import('./shell/types').ProjectModule
 
+declare module 'aawm-tap-dashboard/module' {
+  const module: ProjectModule
+  export default module
+}
+
+declare module 'aegis-dashboard/module' {
+  const module: ProjectModule
+  export default module
+}
+
+declare module 'sluice/module' {
   const module: ProjectModule
   export default module
 }

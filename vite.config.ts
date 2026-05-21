@@ -9,6 +9,12 @@ const aawmTapRemoteEntry =
   process.env.AAWM_TAP_REMOTE_ENTRY ?? '/modules/aawm-tap/remoteEntry.js'
 const aawmTapRemoteEntryType =
   process.env.AAWM_TAP_REMOTE_ENTRY_TYPE ?? 'module'
+const aegisRemoteEntry =
+  process.env.AEGIS_REMOTE_ENTRY ?? '/modules/aegis/remoteEntry.js'
+const aegisRemoteEntryType = process.env.AEGIS_REMOTE_ENTRY_TYPE ?? 'module'
+const sluiceRemoteEntry =
+  process.env.SLUICE_REMOTE_ENTRY ?? '/modules/sluice/remoteEntry.js'
+const sluiceRemoteEntryType = process.env.SLUICE_REMOTE_ENTRY_TYPE ?? 'module'
 const shellReportApiTarget =
   process.env.SHELL_REPORT_API_TARGET ?? 'http://127.0.0.1:3010'
 const dashboardShellDevPort = Number(
@@ -72,6 +78,20 @@ export default defineConfig({
           entryGlobalName: 'aawm-tap-dashboard',
           shareScope: 'default',
         },
+        'aegis-dashboard': {
+          type: aegisRemoteEntryType,
+          name: 'aegis-dashboard',
+          entry: aegisRemoteEntry,
+          entryGlobalName: 'aegis-dashboard',
+          shareScope: 'default',
+        },
+        sluice: {
+          type: sluiceRemoteEntryType,
+          name: 'sluice',
+          entry: sluiceRemoteEntry,
+          entryGlobalName: 'sluice',
+          shareScope: 'default',
+        },
       },
       shared: {
         react: { singleton: true, requiredVersion: '^19.0.0' },
@@ -103,7 +123,15 @@ export default defineConfig({
         target: shellReportApiTarget,
         changeOrigin: true,
       },
+      '/api/aegis': {
+        target: shellReportApiTarget,
+        changeOrigin: true,
+      },
       '/api/shell': {
+        target: shellReportApiTarget,
+        changeOrigin: true,
+      },
+      '/api/sluice': {
         target: shellReportApiTarget,
         changeOrigin: true,
       },
