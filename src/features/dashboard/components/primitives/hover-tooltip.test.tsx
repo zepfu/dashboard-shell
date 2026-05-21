@@ -21,9 +21,9 @@ test('test_hover_tooltip_hidden_by_default', () => {
     </HoverTooltip>
   )
 
-  // Tooltip should be hidden initially
+  // Tooltip panel is portalled to document.body; query there instead of container.
   const tooltip =
-    container.querySelector('.v9-tip') ??
+    document.body.querySelector('.v9-tip') ??
     container.querySelector('[data-testid="hover-tooltip"]')
 
   expect(tooltip).not.toBeNull()
@@ -50,8 +50,9 @@ test('test_hover_tooltip_visible_on_parent_hover', () => {
   const trigger = container.firstChild as HTMLElement
   fireEvent.pointerEnter(trigger)
 
+  // Tooltip panel is portalled to document.body; query there instead of container.
   const tooltip =
-    container.querySelector('.v9-tip') ??
+    document.body.querySelector('.v9-tip') ??
     container.querySelector('[data-testid="hover-tooltip"]')
 
   expect(tooltip).not.toBeNull()
@@ -72,8 +73,9 @@ test('test_hover_tooltip_quota_variant_positions_above', () => {
     </HoverTooltip>
   )
 
+  // Tooltip panel is portalled to document.body; query there instead of container.
   const tooltip =
-    container.querySelector('.v9-tip') ??
+    document.body.querySelector('.v9-tip') ??
     container.querySelector('[data-testid="hover-tooltip"]')
 
   expect(tooltip).not.toBeNull()
