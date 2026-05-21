@@ -263,7 +263,7 @@ test('test_health_strip_vertical_shows_tip_health_on_hover', () => {
     </>
   )
 
-  const { container } = render(
+  render(
     <HealthStrip
       cells={cells}
       orientation='vertical'
@@ -272,15 +272,15 @@ test('test_health_strip_vertical_shows_tip_health_on_hover', () => {
   )
 
   // Tip panel should be present (hidden initially via opacity)
-  const tip = container.querySelector('.v9-tip')
+  const tip = document.body.querySelector('.v9-tip')
   expect(tip).not.toBeNull()
 
   // Head and row structure
-  const head = container.querySelector('.v9-tip-head')
+  const head = document.body.querySelector('.v9-tip-head')
   expect(head).not.toBeNull()
   expect(head?.textContent).toContain('event')
 
-  const row = container.querySelector('.v9-tip-row')
+  const row = document.body.querySelector('.v9-tip-row')
   expect(row).not.toBeNull()
   expect(row?.querySelector('.t-time')).not.toBeNull()
   expect(row?.querySelector('.t-model')).not.toBeNull()
@@ -313,7 +313,7 @@ test('test_health_strip_vertical_tip_health_opens_on_pointer_enter', () => {
 
   fireEvent.pointerEnter(wrapper)
 
-  const tip = container.querySelector('.v9-tip')
+  const tip = document.body.querySelector('.v9-tip')
   expect(tip?.getAttribute('data-state')).toBe('open')
 })
 
@@ -515,11 +515,9 @@ test('test_health_strip_tip_health_renders_one_row_per_event', () => {
     ...Array.from({ length: 287 }, () => ({ color: 'var(--card-2)' })),
   ]
 
-  const { container } = render(
-    <HealthStrip cells={cells} orientation='vertical' />
-  )
+  render(<HealthStrip cells={cells} orientation='vertical' />)
 
-  const rows = container.querySelectorAll('.v9-tip-row')
+  const rows = document.body.querySelectorAll('.v9-tip-row')
   expect(rows.length).toBe(2)
 
   const firstRow = rows[0]
@@ -546,11 +544,9 @@ test('test_health_strip_tip_health_empty_events_shows_placeholder', () => {
     ...Array.from({ length: 287 }, () => ({ color: 'var(--card-2)' })),
   ]
 
-  const { container } = render(
-    <HealthStrip cells={cells} orientation='vertical' />
-  )
+  render(<HealthStrip cells={cells} orientation='vertical' />)
 
-  const rows = container.querySelectorAll('.v9-tip-row')
+  const rows = document.body.querySelectorAll('.v9-tip-row')
   expect(rows.length).toBe(1)
 
   const errSpan = rows[0].querySelector('.t-err')
@@ -571,16 +567,14 @@ test('test_health_strip_tip_health_undefined_events_no_breakdown_shows_head_only
     ...Array.from({ length: 287 }, () => ({ color: 'var(--card-2)' })),
   ]
 
-  const { container } = render(
-    <HealthStrip cells={cells} orientation='vertical' />
-  )
+  render(<HealthStrip cells={cells} orientation='vertical' />)
 
   // Head should be present
-  const head = container.querySelector('.v9-tip-head')
+  const head = document.body.querySelector('.v9-tip-head')
   expect(head).not.toBeNull()
 
   // No body rows — bucket is error-free, nothing to enumerate
-  const rows = container.querySelectorAll('.v9-tip-row')
+  const rows = document.body.querySelectorAll('.v9-tip-row')
   expect(rows.length).toBe(0)
 })
 
@@ -607,12 +601,10 @@ test('test_health_strip_tip_health_raw_error_breakdown_renders_nonzero_rows', ()
     ...Array.from({ length: 287 }, () => ({ color: 'var(--card-2)' })),
   ]
 
-  const { container } = render(
-    <HealthStrip cells={cells} orientation='vertical' />
-  )
+  render(<HealthStrip cells={cells} orientation='vertical' />)
 
   // Should have one row per non-zero field (4 non-zero: provider_error, 5xx, rate_limit, capacity)
-  const rows = container.querySelectorAll('.v9-tip-row')
+  const rows = document.body.querySelectorAll('.v9-tip-row')
   expect(rows.length).toBe(4)
 
   // Verify labels and counts
@@ -654,15 +646,13 @@ test('test_health_strip_tip_health_raw_error_breakdown_all_zero_shows_head_only'
     ...Array.from({ length: 287 }, () => ({ color: 'var(--card-2)' })),
   ]
 
-  const { container } = render(
-    <HealthStrip cells={cells} orientation='vertical' />
-  )
+  render(<HealthStrip cells={cells} orientation='vertical' />)
 
-  const head = container.querySelector('.v9-tip-head')
+  const head = document.body.querySelector('.v9-tip-head')
   expect(head).not.toBeNull()
   expect(head?.textContent).toContain('0 events')
 
-  const rows = container.querySelectorAll('.v9-tip-row')
+  const rows = document.body.querySelectorAll('.v9-tip-row')
   expect(rows.length).toBe(0)
 })
 
@@ -686,11 +676,9 @@ test('test_health_strip_tip_health_raw_error_breakdown_display_order', () => {
     ...Array.from({ length: 287 }, () => ({ color: 'var(--card-2)' })),
   ]
 
-  const { container } = render(
-    <HealthStrip cells={cells} orientation='vertical' />
-  )
+  render(<HealthStrip cells={cells} orientation='vertical' />)
 
-  const rows = container.querySelectorAll('.v9-tip-row')
+  const rows = document.body.querySelectorAll('.v9-tip-row')
   expect(rows.length).toBe(6)
 
   const labels = Array.from(rows).map(
