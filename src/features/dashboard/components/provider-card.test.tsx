@@ -330,7 +330,7 @@ test('test_provider_card_quota_tip_model_has_brand_color', () => {
     },
   ]
 
-  const { container } = render(
+  render(
     <ProviderCard
       config={anthropicConfig}
       data={mockData}
@@ -340,7 +340,7 @@ test('test_provider_card_quota_tip_model_has_brand_color', () => {
   )
 
   // .t-model spans should have an inline color style applied
-  const tModelSpans = container.querySelectorAll('.t-model')
+  const tModelSpans = document.body.querySelectorAll('.t-model')
   // Only populated rows have the style; placeholder '—' rows do not
   const coloredSpans = Array.from(tModelSpans).filter(
     (el) => (el as HTMLElement).style.color !== ''
