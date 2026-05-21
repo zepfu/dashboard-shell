@@ -1,8 +1,8 @@
 import {
   hostDashboardTeam,
-  remoteDashboardConfigs,
   remoteDashboardHref,
-} from '@/shell/remote-dashboard-registry'
+  remoteDashboardMetadata,
+} from '@/shell/remote-dashboard-metadata'
 import {
   Construction,
   LayoutDashboard,
@@ -27,7 +27,7 @@ import {
 import { ClerkLogo } from '@/assets/clerk-logo'
 import { type SidebarData } from '../types'
 
-const remoteDashboardTeams = remoteDashboardConfigs.map((dashboard) => ({
+const remoteDashboardTeams = remoteDashboardMetadata.map((dashboard) => ({
   name: dashboard.name,
   logo: dashboard.icon,
   plan: 'Remote Module',
@@ -35,16 +35,11 @@ const remoteDashboardTeams = remoteDashboardConfigs.map((dashboard) => ({
   accentColor: dashboard.accentColor,
 }))
 
-const remoteDashboardNavItems = remoteDashboardConfigs.map((dashboard) => ({
+const remoteDashboardNavItems = remoteDashboardMetadata.map((dashboard) => ({
   title: dashboard.name,
+  url: remoteDashboardHref(dashboard, dashboard.defaultRoutePath),
   icon: dashboard.icon,
   accentColor: dashboard.accentColor,
-  items: dashboard.navItems.map((navItem) => ({
-    title: navItem.label,
-    url: remoteDashboardHref(dashboard, navItem.path),
-    icon: navItem.icon,
-    accentColor: dashboard.accentColor,
-  })),
 }))
 
 export const sidebarData: SidebarData = {

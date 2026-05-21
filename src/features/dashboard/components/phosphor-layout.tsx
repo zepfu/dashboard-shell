@@ -11,8 +11,8 @@
  * - Breakpoints handled via the co-located CSS module.
  * - sidebar slot wired back: `{ sidebar, header, main, alerts }`.
  * - sidebar placed at grid-column:1, grid-row:1/-1 per mockup line 128-129.
- * - The inline `display`/`gridTemplateColumns` styles ensure the layout is
- *   detectable in jsdom tests (which cannot evaluate computed CSS-class styles).
+ * - The inline `display` style keeps the layout detectable in jsdom tests
+ *   without evaluating computed CSS-class styles.
  *
  * Wave 18-Cards: Removed inline `gridTemplateColumns`, `padding`, and `gap`
  * from the root element so that the CSS module `@media` breakpoint rules at
@@ -34,9 +34,6 @@ interface PhosphorLayoutProps {
 /**
  * PhosphorLayout renders the Phosphor Atlas content shell
  * (sidebar + header + main + alerts).
- *
- * The host AppSidebar is suppressed on the dashboard route so that only the
- * route-scoped PhosphorSidebar renders in the left column.
  *
  * Breakpoints (handled via CSS module):
  * - 1600–2559px: 200px 1fr 240px

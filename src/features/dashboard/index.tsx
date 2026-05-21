@@ -2,8 +2,6 @@
  * Dashboard route entry point — Phosphor Atlas shell.
  *
  * Wave 9: v9.7 reference parity updates:
- * - Sidebar: restyled with team-switcher, 4 nav groups, sidebar-footer.
- *   Routes are NOT rewired (operator decision 2) — visual-only restyle.
  * - Page-header: Playfair Display italic page title, freshness indicator,
  *   fleet-pulse strip (reused horizontal HealthStrip), attribution legend.
  * - DateControls promoted to live state (operator decision 4).
