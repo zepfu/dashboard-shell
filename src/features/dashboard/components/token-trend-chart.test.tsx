@@ -143,12 +143,10 @@ test('test_stacked_heights_proportional', () => {
 // ---------------------------------------------------------------------------
 
 test('test_tooltip_hidden_by_default', () => {
-  const { container } = render(
-    <TokenTrendChart data={mock24Buckets} series={series} />
-  )
+  render(<TokenTrendChart data={mock24Buckets} series={series} />)
 
   // All tooltip panels should start closed (data-state="closed" or class "hidden")
-  const openTips = container.querySelectorAll('.v9-tip[data-state="open"]')
+  const openTips = document.body.querySelectorAll('.v9-tip[data-state="open"]')
   expect(openTips.length).toBe(0)
 })
 
@@ -164,7 +162,8 @@ test('test_tooltip_shows_on_bar_hover', () => {
   // Hover over the wrapper — HoverTooltip uses onPointerEnter
   fireEvent.pointerEnter(tipWrap)
 
-  const tip = tipWrap.querySelector('.v9-tip') as HTMLElement
+  // Panel is portalled to document.body
+  const tip = document.body.querySelector('.v9-tip') as HTMLElement
   expect(tip).not.toBeNull()
   expect(tip.dataset['state']).toBe('open')
 })
@@ -178,7 +177,8 @@ test('test_tooltip_hides_on_mouse_leave', () => {
   fireEvent.pointerEnter(tipWrap)
   fireEvent.pointerLeave(tipWrap)
 
-  const tip = tipWrap.querySelector('.v9-tip') as HTMLElement
+  // Panel is portalled to document.body; it persists with data-state="closed"
+  const tip = document.body.querySelector('.v9-tip') as HTMLElement
   expect(tip.dataset['state']).toBe('closed')
 })
 
@@ -191,8 +191,8 @@ test('test_tooltip_shows_bucket_label_in_head', () => {
   const tipWrap = container.querySelector('.tt-bar-tip-wrap') as HTMLElement
   fireEvent.pointerEnter(tipWrap)
 
-  // The tooltip head should contain the bucket label
-  const head = tipWrap.querySelector('.v9-tip-head') as HTMLElement
+  // The tooltip head should contain the bucket label; panel is portalled to document.body
+  const head = document.body.querySelector('.v9-tip-head') as HTMLElement
   expect(head).not.toBeNull()
   // Bucket 0 label is "0h" (relative label, returned as-is)
   expect(head.textContent).toBe('0h')
@@ -206,8 +206,13 @@ test('test_tooltip_shows_provider_breakdown_sorted_desc', () => {
   const tipWrap = container.querySelector('.tt-bar-tip-wrap') as HTMLElement
   fireEvent.pointerEnter(tipWrap)
 
-  // Tooltip rows should exist (one per provider with non-zero tokens)
-  const rows = tipWrap.querySelectorAll('.v9-tip-row')
+  // Tooltip rows should exist (one per provider with non-zero tokens); panel is portalled to document.body
+  // Scope to the open panel to avoid counting rows from other (closed) portalled panels
+  const openTip = document.body.querySelector(
+    '.v9-tip[data-state="open"]'
+  ) as HTMLElement
+  expect(openTip).not.toBeNull()
+  const rows = openTip.querySelectorAll('.v9-tip-row')
   // Bucket 0: anthropic=100, openai=50, google=25 → 3 rows
   expect(rows.length).toBe(3)
 
