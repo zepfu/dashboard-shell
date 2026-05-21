@@ -6,6 +6,11 @@
  * behaviour is identical to a CSS-hover approach — no additional JS overhead
  * for mouse users.
  *
+ * The floating panel is portalled to `document.body` and positioned with
+ * `position: fixed` using the trigger's `getBoundingClientRect()`. This
+ * ensures the panel is never clipped by ancestor `overflow: hidden/auto`
+ * containers (e.g. the master-ledger table scroll pane).
+ *
  * ## Positioning variants
  * - `default`: tip appears above-right of children.
  * - `health`: tip appears to the LEFT of children (tip-health class).
@@ -31,7 +36,16 @@
  * after bundled CSS) silently overrode `index.css` rules for equal-specificity
  * selectors. `index.css` is now the single authoritative source.
  */
-import { useState, type ReactElement, type ReactNode } from 'react'
+import {
+  useState,
+  useRef,
+  useLayoutEffect,
+  useCallback,
+  type ReactElement,
+  type ReactNode,
+  type CSSProperties,
+} from 'react'
+import { createPortal } from 'react-dom'
 
 /** Supported tooltip positioning variants. */
 type TooltipVariant = 'health' | 'quota' | 'quota-bar' | 'default'
@@ -48,6 +62,17 @@ interface HoverTooltipProps {
   className?: string
 }
 
+/** Computed fixed-position coords for the floating panel. */
+interface PanelCoords {
+  top: number
+  left: number
+  /** translateY applied on top of `top` positioning (health variant). */
+  translateY?: string
+  /** Explicit right alignment: set `right` instead of `left`. */
+  right?: number
+  useRight: boolean
+}
+
 /** Returns the variant-specific CSS class name(s) for positioning. */
 function variantClass(variant: TooltipVariant): string {
   if (variant === 'quota' || variant === 'quota-bar')
@@ -57,8 +82,52 @@ function variantClass(variant: TooltipVariant): string {
 }
 
 /**
+ * Compute `position:fixed` coordinates from the trigger's DOMRect so the
+ * floating panel anchors the same way the previous `position:absolute` layout
+ * did — but now escaping any ancestor overflow clip.
+ *
+ * Variant anchor rules (mirrors old absolute layout):
+ * - `default`:    panel top-left at (rect.right, rect.top)
+ * - `health`:     panel right edge at (rect.left - 8), vertically centred
+ * - `quota` / `quota-bar`: panel bottom edge at (rect.top - 6), right-aligned
+ *   to rect.right, width 240px
+ */
+function computeCoords(rect: DOMRect, variant: TooltipVariant): PanelCoords {
+  if (variant === 'health') {
+    return {
+      // right edge of panel sits 8px left of trigger left edge
+      top: rect.top + rect.height / 2,
+      left: 0, // unused when useRight=true
+      right: window.innerWidth - rect.left + 8,
+      translateY: '-50%',
+      useRight: true,
+    }
+  }
+
+  if (variant === 'quota' || variant === 'quota-bar') {
+    return {
+      // bottom edge of panel sits 6px above trigger top
+      top: rect.top - 6,
+      left: 0, // unused when useRight=true
+      right: window.innerWidth - rect.right,
+      translateY: '-100%',
+      useRight: true,
+    }
+  }
+
+  // default: panel top-left at (rect.right, rect.top)
+  return {
+    top: rect.top,
+    left: rect.right,
+    useRight: false,
+  }
+}
+
+/**
  * HoverTooltip wraps children and shows a floating, amber-bordered,
- * backdrop-blurred tooltip on pointer hover.
+ * backdrop-blurred tooltip on pointer hover. The panel is portalled to
+ * `document.body` and positioned with `position: fixed` so it escapes any
+ * ancestor overflow clip (e.g. the master-ledger table scroll pane).
  */
 export function HoverTooltip({
   content,
@@ -67,11 +136,125 @@ export function HoverTooltip({
   className,
 }: HoverTooltipProps): ReactElement {
   const [isOpen, setIsOpen] = useState(false)
+  const [coords, setCoords] = useState<PanelCoords | null>(null)
+  const wrapperRef = useRef<HTMLDivElement>(null)
 
   const extraClass = variantClass(variant)
 
+  /** Recompute coords from the wrapper's bounding rect. */
+  const updateCoords = useCallback(() => {
+    if (!wrapperRef.current) return
+    const rect = wrapperRef.current.getBoundingClientRect()
+    setCoords(computeCoords(rect, variant))
+  }, [variant])
+
+  /**
+   * While the tooltip is open, reposition on scroll/resize so it tracks the
+   * trigger even if the page scrolls. Clean up on close or unmount.
+   */
+  useLayoutEffect(() => {
+    if (!isOpen) return
+
+    // Compute immediately (synchronous layout read inside useLayoutEffect avoids
+    // a one-frame flash at open time).
+    updateCoords()
+
+    const handleUpdate = () => {
+      requestAnimationFrame(updateCoords)
+    }
+
+    window.addEventListener('scroll', handleUpdate, {
+      passive: true,
+      capture: true,
+    })
+    window.addEventListener('resize', handleUpdate, { passive: true })
+
+    return () => {
+      window.removeEventListener('scroll', handleUpdate, { capture: true })
+      window.removeEventListener('resize', handleUpdate)
+    }
+  }, [isOpen, updateCoords])
+
+  /** Build the `style` object for the portalled panel. */
+  function panelStyle(): CSSProperties {
+    const base: CSSProperties = {
+      position: 'fixed',
+      /* Wave 14-G: rgba(11,16,24,0.96) per mockup line 2011 */
+      backgroundColor: 'rgba(11, 16, 24, 0.96)',
+      border: '1px solid #f59e0b',
+      padding: '6px 8px',
+      minWidth: '120px',
+      fontSize: '10px',
+      color: 'var(--fg, #e2e8f0)',
+      /* Wave 14-G: blur(2px) per mockup line 2012 */
+      backdropFilter: 'blur(2px)',
+      WebkitBackdropFilter: 'blur(2px)',
+      /* Wave 14-G: box-shadow per mockup line 2013 */
+      boxShadow: '0 4px 12px rgba(0, 0, 0, 0.55)',
+      lineHeight: 1.3,
+      // Use 1000 to escape any stacking context created by transformed ancestors.
+      zIndex: 1000,
+      ...(isOpen
+        ? { opacity: 1, pointerEvents: 'auto' }
+        : { opacity: 0, pointerEvents: 'none' }),
+    }
+
+    // Variant-specific sizing / alignment (matches previous absolute layout).
+    if (variant === 'quota' || variant === 'quota-bar') {
+      Object.assign(base, {
+        width: '240px',
+        maxWidth: 'calc(100vw - 16px)',
+      } satisfies CSSProperties)
+    } else if (variant === 'health') {
+      Object.assign(base, {
+        width: '280px',
+        maxWidth: 'none',
+      } satisfies CSSProperties)
+    }
+
+    // Apply computed fixed-position coords.
+    if (coords) {
+      if (coords.useRight && coords.right !== undefined) {
+        base.right = coords.right
+        base.top = coords.top
+      } else {
+        base.top = coords.top
+        base.left = coords.left
+      }
+      if (coords.translateY) {
+        base.transform = `translateY(${coords.translateY})`
+      }
+    } else {
+      // Before first measurement — keep off-screen so it doesn't flash.
+      base.top = -9999
+      base.left = -9999
+    }
+
+    return base
+  }
+
+  /**
+   * Guard: `createPortal` requires a real DOM. In SSR / jsdom-without-body
+   * environments we skip the portal and render inline so existing test queries
+   * that target `document.body` still find the panel.
+   */
+  const canPortal = typeof document !== 'undefined' && document.body != null
+
+  const panel = (
+    <div
+      className={['v9-tip', extraClass, isOpen ? '' : 'hidden']
+        .filter(Boolean)
+        .join(' ')}
+      data-state={isOpen ? 'open' : 'closed'}
+      style={panelStyle()}
+    >
+      {content}
+    </div>
+  )
+
   return (
     <div
+      ref={wrapperRef}
       className={className}
       style={{
         position: 'relative',
@@ -120,53 +303,7 @@ export function HoverTooltip({
       }}
     >
       {children}
-      <div
-        className={['v9-tip', extraClass, isOpen ? '' : 'hidden']
-          .filter(Boolean)
-          .join(' ')}
-        data-state={isOpen ? 'open' : 'closed'}
-        style={{
-          position: 'absolute',
-          /* Wave 14-G: rgba(11,16,24,0.96) per mockup line 2011 */
-          backgroundColor: 'rgba(11, 16, 24, 0.96)',
-          border: '1px solid #f59e0b',
-          padding: '6px 8px',
-          minWidth: '120px',
-          fontSize: '10px',
-          color: 'var(--fg, #e2e8f0)',
-          /* Wave 14-G: blur(2px) per mockup line 2012 */
-          backdropFilter: 'blur(2px)',
-          WebkitBackdropFilter: 'blur(2px)',
-          /* Wave 14-G: box-shadow per mockup line 2013 */
-          boxShadow: '0 4px 12px rgba(0, 0, 0, 0.55)',
-          lineHeight: 1.3,
-          zIndex: 200,
-          ...(isOpen
-            ? { opacity: 1, pointerEvents: 'auto' }
-            : { opacity: 0, pointerEvents: 'none' }),
-          ...(variant === 'quota' || variant === 'quota-bar'
-            ? {
-                width: '240px',
-                bottom: 'calc(100% + 6px)',
-                top: 'auto',
-                right: 0,
-                left: 'auto',
-                maxWidth: 'calc(100% + 40px)',
-              }
-            : variant === 'health'
-              ? {
-                  width: '280px',
-                  right: 'calc(100% + 8px)',
-                  left: 'auto',
-                  top: '50%',
-                  transform: 'translateY(-50%)',
-                  maxWidth: 'none',
-                }
-              : { top: 0, left: '100%' }),
-        }}
-      >
-        {content}
-      </div>
+      {canPortal ? createPortal(panel, document.body) : panel}
     </div>
   )
 }
