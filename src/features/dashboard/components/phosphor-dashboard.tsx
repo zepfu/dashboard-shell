@@ -26,7 +26,7 @@
  * Data is fetched via fetchUsageReport + fetchUsageReportQuotas; anomaly
  * flags come from useAnomalyDetection.
  */
-import { useEffect, useMemo, type ReactElement } from 'react'
+import { useEffect, useMemo, type ReactElement, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import {
   fetchUsageReport,
@@ -247,11 +247,13 @@ export interface PhosphorDashboardProps {
 function SectionTitle({
   id,
   children,
+  accessory,
 }: {
   id: string
   children: string
+  accessory?: ReactNode
 }): ReactElement {
-  return (
+  const title = (
     <h2
       id={id}
       className='section-title'
@@ -261,13 +263,84 @@ function SectionTitle({
         textTransform: 'uppercase',
         letterSpacing: '0.05em',
         fontWeight: 600,
-        marginBottom: '6px',
-        borderBottom: '1px solid var(--border)',
-        paddingBottom: '4px',
+        margin: accessory === undefined ? undefined : 0,
+        marginBottom: accessory === undefined ? '6px' : 0,
+        borderBottom:
+          accessory === undefined ? '1px solid var(--border)' : undefined,
+        paddingBottom: accessory === undefined ? '4px' : 0,
       }}
     >
       {children}
     </h2>
+  )
+
+  if (accessory === undefined) {
+    return title
+  }
+
+  return (
+    <div className='section-title-row'>
+      {title}
+      <div className='section-title-accessory'>{accessory}</div>
+    </div>
+  )
+}
+
+function ProviderStatusLegend(): ReactElement {
+  return (
+    <div
+      aria-label='Provider health and quota color legend'
+      className='status-color-legend'
+    >
+      <span className='legend-group-label'>Health</span>
+      {[
+        ['ok', 'health-ok'],
+        ['degraded', 'health-degraded'],
+        ['down', 'health-down'],
+        ['no data', 'health-no-data'],
+        ['miss', 'health-miss'],
+      ].map(([label, className]) => (
+        <span className='status-legend-item' key={`health-${label}`}>
+          <span
+            aria-hidden='true'
+            className={`status-legend-swatch ${className}`}
+          />
+          {label}
+        </span>
+      ))}
+      <span className='legend-group-label'>Quota used</span>
+      {[
+        ['0-5', 'quota-0-5'],
+        ['5-10', 'quota-5-10'],
+        ['10-25', 'quota-10-25'],
+        ['25-50', 'quota-25-50'],
+        ['50+', 'quota-50-p'],
+      ].map(([label, className]) => (
+        <span className='status-legend-item' key={`quota-${label}`}>
+          <span
+            aria-hidden='true'
+            className={`status-legend-swatch ${className}`}
+          />
+          {label}
+        </span>
+      ))}
+      <span className='legend-group-label'>Burn</span>
+      {[
+        ['slow', 'velocity-slow'],
+        ['steady', 'velocity-steady'],
+        ['fast', 'velocity-fast'],
+        ['hot', 'velocity-hot'],
+        ['peak', 'velocity-peak'],
+      ].map(([label, className]) => (
+        <span className='status-legend-item' key={`velocity-${label}`}>
+          <span
+            aria-hidden='true'
+            className={`status-legend-swatch ${className}`}
+          />
+          {label}
+        </span>
+      ))}
+    </div>
   )
 }
 
@@ -3505,7 +3578,10 @@ export default function PhosphorDashboard({
         data-tab='status'
         aria-labelledby='section-status-heading'
       >
-        <SectionTitle id='section-status-heading'>
+        <SectionTitle
+          id='section-status-heading'
+          accessory={<ProviderStatusLegend />}
+        >
           Provider Health Summary
         </SectionTitle>
         {reportLoading ? (
