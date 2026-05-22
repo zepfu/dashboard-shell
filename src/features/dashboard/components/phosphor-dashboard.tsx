@@ -767,52 +767,64 @@ function ivClassForConsumed(consumedPct: number): string {
   return 'iv-0-5'
 }
 
-/**
- * Builds 12 equal QuotaRowConfig segments for a single quota interval row,
- * with a VISIBLE COLOR GRADIENT across segments.
- *
- * Wave 11 PR3 (11-h): emitted 12 entries all sharing the SAME iv-* class —
- * visually a single solid-colored bar, NOT the rainbow strip the reference
- * shows (operator complaint #8 not fully addressed).
- *
- * Wave 12 Fix 5: each segment now gets its OWN severity class based on its
- * relative position in the consumption window:
- *   - Segments before the "now" cursor (already consumed) use a deeper class
- *     based on overall consumed% severity.
- *   - The "now" cursor segment uses iv-5-10 (transition color).
- *   - Segments after the cursor (remaining quota) use iv-0-5 (dim/cool).
- *
- * This produces a visible left→right color gradient: deeper on the consumed
- * side, lighter on the remaining side, matching the reference's rainbow strip
- * appearance even without real time-bucket backend data.
- */
-function buildQuotaSegments(remainingPct: number): QuotaRowConfig[] {
-  const consumedPct = Math.max(0, Math.min(100, 100 - remainingPct))
-  const SEGMENTS = 12
-  const highVelocityIdx = Math.min(
-    SEGMENTS - 1,
-    Math.floor((consumedPct / 100) * SEGMENTS)
-  )
+function velocityClassForScore(score: number): string | undefined {
+  if (score >= 100) return 'velocity-peak'
+  if (score >= 25) return 'velocity-hot'
+  if (score >= 5) return 'velocity-fast'
+  if (score >= 0.75) return 'velocity-steady'
+  if (score > 0) return 'velocity-slow'
+  return undefined
+}
 
-  // Severity class for the consumed portion — based on overall consumed level
+type QuotaIntervalKind =
+  | 'short'
+  | 'weekly'
+  | 'special'
+  | 'short_special'
+  | 'monthly'
+
+/**
+ * Builds 100 one-percent QuotaRowConfig segments for a single quota interval
+ * row. Consumed segments are filled from the left; unconsumed quota remains
+ * dim. Backend-supplied velocity flags mark only the percent buckets where
+ * consumption outran the reset-window time budget.
+ */
+function buildQuotaSegments(
+  remainingPct: number,
+  velocitySegments?: readonly boolean[],
+  velocityScores?: readonly number[]
+): QuotaRowConfig[] {
+  const consumedPct = Math.max(0, Math.min(100, 100 - remainingPct))
+  const SEGMENTS = 100
+  const consumedWholeSegments = Math.floor(consumedPct)
+  const consumedSegmentLimit = Math.ceil(consumedPct)
+
+  // Severity class for the consumed portion — based on overall consumed level.
   const consumedClass = ivClassForConsumed(consumedPct)
 
   return Array.from({ length: SEGMENTS }, (_, i) => {
+    const isConsumed = i < consumedWholeSegments
+    const isBoundary = i === consumedWholeSegments && i < consumedSegmentLimit
     let severityClass: string
-    if (i < highVelocityIdx) {
-      // Fully consumed segment: use the overall consumed severity
+
+    if (isConsumed) {
       severityClass = consumedClass
-    } else if (i === highVelocityIdx) {
-      // Transition "now" segment: one step lighter to mark the boundary
-      severityClass = 'iv-5-10'
+    } else if (isBoundary) {
+      severityClass = consumedPct >= 99.5 ? consumedClass : 'iv-5-10'
     } else {
-      // Unconsumed remaining quota: dim cool
       severityClass = 'iv-0-5'
     }
+
+    const score = velocityScores?.[i] ?? 0
+    const hasVelocityData = score > 0 && i < consumedSegmentLimit
+    const highVelocity =
+      (Boolean(velocitySegments?.[i]) || score > 1) && i < consumedSegmentLimit
+
     return {
       widthPct: 100 / SEGMENTS,
       severityClass,
-      highVelocity: i === highVelocityIdx,
+      highVelocity,
+      velocityClass: hasVelocityData ? velocityClassForScore(score) : undefined,
     }
   })
 }
@@ -822,7 +834,7 @@ function buildQuotaSegments(remainingPct: number): QuotaRowConfig[] {
  *
  * Wave 11 PR3 (11-h): replaces the legacy flat QuotaRowConfig[] return.
  * Each active interval type (weekly, short, special, monthly) produces one
- * QuotaBarGroup whose `segments` field holds the 12-segment array.
+ * QuotaBarGroup whose `segments` field holds the 100-segment array.
  */
 function buildQuotaIntervals(
   quotaRows: UsageReportQuotaRow[],
@@ -837,47 +849,72 @@ function buildQuotaIntervals(
   for (const row of providerQuotas) {
     // F-QB-1 / 15-B.10: Added short_special so openai's exhausted
     // short_special_remaining_pct=0 (and similar) is rendered.
-    // Wave 35 S4: include intervalStart so tipVelocity can be derived.
+    // Include interval metadata so tooltip window and velocity can be derived.
     const candidates = [
       {
         remainingPct: row.weekly_remaining_pct,
         active: row.weekly_active,
         label: 'Weekly',
+        interval: 'weekly' as const,
         resetAt: row.weekly_reset_at ?? undefined,
         usedTokens: row.weekly_usage_tokens,
         intervalStart: row.weekly_interval_start,
+        intervalEnd: row.weekly_interval_end,
+        durationHours: quotaDurationHours(provider, 'weekly'),
+        velocitySegments: row.weekly_velocity_segments,
+        velocityScores: row.weekly_velocity_scores,
       },
       {
         remainingPct: row.short_remaining_pct,
         active: row.short_active,
         label: 'Short',
+        interval: 'short' as const,
         resetAt: row.short_reset_at ?? undefined,
         usedTokens: row.short_usage_tokens,
         intervalStart: row.short_interval_start,
+        intervalEnd: row.short_interval_end,
+        durationHours: quotaDurationHours(provider, 'short'),
+        velocitySegments: row.short_velocity_segments,
+        velocityScores: row.short_velocity_scores,
       },
       {
         remainingPct: row.special_remaining_pct,
         active: row.special_active,
         label: 'Special',
+        interval: 'special' as const,
         resetAt: row.special_reset_at ?? undefined,
         usedTokens: row.special_usage_tokens,
         intervalStart: row.special_interval_start,
+        intervalEnd: row.special_interval_end,
+        durationHours: quotaDurationHours(provider, 'special'),
+        velocitySegments: row.special_velocity_segments,
+        velocityScores: row.special_velocity_scores,
       },
       {
         remainingPct: row.short_special_remaining_pct,
         active: row.short_special_active,
         label: 'Short-Special',
+        interval: 'short_special' as const,
         resetAt: row.short_special_reset_at ?? undefined,
         usedTokens: row.short_special_usage_tokens,
         intervalStart: row.short_special_interval_start,
+        intervalEnd: row.short_special_interval_end,
+        durationHours: quotaDurationHours(provider, 'short_special'),
+        velocitySegments: row.short_special_velocity_segments,
+        velocityScores: row.short_special_velocity_scores,
       },
       {
         remainingPct: row.monthly_remaining_pct,
         active: row.monthly_active,
         label: 'Monthly',
+        interval: 'monthly' as const,
         resetAt: row.monthly_reset_at ?? undefined,
         usedTokens: row.monthly_usage_tokens,
         intervalStart: row.monthly_interval_start,
+        intervalEnd: row.monthly_interval_end,
+        durationHours: quotaDurationHours(provider, 'monthly'),
+        velocitySegments: row.monthly_velocity_segments,
+        velocityScores: row.monthly_velocity_scores,
       },
     ]
 
@@ -892,9 +929,23 @@ function buildQuotaIntervals(
         consumedPct,
         remainingPct: candidate.remainingPct,
         resetAt: candidate.resetAt,
-        segments: buildQuotaSegments(candidate.remainingPct),
-        // Wave 35 S4: derive velocity from (consumedPct / hoursElapsed).
-        tipVelocity: formatTipVelocity(consumedPct, candidate.intervalStart),
+        segments: buildQuotaSegments(
+          candidate.remainingPct,
+          candidate.velocitySegments,
+          candidate.velocityScores
+        ),
+        tipWindow: formatTipWindow(
+          candidate.interval,
+          candidate.intervalStart,
+          candidate.intervalEnd,
+          candidate.resetAt ?? null,
+          candidate.durationHours
+        ),
+        tipVelocity: formatTipVelocity(
+          consumedPct,
+          candidate.resetAt ?? null,
+          candidate.durationHours
+        ),
       })
     }
   }
@@ -936,26 +987,37 @@ function classifyGeminiModel(model: string): string | null {
  */
 function extractInterval(
   row: UsageReportQuotaRow,
-  interval: 'short' | 'weekly' | 'special' | 'short_special' | 'monthly'
-): { remainingPct: number; resetAt: string | undefined } | null {
+  interval: QuotaIntervalKind
+): {
+  remainingPct: number
+  resetAt: string | undefined
+  velocitySegments?: readonly boolean[]
+  velocityScores?: readonly number[]
+} | null {
   switch (interval) {
     case 'short':
       if (!row.short_active || row.short_remaining_pct === null) return null
       return {
         remainingPct: row.short_remaining_pct,
         resetAt: row.short_reset_at ?? undefined,
+        velocitySegments: row.short_velocity_segments,
+        velocityScores: row.short_velocity_scores,
       }
     case 'weekly':
       if (!row.weekly_active || row.weekly_remaining_pct === null) return null
       return {
         remainingPct: row.weekly_remaining_pct,
         resetAt: row.weekly_reset_at ?? undefined,
+        velocitySegments: row.weekly_velocity_segments,
+        velocityScores: row.weekly_velocity_scores,
       }
     case 'special':
       if (!row.special_active || row.special_remaining_pct === null) return null
       return {
         remainingPct: row.special_remaining_pct,
         resetAt: row.special_reset_at ?? undefined,
+        velocitySegments: row.special_velocity_segments,
+        velocityScores: row.special_velocity_scores,
       }
     case 'short_special':
       if (!row.short_special_active || row.short_special_remaining_pct === null)
@@ -963,16 +1025,45 @@ function extractInterval(
       return {
         remainingPct: row.short_special_remaining_pct,
         resetAt: row.short_special_reset_at ?? undefined,
+        velocitySegments: row.short_special_velocity_segments,
+        velocityScores: row.short_special_velocity_scores,
       }
     case 'monthly':
       if (!row.monthly_active || row.monthly_remaining_pct === null) return null
       return {
         remainingPct: row.monthly_remaining_pct,
         resetAt: row.monthly_reset_at ?? undefined,
+        velocitySegments: row.monthly_velocity_segments,
+        velocityScores: row.monthly_velocity_scores,
       }
     default:
       return null
   }
+}
+
+function quotaDurationHours(
+  provider: string,
+  interval: QuotaIntervalKind
+): number {
+  const providerLower = provider.toLowerCase()
+  if (providerLower === 'google' && interval === 'short') return 24
+  if (interval === 'monthly') return 720
+  if (interval === 'short' || interval === 'short_special') return 5
+  return 168
+}
+
+function resetWindowStartIso(
+  resetAt: string | null,
+  durationHours: number | undefined
+): string | null {
+  if (resetAt === null || durationHours === undefined || durationHours <= 0) {
+    return null
+  }
+
+  const resetMs = new Date(resetAt).getTime()
+  if (Number.isNaN(resetMs)) return null
+
+  return new Date(resetMs - durationHours * 3_600_000).toISOString()
 }
 
 /**
@@ -994,15 +1085,23 @@ function extractInterval(
  * @param intervalEnd   - ISO string for interval end (≈ now or sentinel), or null.
  */
 function formatTipWindow(
-  intervalType: 'short' | 'weekly' | 'special' | 'short_special' | 'monthly',
+  intervalType: QuotaIntervalKind,
   intervalStart: string | null,
-  intervalEnd: string | null
+  intervalEnd: string | null,
+  resetAt: string | null = null,
+  durationHours?: number
 ): string {
   // Monthly quotas: simple label; exact dates rarely meaningful in the tooltip.
   if (intervalType === 'monthly') return 'this month'
 
+  // Current active rows use rate_limit_intervals.fromDate as the latest
+  // change point, not the reset-window start. When reset metadata is available,
+  // derive the true start from resetAt - durationHours.
+  const effectiveStart =
+    resetWindowStartIso(resetAt, durationHours) ?? intervalStart
+
   // Sentinel guard: the API uses year 9999 to mean "no fixed end" (ongoing
-  // interval).  Current bars always end at "now", so substitute the current
+  // interval). Current bars always end at "now", so substitute the current
   // timestamp in place of the sentinel so the tooltip shows an accurate bound.
   const effectiveEnd =
     intervalEnd !== null &&
@@ -1012,7 +1111,7 @@ function formatTipWindow(
       : intervalEnd
 
   // Emit absolute date+time using the shared compact formatter (30-min snapped).
-  return fmtIntervalCompact(intervalStart, effectiveEnd)
+  return fmtIntervalCompact(effectiveStart, effectiveEnd)
 }
 
 /**
@@ -1056,35 +1155,34 @@ export {
 }
 
 /**
- * Derives a velocity string from `consumedPct` and `intervalStart`.
+ * Derives a reset-window-aware average burn-rate label.
  *
- * Wave 35 S4: computes `consumedPct / hoursElapsed` where
- * `hoursElapsed = (Date.now() − intervalStart) / 3_600_000`.
- *
- * Returns `undefined` when:
- * - `intervalStart` is null / invalid
- * - `hoursElapsed ≤ 0` (clock skew or future start)
- * - `consumedPct === 0` (nothing consumed yet — velocity is meaningless)
- *
- * Format: `"+X.X%/h"` (one decimal place).
- *
- * @param consumedPct   - Percentage of quota consumed (0–100).
- * @param intervalStart - ISO-8601 start timestamp of the interval, or null.
+ * The API interval_start marks the latest remaining_pct change point, not the
+ * reset-window start, so using it for long quotas wildly inflates the hover
+ * value. Use resetAt - durationHours instead, then choose a display unit that
+ * matches the quota period.
  */
 function formatTipVelocity(
   consumedPct: number,
-  intervalStart: string | null
+  resetAt: string | null,
+  durationHours: number
 ): string | undefined {
-  if (intervalStart === null || consumedPct === 0) return undefined
+  if (resetAt === null || consumedPct === 0 || durationHours <= 0) {
+    return undefined
+  }
 
-  const startMs = new Date(intervalStart).getTime()
-  if (Number.isNaN(startMs)) return undefined
+  const resetMs = new Date(resetAt).getTime()
+  if (Number.isNaN(resetMs)) return undefined
 
-  const hoursElapsed = (Date.now() - startMs) / 3_600_000
+  const startMs = resetMs - durationHours * 3_600_000
+  const effectiveNowMs = Math.min(Date.now(), resetMs)
+  const hoursElapsed = (effectiveNowMs - startMs) / 3_600_000
   if (hoursElapsed <= 0) return undefined
 
-  const pctPerHour = consumedPct / hoursElapsed
-  return `+${pctPerHour.toFixed(1)}%/h`
+  const unitHours = durationHours >= 48 ? 24 : 1
+  const unitLabel = unitHours === 24 ? 'd' : 'h'
+  const pctPerUnit = consumedPct / (hoursElapsed / unitHours)
+  return `avg +${pctPerUnit.toFixed(1)}%/${unitLabel} since reset`
 }
 
 /**
@@ -1253,18 +1351,19 @@ function quotaTypeToPeriodType(quotaType: string): QuotaBarGroup['periodType'] {
  *
  * Wave 24-PhosphorDash (operator F1b): now wires optional `tipWindow` from
  * interval timestamps and `tipModels` from the usage breakdown array for the
- * same interval. `tipVelocity` is left undefined (no time-series data available).
+ * same interval. `tipVelocity` is derived locally while spectral segment flags come from backend observations.
  *
  * Returns null if the interval is not active on the given row.
  */
 function makeQuotaBarGroup(
   label: string,
   row: UsageReportQuotaRow,
-  interval: 'short' | 'weekly' | 'special' | 'short_special' | 'monthly'
+  interval: QuotaIntervalKind
 ): QuotaBarGroup | null {
   const iv = extractInterval(row, interval)
   if (iv === null) return null
   const consumedPct = Math.max(0, Math.min(100, 100 - iv.remainingPct))
+  const durationHours = quotaDurationHours(row.provider, interval)
 
   // F1b: interval_start/end for tipWindow, breakdown for tipModels.
   let intervalStart: string | null = null
@@ -1303,11 +1402,24 @@ function makeQuotaBarGroup(
     consumedPct,
     remainingPct: iv.remainingPct,
     resetAt: iv.resetAt,
-    segments: buildQuotaSegments(iv.remainingPct),
+    segments: buildQuotaSegments(
+      iv.remainingPct,
+      iv.velocitySegments,
+      iv.velocityScores
+    ),
     // F1b: computed tip fields.
-    tipWindow: formatTipWindow(interval, intervalStart, intervalEnd),
-    // Wave 35 S4: derive velocity from (consumedPct / hoursElapsed).
-    tipVelocity: formatTipVelocity(consumedPct, intervalStart),
+    tipWindow: formatTipWindow(
+      interval,
+      intervalStart,
+      intervalEnd,
+      iv.resetAt ?? null,
+      durationHours
+    ),
+    tipVelocity: formatTipVelocity(
+      consumedPct,
+      iv.resetAt ?? null,
+      durationHours
+    ),
     tipModels: tipModelsFromBreakdown(breakdown),
   }
 }
@@ -1329,10 +1441,11 @@ function makeQuotaBarGroup(
 function makeQuotaBarGroupAlways(
   label: string,
   row: UsageReportQuotaRow,
-  interval: 'short' | 'weekly' | 'special' | 'short_special' | 'monthly'
+  interval: QuotaIntervalKind
 ): QuotaBarGroup {
   const existing = makeQuotaBarGroup(label, row, interval)
   if (existing !== null) return existing
+  const durationHours = quotaDurationHours(row.provider, interval)
 
   // Interval is inactive or pct is null — emit a 0%-consumed placeholder bar.
   let intervalStart: string | null = null
@@ -1371,7 +1484,13 @@ function makeQuotaBarGroupAlways(
     consumedPct: 0,
     remainingPct: 100,
     segments: buildQuotaSegments(100),
-    tipWindow: formatTipWindow(interval, intervalStart, intervalEnd),
+    tipWindow: formatTipWindow(
+      interval,
+      intervalStart,
+      intervalEnd,
+      null,
+      durationHours
+    ),
     tipModels: tipModelsFromBreakdown(breakdown),
   }
 }
@@ -1389,7 +1508,7 @@ function makeQuotaBarGroupAlways(
  *   - `consumedPct`  — 0–100 (100 − remainingPct, clamped)
  *   - `remainingPct` — raw API remaining_pct
  *   - `resetAt?`     — ISO timestamp of next reset if known
- *   - `segments`     — 12-segment array from buildQuotaSegments
+ *   - `segments`     — 100-segment array from buildQuotaSegments
  *
  * ### Provider → row mapping (Operator F1)
  * | provider   | rows included                                                   |
@@ -1638,7 +1757,7 @@ function fmtIntervalCompact(start: string | null, end: string | null): string {
 
 /**
  * Builds QuotaBarGroup[] for past reset windows from quotaHistory[] for a
- * single provider. Full parity with current bars: identical 12-segment fills,
+ * single provider. Full parity with current bars: identical 100-segment fills,
  * per-model tooltip content, and visual weight. Only the label heading differs
  * (model prefix · time-ago instead of model prefix · duration tag).
  *
@@ -1831,7 +1950,7 @@ function buildHistoryBarsForProvider(
       tipModels = tipModelsFromBreakdown(h.usage_breakdown)
     }
 
-    // Full-parity 12-segment render using the same buildQuotaSegments function
+    // Full-parity 100-segment render using the same buildQuotaSegments function
     // as current bars. Use min_remaining_pct (peak consumption).
     const remainingPct = h.min_remaining_pct
     const consumedPct = Math.max(0, Math.min(100, 100 - remainingPct))
@@ -2022,7 +2141,7 @@ const PROVIDER_LANE_DEFS: Readonly<Record<string, LaneDef[]>> = {
 /**
  * Builds a QuotaBarGroup for a single history row in a lane.
  *
- * Wave 41: all prior bars use the same 12-segment fill as current bars.
+ * Wave 41: all prior bars use the same 100-segment fill as current bars.
  * The `timeAgoLabel` is derived from roundToNearest30Min(expected_reset_at).
  * The `periodType` is set for legacy compat but lanes don't need it.
  */

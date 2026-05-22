@@ -96,6 +96,7 @@ export interface QuotaRowConfig {
   /** v9.7 threshold class: iv-0-5 | iv-5-10 | iv-10-25 | iv-25-50 | iv-50-p */
   severityClass: string
   highVelocity: boolean
+  velocityClass?: string
   label?: string
   resetDate?: string
 }
@@ -113,7 +114,7 @@ export interface QuotaTipModel {
 
 /**
  * A single quota-type bar (weekly / short / special / monthly) with its
- * pre-built N=12 segment array.
+ * pre-built N=100 segment array.
  *
  * Wave 11 PR3 (11-h, 11-i): replaces the old flat QuotaRowConfig[] prop so
  * the card can render multi-segment bars with per-bar label + tooltip.
@@ -136,7 +137,7 @@ export interface QuotaBarGroup {
   remainingPct: number
   /** ISO timestamp when the interval next resets, if known. */
   resetAt?: string
-  /** N=12 equal-width segments; all share the same severityClass. */
+  /** N=100 equal-width percent segments. */
   segments: QuotaRowConfig[]
   /**
    * Human-readable window label for tooltip head, e.g. '−30m → now'.
@@ -431,7 +432,7 @@ export interface ProviderCardProps {
   config: ProviderCardConfig
   data: ProviderMetrics
   healthCells: { color: string }[]
-  /** Wave 11 PR3 (11-i): each entry is one quota-type bar with 12 segments. */
+  /** Wave 11 PR3 (11-i): each entry is one quota-type bar with 100 segments. */
   quotas: QuotaBarGroup[]
   /**
    * Wave 41 multi-reset redesign: structured lane data for the quota section.
@@ -687,7 +688,7 @@ export function ProviderCard({
         </div>
 
         {/*
-         * QUOTAS section — Wave 11 PR3 (11-i): each bar uses 12 segments.
+         * QUOTAS section — Wave 11 PR3 (11-i): each bar uses 100 segments.
          * Wave 20 F2: moved BELOW Token Cache + Reasoning per mockup line 2434.
          * Wave 20 F3: tooltip restructured to match mockup v9-tip-quota structure:
          *   v9-tip-head: '{window} · {pct}% used'

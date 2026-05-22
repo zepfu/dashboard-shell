@@ -31,6 +31,7 @@ interface Interval {
   /** v9.7 threshold class: iv-0-5 | iv-5-10 | iv-10-25 | iv-25-50 | iv-50-p */
   severityClass: string
   highVelocity: boolean
+  velocityClass?: string
 }
 
 /** Velocity tier for the optional sub-label row. */
@@ -82,6 +83,7 @@ export function QuotaIntervalBar({
         style={{
           position: 'relative',
           display: 'flex',
+          gap: intervals.length > 50 ? 0 : '2px',
           width: '100%',
           height: '6px',
           background: 'var(--card-2)',
@@ -101,6 +103,7 @@ export function QuotaIntervalBar({
               'qbar-fill',
               interval.severityClass,
               interval.highVelocity ? 'high-velocity' : '',
+              interval.velocityClass ?? '',
             ]
               .filter(Boolean)
               .join(' ')}
