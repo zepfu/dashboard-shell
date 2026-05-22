@@ -104,7 +104,7 @@
   opacity: 1;
 }
 
-/* Velocity shimmer removed — replaced by spectral-shimmer ::after gradient in Wave 11 PR3 */
+/* Velocity shimmer is now a masked bar-level overlay with one stepped sweep. */
 
 /* Provider summary grid responsive breakpoints */
 .provider-summary {
@@ -244,56 +244,18 @@
   animation: alertPulse 0.4s ease-out;
 }
 
-/* Wave 11 PR3 → Wave 14-E.4 → Wave 40:
-   spectral-shimmer rewritten to cover the full filled bar length.
-   OLD (W14-E.4): fixed-position gradient on the last segment only — visible
-     only at the trailing edge of the fill, not across the whole bar.
-   NEW (Wave 40): three-layer animation approach:
-     Layer A (::after on each .high-velocity segment): per-segment spectral glow
-       with multi-stop gradient — provides base shimmer even for single segments.
-     Layer B (.quota-row-bar::before via :has()): full-bar flowing sheen that
-       sweeps left-to-right across the entire filled region. Requires CSS :has()
-       (widely supported in modern browsers; gracefully absent in legacy).
-   Operator intent: "live velocity indicator along the whole filled length". */
+/* Wave 11 PR3 → Wave 14-E.4 → Wave 40 → D1-061:
+   The moving velocity indicator is applied once per quota bar via
+   `.quota-row-velocity-overlay`, with a CSS mask generated from the merged
+   fast/hot/peak spans. D1-061 moves the animation to a stepped transform on a
+   single child sweep so idle CPU does not scale with per-cell paint work. */
 
-/* Layer A keyframes: multi-pulse gradient traversing 300% background-size
-   so multiple glow hotspots are visible simultaneously across the fill. */
-@keyframes spectral-shimmer {
+@keyframes quota-velocity-overlay-sweep {
   0% {
-    background-position: 0% 0%;
-    opacity: 0.4;
-  }
-  33% {
-    background-position: 100% 0%;
-    opacity: 0.9;
-  }
-  66% {
-    background-position: 200% 0%;
-    opacity: 0.55;
+    transform: translateX(-120%);
   }
   100% {
-    background-position: 300% 0%;
-    opacity: 0.4;
-  }
-}
-
-/* Layer B keyframes: full-bar sheen sweeping left to right once per cycle.
-   The sheen starts fully left (-100%) and exits fully right (+110%) so the
-   leading and trailing edges are always invisible, creating a smooth loop. */
-@keyframes velocity-bar-sheen {
-  0% {
-    transform: translateX(-100%);
-    opacity: 0;
-  }
-  10% {
-    opacity: 1;
-  }
-  90% {
-    opacity: 0.8;
-  }
-  100% {
-    transform: translateX(110%);
-    opacity: 0;
+    transform: translateX(240%);
   }
 }
 
@@ -306,21 +268,17 @@
    1. Layer A used overflow:visible on .quota-interval.high-velocity, allowing
       ::after glow to paint beyond the segment boundary and above sibling elements
       via z-index stacking.
-   2. .quota-row-bar lacked overflow:hidden, so the translateX(-100%) starting
-      position of Layer B's ::before sheen was painting off-canvas in a shared
-      stacking context, and could overlap adjacent provider card quota rows.
-   3. The :has() selector on .quota-row-bar:has(.high-velocity) was correct in
-      isolation but the painting bleed caused visual cross-card contamination.
+   2. .quota-row-bar lacked overflow:hidden, so animated overlays could paint
+      off-canvas in a shared stacking context and overlap adjacent provider card
+      quota rows.
 
    Fixes applied:
    • .quota-row-bar now carries overflow:hidden (set via inline style in JSX)
      AND isolation:isolate (set via CSS below) to create a local stacking context.
-   • Layer A uses overflow:hidden (not visible) on .quota-interval.high-velocity
-     so the glow is strictly clipped to the segment's paint area.
-   • Layer A and Layer B selectors rely on local clipping/isolation so prior
-     reset bars can animate without painting outside their own bar.
-   • Layer A gradient covers 600% background-size so the sheen spans more of the
-     filled bar as the operator requested ("in more places than just the end").
+   • The moving glow is now a single masked `.quota-row-velocity-overlay` per
+     bar, clipped by that local stacking context.
+   • Fast/hot/peak segments keep static velocity filters so tier intensity
+     remains visible without per-cell animation.
 */
 
 /* Stacking context isolation — prevents ::after glow escaping across cards. */
@@ -328,10 +286,12 @@
   isolation: isolate;
 }
 
-/* Quota velocity segment: position:relative, strictly clipped. */
+/* Quota velocity segment: static color/intensity only. Motion is handled by a
+   single masked `.quota-row-velocity-overlay` per bar so idle CPU does not scale
+   with the number of fast/hot/peak cells. */
 .quota-row-bar .quota-interval.high-velocity {
   position: relative;
-  overflow: hidden; /* strictly clip ::after glow to segment bounds */
+  overflow: hidden;
 }
 
 /* Quota velocity score tiers. These classes are driven by the backend
@@ -356,109 +316,57 @@
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.26);
 }
 
-/* Layer A: per-segment spectral glow — on current and prior reset bars.  background-size: 600% so six glow hotspots span the
-   segment simultaneously, giving a wider shimmer visible across the full filled
-   region as the operator requested. */
-.quota-row-bar .quota-interval.high-velocity::after {
-  content: '';
+/* Bar-level velocity overlay: the React component applies a CSS mask matching
+   the merged fast/hot/peak runs. One animation now covers the whole bar while
+   static segment filters preserve the tier intensity. */
+.quota-row-velocity-overlay {
   position: absolute;
   inset: 0;
-  background: linear-gradient(
-    90deg,
-    rgba(255, 255, 255, 0.02) 0%,
-    rgba(245, 158, 11, 0.5) 6%,
-    rgba(255, 240, 200, 0.85) 9%,
-    rgba(239, 68, 68, 0.6) 12%,
-    rgba(255, 255, 255, 0.06) 17%,
-    rgba(245, 158, 11, 0.5) 23%,
-    rgba(255, 240, 200, 0.85) 27%,
-    rgba(239, 68, 68, 0.6) 30%,
-    rgba(255, 255, 255, 0.06) 36%,
-    rgba(245, 158, 11, 0.5) 42%,
-    rgba(255, 240, 200, 0.85) 46%,
-    rgba(239, 68, 68, 0.6) 49%,
-    rgba(255, 255, 255, 0.06) 55%,
-    rgba(245, 158, 11, 0.5) 61%,
-    rgba(255, 240, 200, 0.85) 65%,
-    rgba(239, 68, 68, 0.6) 68%,
-    rgba(255, 255, 255, 0.06) 74%,
-    rgba(245, 158, 11, 0.5) 80%,
-    rgba(255, 240, 200, 0.85) 84%,
-    rgba(239, 68, 68, 0.6) 87%,
-    rgba(255, 255, 255, 0.02) 100%
-  );
-  background-size: 600% 100%;
-  background-position: 0% 0%;
-  mix-blend-mode: screen;
-  opacity: 0.55;
-  z-index: 2;
-  pointer-events: none;
-}
-.quota-row-bar .quota-interval.velocity-fast::after {
-  opacity: 0.42;
-}
-.quota-row-bar .quota-interval.velocity-hot::after {
-  opacity: 0.7;
-}
-.quota-row-bar .quota-interval.velocity-peak::after {
-  opacity: 0.92;
-}
-
-/* Layer B: per-segment sweeping sheen — on current and prior reset bars.
-   Moved from the bar-level ::before to the segment-level ::before so the
-   sheen traverses the segment width instead of the full bar width.
-   overflow:hidden on .quota-interval.high-velocity (set above) clips the
-   translateX sheen to the segment boundary. */
-.quota-row-bar .quota-interval.high-velocity::before {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 100%;
-  /* Narrow diagonal sheen band that sweeps across the segment */
-  background: linear-gradient(
-    105deg,
-    transparent 30%,
-    rgba(255, 255, 255, 0.25) 46%,
-    rgba(255, 240, 180, 0.55) 50%,
-    rgba(255, 255, 255, 0.25) 54%,
-    transparent 70%
-  );
+  overflow: hidden;
+  contain: paint;
+  opacity: 1;
   z-index: 3;
   pointer-events: none;
-  /* Start off-screen left; animation will move it across */
-  transform: translateX(-100%);
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-size: 100% 100%;
+  mask-size: 100% 100%;
 }
-.quota-row-bar .quota-interval.velocity-fast::before {
-  opacity: 0.5;
-}
-.quota-row-bar .quota-interval.velocity-hot::before {
-  opacity: 0.75;
-}
-.quota-row-bar .quota-interval.velocity-peak::before {
-  opacity: 1;
+
+.quota-row-velocity-sweep {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 46%;
+  background: linear-gradient(
+    105deg,
+    rgba(255, 255, 255, 0) 0%,
+    rgba(255, 255, 255, 0.14) 24%,
+    rgba(125, 211, 252, 0.38) 38%,
+    rgba(255, 240, 180, 0.58) 50%,
+    rgba(249, 115, 22, 0.34) 62%,
+    rgba(239, 68, 68, 0.22) 74%,
+    rgba(255, 255, 255, 0) 100%
+  );
+  mix-blend-mode: screen;
+  opacity: 0.78;
+  pointer-events: none;
+  transform: translateX(-120%);
+  will-change: transform;
 }
 
 @media (prefers-reduced-motion: no-preference) {
-  .quota-row-bar .quota-interval.high-velocity::after {
-    animation: spectral-shimmer 3.2s linear infinite;
-  }
-  .quota-row-bar .quota-interval.high-velocity::before {
-    animation: velocity-bar-sheen 2.4s ease-in-out infinite;
+  .quota-row-velocity-sweep {
+    animation: quota-velocity-overlay-sweep 4.8s steps(24, end) infinite;
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .quota-row-bar .quota-interval.high-velocity::after {
-    /* Static mid-point glow — visible but not animated */
-    background-position: 300% 0%;
-    opacity: 0.45;
+  .quota-row-velocity-sweep {
     animation: none;
-  }
-  .quota-row-bar .quota-interval.high-velocity::before {
-    animation: none;
-    display: none;
+    opacity: 0.42;
+    transform: translateX(75%);
   }
 }
 

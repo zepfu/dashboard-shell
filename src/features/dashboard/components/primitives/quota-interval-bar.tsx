@@ -17,14 +17,15 @@
  * Wave 41 spectral-animation scoping fix:
  * - Added `isPrior` prop. When true, the `.is-prior` class is added to the
  *   `.quota-row-bar` wrapper for prior/history bar styling hooks.
- * - `overflow: hidden` added to `.quota-row-bar` so the Layer B sweeping
- *   sheen (::before) is clipped to the bar boundary and cannot bleed into
- *   adjacent provider card rows.
+ * - `overflow: hidden` added to `.quota-row-bar` so the masked velocity overlay
+ *   is clipped to the bar boundary and cannot bleed into adjacent provider card
+ *   rows.
  *
  * D1-019: adjacent buckets with the same visual state are merged into wider
- * display runs. Only fast/hot/peak velocity tiers keep animation classes.
+ * display runs. Fast/hot/peak tiers keep static segment intensity while a
+ * single masked bar-level overlay provides motion for all hot spans.
  */
-import type { ReactElement, ReactNode } from 'react'
+import type { CSSProperties, ReactElement, ReactNode } from 'react'
 import { HoverTooltip } from './hover-tooltip'
 import './quota-interval-bar.module.css'
 
@@ -87,6 +88,53 @@ function mergeQuotaIntervalsForDisplay(
   return runs
 }
 
+function formatPercent(value: number): string {
+  const clamped = Math.min(100, Math.max(0, value))
+  return Number.isInteger(clamped)
+    ? `${clamped}%`
+    : `${Number(clamped.toFixed(4))}%`
+}
+
+function buildVelocityOverlayMask(
+  intervals: readonly QuotaInterval[]
+): string | undefined {
+  const stops: string[] = ['transparent 0%']
+  let cursor = 0
+  let hasVisibleRun = false
+  let lastVisibleEnd = 0
+
+  for (const interval of intervals) {
+    const start = cursor
+    const end = cursor + interval.widthPct
+    cursor = end
+
+    if (!interval.highVelocity || end <= start) {
+      continue
+    }
+
+    const startPct = formatPercent(start)
+    const endPct = formatPercent(end)
+
+    if (start > lastVisibleEnd || !hasVisibleRun) {
+      stops.push(`transparent ${startPct}`)
+    }
+
+    stops.push(`black ${startPct}`, `black ${endPct}`, `transparent ${endPct}`)
+    hasVisibleRun = true
+    lastVisibleEnd = end
+  }
+
+  if (!hasVisibleRun) {
+    return undefined
+  }
+
+  if (lastVisibleEnd < 100) {
+    stops.push('transparent 100%')
+  }
+
+  return `linear-gradient(to right, ${stops.join(', ')})`
+}
+
 interface QuotaIntervalBarProps {
   intervals: QuotaInterval[]
   projectionPct?: number
@@ -126,6 +174,14 @@ export function QuotaIntervalBar({
     .join(' ')
 
   const displayIntervals = mergeQuotaIntervalsForDisplay(intervals)
+  const velocityMask = buildVelocityOverlayMask(displayIntervals)
+  const velocityOverlayStyle: CSSProperties | undefined =
+    velocityMask === undefined
+      ? undefined
+      : {
+          WebkitMaskImage: velocityMask,
+          maskImage: velocityMask,
+        }
 
   const bar = (
     <>
@@ -140,9 +196,8 @@ export function QuotaIntervalBar({
           background: 'var(--card-2)',
           border: '1px solid var(--border)',
           boxSizing: 'border-box',
-          /* overflow:hidden clips the Layer B sweeping sheen (::before) and
-             the Layer A ::after glow strictly to the bar boundary, preventing
-             any visual bleed into adjacent rows or provider cards. */
+          /* overflow:hidden clips the masked velocity overlay strictly to the
+             bar boundary, preventing visual bleed into adjacent rows/cards. */
           overflow: 'hidden',
         }}
       >
@@ -165,6 +220,15 @@ export function QuotaIntervalBar({
             }}
           />
         ))}
+        {velocityOverlayStyle !== undefined && (
+          <div
+            aria-hidden='true'
+            className='quota-row-velocity-overlay'
+            style={velocityOverlayStyle}
+          >
+            <span className='quota-row-velocity-sweep' />
+          </div>
+        )}
         {projectionPct !== undefined && (
           <div
             className='qbar-projection sustainable'
@@ -174,6 +238,7 @@ export function QuotaIntervalBar({
               top: 0,
               bottom: 0,
               width: '2px',
+              zIndex: 5,
             }}
           />
         )}

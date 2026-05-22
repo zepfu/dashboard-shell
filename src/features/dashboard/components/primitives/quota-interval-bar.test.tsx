@@ -104,6 +104,87 @@ test('test_quota_interval_bar_only_fast_hot_peak_velocity_tiers_animate', () => 
   expect(
     rendered.slice(2).every((el) => el.classList.contains('high-velocity'))
   ).toBe(true)
+  expect(
+    container.querySelectorAll('.quota-row-velocity-overlay')
+  ).toHaveLength(1)
+  expect(container.querySelectorAll('.quota-row-velocity-sweep')).toHaveLength(
+    1
+  )
+})
+
+test('test_quota_interval_bar_overlay_mask_matches_high_velocity_runs', () => {
+  const intervals: QuotaInterval[] = [
+    {
+      widthPct: 20,
+      severityClass: 'iv-ok',
+      highVelocity: true,
+      velocityClass: 'velocity-slow',
+    },
+    {
+      widthPct: 20,
+      severityClass: 'iv-ok',
+      highVelocity: true,
+      velocityClass: 'velocity-fast',
+    },
+    {
+      widthPct: 20,
+      severityClass: 'iv-ok',
+      highVelocity: true,
+      velocityClass: 'velocity-steady',
+    },
+    {
+      widthPct: 40,
+      severityClass: 'iv-warning',
+      highVelocity: true,
+      velocityClass: 'velocity-hot',
+    },
+  ]
+
+  const { container } = render(<QuotaIntervalBar intervals={intervals} />)
+  const overlay = container.querySelector(
+    '.quota-row-velocity-overlay'
+  ) as HTMLElement | null
+
+  expect(overlay).not.toBeNull()
+  expect(
+    container.querySelectorAll('.quota-row-velocity-overlay')
+  ).toHaveLength(1)
+  expect(overlay!.querySelector('.quota-row-velocity-sweep')).not.toBeNull()
+
+  const style = overlay!.getAttribute('style') ?? ''
+  expect(style).toContain('transparent 20%')
+  expect(style).toContain('black 20%')
+  expect(style).toContain('black 40%')
+  expect(style).toContain('transparent 60%')
+  expect(style).toContain('black 60%')
+  expect(style).toContain('black 100%')
+})
+
+test('test_quota_interval_bar_no_overlay_for_slow_or_steady_only', () => {
+  const intervals: QuotaInterval[] = [
+    {
+      widthPct: 50,
+      severityClass: 'iv-ok',
+      highVelocity: true,
+      velocityClass: 'velocity-slow',
+    },
+    {
+      widthPct: 50,
+      severityClass: 'iv-ok',
+      highVelocity: true,
+      velocityClass: 'velocity-steady',
+    },
+  ]
+
+  const { container } = render(<QuotaIntervalBar intervals={intervals} />)
+
+  expect(container.querySelector('.quota-row-velocity-overlay')).toBeNull()
+  expect(container.querySelector('.quota-row-velocity-sweep')).toBeNull()
+  expect(
+    Array.from(container.querySelectorAll('.quota-interval')).every(
+      (interval) => !interval.classList.contains('high-velocity')
+    )
+  ).toBe(true)
 })
 
 test('test_quota_interval_bar_preserves_visual_boundaries_and_widths', () => {
@@ -246,6 +327,32 @@ test('test_quota_interval_bar_projection_tick_position', () => {
 
   const leftStyle = (projectionEl as HTMLElement).style.left
   expect(leftStyle).toBe('65%')
+})
+
+test('test_quota_interval_bar_projection_tick_renders_above_velocity_overlay', () => {
+  const intervals: QuotaInterval[] = [
+    {
+      widthPct: 50,
+      severityClass: 'iv-warning',
+      highVelocity: true,
+      velocityClass: 'velocity-hot',
+    },
+    { widthPct: 50, severityClass: 'iv-ok', highVelocity: false },
+  ]
+
+  const { container } = render(
+    <QuotaIntervalBar intervals={intervals} projectionPct={65} />
+  )
+  const overlay = container.querySelector('.quota-row-velocity-overlay')
+  const projection = container.querySelector('.qbar-projection') as HTMLElement
+
+  expect(overlay).not.toBeNull()
+  expect(projection).not.toBeNull()
+  expect(projection.style.zIndex).toBe('5')
+  expect(
+    overlay!.compareDocumentPosition(projection) &
+      Node.DOCUMENT_POSITION_FOLLOWING
+  ).toBeTruthy()
 })
 
 test('test_quota_interval_bar_no_projection_when_omitted', () => {
