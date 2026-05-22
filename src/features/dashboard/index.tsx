@@ -73,6 +73,8 @@ function defaultDateRange(): { from: string; to: string } {
   }
 }
 
+const LIVE_DASHBOARD_REFETCH_INTERVAL_MS = 60_000
+
 // ---------------------------------------------------------------------------
 // KpiStrip summary adapter
 // ---------------------------------------------------------------------------
@@ -273,6 +275,8 @@ export function Dashboard(): ReactElement {
     // default (10 s) and refetches on every tab-focus event even though the
     // server returns cached responses for the full 5-minute window.
     staleTime: 5 * 60 * 1000,
+    refetchInterval: LIVE_DASHBOARD_REFETCH_INTERVAL_MS,
+    refetchIntervalInBackground: true,
   })
 
   // Wave 36 Fix 4: showComparison gates the priorReport query in PhosphorDashboard
@@ -453,6 +457,8 @@ export function Dashboard(): ReactElement {
     queryKey: ['usage-report-quotas', from, to],
     queryFn: fetchUsageReportQuotas,
     staleTime: 5 * 60 * 1000,
+    refetchInterval: LIVE_DASHBOARD_REFETCH_INTERVAL_MS,
+    refetchIntervalInBackground: true,
   })
 
   const quotaRows = useMemo(

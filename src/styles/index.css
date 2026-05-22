@@ -71,7 +71,6 @@
   animation: slideUp 300ms ease-out;
 }
 
-
 /* ─────────────────────────────────────────────────────────────────
    Phosphor Atlas v9.7 — quota interval bar threshold colors.
    These classes are applied by QuotaIntervalBar via buildQuotaIntervals().
@@ -346,25 +345,25 @@
   background: linear-gradient(
     90deg,
     rgba(255, 255, 255, 0.02) 0%,
-    rgba(245, 158, 11, 0.50) 6%,
+    rgba(245, 158, 11, 0.5) 6%,
     rgba(255, 240, 200, 0.85) 9%,
-    rgba(239, 68, 68, 0.60) 12%,
+    rgba(239, 68, 68, 0.6) 12%,
     rgba(255, 255, 255, 0.06) 17%,
-    rgba(245, 158, 11, 0.50) 23%,
+    rgba(245, 158, 11, 0.5) 23%,
     rgba(255, 240, 200, 0.85) 27%,
-    rgba(239, 68, 68, 0.60) 30%,
+    rgba(239, 68, 68, 0.6) 30%,
     rgba(255, 255, 255, 0.06) 36%,
-    rgba(245, 158, 11, 0.50) 42%,
+    rgba(245, 158, 11, 0.5) 42%,
     rgba(255, 240, 200, 0.85) 46%,
-    rgba(239, 68, 68, 0.60) 49%,
+    rgba(239, 68, 68, 0.6) 49%,
     rgba(255, 255, 255, 0.06) 55%,
-    rgba(245, 158, 11, 0.50) 61%,
+    rgba(245, 158, 11, 0.5) 61%,
     rgba(255, 240, 200, 0.85) 65%,
-    rgba(239, 68, 68, 0.60) 68%,
+    rgba(239, 68, 68, 0.6) 68%,
     rgba(255, 255, 255, 0.06) 74%,
-    rgba(245, 158, 11, 0.50) 80%,
+    rgba(245, 158, 11, 0.5) 80%,
     rgba(255, 240, 200, 0.85) 84%,
-    rgba(239, 68, 68, 0.60) 87%,
+    rgba(239, 68, 68, 0.6) 87%,
     rgba(255, 255, 255, 0.02) 100%
   );
   background-size: 600% 100%;
@@ -877,7 +876,13 @@
   background: rgba(126, 87, 194, 0.7);
 }
 .attribution-legend .legend-cat.cat-miss .legend-swatch {
-  background: rgba(20, 184, 166, 0.6);
+  background:
+    repeating-linear-gradient(
+      135deg,
+      rgba(255, 255, 255, 0.5) 0 1px,
+      transparent 1px 3px
+    ),
+    rgba(58, 130, 243, 0.84);
 }
 
 /* ─────────────────────────────────────────────────────────────────────────── */
@@ -894,7 +899,6 @@
   color: rgba(245, 158, 11, 0.55);
   margin-left: 2px;
 }
-
 
 /* ─────────────────────────────────────────────────────────────────────────── */
 /* Wave 14-D: aggregate card variant — fleet activity 3-col grid + health tint */
@@ -968,7 +972,6 @@
   filter: saturate(0.95) brightness(1.02);
 }
 
-
 /* ─────────────────────────────────────────────────────────────────────────── */
 /* Wave 14-E: quota consumed% severity classes + animation rewrites           */
 /* ─────────────────────────────────────────────────────────────────────────── */
@@ -1016,7 +1019,6 @@
   color: var(--accent-warm);
   margin-right: 3px;
 }
-
 
 /* ─────────────────────────────────────────────────────────────────────────── */
 /*  Wave 14-H — LOW-severity catch-up (final pixel-polish pass)               */
@@ -1103,7 +1105,6 @@
   }
 }
 
-
 /* ── §7 #1: grid-auto-rows: 1fr at 1280+ per mockup lines 987,994 ─────────  */
 /* max-width: 1599px cap prevents this 2-col rule from overriding the 4-col   */
 /* rule defined at (min-width: 1600px) in L194 — cascade regression fix.      */
@@ -1187,15 +1188,18 @@
   height: clamp(0.8px, 100%, 1.8px);
 }
 
-/* Wave 22-CSS — cat-miss missing-bucket cell (W21-2275 ⚠-#2)
-   HealthStrip emits <div class="health-strip-cell cat-miss"> for missing-data
-   buckets. Without this rule those cells render as transparent voids.
-   Uses card background at reduced opacity to indicate data absence visually. */
+/* Missing upstream latency: keep the miss semantic class, but render it as
+   no-data blue with a hatch overlay so attribution gaps are visible. */
 .health-strip-cell.cat-miss {
-  background: var(--card);
-  opacity: 0.4;
+  background:
+    repeating-linear-gradient(
+      135deg,
+      rgba(255, 255, 255, 0.5) 0 1px,
+      transparent 1px 3px
+    ),
+    rgba(58, 130, 243, 0.84);
+  opacity: 1;
 }
-
 
 /* ── §13 #7: table caption clamp font-size per mockup lines 1281-1287 ──────  */
 .table-caption {
@@ -1222,7 +1226,6 @@
   }
 }
 
-
 /* ── §18 #3: body line-height: 1.4 per mockup line 32 ──────────────────────  */
 /* §18 #4: html/body height: 100% per mockup lines 33-35.                     */
 /* §14-A set font-family and font-size; this wave closes line-height + height. */
@@ -1243,7 +1246,6 @@ tbody tr {
     gap: 4px;
   }
 }
-
 
 /* ═══════════════════════════════════════════════════════════════════════════
    Wave 15-A: Visual regression fixes

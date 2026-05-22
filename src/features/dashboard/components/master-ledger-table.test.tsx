@@ -16,6 +16,7 @@
  */
 import { render, screen, fireEvent } from '@testing-library/react'
 import { type UsageReportToolActivityRow } from '../api/usage-report'
+import { providerBrandHex } from '../lib/usage-report-display'
 import {
   buildToolActivity,
   MasterLedgerTable,
@@ -435,10 +436,90 @@ test('test_buildToolActivity_shell_class_excluded_from_left_column', () => {
   )
   expect(result.shellTotalCalls).toBe(expectedShellTotal)
 
-  // Shell command rows should be captured
+  // Shell command rows should be captured and grouped at executable level
   expect(result.shellRows).toHaveLength(2)
-  expect(result.shellRows[0].label).toBe('git commit')
-  expect(result.shellRows[0].calls).toBe(45)
+  expect(result.shellRows.find((row) => row.label === 'git')?.calls).toBe(45)
+  expect(result.shellRows.find((row) => row.label === 'npm')?.calls).toBe(30)
+})
+
+test('test_buildToolActivity_collapses_multipart_shell_labels_to_executable', () => {
+  const rows: UsageReportToolActivityRow[] = [
+    makeToolActivityRow('Bash', 'outer', 107),
+    makeToolActivityRow('git show', 'shell', 18),
+    makeToolActivityRow('git log', 'shell', 12),
+    makeToolActivityRow('docker exec', 'shell', 23),
+    makeToolActivityRow('docker compose', 'shell', 7),
+    makeToolActivityRow('gh run view', 'shell', 11),
+    makeToolActivityRow('gh pr status', 'shell', 5),
+    makeToolActivityRow('npm run build', 'shell', 9),
+    makeToolActivityRow('npm test', 'shell', 6),
+    makeToolActivityRow('python -m pytest', 'shell', 16),
+  ]
+
+  const result = buildToolActivity(rows)
+
+  expect(result.shellRows.find((row) => row.label === 'git')?.calls).toBe(30)
+  expect(result.shellRows.find((row) => row.label === 'docker')?.calls).toBe(30)
+  expect(result.shellRows.find((row) => row.label === 'gh')?.calls).toBe(16)
+  expect(result.shellRows.find((row) => row.label === 'npm')?.calls).toBe(15)
+  expect(result.shellRows.find((row) => row.label === 'python')?.calls).toBe(16)
+  expect(result.shellRows.every((row) => !row.label.includes(' '))).toBe(true)
+})
+
+test('test_buildToolActivity_normalizes_path_prefixed_shell_labels', () => {
+  const rows: UsageReportToolActivityRow[] = [
+    makeToolActivityRow('Bash', 'outer', 360),
+    makeToolActivityRow(
+      '/home/zepfu/projects/aawm-tap/.venv/bin/python',
+      'shell',
+      136
+    ),
+    makeToolActivityRow('./.venv/bin/python', 'shell', 155),
+    makeToolActivityRow(
+      '/home/zepfu/projects/aawm-tap/.venv/bin/pytest',
+      'shell',
+      28
+    ),
+    makeToolActivityRow('.venv/bin/pytest', 'shell', 12),
+    makeToolActivityRow(
+      'worktree="/home/zepfu/projects/aawm-tap"\ngit',
+      'shell',
+      5
+    ),
+    makeToolActivityRow('#', 'shell', 40),
+    {
+      provider: 'anthropic',
+      model: 'claude-opus-4-7',
+      kind: 'shell',
+      label: null as unknown as string,
+      calls: 9,
+    },
+    {
+      provider: 'anthropic',
+      model: 'claude-opus-4-7',
+      kind: 'shell',
+      label: undefined as unknown as string,
+      calls: 8,
+    },
+  ]
+
+  const result = buildToolActivity(rows)
+
+  const pythonRow = result.shellRows.find((row) => row.label === 'python')
+  expect(pythonRow?.calls).toBe(291)
+
+  const pytestRow = result.shellRows.find((row) => row.label === 'pytest')
+  expect(pytestRow?.calls).toBe(40)
+
+  expect(result.shellRows.find((row) => row.label === 'git')?.calls).toBe(5)
+  expect(result.shellRows.some((row) => row.label.includes('/home/'))).toBe(
+    false
+  )
+  expect(result.shellRows.some((row) => row.label.includes('.venv/bin'))).toBe(
+    false
+  )
+  expect(result.shellRows.some((row) => row.label === '#')).toBe(false)
+  expect(result.shellRows.some((row) => row.label === '')).toBe(false)
 })
 
 test('test_buildToolActivity_empty_state_zero_calls', () => {
@@ -449,6 +530,66 @@ test('test_buildToolActivity_empty_state_zero_calls', () => {
   expect(result.leftRows).toHaveLength(0)
   expect(result.shellRows).toHaveLength(0)
   expect(result.shellTotalCalls).toBe(0)
+})
+
+test('test_buildToolActivity_retains_three_columns_per_tooltip_side', () => {
+  const manyToolRows = Array.from({ length: 30 }, (_value, index) =>
+    makeToolActivityRow(
+      `Tool ${index.toString().padStart(2, '0')}`,
+      'outer',
+      100 - index
+    )
+  )
+  const manyShellRows = Array.from({ length: 30 }, (_value, index) =>
+    makeToolActivityRow(
+      `cmd${index.toString().padStart(2, '0')}`,
+      'shell',
+      100 - index
+    )
+  )
+
+  const result = buildToolActivity([
+    makeToolActivityRow('Bash', 'outer', 500),
+    ...manyToolRows,
+    ...manyShellRows,
+  ])
+
+  expect(result.leftRows).toHaveLength(30)
+  expect(result.shellRows).toHaveLength(30)
+  expect(result.leftTruncated).toBe(false)
+  expect(result.shellTruncated).toBe(false)
+  expect(result.leftRows.some((row) => row.label === 'Tool 29')).toBe(true)
+  expect(result.shellRows.some((row) => row.label === 'cmd29')).toBe(true)
+})
+
+test('test_buildToolActivity_truncates_after_three_tooltip_columns', () => {
+  const manyToolRows = Array.from({ length: 45 }, (_value, index) =>
+    makeToolActivityRow(
+      `Tool ${index.toString().padStart(2, '0')}`,
+      'outer',
+      100 - index
+    )
+  )
+  const manyShellRows = Array.from({ length: 90 }, (_value, index) =>
+    makeToolActivityRow(
+      `cmd${index.toString().padStart(2, '0')}`,
+      'shell',
+      100 - index
+    )
+  )
+
+  const result = buildToolActivity([
+    makeToolActivityRow('Bash', 'outer', 500),
+    ...manyToolRows,
+    ...manyShellRows,
+  ])
+
+  expect(result.leftRows).toHaveLength(42)
+  expect(result.shellRows).toHaveLength(84)
+  expect(result.leftTotalCount).toBe(45)
+  expect(result.shellTotalCount).toBe(90)
+  expect(result.leftTruncated).toBe(true)
+  expect(result.shellTruncated).toBe(true)
 })
 
 test('test_tool_cell_hover_tooltip_rendered_when_tool_activity_present', () => {
@@ -482,6 +623,95 @@ test('test_tool_cell_hover_tooltip_rendered_when_tool_activity_present', () => {
   expect(screen.getByText(/shell.*80.*calls/i)).toBeInTheDocument()
   // Tool names in the left column should be visible in the tooltip DOM.
   expect(screen.getByText('Read')).toBeInTheDocument()
+})
+
+test('test_tool_cell_hover_expands_shell_height_for_mcp_heavy_tools', () => {
+  const mcpRows = Array.from({ length: 40 }, (_value, index) =>
+    makeToolActivityRow(
+      `mcp__aawm__tool${index.toString().padStart(2, '0')}`,
+      'outer',
+      200 - index
+    )
+  )
+  const shellRows = Array.from({ length: 70 }, (_value, index) =>
+    makeToolActivityRow(
+      `cmd${index.toString().padStart(2, '0')}`,
+      'shell',
+      170 - index
+    )
+  )
+  const toolRow = {
+    model: 'claude-opus-4-7',
+    provider: 'anthropic',
+    tokens_in: 1000,
+    tokens_out: 2000,
+    requests: 100,
+    p50_ms: 200,
+    p95_ms: 500,
+    error_pct: 0,
+    cost_usd: 0.5,
+    cost_per_1k: 0.05,
+    tool: 9000,
+    toolActivity: buildToolActivity([
+      makeToolActivityRow('Bash', 'outer', 500),
+      makeToolActivityRow('Read', 'outer', 245),
+      ...mcpRows,
+      ...shellRows,
+    ]),
+  }
+
+  render(<MasterLedgerTable rows={[toolRow]} />)
+
+  expect(screen.getByText('MCP: aawm')).toBeInTheDocument()
+  expect(screen.getByText(/tool25/)).toBeInTheDocument()
+  expect(screen.getByText(/\+14 more/i)).toBeInTheDocument()
+  expect(screen.getByText('cmd69')).toBeInTheDocument()
+
+  const gridTemplates = Array.from(document.querySelectorAll('div'))
+    .map((el) => (el as HTMLElement).style.gridTemplateColumns)
+    .filter(Boolean)
+  expect(gridTemplates).toContain('repeat(3, minmax(0, 1fr))')
+})
+
+test('test_tool_cell_hover_keeps_second_column_detail_on_both_sides', () => {
+  const toolRows = Array.from({ length: 16 }, (_value, index) =>
+    makeToolActivityRow(
+      `Tool ${index.toString().padStart(2, '0')}`,
+      'outer',
+      100 - index
+    )
+  )
+  const shellRows = Array.from({ length: 16 }, (_value, index) =>
+    makeToolActivityRow(
+      `cmd${index.toString().padStart(2, '0')}`,
+      'shell',
+      100 - index
+    )
+  )
+  const toolRow = {
+    model: 'claude-opus-4-7',
+    provider: 'anthropic',
+    tokens_in: 1000,
+    tokens_out: 2000,
+    requests: 100,
+    p50_ms: 200,
+    p95_ms: 500,
+    error_pct: 0,
+    cost_usd: 0.5,
+    cost_per_1k: 0.05,
+    tool: 1860,
+    toolActivity: buildToolActivity([
+      makeToolActivityRow('Bash', 'outer', 500),
+      ...toolRows,
+      ...shellRows,
+    ]),
+  }
+
+  render(<MasterLedgerTable rows={[toolRow]} />)
+
+  expect(screen.getByText('Tool 15')).toBeInTheDocument()
+  expect(screen.getByText('cmd15')).toBeInTheDocument()
+  expect(screen.queryByText(/\+2 more/i)).toBeNull()
 })
 
 // ---------------------------------------------------------------------------
@@ -662,4 +892,22 @@ test('test_tool_cell_renders_fmtCompact_value', () => {
   expect(cellTexts.some((t) => t?.includes('1.2K'))).toBe(true)
   // numFmt form must NOT appear for the tool cell
   expect(cellTexts.some((t) => t === '1,200')).toBe(false)
+})
+
+test('test_model_name_gutter_uses_provider_brand_color', () => {
+  const providerRow = {
+    ...mockRows[0],
+    provider: 'anthropic',
+    error_pct: 5,
+    cost_usd: 10,
+  }
+
+  const { container } = render(<MasterLedgerTable rows={[providerRow]} />)
+
+  const firstCell = container.querySelector('tbody td') as HTMLElement | null
+  expect(firstCell).not.toBeNull()
+  expect(firstCell).toHaveStyle({
+    borderLeftColor: providerBrandHex('anthropic'),
+  })
+  expect(firstCell?.className).not.toContain('gutter-')
 })
