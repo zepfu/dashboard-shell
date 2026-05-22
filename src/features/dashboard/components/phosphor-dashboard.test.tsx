@@ -715,6 +715,36 @@ describe('Wave 41 — buildProviderLanes', () => {
     expect(shortLane!.currentBar!.consumedPct).toBeCloseTo(1, 0) // 100 − 99 = 1
   })
 
+  test('test_current_quota_segments_use_backend_velocity_scores', () => {
+    const velocitySegments = Array.from({ length: 100 }, (_, i) => i === 2)
+    const velocityScores = Array.from({ length: 100 }, (_, i) => {
+      if (i === 0) return 0.4
+      if (i === 1) return 7
+      if (i === 2) return 35
+      return 0
+    })
+    const quotaRows = [
+      makeAnthropicQuotaRow({
+        short_remaining_pct: 97.5,
+        short_velocity_segments: velocitySegments,
+        short_velocity_scores: velocityScores,
+      }),
+    ]
+    const lanes = _buildProviderLanesForTest('anthropic', quotaRows, [])
+    const shortLane = lanes.find((l) => l.laneKey === 'anthropic/short')
+    const segments = shortLane!.currentBar!.segments
+
+    expect(segments).toHaveLength(100)
+    expect(segments[0].highVelocity).toBe(false)
+    expect(segments[0].velocityClass).toBe('velocity-slow')
+    expect(segments[1].highVelocity).toBe(true)
+    expect(segments[1].velocityClass).toBe('velocity-fast')
+    expect(segments[2].highVelocity).toBe(true)
+    expect(segments[2].velocityClass).toBe('velocity-hot')
+    expect(segments[3].highVelocity).toBe(false)
+    expect(segments[3].velocityClass).toBeUndefined()
+  })
+
   test('test_anthropic_prior_bars_from_history', () => {
     const quotaRows = [makeAnthropicQuotaRow()]
     const historyRows: UsageReportQuotaHistoryRow[] = [

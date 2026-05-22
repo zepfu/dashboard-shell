@@ -233,6 +233,9 @@ export interface UsageReportQuotaRow {
   weekly_active: boolean
   weekly_usage_tokens: number
   weekly_usage_breakdown: UsageReportQuotaUsageBreakdown[]
+  weekly_velocity_segments?: boolean[]
+  weekly_velocity_scores?: number[]
+  weekly_velocity_sample_count?: number
   short_remaining_pct: number | null
   short_reset_at: string | null
   short_interval_start: string | null
@@ -240,6 +243,9 @@ export interface UsageReportQuotaRow {
   short_active: boolean
   short_usage_tokens: number
   short_usage_breakdown: UsageReportQuotaUsageBreakdown[]
+  short_velocity_segments?: boolean[]
+  short_velocity_scores?: number[]
+  short_velocity_sample_count?: number
   special_remaining_pct: number | null
   special_reset_at: string | null
   special_interval_start: string | null
@@ -247,6 +253,9 @@ export interface UsageReportQuotaRow {
   special_active: boolean
   special_usage_tokens: number
   special_usage_breakdown: UsageReportQuotaUsageBreakdown[]
+  special_velocity_segments?: boolean[]
+  special_velocity_scores?: number[]
+  special_velocity_sample_count?: number
   short_special_remaining_pct: number | null
   short_special_reset_at: string | null
   short_special_interval_start: string | null
@@ -254,6 +263,9 @@ export interface UsageReportQuotaRow {
   short_special_active: boolean
   short_special_usage_tokens: number
   short_special_usage_breakdown: UsageReportQuotaUsageBreakdown[]
+  short_special_velocity_segments?: boolean[]
+  short_special_velocity_scores?: number[]
+  short_special_velocity_sample_count?: number
   monthly_remaining_pct: number | null
   monthly_reset_at: string | null
   monthly_interval_start: string | null
@@ -261,6 +273,9 @@ export interface UsageReportQuotaRow {
   monthly_active: boolean
   monthly_usage_tokens: number
   monthly_usage_breakdown: UsageReportQuotaUsageBreakdown[]
+  monthly_velocity_segments?: boolean[]
+  monthly_velocity_scores?: number[]
+  monthly_velocity_sample_count?: number
 }
 
 export interface UsageReportQuotaUsageBreakdown {

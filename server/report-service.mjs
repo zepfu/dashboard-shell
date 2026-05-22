@@ -99,7 +99,7 @@ const REPORT_CACHE_STALE_TTL_MS = Math.max(
 const REPORT_CACHE_REDIS_URL = process.env.SHELL_REPORT_REDIS_URL
 const REPORT_CACHE_PREFIX =
   process.env.SHELL_REPORT_CACHE_PREFIX ?? 'dashboard-shell:reports'
-const REPORT_CACHE_VERSION = process.env.SHELL_REPORT_CACHE_VERSION ?? 'v2'
+const REPORT_CACHE_VERSION = process.env.SHELL_REPORT_CACHE_VERSION ?? 'v5'
 const REPORT_CACHE_LOCK_TTL_MS = Math.max(
   1_000,
   Number(process.env.SHELL_REPORT_CACHE_LOCK_TTL_MS ?? 30 * 60 * 1000)
@@ -123,6 +123,7 @@ const REPORT_CACHE_PREWARM_LOCK_TTL_MS = Math.max(
   Number(process.env.SHELL_REPORT_CACHE_PREWARM_LOCK_TTL_MS ?? 2 * 60 * 60 * 1000)
 )
 const MAX_REPORT_CACHE_ENTRIES = 20
+const QUOTA_VELOCITY_SEGMENT_COUNT = 100
 const UPSTREAM_FETCH_TIMEOUT_MS = Number(
   process.env.SHELL_REPORT_UPSTREAM_TIMEOUT_MS ?? 30_000
 )
@@ -1312,6 +1313,264 @@ ORDER BY s.provider ASC, s.model ASC NULLS FIRST;
   return { sql, values: [] }
 }
 
+
+function buildQuotaVelocityQuery() {
+  const sql = `
+WITH
+quota_key_gaps AS (
+    SELECT
+        provider,
+        quota_key,
+        quota_type,
+        EXTRACT(EPOCH FROM (
+            expected_reset_at
+            - LAG(expected_reset_at) OVER (
+                PARTITION BY provider, quota_key
+                ORDER BY expected_reset_at
+            )
+        )) / 3600.0 AS gap_hours
+    FROM (
+        SELECT DISTINCT provider, quota_key, quota_type, expected_reset_at
+        FROM public.rate_limit_intervals
+        WHERE quota_type IN ('weekly', 'weekly_special', 'short', 'short_special', 'requests', 'monthly')
+          AND expected_reset_at IS NOT NULL
+          AND quota_key IS NOT NULL
+    ) distinct_resets
+),
+quota_key_interval_hours AS (
+    SELECT
+        provider,
+        quota_key,
+        quota_type,
+        PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY gap_hours) AS interval_hours,
+        COUNT(*) AS gap_count
+    FROM quota_key_gaps
+    WHERE gap_hours >= 1.0
+    GROUP BY provider, quota_key, quota_type
+),
+normalized AS (
+    SELECT
+        ri.provider AS raw_provider,
+        CASE
+            WHEN lower(COALESCE(ri.provider, 'unknown')) IN ('xai', 'x.ai') THEN 'xai'
+            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'xai/%' THEN 'xai'
+            WHEN lower(COALESCE(ri.provider, 'unknown')) = 'nvidia' THEN 'nvidia_nim'
+            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'nvidia_nim/%' THEN 'nvidia_nim'
+            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'nvidia/%' THEN 'nvidia_nim'
+            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'local/%' THEN 'local'
+            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'local_%' THEN 'local'
+            ELSE COALESCE(ri.provider, 'unknown')
+        END AS provider,
+        CASE
+            WHEN ri.quota_type IN ('monthly', 'requests')
+              AND (
+                  lower(COALESCE(ri.provider, 'unknown')) LIKE 'xai/%'
+                  OR lower(COALESCE(ri.provider, 'unknown')) IN ('xai', 'x.ai')
+              )
+            THEN NULL
+            ELSE NULLIF(ri.model, '')
+        END AS model,
+        CASE
+            WHEN ri.quota_type = 'requests'
+              AND (
+                  lower(COALESCE(ri.provider, 'unknown')) LIKE 'xai/%'
+                  OR lower(COALESCE(ri.provider, 'unknown')) IN ('xai', 'x.ai')
+              )
+            THEN 'monthly'
+            WHEN ri.quota_type = 'weekly_special' THEN 'special'
+            WHEN ri.quota_type = 'short_special' THEN 'short_special'
+            WHEN ri.quota_type = 'requests' THEN 'short'
+            ELSE ri.quota_type
+        END AS quota_type,
+        ri.quota_type AS raw_quota_type,
+        ri.quota_key,
+        ri.expected_reset_at,
+        ri.remaining_pct,
+        ri.fromDate AS interval_start,
+        ri.toDate AS interval_end,
+        CASE
+            WHEN ri.fromDate <= now() AND ri.toDate > now() THEN true
+            ELSE false
+        END AS active
+    FROM public.rate_limit_intervals ri
+    WHERE ri.quota_type IN ('weekly', 'short', 'weekly_special', 'short_special', 'requests', 'monthly')
+),
+ranked AS (
+    SELECT
+        *,
+        ROW_NUMBER() OVER (
+            PARTITION BY provider, COALESCE(model, ''), quota_type
+            ORDER BY active DESC, interval_start DESC, interval_end DESC
+        ) AS quota_rank
+    FROM normalized
+),
+selected AS (
+    SELECT *
+    FROM ranked
+    WHERE quota_rank = 1
+),
+selected_with_fallbacks AS (
+    SELECT *
+    FROM selected
+    UNION ALL
+    SELECT
+        weekly.raw_provider,
+        weekly.provider,
+        weekly.model,
+        'special' AS quota_type,
+        'weekly_special' AS raw_quota_type,
+        NULL::text AS quota_key,
+        weekly.expected_reset_at,
+        0::double precision AS remaining_pct,
+        weekly.interval_start,
+        weekly.interval_end,
+        weekly.active,
+        weekly.quota_rank
+    FROM selected weekly
+    WHERE weekly.provider = 'openai'
+      AND weekly.model IS NULL
+      AND weekly.quota_type = 'weekly'
+      AND NOT EXISTS (
+          SELECT 1
+          FROM selected special
+          WHERE special.provider = weekly.provider
+            AND special.model IS NOT DISTINCT FROM weekly.model
+            AND special.quota_type = 'special'
+      )
+    UNION ALL
+    SELECT
+        short.raw_provider,
+        short.provider,
+        short.model,
+        'short_special' AS quota_type,
+        'short_special' AS raw_quota_type,
+        NULL::text AS quota_key,
+        short.expected_reset_at,
+        0::double precision AS remaining_pct,
+        short.interval_start,
+        short.interval_end,
+        short.active,
+        short.quota_rank
+    FROM selected short
+    WHERE short.provider = 'openai'
+      AND short.model IS NULL
+      AND short.quota_type = 'short'
+      AND NOT EXISTS (
+          SELECT 1
+          FROM selected short_special
+          WHERE short_special.provider = short.provider
+            AND short_special.model IS NOT DISTINCT FROM short.model
+            AND short_special.quota_type = 'short_special'
+      )
+),
+selected_with_duration AS (
+    SELECT
+        s.*,
+        COALESCE(
+            CASE WHEN kh.gap_count >= 2 THEN kh.interval_hours END,
+            CASE
+                WHEN s.provider = 'google' AND s.raw_quota_type = 'requests' THEN 24.0
+                WHEN s.quota_type = 'monthly' THEN 720.0
+                WHEN s.quota_type IN ('short', 'short_special') THEN 5.0
+                WHEN s.quota_type IN ('weekly', 'special') THEN 168.0
+                ELSE 168.0
+            END
+        ) AS interval_hours
+    FROM selected_with_fallbacks s
+    LEFT JOIN quota_key_interval_hours kh
+           ON kh.provider = s.raw_provider
+          AND kh.quota_key = s.quota_key
+),
+observations AS (
+    SELECT
+        s.provider,
+        s.model,
+        s.quota_type,
+        s.interval_hours,
+        o.observed_at,
+        MAX(GREATEST(0, LEAST(100, 100 - o.remaining_pct))) AS consumed_pct
+    FROM selected_with_duration s
+    JOIN public.rate_limit_observations o
+      ON s.quota_key IS NOT NULL
+     AND s.expected_reset_at IS NOT NULL
+     AND o.provider = s.raw_provider
+     AND o.quota_key = s.quota_key
+     AND o.expected_reset_at IS NOT DISTINCT FROM s.expected_reset_at
+     AND o.remaining_pct IS NOT NULL
+     AND o.remaining_pct >= 0
+     AND o.observed_at IS NOT NULL
+     AND o.observed_at <= now() + INTERVAL '5 minutes'
+    GROUP BY s.provider, s.model, s.quota_type, s.interval_hours, o.observed_at
+),
+ordered_observations AS (
+    SELECT
+        *,
+        LAG(consumed_pct) OVER (
+            PARTITION BY provider, COALESCE(model, ''), quota_type
+            ORDER BY observed_at ASC
+        ) AS prev_consumed_pct,
+        LAG(observed_at) OVER (
+            PARTITION BY provider, COALESCE(model, ''), quota_type
+            ORDER BY observed_at ASC
+        ) AS prev_observed_at
+    FROM observations
+),
+velocity_segments AS (
+    SELECT
+        provider,
+        model,
+        quota_type,
+        segment.segment_index,
+        MAX(
+            (o.consumed_pct - o.prev_consumed_pct)
+            * o.interval_hours
+            * 36.0
+            / NULLIF(EXTRACT(EPOCH FROM (o.observed_at - o.prev_observed_at)), 0)
+        )::double precision AS velocity_score
+    FROM ordered_observations o
+    CROSS JOIN LATERAL generate_series(
+        GREATEST(0, FLOOR(o.prev_consumed_pct)::int),
+        LEAST(${QUOTA_VELOCITY_SEGMENT_COUNT - 1}, CEIL(o.consumed_pct)::int - 1)
+    ) AS segment(segment_index)
+    WHERE o.prev_observed_at IS NOT NULL
+      AND o.observed_at > o.prev_observed_at
+      AND o.consumed_pct > o.prev_consumed_pct
+    GROUP BY provider, model, quota_type, segment.segment_index
+),
+samples_by_lane AS (
+    SELECT
+        provider,
+        model,
+        quota_type,
+        COUNT(*) AS sample_count
+    FROM observations
+    GROUP BY provider, model, quota_type
+)
+SELECT
+    s.provider,
+    s.model,
+    s.quota_type,
+    COALESCE(samples.sample_count, 0)::double precision AS velocity_sample_count,
+    jsonb_agg((COALESCE(velocity.velocity_score, 0) > 1.0) ORDER BY segment.segment_index) AS velocity_segments,
+    jsonb_agg(LEAST(COALESCE(velocity.velocity_score, 0), 10000.0) ORDER BY segment.segment_index) AS velocity_scores
+FROM selected_with_duration s
+CROSS JOIN generate_series(0, ${QUOTA_VELOCITY_SEGMENT_COUNT - 1}) AS segment(segment_index)
+LEFT JOIN velocity_segments velocity
+       ON velocity.provider = s.provider
+      AND velocity.model IS NOT DISTINCT FROM s.model
+      AND velocity.quota_type = s.quota_type
+      AND velocity.segment_index = segment.segment_index
+LEFT JOIN samples_by_lane samples
+       ON samples.provider = s.provider
+      AND samples.model IS NOT DISTINCT FROM s.model
+      AND samples.quota_type = s.quota_type
+GROUP BY s.provider, s.model, s.quota_type, samples.sample_count
+ORDER BY s.provider ASC, s.model ASC NULLS FIRST, s.quota_type ASC;
+`
+
+  return { sql, values: [] }
+}
+
 function buildQuotaHistoryQuery(_searchParams) {
   // Wave 40: lookback is interval-multiplier-driven (1.5× the reset period),
   // not dashboard date-range-driven. The from/to search params are intentionally
@@ -1726,13 +1985,18 @@ async function loadQuotaReport(options = {}) {
 
 async function loadQuotaReportFromDatabase() {
   const quotaQuery = buildQuotaQuery()
+  const quotaVelocityQuery = buildQuotaVelocityQuery()
   const freshnessQuery = buildFreshnessQuery()
-  const [quotaResult, freshnessResult] = await Promise.all([
+  const [quotaResult, quotaVelocityResult, freshnessResult] = await Promise.all([
     pool.query(quotaQuery.sql, quotaQuery.values),
+    pool.query(quotaVelocityQuery.sql, quotaVelocityQuery.values),
     pool.query(freshnessQuery.sql, freshnessQuery.values),
   ])
   const freshness = buildFreshnessMetadata(
     firstRow(freshnessResult).latest_record_at
+  )
+  const quotaVelocityRowsByLane = buildQuotaVelocityRowsByLane(
+    quotaVelocityResult.rows
   )
 
   return {
@@ -1740,7 +2004,9 @@ async function loadQuotaReportFromDatabase() {
       ...freshness,
       staleRecordThresholdMinutes: STALE_RECORD_THRESHOLD_MINUTES,
     },
-    quotas: quotaResult.rows.map(normalizeQuotaRow),
+    quotas: quotaResult.rows
+      .map((row) => attachQuotaVelocityRows(row, quotaVelocityRowsByLane))
+      .map(normalizeQuotaRow),
   }
 }
 
@@ -1891,6 +2157,60 @@ function normalizeUsageBreakdown(value) {
   }))
 }
 
+
+function normalizeQuotaVelocityScores(value) {
+  if (!Array.isArray(value)) return []
+
+  return value.slice(0, QUOTA_VELOCITY_SEGMENT_COUNT).map((entry) => {
+    const score = normalizeNumber(entry) ?? 0
+    return Math.max(0, Math.min(10000, score))
+  })
+}
+
+function normalizeQuotaVelocitySegments(value) {
+  if (!Array.isArray(value)) return []
+
+  return value
+    .slice(0, QUOTA_VELOCITY_SEGMENT_COUNT)
+    .map((entry) => Boolean(entry))
+}
+
+function quotaVelocityLaneKey(provider, model, quotaType) {
+  return [provider ?? 'unknown', model ?? '', quotaType].join('\u0000')
+}
+
+function buildQuotaVelocityRowsByLane(rows) {
+  const byLane = new Map()
+  for (const row of rows) {
+    byLane.set(
+      quotaVelocityLaneKey(row.provider, row.model, row.quota_type),
+      row
+    )
+  }
+  return byLane
+}
+
+function attachQuotaVelocityRows(row, quotaVelocityRowsByLane) {
+  const merged = { ...row }
+  for (const quotaType of [
+    'weekly',
+    'short',
+    'special',
+    'short_special',
+    'monthly',
+  ]) {
+    const velocityRow = quotaVelocityRowsByLane.get(
+      quotaVelocityLaneKey(row.provider, row.model, quotaType)
+    )
+    merged[`${quotaType}_velocity_segments`] =
+      velocityRow?.velocity_segments ?? []
+    merged[`${quotaType}_velocity_scores`] = velocityRow?.velocity_scores ?? []
+    merged[`${quotaType}_velocity_sample_count`] =
+      velocityRow?.velocity_sample_count ?? 0
+  }
+  return merged
+}
+
 function normalizeQuotaRow(row) {
   return {
     provider: row.provider,
@@ -1904,6 +2224,14 @@ function normalizeQuotaRow(row) {
     weekly_usage_breakdown: normalizeUsageBreakdown(
       row.weekly_usage_breakdown
     ),
+    weekly_velocity_segments: normalizeQuotaVelocitySegments(
+      row.weekly_velocity_segments
+    ),
+    weekly_velocity_scores: normalizeQuotaVelocityScores(
+      row.weekly_velocity_scores
+    ),
+    weekly_velocity_sample_count:
+      normalizeNumber(row.weekly_velocity_sample_count) ?? 0,
     short_remaining_pct: normalizeNumber(row.short_remaining_pct),
     short_reset_at: row.short_reset_at ?? null,
     short_interval_start: row.short_interval_start ?? null,
@@ -1911,6 +2239,14 @@ function normalizeQuotaRow(row) {
     short_active: Boolean(normalizeNumber(row.short_active)),
     short_usage_tokens: normalizeNumber(row.short_usage_tokens) ?? 0,
     short_usage_breakdown: normalizeUsageBreakdown(row.short_usage_breakdown),
+    short_velocity_segments: normalizeQuotaVelocitySegments(
+      row.short_velocity_segments
+    ),
+    short_velocity_scores: normalizeQuotaVelocityScores(
+      row.short_velocity_scores
+    ),
+    short_velocity_sample_count:
+      normalizeNumber(row.short_velocity_sample_count) ?? 0,
     special_remaining_pct: normalizeNumber(row.special_remaining_pct),
     special_reset_at: row.special_reset_at ?? null,
     special_interval_start: row.special_interval_start ?? null,
@@ -1920,6 +2256,14 @@ function normalizeQuotaRow(row) {
     special_usage_breakdown: normalizeUsageBreakdown(
       row.special_usage_breakdown
     ),
+    special_velocity_segments: normalizeQuotaVelocitySegments(
+      row.special_velocity_segments
+    ),
+    special_velocity_scores: normalizeQuotaVelocityScores(
+      row.special_velocity_scores
+    ),
+    special_velocity_sample_count:
+      normalizeNumber(row.special_velocity_sample_count) ?? 0,
     short_special_remaining_pct: normalizeNumber(
       row.short_special_remaining_pct
     ),
@@ -1932,6 +2276,14 @@ function normalizeQuotaRow(row) {
     short_special_usage_breakdown: normalizeUsageBreakdown(
       row.short_special_usage_breakdown
     ),
+    short_special_velocity_segments: normalizeQuotaVelocitySegments(
+      row.short_special_velocity_segments
+    ),
+    short_special_velocity_scores: normalizeQuotaVelocityScores(
+      row.short_special_velocity_scores
+    ),
+    short_special_velocity_sample_count:
+      normalizeNumber(row.short_special_velocity_sample_count) ?? 0,
     monthly_remaining_pct: normalizeNumber(row.monthly_remaining_pct),
     monthly_reset_at: row.monthly_reset_at ?? null,
     monthly_interval_start: row.monthly_interval_start ?? null,
@@ -1941,6 +2293,14 @@ function normalizeQuotaRow(row) {
     monthly_usage_breakdown: normalizeUsageBreakdown(
       row.monthly_usage_breakdown
     ),
+    monthly_velocity_segments: normalizeQuotaVelocitySegments(
+      row.monthly_velocity_segments
+    ),
+    monthly_velocity_scores: normalizeQuotaVelocityScores(
+      row.monthly_velocity_scores
+    ),
+    monthly_velocity_sample_count:
+      normalizeNumber(row.monthly_velocity_sample_count) ?? 0,
   }
 }
 

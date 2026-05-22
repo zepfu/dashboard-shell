@@ -46,6 +46,22 @@ test('test_quota_interval_bar_high_velocity_class', () => {
   expect(highVelEl).not.toBeNull()
 })
 
+test('test_quota_interval_bar_velocity_class', () => {
+  const intervals = [
+    {
+      widthPct: 50,
+      severityClass: 'iv-warning',
+      highVelocity: true,
+      velocityClass: 'velocity-hot',
+    },
+    { widthPct: 50, severityClass: 'iv-ok', highVelocity: false },
+  ]
+  const { container } = render(<QuotaIntervalBar intervals={intervals} />)
+
+  const hotEl = container.querySelector('.quota-interval.velocity-hot')
+  expect(hotEl).not.toBeNull()
+})
+
 test('test_quota_interval_bar_projection_tick_position', () => {
   const { container } = render(
     <QuotaIntervalBar intervals={makeIntervals(4)} projectionPct={65} />

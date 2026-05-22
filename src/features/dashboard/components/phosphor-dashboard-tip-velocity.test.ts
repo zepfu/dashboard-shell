@@ -1,23 +1,16 @@
 /**
- * Wave 35 S4 — Unit tests for formatTipVelocity.
+ * Unit tests for formatTipVelocity.
  *
- * `formatTipVelocity` derives a "+X.X%/h" burn-rate label from
- * `consumedPct` and `intervalStart`.  It is exported for testing via the
+ * `formatTipVelocity` derives a reset-window-aware average burn-rate label from
+ * consumedPct, resetAt, and quota duration. It is exported for testing via the
  * `_formatTipVelocityForTest` alias.
- *
- * Boundary cases verified:
- * - null intervalStart → undefined (no data)
- * - consumedPct === 0 → undefined (nothing consumed yet)
- * - invalid ISO string → undefined (NaN guard)
- * - future intervalStart → undefined (hoursElapsed ≤ 0)
- * - normal case → "+X.X%/h" formatted string
  */
 import { _formatTipVelocityForTest } from './phosphor-dashboard'
 
 const { describe, it, expect, beforeEach, afterEach, vi } =
   await import('vitest')
 
-describe('formatTipVelocity — Wave 35 S4', () => {
+describe('formatTipVelocity', () => {
   beforeEach(() => {
     vi.useFakeTimers()
   })
@@ -26,52 +19,55 @@ describe('formatTipVelocity — Wave 35 S4', () => {
     vi.useRealTimers()
   })
 
-  it('returns undefined when intervalStart is null', () => {
+  it('returns undefined when resetAt is null', () => {
     vi.setSystemTime(new Date('2026-05-19T12:00:00.000Z'))
-    expect(_formatTipVelocityForTest(50, null)).toBeUndefined()
+    expect(_formatTipVelocityForTest(50, null, 5)).toBeUndefined()
   })
 
   it('returns undefined when consumedPct is 0', () => {
-    vi.setSystemTime(new Date('2026-05-19T12:00:00.000Z'))
-    const start = '2026-05-19T07:00:00.000Z' // 5h ago
-    expect(_formatTipVelocityForTest(0, start)).toBeUndefined()
+    vi.setSystemTime(new Date('2026-05-19T09:00:00.000Z'))
+    expect(
+      _formatTipVelocityForTest(0, '2026-05-19T12:00:00.000Z', 5)
+    ).toBeUndefined()
   })
 
-  it('returns undefined for an invalid ISO timestamp', () => {
+  it('returns undefined for an invalid reset timestamp', () => {
     vi.setSystemTime(new Date('2026-05-19T12:00:00.000Z'))
-    expect(_formatTipVelocityForTest(30, 'not-a-date')).toBeUndefined()
+    expect(_formatTipVelocityForTest(30, 'not-a-date', 5)).toBeUndefined()
   })
 
-  it('returns undefined when intervalStart is in the future', () => {
+  it('returns undefined for an invalid duration', () => {
     vi.setSystemTime(new Date('2026-05-19T12:00:00.000Z'))
-    const futureStart = '2026-05-19T14:00:00.000Z' // 2h in the future
-    expect(_formatTipVelocityForTest(10, futureStart)).toBeUndefined()
+    expect(
+      _formatTipVelocityForTest(30, '2026-05-19T12:00:00.000Z', 0)
+    ).toBeUndefined()
   })
 
-  it('computes "+2.0%/h" for 10% consumed over 5h', () => {
-    vi.setSystemTime(new Date('2026-05-19T12:00:00.000Z'))
-    const start = '2026-05-19T07:00:00.000Z' // 5h ago
-    expect(_formatTipVelocityForTest(10, start)).toBe('+2.0%/h')
+  it('returns undefined before the derived reset window has started', () => {
+    vi.setSystemTime(new Date('2026-05-19T06:00:00.000Z'))
+    expect(
+      _formatTipVelocityForTest(10, '2026-05-19T12:00:00.000Z', 5)
+    ).toBeUndefined()
   })
 
-  it('computes "+10.0%/h" for 70% consumed over 7h', () => {
-    vi.setSystemTime(new Date('2026-05-19T12:00:00.000Z'))
-    const start = '2026-05-19T05:00:00.000Z' // 7h ago
-    expect(_formatTipVelocityForTest(70, start)).toBe('+10.0%/h')
+  it('computes an hourly average for short reset windows', () => {
+    vi.setSystemTime(new Date('2026-05-19T09:30:00.000Z'))
+    expect(_formatTipVelocityForTest(10, '2026-05-19T12:00:00.000Z', 5)).toBe(
+      'avg +4.0%/h since reset'
+    )
   })
 
-  it('returns a string starting with "+" and ending with "%/h"', () => {
-    vi.setSystemTime(new Date('2026-05-19T12:00:00.000Z'))
-    const start = '2026-05-19T10:00:00.000Z' // 2h ago
-    const result = _formatTipVelocityForTest(30, start)
-    expect(result).not.toBeUndefined()
-    expect(result).toMatch(/^\+[\d.]+%\/h$/)
+  it('computes a daily average for long reset windows', () => {
+    vi.setSystemTime(new Date('2026-05-20T12:00:00.000Z'))
+    expect(_formatTipVelocityForTest(14, '2026-05-26T12:00:00.000Z', 168)).toBe(
+      'avg +14.0%/d since reset'
+    )
   })
 
-  it('rounds to one decimal place', () => {
-    // 17% over 5h = 3.4%/h — should render "+3.4%/h"
-    vi.setSystemTime(new Date('2026-05-19T12:00:00.000Z'))
-    const start = '2026-05-19T07:00:00.000Z' // 5h ago
-    expect(_formatTipVelocityForTest(17, start)).toBe('+3.4%/h')
+  it('caps elapsed time at reset when now is past resetAt', () => {
+    vi.setSystemTime(new Date('2026-05-19T13:00:00.000Z'))
+    expect(_formatTipVelocityForTest(10, '2026-05-19T12:00:00.000Z', 5)).toBe(
+      'avg +2.0%/h since reset'
+    )
   })
 })

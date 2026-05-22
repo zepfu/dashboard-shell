@@ -52,11 +52,13 @@ const mockHealthCells = Array.from({ length: 288 }, () => ({
   color: 'var(--card-2)',
 }))
 
+const QUOTA_SEGMENTS = 100
+
 // Wave 11 PR3 (11-h/11-i): QuotaBarGroup[] — each entry is a quota-type bar
-// with pre-built N=12 segment array.
+// with pre-built N=100 segment array.
 const makeSegments = () =>
-  Array.from({ length: 12 }, (_, i) => ({
-    widthPct: 100 / 12,
+  Array.from({ length: QUOTA_SEGMENTS }, (_, i) => ({
+    widthPct: 100 / QUOTA_SEGMENTS,
     severityClass: 'iv-ok',
     highVelocity: i === 0,
   }))
@@ -255,7 +257,7 @@ test('test_provider_card_renders_health_strip', () => {
 
 test('test_provider_card_quota_bar_renders_intervals', () => {
   // Wave 11 PR3 (11-h/11-i): mockQuotas now contains 1 QuotaBarGroup with
-  // N=12 segments, so the rendered interval count is 1 × 12 = 12.
+  // N=100 segments, so the rendered interval count is 1 x 100 = 100.
   const { container } = render(
     <ProviderCard
       config={anthropicConfig}
@@ -270,7 +272,7 @@ test('test_provider_card_quota_bar_renders_intervals', () => {
       ? container.querySelectorAll('.quota-interval')
       : container.querySelectorAll('[data-testid="quota-interval"]')
 
-  expect(intervals.length).toBe(12)
+  expect(intervals.length).toBe(QUOTA_SEGMENTS)
 })
 
 test('test_provider_card_anomaly_badge_early_reset', () => {
@@ -357,13 +359,13 @@ test('test_provider_card_quota_tip_model_has_brand_color', () => {
  * resets at IDENTICAL visual weight to current bars — no opacity reduction.
  *
  * Historical bars are produced by buildHistoryBarsForProvider and have the
- * same 12-segment fill shape as current bars. The `isHistorical` field has
+ * same 100-segment fill shape as current bars. The `isHistorical` field has
  * been removed; there is no longer any visual differentiation.
  */
 test('test_provider_card_renders_historical_bars_identical_to_current', () => {
   const makeFullSegments = (): QuotaRowConfig[] =>
-    Array.from({ length: 12 }, (_, i) => ({
-      widthPct: 100 / 12,
+    Array.from({ length: QUOTA_SEGMENTS }, (_, i) => ({
+      widthPct: 100 / QUOTA_SEGMENTS,
       severityClass: i < 10 ? 'iv-50-p' : i === 10 ? 'iv-5-10' : 'iv-0-5',
       highVelocity: i === 10,
     }))
@@ -375,7 +377,7 @@ test('test_provider_card_renders_historical_bars_identical_to_current', () => {
     resetAt: '2026-05-19T00:00:00Z',
     segments: makeSegments(),
   }
-  // Historical bar uses full 12-segment segments (full parity).
+  // Historical bar uses full 100-segment segments (full parity).
   const historicalBar: QuotaBarGroup = {
     label: 'all · 2026-05-12 00:00',
     consumedPct: 88,
@@ -407,12 +409,12 @@ test('test_provider_card_renders_historical_bars_identical_to_current', () => {
   expect(opacitySet).toBe(false)
 })
 
-test('test_provider_card_historical_bar_uses_12_segments', () => {
-  // Full-parity: historical bars must render 12 quota-interval segments,
+test('test_provider_card_historical_bar_uses_100_segments', () => {
+  // Full-parity: historical bars must render 100 quota-interval segments,
   // identical to current bars produced by buildQuotaSegments().
   const makeFullSegments = (): QuotaRowConfig[] =>
-    Array.from({ length: 12 }, (_, i) => ({
-      widthPct: 100 / 12,
+    Array.from({ length: QUOTA_SEGMENTS }, (_, i) => ({
+      widthPct: 100 / QUOTA_SEGMENTS,
       severityClass: i < 6 ? 'iv-50-p' : i === 6 ? 'iv-5-10' : 'iv-0-5',
       highVelocity: i === 6,
     }))
@@ -435,9 +437,9 @@ test('test_provider_card_historical_bar_uses_12_segments', () => {
     />
   )
 
-  // Exactly 12 quota-interval elements — same as a current bar.
+  // Exactly 100 quota-interval elements — same as a current bar.
   const intervals = container.querySelectorAll('.quota-interval')
-  expect(intervals.length).toBe(12)
+  expect(intervals.length).toBe(QUOTA_SEGMENTS)
 })
 
 test('test_provider_card_historical_bars_do_not_break_empty_quotaHistory', () => {
@@ -454,9 +456,9 @@ test('test_provider_card_historical_bars_do_not_break_empty_quotaHistory', () =>
 
   // Still renders the Quotas section title.
   expect(container.querySelector('.quota-section-title')).not.toBeNull()
-  // Still renders exactly 12 intervals (1 bar × 12 segments).
+  // Still renders exactly 100 intervals (1 bar x 100 segments).
   const intervals = container.querySelectorAll('.quota-interval')
-  expect(intervals.length).toBe(12)
+  expect(intervals.length).toBe(QUOTA_SEGMENTS)
 })
 
 // ---------------------------------------------------------------------------
@@ -465,8 +467,8 @@ test('test_provider_card_historical_bars_do_not_break_empty_quotaHistory', () =>
 
 describe('Wave 41 — QuotaLane structured lane rendering', () => {
   const makeFullSegments = (): QuotaRowConfig[] =>
-    Array.from({ length: 12 }, (_, i) => ({
-      widthPct: 100 / 12,
+    Array.from({ length: QUOTA_SEGMENTS }, (_, i) => ({
+      widthPct: 100 / QUOTA_SEGMENTS,
       severityClass: i < 8 ? 'iv-50-p' : i === 8 ? 'iv-5-10' : 'iv-0-5',
       highVelocity: i === 8,
     }))
@@ -539,7 +541,7 @@ describe('Wave 41 — QuotaLane structured lane rendering', () => {
   })
 
   test('test_provider_card_lane_renders_3_bars_total', () => {
-    // 1 current + 2 prior = 3 bars total = 3 × 12 = 36 intervals.
+    // 1 current + 2 prior = 3 bars total = 3 x 100 = 300 intervals.
     const { container } = render(
       <ProviderCard
         config={anthropicConfig}
