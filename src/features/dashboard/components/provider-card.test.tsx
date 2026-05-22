@@ -586,6 +586,38 @@ describe('Wave 41 — QuotaLane structured lane rendering', () => {
     expect(bars[2].classList.contains('is-prior')).toBe(true)
   })
 
+  test('test_provider_card_prior_bars_preserve_velocity_classes', () => {
+    const priorWithVelocity: QuotaBarGroup = {
+      ...priorBar1,
+      segments: Array.from({ length: QUOTA_SEGMENTS }, (_, i) => ({
+        widthPct: 100 / QUOTA_SEGMENTS,
+        severityClass: 'iv-25-50',
+        highVelocity: i === 3,
+        velocityClass: i === 3 ? 'velocity-hot' : undefined,
+      })),
+    }
+    const lane: QuotaLane = {
+      ...testLane,
+      priorBars: [priorWithVelocity],
+    }
+
+    const { container } = render(
+      <ProviderCard
+        config={anthropicConfig}
+        data={mockData}
+        healthCells={mockHealthCells}
+        quotas={[]}
+        lanes={[lane]}
+      />
+    )
+
+    const priorBar = container.querySelector('.quota-row-bar.is-prior')
+    expect(priorBar).not.toBeNull()
+    expect(
+      priorBar!.querySelector('.quota-interval.high-velocity.velocity-hot')
+    ).not.toBeNull()
+  })
+
   test('test_provider_card_multiple_lanes_render_separate_rows', () => {
     const lane2: QuotaLane = {
       laneKey: 'anthropic/weekly',

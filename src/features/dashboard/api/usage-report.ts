@@ -311,6 +311,12 @@ export interface UsageReportQuotaHistoryRow {
   min_remaining_pct: number | null
   /** Highest remaining_pct observed (typically near-100 just after reset). */
   max_remaining_pct: number | null
+  /** Per-percent velocity flags for this completed reset window. */
+  velocity_segments?: boolean[]
+  /** Per-percent burn-rate scores for this completed reset window. */
+  velocity_scores?: number[]
+  /** Number of observation samples behind the historical velocity arrays. */
+  velocity_sample_count?: number
   /** Total tokens consumed within the window across all models. */
   usage_tokens: number
   /** Per-model breakdown: token/cost/traces for each model in the window. */
