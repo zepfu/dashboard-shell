@@ -625,6 +625,12 @@ describe('Wave 41 — QuotaLane structured lane rendering', () => {
     expect(
       priorBar!.querySelector('.quota-interval.high-velocity.velocity-hot')
     ).not.toBeNull()
+    expect(
+      priorBar!.querySelectorAll('.quota-row-velocity-overlay')
+    ).toHaveLength(1)
+    expect(
+      priorBar!.querySelectorAll('.quota-row-velocity-sweep')
+    ).toHaveLength(1)
   })
 
   test('test_provider_card_multiple_lanes_render_separate_rows', () => {

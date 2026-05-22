@@ -1,14 +1,13 @@
 /**
  * Quota interval bar CSS module.
  *
- * Wave 10 D17: Removed local shimmer keyframes and .high-velocity animation
- * rule that conflicted with the global `spectral-shimmer 2.6s linear infinite`
- * rule defined in index.css. The global rule is the single source of truth for
- * high-velocity shimmer animation so the cadence matches the v9.7 reference.
+ * Wave 10 D17 and D1-061: Local shimmer keyframes and .high-velocity animation
+ * rules stay out of this module. The global index.css overlay classes are the
+ * single source of truth for high-velocity sweep animation.
  *
  * Wave 35 cycle-2: Removed dead @media (prefers-reduced-motion: reduce) block.
  * The module's CSS Modules scope transforms .high-velocity to a scoped hash
  * class, but the component assigns the global class name directly — so the
- * module rule was never applied. The global index.css already has the correct
- * animation: none override at .quota-interval.high-velocity::after.
+ * module rule was never applied. The global index.css owns the reduced-motion
+ * override for the quota velocity overlay.
  */
