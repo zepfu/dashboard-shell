@@ -9,6 +9,15 @@ const aawmTapRemoteEntry =
   process.env.AAWM_TAP_REMOTE_ENTRY ?? '/modules/aawm-tap/remoteEntry.js'
 const aawmTapRemoteEntryType =
   process.env.AAWM_TAP_REMOTE_ENTRY_TYPE ?? 'module'
+const aawmDashboardRemoteEntry =
+  process.env.AAWM_DASHBOARD_REMOTE_ENTRY ?? '/modules/aawm/remoteEntry.js'
+const aawmDashboardRemoteEntryType =
+  process.env.AAWM_DASHBOARD_REMOTE_ENTRY_TYPE ?? 'module'
+const aawmObserveRemoteEntry =
+  process.env.AAWM_OBSERVE_REMOTE_ENTRY ??
+  '/modules/aawm-observe/remoteEntry.js'
+const aawmObserveRemoteEntryType =
+  process.env.AAWM_OBSERVE_REMOTE_ENTRY_TYPE ?? 'module'
 const aegisRemoteEntry =
   process.env.AEGIS_REMOTE_ENTRY ?? '/modules/aegis/remoteEntry.js'
 const aegisRemoteEntryType = process.env.AEGIS_REMOTE_ENTRY_TYPE ?? 'module'
@@ -78,6 +87,20 @@ export default defineConfig({
           entryGlobalName: 'aawm-tap-dashboard',
           shareScope: 'default',
         },
+        'aawm-dashboard': {
+          type: aawmDashboardRemoteEntryType,
+          name: 'aawm-dashboard',
+          entry: aawmDashboardRemoteEntry,
+          entryGlobalName: 'aawm-dashboard',
+          shareScope: 'default',
+        },
+        'aawm-observe-dashboard': {
+          type: aawmObserveRemoteEntryType,
+          name: 'aawm-observe-dashboard',
+          entry: aawmObserveRemoteEntry,
+          entryGlobalName: 'aawm-observe-dashboard',
+          shareScope: 'default',
+        },
         'aegis-dashboard': {
           type: aegisRemoteEntryType,
           name: 'aegis-dashboard',
@@ -123,6 +146,14 @@ export default defineConfig({
         target: shellReportApiTarget,
         changeOrigin: true,
       },
+      '/api/aawm-observe': {
+        target: shellReportApiTarget,
+        changeOrigin: true,
+      },
+      '/api/aawm': {
+        target: shellReportApiTarget,
+        changeOrigin: true,
+      },
       '/api/aegis': {
         target: shellReportApiTarget,
         changeOrigin: true,
@@ -132,6 +163,10 @@ export default defineConfig({
         changeOrigin: true,
       },
       '/api/sluice': {
+        target: shellReportApiTarget,
+        changeOrigin: true,
+      },
+      '/hook-api': {
         target: shellReportApiTarget,
         changeOrigin: true,
       },

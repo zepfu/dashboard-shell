@@ -23,7 +23,9 @@ const remoteDashboardImporters: Record<
   RemoteDashboardKey,
   () => Promise<{ default: ProjectModule }>
 > = {
+  aawm: () => import('aawm-dashboard/module'),
   'aawm-tap': () => import('aawm-tap-dashboard/module'),
+  'aawm-observe': () => import('aawm-observe-dashboard/module'),
   aegis: () => import('aegis-dashboard/module'),
   sluice: () => import('sluice/module'),
 }

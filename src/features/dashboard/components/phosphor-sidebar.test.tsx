@@ -27,8 +27,14 @@ test('renders one module entry point per remote dashboard', async () => {
     .closest('.sidebar-section') as HTMLElement
 
   expect(
+    within(dashboards).getByRole('link', { name: 'AAWM' })
+  ).toHaveAttribute('href', '/aawm')
+  expect(
     within(dashboards).getByRole('link', { name: 'AAWM TAP' })
   ).toHaveAttribute('href', '/aawm-tap/overview')
+  expect(
+    within(dashboards).getByRole('link', { name: 'AAWM Observe' })
+  ).toHaveAttribute('href', '/aawm-observe/overview')
   expect(
     within(dashboards).getByRole('link', { name: 'Aegis' })
   ).toHaveAttribute('href', '/aegis')
@@ -48,4 +54,11 @@ test('marks a remote dashboard active by base path', async () => {
   await renderSidebar('/aegis/summary')
 
   expect(screen.getByRole('link', { name: 'Aegis' })).toHaveClass('active')
+})
+
+test('does not confuse AAWM and AAWM TAP active prefixes', async () => {
+  await renderSidebar('/aawm-tap/overview')
+
+  expect(screen.getByRole('link', { name: 'AAWM TAP' })).toHaveClass('active')
+  expect(screen.getByRole('link', { name: 'AAWM' })).not.toHaveClass('active')
 })

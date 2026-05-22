@@ -33,7 +33,9 @@ import { Route as AuthenticatedHelpCenterIndexRouteImport } from './routes/_auth
 import { Route as AuthenticatedChatsIndexRouteImport } from './routes/_authenticated/chats/index'
 import { Route as AuthenticatedAppsIndexRouteImport } from './routes/_authenticated/apps/index'
 import { Route as AuthenticatedAegisIndexRouteImport } from './routes/_authenticated/aegis/index'
+import { Route as AuthenticatedAawmIndexRouteImport } from './routes/_authenticated/aawm/index'
 import { Route as AuthenticatedAawmTapIndexRouteImport } from './routes/_authenticated/aawm-tap/index'
+import { Route as AuthenticatedAawmObserveIndexRouteImport } from './routes/_authenticated/aawm-observe/index'
 import { Route as ClerkAuthenticatedUserManagementRouteImport } from './routes/clerk/_authenticated/user-management'
 import { Route as ClerkauthSignUpRouteImport } from './routes/clerk/(auth)/sign-up'
 import { Route as ClerkauthSignInRouteImport } from './routes/clerk/(auth)/sign-in'
@@ -44,7 +46,9 @@ import { Route as AuthenticatedSettingsAppearanceRouteImport } from './routes/_a
 import { Route as AuthenticatedSettingsAccountRouteImport } from './routes/_authenticated/settings/account'
 import { Route as AuthenticatedErrorsErrorRouteImport } from './routes/_authenticated/errors/$error'
 import { Route as AuthenticatedAegisSplatRouteImport } from './routes/_authenticated/aegis/$'
+import { Route as AuthenticatedAawmSplatRouteImport } from './routes/_authenticated/aawm/$'
 import { Route as AuthenticatedAawmTapPageRouteImport } from './routes/_authenticated/aawm-tap/$page'
+import { Route as AuthenticatedAawmObserveSplatRouteImport } from './routes/_authenticated/aawm-observe/$'
 
 const ClerkRouteRoute = ClerkRouteRouteImport.update({
   id: '/clerk',
@@ -167,10 +171,21 @@ const AuthenticatedAegisIndexRoute = AuthenticatedAegisIndexRouteImport.update({
   path: '/aegis/',
   getParentRoute: () => AuthenticatedRouteRoute,
 } as any)
+const AuthenticatedAawmIndexRoute = AuthenticatedAawmIndexRouteImport.update({
+  id: '/aawm/',
+  path: '/aawm/',
+  getParentRoute: () => AuthenticatedRouteRoute,
+} as any)
 const AuthenticatedAawmTapIndexRoute =
   AuthenticatedAawmTapIndexRouteImport.update({
     id: '/aawm-tap/',
     path: '/aawm-tap/',
+    getParentRoute: () => AuthenticatedRouteRoute,
+  } as any)
+const AuthenticatedAawmObserveIndexRoute =
+  AuthenticatedAawmObserveIndexRouteImport.update({
+    id: '/aawm-observe/',
+    path: '/aawm-observe/',
     getParentRoute: () => AuthenticatedRouteRoute,
   } as any)
 const ClerkAuthenticatedUserManagementRoute =
@@ -230,10 +245,21 @@ const AuthenticatedAegisSplatRoute = AuthenticatedAegisSplatRouteImport.update({
   path: '/aegis/$',
   getParentRoute: () => AuthenticatedRouteRoute,
 } as any)
+const AuthenticatedAawmSplatRoute = AuthenticatedAawmSplatRouteImport.update({
+  id: '/aawm/$',
+  path: '/aawm/$',
+  getParentRoute: () => AuthenticatedRouteRoute,
+} as any)
 const AuthenticatedAawmTapPageRoute =
   AuthenticatedAawmTapPageRouteImport.update({
     id: '/aawm-tap/$page',
     path: '/aawm-tap/$page',
+    getParentRoute: () => AuthenticatedRouteRoute,
+  } as any)
+const AuthenticatedAawmObserveSplatRoute =
+  AuthenticatedAawmObserveSplatRouteImport.update({
+    id: '/aawm-observe/$',
+    path: '/aawm-observe/$',
     getParentRoute: () => AuthenticatedRouteRoute,
   } as any)
 
@@ -251,7 +277,9 @@ export interface FileRoutesByFullPath {
   '/404': typeof errors404Route
   '/500': typeof errors500Route
   '/503': typeof errors503Route
+  '/aawm-observe/$': typeof AuthenticatedAawmObserveSplatRoute
   '/aawm-tap/$page': typeof AuthenticatedAawmTapPageRoute
+  '/aawm/$': typeof AuthenticatedAawmSplatRoute
   '/aegis/$': typeof AuthenticatedAegisSplatRoute
   '/errors/$error': typeof AuthenticatedErrorsErrorRoute
   '/settings/account': typeof AuthenticatedSettingsAccountRoute
@@ -262,7 +290,9 @@ export interface FileRoutesByFullPath {
   '/clerk/sign-in': typeof ClerkauthSignInRoute
   '/clerk/sign-up': typeof ClerkauthSignUpRoute
   '/clerk/user-management': typeof ClerkAuthenticatedUserManagementRoute
+  '/aawm-observe/': typeof AuthenticatedAawmObserveIndexRoute
   '/aawm-tap/': typeof AuthenticatedAawmTapIndexRoute
+  '/aawm/': typeof AuthenticatedAawmIndexRoute
   '/aegis/': typeof AuthenticatedAegisIndexRoute
   '/apps/': typeof AuthenticatedAppsIndexRoute
   '/chats/': typeof AuthenticatedChatsIndexRoute
@@ -285,7 +315,9 @@ export interface FileRoutesByTo {
   '/500': typeof errors500Route
   '/503': typeof errors503Route
   '/': typeof AuthenticatedIndexRoute
+  '/aawm-observe/$': typeof AuthenticatedAawmObserveSplatRoute
   '/aawm-tap/$page': typeof AuthenticatedAawmTapPageRoute
+  '/aawm/$': typeof AuthenticatedAawmSplatRoute
   '/aegis/$': typeof AuthenticatedAegisSplatRoute
   '/errors/$error': typeof AuthenticatedErrorsErrorRoute
   '/settings/account': typeof AuthenticatedSettingsAccountRoute
@@ -296,7 +328,9 @@ export interface FileRoutesByTo {
   '/clerk/sign-in': typeof ClerkauthSignInRoute
   '/clerk/sign-up': typeof ClerkauthSignUpRoute
   '/clerk/user-management': typeof ClerkAuthenticatedUserManagementRoute
+  '/aawm-observe': typeof AuthenticatedAawmObserveIndexRoute
   '/aawm-tap': typeof AuthenticatedAawmTapIndexRoute
+  '/aawm': typeof AuthenticatedAawmIndexRoute
   '/aegis': typeof AuthenticatedAegisIndexRoute
   '/apps': typeof AuthenticatedAppsIndexRoute
   '/chats': typeof AuthenticatedChatsIndexRoute
@@ -324,7 +358,9 @@ export interface FileRoutesById {
   '/(errors)/500': typeof errors500Route
   '/(errors)/503': typeof errors503Route
   '/_authenticated/': typeof AuthenticatedIndexRoute
+  '/_authenticated/aawm-observe/$': typeof AuthenticatedAawmObserveSplatRoute
   '/_authenticated/aawm-tap/$page': typeof AuthenticatedAawmTapPageRoute
+  '/_authenticated/aawm/$': typeof AuthenticatedAawmSplatRoute
   '/_authenticated/aegis/$': typeof AuthenticatedAegisSplatRoute
   '/_authenticated/errors/$error': typeof AuthenticatedErrorsErrorRoute
   '/_authenticated/settings/account': typeof AuthenticatedSettingsAccountRoute
@@ -335,7 +371,9 @@ export interface FileRoutesById {
   '/clerk/(auth)/sign-in': typeof ClerkauthSignInRoute
   '/clerk/(auth)/sign-up': typeof ClerkauthSignUpRoute
   '/clerk/_authenticated/user-management': typeof ClerkAuthenticatedUserManagementRoute
+  '/_authenticated/aawm-observe/': typeof AuthenticatedAawmObserveIndexRoute
   '/_authenticated/aawm-tap/': typeof AuthenticatedAawmTapIndexRoute
+  '/_authenticated/aawm/': typeof AuthenticatedAawmIndexRoute
   '/_authenticated/aegis/': typeof AuthenticatedAegisIndexRoute
   '/_authenticated/apps/': typeof AuthenticatedAppsIndexRoute
   '/_authenticated/chats/': typeof AuthenticatedChatsIndexRoute
@@ -361,7 +399,9 @@ export interface FileRouteTypes {
     | '/404'
     | '/500'
     | '/503'
+    | '/aawm-observe/$'
     | '/aawm-tap/$page'
+    | '/aawm/$'
     | '/aegis/$'
     | '/errors/$error'
     | '/settings/account'
@@ -372,7 +412,9 @@ export interface FileRouteTypes {
     | '/clerk/sign-in'
     | '/clerk/sign-up'
     | '/clerk/user-management'
+    | '/aawm-observe/'
     | '/aawm-tap/'
+    | '/aawm/'
     | '/aegis/'
     | '/apps/'
     | '/chats/'
@@ -395,7 +437,9 @@ export interface FileRouteTypes {
     | '/500'
     | '/503'
     | '/'
+    | '/aawm-observe/$'
     | '/aawm-tap/$page'
+    | '/aawm/$'
     | '/aegis/$'
     | '/errors/$error'
     | '/settings/account'
@@ -406,7 +450,9 @@ export interface FileRouteTypes {
     | '/clerk/sign-in'
     | '/clerk/sign-up'
     | '/clerk/user-management'
+    | '/aawm-observe'
     | '/aawm-tap'
+    | '/aawm'
     | '/aegis'
     | '/apps'
     | '/chats'
@@ -433,7 +479,9 @@ export interface FileRouteTypes {
     | '/(errors)/500'
     | '/(errors)/503'
     | '/_authenticated/'
+    | '/_authenticated/aawm-observe/$'
     | '/_authenticated/aawm-tap/$page'
+    | '/_authenticated/aawm/$'
     | '/_authenticated/aegis/$'
     | '/_authenticated/errors/$error'
     | '/_authenticated/settings/account'
@@ -444,7 +492,9 @@ export interface FileRouteTypes {
     | '/clerk/(auth)/sign-in'
     | '/clerk/(auth)/sign-up'
     | '/clerk/_authenticated/user-management'
+    | '/_authenticated/aawm-observe/'
     | '/_authenticated/aawm-tap/'
+    | '/_authenticated/aawm/'
     | '/_authenticated/aegis/'
     | '/_authenticated/apps/'
     | '/_authenticated/chats/'
@@ -640,11 +690,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedAegisIndexRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
+    '/_authenticated/aawm/': {
+      id: '/_authenticated/aawm/'
+      path: '/aawm'
+      fullPath: '/aawm/'
+      preLoaderRoute: typeof AuthenticatedAawmIndexRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
     '/_authenticated/aawm-tap/': {
       id: '/_authenticated/aawm-tap/'
       path: '/aawm-tap'
       fullPath: '/aawm-tap/'
       preLoaderRoute: typeof AuthenticatedAawmTapIndexRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
+    '/_authenticated/aawm-observe/': {
+      id: '/_authenticated/aawm-observe/'
+      path: '/aawm-observe'
+      fullPath: '/aawm-observe/'
+      preLoaderRoute: typeof AuthenticatedAawmObserveIndexRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
     '/clerk/_authenticated/user-management': {
@@ -717,11 +781,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedAegisSplatRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
+    '/_authenticated/aawm/$': {
+      id: '/_authenticated/aawm/$'
+      path: '/aawm/$'
+      fullPath: '/aawm/$'
+      preLoaderRoute: typeof AuthenticatedAawmSplatRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
     '/_authenticated/aawm-tap/$page': {
       id: '/_authenticated/aawm-tap/$page'
       path: '/aawm-tap/$page'
       fullPath: '/aawm-tap/$page'
       preLoaderRoute: typeof AuthenticatedAawmTapPageRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
+    '/_authenticated/aawm-observe/$': {
+      id: '/_authenticated/aawm-observe/$'
+      path: '/aawm-observe/$'
+      fullPath: '/aawm-observe/$'
+      preLoaderRoute: typeof AuthenticatedAawmObserveSplatRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
   }
@@ -753,11 +831,15 @@ const AuthenticatedSettingsRouteRouteWithChildren =
 interface AuthenticatedRouteRouteChildren {
   AuthenticatedSettingsRouteRoute: typeof AuthenticatedSettingsRouteRouteWithChildren
   AuthenticatedIndexRoute: typeof AuthenticatedIndexRoute
+  AuthenticatedAawmObserveSplatRoute: typeof AuthenticatedAawmObserveSplatRoute
   AuthenticatedAawmTapPageRoute: typeof AuthenticatedAawmTapPageRoute
+  AuthenticatedAawmSplatRoute: typeof AuthenticatedAawmSplatRoute
   AuthenticatedAegisSplatRoute: typeof AuthenticatedAegisSplatRoute
   AuthenticatedErrorsErrorRoute: typeof AuthenticatedErrorsErrorRoute
   AuthenticatedSluiceSplatRoute: typeof AuthenticatedSluiceSplatRoute
+  AuthenticatedAawmObserveIndexRoute: typeof AuthenticatedAawmObserveIndexRoute
   AuthenticatedAawmTapIndexRoute: typeof AuthenticatedAawmTapIndexRoute
+  AuthenticatedAawmIndexRoute: typeof AuthenticatedAawmIndexRoute
   AuthenticatedAegisIndexRoute: typeof AuthenticatedAegisIndexRoute
   AuthenticatedAppsIndexRoute: typeof AuthenticatedAppsIndexRoute
   AuthenticatedChatsIndexRoute: typeof AuthenticatedChatsIndexRoute
@@ -770,11 +852,15 @@ interface AuthenticatedRouteRouteChildren {
 const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
   AuthenticatedSettingsRouteRoute: AuthenticatedSettingsRouteRouteWithChildren,
   AuthenticatedIndexRoute: AuthenticatedIndexRoute,
+  AuthenticatedAawmObserveSplatRoute: AuthenticatedAawmObserveSplatRoute,
   AuthenticatedAawmTapPageRoute: AuthenticatedAawmTapPageRoute,
+  AuthenticatedAawmSplatRoute: AuthenticatedAawmSplatRoute,
   AuthenticatedAegisSplatRoute: AuthenticatedAegisSplatRoute,
   AuthenticatedErrorsErrorRoute: AuthenticatedErrorsErrorRoute,
   AuthenticatedSluiceSplatRoute: AuthenticatedSluiceSplatRoute,
+  AuthenticatedAawmObserveIndexRoute: AuthenticatedAawmObserveIndexRoute,
   AuthenticatedAawmTapIndexRoute: AuthenticatedAawmTapIndexRoute,
+  AuthenticatedAawmIndexRoute: AuthenticatedAawmIndexRoute,
   AuthenticatedAegisIndexRoute: AuthenticatedAegisIndexRoute,
   AuthenticatedAppsIndexRoute: AuthenticatedAppsIndexRoute,
   AuthenticatedChatsIndexRoute: AuthenticatedChatsIndexRoute,

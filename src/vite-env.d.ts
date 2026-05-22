@@ -7,6 +7,16 @@ declare module 'aawm-tap-dashboard/module' {
   export default module
 }
 
+declare module 'aawm-dashboard/module' {
+  const module: ProjectModule
+  export default module
+}
+
+declare module 'aawm-observe-dashboard/module' {
+  const module: ProjectModule
+  export default module
+}
+
 declare module 'aegis-dashboard/module' {
   const module: ProjectModule
   export default module
