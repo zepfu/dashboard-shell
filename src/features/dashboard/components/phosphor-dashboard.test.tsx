@@ -719,13 +719,14 @@ describe('Wave 41 — buildProviderLanes', () => {
     const velocitySegments = Array.from({ length: 100 }, (_, i) => i === 2)
     const velocityScores = Array.from({ length: 100 }, (_, i) => {
       if (i === 0) return 0.4
-      if (i === 1) return 7
-      if (i === 2) return 35
+      if (i === 1) return 1.2
+      if (i === 2) return 7
+      if (i === 3) return 35
       return 0
     })
     const quotaRows = [
       makeAnthropicQuotaRow({
-        short_remaining_pct: 97.5,
+        short_remaining_pct: 96.5,
         short_velocity_segments: velocitySegments,
         short_velocity_scores: velocityScores,
       }),
@@ -737,12 +738,14 @@ describe('Wave 41 — buildProviderLanes', () => {
     expect(segments).toHaveLength(100)
     expect(segments[0].highVelocity).toBe(false)
     expect(segments[0].velocityClass).toBe('velocity-slow')
-    expect(segments[1].highVelocity).toBe(true)
-    expect(segments[1].velocityClass).toBe('velocity-fast')
+    expect(segments[1].highVelocity).toBe(false)
+    expect(segments[1].velocityClass).toBe('velocity-steady')
     expect(segments[2].highVelocity).toBe(true)
-    expect(segments[2].velocityClass).toBe('velocity-hot')
-    expect(segments[3].highVelocity).toBe(false)
-    expect(segments[3].velocityClass).toBeUndefined()
+    expect(segments[2].velocityClass).toBe('velocity-fast')
+    expect(segments[3].highVelocity).toBe(true)
+    expect(segments[3].velocityClass).toBe('velocity-hot')
+    expect(segments[4].highVelocity).toBe(false)
+    expect(segments[4].velocityClass).toBeUndefined()
   })
 
   test('test_anthropic_prior_bars_from_history', () => {
@@ -1238,12 +1241,13 @@ describe('Wave 43 — buildPriorBarFromHistory dateRangeLabel', () => {
     const velocitySegments = Array.from({ length: 100 }, (_, i) => i === 2)
     const velocityScores = Array.from({ length: 100 }, (_, i) => {
       if (i === 0) return 0.5
-      if (i === 1) return 8
-      if (i === 2) return 35
+      if (i === 1) return 1.2
+      if (i === 2) return 8
+      if (i === 3) return 35
       return 0
     })
     const h = makeHistoryRow({
-      min_remaining_pct: 97,
+      min_remaining_pct: 96,
       velocity_segments: velocitySegments,
       velocity_scores: velocityScores,
     })
@@ -1252,10 +1256,12 @@ describe('Wave 43 — buildPriorBarFromHistory dateRangeLabel', () => {
     expect(bar.segments).toHaveLength(100)
     expect(bar.segments[0].highVelocity).toBe(false)
     expect(bar.segments[0].velocityClass).toBe('velocity-slow')
-    expect(bar.segments[1].highVelocity).toBe(true)
-    expect(bar.segments[1].velocityClass).toBe('velocity-fast')
+    expect(bar.segments[1].highVelocity).toBe(false)
+    expect(bar.segments[1].velocityClass).toBe('velocity-steady')
     expect(bar.segments[2].highVelocity).toBe(true)
-    expect(bar.segments[2].velocityClass).toBe('velocity-hot')
-    expect(bar.segments[3].velocityClass).toBeUndefined()
+    expect(bar.segments[2].velocityClass).toBe('velocity-fast')
+    expect(bar.segments[3].highVelocity).toBe(true)
+    expect(bar.segments[3].velocityClass).toBe('velocity-hot')
+    expect(bar.segments[4].velocityClass).toBeUndefined()
   })
 })

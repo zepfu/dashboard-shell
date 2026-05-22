@@ -240,7 +240,8 @@ test('test_provider_card_renders_health_strip', () => {
     />
   )
 
-  // HealthStrip should render 288 cells
+  // Provider-card vertical strips keep 288 logical buckets but render adjacent
+  // identical buckets as one proportional visual run.
   const cellEls =
     container.querySelectorAll('.health-strip-cell').length > 0
       ? container.querySelectorAll('.health-strip-cell')
@@ -251,13 +252,15 @@ test('test_provider_card_renders_health_strip', () => {
     const strip = container.querySelector('[data-testid="health-strip"]')
     expect(strip).not.toBeNull()
   } else {
-    expect(cellEls.length).toBe(288)
+    expect(cellEls.length).toBe(1)
+    expect((cellEls[0] as HTMLElement).style.flexGrow).toBe('288')
+    expect((cellEls[0] as HTMLElement).style.flexBasis).toBe('0px')
   }
 })
 
 test('test_provider_card_quota_bar_renders_intervals', () => {
   // Wave 11 PR3 (11-h/11-i): mockQuotas now contains 1 QuotaBarGroup with
-  // N=100 segments, so the rendered interval count is 1 x 100 = 100.
+  // N=100 logical segments. Adjacent identical segments render as a single run.
   const { container } = render(
     <ProviderCard
       config={anthropicConfig}
@@ -272,7 +275,9 @@ test('test_provider_card_quota_bar_renders_intervals', () => {
       ? container.querySelectorAll('.quota-interval')
       : container.querySelectorAll('[data-testid="quota-interval"]')
 
-  expect(intervals.length).toBe(QUOTA_SEGMENTS)
+  expect(mockQuotas[0].segments).toHaveLength(QUOTA_SEGMENTS)
+  expect(intervals.length).toBe(1)
+  expect((intervals[0] as HTMLElement).style.width).toBe('100%')
 })
 
 test('test_provider_card_anomaly_badge_early_reset', () => {
@@ -410,8 +415,8 @@ test('test_provider_card_renders_historical_bars_identical_to_current', () => {
 })
 
 test('test_provider_card_historical_bar_uses_100_segments', () => {
-  // Full-parity: historical bars must render 100 quota-interval segments,
-  // identical to current bars produced by buildQuotaSegments().
+  // Full-parity: historical bars keep 100 logical quota intervals and render
+  // the same merged visual-run shape as current bars.
   const makeFullSegments = (): QuotaRowConfig[] =>
     Array.from({ length: QUOTA_SEGMENTS }, (_, i) => ({
       widthPct: 100 / QUOTA_SEGMENTS,
@@ -437,9 +442,12 @@ test('test_provider_card_historical_bar_uses_100_segments', () => {
     />
   )
 
-  // Exactly 100 quota-interval elements — same as a current bar.
+  expect(historicalBar.segments).toHaveLength(QUOTA_SEGMENTS)
   const intervals = container.querySelectorAll('.quota-interval')
-  expect(intervals.length).toBe(QUOTA_SEGMENTS)
+  expect(intervals.length).toBe(3)
+  expect(
+    Array.from(intervals).map((el) => (el as HTMLElement).style.width)
+  ).toEqual(['6%', '1%', '93%'])
 })
 
 test('test_provider_card_historical_bars_do_not_break_empty_quotaHistory', () => {
@@ -456,9 +464,10 @@ test('test_provider_card_historical_bars_do_not_break_empty_quotaHistory', () =>
 
   // Still renders the Quotas section title.
   expect(container.querySelector('.quota-section-title')).not.toBeNull()
-  // Still renders exactly 100 intervals (1 bar x 100 segments).
+  // Still receives exactly 100 logical intervals and renders one merged run.
   const intervals = container.querySelectorAll('.quota-interval')
-  expect(intervals.length).toBe(QUOTA_SEGMENTS)
+  expect(mockQuotas[0].segments).toHaveLength(QUOTA_SEGMENTS)
+  expect(intervals.length).toBe(1)
 })
 
 // ---------------------------------------------------------------------------
