@@ -1960,7 +1960,11 @@ function buildHistoryBarsForProvider(
       consumedPct,
       remainingPct,
       resetAt: h.expected_reset_at ?? undefined,
-      segments: buildQuotaSegments(remainingPct),
+      segments: buildQuotaSegments(
+        remainingPct,
+        h.velocity_segments,
+        h.velocity_scores
+      ),
       tipWindow: fmtIntervalCompact(h.interval_start, h.interval_end),
       tipModels,
       // Wave 40 #3: no slice — all history bars returned (1.5× lookback from server).
@@ -2191,7 +2195,11 @@ function buildPriorBarFromHistory(
     consumedPct,
     remainingPct,
     resetAt: h.expected_reset_at ?? undefined,
-    segments: buildQuotaSegments(remainingPct),
+    segments: buildQuotaSegments(
+      remainingPct,
+      h.velocity_segments,
+      h.velocity_scores
+    ),
     tipWindow: fmtIntervalCompact(h.interval_start, h.interval_end),
     tipModels,
     timeAgoLabel,

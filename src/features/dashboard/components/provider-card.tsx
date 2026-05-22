@@ -700,11 +700,11 @@ export function ProviderCard({
          * - When `lanes` prop is provided, each lane renders as a vertical stack:
          *   [lane label]
          *   [current bar — full width, animated]
-         *   [prior bar 1 — full width, static, "Xh ago" label]
-         *   [prior bar 2 — full width, static, "Xd ago" label]
+         *   [prior bar 1 — full width, animated when velocity data exists, "Xh ago" label]
+         *   [prior bar 2 — full width, animated when velocity data exists, "Xd ago" label]
          *   ...
          * - Lane label on the top (e.g., "All Models · 5hr", "Sonnet · 7d").
-         * - Current bar is first (animated), prior bars follow beneath (static).
+         * - Current bar is first; prior bars follow beneath and animate when velocity data exists.
          * - Prior bars have subtle left accent line + indent for visual hierarchy.
          * - Anomaly icons only on current bar.
          * - Falls back to legacy flat `quotas` list when `lanes` is not provided.

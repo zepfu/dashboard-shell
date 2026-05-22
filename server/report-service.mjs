@@ -99,7 +99,7 @@ const REPORT_CACHE_STALE_TTL_MS = Math.max(
 const REPORT_CACHE_REDIS_URL = process.env.SHELL_REPORT_REDIS_URL
 const REPORT_CACHE_PREFIX =
   process.env.SHELL_REPORT_CACHE_PREFIX ?? 'dashboard-shell:reports'
-const REPORT_CACHE_VERSION = process.env.SHELL_REPORT_CACHE_VERSION ?? 'v5'
+const REPORT_CACHE_VERSION = process.env.SHELL_REPORT_CACHE_VERSION ?? 'v6'
 const REPORT_CACHE_LOCK_TTL_MS = Math.max(
   1_000,
   Number(process.env.SHELL_REPORT_CACHE_LOCK_TTL_MS ?? 30 * 60 * 1000)
@@ -107,6 +107,10 @@ const REPORT_CACHE_LOCK_TTL_MS = Math.max(
 const REPORT_CACHE_LOCK_WAIT_MS = Math.max(
   0,
   Number(process.env.SHELL_REPORT_CACHE_LOCK_WAIT_MS ?? 60 * 1000)
+)
+const REPORT_CACHE_FOREGROUND_LOCK_WAIT_MS = Math.max(
+  0,
+  Number(process.env.SHELL_REPORT_CACHE_FOREGROUND_LOCK_WAIT_MS ?? 2 * 1000)
 )
 const REPORT_CACHE_LOCK_POLL_MS = Math.max(
   100,
@@ -248,6 +252,28 @@ async function cachedReport(scope, load, options = {}) {
     )
   }
 
+  const localEntry = readLocalReportCache(identity.cacheKey)
+  if (localEntry?.status === 'fresh' || localEntry?.status === 'stale') {
+    if (localEntry.status === 'stale') {
+      refreshReportCache(identity, load).catch((error) => {
+        process.stderr.write(
+          `[report-service] WARN: background cache refresh failed for ${identity.scope}:${identity.hash}: ${formatError(error)}\n`
+        )
+      })
+    }
+    return maybeDecorateCacheMetadata(
+      localEntry.entry.payload,
+      {
+        ...identity,
+        backend: 'local',
+        status: localEntry.status === 'fresh' ? 'local_hit' : 'local_stale',
+        refreshing: localEntry.status === 'stale',
+        entry: localEntry.entry,
+      },
+      decorateMetadata
+    )
+  }
+
   if (redisEntry.status === 'error' || redisEntry.status === 'unavailable') {
     const localEntry = readLocalReportCache(identity.cacheKey)
     if (localEntry?.status === 'fresh' || localEntry?.status === 'stale') {
@@ -272,7 +298,10 @@ async function cachedReport(scope, load, options = {}) {
     }
   }
 
-  const refreshResult = await refreshReportCache(identity, load)
+  const refreshResult = await refreshReportCache(identity, load, {
+    lockWaitMs: options.lockWaitMs ?? REPORT_CACHE_FOREGROUND_LOCK_WAIT_MS,
+    sharePromise: false,
+  })
   return maybeDecorateCacheMetadata(
     refreshResult.entry.payload,
     {
@@ -403,7 +432,7 @@ async function writeRedisCacheEntry(identity, entry) {
 
 async function refreshReportCache(identity, load, options = {}) {
   const existing = reportCache.get(identity.cacheKey)
-  if (existing?.promise) return existing.promise
+  if (existing?.promise && options.sharePromise !== false) return existing.promise
 
   const promise = refreshReportCacheUnshared(identity, load, options)
     .then((result) => {
@@ -447,7 +476,10 @@ async function refreshReportCacheUnshared(identity, load, options) {
             entry: null,
           }
         }
-        const waitedEntry = await waitForRedisCacheEntry(identity)
+        const waitedEntry = await waitForRedisCacheEntry(
+          identity,
+          options.lockWaitMs
+        )
         if (waitedEntry) {
           setLocalReportCache(identity.cacheKey, waitedEntry.entry)
           return {
@@ -464,7 +496,7 @@ async function refreshReportCacheUnshared(identity, load, options) {
     setLocalReportCache(identity.cacheKey, entry)
 
     let backend = 'sql'
-    if (useRedis && lockToken) {
+    if (useRedis) {
       try {
         if (redisClient?.isReady) {
           await writeRedisCacheEntry(identity, entry)
@@ -541,10 +573,17 @@ async function releaseRedisNamedLock(lockKey, token, label) {
   }
 }
 
-async function waitForRedisCacheEntry(identity) {
-  if (!redisClient?.isReady || REPORT_CACHE_LOCK_WAIT_MS <= 0) return null
+async function waitForRedisCacheEntry(
+  identity,
+  waitMs = REPORT_CACHE_LOCK_WAIT_MS
+) {
+  const effectiveWaitMs = Math.max(
+    0,
+    Number(waitMs ?? REPORT_CACHE_LOCK_WAIT_MS)
+  )
+  if (!redisClient?.isReady || effectiveWaitMs <= 0) return null
 
-  const deadline = Date.now() + REPORT_CACHE_LOCK_WAIT_MS
+  const deadline = Date.now() + effectiveWaitMs
   while (Date.now() < deadline) {
     await sleep(Math.min(REPORT_CACHE_LOCK_POLL_MS, deadline - Date.now()))
     const redisEntry = await readRedisCacheEntry(identity)
@@ -1641,6 +1680,9 @@ quota_key_interval_hours AS (
 ),
 normalized AS (
     SELECT
+        ri.provider AS raw_provider,
+        ri.quota_type AS raw_quota_type,
+        ri.quota_key,
         CASE
             WHEN lower(COALESCE(ri.provider, 'unknown')) IN ('xai', 'x.ai') THEN 'xai'
             WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'xai/%' THEN 'xai'
@@ -1742,6 +1784,102 @@ normalized AS (
               ) * 2.0 * INTERVAL '1 hour'
           )
 ),
+history_observations AS (
+    SELECT
+        n.provider,
+        n.model,
+        n.quota_type,
+        n.expected_reset_at,
+        MAX(n.interval_hours)::double precision AS interval_hours,
+        o.observed_at,
+        MAX(GREATEST(0, LEAST(100, 100 - o.remaining_pct))) AS consumed_pct
+    FROM normalized n
+    JOIN public.rate_limit_observations o
+      ON n.quota_key IS NOT NULL
+     AND n.expected_reset_at IS NOT NULL
+     AND o.provider = n.raw_provider
+     AND o.quota_key = n.quota_key
+     AND o.expected_reset_at IS NOT DISTINCT FROM n.expected_reset_at
+     AND o.remaining_pct IS NOT NULL
+     AND o.remaining_pct >= 0
+     AND o.observed_at IS NOT NULL
+     AND o.observed_at >= n.interval_start - INTERVAL '5 minutes'
+     AND o.observed_at <= n.expected_reset_at + INTERVAL '5 minutes'
+    GROUP BY n.provider, n.model, n.quota_type, n.expected_reset_at, o.observed_at
+),
+ordered_history_observations AS (
+    SELECT
+        *,
+        LAG(consumed_pct) OVER (
+            PARTITION BY provider, COALESCE(model, ''), quota_type, expected_reset_at
+            ORDER BY observed_at ASC
+        ) AS prev_consumed_pct,
+        LAG(observed_at) OVER (
+            PARTITION BY provider, COALESCE(model, ''), quota_type, expected_reset_at
+            ORDER BY observed_at ASC
+        ) AS prev_observed_at
+    FROM history_observations
+),
+history_velocity_segments AS (
+    SELECT
+        provider,
+        model,
+        quota_type,
+        expected_reset_at,
+        segment.segment_index,
+        MAX(
+            (o.consumed_pct - o.prev_consumed_pct)
+            * o.interval_hours
+            * 36.0
+            / NULLIF(EXTRACT(EPOCH FROM (o.observed_at - o.prev_observed_at)), 0)
+        )::double precision AS velocity_score
+    FROM ordered_history_observations o
+    CROSS JOIN LATERAL generate_series(
+        GREATEST(0, FLOOR(o.prev_consumed_pct)::int),
+        LEAST(${QUOTA_VELOCITY_SEGMENT_COUNT - 1}, CEIL(o.consumed_pct)::int - 1)
+    ) AS segment(segment_index)
+    WHERE o.prev_observed_at IS NOT NULL
+      AND o.observed_at > o.prev_observed_at
+      AND o.consumed_pct > o.prev_consumed_pct
+    GROUP BY provider, model, quota_type, expected_reset_at, segment.segment_index
+),
+history_velocity_samples AS (
+    SELECT
+        provider,
+        model,
+        quota_type,
+        expected_reset_at,
+        COUNT(*) AS sample_count
+    FROM history_observations
+    GROUP BY provider, model, quota_type, expected_reset_at
+),
+history_velocity_arrays AS (
+    SELECT
+        lanes.provider,
+        lanes.model,
+        lanes.quota_type,
+        lanes.expected_reset_at,
+        COALESCE(samples.sample_count, 0)::double precision AS velocity_sample_count,
+        jsonb_agg((COALESCE(velocity.velocity_score, 0) > 1.0) ORDER BY segment.segment_index) AS velocity_segments,
+        jsonb_agg(LEAST(COALESCE(velocity.velocity_score, 0), 10000.0) ORDER BY segment.segment_index) AS velocity_scores
+    FROM (
+        SELECT DISTINCT provider, model, quota_type, expected_reset_at
+        FROM normalized
+    ) lanes
+    CROSS JOIN generate_series(0, ${QUOTA_VELOCITY_SEGMENT_COUNT - 1}) AS segment(segment_index)
+    LEFT JOIN history_velocity_segments velocity
+           ON velocity.provider = lanes.provider
+          AND velocity.model IS NOT DISTINCT FROM lanes.model
+          AND velocity.quota_type = lanes.quota_type
+          AND velocity.expected_reset_at IS NOT DISTINCT FROM lanes.expected_reset_at
+          AND velocity.segment_index = segment.segment_index
+    LEFT JOIN history_velocity_samples samples
+           ON samples.provider = lanes.provider
+          AND samples.model IS NOT DISTINCT FROM lanes.model
+          AND samples.quota_type = lanes.quota_type
+          AND samples.expected_reset_at IS NOT DISTINCT FROM lanes.expected_reset_at
+    GROUP BY lanes.provider, lanes.model, lanes.quota_type, lanes.expected_reset_at, samples.sample_count
+),
 window_bounds AS (
     SELECT
         provider,
@@ -1805,6 +1943,9 @@ SELECT
     wb.expected_reset_at AS interval_end,
     wb.min_remaining_pct,
     wb.max_remaining_pct,
+    COALESCE(hv.velocity_sample_count, 0)::double precision AS velocity_sample_count,
+    COALESCE(hv.velocity_segments, '[]'::jsonb) AS velocity_segments,
+    COALESCE(hv.velocity_scores, '[]'::jsonb) AS velocity_scores,
     COALESCE(SUM(pmu.tokens), 0)::double precision AS usage_tokens,
     COALESCE(
         json_agg(
@@ -1824,6 +1965,11 @@ LEFT JOIN per_model_usage pmu
   AND pmu.quota_type = wb.quota_type
   AND pmu.expected_reset_at = wb.expected_reset_at
   AND (pmu.quota_model IS NOT DISTINCT FROM wb.model)
+LEFT JOIN history_velocity_arrays hv
+  ON hv.provider = wb.provider
+  AND hv.model IS NOT DISTINCT FROM wb.model
+  AND hv.quota_type = wb.quota_type
+  AND hv.expected_reset_at IS NOT DISTINCT FROM wb.expected_reset_at
 GROUP BY
     wb.provider,
     wb.model,
@@ -1831,7 +1977,10 @@ GROUP BY
     wb.expected_reset_at,
     wb.interval_start,
     wb.min_remaining_pct,
-    wb.max_remaining_pct
+    wb.max_remaining_pct,
+    hv.velocity_sample_count,
+    hv.velocity_segments,
+    hv.velocity_scores
 ORDER BY wb.expected_reset_at DESC;
 `
 
@@ -2314,6 +2463,9 @@ function normalizeQuotaHistoryRow(row) {
     interval_end: row.interval_end ?? null,
     min_remaining_pct: normalizeNumber(row.min_remaining_pct),
     max_remaining_pct: normalizeNumber(row.max_remaining_pct),
+    velocity_segments: normalizeQuotaVelocitySegments(row.velocity_segments),
+    velocity_scores: normalizeQuotaVelocityScores(row.velocity_scores),
+    velocity_sample_count: normalizeNumber(row.velocity_sample_count) ?? 0,
     usage_tokens: normalizeNumber(row.usage_tokens) ?? 0,
     usage_breakdown: Array.isArray(row.usage_breakdown)
       ? row.usage_breakdown.map((b) => ({

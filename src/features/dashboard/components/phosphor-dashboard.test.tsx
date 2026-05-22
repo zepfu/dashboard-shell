@@ -1233,4 +1233,29 @@ describe('Wave 43 — buildPriorBarFromHistory dateRangeLabel', () => {
     expect(bar.dateRangeLabel).toBeDefined()
     expect(bar.dateRangeLabel).toContain('→')
   })
+
+  test('test_prior_bar_uses_history_velocity_scores', () => {
+    const velocitySegments = Array.from({ length: 100 }, (_, i) => i === 2)
+    const velocityScores = Array.from({ length: 100 }, (_, i) => {
+      if (i === 0) return 0.5
+      if (i === 1) return 8
+      if (i === 2) return 35
+      return 0
+    })
+    const h = makeHistoryRow({
+      min_remaining_pct: 97,
+      velocity_segments: velocitySegments,
+      velocity_scores: velocityScores,
+    })
+    const bar = _buildPriorBarFromHistoryForTest(h, 'anthropic')
+
+    expect(bar.segments).toHaveLength(100)
+    expect(bar.segments[0].highVelocity).toBe(false)
+    expect(bar.segments[0].velocityClass).toBe('velocity-slow')
+    expect(bar.segments[1].highVelocity).toBe(true)
+    expect(bar.segments[1].velocityClass).toBe('velocity-fast')
+    expect(bar.segments[2].highVelocity).toBe(true)
+    expect(bar.segments[2].velocityClass).toBe('velocity-hot')
+    expect(bar.segments[3].velocityClass).toBeUndefined()
+  })
 })
