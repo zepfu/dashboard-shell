@@ -30,6 +30,32 @@ const UPSTREAM_API_PROXIES = [
     ),
   },
   {
+    prefix: '/api/aawm-observe',
+    displayName: 'AAWM Observe',
+    target:
+      process.env.AAWM_OBSERVE_API_TARGET ??
+      'http://host.docker.internal:34042',
+    apiKey: envSecret('AAWM_OBSERVE_API_KEY'),
+    accessToken: envSecret(
+      'AAWM_OBSERVE_ACCESS_TOKEN',
+      'AAWM_OBSERVE_API_TOKEN'
+    ),
+  },
+  {
+    prefix: '/api/aawm',
+    displayName: 'AAWM',
+    target: process.env.AAWM_API_TARGET ?? 'http://aawm-api:8000',
+    apiKey: envSecret('AAWM_API_KEY'),
+    accessToken: envSecret('AAWM_ACCESS_TOKEN', 'AAWM_API_TOKEN'),
+  },
+  {
+    prefix: '/hook-api',
+    displayName: 'AAWM Hook Server',
+    target: process.env.AAWM_HOOK_API_TARGET ?? 'http://aawm-hook-server:8318',
+    apiKey: envSecret('AAWM_HOOK_API_KEY'),
+    accessToken: envSecret('AAWM_HOOK_ACCESS_TOKEN', 'AAWM_HOOK_API_TOKEN'),
+  },
+  {
     prefix: '/api/aegis',
     displayName: 'Aegis',
     target:

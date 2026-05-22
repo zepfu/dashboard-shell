@@ -7,8 +7,11 @@ the shadcn-admin shell and is being adapted into a Module Federation host.
 
 The current remote dashboards are sibling repos:
 
+- `../aawm-dashboard`, exposed as `aawm-dashboard/module` at `/aawm`.
 - `../aawm-tap-dashboard`, exposed as `aawm-tap-dashboard/module` at
   `/aawm-tap`.
+- `../aawm-observe-dashboard`, exposed as `aawm-observe-dashboard/module` at
+  `/aawm-observe`.
 - `../aegis-dashboard`, exposed as `aegis-dashboard/module` at `/aegis`.
 - `../sluice-dashboard`, exposed as `sluice/module` at `/sluice`.
 
@@ -20,15 +23,20 @@ pnpm docker:dev
 
 Then open the shell-mounted routes:
 
+- `http://localhost:3006/aawm`
 - `http://localhost:3006/aawm-tap/overview`
+- `http://localhost:3006/aawm-observe/overview`
 - `http://localhost:3006/aegis`
 - `http://localhost:3006/sluice/overview`
 
 This stack runs Vite servers in containers with bind-mounted source from this
 repo and the sibling dashboard repos, so changes in any checkout are served live
 without a Docker image rebuild. The shell dev server proxies `/api/aawm-tap/*`,
-`/api/aegis/*`, and `/api/sluice/*` to the shell report service, which then
-forwards to `AAWM_TAP_API_TARGET`, `AEGIS_API_TARGET`, or `SLUICE_API_TARGET`.
+`/api/aawm/*`, `/api/aawm-observe/*`, `/api/aegis/*`, and `/api/sluice/*` to
+the shell report service, which then forwards to `AAWM_TAP_API_TARGET`,
+`AAWM_API_TARGET`, `AAWM_OBSERVE_API_TARGET`, `AEGIS_API_TARGET`, or
+`SLUICE_API_TARGET`. The AAWM dashboard's legacy hook-log route is also
+proxied through `/hook-api/*` to `AAWM_HOOK_API_TARGET`.
 
 The same dev stack starts the shell report API on `SHELL_REPORT_PORT`, which
 defaults to `3010`. The browser reads the General dashboard report through
@@ -68,22 +76,24 @@ Run the container stack:
 pnpm docker:up
 ```
 
-Then open `http://localhost:3005/aawm-tap/overview`,
-`http://localhost:3005/aegis`, or `http://localhost:3005/sluice/overview`. Set
+Then open `http://localhost:3005/aawm`, `http://localhost:3005/aawm-tap/overview`,
+`http://localhost:3005/aawm-observe/overview`, `http://localhost:3005/aegis`,
+or `http://localhost:3005/sluice/overview`. Set
 `DASHBOARD_SHELL_PORT=3000` if you want to publish the container on port 3000.
 The compose services run detached and use `restart: unless-stopped`, so Docker
 will bring the shell and remotes back after a system restart unless they were
 intentionally stopped.
 
 The static compose stack also starts `dashboard-shell-reports`, and nginx proxies
-`/api/shell/*`, `/api/aawm-tap/*`, `/api/aegis/*`, and `/api/sluice/*` to that
-service. Set `DATABASE_URL` in `.env` or the process environment before starting
-compose if the General dashboard should query live report data. Set remote
-backend secrets here, not in browser bundles. The static shell, remotes, and
-report service all join `aawm-tap_default`; the report service also joins
-`aawm_default` so a host-published database URL such as `127.0.0.1:5434` can be
-rewritten to the internal `aawm-postgres18:5432` endpoint. The local static
-compose report service bind-mounts `./server` into the container, so
+`/api/shell/*`, `/api/aawm-tap/*`, `/api/aawm/*`, `/api/aawm-observe/*`,
+`/api/aegis/*`, `/api/sluice/*`, and `/hook-api/*` to that service. Set
+`DATABASE_URL` in `.env` or the process environment before starting compose if
+the General dashboard should query live report data. Set remote backend secrets
+here, not in browser bundles. The static shell, remotes, and report service all
+join `aawm-tap_default`; the report service also joins `aawm_default` so a
+host-published database URL such as `127.0.0.1:5434` can be rewritten to the
+internal `aawm-postgres18:5432` endpoint. The local static compose report
+service bind-mounts `./server` into the container, so
 `server/report-service.mjs` edits need a report-service restart, not an image
 rebuild. Dependency changes under `server/package.json` still require rebuilding
 the report image.
@@ -91,8 +101,8 @@ the report image.
 The shell defaults to loading remotes through `/modules/<base>/remoteEntry.js`,
 which `nginx.conf` proxies to the sibling static containers. For local Vite
 development, the dev compose file sets browser-accessible localhost remote
-entries such as `AAWM_TAP_REMOTE_ENTRY`, `AEGIS_REMOTE_ENTRY`, and
-`SLUICE_REMOTE_ENTRY`.
+entries such as `AAWM_DASHBOARD_REMOTE_ENTRY`, `AAWM_TAP_REMOTE_ENTRY`,
+`AAWM_OBSERVE_REMOTE_ENTRY`, `AEGIS_REMOTE_ENTRY`, and `SLUICE_REMOTE_ENTRY`.
 
 ## Remote Dashboard Contract
 

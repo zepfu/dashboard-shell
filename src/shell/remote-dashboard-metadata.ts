@@ -1,6 +1,7 @@
 import {
   Activity,
   AlertOctagon,
+  Bot,
   BookOpen,
   Command,
   Database,
@@ -19,11 +20,17 @@ import {
   ShieldCheck,
   Telescope,
   TrendingUp,
+  Users,
   Zap,
 } from 'lucide-react'
 import type { ProjectModule, RemoteNavItem } from './types'
 
-export type RemoteDashboardKey = 'aawm-tap' | 'aegis' | 'sluice'
+export type RemoteDashboardKey =
+  | 'aawm'
+  | 'aawm-tap'
+  | 'aawm-observe'
+  | 'aegis'
+  | 'sluice'
 
 export type RemoteDashboardMetadataEntry = {
   key: RemoteDashboardKey
@@ -39,6 +46,29 @@ export type RemoteDashboardMetadataEntry = {
 }
 
 export const remoteDashboardMetadata = [
+  {
+    key: 'aawm',
+    moduleId: 'aawm-dashboard',
+    name: 'AAWM',
+    description: 'AAWM platform operations',
+    icon: LayoutDashboard,
+    basePath: '/aawm',
+    apiBase: '/api/aawm',
+    accentColor: 'hsl(220 70% 50%)',
+    defaultRoutePath: '/',
+    navItems: [
+      { label: 'Dashboard', path: '/', icon: LayoutDashboard },
+      { label: 'Agents', path: '/agents', icon: Bot },
+      { label: 'Tasks', path: '/tasks', icon: ListChecks },
+      { label: 'Tenants', path: '/tenants', icon: Users },
+      { label: 'Metrics', path: '/metrics', icon: TrendingUp },
+      { label: 'Activity', path: '/activity', icon: Activity },
+      { label: 'TriStore', path: '/tristore', icon: Database },
+      { label: 'Repos', path: '/repos', icon: GitBranch },
+      { label: 'Errors', path: '/errors', icon: AlertOctagon },
+      { label: 'Logs', path: '/logs', icon: FileText },
+    ],
+  },
   {
     key: 'aawm-tap',
     moduleId: 'aawm-tap-dashboard',
@@ -57,6 +87,23 @@ export const remoteDashboardMetadata = [
       { label: 'Search', path: '/search', icon: Search },
       { label: 'Graph', path: '/graph', icon: GitBranch },
       { label: 'Admin', path: '/admin', icon: Activity },
+    ],
+  },
+  {
+    key: 'aawm-observe',
+    moduleId: 'aawm-observe-dashboard',
+    name: 'AAWM Observe',
+    description: 'Pytest and quality telemetry',
+    icon: Telescope,
+    basePath: '/aawm-observe',
+    apiBase: '/api/aawm-observe',
+    accentColor: 'hsl(188 70% 42%)',
+    defaultRoutePath: '/overview',
+    navItems: [
+      { label: 'Overview', path: '/overview', icon: LayoutDashboard },
+      { label: 'Suites', path: '/suites', icon: ListChecks },
+      { label: 'Findings', path: '/findings', icon: ShieldCheck },
+      { label: 'Trends', path: '/trends', icon: TrendingUp },
     ],
   },
   {

@@ -10,8 +10,16 @@ describe('sidebarData', () => {
     expect(dashboardsGroup?.items).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
+          title: 'AAWM',
+          url: '/aawm',
+        }),
+        expect.objectContaining({
           title: 'AAWM TAP',
           url: '/aawm-tap/overview',
+        }),
+        expect.objectContaining({
+          title: 'AAWM Observe',
+          url: '/aawm-observe/overview',
         }),
         expect.objectContaining({
           title: 'Aegis',
@@ -23,7 +31,7 @@ describe('sidebarData', () => {
         }),
       ])
     )
-    expect(dashboardsGroup?.items).toHaveLength(3)
+    expect(dashboardsGroup?.items).toHaveLength(5)
     expect(dashboardsGroup?.items.every((item) => !('items' in item))).toBe(
       true
     )

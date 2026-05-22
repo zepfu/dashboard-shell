@@ -5,6 +5,10 @@ services:
     restart: unless-stopped
     working_dir: /workspace/dashboard-shell
     depends_on:
+      aawm-dashboard-dev:
+        condition: service_healthy
+      aawm-observe-dashboard-dev:
+        condition: service_healthy
       aawm-tap-dashboard-dev:
         condition: service_healthy
       aegis-dashboard-dev:
@@ -14,6 +18,10 @@ services:
       sluice-dashboard-dev:
         condition: service_healthy
     environment:
+      AAWM_DASHBOARD_REMOTE_ENTRY: "http://localhost:${AAWM_DASHBOARD_REMOTE_DEV_PORT:-5176}/remoteEntry.js"
+      AAWM_DASHBOARD_REMOTE_ENTRY_TYPE: "module"
+      AAWM_OBSERVE_REMOTE_ENTRY: "http://localhost:${AAWM_OBSERVE_REMOTE_DEV_PORT:-5177}/remoteEntry.js"
+      AAWM_OBSERVE_REMOTE_ENTRY_TYPE: "module"
       AAWM_TAP_REMOTE_ENTRY: "http://localhost:${AAWM_TAP_REMOTE_DEV_PORT:-5173}/remoteEntry.js"
       AAWM_TAP_REMOTE_ENTRY_TYPE: "module"
       AEGIS_REMOTE_ENTRY: "http://localhost:${AEGIS_REMOTE_DEV_PORT:-5174}/remoteEntry.js"
@@ -61,6 +69,15 @@ services:
     restart: unless-stopped
     working_dir: /workspace/dashboard-shell
     environment:
+      AAWM_API_KEY: "${AAWM_API_KEY:-}"
+      AAWM_ACCESS_TOKEN: "${AAWM_ACCESS_TOKEN:-}"
+      AAWM_API_TARGET: "${AAWM_API_TARGET:-http://aawm-api:8000}"
+      AAWM_HOOK_API_KEY: "${AAWM_HOOK_API_KEY:-}"
+      AAWM_HOOK_ACCESS_TOKEN: "${AAWM_HOOK_ACCESS_TOKEN:-}"
+      AAWM_HOOK_API_TARGET: "${AAWM_HOOK_API_TARGET:-http://aawm-hook-server:8318}"
+      AAWM_OBSERVE_API_KEY: "${AAWM_OBSERVE_API_KEY:-}"
+      AAWM_OBSERVE_ACCESS_TOKEN: "${AAWM_OBSERVE_ACCESS_TOKEN:-}"
+      AAWM_OBSERVE_API_TARGET: "${AAWM_OBSERVE_API_TARGET:-http://host.docker.internal:34042}"
       AAWM_TAP_API_KEY: "${AAWM_TAP_API_KEY:-}"
       AAWM_TAP_ACCESS_TOKEN: "${AAWM_TAP_ACCESS_TOKEN:-}"
       AAWM_TAP_ADMIN_CAPABILITY: "${AAWM_TAP_ADMIN_CAPABILITY:-}"
@@ -147,6 +164,74 @@ services:
       timeout: 5s
       start_period: 5s
       retries: 3
+
+  aawm-dashboard-dev:
+    image: node:22-alpine
+    container_name: dashboard-shell-aawm-dashboard-dev
+    restart: unless-stopped
+    working_dir: /workspace/aawm-dashboard
+    environment:
+      AAWM_DASHBOARD_REMOTE_DEV_PORT: "${AAWM_DASHBOARD_REMOTE_DEV_PORT:-5176}"
+      CHOKIDAR_USEPOLLING: "${CHOKIDAR_USEPOLLING:-true}"
+      WATCHPACK_POLLING: "${WATCHPACK_POLLING:-true}"
+    ports:
+      - "${AAWM_DASHBOARD_REMOTE_DEV_PORT:-5176}:${AAWM_DASHBOARD_REMOTE_DEV_PORT:-5176}"
+    networks:
+      - aawm_tap
+    volumes:
+      - ../aawm-dashboard:/workspace/aawm-dashboard
+      - aawm_dashboard_dev_node_modules:/workspace/aawm-dashboard/node_modules
+      - aawm_dashboard_dev_npm_cache:/root/.npm
+    command:
+      - sh
+      - -lc
+      - |
+        npm ci
+        npm run dev -- --host 0.0.0.0 --port "$${AAWM_DASHBOARD_REMOTE_DEV_PORT:-5176}" --strictPort --cors
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "wget -qO- http://127.0.0.1:$${AAWM_DASHBOARD_REMOTE_DEV_PORT:-5176}/remoteEntry.js >/dev/null",
+        ]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 5
+
+  aawm-observe-dashboard-dev:
+    image: node:22-alpine
+    container_name: dashboard-shell-aawm-observe-dashboard-dev
+    restart: unless-stopped
+    working_dir: /workspace/aawm-observe-dashboard
+    environment:
+      AAWM_OBSERVE_REMOTE_DEV_PORT: "${AAWM_OBSERVE_REMOTE_DEV_PORT:-5177}"
+      CHOKIDAR_USEPOLLING: "${CHOKIDAR_USEPOLLING:-true}"
+      WATCHPACK_POLLING: "${WATCHPACK_POLLING:-true}"
+    ports:
+      - "${AAWM_OBSERVE_REMOTE_DEV_PORT:-5177}:${AAWM_OBSERVE_REMOTE_DEV_PORT:-5177}"
+    networks:
+      - aawm_tap
+    volumes:
+      - ../aawm-observe-dashboard:/workspace/aawm-observe-dashboard
+      - aawm_observe_dashboard_dev_node_modules:/workspace/aawm-observe-dashboard/node_modules
+      - aawm_observe_dashboard_dev_npm_cache:/root/.npm
+    command:
+      - sh
+      - -lc
+      - |
+        npm ci
+        npm run dev -- --host 0.0.0.0 --port "$${AAWM_OBSERVE_REMOTE_DEV_PORT:-5177}" --strictPort --cors
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "wget -qO- http://127.0.0.1:$${AAWM_OBSERVE_REMOTE_DEV_PORT:-5177}/remoteEntry.js >/dev/null",
+        ]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 5
 
   aawm-tap-dashboard-dev:
     image: node:22-alpine
@@ -255,6 +340,10 @@ services:
       retries: 5
 
 volumes:
+  aawm_dashboard_dev_node_modules:
+  aawm_dashboard_dev_npm_cache:
+  aawm_observe_dashboard_dev_node_modules:
+  aawm_observe_dashboard_dev_npm_cache:
   aawm_tap_dashboard_dev_node_modules:
   aawm_tap_dashboard_dev_npm_cache:
   aegis_dashboard_dev_node_modules:

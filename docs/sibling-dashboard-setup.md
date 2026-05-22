@@ -11,7 +11,9 @@ chrome in both live dev containers and static/prod-style containers.
 
 | Dashboard | Repo | Module id | Base path | API base | Dev port | Static module path |
 | --- | --- | --- | --- | --- | --- | --- |
+| AAWM | `../aawm-dashboard` | `aawm-dashboard` | `/aawm` | `/api/aawm` | `5176` | `/modules/aawm/remoteEntry.js` |
 | AAWM TAP | `../aawm-tap-dashboard` | `aawm-tap-dashboard` | `/aawm-tap` | `/api/aawm-tap` | `5173` | `/modules/aawm-tap/remoteEntry.js` |
+| AAWM Observe | `../aawm-observe-dashboard` | `aawm-observe-dashboard` | `/aawm-observe` | `/api/aawm-observe` | `5177` | `/modules/aawm-observe/remoteEntry.js` |
 | Aegis | `../aegis-dashboard` | `aegis-dashboard` | `/aegis` | `/api/aegis` | `5174` | `/modules/aegis/remoteEntry.js` |
 | Sluice | `../sluice-dashboard` | `sluice` | `/sluice` | `/api/sluice` | `5175` | `/modules/sluice/remoteEntry.js` |
 
@@ -35,6 +37,21 @@ Before shell integration, the sibling repo needs to provide:
 Do not use `VITE_*` variables for secrets. Browser code should call only the
 shell-provided `apiBase`; the shell report/proxy service injects credentials
 server-side.
+
+Current AAWM notes:
+
+- `../aawm-dashboard` currently exposes its dashboard route at `/` in
+  `src/module.ts`, so the shell registers `/aawm` as its default entry even
+  though older sibling docs mention `/overview`.
+- `../aawm-dashboard` still has a hook-log page that calls `/hook-api/*`.
+  The shell proxies this compatibility path to `AAWM_HOOK_API_TARGET` until the
+  remote moves those calls under `/api/aawm`. In the local compose topology,
+  defaults use the `aawm_default` service names `http://aawm-api:8000` and
+  `http://aawm-hook-server:8318` because those services bind their host ports to
+  `127.0.0.1`.
+- `../aawm-observe-dashboard` currently renders placeholder pages and declares
+  `/api/aawm-observe`, but its live data service contract is still evolving.
+  Set `AAWM_OBSERVE_API_TARGET` when an upstream observe adapter is available.
 
 ## Shell Registration
 
@@ -93,10 +110,10 @@ example-dashboard-dev:
   working_dir: /workspace/example-dashboard
   environment:
     CHOKIDAR_USEPOLLING: "${CHOKIDAR_USEPOLLING:-true}"
-    EXAMPLE_REMOTE_DEV_PORT: "${EXAMPLE_REMOTE_DEV_PORT:-5176}"
+    EXAMPLE_REMOTE_DEV_PORT: "${EXAMPLE_REMOTE_DEV_PORT:-5178}"
     WATCHPACK_POLLING: "${WATCHPACK_POLLING:-true}"
   ports:
-    - "${EXAMPLE_REMOTE_DEV_PORT:-5176}:${EXAMPLE_REMOTE_DEV_PORT:-5176}"
+    - "${EXAMPLE_REMOTE_DEV_PORT:-5178}:${EXAMPLE_REMOTE_DEV_PORT:-5178}"
   networks:
     - aawm_tap
   volumes:

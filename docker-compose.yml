@@ -8,6 +8,10 @@ services:
     ports:
       - "${DASHBOARD_SHELL_PORT:-3005}:80"
     depends_on:
+      aawm-dashboard:
+        condition: service_healthy
+      aawm-observe-dashboard:
+        condition: service_healthy
       aawm-tap-dashboard:
         condition: service_healthy
       aegis-dashboard:
@@ -28,6 +32,15 @@ services:
       dockerfile: Dockerfile.report-service
     image: dashboard-shell-reports:local
     environment:
+      AAWM_API_KEY: "${AAWM_API_KEY:-}"
+      AAWM_ACCESS_TOKEN: "${AAWM_ACCESS_TOKEN:-}"
+      AAWM_API_TARGET: "${AAWM_API_TARGET:-http://aawm-api:8000}"
+      AAWM_HOOK_API_KEY: "${AAWM_HOOK_API_KEY:-}"
+      AAWM_HOOK_ACCESS_TOKEN: "${AAWM_HOOK_ACCESS_TOKEN:-}"
+      AAWM_HOOK_API_TARGET: "${AAWM_HOOK_API_TARGET:-http://aawm-hook-server:8318}"
+      AAWM_OBSERVE_API_KEY: "${AAWM_OBSERVE_API_KEY:-}"
+      AAWM_OBSERVE_ACCESS_TOKEN: "${AAWM_OBSERVE_ACCESS_TOKEN:-}"
+      AAWM_OBSERVE_API_TARGET: "${AAWM_OBSERVE_API_TARGET:-http://host.docker.internal:34042}"
       AAWM_TAP_API_KEY: "${AAWM_TAP_API_KEY:-}"
       AAWM_TAP_ACCESS_TOKEN: "${AAWM_TAP_ACCESS_TOKEN:-}"
       AAWM_TAP_ADMIN_CAPABILITY: "${AAWM_TAP_ADMIN_CAPABILITY:-}"
@@ -102,6 +115,40 @@ services:
       interval: 30s
       timeout: 5s
       start_period: 5s
+      retries: 3
+    networks:
+      - aawm_tap
+
+  aawm-dashboard:
+    restart: unless-stopped
+    build:
+      context: ../aawm-dashboard
+      dockerfile: Dockerfile
+    image: aawm-dashboard-remote:local
+    expose:
+      - "80"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/remoteEntry.js >/dev/null"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    networks:
+      - aawm_tap
+
+  aawm-observe-dashboard:
+    restart: unless-stopped
+    build:
+      context: ../aawm-observe-dashboard
+      dockerfile: Dockerfile
+    image: aawm-observe-dashboard-remote:local
+    expose:
+      - "80"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/remoteEntry.js >/dev/null"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
       retries: 3
     networks:
       - aawm_tap
