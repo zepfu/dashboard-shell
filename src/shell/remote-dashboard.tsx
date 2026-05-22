@@ -50,6 +50,17 @@ type RemoteHeaderModule = {
   routes?: RemoteRouteConfig[]
 }
 
+type RemoteDashboardRuntimeConfig = Pick<
+  RemoteDashboardRegistryEntry,
+  'apiBase' | 'basePath' | 'moduleId'
+>
+
+declare global {
+  interface Window {
+    __DASHBOARD_SHELL_REMOTES__?: Record<string, RemoteDashboardRuntimeConfig>
+  }
+}
+
 type BoundaryProps = {
   children: ReactNode
   config: RemoteDashboardRegistryEntry
@@ -97,7 +108,9 @@ const remoteModuleViews = Object.fromEntries(
   Object.values(remoteDashboardConfigByKey).map((config) => [
     config.key,
     lazy(async () => {
+      publishRemoteRuntimeConfig(config)
       const remote = await config.importModule()
+      publishRemoteRuntimeConfig(config)
 
       return {
         default: createRemoteModuleView(config, remote.default),
@@ -115,6 +128,7 @@ export function RemoteDashboardRoute({
 }: RemoteDashboardRouteProps) {
   const config = remoteDashboardConfigByKey[moduleKey]
   const RemoteModuleView = remoteModuleViews[moduleKey]
+  publishRemoteRuntimeConfig(config)
 
   return (
     <RemoteModuleBoundary config={config} routePath={routePath}>
@@ -131,6 +145,19 @@ export function RemoteDashboardRoute({
       </Suspense>
     </RemoteModuleBoundary>
   )
+}
+
+function publishRemoteRuntimeConfig(config: RemoteDashboardRegistryEntry) {
+  if (typeof window === 'undefined') return
+
+  window.__DASHBOARD_SHELL_REMOTES__ = {
+    ...(window.__DASHBOARD_SHELL_REMOTES__ ?? {}),
+    [config.moduleId]: {
+      apiBase: config.apiBase,
+      basePath: config.basePath,
+      moduleId: config.moduleId,
+    },
+  }
 }
 
 function createRemoteModuleView(
