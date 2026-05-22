@@ -18,6 +18,7 @@ import { render, act } from '@testing-library/react'
 import { http, HttpResponse } from 'msw'
 import { server } from '../../../test/setup'
 import type {
+  UsageReportProviderErrorObservationRow,
   UsageReportProviderLatencyHealthRow,
   UsageReportQuotaHistoryRow,
   UsageReportQuotaRow,
@@ -265,6 +266,27 @@ describe('Provider health cell classification', () => {
     }
   }
 
+  function makeErrorObservation(
+    overrides: Partial<UsageReportProviderErrorObservationRow> = {}
+  ): UsageReportProviderErrorObservationRow {
+    return {
+      observed_at: '2026-05-21T20:47:12.000Z',
+      environment: 'dev',
+      provider: 'xai',
+      model: 'grok-4',
+      model_group: 'unknown',
+      route_family: 'chat',
+      status_code: 429,
+      error_type: 'HTTPException',
+      error_code: 'rate_limit',
+      error_class: 'provider_error',
+      error_message: 'provider rate limit exceeded',
+      retry_after_seconds: null,
+      expected_reset_at: null,
+      ...overrides,
+    }
+  }
+
   test('test_probe_backed_no_traffic_bucket_is_green_not_blue', () => {
     const cells = _padHealthCellsForTest(
       [
@@ -431,6 +453,70 @@ describe('Provider health cell classification', () => {
     expect(cells[287].rawP95Ms).toBe(120)
     expect(cells[287].rawErrorCount).toBe(0)
     expect(cells[287].eventCount).toBeUndefined()
+  })
+
+  test('test_provider_health_cells_include_timestamped_error_log_events', () => {
+    const cells = _padHealthCellsForTest(
+      [
+        makeHealthRow({
+          bucket_start: '2026-05-21T20:45:00.000Z',
+          provider: 'xai',
+          provider_error_events: 1,
+        }),
+      ],
+      'xai',
+      [
+        makeErrorObservation({
+          observed_at: '2026-05-21T20:47:12.000Z',
+          provider: 'xai',
+          model: 'grok-4',
+          status_code: 429,
+          error_class: 'provider_error',
+          error_message: 'provider rate limit exceeded',
+        }),
+      ]
+    )
+
+    expect(cells[287].events).toEqual([
+      expect.objectContaining({
+        time: '4:47 PM:',
+        model: 'grok-4',
+        errorType: expect.stringContaining(
+          '429 provider error / provider rate limit exceeded'
+        ),
+      }),
+    ])
+  })
+
+  test('test_aggregate_health_cells_include_provider_in_error_log_model_label', () => {
+    const cells = _buildAggregateHealthCellsForTest(
+      [
+        makeHealthRow({
+          bucket_start: '2026-05-21T20:45:00.000Z',
+          provider: 'openai',
+          provider_5xx_events: 1,
+        }),
+      ],
+      [
+        makeErrorObservation({
+          observed_at: '2026-05-21T20:47:12.000Z',
+          provider: 'openai',
+          model: 'gpt-5.5',
+          status_code: 503,
+          error_class: 'provider_5xx',
+          error_message: 'connection reset',
+        }),
+      ]
+    )
+
+    expect(cells[287].events?.[0]).toEqual(
+      expect.objectContaining({
+        model: 'openai/gpt-5.5',
+        errorType: expect.stringContaining(
+          '503 provider 5xx / connection reset'
+        ),
+      })
+    )
   })
 })
 

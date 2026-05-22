@@ -1220,6 +1220,17 @@ SELECT
     COALESCE(error_type, 'unknown') AS error_type,
     COALESCE(error_code, 'unknown') AS error_code,
     COALESCE(error_class, 'unknown') AS error_class,
+    LEFT(
+        COALESCE(
+            NULLIF(metadata->>'normalized_error_text', ''),
+            NULLIF(metadata->>'error_message', ''),
+            NULLIF(metadata->>'message', ''),
+            NULLIF(metadata #>> '{error,message}', ''),
+            NULLIF(metadata #>> '{error,error,message}', ''),
+            NULLIF(metadata #>> '{response,error,message}', '')
+        ),
+        280
+    ) AS error_message,
     retry_after_seconds,
     expected_reset_at
 FROM public.provider_error_observations
@@ -2426,6 +2437,7 @@ function normalizeProviderErrorObservationRow(row) {
     error_type: row.error_type ?? 'unknown',
     error_code: row.error_code ?? 'unknown',
     error_class: row.error_class ?? 'unknown',
+    error_message: row.error_message ?? null,
     retry_after_seconds: normalizeNumber(row.retry_after_seconds),
     expected_reset_at: row.expected_reset_at ?? null,
   }

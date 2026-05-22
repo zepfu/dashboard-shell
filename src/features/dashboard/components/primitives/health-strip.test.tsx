@@ -575,7 +575,8 @@ test('test_health_strip_tip_health_renders_one_row_per_event', () => {
   expect(firstRow.querySelector('.t-time')?.textContent).toBe('13:42')
   expect(firstRow.querySelector('.t-model')?.textContent).toBe('gpt-4o')
   expect(firstRow.querySelector('.t-err')?.textContent).toBe('503 capacity')
-  expect(firstRow.querySelector('.t-count')?.textContent).toBe('x1')
+  expect(firstRow.querySelector('.t-count')?.textContent).toBe('')
+  expect(rows[1].querySelector('.t-count')?.textContent).toBe('x2')
 })
 
 test('test_health_strip_tip_health_empty_events_shows_placeholder', () => {

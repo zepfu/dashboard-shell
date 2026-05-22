@@ -90,6 +90,7 @@ import { TokenTrendChart, type ProviderSeries } from './token-trend-chart'
 
 /** Cell count expected by HealthStrip inside ProviderCard. */
 const HEALTH_CELL_COUNT = 288
+const HEALTH_BUCKET_MS = 5 * 60 * 1000
 
 /**
  * Ordered provider series for TokenTrendChart.
@@ -460,18 +461,227 @@ function deriveProbeBackedCategory(
   return 'green'
 }
 
-function makeNoDataHealthCell(emptyEvents: HealthStripEvent[]): CellDef {
+function makeNoDataHealthCell(): CellDef {
   return {
     color: 'var(--card-2)',
     rawP95Ms: null,
     rawErrorCount: 0,
-    events: emptyEvents,
   }
+}
+
+function bucketKeyFromIso(value: string | null): string | null {
+  if (value == null) return null
+  const ms = new Date(value).getTime()
+  if (!Number.isFinite(ms)) return null
+  return new Date(Math.floor(ms / HEALTH_BUCKET_MS) * HEALTH_BUCKET_MS)
+    .toISOString()
+    .replace('.000Z', '.000Z')
+}
+
+function formatHealthEventTime(value: string | null): string {
+  if (value == null) return '--'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return '--'
+  return `${new Intl.DateTimeFormat('en-US', {
+    hour: 'numeric',
+    minute: '2-digit',
+  }).format(date)}:`
+}
+
+function compactErrorMessage(value: string | null): string | null {
+  if (value == null) return null
+  const cleaned = value
+    .replace(/\bb(['"])(.*?)\1/g, '$2')
+    .replace(/^['"]|['"]$/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+  if (cleaned === '') return null
+  return cleaned.length > 140 ? `${cleaned.slice(0, 137)}...` : cleaned
+}
+
+function humanizeSignal(value: string): string {
+  return value.replace(/_/g, ' ')
+}
+
+function formatObservationEventDescription(
+  observation: UsageReportProviderErrorObservationRow
+): string {
+  const status =
+    observation.status_code !== null
+      ? observation.status_code.toString()
+      : 'status unknown'
+  const errorClass =
+    observation.error_class !== 'unknown'
+      ? humanizeSignal(observation.error_class)
+      : humanizeSignal(observation.error_type)
+  const message = compactErrorMessage(observation.error_message)
+  if (message !== null) return `${status} ${errorClass} / ${message}`
+
+  const code =
+    observation.error_code !== '' && observation.error_code !== 'unknown'
+      ? humanizeSignal(observation.error_code)
+      : humanizeSignal(observation.error_type)
+  return `${status} ${errorClass} / ${code}`
+}
+
+function modelEventLabel(
+  provider: string,
+  model: string,
+  includeProvider: boolean
+): string {
+  const modelLabel = model !== 'unknown' ? model : 'unknown'
+  return includeProvider
+    ? `${canonicalProvider(provider)}/${modelLabel}`
+    : modelLabel
+}
+
+function buildObservationEventsByBucket(
+  observations: UsageReportProviderErrorObservationRow[],
+  includeProviderInLabel: boolean
+): Map<string, HealthStripEvent[]> {
+  const eventsByBucket = new Map<string, HealthStripEvent[]>()
+
+  for (const observation of observations) {
+    const bucketKey = bucketKeyFromIso(observation.observed_at)
+    if (bucketKey === null) continue
+
+    const existing = eventsByBucket.get(bucketKey) ?? []
+    existing.push({
+      time: formatHealthEventTime(observation.observed_at),
+      model: modelEventLabel(
+        observation.provider,
+        observation.model,
+        includeProviderInLabel
+      ),
+      errorType: formatObservationEventDescription(observation),
+      count: 1,
+      observedAt: observation.observed_at ?? undefined,
+    })
+    eventsByBucket.set(bucketKey, existing)
+  }
+
+  return eventsByBucket
+}
+
+function buildProbeEventDescription(
+  kind: string,
+  detail: string | number | null
+): string {
+  return detail === null ? `degraded ${kind}` : `degraded ${kind} / ${detail}`
+}
+
+function buildProbeEventsForGroup(
+  group: UsageReportProviderLatencyHealthRow[],
+  bucketStart: string | undefined,
+  includeProviderInLabel: boolean
+): HealthStripEvent[] {
+  if (bucketStart === undefined) return []
+  const time = formatHealthEventTime(bucketStart)
+  const events: HealthStripEvent[] = []
+
+  for (const row of group) {
+    const label = modelEventLabel(
+      row.provider,
+      row.model,
+      includeProviderInLabel
+    )
+    const observedAt = bucketStart
+    const probeFailures =
+      row.dns_failures + row.tcp_failures + row.tls_failures + row.icmp_failures
+    if (probeFailures > 0) {
+      const parts = [
+        row.dns_failures > 0 ? `dns ${row.dns_failures.toString()}` : null,
+        row.tcp_failures > 0 ? `tcp ${row.tcp_failures.toString()}` : null,
+        row.tls_failures > 0 ? `tls ${row.tls_failures.toString()}` : null,
+        row.icmp_failures > 0 ? `icmp ${row.icmp_failures.toString()}` : null,
+      ].filter((part): part is string => part !== null)
+      events.push({
+        time,
+        model: label,
+        errorType: buildProbeEventDescription(
+          'probe failure',
+          parts.join(', ')
+        ),
+        count: probeFailures,
+        observedAt,
+      })
+    }
+    if (
+      row.status_probe_count > 0 &&
+      row.status_probe_success_pct !== null &&
+      row.status_probe_success_pct < 100
+    ) {
+      events.push({
+        time,
+        model: label,
+        errorType: buildProbeEventDescription(
+          'provider probe',
+          `${row.status_probe_success_pct.toFixed(0)}% success`
+        ),
+        count: 1,
+        observedAt,
+      })
+    }
+    if (
+      row.control_probe_success_pct !== null &&
+      row.control_probe_success_pct < 100
+    ) {
+      events.push({
+        time,
+        model: label,
+        errorType: buildProbeEventDescription(
+          'control probe',
+          `${row.control_probe_success_pct.toFixed(0)}% success`
+        ),
+        count: 1,
+        observedAt,
+      })
+    }
+    if ((row.provider_ping_packet_loss_pct ?? 0) > 0) {
+      events.push({
+        time,
+        model: label,
+        errorType: buildProbeEventDescription(
+          'provider packet loss',
+          `${(row.provider_ping_packet_loss_pct ?? 0).toFixed(1)}%`
+        ),
+        count: 1,
+        observedAt,
+      })
+    }
+    if ((row.control_packet_loss_pct ?? 0) > 0) {
+      events.push({
+        time,
+        model: label,
+        errorType: buildProbeEventDescription(
+          'control packet loss',
+          `${(row.control_packet_loss_pct ?? 0).toFixed(1)}%`
+        ),
+        count: 1,
+        observedAt,
+      })
+    }
+    if ((row.provider_ping_minus_control_ms ?? 0) > 250) {
+      events.push({
+        time,
+        model: label,
+        errorType: buildProbeEventDescription(
+          'provider latency delta',
+          `${(row.provider_ping_minus_control_ms ?? 0).toFixed(0)}ms`
+        ),
+        count: 1,
+        observedAt,
+      })
+    }
+  }
+
+  return events
 }
 
 function buildHealthCellFromGroup(
   group: UsageReportProviderLatencyHealthRow[],
-  emptyEvents: HealthStripEvent[]
+  observationEventsByBucket: Map<string, HealthStripEvent[]>,
+  includeProviderInEvents: boolean
 ): CellDef {
   // Max non-null passive p95 across all tuples in this bucket. Prefer the
   // exact upstream split, but fall back to total request latency for provider
@@ -572,6 +782,17 @@ function buildHealthCellFromGroup(
       : undefined
 
   const bucketStart = group.find((r) => r.bucket_start != null)?.bucket_start
+  const bucketKey = bucketStart != null ? String(bucketStart) : null
+  const events = [
+    ...(bucketKey !== null
+      ? (observationEventsByBucket.get(bucketKey) ?? [])
+      : []),
+    ...buildProbeEventsForGroup(
+      group,
+      bucketStart ?? undefined,
+      includeProviderInEvents
+    ),
+  ]
   const category = deriveProbeBackedCategory(
     group,
     maxP95,
@@ -584,7 +805,7 @@ function buildHealthCellFromGroup(
     bucketStart: bucketStart ?? undefined,
     eventCount: eventCount > 0 ? eventCount : undefined,
     degradedCount: degradedCount > 0 ? degradedCount : undefined,
-    events: emptyEvents,
+    ...(events.length > 0 ? { events } : {}),
     rawP95Ms: maxP95,
     rawErrorCount: eventCount > 0 ? eventCount : 0,
     ...(category !== undefined ? { category } : {}),
@@ -595,7 +816,8 @@ function buildHealthCellFromGroup(
 
 function padHealthCellsFromRows(
   providerRows: UsageReportProviderLatencyHealthRow[],
-  emptyEvents: HealthStripEvent[]
+  observationEventsByBucket: Map<string, HealthStripEvent[]>,
+  includeProviderInEvents: boolean
 ): CellDef[] {
   const bucketMap = new Map<string, UsageReportProviderLatencyHealthRow[]>()
   providerRows.forEach((row, idx) => {
@@ -612,7 +834,11 @@ function padHealthCellsFromRows(
   })
 
   const cellsDesc: CellDef[] = Array.from(bucketMap.values()).map((group) =>
-    buildHealthCellFromGroup(group, emptyEvents)
+    buildHealthCellFromGroup(
+      group,
+      observationEventsByBucket,
+      includeProviderInEvents
+    )
   )
   const cells = cellsDesc.reverse()
 
@@ -622,7 +848,7 @@ function padHealthCellsFromRows(
 
   const pad = Array.from<CellDef>({
     length: HEALTH_CELL_COUNT - cells.length,
-  }).map(() => makeNoDataHealthCell(emptyEvents))
+  }).map(() => makeNoDataHealthCell())
   return [...pad, ...cells]
 }
 
@@ -646,28 +872,46 @@ function padHealthCellsFromRows(
  */
 function padHealthCells(
   rows: UsageReportProviderLatencyHealthRow[],
-  provider: string
+  provider: string,
+  errorObservations: UsageReportProviderErrorObservationRow[] = []
 ): CellDef[] {
   // 15-B.2: use alias map so 'google' also picks up 'gemini' health rows
   const aliases = providerAliases(provider)
   const providerRows = rows.filter((r) =>
     aliases.includes(r.provider.toLowerCase())
   )
-  // Satisfy the HealthStripEvent[] type even though we have no per-event data.
-  const emptyEvents: HealthStripEvent[] = []
+  const providerObservations = errorObservations.filter((observation) => {
+    const providerLower = observation.provider.toLowerCase()
+    return (
+      aliases.includes(providerLower) ||
+      aliases.includes(canonicalProvider(providerLower))
+    )
+  })
+  const observationEventsByBucket = buildObservationEventsByBucket(
+    providerObservations,
+    false
+  )
 
-  return padHealthCellsFromRows(providerRows, emptyEvents)
+  return padHealthCellsFromRows(providerRows, observationEventsByBucket, false)
 }
 
 function buildAggregateHealthCells(
-  rows: UsageReportProviderLatencyHealthRow[]
+  rows: UsageReportProviderLatencyHealthRow[],
+  errorObservations: UsageReportProviderErrorObservationRow[] = []
 ): CellDef[] {
-  const emptyEvents: HealthStripEvent[] = []
   const aggregateRows = rows.filter((row) => {
     const provider = row.provider.toLowerCase()
     return provider !== 'proxy_internal' && provider !== 'aggregate'
   })
-  return padHealthCellsFromRows(aggregateRows, emptyEvents)
+  const aggregateObservations = errorObservations.filter((observation) => {
+    const provider = canonicalProvider(observation.provider).toLowerCase()
+    return provider !== 'proxy_internal' && provider !== 'aggregate'
+  })
+  const observationEventsByBucket = buildObservationEventsByBucket(
+    aggregateObservations,
+    true
+  )
+  return padHealthCellsFromRows(aggregateRows, observationEventsByBucket, true)
 }
 
 /**
@@ -3499,8 +3743,8 @@ export default function PhosphorDashboard({
   }
 
   const aggregateHealthCells = useMemo(
-    () => buildAggregateHealthCells(healthRows),
-    [healthRows]
+    () => buildAggregateHealthCells(healthRows, providerErrorObservations),
+    [healthRows, providerErrorObservations]
   )
 
   const providerStatusUsage = useMemo(
@@ -3645,7 +3889,11 @@ export default function PhosphorDashboard({
                 healthRows,
                 report?.rows ?? []
               )
-              const cells = padHealthCells(healthRows, provider)
+              const cells = padHealthCells(
+                healthRows,
+                provider,
+                providerErrorObservations
+              )
               // Wave 41: build structured QuotaLane[] for providers with lane
               // definitions (anthropic, openai, google, xai). Each lane groups
               // the current bar + prior bars for a single quota type side-by-side.

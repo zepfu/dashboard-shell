@@ -17,6 +17,7 @@ import {
   canonicalProvider,
   formatLatency,
   formatUsd,
+  formatModelDisplayName,
   formatResetDistance,
   modelBrandHex,
   providerAliases,
@@ -515,6 +516,28 @@ describe('modelBrandHex via modelToProviderKey branches', () => {
 
   test('test_gpt5_numeric_prefix_maps_to_openai', () => {
     expect(modelBrandHex('gpt5-preview')).toBe(OPENAI_HEX)
+  })
+})
+
+describe('formatModelDisplayName', () => {
+  test('test_formats_gpt_model_name_for_display', () => {
+    expect(formatModelDisplayName('gpt-5.5')).toBe('GPT 5.5')
+  })
+
+  test('test_preserves_stealth_context_suffix', () => {
+    expect(formatModelDisplayName('gpt-5.5:stealth')).toBe('GPT 5.5 · stealth')
+  })
+
+  test('test_preserves_free_context_suffix', () => {
+    expect(formatModelDisplayName('qwen3-coder:free')).toBe(
+      'Qwen3 Coder · free'
+    )
+  })
+
+  test('test_formats_openrouter_model_path_without_losing_free_context', () => {
+    expect(formatModelDisplayName('qwen/qwen3-coder:free')).toBe(
+      'Qwen/Qwen3 Coder · free'
+    )
   })
 })
 

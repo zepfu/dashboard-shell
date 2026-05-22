@@ -199,6 +199,76 @@ export function modelBrandHex(model: string): string {
   return providerBrandHex(key)
 }
 
+const MODEL_CONTEXT_SUFFIXES = new Set(['free', 'stealth'])
+const MODEL_ACRONYMS = new Set([
+  'ai',
+  'api',
+  'asr',
+  'fs',
+  'gpt',
+  'llm',
+  'mcp',
+  'nim',
+  'ocr',
+  'sql',
+  'stt',
+  'tts',
+])
+
+function formatModelToken(token: string): string {
+  const lower = token.toLowerCase()
+  if (MODEL_ACRONYMS.has(lower)) return lower.toUpperCase()
+  if (/^o[0-9]+$/i.test(token)) return token.toUpperCase()
+  if (/^[0-9]+(?:\.[0-9]+)?[a-z]*$/i.test(token)) return token
+  if (token === '') return token
+  return `${lower.charAt(0).toUpperCase()}${lower.slice(1)}`
+}
+
+function formatModelPathPart(part: string): string {
+  return part
+    .split(/[-_\s]+/)
+    .filter(Boolean)
+    .map(formatModelToken)
+    .join(' ')
+}
+
+/**
+ * Formats raw model identifiers for display without changing the row key.
+ *
+ * Raw provider/model labels often arrive as API identifiers
+ * (`gpt-5.5`, `qwen3-coder:free`). The dashboard should render those as
+ * readable names while preserving suffix context that affects operator
+ * interpretation, especially OpenRouter `:free` and internal `:stealth`
+ * models.
+ */
+export function formatModelDisplayName(model: string): string {
+  const trimmed = model.trim()
+  if (trimmed === '') return model
+
+  let base = trimmed
+  const contexts: string[] = []
+
+  for (;;) {
+    const match = base.match(/:([A-Za-z][A-Za-z0-9_-]*)$/)
+    if (match == null) break
+
+    const context = (match[1] ?? '').toLowerCase()
+    if (!MODEL_CONTEXT_SUFFIXES.has(context)) break
+
+    contexts.unshift(context)
+    base = base.slice(0, -match[0].length)
+  }
+
+  const displayBase = base
+    .split('/')
+    .map(formatModelPathPart)
+    .filter(Boolean)
+    .join('/')
+
+  if (contexts.length === 0) return displayBase || trimmed
+  return `${displayBase || base} · ${contexts.join(' · ')}`
+}
+
 const providerColors = [
   '#2563eb',
   '#7c3aed',

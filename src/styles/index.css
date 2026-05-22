@@ -910,6 +910,10 @@
   grid-template-columns: minmax(0, 1fr) auto;
 }
 
+.v9-tip.tip-health .v9-tip-row {
+  grid-template-columns: 58px minmax(72px, 0.8fr) minmax(0, 2fr) auto;
+}
+
 /* v9-tip subclass helpers */
 .v9-tip .t-time {
   color: var(--fg-muted, #94a3b8);
