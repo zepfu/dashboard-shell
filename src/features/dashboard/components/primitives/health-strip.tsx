@@ -91,6 +91,8 @@ export interface HealthStripEvent {
   errorType: string
   /** Occurrence count for this event/model pair in the bucket. */
   count: number
+  /** Optional timestamp used to sort event-log rows before display. */
+  observedAt?: string
 }
 
 /**
@@ -186,7 +188,8 @@ export interface CellDef {
 
   /**
    * Per-event rows rendered in the hover tooltip body.
-   * When absent, a summary-only tooltip is shown.
+   * When absent, a summary-only tooltip is shown. Health-strip callers use
+   * these as timestamped event-log lines rather than generic bucket summaries.
    */
   events?: HealthStripEvent[]
 
@@ -509,6 +512,33 @@ const DEGRADED_BREAKDOWN_LABELS: ReadonlyArray<
   ['provider_latency_delta', 'Provider latency delta'],
 ]
 
+const EVENT_LOG_LIMIT = 14
+
+function eventSortMs(ev: HealthStripEvent): number {
+  if (ev.observedAt == null) return 0
+  const ms = new Date(ev.observedAt).getTime()
+  return Number.isFinite(ms) ? ms : 0
+}
+
+function collectRecentEventLog(cells: readonly CellDef[]): HealthStripEvent[] {
+  const events = cells.flatMap((cell) => cell.events ?? [])
+  if (events.length <= EVENT_LOG_LIMIT) {
+    return [...events].sort((a, b) => eventSortMs(a) - eventSortMs(b))
+  }
+
+  const sorted = [...events].sort((a, b) => eventSortMs(a) - eventSortMs(b))
+  const omitted = sorted.length - EVENT_LOG_LIMIT
+  return [
+    {
+      time: '...',
+      model: '',
+      errorType: `+${omitted.toString()} earlier event${omitted === 1 ? '' : 's'}`,
+      count: 0,
+    },
+    ...sorted.slice(sorted.length - EVENT_LOG_LIMIT),
+  ]
+}
+
 function buildDegradedTooltipRows(
   breakdown: CellDef['rawDegradedBreakdown']
 ): ReactNode[] {
@@ -586,6 +616,27 @@ function buildCellTooltip(cell: CellDef, now: Date): ReactNode {
     headText = n > 0 ? `— · ${n.toString()} ${noun}` : '— no data'
   }
 
+  // --- Rows: event log ------------------------------------------------------
+  // Prefer raw observation/degradation log lines over generic bucket summaries.
+  if (cell.events != null && cell.events.length > 0) {
+    const rows = cell.events.map((ev, idx) => (
+      <div key={idx} className='v9-tip-row'>
+        <span className='t-time'>{ev.time}</span>
+        <span className='t-model'>{ev.model}</span>
+        <span className='t-err'>{ev.errorType}</span>
+        <span className='t-count'>
+          {ev.count > 1 ? `x${ev.count.toString()}` : ''}
+        </span>
+      </div>
+    ))
+    return (
+      <>
+        <div className='v9-tip-head'>{headText}</div>
+        {rows}
+      </>
+    )
+  }
+
   // --- Rows: error breakdown (Wave 29-E2 Track 6) -------------------------
   // Priority 1: rawErrorBreakdown with at least one non-zero field → emit one
   // row per error type using short human-readable labels.
@@ -617,26 +668,6 @@ function buildCellTooltip(cell: CellDef, now: Date): ReactNode {
       <>
         <div className='v9-tip-head'>{headText}</div>
         {degradedRows}
-      </>
-    )
-  }
-
-  // --- Rows: legacy per-event entries (Wave 24 path) ----------------------
-  if (cell.events != null && cell.events.length > 0) {
-    // Fully wired: one row per event (Wave 24 — bucketStart/events wired by
-    // W24-PhosphorDash upstream).
-    const rows = cell.events.map((ev, idx) => (
-      <div key={idx} className='v9-tip-row'>
-        <span className='t-time'>{ev.time}</span>
-        <span className='t-model'>{ev.model}</span>
-        <span className='t-err'>{ev.errorType}</span>
-        <span className='t-count'>x{ev.count.toString()}</span>
-      </div>
-    ))
-    return (
-      <>
-        <div className='v9-tip-head'>{headText}</div>
-        {rows}
       </>
     )
   }
@@ -682,6 +713,30 @@ function resolveTooltipContent(
   now: Date
 ): ReactNode | undefined {
   if (tooltipContent !== undefined) return tooltipContent
+
+  const eventLog = collectRecentEventLog(cells)
+  if (eventLog.length > 0) {
+    const newestEvent = [...eventLog]
+      .reverse()
+      .find((ev) => ev.observedAt != null)
+    const newestBucketMs =
+      newestEvent?.observedAt != null
+        ? Math.floor(new Date(newestEvent.observedAt).getTime() / 300_000) *
+          300_000
+        : undefined
+    return buildCellTooltip(
+      {
+        color: 'var(--card-2)',
+        bucketStart:
+          newestBucketMs !== undefined
+            ? new Date(newestBucketMs).toISOString()
+            : undefined,
+        eventCount: eventLog.filter((ev) => ev.count !== 0).length,
+        events: eventLog,
+      },
+      now
+    )
+  }
 
   // Find the most recent interesting bucket so the strip-level hover reports
   // the newest error/degraded signal near "now", not an older bucket that
@@ -938,7 +993,14 @@ export function HealthStrip({
         <div aria-hidden='true' style={shellStyle}>
           {/* Wave 35 S2: restore pointer events for the strip's interactive zone only. */}
           <div style={{ pointerEvents: 'auto', height: '100%' }}>
-            <HoverTooltip content={resolvedTooltip} variant='health'>
+            <HoverTooltip
+              content={resolvedTooltip}
+              variant='health'
+              panelStyle={{
+                minWidth: '360px',
+                maxWidth: 'min(560px, calc(100vw - 16px))',
+              }}
+            >
               <div className='health-strip-wrapper' style={stripWrapperStyle}>
                 {stripInner}
               </div>

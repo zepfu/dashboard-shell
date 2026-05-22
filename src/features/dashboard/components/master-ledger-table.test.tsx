@@ -153,7 +153,7 @@ test('test_click_sort_descending', () => {
   const rows = screen.getAllByRole('row')
   // rows[0] is thead, rows[1] is first data row
   const firstDataRow = rows[1]
-  expect(firstDataRow.textContent).toContain('gpt-4o')
+  expect(firstDataRow.textContent).toContain('GPT 4o')
 })
 
 test('test_click_sort_toggles_ascending', () => {
@@ -165,7 +165,7 @@ test('test_click_sort_toggles_ascending', () => {
 
   const rows = screen.getAllByRole('row')
   const firstDataRow = rows[1]
-  expect(firstDataRow.textContent).toContain('claude-3')
+  expect(firstDataRow.textContent).toContain('Claude 3')
 })
 
 test('test_no_tfoot_row', () => {
@@ -246,6 +246,7 @@ const makeErrorObs = (
   error_type: 'HTTPException',
   error_code: errorCode,
   error_class: errorClass,
+  error_message: null,
   retry_after_seconds: null,
   expected_reset_at: null,
 })
@@ -405,6 +406,39 @@ test('test_buildToolActivity_mcp_rollup_groups_by_server', () => {
   const subLabels = mcpRow?.subRows?.map((s) => s.label) ?? []
   expect(subLabels).toContain('search')
   expect(subLabels).toContain('tristore_add')
+})
+
+test('test_tool_hover_packs_small_mcp_groups_into_shared_columns', () => {
+  const toolRow = {
+    model: 'claude-opus-4-7',
+    provider: 'anthropic',
+    tokens_in: 1000,
+    tokens_out: 2000,
+    requests: 100,
+    p50_ms: 200,
+    p95_ms: 500,
+    error_pct: 0,
+    cost_usd: 0.5,
+    cost_per_1k: 0.05,
+    tool: 89,
+    toolActivity: buildToolActivity([
+      makeToolActivityRow('mcp__aawm__search', 'outer', 35),
+      makeToolActivityRow('mcp__aawm__tristore_add', 'outer', 18),
+      makeToolActivityRow('mcp__fs__read_file', 'outer', 14),
+      makeToolActivityRow('mcp__fs__list_dir', 'outer', 12),
+      makeToolActivityRow('Read', 'outer', 10),
+    ]),
+  }
+
+  render(<MasterLedgerTable rows={[toolRow]} />)
+
+  expect(
+    document.querySelectorAll('[data-tool-left-column="true"]')
+  ).toHaveLength(1)
+  expect(screen.getByText('MCP: aawm')).toBeInTheDocument()
+  expect(screen.getByText('MCP: fs')).toBeInTheDocument()
+  expect(screen.getByText(/search/)).toBeInTheDocument()
+  expect(screen.getByText(/read_file/)).toBeInTheDocument()
 })
 
 test('test_buildToolActivity_shell_class_excluded_from_left_column', () => {
@@ -712,6 +746,89 @@ test('test_tool_cell_hover_keeps_second_column_detail_on_both_sides', () => {
   expect(screen.getByText('Tool 15')).toBeInTheDocument()
   expect(screen.getByText('cmd15')).toBeInTheDocument()
   expect(screen.queryByText(/\+2 more/i)).toBeNull()
+})
+
+test('test_tool_hover_renders_highest_priority_tool_column_next_to_shell', () => {
+  const toolRows = Array.from({ length: 30 }, (_value, index) =>
+    makeToolActivityRow(
+      `Tool ${index.toString().padStart(2, '0')}`,
+      'outer',
+      100 - index
+    )
+  )
+  const toolRow = {
+    model: 'claude-opus-4-7',
+    provider: 'anthropic',
+    tokens_in: 1000,
+    tokens_out: 2000,
+    requests: 100,
+    p50_ms: 200,
+    p95_ms: 500,
+    error_pct: 0,
+    cost_usd: 0.5,
+    cost_per_1k: 0.05,
+    tool: 3500,
+    toolActivity: buildToolActivity([
+      makeToolActivityRow('Bash', 'outer', 500),
+      ...toolRows,
+      makeToolActivityRow('git show', 'shell', 20),
+    ]),
+  }
+
+  render(<MasterLedgerTable rows={[toolRow]} />)
+
+  const renderedSourceIndexes = Array.from(
+    document.querySelectorAll('[data-tool-left-column="true"]')
+  ).map((el) => (el as HTMLElement).dataset.sourceIndex)
+  expect(renderedSourceIndexes).toEqual(['2', '1', '0'])
+})
+
+test('test_model_column_normalizes_names_and_preserves_context_suffixes', () => {
+  const rows = [
+    {
+      ...mockRows[0],
+      model: 'gpt-5.5:stealth',
+      provider: 'openai',
+    },
+    {
+      ...mockRows[1],
+      model: 'qwen3-coder:free',
+      provider: 'openrouter',
+    },
+  ]
+
+  render(<MasterLedgerTable rows={rows} />)
+
+  expect(screen.getByText('GPT 5.5 · stealth')).toBeInTheDocument()
+  expect(screen.getByText('Qwen3 Coder · free')).toBeInTheDocument()
+  expect(screen.queryByText('gpt-5.5:stealth')).toBeNull()
+})
+
+test('test_tool_hover_heading_uses_normalized_model_display_name', () => {
+  const toolRow = {
+    model: 'gpt-5.5:stealth',
+    provider: 'openai',
+    tokens_in: 1000,
+    tokens_out: 2000,
+    requests: 100,
+    p50_ms: 200,
+    p95_ms: 500,
+    error_pct: 0,
+    cost_usd: 0.5,
+    cost_per_1k: 0.05,
+    tool: 120,
+    toolActivity: buildToolActivity([
+      makeToolActivityRow('Read', 'outer', 80, 'openai', 'gpt-5.5:stealth'),
+      makeToolActivityRow('Bash', 'outer', 40, 'openai', 'gpt-5.5:stealth'),
+      makeToolActivityRow('git show', 'shell', 20, 'openai', 'gpt-5.5:stealth'),
+    ]),
+  }
+
+  render(<MasterLedgerTable rows={[toolRow]} />)
+
+  expect(
+    screen.getByText(/GPT 5\.5 · stealth.*tool breakdown/i)
+  ).toBeInTheDocument()
 })
 
 // ---------------------------------------------------------------------------

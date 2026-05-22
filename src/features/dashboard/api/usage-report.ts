@@ -209,6 +209,7 @@ export interface UsageReportProviderErrorObservationRow {
   error_type: string
   error_code: string
   error_class: string
+  error_message: string | null
   retry_after_seconds: number | null
   expected_reset_at: string | null
 }

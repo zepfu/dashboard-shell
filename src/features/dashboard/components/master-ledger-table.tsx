@@ -68,6 +68,7 @@ import {
 import { fmtCompact, numFmt } from '../lib/format-utils'
 import {
   providerBrandHex,
+  formatModelDisplayName,
   formatLatency,
   formatUsd,
 } from '../lib/usage-report-display'
@@ -108,9 +109,6 @@ const TOOL_HOVER_ROWS_PER_COLUMN = 14
 /** Maximum compact columns retained per side before truncating source rows. */
 const TOOL_HOVER_MAX_SIDE_COLUMNS = 3
 
-/** Maximum MCP server groups promoted into their own left-side columns. */
-const TOOL_HOVER_MAX_MCP_COLUMNS = 5
-
 /** Maximum visual rows used when an MCP column expands its subtools. */
 const TOOL_HOVER_MAX_VISUAL_ROWS_PER_COLUMN = 28
 
@@ -143,21 +141,19 @@ interface ToolShellRow {
   calls: number
 }
 
-interface ToolHoverPlainColumn {
-  kind: 'plain'
-  label: string
-  rows: ToolLeftRow[]
-}
-
-interface ToolHoverMcpColumn {
-  kind: 'mcp'
-  label: string
+interface ToolHoverColumnEntry {
   row: ToolLeftRow
   subRows: { label: string; calls: number }[]
   hiddenSubRowCount: number
+  visualRows: number
 }
 
-type ToolHoverLeftColumn = ToolHoverPlainColumn | ToolHoverMcpColumn
+interface ToolHoverLeftColumn {
+  label: string
+  entries: ToolHoverColumnEntry[]
+  sourceIndex: number
+  visualRows: number
+}
 
 function chunkToolHoverRows<T>(
   rows: readonly T[],
@@ -192,46 +188,94 @@ function mcpColumnVisualRowCount(row: ToolLeftRow): number {
   return 1 + subRows.length + (hiddenSubRowCount > 0 ? 1 : 0)
 }
 
+function buildToolHoverColumnEntry(row: ToolLeftRow): ToolHoverColumnEntry {
+  const visible = visibleMcpSubRows(row)
+  const visualRows =
+    (row.subRows?.length ?? 0) > 0 ? mcpColumnVisualRowCount(row) : 1
+  return {
+    row,
+    subRows: visible.subRows,
+    hiddenSubRowCount: visible.hiddenSubRowCount,
+    visualRows,
+  }
+}
+
 function buildToolHoverLeftColumns(rows: readonly ToolLeftRow[]): {
   columns: ToolHoverLeftColumn[]
   rowsPerColumn: number
+  hiddenRowCount: number
 } {
-  const mcpRows = rows.filter((row) => (row.subRows?.length ?? 0) > 0)
-  const ownMcpRows = mcpRows.slice(0, TOOL_HOVER_MAX_MCP_COLUMNS)
-  const ownMcpLabels = new Set(ownMcpRows.map((row) => row.label))
-  const plainRows = rows.filter((row) => !ownMcpLabels.has(row.label))
+  const entries = rows.map(buildToolHoverColumnEntry)
 
   const rowsPerColumn = Math.min(
     TOOL_HOVER_MAX_VISUAL_ROWS_PER_COLUMN,
     Math.max(
       TOOL_HOVER_ROWS_PER_COLUMN,
-      ...ownMcpRows.map((row) => mcpColumnVisualRowCount(row))
+      ...entries.map((entry) => entry.visualRows)
     )
   )
 
-  const plainColumns: ToolHoverPlainColumn[] = chunkToolHoverRows(
-    plainRows,
-    rowsPerColumn
-  ).map((columnRows, columnIdx) => ({
-    kind: 'plain',
-    label: columnIdx === 0 ? 'Tools' : `Tools ${columnIdx + 1}`,
-    rows: columnRows,
-  }))
+  const columns: ToolHoverLeftColumn[] = []
+  let active: ToolHoverLeftColumn = {
+    label: 'Tools',
+    entries: [],
+    sourceIndex: 0,
+    visualRows: 0,
+  }
+  let hiddenRowCount = 0
+  let atCapacity = false
 
-  const mcpColumns: ToolHoverMcpColumn[] = ownMcpRows.map((row) => {
-    const visible = visibleMcpSubRows(row)
-    return {
-      kind: 'mcp',
-      label: row.label,
-      row,
-      subRows: visible.subRows,
-      hiddenSubRowCount: visible.hiddenSubRowCount,
+  for (const entry of entries) {
+    if (atCapacity) {
+      hiddenRowCount += 1
+      continue
     }
-  })
+
+    if (
+      active.entries.length > 0 &&
+      active.visualRows + entry.visualRows > rowsPerColumn
+    ) {
+      columns.push(active)
+      if (columns.length >= TOOL_HOVER_MAX_SIDE_COLUMNS) {
+        hiddenRowCount += 1
+        atCapacity = true
+        active = {
+          label: '',
+          entries: [],
+          sourceIndex: columns.length,
+          visualRows: 0,
+        }
+        continue
+      }
+      const sourceIndex = columns.length
+      active = {
+        label: `Tools ${sourceIndex + 1}`,
+        entries: [],
+        sourceIndex,
+        visualRows: 0,
+      }
+    }
+
+    if (columns.length >= TOOL_HOVER_MAX_SIDE_COLUMNS) {
+      hiddenRowCount += 1
+      continue
+    }
+
+    active.entries.push(entry)
+    active.visualRows += entry.visualRows
+  }
+
+  if (
+    active.entries.length > 0 &&
+    columns.length < TOOL_HOVER_MAX_SIDE_COLUMNS
+  ) {
+    columns.push(active)
+  }
 
   return {
-    columns: [...plainColumns, ...mcpColumns],
+    columns,
     rowsPerColumn,
+    hiddenRowCount,
   }
 }
 
@@ -600,7 +644,7 @@ function formatPercent(pct: number): string {
 const baseVolumeColumns = [
   helper.accessor('model', {
     header: 'Model',
-    cell: (info) => info.getValue() as string,
+    cell: (info) => formatModelDisplayName(info.getValue() as string),
   }),
   helper.accessor('provider', {
     header: 'Provider',
@@ -1252,6 +1296,12 @@ export function MasterLedgerTable({
                     if (ta !== undefined && ta.totalCalls > 0) {
                       const leftLayout = buildToolHoverLeftColumns(ta.leftRows)
                       const leftColumns = leftLayout.columns
+                      const displayLeftColumns = [...leftColumns].reverse()
+                      const leftHiddenCount =
+                        leftLayout.hiddenRowCount +
+                        (ta.leftTruncated
+                          ? Math.max(0, ta.leftTotalCount - LEFT_COL_CAP)
+                          : 0)
                       const shellDisplayCap =
                         leftLayout.rowsPerColumn * TOOL_HOVER_MAX_SIDE_COLUMNS
                       const displayedShellRows = ta.shellRows.slice(
@@ -1290,7 +1340,8 @@ export function MasterLedgerTable({
                               className='v9-tip-head'
                               style={{ marginBottom: '4px' }}
                             >
-                              {orig.model} — tool breakdown
+                              {formatModelDisplayName(orig.model)} — tool
+                              breakdown
                             </div>
                             <div
                               style={{
@@ -1312,53 +1363,17 @@ export function MasterLedgerTable({
                                 alignItems: 'start',
                               }}
                             >
-                              {leftColumns.map((column, columnIdx) => (
+                              {displayLeftColumns.map((column, columnIdx) => (
                                 <div
-                                  key={`tools-${column.kind}-${column.label}-${columnIdx.toString()}`}
+                                  key={`tools-${column.label}-${column.sourceIndex.toString()}`}
+                                  data-tool-left-column='true'
+                                  data-source-index={column.sourceIndex}
                                   style={{ minWidth: 0 }}
                                 >
-                                  {column.kind === 'plain' ? (
-                                    <>
-                                      {column.rows.map((lr, rowIdx) => (
-                                        <div
-                                          key={`${lr.label}-${rowIdx.toString()}`}
-                                          style={{
-                                            display: 'flex',
-                                            justifyContent: 'space-between',
-                                            gap: '4px',
-                                            fontSize: '9px',
-                                            color: 'var(--fg, #e2e8f0)',
-                                            padding: '1px 0',
-                                            lineHeight: 1.5,
-                                            minWidth: 0,
-                                          }}
-                                        >
-                                          <span
-                                            style={{
-                                              flex: '1 1 auto',
-                                              minWidth: 0,
-                                              overflow: 'hidden',
-                                              textOverflow: 'ellipsis',
-                                              whiteSpace: 'nowrap',
-                                            }}
-                                          >
-                                            {lr.label}
-                                          </span>
-                                          <span
-                                            style={{
-                                              flex: '0 0 auto',
-                                              whiteSpace: 'nowrap',
-                                            }}
-                                          >
-                                            {numFmt(lr.calls)}
-                                            {'  '}
-                                            {lr.pct.toFixed(0)}%
-                                          </span>
-                                        </div>
-                                      ))}
-                                    </>
-                                  ) : (
-                                    <>
+                                  {column.entries.map((entry, entryIdx) => (
+                                    <div
+                                      key={`${entry.row.label}-${entryIdx.toString()}`}
+                                    >
                                       <div
                                         style={{
                                           display: 'flex',
@@ -1380,7 +1395,7 @@ export function MasterLedgerTable({
                                             whiteSpace: 'nowrap',
                                           }}
                                         >
-                                          {column.row.label}
+                                          {entry.row.label}
                                         </span>
                                         <span
                                           style={{
@@ -1388,63 +1403,64 @@ export function MasterLedgerTable({
                                             whiteSpace: 'nowrap',
                                           }}
                                         >
-                                          {numFmt(column.row.calls)}
+                                          {numFmt(entry.row.calls)}
                                           {'  '}
-                                          {column.row.pct.toFixed(0)}%
+                                          {entry.row.pct.toFixed(0)}%
                                         </span>
                                       </div>
-                                      <div
-                                        style={{
-                                          paddingLeft: '8px',
-                                          fontSize: '8px',
-                                          color: 'var(--fg-muted, #94a3b8)',
-                                        }}
-                                      >
-                                        {column.subRows.map(
-                                          (sr, srIdx, arr) => {
-                                            const isLastVisible =
-                                              column.hiddenSubRowCount === 0 &&
-                                              srIdx === arr.length - 1
-                                            const prefix = isLastVisible
-                                              ? '└─'
-                                              : '├─'
-                                            return (
-                                              <div
-                                                key={`${sr.label}-${srIdx.toString()}`}
-                                                style={{
-                                                  padding: '0.5px 0',
-                                                  overflow: 'hidden',
-                                                  textOverflow: 'ellipsis',
-                                                  whiteSpace: 'nowrap',
-                                                }}
-                                              >
-                                                {prefix} {sr.label}{' '}
-                                                {numFmt(sr.calls)}
-                                              </div>
-                                            )
-                                          }
-                                        )}
-                                        {column.hiddenSubRowCount > 0 && (
-                                          <div>
-                                            {`+${column.hiddenSubRowCount.toString()} more`}
-                                          </div>
-                                        )}
-                                      </div>
-                                    </>
+                                      {entry.subRows.length > 0 && (
+                                        <div
+                                          style={{
+                                            paddingLeft: '8px',
+                                            fontSize: '8px',
+                                            color: 'var(--fg-muted, #94a3b8)',
+                                          }}
+                                        >
+                                          {entry.subRows.map(
+                                            (sr, srIdx, arr) => {
+                                              const isLastVisible =
+                                                entry.hiddenSubRowCount === 0 &&
+                                                srIdx === arr.length - 1
+                                              const prefix = isLastVisible
+                                                ? '└─'
+                                                : '├─'
+                                              return (
+                                                <div
+                                                  key={`${sr.label}-${srIdx.toString()}`}
+                                                  style={{
+                                                    padding: '0.5px 0',
+                                                    overflow: 'hidden',
+                                                    textOverflow: 'ellipsis',
+                                                    whiteSpace: 'nowrap',
+                                                  }}
+                                                >
+                                                  {prefix} {sr.label}{' '}
+                                                  {numFmt(sr.calls)}
+                                                </div>
+                                              )
+                                            }
+                                          )}
+                                          {entry.hiddenSubRowCount > 0 && (
+                                            <div>
+                                              {`+${entry.hiddenSubRowCount.toString()} more`}
+                                            </div>
+                                          )}
+                                        </div>
+                                      )}
+                                    </div>
+                                  ))}
+                                  {columnIdx === 0 && leftHiddenCount > 0 && (
+                                    <div
+                                      style={{
+                                        fontSize: '9px',
+                                        color: 'var(--fg-muted, #94a3b8)',
+                                        fontStyle: 'italic',
+                                        padding: '1px 0',
+                                      }}
+                                    >
+                                      {`+${leftHiddenCount.toString()} more`}
+                                    </div>
                                   )}
-                                  {columnIdx === leftColumns.length - 1 &&
-                                    ta.leftTruncated && (
-                                      <div
-                                        style={{
-                                          fontSize: '9px',
-                                          color: 'var(--fg-muted, #94a3b8)',
-                                          fontStyle: 'italic',
-                                          padding: '1px 0',
-                                        }}
-                                      >
-                                        {`+${(ta.leftTotalCount - LEFT_COL_CAP).toString()} more`}
-                                      </div>
-                                    )}
                                 </div>
                               ))}
                             </div>
