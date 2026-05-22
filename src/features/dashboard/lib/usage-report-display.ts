@@ -11,6 +11,14 @@
  */
 const PROVIDER_ALIASES: Record<string, readonly string[]> = {
   google: ['google', 'gemini'],
+  local: [
+    'local',
+    'local_biomed',
+    'local_embed',
+    'local_litellm',
+    'local_llm',
+    'local_rerank',
+  ],
   xai: ['xai', 'x.ai'],
 }
 
@@ -361,13 +369,18 @@ export function computeFleetErrors(
  * prior-window P95 and pass it back to index.tsx via `onPriorHealthReady`.
  */
 export function computeFleetP95(
-  healthRows: { upstream_p95_ms: number | null; requests: number }[]
+  healthRows: {
+    upstream_p95_ms: number | null
+    total_p95_ms?: number | null
+    requests: number
+  }[]
 ): number {
   let weightedSum = 0
   let totalRequests = 0
   for (const r of healthRows) {
-    if (r.upstream_p95_ms === null) continue
-    weightedSum += r.upstream_p95_ms * r.requests
+    const p95 = r.upstream_p95_ms ?? r.total_p95_ms
+    if (p95 == null) continue
+    weightedSum += p95 * r.requests
     totalRequests += r.requests
   }
   return totalRequests > 0 ? weightedSum / totalRequests : 0

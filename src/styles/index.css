@@ -106,6 +106,14 @@
 
 /* Velocity shimmer is now a masked bar-level overlay with one stepped sweep. */
 
+:root {
+  --quota-burn-slow: #64748b;
+  --quota-burn-steady: #22c55e;
+  --quota-burn-fast: #8b5cf6;
+  --quota-burn-hot: #d946ef;
+  --quota-burn-peak: #f43f5e;
+}
+
 .section-title-row {
   display: flex;
   align-items: flex-end;
@@ -222,23 +230,23 @@
 }
 
 .status-legend-swatch.velocity-slow {
-  background: #64748b;
+  background: var(--quota-burn-slow);
 }
 
 .status-legend-swatch.velocity-steady {
-  background: #4f46e5;
+  background: var(--quota-burn-steady);
 }
 
 .status-legend-swatch.velocity-fast {
-  background: #8b5cf6;
+  background: var(--quota-burn-fast);
 }
 
 .status-legend-swatch.velocity-hot {
-  background: #d946ef;
+  background: var(--quota-burn-hot);
 }
 
 .status-legend-swatch.velocity-peak {
-  background: #f43f5e;
+  background: var(--quota-burn-peak);
 }
 
 @media (max-width: 900px) {
@@ -423,7 +431,7 @@
      AND isolation:isolate (set via CSS below) to create a local stacking context.
    • The moving glow is now a single masked `.quota-row-velocity-overlay` per
      bar, clipped by that local stacking context.
-   • Fast/hot/peak segments keep static velocity filters so tier intensity
+   • Fast/hot/peak segments keep static velocity colors so tier intensity
      remains visible without per-cell animation.
 */
 
@@ -443,28 +451,28 @@
 /* Quota velocity score tiers. These classes are driven by the backend
    ratio of observed burn rate to the quota's expected 1%-per-window cadence. */
 .quota-row-bar .quota-interval.velocity-slow {
-  filter: saturate(0.65) brightness(0.74);
-  opacity: 0.62;
+  background: var(--quota-burn-slow);
+  opacity: 0.68;
 }
 .quota-row-bar .quota-interval.velocity-steady {
-  filter: saturate(0.9) brightness(0.94);
+  background: var(--quota-burn-steady);
   opacity: 0.82;
 }
 .quota-row-bar .quota-interval.velocity-fast {
-  filter: saturate(1.24) brightness(1.08);
+  background: var(--quota-burn-fast);
 }
 .quota-row-bar .quota-interval.velocity-hot {
-  filter: saturate(1.55) brightness(1.18);
-  box-shadow: inset 0 0 0 1px rgba(255, 238, 180, 0.18);
+  background: var(--quota-burn-hot);
+  box-shadow: inset 0 0 0 1px rgba(240, 171, 252, 0.24);
 }
 .quota-row-bar .quota-interval.velocity-peak {
-  filter: saturate(1.95) brightness(1.34);
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.26);
+  background: var(--quota-burn-peak);
+  box-shadow: inset 0 0 0 1px rgba(255, 228, 230, 0.3);
 }
 
 /* Bar-level velocity overlay: the React component applies a CSS mask matching
    the merged fast/hot/peak runs. One animation now covers the whole bar while
-   static segment filters preserve the tier intensity. */
+   static segment colors preserve the tier intensity. */
 .quota-row-velocity-overlay {
   position: absolute;
   inset: 0;
@@ -488,11 +496,11 @@
   background: linear-gradient(
     105deg,
     rgba(255, 255, 255, 0) 0%,
-    rgba(255, 255, 255, 0.14) 24%,
-    rgba(125, 211, 252, 0.38) 38%,
-    rgba(255, 240, 180, 0.58) 50%,
-    rgba(249, 115, 22, 0.34) 62%,
-    rgba(239, 68, 68, 0.22) 74%,
+    rgba(255, 255, 255, 0.14) 22%,
+    rgba(167, 139, 250, 0.42) 38%,
+    rgba(240, 171, 252, 0.62) 50%,
+    rgba(244, 114, 182, 0.42) 64%,
+    rgba(244, 63, 94, 0.24) 76%,
     rgba(255, 255, 255, 0) 100%
   );
   mix-blend-mode: screen;

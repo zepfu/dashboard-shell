@@ -501,31 +501,6 @@ export function ProviderCard({
     : 'var(--accent-hot)'
   const statusGlyph = isHealthy ? '✓' : '✗'
 
-  // Wave 12 Fix 2: build tooltip content for the vertical HealthStrip.
-  // The primitive supports tooltipContent but ProviderCard never passed it —
-  // operator complaint #6 ("health bars do not have hover over") unaddressed.
-  const healthTooltipContent = (
-    <>
-      <div className='v9-tip-head'>{config.provider.toUpperCase()} HEALTH</div>
-      <div className='v9-tip-row'>
-        <span>P95</span>
-        <span>{formatLatency(data.p95_ms)}</span>
-        <span />
-      </div>
-      <div className='v9-tip-row'>
-        <span>Errors</span>
-        <span>{data.errors.toLocaleString()}</span>
-        <span />
-      </div>
-      <div className='v9-tip-row'>
-        <span>Requests</span>
-        <span>{data.requests.toLocaleString()}</span>
-        <span />
-      </div>
-      <div className='v9-tip-foot'>288 cells · last 24h</div>
-    </>
-  )
-
   const rootClassName = ['provider-card', wrapperClassName]
     .filter(Boolean)
     .join(' ')
@@ -547,13 +522,8 @@ export function ProviderCard({
         fontSize: 'clamp(10px, 0.55vw, 14px)',
       }}
     >
-      {/* Vertical HealthStrip — absolutely positioned at right edge */}
-      {/* Wave 12 Fix 2: pass healthTooltipContent so hover tooltip is functional */}
-      <HealthStrip
-        cells={healthCells}
-        orientation='vertical'
-        tooltipContent={healthTooltipContent}
-      />
+      {/* Vertical HealthStrip — auto-tooltip uses bucket-level relative time and health metadata. */}
+      <HealthStrip cells={healthCells} orientation='vertical' />
 
       {/* Header: provider name
           14-C.1: color is var(--accent-chrome) per mockup line 1047 (not brand hex).
