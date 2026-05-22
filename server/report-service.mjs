@@ -59,14 +59,14 @@ const UPSTREAM_API_PROXIES = [
     prefix: '/api/aegis',
     displayName: 'Aegis',
     target:
-      process.env.AEGIS_API_TARGET ?? 'http://host.docker.internal:8001/api/v1',
+      process.env.AEGIS_API_TARGET ?? 'http://aegis-api:8001/api/v1',
     accessToken: envSecret('AEGIS_ACCESS_TOKEN', 'AEGIS_API_TOKEN'),
   },
   {
     prefix: '/api/sluice',
     displayName: 'Sluice',
     target:
-      process.env.SLUICE_API_TARGET ?? 'http://host.docker.internal:8000/api/v1',
+      process.env.SLUICE_API_TARGET ?? 'http://host.docker.internal:8002/api/v1',
     accessToken: envSecret('SLUICE_ACCESS_TOKEN', 'SLUICE_API_TOKEN'),
   },
 ]
