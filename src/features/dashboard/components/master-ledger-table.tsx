@@ -102,11 +102,30 @@ export const SHELL_CLASS_TOOL_NAMES = new Set([
   'code_execution:run_command',
 ])
 
-/** Maximum non-MCP tool rows shown in the left column. */
-const LEFT_COL_CAP = 12
+/** Target row count per compact TOOL hover column. */
+const TOOL_HOVER_ROWS_PER_COLUMN = 14
 
-/** Maximum shell command rows shown in the right column. */
-const RIGHT_COL_CAP = 14
+/** Maximum compact columns retained per side before truncating source rows. */
+const TOOL_HOVER_MAX_SIDE_COLUMNS = 3
+
+/** Maximum MCP server groups promoted into their own left-side columns. */
+const TOOL_HOVER_MAX_MCP_COLUMNS = 5
+
+/** Maximum visual rows used when an MCP column expands its subtools. */
+const TOOL_HOVER_MAX_VISUAL_ROWS_PER_COLUMN = 28
+
+/** Approximate width budget for each rendered TOOL hover column. */
+const TOOL_HOVER_COLUMN_WIDTH_PX = 140
+
+/** Gap between the Tools and Shell groups in the TOOL hover. */
+const TOOL_HOVER_GROUP_GAP_PX = 12
+
+/** Maximum non-MCP tool rows retained for the left-side hover columns. */
+const LEFT_COL_CAP = TOOL_HOVER_ROWS_PER_COLUMN * TOOL_HOVER_MAX_SIDE_COLUMNS
+
+/** Maximum shell rows retained for the tallest dynamic right-side layout. */
+const RIGHT_COL_CAP =
+  TOOL_HOVER_MAX_VISUAL_ROWS_PER_COLUMN * TOOL_HOVER_MAX_SIDE_COLUMNS
 
 /** A single row in the rendered left TOOLS column (post-rollup). */
 export interface ToolLeftRow {
@@ -117,6 +136,103 @@ export interface ToolLeftRow {
   pct: number
   /** Sub-rows for MCP server rollup entries. `undefined` for plain tools. */
   subRows?: { label: string; calls: number }[]
+}
+
+interface ToolShellRow {
+  label: string
+  calls: number
+}
+
+interface ToolHoverPlainColumn {
+  kind: 'plain'
+  label: string
+  rows: ToolLeftRow[]
+}
+
+interface ToolHoverMcpColumn {
+  kind: 'mcp'
+  label: string
+  row: ToolLeftRow
+  subRows: { label: string; calls: number }[]
+  hiddenSubRowCount: number
+}
+
+type ToolHoverLeftColumn = ToolHoverPlainColumn | ToolHoverMcpColumn
+
+function chunkToolHoverRows<T>(
+  rows: readonly T[],
+  rowsPerColumn = TOOL_HOVER_ROWS_PER_COLUMN
+): T[][] {
+  const chunks: T[][] = []
+  for (let i = 0; i < rows.length; i += rowsPerColumn) {
+    chunks.push(rows.slice(i, i + rowsPerColumn))
+  }
+  return chunks
+}
+
+function visibleMcpSubRows(row: ToolLeftRow): {
+  subRows: { label: string; calls: number }[]
+  hiddenSubRowCount: number
+} {
+  const subRows = row.subRows ?? []
+  const maxSubRowsWithoutMarker = TOOL_HOVER_MAX_VISUAL_ROWS_PER_COLUMN - 1
+  const visibleCount =
+    subRows.length > maxSubRowsWithoutMarker
+      ? maxSubRowsWithoutMarker - 1
+      : subRows.length
+
+  return {
+    subRows: subRows.slice(0, visibleCount),
+    hiddenSubRowCount: Math.max(0, subRows.length - visibleCount),
+  }
+}
+
+function mcpColumnVisualRowCount(row: ToolLeftRow): number {
+  const { subRows, hiddenSubRowCount } = visibleMcpSubRows(row)
+  return 1 + subRows.length + (hiddenSubRowCount > 0 ? 1 : 0)
+}
+
+function buildToolHoverLeftColumns(rows: readonly ToolLeftRow[]): {
+  columns: ToolHoverLeftColumn[]
+  rowsPerColumn: number
+} {
+  const mcpRows = rows.filter((row) => (row.subRows?.length ?? 0) > 0)
+  const ownMcpRows = mcpRows.slice(0, TOOL_HOVER_MAX_MCP_COLUMNS)
+  const ownMcpLabels = new Set(ownMcpRows.map((row) => row.label))
+  const plainRows = rows.filter((row) => !ownMcpLabels.has(row.label))
+
+  const rowsPerColumn = Math.min(
+    TOOL_HOVER_MAX_VISUAL_ROWS_PER_COLUMN,
+    Math.max(
+      TOOL_HOVER_ROWS_PER_COLUMN,
+      ...ownMcpRows.map((row) => mcpColumnVisualRowCount(row))
+    )
+  )
+
+  const plainColumns: ToolHoverPlainColumn[] = chunkToolHoverRows(
+    plainRows,
+    rowsPerColumn
+  ).map((columnRows, columnIdx) => ({
+    kind: 'plain',
+    label: columnIdx === 0 ? 'Tools' : `Tools ${columnIdx + 1}`,
+    rows: columnRows,
+  }))
+
+  const mcpColumns: ToolHoverMcpColumn[] = ownMcpRows.map((row) => {
+    const visible = visibleMcpSubRows(row)
+    return {
+      kind: 'mcp',
+      label: row.label,
+      row,
+      subRows: visible.subRows,
+      hiddenSubRowCount: visible.hiddenSubRowCount,
+    }
+  })
+
+  return {
+    columns: [...plainColumns, ...mcpColumns],
+    rowsPerColumn,
+  }
 }
 
 /**
@@ -136,11 +252,57 @@ export interface ModelToolActivity {
   /** Original count of non-truncated left rows (used for "+N more" display). */
   leftTotalCount: number
   /** Right-column shell command rows, capped at RIGHT_COL_CAP. */
-  shellRows: { label: string; calls: number }[]
+  shellRows: ToolShellRow[]
   /** Whether shellRows was truncated. */
   shellTruncated: boolean
   /** Original count of non-truncated shell rows (for "+N more" display). */
   shellTotalCount: number
+}
+
+function isShellAssignmentToken(token: string): boolean {
+  return /^[A-Za-z_][A-Za-z0-9_]*=/.test(token)
+}
+
+function cleanShellToken(token: string | undefined): string {
+  if (token === undefined) return ''
+  const unquoted = token
+    .trim()
+    .replace(/^["']|["']$/g, '')
+    .replace(/\\$/, '')
+  const normalized = unquoted.replace(/\\/g, '/')
+  const parts = normalized.split('/').filter(Boolean)
+  return (parts.length > 0 ? parts[parts.length - 1] : normalized).toLowerCase()
+}
+
+/**
+ * Normalizes shell labels before the TOOL hover groups them.
+ *
+ * The server intentionally emits compact command labels, but some Bash commands
+ * arrive with executable paths or assignment prefixes, for example
+ * `/home/.../.venv/bin/python`, `./.venv/bin/python`, or
+ * `worktree="/tmp/x"\ngit`. Those should roll up with `python` and `git`.
+ */
+function normalizeShellCommandLabel(label: string | null | undefined): string {
+  const tokens = (label ?? '')
+    .trim()
+    .split(/\s+/)
+    .map((token) => token.trim())
+    .filter(Boolean)
+
+  let commandIdx = 0
+  while (
+    commandIdx < tokens.length &&
+    (tokens[commandIdx] === '\\' ||
+      tokens[commandIdx] === 'env' ||
+      isShellAssignmentToken(tokens[commandIdx]))
+  ) {
+    commandIdx += 1
+  }
+
+  const command = cleanShellToken(tokens[commandIdx])
+  if (command === '' || command.startsWith('#')) return ''
+
+  return command
 }
 
 /**
@@ -240,8 +402,17 @@ export function buildToolActivity(
     }
   })
 
-  // Right-column: shell command rows sorted by calls desc, capped
-  const sortedShell = [...shellRows].sort((a, b) => b.calls - a.calls)
+  const shellRollup = new Map<string, number>()
+  for (const row of shellRows) {
+    const label = normalizeShellCommandLabel(row.label)
+    if (label === '') continue
+    shellRollup.set(label, (shellRollup.get(label) ?? 0) + row.calls)
+  }
+
+  // Right-column: normalized shell command rows sorted by calls desc, capped
+  const sortedShell = [...shellRollup.entries()]
+    .map(([label, calls]) => ({ label, calls }))
+    .sort((a, b) => b.calls - a.calls)
   const shellTotalCount = sortedShell.length
   const shellTruncated = shellTotalCount > RIGHT_COL_CAP
   const shellRowsCapped = sortedShell.slice(0, RIGHT_COL_CAP).map((r) => ({
@@ -306,22 +477,6 @@ export interface ModelRow {
 // ---------------------------------------------------------------------------
 // Severity helpers
 // ---------------------------------------------------------------------------
-
-/**
- * Returns the CSS gutter class name representing the severity of a row,
- * derived from error_pct and cost_usd thresholds.
- *
- * 14-F.2: Maps severity to .gutter-* class names from the Wave 14-F CSS
- * class system instead of inline color values.
- *
- * Wave 26 (F#13): quota_pct removed; severity now based on error_pct + cost.
- */
-function rowSeverityClass(row: ModelRow): string {
-  if (row.error_pct >= 2) return 'gutter-hot'
-  if (row.error_pct >= 0.5) return 'gutter-warm'
-  if (row.cost_usd >= 1) return 'gutter-teal'
-  return 'gutter-cool'
-}
 
 /**
  * Returns the CSS color variable for sparkline tinting (still needed for
@@ -843,7 +998,6 @@ export function MasterLedgerTable({
         <tbody>
           {table.getRowModel().rows.map((row) => {
             const orig = row.original
-            const gutterClass = rowSeverityClass(orig)
             const severityColor = rowSeverityColor(orig)
             // Wave 12 Fix 1: use reference brand hex for Provider column cell.
             // providerColorFor() returns legacy palette (blue/purple) which was
@@ -1096,25 +1250,48 @@ export function MasterLedgerTable({
                         : '—'
                     const ta = orig.toolActivity
                     if (ta !== undefined && ta.totalCalls > 0) {
-                      // Build 2-column hover tooltip
+                      const leftLayout = buildToolHoverLeftColumns(ta.leftRows)
+                      const leftColumns = leftLayout.columns
+                      const shellDisplayCap =
+                        leftLayout.rowsPerColumn * TOOL_HOVER_MAX_SIDE_COLUMNS
+                      const displayedShellRows = ta.shellRows.slice(
+                        0,
+                        shellDisplayCap
+                      )
+                      const shellHiddenCount = Math.max(
+                        0,
+                        ta.shellTotalCount - displayedShellRows.length
+                      )
+                      const shellColumns = chunkToolHoverRows(
+                        displayedShellRows,
+                        leftLayout.rowsPerColumn
+                      )
+                      const leftColumnCount = Math.max(1, leftColumns.length)
+                      const shellColumnCount = Math.max(1, shellColumns.length)
+                      const tooltipWidthPx = Math.max(
+                        340,
+                        (leftColumnCount + shellColumnCount) *
+                          TOOL_HOVER_COLUMN_WIDTH_PX +
+                          TOOL_HOVER_GROUP_GAP_PX
+                      )
+
                       const tooltipContent = (
                         <div
                           style={{
                             display: 'grid',
-                            gridTemplateColumns: '1fr 1fr',
-                            columnGap: '12px',
-                            minWidth: '340px',
+                            gridTemplateColumns: `minmax(0, ${leftColumnCount.toString()}fr) minmax(0, ${shellColumnCount.toString()}fr)`,
+                            columnGap: `${TOOL_HOVER_GROUP_GAP_PX.toString()}px`,
+                            minWidth: 0,
+                            width: '100%',
                           }}
                         >
-                          {/* LEFT: TOOLS column */}
-                          <div>
+                          <div style={{ minWidth: 0 }}>
                             <div
                               className='v9-tip-head'
                               style={{ marginBottom: '4px' }}
                             >
                               {orig.model} — tool breakdown
                             </div>
-                            {/* Left column sub-header */}
                             <div
                               style={{
                                 fontSize: '9px',
@@ -1127,93 +1304,159 @@ export function MasterLedgerTable({
                             >
                               Tools
                             </div>
-                            {ta.leftRows.map((lr) => (
-                              <div key={lr.label}>
+                            <div
+                              style={{
+                                display: 'grid',
+                                gridTemplateColumns: `repeat(${leftColumnCount.toString()}, minmax(0, 1fr))`,
+                                columnGap: '8px',
+                                alignItems: 'start',
+                              }}
+                            >
+                              {leftColumns.map((column, columnIdx) => (
                                 <div
-                                  style={{
-                                    display: 'flex',
-                                    justifyContent: 'space-between',
-                                    gap: '4px',
-                                    fontSize: '9px',
-                                    color: 'var(--fg, #e2e8f0)',
-                                    padding: '1px 0',
-                                    lineHeight: 1.5,
-                                  }}
+                                  key={`tools-${column.kind}-${column.label}-${columnIdx.toString()}`}
+                                  style={{ minWidth: 0 }}
                                 >
-                                  <span
-                                    style={{
-                                      overflow: 'hidden',
-                                      textOverflow: 'ellipsis',
-                                      whiteSpace: 'nowrap',
-                                      maxWidth: '100px',
-                                    }}
-                                  >
-                                    {lr.label}
-                                  </span>
-                                  <span style={{ whiteSpace: 'nowrap' }}>
-                                    {numFmt(lr.calls)}
-                                    {'  '}
-                                    {lr.pct.toFixed(0)}%
-                                  </span>
-                                </div>
-                                {/* MCP sub-rows */}
-                                {lr.subRows !== undefined &&
-                                  lr.subRows.length > 0 && (
-                                    <div
-                                      style={{
-                                        paddingLeft: '8px',
-                                        fontSize: '8px',
-                                        color: 'var(--fg-muted, #94a3b8)',
-                                      }}
-                                    >
-                                      {lr.subRows
-                                        .slice(0, 3)
-                                        .map((sr, srIdx, arr) => {
-                                          const isLast =
-                                            srIdx === arr.length - 1
-                                          const prefix = isLast ? '└─' : '├─'
-                                          return (
-                                            <div
-                                              key={sr.label}
-                                              style={{ padding: '0.5px 0' }}
-                                            >
-                                              {prefix} {sr.label}{' '}
-                                              {numFmt(sr.calls)}
-                                            </div>
-                                          )
-                                        })}
-                                      {lr.subRows.length > 3 && (
-                                        <div>
-                                          {`+${(lr.subRows.length - 3).toString()} more`}
+                                  {column.kind === 'plain' ? (
+                                    <>
+                                      {column.rows.map((lr, rowIdx) => (
+                                        <div
+                                          key={`${lr.label}-${rowIdx.toString()}`}
+                                          style={{
+                                            display: 'flex',
+                                            justifyContent: 'space-between',
+                                            gap: '4px',
+                                            fontSize: '9px',
+                                            color: 'var(--fg, #e2e8f0)',
+                                            padding: '1px 0',
+                                            lineHeight: 1.5,
+                                            minWidth: 0,
+                                          }}
+                                        >
+                                          <span
+                                            style={{
+                                              flex: '1 1 auto',
+                                              minWidth: 0,
+                                              overflow: 'hidden',
+                                              textOverflow: 'ellipsis',
+                                              whiteSpace: 'nowrap',
+                                            }}
+                                          >
+                                            {lr.label}
+                                          </span>
+                                          <span
+                                            style={{
+                                              flex: '0 0 auto',
+                                              whiteSpace: 'nowrap',
+                                            }}
+                                          >
+                                            {numFmt(lr.calls)}
+                                            {'  '}
+                                            {lr.pct.toFixed(0)}%
+                                          </span>
                                         </div>
-                                      )}
-                                    </div>
+                                      ))}
+                                    </>
+                                  ) : (
+                                    <>
+                                      <div
+                                        style={{
+                                          display: 'flex',
+                                          justifyContent: 'space-between',
+                                          gap: '4px',
+                                          fontSize: '9px',
+                                          color: 'var(--fg, #e2e8f0)',
+                                          padding: '1px 0',
+                                          lineHeight: 1.5,
+                                          minWidth: 0,
+                                        }}
+                                      >
+                                        <span
+                                          style={{
+                                            flex: '1 1 auto',
+                                            minWidth: 0,
+                                            overflow: 'hidden',
+                                            textOverflow: 'ellipsis',
+                                            whiteSpace: 'nowrap',
+                                          }}
+                                        >
+                                          {column.row.label}
+                                        </span>
+                                        <span
+                                          style={{
+                                            flex: '0 0 auto',
+                                            whiteSpace: 'nowrap',
+                                          }}
+                                        >
+                                          {numFmt(column.row.calls)}
+                                          {'  '}
+                                          {column.row.pct.toFixed(0)}%
+                                        </span>
+                                      </div>
+                                      <div
+                                        style={{
+                                          paddingLeft: '8px',
+                                          fontSize: '8px',
+                                          color: 'var(--fg-muted, #94a3b8)',
+                                        }}
+                                      >
+                                        {column.subRows.map(
+                                          (sr, srIdx, arr) => {
+                                            const isLastVisible =
+                                              column.hiddenSubRowCount === 0 &&
+                                              srIdx === arr.length - 1
+                                            const prefix = isLastVisible
+                                              ? '└─'
+                                              : '├─'
+                                            return (
+                                              <div
+                                                key={`${sr.label}-${srIdx.toString()}`}
+                                                style={{
+                                                  padding: '0.5px 0',
+                                                  overflow: 'hidden',
+                                                  textOverflow: 'ellipsis',
+                                                  whiteSpace: 'nowrap',
+                                                }}
+                                              >
+                                                {prefix} {sr.label}{' '}
+                                                {numFmt(sr.calls)}
+                                              </div>
+                                            )
+                                          }
+                                        )}
+                                        {column.hiddenSubRowCount > 0 && (
+                                          <div>
+                                            {`+${column.hiddenSubRowCount.toString()} more`}
+                                          </div>
+                                        )}
+                                      </div>
+                                    </>
                                   )}
-                              </div>
-                            ))}
-                            {ta.leftTruncated && (
-                              <div
-                                style={{
-                                  fontSize: '9px',
-                                  color: 'var(--fg-muted, #94a3b8)',
-                                  fontStyle: 'italic',
-                                  padding: '1px 0',
-                                }}
-                              >
-                                {`+${(ta.leftTotalCount - LEFT_COL_CAP).toString()} more`}
-                              </div>
-                            )}
+                                  {columnIdx === leftColumns.length - 1 &&
+                                    ta.leftTruncated && (
+                                      <div
+                                        style={{
+                                          fontSize: '9px',
+                                          color: 'var(--fg-muted, #94a3b8)',
+                                          fontStyle: 'italic',
+                                          padding: '1px 0',
+                                        }}
+                                      >
+                                        {`+${(ta.leftTotalCount - LEFT_COL_CAP).toString()} more`}
+                                      </div>
+                                    )}
+                                </div>
+                              ))}
+                            </div>
                           </div>
 
-                          {/* RIGHT: SHELL column */}
-                          <div>
+                          <div style={{ minWidth: 0 }}>
                             <div
                               className='v9-tip-head'
                               style={{ marginBottom: '4px' }}
                             >
                               &nbsp;
                             </div>
-                            {/* Right column sub-header */}
                             <div
                               style={{
                                 fontSize: '9px',
@@ -1226,44 +1469,70 @@ export function MasterLedgerTable({
                             >
                               {`Shell (${numFmt(ta.shellTotalCalls)} calls)`}
                             </div>
-                            {ta.shellRows.map((sr) => (
-                              <div
-                                key={sr.label}
-                                style={{
-                                  display: 'flex',
-                                  justifyContent: 'space-between',
-                                  gap: '4px',
-                                  fontSize: '9px',
-                                  color: 'var(--fg, #e2e8f0)',
-                                  padding: '1px 0',
-                                  lineHeight: 1.5,
-                                }}
-                              >
-                                <span
-                                  style={{
-                                    overflow: 'hidden',
-                                    textOverflow: 'ellipsis',
-                                    whiteSpace: 'nowrap',
-                                    maxWidth: '100px',
-                                  }}
+                            <div
+                              style={{
+                                display: 'grid',
+                                gridTemplateColumns: `repeat(${shellColumnCount.toString()}, minmax(0, 1fr))`,
+                                columnGap: '8px',
+                                alignItems: 'start',
+                              }}
+                            >
+                              {shellColumns.map((columnRows, columnIdx) => (
+                                <div
+                                  key={`shell-${columnIdx.toString()}`}
+                                  style={{ minWidth: 0 }}
                                 >
-                                  {sr.label}
-                                </span>
-                                <span>{numFmt(sr.calls)}</span>
-                              </div>
-                            ))}
-                            {ta.shellTruncated && (
-                              <div
-                                style={{
-                                  fontSize: '9px',
-                                  color: 'var(--fg-muted, #94a3b8)',
-                                  fontStyle: 'italic',
-                                  padding: '1px 0',
-                                }}
-                              >
-                                {`+${(ta.shellTotalCount - RIGHT_COL_CAP).toString()} more`}
-                              </div>
-                            )}
+                                  {columnRows.map((sr) => (
+                                    <div
+                                      key={sr.label}
+                                      style={{
+                                        display: 'flex',
+                                        justifyContent: 'space-between',
+                                        gap: '4px',
+                                        fontSize: '9px',
+                                        color: 'var(--fg, #e2e8f0)',
+                                        padding: '1px 0',
+                                        lineHeight: 1.5,
+                                        minWidth: 0,
+                                      }}
+                                    >
+                                      <span
+                                        style={{
+                                          flex: '1 1 auto',
+                                          minWidth: 0,
+                                          overflow: 'hidden',
+                                          textOverflow: 'ellipsis',
+                                          whiteSpace: 'nowrap',
+                                        }}
+                                      >
+                                        {sr.label}
+                                      </span>
+                                      <span
+                                        style={{
+                                          flex: '0 0 auto',
+                                          whiteSpace: 'nowrap',
+                                        }}
+                                      >
+                                        {numFmt(sr.calls)}
+                                      </span>
+                                    </div>
+                                  ))}
+                                  {columnIdx === shellColumns.length - 1 &&
+                                    shellHiddenCount > 0 && (
+                                      <div
+                                        style={{
+                                          fontSize: '9px',
+                                          color: 'var(--fg-muted, #94a3b8)',
+                                          fontStyle: 'italic',
+                                          padding: '1px 0',
+                                        }}
+                                      >
+                                        {`+${shellHiddenCount.toString()} more`}
+                                      </div>
+                                    )}
+                                </div>
+                              ))}
+                            </div>
                           </div>
                         </div>
                       )
@@ -1271,6 +1540,10 @@ export function MasterLedgerTable({
                         <HoverTooltip
                           variant='quota-bar'
                           content={tooltipContent}
+                          panelStyle={{
+                            maxWidth: 'calc(100vw - 16px)',
+                            width: `min(${tooltipWidthPx.toString()}px, calc(100vw - 16px))`,
+                          }}
                         >
                           {toolLabel}
                         </HoverTooltip>
@@ -1306,13 +1579,9 @@ export function MasterLedgerTable({
                     colId !== 'provider' &&
                     colId !== 'sparkline'
 
-                  // Build className: meta class + optional gutter class + optional number class
+                  // Build className: meta class + optional number class
                   const tdClassName =
-                    [
-                      meta?.className,
-                      isFirst ? gutterClass : undefined,
-                      isNumericCell ? 'number' : undefined,
-                    ]
+                    [meta?.className, isNumericCell ? 'number' : undefined]
                       .filter(Boolean)
                       .join(' ') || undefined
 
@@ -1325,9 +1594,8 @@ export function MasterLedgerTable({
                         fontFamily: 'var(--font-mono)',
                         color: cellColor,
                         borderRight: '1px solid var(--border)',
-                        // 14-F.2: gutter now applied via .gutter-* class; keep borderLeft
-                        // for the 4px solid base with inherited color from class
                         borderLeft: isFirst ? '4px solid' : undefined,
+                        borderLeftColor: isFirst ? providerColor : undefined,
                         paddingLeft: isFirst ? '6px' : undefined,
                         textAlign: isNumericAlign ? 'right' : 'left',
                       }}

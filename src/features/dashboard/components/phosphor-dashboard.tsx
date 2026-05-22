@@ -296,6 +296,95 @@ function _localFallbackRange(): { from: string; to: string } {
   }
 }
 
+function mergeMin(current: number | null, value: number | null): number | null {
+  if (value === null) return current
+  return current === null ? value : Math.min(current, value)
+}
+
+function mergeMax(current: number | null, value: number | null): number | null {
+  if (value === null) return current
+  return current === null ? value : Math.max(current, value)
+}
+
+function deriveProbeBackedCategory(
+  group: UsageReportProviderLatencyHealthRow[],
+  maxP95: number | null,
+  eventCount: number,
+  missingUpstreamLatency: number
+): CellDef['category'] | undefined {
+  if (eventCount > 0 || maxP95 !== null) return undefined
+  if (missingUpstreamLatency > 0) return 'miss'
+
+  let statusProbeCount = 0
+  let minStatusProbeSuccessPct: number | null = null
+  let minControlProbeSuccessPct: number | null = null
+  let maxProviderPacketLossPct: number | null = null
+  let maxControlPacketLossPct: number | null = null
+  let maxProviderDeltaMs: number | null = null
+  let probeFailureCount = 0
+  let hasProbeData = false
+
+  for (const row of group) {
+    statusProbeCount += row.status_probe_count
+    minStatusProbeSuccessPct = mergeMin(
+      minStatusProbeSuccessPct,
+      row.status_probe_success_pct
+    )
+    minControlProbeSuccessPct = mergeMin(
+      minControlProbeSuccessPct,
+      row.control_probe_success_pct
+    )
+    maxProviderPacketLossPct = mergeMax(
+      maxProviderPacketLossPct,
+      row.provider_ping_packet_loss_pct
+    )
+    maxControlPacketLossPct = mergeMax(
+      maxControlPacketLossPct,
+      row.control_packet_loss_pct
+    )
+    maxProviderDeltaMs = mergeMax(
+      maxProviderDeltaMs,
+      row.provider_ping_minus_control_ms
+    )
+    probeFailureCount +=
+      row.dns_failures + row.tcp_failures + row.tls_failures + row.icmp_failures
+
+    hasProbeData =
+      hasProbeData ||
+      row.status_probe_count > 0 ||
+      row.status_probe_success_pct !== null ||
+      row.status_probe_p95_ms !== null ||
+      row.provider_ping_avg_ms !== null ||
+      row.provider_ping_packet_loss_pct !== null ||
+      row.control_ping_avg_ms !== null ||
+      row.control_packet_loss_pct !== null ||
+      row.control_probe_success_pct !== null ||
+      row.provider_ping_minus_control_ms !== null
+  }
+
+  if (!hasProbeData) return undefined
+
+  if (
+    (statusProbeCount > 0 && minStatusProbeSuccessPct === 0) ||
+    (maxProviderPacketLossPct ?? 0) >= 100
+  ) {
+    return 'red'
+  }
+
+  if (
+    probeFailureCount > 0 ||
+    (minStatusProbeSuccessPct !== null && minStatusProbeSuccessPct < 100) ||
+    (minControlProbeSuccessPct !== null && minControlProbeSuccessPct < 100) ||
+    (maxProviderPacketLossPct ?? 0) > 0 ||
+    (maxControlPacketLossPct ?? 0) > 0 ||
+    (maxProviderDeltaMs ?? 0) > 250
+  ) {
+    return 'orange'
+  }
+
+  return 'green'
+}
+
 /**
  * Pads or truncates a health cell array to exactly HEALTH_CELL_COUNT entries.
  * Missing cells are filled with a neutral muted color.
@@ -347,20 +436,20 @@ function padHealthCells(
 
   // Wave 30-Track5 Step 2: emit one CellDef per bucket group.
   // Aggregation rules:
-  //   rawP95Ms      = max non-null upstream_p95_ms across group (null if all null)
+  //   rawP95Ms      = max non-null passive p95 across group (null if all null)
   //   eventCount    = sum of all error-class counters (undefined when total = 0)
   //   rawErrorCount = same numeric total, defaults to 0 (not undefined)
   //   rawErrorBreakdown = per-class sums (undefined when eventCount = 0)
   // Ordering: bucketMap iterates in insertion order = DESC (newest first).
   const cellsDesc: CellDef[] = Array.from(bucketMap.values()).map((group) => {
-    // Max non-null p95 across all tuples in this bucket.
+    // Max non-null passive p95 across all tuples in this bucket. Prefer the
+    // exact upstream split, but fall back to total request latency for provider
+    // routes that recorded timing without upstream sub-span attribution.
     let maxP95: number | null = null
     for (const r of group) {
-      if (r.upstream_p95_ms !== null) {
-        maxP95 =
-          maxP95 === null
-            ? r.upstream_p95_ms
-            : Math.max(maxP95, r.upstream_p95_ms)
+      const passiveP95 = r.upstream_p95_ms ?? r.total_p95_ms
+      if (passiveP95 !== null) {
+        maxP95 = maxP95 === null ? passiveP95 : Math.max(maxP95, passiveP95)
       }
     }
 
@@ -371,6 +460,7 @@ function padHealthCells(
     let sumNetwork = 0
     let sumRateLimit = 0
     let sumCapacity = 0
+    let sumMissingUpstreamLatency = 0
     for (const r of group) {
       sumProviderError += r.provider_error_events
       sum5xx += r.provider_5xx_events
@@ -378,6 +468,7 @@ function padHealthCells(
       sumNetwork += r.network_error_events
       sumRateLimit += r.rate_limit_events
       sumCapacity += r.capacity_events
+      sumMissingUpstreamLatency += r.missing_upstream_latency
     }
     const eventCount =
       sumProviderError +
@@ -406,6 +497,12 @@ function padHealthCells(
     // First non-null bucket_start in the group (all rows in the group share
     // the same bucket_start when the key is not synthetic).
     const bucketStart = group.find((r) => r.bucket_start != null)?.bucket_start
+    const category = deriveProbeBackedCategory(
+      group,
+      maxP95,
+      eventCount,
+      sumMissingUpstreamLatency
+    )
 
     return {
       // Wave 25-PhosphorDash (F#11): neutral fallback color; deriveCellStyle
@@ -419,14 +516,21 @@ function padHealthCells(
       // F1a: no per-event JSON available at health-row granularity; pass empty
       // array so W24-HealthStrip's buildCellTooltip renders a summary-only tooltip.
       events: emptyEvents,
-      // Wave 25-PhosphorDash (F#11): wire upstream p95 so deriveCellStyle path-2
+      // Wave 25-PhosphorDash (F#11): wire passive p95 so deriveCellStyle path-2
       // (percentile-relative thresholds) is activated instead of falling through
       // to the legacy color fallback. null when the bucket has no latency data,
-      // which deriveCellStyle handles as a cat-miss cell.
+      // which deriveCellStyle handles as a no-data cell unless category marks
+      // an attribution gap.
       rawP95Ms: maxP95,
       // Wave 25-PhosphorDash (F#11): wire raw error count for the amber trigger
       // in deriveCellStyle (any error event → amber regardless of p95).
       rawErrorCount: eventCount > 0 ? eventCount : 0,
+      // Provider health can be known from active status/control probes even when
+      // there was no passive LLM traffic in the bucket. Use an explicit category
+      // only for those probe-backed no-traffic buckets and instrumentation gaps;
+      // buckets with passive latency keep the raw metric path so percentile-based
+      // latency degradation still works.
+      ...(category !== undefined ? { category } : {}),
       // Wave 29-E2 (Track 6): per-type error breakdown for hover tooltip.
       rawErrorBreakdown,
     }
@@ -943,6 +1047,8 @@ export {
   quotaTypeToPeriodType as _quotaTypeToPeriodTypeForTest,
   tipModelsFromBreakdownGoogleAggregated as _tipModelsGoogleForTest,
   tipModelsFromBreakdownSingleLabel as _tipModelsSingleLabelForTest,
+  // eslint-disable-next-line react-refresh/only-export-components
+  padHealthCells as _padHealthCellsForTest,
   buildProviderLanes as _buildProviderLanesForTest,
   classifyGeminiModel as _classifyGeminiModelForTest,
   fmtIntervalCompact as _fmtIntervalCompactForTest,

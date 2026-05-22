@@ -88,6 +88,51 @@ test('test_hover_tooltip_quota_variant_positions_above', () => {
   expect(hasAboveClass || hasAboveStyle).toBe(true)
 })
 
+test('test_hover_tooltip_portalled_panel_clears_legacy_offsets', () => {
+  const { container } = render(
+    <HoverTooltip
+      content={
+        <>
+          <div className='v9-tip-head'>Quota tip</div>
+          <div className='v9-tip-row'>First row</div>
+          <div className='v9-tip-row'>Second row</div>
+        </>
+      }
+      variant='quota'
+    >
+      <button type='button'>Trigger</button>
+    </HoverTooltip>
+  )
+
+  const trigger = container.firstChild as HTMLElement
+  fireEvent.pointerEnter(trigger)
+
+  const tooltip = document.body.querySelector('.v9-tip') as HTMLElement | null
+  expect(tooltip).not.toBeNull()
+
+  // Regression: .tip-quota still has legacy absolute `bottom` CSS. The
+  // portalled fixed panel must clear it or the browser constrains the panel
+  // height and rows overflow outside the painted background.
+  expect(tooltip?.style.inset).toBe('auto')
+})
+
+test('test_hover_tooltip_accepts_panel_style_override', () => {
+  render(
+    <HoverTooltip
+      content={<span>Tooltip content</span>}
+      panelStyle={{ maxWidth: 'calc(100vw - 16px)', width: '720px' }}
+    >
+      <button type='button'>Hover me</button>
+    </HoverTooltip>
+  )
+
+  const tooltip = document.body.querySelector('.v9-tip') as HTMLElement | null
+
+  expect(tooltip).not.toBeNull()
+  expect(tooltip?.style.maxWidth).toBe('calc(100vw - 16px)')
+  expect(tooltip?.style.width).toBe('720px')
+})
+
 test('test_hover_tooltip_does_not_inject_style_tag', () => {
   // Wave 35 ✘-2: ensureStyles() was removed so the component no longer injects
   // a <style data-v9-tooltip> tag at runtime. CSS in index.css is the sole source

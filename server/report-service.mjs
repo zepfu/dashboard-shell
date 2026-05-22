@@ -405,6 +405,20 @@ async function refreshReportCache(identity, load, options = {}) {
   if (existing?.promise) return existing.promise
 
   const promise = refreshReportCacheUnshared(identity, load, options)
+    .then((result) => {
+      const current = reportCache.get(identity.cacheKey)
+      if (current?.promise === promise) {
+        if (result.entry) {
+          reportCache.set(identity.cacheKey, { entry: result.entry })
+        } else {
+          const next = { ...current }
+          delete next.promise
+          reportCache.set(identity.cacheKey, next)
+        }
+        pruneReportCache()
+      }
+      return result
+    })
     .catch((error) => {
       if (reportCache.get(identity.cacheKey)?.promise === promise) {
         reportCache.delete(identity.cacheKey)
@@ -941,7 +955,11 @@ function buildProviderLatencyHealthQuery(searchParams) {
 SELECT
     bucket_start,
     COALESCE(environment, 'unknown') AS environment,
-    COALESCE(provider, 'unknown') AS provider,
+    CASE
+        WHEN lower(COALESCE(provider, 'unknown')) IN ('xai', 'x.ai') THEN 'xai'
+        WHEN lower(COALESCE(provider, 'unknown')) LIKE 'xai/%' THEN 'xai'
+        ELSE COALESCE(provider, 'unknown')
+    END AS provider,
     COALESCE(model, 'unknown') AS model,
     COALESCE(model_group, 'unknown') AS model_group,
     requests,

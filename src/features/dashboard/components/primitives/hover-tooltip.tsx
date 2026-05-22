@@ -60,6 +60,8 @@ interface HoverTooltipProps {
   children: ReactNode
   /** Extra class names forwarded to the wrapper div. */
   className?: string
+  /** Optional inline style overrides for the floating panel. */
+  panelStyle?: CSSProperties
 }
 
 /** Computed fixed-position coords for the floating panel. */
@@ -134,6 +136,7 @@ export function HoverTooltip({
   variant = 'default',
   children,
   className,
+  panelStyle: panelStyleOverride,
 }: HoverTooltipProps): ReactElement {
   const [isOpen, setIsOpen] = useState(false)
   const [coords, setCoords] = useState<PanelCoords | null>(null)
@@ -179,6 +182,14 @@ export function HoverTooltip({
   function panelStyle(): CSSProperties {
     const base: CSSProperties = {
       position: 'fixed',
+      /*
+       * Reset legacy absolute-positioning offsets from .tip-quota/.tip-health.
+       * Those classes still carry bottom/right/top rules from the pre-portal
+       * implementation; if bottom survives alongside the fixed top coordinate,
+       * the browser constrains the panel to a header-height box while the rows
+       * overflow outside the painted background.
+       */
+      inset: 'auto',
       /* Wave 14-G: rgba(11,16,24,0.96) per mockup line 2011 */
       backgroundColor: 'rgba(11, 16, 24, 0.96)',
       border: '1px solid #f59e0b',
@@ -225,6 +236,10 @@ export function HoverTooltip({
         width: 'max-content',
         whiteSpace: 'normal',
       } satisfies CSSProperties)
+    }
+
+    if (panelStyleOverride !== undefined) {
+      Object.assign(base, panelStyleOverride)
     }
 
     // Apply computed fixed-position coords.

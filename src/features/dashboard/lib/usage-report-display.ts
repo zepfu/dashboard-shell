@@ -11,6 +11,7 @@
  */
 const PROVIDER_ALIASES: Record<string, readonly string[]> = {
   google: ['google', 'gemini'],
+  xai: ['xai', 'x.ai'],
 }
 
 /**

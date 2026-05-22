@@ -18,6 +18,7 @@ import { render, act } from '@testing-library/react'
 import { http, HttpResponse } from 'msw'
 import { server } from '../../../test/setup'
 import type {
+  UsageReportProviderLatencyHealthRow,
   UsageReportQuotaHistoryRow,
   UsageReportQuotaRow,
   UsageReportQuotaUsageBreakdown,
@@ -28,6 +29,7 @@ import PhosphorDashboard, {
   _quotaTypeToPeriodTypeForTest,
   _tipModelsGoogleForTest,
   _tipModelsSingleLabelForTest,
+  _padHealthCellsForTest,
   _buildProviderLanesForTest,
   _classifyGeminiModelForTest,
   _fmtIntervalCompactForTest,
@@ -156,6 +158,150 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
     // The internal useQuery is gated by `internalQueryEnabled = reportProp === undefined`.
     // Since we supplied `report`, NO fetch to /api/shell/reports/usage should occur.
     expect(usageCallCount).toBe(0)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Provider health cell classification
+// ---------------------------------------------------------------------------
+
+describe('Provider health cell classification', () => {
+  function makeHealthRow(
+    overrides: Partial<UsageReportProviderLatencyHealthRow> = {}
+  ): UsageReportProviderLatencyHealthRow {
+    return {
+      bucket_start: '2026-05-21T20:45:00.000Z',
+      environment: 'dev',
+      provider: 'xai',
+      model: 'unknown',
+      model_group: 'unknown',
+      requests: 0,
+      passive_latency_sample_status: 'no_traffic',
+      upstream_p50_ms: null,
+      upstream_p95_ms: null,
+      upstream_p99_ms: null,
+      total_p95_ms: null,
+      proxy_processing_p95_ms: null,
+      missing_upstream_latency: 0,
+      provider_error_events: 0,
+      rate_limit_events: 0,
+      capacity_events: 0,
+      provider_5xx_events: 0,
+      provider_timeout_events: 0,
+      network_error_events: 0,
+      auth_failed_events: 0,
+      adapter_error_events: 0,
+      status_probe_count: 0,
+      status_probe_success_pct: null,
+      status_probe_p95_ms: null,
+      provider_ping_avg_ms: null,
+      provider_ping_packet_loss_pct: null,
+      control_ping_avg_ms: null,
+      control_packet_loss_pct: null,
+      control_probe_success_pct: null,
+      provider_ping_minus_control_ms: null,
+      dns_failures: 0,
+      tcp_failures: 0,
+      tls_failures: 0,
+      icmp_failures: 0,
+      probed_endpoints: null,
+      status_error_classes: null,
+      min_remaining_pct: null,
+      max_remaining_pct: null,
+      next_expected_reset_at: null,
+      quota_keys: null,
+      request_period_start: null,
+      request_period_end: null,
+      ...overrides,
+    }
+  }
+
+  test('test_probe_backed_no_traffic_bucket_is_green_not_blue', () => {
+    const cells = _padHealthCellsForTest(
+      [
+        makeHealthRow({
+          status_probe_count: 8,
+          status_probe_success_pct: 100,
+          status_probe_p95_ms: 110,
+          provider_ping_avg_ms: 32,
+          provider_ping_packet_loss_pct: 0,
+          control_ping_avg_ms: 30,
+          control_packet_loss_pct: 0,
+          control_probe_success_pct: 100,
+          provider_ping_minus_control_ms: 2,
+        }),
+      ],
+      'xai'
+    )
+
+    expect(cells).toHaveLength(288)
+    expect(cells[287].category).toBe('green')
+    expect(cells[287].rawP95Ms).toBeNull()
+  })
+
+  test('test_xai_alias_row_feeds_xai_provider_health', () => {
+    const cells = _padHealthCellsForTest(
+      [
+        makeHealthRow({
+          provider: 'x.ai',
+          requests: 3,
+          passive_latency_sample_status: 'normal',
+          upstream_p95_ms: 145,
+        }),
+      ],
+      'xai'
+    )
+
+    expect(cells[287].rawP95Ms).toBe(145)
+  })
+
+  test('test_total_latency_fallback_prevents_false_missing_upstream_miss', () => {
+    const cells = _padHealthCellsForTest(
+      [
+        makeHealthRow({
+          provider: 'openrouter',
+          model: 'openrouter/qwen/qwen3-embedding-8b',
+          requests: 18,
+          passive_latency_sample_status: 'normal',
+          upstream_p95_ms: null,
+          total_p95_ms: 6130.985,
+          missing_upstream_latency: 18,
+          status_probe_count: 4,
+          status_probe_success_pct: 100,
+          status_probe_p95_ms: 110,
+        }),
+      ],
+      'openrouter'
+    )
+
+    expect(cells[287].category).toBeUndefined()
+    expect(cells[287].rawP95Ms).toBe(6130.985)
+  })
+
+  test('test_missing_upstream_latency_bucket_is_miss', () => {
+    const cells = _padHealthCellsForTest(
+      [
+        makeHealthRow({
+          requests: 12,
+          passive_latency_sample_status: 'missing',
+          missing_upstream_latency: 12,
+          status_probe_count: 8,
+          status_probe_success_pct: 100,
+          status_probe_p95_ms: 110,
+        }),
+      ],
+      'xai'
+    )
+
+    expect(cells[287].category).toBe('miss')
+  })
+
+  test('test_true_no_probe_no_traffic_bucket_stays_raw_blue_path', () => {
+    const cells = _padHealthCellsForTest([makeHealthRow()], 'xai')
+
+    expect(cells[287].category).toBeUndefined()
+    expect(cells[287].rawP95Ms).toBeNull()
+    expect(cells[287].rawErrorCount).toBe(0)
   })
 })
 
