@@ -817,14 +817,21 @@ function buildQuotaSegments(
 
     const score = velocityScores?.[i] ?? 0
     const hasVelocityData = score > 0 && i < consumedSegmentLimit
+    const velocityClass = hasVelocityData
+      ? velocityClassForScore(score)
+      : undefined
     const highVelocity =
-      (Boolean(velocitySegments?.[i]) || score > 1) && i < consumedSegmentLimit
+      velocityClass === 'velocity-fast' ||
+      velocityClass === 'velocity-hot' ||
+      velocityClass === 'velocity-peak'
+
+    void velocitySegments
 
     return {
       widthPct: 100 / SEGMENTS,
       severityClass,
       highVelocity,
-      velocityClass: hasVelocityData ? velocityClassForScore(score) : undefined,
+      velocityClass,
     }
   })
 }

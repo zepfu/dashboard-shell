@@ -8,7 +8,10 @@
  * All tests expected to FAIL (red) — source file does not exist yet.
  */
 import { render } from '@testing-library/react'
-import { QuotaIntervalBar } from '../primitives/quota-interval-bar'
+import {
+  QuotaIntervalBar,
+  type QuotaInterval,
+} from '../primitives/quota-interval-bar'
 
 const makeIntervals = (count: number) =>
   Array.from({ length: count }, () => ({
@@ -22,18 +25,26 @@ test('test_quota_interval_bar_renders_n_intervals', () => {
     <QuotaIntervalBar intervals={makeIntervals(8)} />
   )
 
-  // Should render 8 interval elements
+  // Adjacent identical logical buckets are rendered as one visual run.
   const intervals =
     container.querySelectorAll('.quota-interval').length > 0
       ? container.querySelectorAll('.quota-interval')
       : container.querySelectorAll('[data-testid="quota-interval"]')
 
-  expect(intervals.length).toBe(8)
+  expect(intervals.length).toBe(1)
+  const mergedRun = intervals[0] as HTMLElement
+  expect(mergedRun.style.width).toBe('100%')
+  expect(mergedRun.style.flex).toBe('0 0 100%')
 })
 
 test('test_quota_interval_bar_high_velocity_class', () => {
   const intervals = [
-    { widthPct: 50, severityClass: 'iv-warning', highVelocity: true },
+    {
+      widthPct: 50,
+      severityClass: 'iv-warning',
+      highVelocity: true,
+      velocityClass: 'velocity-fast',
+    },
     { widthPct: 50, severityClass: 'iv-ok', highVelocity: false },
   ]
   const { container } = render(<QuotaIntervalBar intervals={intervals} />)
@@ -44,6 +55,166 @@ test('test_quota_interval_bar_high_velocity_class', () => {
     container.querySelector('[data-high-velocity="true"]')
 
   expect(highVelEl).not.toBeNull()
+})
+
+test('test_quota_interval_bar_only_fast_hot_peak_velocity_tiers_animate', () => {
+  const intervals: QuotaInterval[] = [
+    {
+      widthPct: 20,
+      severityClass: 'iv-ok',
+      highVelocity: true,
+      velocityClass: 'velocity-slow',
+    },
+    {
+      widthPct: 20,
+      severityClass: 'iv-ok',
+      highVelocity: true,
+      velocityClass: 'velocity-steady',
+    },
+    {
+      widthPct: 20,
+      severityClass: 'iv-ok',
+      highVelocity: true,
+      velocityClass: 'velocity-fast',
+    },
+    {
+      widthPct: 20,
+      severityClass: 'iv-ok',
+      highVelocity: true,
+      velocityClass: 'velocity-hot',
+    },
+    {
+      widthPct: 20,
+      severityClass: 'iv-ok',
+      highVelocity: true,
+      velocityClass: 'velocity-peak',
+    },
+  ]
+
+  const { container } = render(<QuotaIntervalBar intervals={intervals} />)
+  const rendered = Array.from(
+    container.querySelectorAll('.quota-interval')
+  ) as HTMLElement[]
+
+  expect(rendered).toHaveLength(5)
+  expect(rendered[0].classList.contains('velocity-slow')).toBe(true)
+  expect(rendered[0].classList.contains('high-velocity')).toBe(false)
+  expect(rendered[1].classList.contains('velocity-steady')).toBe(true)
+  expect(rendered[1].classList.contains('high-velocity')).toBe(false)
+  expect(
+    rendered.slice(2).every((el) => el.classList.contains('high-velocity'))
+  ).toBe(true)
+})
+
+test('test_quota_interval_bar_preserves_visual_boundaries_and_widths', () => {
+  const intervals: QuotaInterval[] = [
+    {
+      widthPct: 1,
+      severityClass: 'iv-ok',
+      highVelocity: false,
+      velocityClass: 'velocity-slow',
+    },
+    {
+      widthPct: 1,
+      severityClass: 'iv-ok',
+      highVelocity: false,
+      velocityClass: 'velocity-slow',
+    },
+    {
+      widthPct: 1,
+      severityClass: 'iv-ok',
+      highVelocity: true,
+      velocityClass: 'velocity-fast',
+    },
+    {
+      widthPct: 1,
+      severityClass: 'iv-ok',
+      highVelocity: true,
+      velocityClass: 'velocity-fast',
+    },
+    {
+      widthPct: 1,
+      severityClass: 'iv-warning',
+      highVelocity: true,
+      velocityClass: 'velocity-fast',
+    },
+  ]
+  const { container } = render(<QuotaIntervalBar intervals={intervals} />)
+  const rendered = Array.from(
+    container.querySelectorAll('.quota-interval')
+  ) as HTMLElement[]
+
+  expect(rendered.map((interval) => interval.style.width)).toEqual([
+    '2%',
+    '2%',
+    '1%',
+  ])
+  expect(
+    rendered.map((interval) => interval.classList.contains('high-velocity'))
+  ).toEqual([false, true, true])
+  expect(
+    rendered.map((interval) => interval.classList.contains('iv-ok'))
+  ).toEqual([true, true, false])
+  expect(
+    rendered.map((interval) => interval.classList.contains('iv-warning'))
+  ).toEqual([false, false, true])
+  expect(
+    rendered.map((interval) => interval.classList.contains('velocity-fast'))
+  ).toEqual([false, true, true])
+})
+
+test('test_quota_interval_bar_keeps_velocity_tiers_as_merge_boundaries', () => {
+  const intervals: QuotaInterval[] = [
+    {
+      widthPct: 1,
+      severityClass: 'iv-ok',
+      highVelocity: false,
+      velocityClass: 'velocity-slow',
+    },
+    {
+      widthPct: 1,
+      severityClass: 'iv-ok',
+      highVelocity: false,
+      velocityClass: 'velocity-steady',
+    },
+  ]
+  const { container } = render(<QuotaIntervalBar intervals={intervals} />)
+  const rendered = Array.from(
+    container.querySelectorAll('.quota-interval')
+  ) as HTMLElement[]
+
+  expect(rendered).toHaveLength(2)
+  expect(
+    rendered.map((interval) => interval.classList.contains('velocity-slow'))
+  ).toEqual([true, false])
+  expect(
+    rendered.map((interval) => interval.classList.contains('velocity-steady'))
+  ).toEqual([false, true])
+})
+
+test('test_quota_interval_bar_merges_adjacent_matching_velocity_tiers', () => {
+  const intervals: QuotaInterval[] = [
+    {
+      widthPct: 1,
+      severityClass: 'iv-ok',
+      highVelocity: false,
+      velocityClass: 'velocity-slow',
+    },
+    {
+      widthPct: 1,
+      severityClass: 'iv-ok',
+      highVelocity: false,
+      velocityClass: 'velocity-slow',
+    },
+  ]
+  const { container } = render(<QuotaIntervalBar intervals={intervals} />)
+  const rendered = Array.from(
+    container.querySelectorAll('.quota-interval')
+  ) as HTMLElement[]
+
+  expect(rendered).toHaveLength(1)
+  expect(rendered[0].style.width).toBe('2%')
+  expect(rendered[0].classList.contains('velocity-slow')).toBe(true)
 })
 
 test('test_quota_interval_bar_velocity_class', () => {

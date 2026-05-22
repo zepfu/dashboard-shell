@@ -16,17 +16,19 @@
  *
  * Wave 41 spectral-animation scoping fix:
  * - Added `isPrior` prop. When true, the `.is-prior` class is added to the
- *   `.quota-row-bar` wrapper so the CSS can suppress all `high-velocity`
- *   animation on prior (history) bars.
+ *   `.quota-row-bar` wrapper for prior/history bar styling hooks.
  * - `overflow: hidden` added to `.quota-row-bar` so the Layer B sweeping
  *   sheen (::before) is clipped to the bar boundary and cannot bleed into
  *   adjacent provider card rows.
+ *
+ * D1-019: adjacent buckets with the same visual state are merged into wider
+ * display runs. Only fast/hot/peak velocity tiers keep animation classes.
  */
 import type { ReactElement, ReactNode } from 'react'
 import { HoverTooltip } from './hover-tooltip'
 import './quota-interval-bar.module.css'
 
-interface Interval {
+export interface QuotaInterval {
   widthPct: number
   /** v9.7 threshold class: iv-0-5 | iv-5-10 | iv-10-25 | iv-25-50 | iv-50-p */
   severityClass: string
@@ -37,8 +39,56 @@ interface Interval {
 /** Velocity tier for the optional sub-label row. */
 export type VelocityTier = 'amber' | 'red' | 'steady'
 
+const ANIMATED_VELOCITY_CLASSES = new Set([
+  'velocity-fast',
+  'velocity-hot',
+  'velocity-peak',
+])
+
+function shouldAnimateInterval(interval: QuotaInterval): boolean {
+  return (
+    interval.highVelocity &&
+    interval.velocityClass !== undefined &&
+    ANIMATED_VELOCITY_CLASSES.has(interval.velocityClass)
+  )
+}
+
+function intervalMergeKey(interval: QuotaInterval): string {
+  return [
+    interval.severityClass,
+    shouldAnimateInterval(interval) ? 'animated' : 'static',
+    interval.velocityClass ?? '',
+  ].join('|')
+}
+
+function mergeQuotaIntervalsForDisplay(
+  intervals: readonly QuotaInterval[]
+): QuotaInterval[] {
+  const runs: QuotaInterval[] = []
+
+  for (const interval of intervals) {
+    const normalized: QuotaInterval = {
+      ...interval,
+      highVelocity: shouldAnimateInterval(interval),
+    }
+    const previous = runs[runs.length - 1]
+
+    if (
+      previous !== undefined &&
+      intervalMergeKey(previous) === intervalMergeKey(normalized)
+    ) {
+      previous.widthPct += normalized.widthPct
+      continue
+    }
+
+    runs.push({ ...normalized })
+  }
+
+  return runs
+}
+
 interface QuotaIntervalBarProps {
-  intervals: Interval[]
+  intervals: QuotaInterval[]
   projectionPct?: number
   tooltipContent?: ReactNode
   /**
@@ -50,9 +100,8 @@ interface QuotaIntervalBarProps {
   velocityTier?: VelocityTier
   /**
    * Wave 41: when true, marks this bar as a prior (history) bar.
-   * Adds `.is-prior` to the `.quota-row-bar` wrapper so CSS suppresses
-   * all spectral/velocity animation on this element. Prior bars are
-   * always static — only the current active bar animates.
+   * Adds `.is-prior` to the `.quota-row-bar` wrapper for prior/history
+   * styling hooks while preserving velocity-tier classes.
    */
   isPrior?: boolean
 }
@@ -76,6 +125,8 @@ export function QuotaIntervalBar({
     .filter(Boolean)
     .join(' ')
 
+  const displayIntervals = mergeQuotaIntervalsForDisplay(intervals)
+
   const bar = (
     <>
       <div
@@ -95,7 +146,7 @@ export function QuotaIntervalBar({
           overflow: 'hidden',
         }}
       >
-        {intervals.map((interval, i) => (
+        {displayIntervals.map((interval, i) => (
           <div
             key={i}
             className={[
@@ -107,7 +158,11 @@ export function QuotaIntervalBar({
             ]
               .filter(Boolean)
               .join(' ')}
-            style={{ width: `${interval.widthPct}%`, height: '100%' }}
+            style={{
+              width: `${interval.widthPct}%`,
+              flex: `0 0 ${interval.widthPct}%`,
+              height: '100%',
+            }}
           />
         ))}
         {projectionPct !== undefined && (

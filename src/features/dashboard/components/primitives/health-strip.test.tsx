@@ -79,6 +79,57 @@ test('test_health_strip_pads_sparse_data', () => {
   ).toBe(true)
 })
 
+test('test_health_strip_vertical_merges_identical_visual_runs', () => {
+  const cells = Array.from({ length: CELL_COUNT }, () => ({
+    color: 'var(--card-2)',
+  }))
+  const { container } = render(
+    <HealthStrip cells={cells} orientation='vertical' />
+  )
+
+  const cellEls = container.querySelectorAll('.health-strip-cell')
+  expect(cellEls.length).toBe(1)
+  expect((cellEls[0] as HTMLElement).style.flexGrow).toBe('288')
+  expect((cellEls[0] as HTMLElement).style.flexBasis).toBe('0px')
+})
+
+test('test_health_strip_vertical_preserves_run_boundaries_and_padding_span', () => {
+  const cells = [{ color: '#f00' }, { color: '#0f0' }]
+  const { container } = render(
+    <HealthStrip cells={cells} orientation='vertical' />
+  )
+
+  const cellEls = Array.from(
+    container.querySelectorAll('.health-strip-cell')
+  ) as HTMLElement[]
+
+  expect(cellEls.length).toBe(3)
+  expect(cellEls.map((el) => el.style.flexGrow)).toEqual(['1', '1', '286'])
+  expect(cellEls.map((el) => el.style.flexBasis)).toEqual(['0px', '0px', '0px'])
+})
+
+test('test_health_strip_vertical_preserves_miss_hatch_run_without_inline_bg', () => {
+  const cells = [
+    { color: 'var(--card-2)', category: 'miss' as const },
+    { color: 'var(--card-2)', category: 'miss' as const },
+    ...Array.from({ length: CELL_COUNT - 2 }, () => ({
+      color: 'var(--card-2)',
+    })),
+  ]
+  const { container } = render(
+    <HealthStrip cells={cells} orientation='vertical' />
+  )
+
+  const missCells = container.querySelectorAll('.health-strip-cell.cat-miss')
+  expect(missCells.length).toBe(1)
+  expect((missCells[0] as HTMLElement).style.flexGrow).toBe('2')
+  expect((missCells[0] as HTMLElement).style.flexBasis).toBe('0px')
+  const bg =
+    (missCells[0] as HTMLElement).style.background ||
+    (missCells[0] as HTMLElement).style.backgroundColor
+  expect(bg === '' || bg === 'transparent').toBe(true)
+})
+
 // ---------------------------------------------------------------------------
 // Wave 20 — category/intensity color mapping
 // ---------------------------------------------------------------------------

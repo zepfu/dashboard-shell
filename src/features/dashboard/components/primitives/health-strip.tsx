@@ -636,6 +636,8 @@ interface HealthCellProps {
   /** Extra CSS class to append (e.g. 'cat-miss'). */
   extraClass: string
   vertical: boolean
+  /** Number of original five-minute buckets represented by this visual run. */
+  span?: number
 }
 
 /**
@@ -646,12 +648,15 @@ const HealthCell = memo(function HealthCell({
   background,
   extraClass,
   vertical,
+  span = 1,
 }: HealthCellProps): ReactElement {
   const style: CSSProperties = {
     ...(background !== undefined ? { background } : {}),
     width: vertical ? '12px' : '100%',
     height: vertical ? undefined : '6px',
-    flex: vertical ? '1 1 0' : undefined,
+    flexGrow: vertical ? span : undefined,
+    flexShrink: vertical ? 1 : undefined,
+    flexBasis: vertical ? 0 : undefined,
     minHeight: vertical ? 0 : undefined,
   }
 
@@ -659,6 +664,48 @@ const HealthCell = memo(function HealthCell({
 
   return <div className={className} style={style} />
 })
+
+interface HealthVisualRun {
+  background: string | undefined
+  extraClass: string
+  span: number
+}
+
+function healthRunKey(
+  run: Pick<HealthVisualRun, 'background' | 'extraClass'>
+): string {
+  return `${run.background ?? ''}|${run.extraClass}`
+}
+
+function buildHealthVisualRuns(
+  cells: readonly CellDef[],
+  p90Threshold: number | null,
+  p50Threshold: number | null
+): HealthVisualRun[] {
+  const runs: HealthVisualRun[] = []
+
+  for (const cell of cells) {
+    const { background, extraClass } = deriveCellStyle(
+      cell,
+      p90Threshold,
+      p50Threshold
+    )
+    const previous = runs[runs.length - 1]
+    const next = { background, extraClass, span: 1 }
+
+    if (
+      previous !== undefined &&
+      healthRunKey(previous) === healthRunKey(next)
+    ) {
+      previous.span += 1
+      continue
+    }
+
+    runs.push(next)
+  }
+
+  return runs
+}
 
 // ---------------------------------------------------------------------------
 // HealthStrip — main component
@@ -731,6 +778,7 @@ export function HealthStrip({
     */
 
     const resolvedTooltip = resolveTooltipContent(tooltipContent, padded, now)
+    const visualRuns = buildHealthVisualRuns(padded, p90Threshold, p50Threshold)
 
     /** Inner strip content — shared by both branches. */
     const stripInner = (
@@ -746,21 +794,15 @@ export function HealthStrip({
             gap: 0,
           }}
         >
-          {padded.map((cell, i) => {
-            const { background, extraClass } = deriveCellStyle(
-              cell,
-              p90Threshold,
-              p50Threshold
-            )
-            return (
-              <HealthCell
-                key={i}
-                background={background}
-                extraClass={extraClass}
-                vertical
-              />
-            )
-          })}
+          {visualRuns.map((run, i) => (
+            <HealthCell
+              key={i}
+              background={run.background}
+              extraClass={run.extraClass}
+              vertical
+              span={run.span}
+            />
+          ))}
         </div>
         {/* "NOW" label at bottom — .vbar-label.bottom per mockup lines 2005-2007 */}
         <div className='vbar-label bottom'>NOW</div>
