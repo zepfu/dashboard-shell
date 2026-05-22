@@ -110,6 +110,54 @@ const MOCK_REPORT: UsageReportResponse = {
 // ---------------------------------------------------------------------------
 
 describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
+  test('test_phosphor_dashboard_provider_status_color_legend_renders', async () => {
+    server.use(
+      http.get('/api/shell/reports/quotas', () =>
+        HttpResponse.json({
+          metadata: {
+            generatedAt: '2026-05-19T00:00:00.000Z',
+            latestRecordAt: null,
+            latestRecordAgeMinutes: null,
+            latestRecordStale: false,
+            staleRecordThresholdMinutes: 60,
+          },
+          quotas: [],
+        })
+      )
+    )
+
+    let container!: HTMLElement
+    await act(async () => {
+      const renderResult = render(
+        <Wrapper>
+          <PhosphorDashboard
+            from='2026-04-19'
+            to='2026-05-19'
+            report={MOCK_REPORT}
+            reportLoading={false}
+            showComparison={false}
+          />
+        </Wrapper>
+      )
+      container = renderResult.container
+    })
+
+    const legend = container.querySelector('.status-color-legend')
+    expect(legend).not.toBeNull()
+    expect(legend?.getAttribute('aria-label')).toBe(
+      'Provider health and quota color legend'
+    )
+    expect(legend?.textContent).toContain('Health')
+    expect(legend?.textContent).toContain('Quota used')
+    expect(legend?.textContent).toContain('Burn')
+    expect(
+      legend?.querySelectorAll('.status-legend-swatch.health-miss')
+    ).toHaveLength(1)
+    expect(
+      legend?.querySelectorAll('.status-legend-swatch.velocity-peak')
+    ).toHaveLength(1)
+  })
+
   test('test_phosphor_dashboard_no_usage_fetch_when_report_prop_provided', async () => {
     // Track every hit to /api/shell/reports/usage
     let usageCallCount = 0
