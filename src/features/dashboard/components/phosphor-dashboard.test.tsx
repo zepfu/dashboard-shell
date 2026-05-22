@@ -30,6 +30,7 @@ import PhosphorDashboard, {
   _tipModelsGoogleForTest,
   _tipModelsSingleLabelForTest,
   _padHealthCellsForTest,
+  _buildAggregateHealthCellsForTest,
   _buildProviderLanesForTest,
   _classifyGeminiModelForTest,
   _fmtIntervalCompactForTest,
@@ -350,6 +351,86 @@ describe('Provider health cell classification', () => {
     expect(cells[287].category).toBeUndefined()
     expect(cells[287].rawP95Ms).toBeNull()
     expect(cells[287].rawErrorCount).toBe(0)
+  })
+
+  test('test_provider_without_health_rows_renders_no_data_blue_path', () => {
+    const cells = _padHealthCellsForTest([], 'local')
+
+    expect(cells).toHaveLength(288)
+    expect(cells[0].category).toBeUndefined()
+    expect(cells[0].rawP95Ms).toBeNull()
+    expect(cells[0].rawErrorCount).toBe(0)
+    expect(cells[287].rawP95Ms).toBeNull()
+  })
+
+  test('test_aggregate_health_cells_overlay_provider_errors_by_bucket', () => {
+    const cells = _buildAggregateHealthCellsForTest([
+      makeHealthRow({
+        provider: 'openai',
+        requests: 10,
+        upstream_p95_ms: 120,
+      }),
+      makeHealthRow({
+        provider: 'anthropic',
+        provider_timeout_events: 2,
+      }),
+    ])
+
+    expect(cells).toHaveLength(288)
+    expect(cells[287].rawP95Ms).toBe(120)
+    expect(cells[287].rawErrorCount).toBe(2)
+    expect(cells[287].eventCount).toBe(2)
+    expect(cells[287].rawErrorBreakdown?.provider_timeout_events).toBe(2)
+  })
+
+  test('test_aggregate_health_cells_include_probe_degradation_counts', () => {
+    const cells = _buildAggregateHealthCellsForTest([
+      makeHealthRow({
+        provider: 'openai',
+        status_probe_count: 4,
+        status_probe_success_pct: 75,
+      }),
+    ])
+
+    expect(cells[287].category).toBe('orange')
+    expect(cells[287].degradedCount).toBe(1)
+    expect(cells[287].rawDegradedBreakdown?.provider_probe_degraded).toBe(1)
+  })
+
+  test('test_probe_degradation_overrides_passive_latency_green_path', () => {
+    const cells = _padHealthCellsForTest(
+      [
+        makeHealthRow({
+          requests: 12,
+          upstream_p95_ms: 180,
+          status_probe_count: 4,
+          status_probe_success_pct: 75,
+        }),
+      ],
+      'xai'
+    )
+
+    expect(cells[287].rawP95Ms).toBe(180)
+    expect(cells[287].category).toBe('orange')
+    expect(cells[287].degradedCount).toBe(1)
+  })
+
+  test('test_aggregate_health_cells_exclude_proxy_internal_rows', () => {
+    const cells = _buildAggregateHealthCellsForTest([
+      makeHealthRow({
+        provider: 'proxy_internal',
+        provider_error_events: 7,
+      }),
+      makeHealthRow({
+        provider: 'openai',
+        requests: 10,
+        upstream_p95_ms: 120,
+      }),
+    ])
+
+    expect(cells[287].rawP95Ms).toBe(120)
+    expect(cells[287].rawErrorCount).toBe(0)
+    expect(cells[287].eventCount).toBeUndefined()
   })
 })
 

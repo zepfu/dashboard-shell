@@ -18,7 +18,7 @@
  * remain for backward compat.
  */
 import { fireEvent, render } from '@testing-library/react'
-import { HealthStrip } from '../primitives/health-strip'
+import { HealthStrip, type CellDef } from '../primitives/health-strip'
 
 const CELL_COUNT = 288 // 24h * 12 (5-min buckets)
 
@@ -743,6 +743,78 @@ test('test_health_strip_tip_health_raw_error_breakdown_display_order', () => {
     'Rate limits',
     'Capacity limits',
   ])
+})
+
+test('test_health_strip_tip_health_degraded_breakdown_renders_signal_rows', () => {
+  const cells = [
+    {
+      color: 'var(--card-2)',
+      bucketStart: new Date(Date.now() - 30 * 60 * 1000).toISOString(),
+      degradedCount: 2,
+      rawDegradedBreakdown: {
+        probe_failures: 0,
+        provider_probe_degraded: 1,
+        control_probe_degraded: 0,
+        provider_packet_loss: 1,
+        control_packet_loss: 0,
+        provider_latency_delta: 0,
+      },
+    },
+    ...Array.from({ length: 287 }, () => ({ color: 'var(--card-2)' })),
+  ]
+
+  render(<HealthStrip cells={cells} orientation='vertical' />)
+
+  const head = document.body.querySelector('.v9-tip-head')
+  expect(head?.textContent).toContain('2 signals')
+
+  const rows = document.body.querySelectorAll('.v9-tip-row')
+  expect(rows.length).toBe(2)
+  const labels = Array.from(rows).map(
+    (r) => r.querySelector('.t-err')?.textContent
+  )
+  expect(labels).toContain('Provider probe degraded')
+  expect(labels).toContain('Provider packet loss')
+})
+
+test('test_health_strip_auto_tooltip_prefers_newest_error_or_degraded_bucket', () => {
+  const cells: CellDef[] = Array.from({ length: 288 }, () => ({
+    color: 'var(--card-2)',
+  }))
+  cells[40] = {
+    color: 'var(--card-2)',
+    bucketStart: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
+    degradedCount: 1,
+    rawDegradedBreakdown: {
+      probe_failures: 0,
+      provider_probe_degraded: 1,
+      control_probe_degraded: 0,
+      provider_packet_loss: 0,
+      control_packet_loss: 0,
+      provider_latency_delta: 0,
+    },
+  }
+  cells[287] = {
+    color: 'var(--card-2)',
+    bucketStart: new Date(Date.now() - 5 * 60 * 1000).toISOString(),
+    eventCount: 3,
+    rawErrorBreakdown: {
+      provider_error_events: 3,
+      provider_5xx_events: 0,
+      provider_timeout_events: 0,
+      network_error_events: 0,
+      rate_limit_events: 0,
+      capacity_events: 0,
+    },
+  }
+
+  render(<HealthStrip cells={cells} orientation='vertical' />)
+
+  const head = document.body.querySelector('.v9-tip-head')
+  expect(head?.textContent).toContain('3 events')
+  expect(head?.textContent).toContain('−0h 5m')
+  expect(document.body.textContent).toContain('Provider errors')
+  expect(document.body.textContent).not.toContain('Provider probe degraded')
 })
 
 test('test_health_strip_vertical_shell_has_pointer_events_none', () => {

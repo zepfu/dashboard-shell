@@ -85,10 +85,11 @@ const MAX_LIMIT = 50000
 // of magnitude of MAX_LIMIT and is safe for memory given that client
 // rows are a small aggregate (6 columns per pair).
 const MAX_CLIENT_ROWS = 5000
-// Wave 38-1: HEALTH_WINDOW_HOURS removed — buildProviderLatencyHealthQuery()
-// now accepts searchParams and applies the caller-supplied from/to window
-// (same pattern as buildProviderErrorObservationQuery). The env-override
-// SHELL_REPORT_HEALTH_WINDOW_HOURS is no longer in use.
+// Provider health strips are fixed 24-hour surfaces: 288 buckets × 5 minutes.
+// Report date filters can span days/months, but the status bars should stay a
+// bounded rolling window ending at "now" for live ranges, or the selected `to`
+// boundary for fully historical/prior ranges.
+const HEALTH_WINDOW_HOURS = 24
 // Wave 35-C2: raised default from 8_000 to 20_000.
 // At scale (many providers × models × environments) the 8k cap truncated the
 // oldest fleet-pulse buckets silently; at current traffic (~2,529 rows) this
@@ -808,6 +809,26 @@ function defaultToDate() {
   ).toISOString()
 }
 
+function resolveHealthWindow(from, to) {
+  const nowMs = Date.now()
+  const fromMs = new Date(from).getTime()
+  const toMs = new Date(to).getTime()
+  const fallbackToMs = Number.isFinite(toMs) ? toMs : nowMs
+  const healthToMs = Math.min(fallbackToMs, nowMs)
+  const fallbackFromMs = Number.isFinite(fromMs)
+    ? fromMs
+    : healthToMs - HEALTH_WINDOW_HOURS * 60 * 60 * 1000
+  const healthFromMs = Math.max(
+    fallbackFromMs,
+    healthToMs - HEALTH_WINDOW_HOURS * 60 * 60 * 1000
+  )
+
+  return {
+    from: new Date(healthFromMs).toISOString(),
+    to: new Date(healthToMs).toISOString(),
+  }
+}
+
 function parseCsv(value) {
   if (!value) return []
   return value
@@ -1006,24 +1027,72 @@ LIMIT $${values.length};
   return { sql, values }
 }
 
-// Wave 38-1 (⚠-W38-1): Accept searchParams and scope health rows to the
-// caller-supplied from/to window instead of the previous fixed rolling window
-// (`now() - HEALTH_WINDOW_HOURS`). This mirrors the pattern introduced in
-// W35-M5 for buildProviderErrorObservationQuery. Without this fix the
-// prior-period /usage request returns identical live health rows to the
-// current-period request, causing priorP95 === currentP95 always and
-// rendering the KPI P95 delta permanently 0% (or never shown).
+// Scope provider health rows to the 24-hour status-bar window inside the
+// caller's selected range. Current/live ranges end at now even though the
+// default report `to` date is tomorrow; historical/prior ranges end at their
+// requested `to`, so comparison windows still remain distinct.
 function buildProviderLatencyHealthQuery(searchParams) {
   const from = parseDateParam(searchParams.get('from'), defaultFromDate)
   const to = parseDateParam(searchParams.get('to'), defaultToDate)
+  const healthWindow = resolveHealthWindow(from, to)
 
   const sql = `
+WITH local_request_latency AS (
+    SELECT
+        date_bin(
+            '00:05:00'::interval,
+            COALESCE(sh.start_time, sh.created_at),
+            '2000-01-01 00:00:00+00'::timestamptz
+        ) AS bucket_start,
+        'all'::text AS environment,
+        'local'::text AS provider,
+        COALESCE(sh.model, 'unknown') AS model,
+        COALESCE(NULLIF(sh.model_group, ''), 'unknown') AS model_group,
+        COUNT(*) AS requests,
+        percentile_cont(0.50) WITHIN GROUP (ORDER BY sh.llm_upstream_elapsed_ms)
+            FILTER (WHERE sh.llm_upstream_elapsed_ms IS NOT NULL) AS upstream_p50_ms,
+        percentile_cont(0.95) WITHIN GROUP (ORDER BY sh.llm_upstream_elapsed_ms)
+            FILTER (WHERE sh.llm_upstream_elapsed_ms IS NOT NULL) AS upstream_p95_ms,
+        percentile_cont(0.99) WITHIN GROUP (ORDER BY sh.llm_upstream_elapsed_ms)
+            FILTER (WHERE sh.llm_upstream_elapsed_ms IS NOT NULL) AS upstream_p99_ms,
+        percentile_cont(0.95) WITHIN GROUP (ORDER BY sh.total_server_elapsed_ms)
+            FILTER (WHERE sh.total_server_elapsed_ms IS NOT NULL) AS total_p95_ms,
+        percentile_cont(0.95) WITHIN GROUP (ORDER BY sh.litellm_processing_ms)
+            FILTER (WHERE sh.litellm_processing_ms IS NOT NULL) AS proxy_processing_p95_ms,
+        COUNT(*) FILTER (WHERE sh.llm_upstream_elapsed_ms IS NULL) AS missing_upstream_latency,
+        MIN(COALESCE(sh.start_time, sh.created_at)) AS request_period_start,
+        MAX(COALESCE(sh.end_time, sh.created_at)) AS request_period_end
+    FROM public.session_history sh
+    WHERE sh.created_at >= $2::timestamptz
+      AND sh.created_at < $3::timestamptz
+      AND COALESCE(sh.start_time, sh.created_at) >= $2::timestamptz
+      AND COALESCE(sh.start_time, sh.created_at) < $3::timestamptz
+      AND (
+          lower(COALESCE(sh.provider, 'unknown')) = 'local'
+          OR lower(COALESCE(sh.provider, 'unknown')) LIKE 'local/%'
+          OR lower(COALESCE(sh.provider, 'unknown')) LIKE 'local_%'
+      )
+    GROUP BY
+        date_bin(
+            '00:05:00'::interval,
+            COALESCE(sh.start_time, sh.created_at),
+            '2000-01-01 00:00:00+00'::timestamptz
+        ),
+        COALESCE(sh.model, 'unknown'),
+        COALESCE(NULLIF(sh.model_group, ''), 'unknown')
+), health_rows AS (
 SELECT
     bucket_start,
     COALESCE(environment, 'unknown') AS environment,
     CASE
         WHEN lower(COALESCE(provider, 'unknown')) IN ('xai', 'x.ai') THEN 'xai'
         WHEN lower(COALESCE(provider, 'unknown')) LIKE 'xai/%' THEN 'xai'
+        WHEN lower(COALESCE(provider, 'unknown')) = 'nvidia' THEN 'nvidia_nim'
+        WHEN lower(COALESCE(provider, 'unknown')) LIKE 'nvidia_nim/%' THEN 'nvidia_nim'
+        WHEN lower(COALESCE(provider, 'unknown')) LIKE 'nvidia/%' THEN 'nvidia_nim'
+        WHEN lower(COALESCE(provider, 'unknown')) = 'local' THEN 'local'
+        WHEN lower(COALESCE(provider, 'unknown')) LIKE 'local/%' THEN 'local'
+        WHEN lower(COALESCE(provider, 'unknown')) LIKE 'local_%' THEN 'local'
         ELSE COALESCE(provider, 'unknown')
     END AS provider,
     COALESCE(model, 'unknown') AS model,
@@ -1068,11 +1137,63 @@ SELECT
 FROM public.provider_latency_health_5m
 WHERE bucket_start >= $2::timestamptz
   AND bucket_start < $3::timestamptz
+UNION ALL
+SELECT
+    bucket_start,
+    environment,
+    provider,
+    model,
+    model_group,
+    requests,
+    CASE
+        WHEN requests = 0 THEN 'no_traffic'
+        WHEN requests < 5 THEN 'low_sample'
+        ELSE 'normal'
+    END AS passive_latency_sample_status,
+    upstream_p50_ms,
+    upstream_p95_ms,
+    upstream_p99_ms,
+    total_p95_ms,
+    proxy_processing_p95_ms,
+    missing_upstream_latency,
+    0::bigint AS provider_error_events,
+    0::bigint AS rate_limit_events,
+    0::bigint AS capacity_events,
+    0::bigint AS provider_5xx_events,
+    0::bigint AS provider_timeout_events,
+    0::bigint AS network_error_events,
+    0::bigint AS auth_failed_events,
+    0::bigint AS adapter_error_events,
+    0::bigint AS status_probe_count,
+    NULL::numeric AS status_probe_success_pct,
+    NULL::double precision AS status_probe_p95_ms,
+    NULL::numeric AS provider_ping_avg_ms,
+    NULL::numeric AS provider_ping_packet_loss_pct,
+    NULL::numeric AS control_ping_avg_ms,
+    NULL::numeric AS control_packet_loss_pct,
+    NULL::numeric AS control_probe_success_pct,
+    NULL::numeric AS provider_ping_minus_control_ms,
+    0::bigint AS dns_failures,
+    0::bigint AS tcp_failures,
+    0::bigint AS tls_failures,
+    0::bigint AS icmp_failures,
+    NULL::text AS probed_endpoints,
+    NULL::text AS status_error_classes,
+    NULL::double precision AS min_remaining_pct,
+    NULL::double precision AS max_remaining_pct,
+    NULL::timestamp with time zone AS next_expected_reset_at,
+    NULL::text AS quota_keys,
+    request_period_start,
+    request_period_end
+FROM local_request_latency
+)
+SELECT *
+FROM health_rows
 ORDER BY bucket_start DESC, environment, provider, model
 LIMIT $1;
 `
 
-  return { sql, values: [MAX_HEALTH_ROWS, from, to] }
+  return { sql, values: [MAX_HEALTH_ROWS, healthWindow.from, healthWindow.to] }
 }
 
 // Wave 35-C2 (⚠-1): accept searchParams and scope observations to the

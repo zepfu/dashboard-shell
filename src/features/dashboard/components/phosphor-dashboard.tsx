@@ -385,8 +385,8 @@ function deriveProbeBackedCategory(
   eventCount: number,
   missingUpstreamLatency: number
 ): CellDef['category'] | undefined {
-  if (eventCount > 0 || maxP95 !== null) return undefined
-  if (missingUpstreamLatency > 0) return 'miss'
+  if (eventCount > 0) return undefined
+  if (missingUpstreamLatency > 0 && maxP95 === null) return 'miss'
 
   let statusProbeCount = 0
   let minStatusProbeSuccessPct: number | null = null
@@ -455,12 +455,180 @@ function deriveProbeBackedCategory(
     return 'orange'
   }
 
+  if (maxP95 !== null) return undefined
+
   return 'green'
+}
+
+function makeNoDataHealthCell(emptyEvents: HealthStripEvent[]): CellDef {
+  return {
+    color: 'var(--card-2)',
+    rawP95Ms: null,
+    rawErrorCount: 0,
+    events: emptyEvents,
+  }
+}
+
+function buildHealthCellFromGroup(
+  group: UsageReportProviderLatencyHealthRow[],
+  emptyEvents: HealthStripEvent[]
+): CellDef {
+  // Max non-null passive p95 across all tuples in this bucket. Prefer the
+  // exact upstream split, but fall back to total request latency for provider
+  // routes that recorded timing without upstream sub-span attribution.
+  let maxP95: number | null = null
+  for (const r of group) {
+    const passiveP95 = r.upstream_p95_ms ?? r.total_p95_ms
+    if (passiveP95 !== null) {
+      maxP95 = maxP95 === null ? passiveP95 : Math.max(maxP95, passiveP95)
+    }
+  }
+
+  // Summed error-class counters.
+  let sumProviderError = 0
+  let sum5xx = 0
+  let sumTimeout = 0
+  let sumNetwork = 0
+  let sumRateLimit = 0
+  let sumCapacity = 0
+  let sumMissingUpstreamLatency = 0
+  let probeFailures = 0
+  let providerProbeDegraded = 0
+  let controlProbeDegraded = 0
+  let providerPacketLoss = 0
+  let controlPacketLoss = 0
+  let providerLatencyDelta = 0
+
+  for (const r of group) {
+    sumProviderError += r.provider_error_events
+    sum5xx += r.provider_5xx_events
+    sumTimeout += r.provider_timeout_events
+    sumNetwork += r.network_error_events
+    sumRateLimit += r.rate_limit_events
+    sumCapacity += r.capacity_events
+    sumMissingUpstreamLatency += r.missing_upstream_latency
+    probeFailures +=
+      r.dns_failures + r.tcp_failures + r.tls_failures + r.icmp_failures
+    if (
+      r.status_probe_count > 0 &&
+      r.status_probe_success_pct !== null &&
+      r.status_probe_success_pct < 100
+    ) {
+      providerProbeDegraded += 1
+    }
+    if (
+      r.control_probe_success_pct !== null &&
+      r.control_probe_success_pct < 100
+    ) {
+      controlProbeDegraded += 1
+    }
+    if ((r.provider_ping_packet_loss_pct ?? 0) > 0) {
+      providerPacketLoss += 1
+    }
+    if ((r.control_packet_loss_pct ?? 0) > 0) {
+      controlPacketLoss += 1
+    }
+    if ((r.provider_ping_minus_control_ms ?? 0) > 250) {
+      providerLatencyDelta += 1
+    }
+  }
+
+  const eventCount =
+    sumProviderError +
+    sum5xx +
+    sumTimeout +
+    sumNetwork +
+    sumRateLimit +
+    sumCapacity
+  const degradedCount =
+    probeFailures +
+    providerProbeDegraded +
+    controlProbeDegraded +
+    providerPacketLoss +
+    controlPacketLoss +
+    providerLatencyDelta
+
+  const rawErrorBreakdown: CellDef['rawErrorBreakdown'] =
+    eventCount > 0
+      ? {
+          provider_error_events: sumProviderError,
+          provider_5xx_events: sum5xx,
+          provider_timeout_events: sumTimeout,
+          network_error_events: sumNetwork,
+          rate_limit_events: sumRateLimit,
+          capacity_events: sumCapacity,
+        }
+      : undefined
+  const rawDegradedBreakdown: CellDef['rawDegradedBreakdown'] =
+    degradedCount > 0
+      ? {
+          probe_failures: probeFailures,
+          provider_probe_degraded: providerProbeDegraded,
+          control_probe_degraded: controlProbeDegraded,
+          provider_packet_loss: providerPacketLoss,
+          control_packet_loss: controlPacketLoss,
+          provider_latency_delta: providerLatencyDelta,
+        }
+      : undefined
+
+  const bucketStart = group.find((r) => r.bucket_start != null)?.bucket_start
+  const category = deriveProbeBackedCategory(
+    group,
+    maxP95,
+    eventCount,
+    sumMissingUpstreamLatency
+  )
+
+  return {
+    color: 'var(--card-2)',
+    bucketStart: bucketStart ?? undefined,
+    eventCount: eventCount > 0 ? eventCount : undefined,
+    degradedCount: degradedCount > 0 ? degradedCount : undefined,
+    events: emptyEvents,
+    rawP95Ms: maxP95,
+    rawErrorCount: eventCount > 0 ? eventCount : 0,
+    ...(category !== undefined ? { category } : {}),
+    rawErrorBreakdown,
+    rawDegradedBreakdown,
+  }
+}
+
+function padHealthCellsFromRows(
+  providerRows: UsageReportProviderLatencyHealthRow[],
+  emptyEvents: HealthStripEvent[]
+): CellDef[] {
+  const bucketMap = new Map<string, UsageReportProviderLatencyHealthRow[]>()
+  providerRows.forEach((row, idx) => {
+    const key =
+      row.bucket_start != null
+        ? String(row.bucket_start)
+        : `__missing_${idx.toString()}__`
+    const group = bucketMap.get(key)
+    if (group !== undefined) {
+      group.push(row)
+    } else {
+      bucketMap.set(key, [row])
+    }
+  })
+
+  const cellsDesc: CellDef[] = Array.from(bucketMap.values()).map((group) =>
+    buildHealthCellFromGroup(group, emptyEvents)
+  )
+  const cells = cellsDesc.reverse()
+
+  if (cells.length >= HEALTH_CELL_COUNT) {
+    return cells.slice(cells.length - HEALTH_CELL_COUNT)
+  }
+
+  const pad = Array.from<CellDef>({
+    length: HEALTH_CELL_COUNT - cells.length,
+  }).map(() => makeNoDataHealthCell(emptyEvents))
+  return [...pad, ...cells]
 }
 
 /**
  * Pads or truncates a health cell array to exactly HEALTH_CELL_COUNT entries.
- * Missing cells are filled with a neutral muted color.
+ * Missing cells are filled through the raw no-data path so they render blue.
  *
  * Wave 24-PhosphorDash (operator F1a): wires CellDef hover metadata —
  * `bucketStart` from health row bucket_start, `eventCount` from aggregate
@@ -488,145 +656,18 @@ function padHealthCells(
   // Satisfy the HealthStripEvent[] type even though we have no per-event data.
   const emptyEvents: HealthStripEvent[] = []
 
-  // Wave 30-Track5 Step 1: group rows by bucket_start.
-  // The API arrives bucket_start DESC (newest first); Map insertion order
-  // preserves that ordering within each group.
-  // Rows with null/undefined bucket_start get a synthetic key so they are
-  // not incorrectly merged with each other or with valid buckets.
-  const bucketMap = new Map<string, UsageReportProviderLatencyHealthRow[]>()
-  providerRows.forEach((row, idx) => {
-    const key =
-      row.bucket_start != null
-        ? String(row.bucket_start)
-        : `__missing_${idx.toString()}__`
-    const group = bucketMap.get(key)
-    if (group !== undefined) {
-      group.push(row)
-    } else {
-      bucketMap.set(key, [row])
-    }
+  return padHealthCellsFromRows(providerRows, emptyEvents)
+}
+
+function buildAggregateHealthCells(
+  rows: UsageReportProviderLatencyHealthRow[]
+): CellDef[] {
+  const emptyEvents: HealthStripEvent[] = []
+  const aggregateRows = rows.filter((row) => {
+    const provider = row.provider.toLowerCase()
+    return provider !== 'proxy_internal' && provider !== 'aggregate'
   })
-
-  // Wave 30-Track5 Step 2: emit one CellDef per bucket group.
-  // Aggregation rules:
-  //   rawP95Ms      = max non-null passive p95 across group (null if all null)
-  //   eventCount    = sum of all error-class counters (undefined when total = 0)
-  //   rawErrorCount = same numeric total, defaults to 0 (not undefined)
-  //   rawErrorBreakdown = per-class sums (undefined when eventCount = 0)
-  // Ordering: bucketMap iterates in insertion order = DESC (newest first).
-  const cellsDesc: CellDef[] = Array.from(bucketMap.values()).map((group) => {
-    // Max non-null passive p95 across all tuples in this bucket. Prefer the
-    // exact upstream split, but fall back to total request latency for provider
-    // routes that recorded timing without upstream sub-span attribution.
-    let maxP95: number | null = null
-    for (const r of group) {
-      const passiveP95 = r.upstream_p95_ms ?? r.total_p95_ms
-      if (passiveP95 !== null) {
-        maxP95 = maxP95 === null ? passiveP95 : Math.max(maxP95, passiveP95)
-      }
-    }
-
-    // Summed error-class counters.
-    let sumProviderError = 0
-    let sum5xx = 0
-    let sumTimeout = 0
-    let sumNetwork = 0
-    let sumRateLimit = 0
-    let sumCapacity = 0
-    let sumMissingUpstreamLatency = 0
-    for (const r of group) {
-      sumProviderError += r.provider_error_events
-      sum5xx += r.provider_5xx_events
-      sumTimeout += r.provider_timeout_events
-      sumNetwork += r.network_error_events
-      sumRateLimit += r.rate_limit_events
-      sumCapacity += r.capacity_events
-      sumMissingUpstreamLatency += r.missing_upstream_latency
-    }
-    const eventCount =
-      sumProviderError +
-      sum5xx +
-      sumTimeout +
-      sumNetwork +
-      sumRateLimit +
-      sumCapacity
-
-    // Wave 29-E2 (Track 6): pass the per-type breakdown to CellDef so
-    // buildCellTooltip can render labeled rows instead of the generic placeholder.
-    // Undefined when no errors occurred in the bucket (avoids an empty breakdown
-    // object reaching the tooltip renderer for clean error-free buckets).
-    const rawErrorBreakdown: CellDef['rawErrorBreakdown'] =
-      eventCount > 0
-        ? {
-            provider_error_events: sumProviderError,
-            provider_5xx_events: sum5xx,
-            provider_timeout_events: sumTimeout,
-            network_error_events: sumNetwork,
-            rate_limit_events: sumRateLimit,
-            capacity_events: sumCapacity,
-          }
-        : undefined
-
-    // First non-null bucket_start in the group (all rows in the group share
-    // the same bucket_start when the key is not synthetic).
-    const bucketStart = group.find((r) => r.bucket_start != null)?.bucket_start
-    const category = deriveProbeBackedCategory(
-      group,
-      maxP95,
-      eventCount,
-      sumMissingUpstreamLatency
-    )
-
-    return {
-      // Wave 25-PhosphorDash (F#11): neutral fallback color; deriveCellStyle
-      // path-2 now drives coloring from rawP95Ms / rawErrorCount via the W24
-      // percentile recalibration (absolute-threshold function removed W34).
-      color: 'var(--card-2)',
-      // F1a: bucket_start drives the relative-time header in buildCellTooltip.
-      bucketStart: bucketStart ?? undefined,
-      // F1a: total events in this bucket (errors + timeouts + rate-limits + capacity).
-      eventCount: eventCount > 0 ? eventCount : undefined,
-      // F1a: no per-event JSON available at health-row granularity; pass empty
-      // array so W24-HealthStrip's buildCellTooltip renders a summary-only tooltip.
-      events: emptyEvents,
-      // Wave 25-PhosphorDash (F#11): wire passive p95 so deriveCellStyle path-2
-      // (percentile-relative thresholds) is activated instead of falling through
-      // to the legacy color fallback. null when the bucket has no latency data,
-      // which deriveCellStyle handles as a no-data cell unless category marks
-      // an attribution gap.
-      rawP95Ms: maxP95,
-      // Wave 25-PhosphorDash (F#11): wire raw error count for the amber trigger
-      // in deriveCellStyle (any error event → amber regardless of p95).
-      rawErrorCount: eventCount > 0 ? eventCount : 0,
-      // Provider health can be known from active status/control probes even when
-      // there was no passive LLM traffic in the bucket. Use an explicit category
-      // only for those probe-backed no-traffic buckets and instrumentation gaps;
-      // buckets with passive latency keep the raw metric path so percentile-based
-      // latency degradation still works.
-      ...(category !== undefined ? { category } : {}),
-      // Wave 29-E2 (Track 6): per-type error breakdown for hover tooltip.
-      rawErrorBreakdown,
-    }
-  })
-
-  // Wave 30-Track5: rows arrived DESC (newest first); reverse to ASC so that
-  // cells[0] = oldest bucket (left / top of strip, labelled "-24h") and
-  // cells[N-1] = newest bucket (right / bottom, labelled "now"). This ensures
-  // the tail-slice below keeps the newest HEALTH_CELL_COUNT buckets and the
-  // strip's left-to-right / top-to-bottom axis matches the time direction.
-  const cells = cellsDesc.reverse()
-
-  if (cells.length >= HEALTH_CELL_COUNT) {
-    return cells.slice(cells.length - HEALTH_CELL_COUNT)
-  }
-
-  const pad = Array.from<CellDef>({
-    length: HEALTH_CELL_COUNT - cells.length,
-  }).fill({
-    color: 'var(--card-2)',
-    events: emptyEvents,
-  })
-  return [...pad, ...cells]
+  return padHealthCellsFromRows(aggregateRows, emptyEvents)
 }
 
 /**
@@ -666,11 +707,15 @@ function buildProviderMetrics(
   // 15-B.1: providerLatencyHealth is ordered bucket_start DESC (newest first).
   // The original code used `[length - 1]` (oldest row), which consistently
   // has upstream_p95_ms = null (no-traffic tail buckets). Fix: scan from
-  // index 0 (most-recent) and pick the first row with a non-null p95.
+  // index 0 (most-recent) and pick the first row with a non-null p95. Use
+  // total_p95_ms as a fallback for local routes that do not emit upstream spans.
   const latestP95Row = providerHealthRows.find(
-    (r) => r.upstream_p95_ms !== null
+    (r) => (r.upstream_p95_ms ?? r.total_p95_ms) !== null
   )
-  const p95 = latestP95Row?.upstream_p95_ms ?? 0
+  const p95 =
+    latestP95Row !== undefined
+      ? (latestP95Row.upstream_p95_ms ?? latestP95Row.total_p95_ms ?? 0)
+      : 0
 
   // Wave 14-C: rate_limits, capacity from health rows; packet_loss from ping probe.
   const rate_limits = providerHealthRows.reduce(
@@ -768,11 +813,9 @@ function buildAggregateMetrics(
       r.network_error_events,
     0
   )
-  // Fleet-wide P95: pick max P95 across all health rows
-  const p95Values = healthRows
-    .map((r) => r.upstream_p95_ms)
-    .filter((v): v is number => v !== null)
-  const p95 = p95Values.length > 0 ? Math.max(...p95Values) : 0
+  // Fleet-wide P95: requests-weighted average with total-latency fallback for
+  // providers that do not emit upstream spans.
+  const p95 = computeFleetP95(healthRows)
 
   // Wave 14-C: aggregate rate_limits, capacity, packet_loss across all health rows.
   const rate_limits = healthRows.reduce((s, r) => s + r.rate_limit_events, 0)
@@ -1228,6 +1271,7 @@ export {
   tipModelsFromBreakdownSingleLabel as _tipModelsSingleLabelForTest,
   // eslint-disable-next-line react-refresh/only-export-components
   padHealthCells as _padHealthCellsForTest,
+  buildAggregateHealthCells as _buildAggregateHealthCellsForTest,
   buildProviderLanes as _buildProviderLanesForTest,
   classifyGeminiModel as _classifyGeminiModelForTest,
   fmtIntervalCompact as _fmtIntervalCompactForTest,
@@ -3455,7 +3499,7 @@ export default function PhosphorDashboard({
   }
 
   const aggregateHealthCells = useMemo(
-    () => padHealthCells(healthRows, ''),
+    () => buildAggregateHealthCells(healthRows),
     [healthRows]
   )
 

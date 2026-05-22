@@ -212,6 +212,22 @@ export interface CellDef {
     /** Capacity errors (503 capacity / overload). */
     capacity_events: number
   }
+
+  /**
+   * Probe/control degradation counts for buckets that were not hard request
+   * errors but still indicate impaired provider health.
+   */
+  rawDegradedBreakdown?: {
+    probe_failures: number
+    provider_probe_degraded: number
+    control_probe_degraded: number
+    provider_packet_loss: number
+    control_packet_loss: number
+    provider_latency_delta: number
+  }
+
+  /** Total degraded probe/control signals in the bucket. */
+  degradedCount?: number
 }
 
 export interface HealthStripProps {
@@ -482,6 +498,31 @@ const ERROR_BREAKDOWN_LABELS: ReadonlyArray<
   ['capacity_events', 'Capacity limits'],
 ]
 
+const DEGRADED_BREAKDOWN_LABELS: ReadonlyArray<
+  [keyof NonNullable<CellDef['rawDegradedBreakdown']>, string]
+> = [
+  ['probe_failures', 'Probe failures'],
+  ['provider_probe_degraded', 'Provider probe degraded'],
+  ['control_probe_degraded', 'Control probe degraded'],
+  ['provider_packet_loss', 'Provider packet loss'],
+  ['control_packet_loss', 'Control packet loss'],
+  ['provider_latency_delta', 'Provider latency delta'],
+]
+
+function buildDegradedTooltipRows(
+  breakdown: CellDef['rawDegradedBreakdown']
+): ReactNode[] {
+  if (breakdown == null) return []
+  return DEGRADED_BREAKDOWN_LABELS.filter(([key]) => breakdown[key] > 0).map(
+    ([key, label]) => (
+      <div key={key} className='v9-tip-row'>
+        <span className='t-err'>{label}</span>
+        <span className='t-count'>{breakdown[key].toString()}</span>
+      </div>
+    )
+  )
+}
+
 /**
  * Builds the `tip-health` tooltip ReactNode for a given cell, following the
  * Wave 20 mockup structure:
@@ -522,12 +563,26 @@ function buildCellTooltip(cell: CellDef, now: Date): ReactNode {
 
     const windowStart = formatRelTime(startOffsetSec)
     const windowEnd = formatRelTime(endOffsetSec)
-    const n = cell.eventCount ?? 0
-    const noun = n === 1 ? 'event' : 'events'
+    const n = (cell.eventCount ?? 0) + (cell.degradedCount ?? 0)
+    const noun =
+      (cell.degradedCount ?? 0) > 0
+        ? n === 1
+          ? 'signal'
+          : 'signals'
+        : n === 1
+          ? 'event'
+          : 'events'
     headText = `${windowStart} → ${windowEnd} · ${n.toString()} ${noun}`
   } else {
-    const n = cell.eventCount ?? 0
-    const noun = n === 1 ? 'event' : 'events'
+    const n = (cell.eventCount ?? 0) + (cell.degradedCount ?? 0)
+    const noun =
+      (cell.degradedCount ?? 0) > 0
+        ? n === 1
+          ? 'signal'
+          : 'signals'
+        : n === 1
+          ? 'event'
+          : 'events'
     headText = n > 0 ? `— · ${n.toString()} ${noun}` : '— no data'
   }
 
@@ -544,12 +599,24 @@ function buildCellTooltip(cell: CellDef, now: Date): ReactNode {
         <span className='t-count'>{bd[key].toString()}</span>
       </div>
     ))
+    const degradedRows = buildDegradedTooltipRows(cell.rawDegradedBreakdown)
 
     // Error-free bucket: show head only (no misleading rows).
     return (
       <>
         <div className='v9-tip-head'>{headText}</div>
         {breakdownRows}
+        {degradedRows}
+      </>
+    )
+  }
+
+  const degradedRows = buildDegradedTooltipRows(cell.rawDegradedBreakdown)
+  if (degradedRows.length > 0) {
+    return (
+      <>
+        <div className='v9-tip-head'>{headText}</div>
+        {degradedRows}
       </>
     )
   }
@@ -616,10 +683,30 @@ function resolveTooltipContent(
 ): ReactNode | undefined {
   if (tooltipContent !== undefined) return tooltipContent
 
-  // Find the most interesting cell — prefer one with events/eventCount.
-  const interesting =
-    cells.find((c) => (c.eventCount ?? 0) > 0 && c.category !== 'miss') ??
-    cells.find((c) => c.bucketStart != null)
+  // Find the most recent interesting bucket so the strip-level hover reports
+  // the newest error/degraded signal near "now", not an older bucket that
+  // happens to appear earlier in the oldest-to-newest cell array.
+  let interesting: CellDef | undefined
+  for (let i = cells.length - 1; i >= 0; i -= 1) {
+    const c = cells[i]
+    if (
+      ((c.eventCount ?? 0) > 0 || (c.degradedCount ?? 0) > 0) &&
+      c.category !== 'miss'
+    ) {
+      interesting = c
+      break
+    }
+  }
+
+  if (interesting === undefined) {
+    for (let i = cells.length - 1; i >= 0; i -= 1) {
+      const c = cells[i]
+      if (c.bucketStart != null) {
+        interesting = c
+        break
+      }
+    }
+  }
 
   if (interesting == null) return undefined
 

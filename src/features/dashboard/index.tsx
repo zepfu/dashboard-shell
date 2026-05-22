@@ -3,7 +3,7 @@
  *
  * Wave 9: v9.7 reference parity updates:
  * - Page-header: Playfair Display italic page title, freshness indicator,
- *   fleet-pulse strip (reused horizontal HealthStrip), attribution legend.
+ *   attribution legend.
  * - DateControls promoted to live state (operator decision 4).
  * - Controls bar styled per reference (control-input).
  * - Alerts wired via useAlertsFromAnomalies hook (operator decision 3).
@@ -11,7 +11,6 @@
  *
  * Wave 11 PR7-lite:
  * - Attribution legend rewritten per audit C22 (ATTRIBUTION label + 5 pill swatches).
- * - Fleet Pulse label updated to "FLEET HEALTH PULSE · 24H · 5m" (audit C23).
  * - Freshness indicator now computes from dataUpdatedAt (audit C24).
  */
 import {
@@ -30,7 +29,6 @@ import {
   fetchUsageReport,
   fetchUsageReportQuotas,
   type UsageReportGrain,
-  type UsageReportProviderLatencyHealthRow,
   type UsageReportSummary,
 } from './api/usage-report'
 import { AlertsRail } from './components/alerts-rail'
@@ -41,7 +39,6 @@ import { KpiStrip } from './components/kpi-strip'
 import PhosphorDashboard from './components/phosphor-dashboard'
 import { PhosphorLayout } from './components/phosphor-layout'
 import { PhosphorSidebar } from './components/phosphor-sidebar'
-import { type CellDef, HealthStrip } from './components/primitives/health-strip'
 import {
   SlicerBar,
   type SlicerFilters,
@@ -112,95 +109,13 @@ function toKpiSummary(
 }
 
 // ---------------------------------------------------------------------------
-// Fleet pulse data (aggregate health cells for horizontal strip)
-// ---------------------------------------------------------------------------
-
-/** Number of 5-minute buckets in a 24-hour health window (24 × 12). */
-const FLEET_PULSE_CELL_COUNT = 288
-
-/**
- * Derives fleet-wide health cells from `providerLatencyHealth` rows by
- * collapsing all providers into one cell per 5-minute bucket.
- *
- * B1 fix (wave34-data-flow-audit ✘-1): replaces the hardcoded static color
- * pattern with data-driven aggregation using the worst-status rule:
- *   red > orange > blue > green
- * where red = errors + no p95 (service down), orange = errors present,
- * blue = no p95 data, green = normal.
- *
- * Mirrors the per-bucket collapse logic in phosphor-dashboard's padHealthCells
- * without the provider filter, then pads/truncates to exactly 288 cells.
- */
-function deriveFleetPulseCells(
-  healthRows: UsageReportProviderLatencyHealthRow[]
-): CellDef[] {
-  // Group all rows by bucket_start (newest first, matching API order DESC).
-  const bucketMap = new Map<string, UsageReportProviderLatencyHealthRow[]>()
-  healthRows.forEach((row, idx) => {
-    const key =
-      row.bucket_start != null
-        ? String(row.bucket_start)
-        : `__missing_${idx.toString()}__`
-    const group = bucketMap.get(key)
-    if (group !== undefined) {
-      group.push(row)
-    } else {
-      bucketMap.set(key, [row])
-    }
-  })
-
-  // Emit one CellDef per bucket: aggregate p95 (max) and error counts (sum).
-  const cellsDesc: CellDef[] = Array.from(bucketMap.values()).map((group) => {
-    let maxP95: number | null = null
-    let totalErrors = 0
-    for (const r of group) {
-      if (r.upstream_p95_ms !== null) {
-        maxP95 =
-          maxP95 === null
-            ? r.upstream_p95_ms
-            : Math.max(maxP95, r.upstream_p95_ms)
-      }
-      totalErrors +=
-        r.provider_error_events +
-        r.provider_5xx_events +
-        r.provider_timeout_events +
-        r.network_error_events +
-        r.rate_limit_events +
-        r.capacity_events
-    }
-    const bucketStart = group.find((r) => r.bucket_start != null)?.bucket_start
-
-    return {
-      color: 'var(--card-2)',
-      bucketStart: bucketStart ?? undefined,
-      rawP95Ms: maxP95,
-      rawErrorCount: totalErrors,
-    }
-  })
-
-  // Reverse DESC → ASC so oldest is left (−24h) and newest is right (now).
-  const cells = cellsDesc.reverse()
-
-  if (cells.length >= FLEET_PULSE_CELL_COUNT) {
-    return cells.slice(cells.length - FLEET_PULSE_CELL_COUNT)
-  }
-
-  const pad = Array.from<CellDef>({
-    length: FLEET_PULSE_CELL_COUNT - cells.length,
-  }).fill({
-    color: 'var(--card-2)',
-  })
-  return [...pad, ...cells]
-}
-
-// ---------------------------------------------------------------------------
 // Dashboard
 // ---------------------------------------------------------------------------
 
 /**
  * Dashboard is the root component for the /usage route.
  *
- * Wave 9: Wires full page-header, fleet-pulse, controls, sidebar restyle,
+ * Wave 9: Wires full page-header, controls, sidebar restyle,
  * and alerts hook into PhosphorLayout.
  */
 export function Dashboard(): ReactElement {
@@ -353,13 +268,6 @@ export function Dashboard(): ReactElement {
         to
       ),
     [summaryReport?.providerErrorObservations, from, to]
-  )
-
-  // B1 fix: Derive fleet-wide health cells from real providerLatencyHealth data
-  // (replaces the hardcoded static color pattern per wave34-data-flow-audit ✘-1).
-  const fleetPulseCells = useMemo(
-    () => deriveFleetPulseCells(summaryReport?.providerLatencyHealth ?? []),
-    [summaryReport?.providerLatencyHealth]
   )
 
   const kpiSummary = useMemo(
@@ -571,87 +479,6 @@ export function Dashboard(): ReactElement {
                 <span className='pulse-dot' />
                 {freshnessStr}
               </span>
-            </div>
-
-            {/* Fleet-pulse strip */}
-            <div
-              className='fleet-pulse-wrapper'
-              style={{
-                display: 'flex',
-                flexDirection: 'column',
-                gap: '2px',
-                maxWidth: '600px',
-                marginTop: '4px',
-              }}
-            >
-              <div
-                className='fleet-pulse-label'
-                style={{
-                  fontFamily: 'var(--font-mono)',
-                  fontSize: '8px',
-                  color: 'var(--fg-muted)',
-                  letterSpacing: '0.06em',
-                  textTransform: 'uppercase',
-                }}
-              >
-                FLEET HEALTH PULSE · 24H · 5m
-              </div>
-              <HealthStrip cells={fleetPulseCells} orientation='horizontal' />
-            </div>
-
-            {/* Attribution legend — 14-B.5 per mockup lines 1951-1986, 2386 */}
-            {/* .attribution-legend: gap 12px, text-transform lowercase */}
-            {/* .legend-label: accent-chrome, letter-spacing 0.12em, opacity 0.85 */}
-            <div
-              className='attribution-legend'
-              aria-label='Health bar attribution'
-              style={{
-                display: 'flex',
-                flexWrap: 'wrap',
-                gap: '12px',
-                alignItems: 'center',
-                fontSize: '9px',
-                fontFamily: 'var(--font-mono)',
-                color: 'var(--fg-muted)',
-                letterSpacing: '0.08em',
-                textTransform: 'lowercase',
-                marginTop: '4px',
-              }}
-            >
-              {/* "attribution" label — uppercase via text-transform, chrome color, 0.12em spacing, 0.85 opacity */}
-              <span
-                className='legend-label'
-                style={{
-                  color: 'var(--accent-chrome)',
-                  letterSpacing: '0.12em',
-                  textTransform: 'uppercase',
-                  opacity: 0.85,
-                }}
-              >
-                attribution
-              </span>
-              {/* Category pills — lowercase labels via CSS text-transform on parent */}
-              {[
-                { key: 'norm', catClass: 'cat-norm' },
-                { key: 'papi', catClass: 'cat-papi' },
-                { key: 'wkld', catClass: 'cat-wkld' },
-                { key: 'ctrl', catClass: 'cat-ctrl' },
-                { key: 'miss', catClass: 'cat-miss' },
-              ].map(({ key, catClass }) => (
-                <span
-                  key={key}
-                  className={`legend-cat ${catClass}`}
-                  style={{
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    gap: '5px',
-                    color: 'var(--fg-muted)',
-                  }}
-                >
-                  <span className='legend-swatch' />
-                  {key}
-                </span>
-              ))}
             </div>
           </div>
 

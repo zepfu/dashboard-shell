@@ -14,10 +14,12 @@
 import {
   computeFleetErrors,
   computeFleetP95,
+  canonicalProvider,
   formatLatency,
   formatUsd,
   formatResetDistance,
   modelBrandHex,
+  providerAliases,
 } from './usage-report-display'
 
 // ---------------------------------------------------------------------------
@@ -148,6 +150,12 @@ describe('computeFleetP95 weighted-average semantics', () => {
     expect(computeFleetP95(rows)).toBe(2_000)
   })
 
+  test('test_total_p95_fallback_counts_when_upstream_p95_missing', () => {
+    const rows = [{ upstream_p95_ms: null, total_p95_ms: 1_700, requests: 25 }]
+
+    expect(computeFleetP95(rows)).toBe(1_700)
+  })
+
   test('test_weighted_avg_is_not_equal_to_max', () => {
     // Regression guard: ensure we are NOT returning Math.max
     const rows = [
@@ -158,6 +166,22 @@ describe('computeFleetP95 weighted-average semantics', () => {
     expect(result).not.toBe(50_000) // not max
     // (5000*900 + 50000*10) / 910 ≈ 5_494
     expect(result).toBeCloseTo(5_494.5, 0)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// provider aliases
+// ---------------------------------------------------------------------------
+
+describe('provider alias canonicalization', () => {
+  test('test_provider_aliases_include_local_route_families', () => {
+    expect(providerAliases('local')).toEqual(
+      expect.arrayContaining(['local_embed', 'local_llm', 'local_rerank'])
+    )
+  })
+
+  test('test_canonical_provider_maps_local_embed_to_local', () => {
+    expect(canonicalProvider('local_embed')).toBe('local')
   })
 })
 
