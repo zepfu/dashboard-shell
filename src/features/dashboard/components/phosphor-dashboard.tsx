@@ -26,11 +26,20 @@
  * Data is fetched via fetchUsageReport + fetchUsageReportQuotas; anomaly
  * flags come from useAnomalyDetection.
  */
-import { useEffect, useMemo, type ReactElement, type ReactNode } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactElement,
+  type ReactNode,
+} from 'react'
 import { useQuery } from '@tanstack/react-query'
 import {
   fetchUsageReport,
   fetchUsageReportQuotas,
+  fetchUsageReportTokenTrendDay,
+  fetchUsageReportTokenTrendSummary,
   type UsageReportProviderErrorObservationRow,
   type UsageReportProviderLatencyHealthRow,
   type UsageReportQuotaHistoryRow,
@@ -45,7 +54,10 @@ import {
 } from '../api/usage-report'
 import { useAnomalyDetection } from '../hooks/use-anomaly-detection'
 import { CLIENT_BRAND_COLORS } from '../lib/client-brand-colors'
-import { normalizeTrendData } from '../lib/trend-utils'
+import {
+  buildTokenTrendDayEnvelopes,
+  normalizeTrendData,
+} from '../lib/trend-utils'
 import {
   canonicalProvider,
   clientColorFor,
@@ -3591,6 +3603,150 @@ export default function PhosphorDashboard({
     [report?.trend]
   )
 
+  const tokenTrendScopeKey = useMemo(
+    () =>
+      JSON.stringify({
+        from: resolvedFrom,
+        to: resolvedTo,
+        providers: filters?.providers ?? [],
+        repositories: filters?.repositories ?? [],
+        clients: filters?.clients ?? [],
+        environments: filters?.environments ?? [],
+        models: filters?.models ?? [],
+      }),
+    [
+      resolvedFrom,
+      resolvedTo,
+      filters?.providers,
+      filters?.repositories,
+      filters?.clients,
+      filters?.environments,
+      filters?.models,
+    ]
+  )
+
+  const tokenTrendSummaryQuery = useQuery({
+    queryKey: [
+      'usage-report-token-trend-summary',
+      tokenTrendScopeKey,
+      resolvedFrom,
+      resolvedTo,
+      filters?.providers,
+      filters?.repositories,
+      filters?.clients,
+      filters?.environments,
+      filters?.models,
+    ],
+    queryFn: ({ signal }) =>
+      fetchUsageReportTokenTrendSummary(
+        {
+          from: resolvedFrom,
+          to: resolvedTo,
+          provider: filters?.providers,
+          repository: filters?.repositories,
+          client: filters?.clients,
+          environment: filters?.environments,
+          model: filters?.models,
+        },
+        signal
+      ),
+    staleTime: 5 * 60 * 1000,
+  })
+
+  const tokenTrendVersions = useMemo(
+    () =>
+      tokenTrendSummaryQuery.data?.tokenTrendVersions ??
+      report?.tokenTrendVersions ??
+      [],
+    [
+      tokenTrendSummaryQuery.data?.tokenTrendVersions,
+      report?.tokenTrendVersions,
+    ]
+  )
+
+  const tokenTrendDayEnvelopes = useMemo(
+    () =>
+      buildTokenTrendDayEnvelopes(
+        tokenTrendSummaryQuery.data?.tokenTrendHours ??
+          report?.tokenTrendHours ??
+          []
+      ),
+    [tokenTrendSummaryQuery.data?.tokenTrendHours, report?.tokenTrendHours]
+  )
+
+  const [tokenTrendHoverTarget, setTokenTrendHoverTarget] = useState<{
+    day: string
+    hour: number
+    scopeKey: string
+  } | null>(null)
+  const [tokenTrendDetailRequest, setTokenTrendDetailRequest] = useState<{
+    day: string
+    scopeKey: string
+  } | null>(null)
+
+  const handleTokenTrendHourHover = useCallback(
+    (target: { day: string; hour: number }): void => {
+      setTokenTrendHoverTarget((current) =>
+        current?.day === target.day &&
+        current.hour === target.hour &&
+        current.scopeKey === tokenTrendScopeKey
+          ? current
+          : { ...target, scopeKey: tokenTrendScopeKey }
+      )
+    },
+    [tokenTrendScopeKey]
+  )
+
+  useEffect(() => {
+    if (tokenTrendHoverTarget === null) return
+    const timeout = window.setTimeout(() => {
+      setTokenTrendDetailRequest({
+        day: tokenTrendHoverTarget.day,
+        scopeKey: tokenTrendHoverTarget.scopeKey,
+      })
+    }, 125)
+    return () => {
+      window.clearTimeout(timeout)
+    }
+  }, [tokenTrendHoverTarget])
+
+  const tokenTrendDayDetailQuery = useQuery({
+    queryKey: [
+      'usage-report-token-trend-day',
+      tokenTrendScopeKey,
+      tokenTrendDetailRequest,
+      resolvedFrom,
+      resolvedTo,
+      filters?.providers,
+      filters?.repositories,
+      filters?.clients,
+      filters?.environments,
+      filters?.models,
+    ],
+    queryFn: ({ signal }) => {
+      if (tokenTrendDetailRequest === null) {
+        throw new Error('Token trend day detail requested without a day.')
+      }
+      return fetchUsageReportTokenTrendDay(
+        {
+          from: resolvedFrom,
+          to: resolvedTo,
+          date: tokenTrendDetailRequest.day,
+          provider: filters?.providers,
+          repository: filters?.repositories,
+          client: filters?.clients,
+          environment: filters?.environments,
+          model: filters?.models,
+        },
+        signal
+      )
+    },
+    enabled:
+      tokenTrendDetailRequest !== null &&
+      tokenTrendDetailRequest.scopeKey === tokenTrendScopeKey,
+    staleTime: 5 * 60 * 1000,
+  })
+
   const providers = useMemo(() => deriveProviders(), [])
 
   // Wave 37 SF-1: prefer parent-supplied quotas (dedup fix); fall back to the
@@ -3961,24 +4117,6 @@ export default function PhosphorDashboard({
         )}
       </section>
 
-      {/* ── TOKENS ────────────────────────────────────────────────────── */}
-      {/* Wave 48: tokens moved BACK under provider health per operator   */}
-      {/* request — visual grouping prioritised over above-fold placement. */}
-      <section
-        id='tokens'
-        data-tab='tokens'
-        aria-labelledby='section-tokens-heading'
-      >
-        <SectionTitle id='section-tokens-heading'>
-          Token Trend · Stacked by Provider · 24h
-        </SectionTitle>
-        {reportLoading ? (
-          <SectionSkeleton height={120} />
-        ) : (
-          <TokenTrendChart data={trendData} series={PROVIDER_SERIES} />
-        )}
-      </section>
-
       {/* ── MODEL LEDGER + REPOSITORY BREAKDOWN (side-by-side ≥1600px) ── */}
       {/* Wave 11 PR1 (11-b, 11-c): ledger moves from #health → #models; */}
       {/* repo stays in #repos; both wrapped for 8fr/4fr grid at 1600px+. */}
@@ -4017,6 +4155,34 @@ export default function PhosphorDashboard({
           )}
         </section>
       </div>
+
+      {/* ── TOKENS ────────────────────────────────────────────────────── */}
+      <section
+        id='tokens'
+        data-tab='tokens'
+        aria-labelledby='section-tokens-heading'
+      >
+        <SectionTitle id='section-tokens-heading'>
+          Token Trend · Hourly by Day · Stacked by Provider
+        </SectionTitle>
+        {reportLoading ? (
+          <SectionSkeleton height={280} />
+        ) : (
+          <TokenTrendChart
+            data={trendData}
+            series={PROVIDER_SERIES}
+            dayEnvelopes={
+              tokenTrendDayEnvelopes.length > 0
+                ? tokenTrendDayEnvelopes
+                : undefined
+            }
+            versionIntervals={tokenTrendVersions}
+            dayDetail={tokenTrendDayDetailQuery.data}
+            detailLoading={tokenTrendDayDetailQuery.isFetching}
+            onHourHover={handleTokenTrendHourHover}
+          />
+        )}
+      </section>
 
       {/* ── CLIENTS ───────────────────────────────────────────────────── */}
       <section

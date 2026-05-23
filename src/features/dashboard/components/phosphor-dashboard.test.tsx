@@ -14,7 +14,7 @@
  */
 import type { ReactNode } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { render, act } from '@testing-library/react'
+import { render, act, fireEvent, waitFor } from '@testing-library/react'
 import { http, HttpResponse } from 'msw'
 import { server } from '../../../test/setup'
 import type {
@@ -97,6 +97,8 @@ const MOCK_REPORT: UsageReportResponse = {
     latest_record_at: '2026-05-19T00:00:00.000Z',
   },
   trend: [],
+  tokenTrendHours: [],
+  tokenTrendVersions: [],
   clients: [],
   providerLatencyHealth: [],
   providerErrorObservations: [],
@@ -208,6 +210,140 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
     // The internal useQuery is gated by `internalQueryEnabled = reportProp === undefined`.
     // Since we supplied `report`, NO fetch to /api/shell/reports/usage should occur.
     expect(usageCallCount).toBe(0)
+  })
+
+  test('test_token_trend_hover_fetches_day_detail_once_per_day', async () => {
+    let dayDetailCallCount = 0
+    let dayDetailUrl: URL | null = null
+
+    server.use(
+      http.get('/api/shell/reports/usage/token-trend-summary', () =>
+        HttpResponse.json({
+          metadata: {
+            from: '2026-05-20',
+            to: '2026-05-21',
+          },
+          tokenTrendHours: [
+            {
+              day: '2026-05-20',
+              hour: 8,
+              provider: 'anthropic',
+              traces: 1,
+              token_total: 100,
+              usd_cost: 0,
+            },
+            {
+              day: '2026-05-20',
+              hour: 9,
+              provider: 'openai',
+              traces: 1,
+              token_total: 50,
+              usd_cost: 0,
+            },
+          ],
+          tokenTrendVersions: [],
+        })
+      ),
+      http.get('/api/shell/reports/usage/token-trend-day', ({ request }) => {
+        dayDetailCallCount += 1
+        dayDetailUrl = new URL(request.url)
+        return HttpResponse.json({
+          metadata: {
+            date: '2026-05-20',
+            from: '2026-05-20',
+            to: '2026-05-21',
+          },
+          date: '2026-05-20',
+          rows: [],
+        })
+      })
+    )
+
+    let container!: HTMLElement
+    await act(async () => {
+      const renderResult = render(
+        <Wrapper>
+          <PhosphorDashboard
+            from='2026-05-20'
+            to='2026-05-21'
+            report={MOCK_REPORT}
+            reportLoading={false}
+            showComparison={false}
+            quotas={[]}
+          />
+        </Wrapper>
+      )
+      container = renderResult.container
+    })
+
+    await waitFor(() => {
+      expect(
+        container.querySelector('.tt-day-hover-shell[data-day="2026-05-20"]')
+      ).not.toBeNull()
+    })
+
+    const dayHoverShell = container.querySelector(
+      '.tt-day-hover-shell[data-day="2026-05-20"]'
+    ) as HTMLElement
+    fireEvent.pointerEnter(dayHoverShell)
+
+    await waitFor(() => {
+      expect(dayDetailCallCount).toBe(1)
+    })
+    expect(dayDetailUrl?.searchParams.get('date')).toBe('2026-05-20')
+
+    fireEvent.pointerEnter(dayHoverShell)
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 175))
+    })
+    expect(dayDetailCallCount).toBe(1)
+  })
+
+  test('test_token_trend_renders_after_model_and_repo_sections', async () => {
+    server.use(
+      http.get('/api/shell/reports/usage/token-trend-summary', () =>
+        HttpResponse.json({
+          metadata: {
+            from: '2026-05-20',
+            to: '2026-05-21',
+          },
+          tokenTrendHours: [],
+          tokenTrendVersions: [],
+        })
+      )
+    )
+
+    let container!: HTMLElement
+    await act(async () => {
+      const renderResult = render(
+        <Wrapper>
+          <PhosphorDashboard
+            from='2026-05-20'
+            to='2026-05-21'
+            report={MOCK_REPORT}
+            reportLoading={false}
+            showComparison={false}
+            quotas={[]}
+          />
+        </Wrapper>
+      )
+      container = renderResult.container
+    })
+
+    const models = container.querySelector('#models') as HTMLElement
+    const repos = container.querySelector('#repos') as HTMLElement
+    const tokens = container.querySelector('#tokens') as HTMLElement
+
+    expect(models).not.toBeNull()
+    expect(repos).not.toBeNull()
+    expect(tokens).not.toBeNull()
+    expect(
+      models.compareDocumentPosition(tokens) & Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy()
+    expect(
+      repos.compareDocumentPosition(tokens) & Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy()
   })
 })
 
