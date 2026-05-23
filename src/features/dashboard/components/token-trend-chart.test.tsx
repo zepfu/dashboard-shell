@@ -11,7 +11,11 @@
  * (which also renders provider names) does not cause false failures.
  */
 import { render, fireEvent, within } from '@testing-library/react'
-import { formatBucketLabel } from '../lib/trend-utils'
+import { vi } from 'vitest'
+import {
+  buildTokenTrendDayEnvelopes,
+  formatBucketLabel,
+} from '../lib/trend-utils'
 import { TokenTrendChart } from './token-trend-chart'
 
 // ---------------------------------------------------------------------------
@@ -322,6 +326,219 @@ test('test_relative_label_displayed_as_is', () => {
 
   expect(labels[0]?.textContent?.trim()).toBe('5h')
   expect(labels[1]?.textContent?.trim()).toBe('4h')
+})
+
+// ---------------------------------------------------------------------------
+// D1-019 — hourly day envelope mode
+// ---------------------------------------------------------------------------
+
+test('test_day_envelope_mode_renders_days_and_24_hour_bars_per_day', () => {
+  const dayEnvelopes = buildTokenTrendDayEnvelopes([
+    {
+      day: '2026-05-20',
+      hour: 8,
+      provider: 'anthropic',
+      traces: 1,
+      token_total: 100,
+      usd_cost: 0,
+    },
+    {
+      day: '2026-05-21',
+      hour: 9,
+      provider: 'openai',
+      traces: 1,
+      token_total: 50,
+      usd_cost: 0,
+    },
+  ])
+
+  const { container } = render(
+    <TokenTrendChart dayEnvelopes={dayEnvelopes} series={series} />
+  )
+
+  expect(container.querySelectorAll('.tt-day-envelope').length).toBe(2)
+  expect(container.querySelectorAll('.tt-day-tip-wrap').length).toBe(2)
+  expect(container.querySelectorAll('.tt-hour-bar').length).toBe(48)
+  expect(container.querySelectorAll('.tt-hour-tip-wrap').length).toBe(0)
+  expect(
+    container.querySelector('.tt-day-envelope .tt-anthropic')
+  ).not.toBeNull()
+  expect(container.querySelector('.tt-day-envelope .tt-openai')).not.toBeNull()
+})
+
+test('test_day_envelope_mode_renders_release_dot_and_continuation_line', () => {
+  const dayEnvelopes = buildTokenTrendDayEnvelopes([
+    {
+      day: '2026-05-20',
+      hour: 8,
+      provider: 'anthropic',
+      traces: 1,
+      token_total: 100,
+      usd_cost: 0,
+    },
+    {
+      day: '2026-05-20',
+      hour: 9,
+      provider: 'anthropic',
+      traces: 1,
+      token_total: 110,
+      usd_cost: 0,
+    },
+  ])
+
+  const { container } = render(
+    <TokenTrendChart
+      dayEnvelopes={dayEnvelopes}
+      series={series}
+      versionIntervals={[
+        {
+          provider: 'anthropic',
+          client_name: 'codex-tui',
+          client_version: '0.120.0',
+          first_seen_at: '2026-05-20T12:00:00.000Z',
+          last_seen_at: '2026-05-20T13:10:00.000Z',
+          first_seen_day: '2026-05-20',
+          first_seen_hour: 8,
+          last_seen_day: '2026-05-20',
+          last_seen_hour: 9,
+          traces: 2,
+          token_total: 210,
+          usd_cost: 0,
+        },
+      ]}
+    />
+  )
+
+  expect(container.querySelector('.tt-release-dot')).not.toBeNull()
+  expect(container.querySelector('.tt-version-line')).not.toBeNull()
+  expect(container.querySelector('.tt-version-line-halo')).not.toBeNull()
+  const overlay = container.querySelector('.tt-version-overlay') as SVGElement
+  expect(overlay.style.height).toBe('100%')
+  expect(overlay.style.overflow).toBe('hidden')
+  const versionLine = container.querySelector('.tt-version-line') as SVGElement
+  const versionHalo = container.querySelector(
+    '.tt-version-line-halo'
+  ) as SVGElement
+  expect(versionLine.getAttribute('stroke-width')).toBe('2')
+  expect(versionHalo.getAttribute('stroke-width')).toBe('5')
+})
+
+test('test_day_envelope_mode_uses_taller_chart_for_dense_ranges', () => {
+  const rows = Array.from({ length: 21 }, (_, index) => ({
+    day: `2026-05-${(index + 1).toString().padStart(2, '0')}`,
+    hour: 8,
+    provider: 'anthropic',
+    traces: 1,
+    token_total: 100,
+    usd_cost: 0,
+  }))
+  const dayEnvelopes = buildTokenTrendDayEnvelopes(rows)
+
+  const { container } = render(
+    <TokenTrendChart dayEnvelopes={dayEnvelopes} series={series} />
+  )
+
+  const chart = container.querySelector('.tt-day-chart') as HTMLElement
+  expect(chart.style.height).toBe('248px')
+})
+
+test('test_day_envelope_mode_hover_requests_day_detail', () => {
+  const onHourHover = vi.fn()
+  const dayEnvelopes = buildTokenTrendDayEnvelopes([
+    {
+      day: '2026-05-20',
+      hour: 8,
+      provider: 'anthropic',
+      traces: 1,
+      token_total: 100,
+      usd_cost: 0,
+    },
+  ])
+
+  const { container } = render(
+    <TokenTrendChart
+      dayEnvelopes={dayEnvelopes}
+      series={series}
+      onHourHover={onHourHover}
+    />
+  )
+
+  const dayHoverShell = container.querySelector(
+    '.tt-day-hover-shell[data-day="2026-05-20"]'
+  ) as HTMLElement
+  expect(dayHoverShell).not.toBeNull()
+  fireEvent.pointerEnter(dayHoverShell)
+
+  expect(onHourHover).toHaveBeenCalledWith({ day: '2026-05-20', hour: 8 })
+})
+
+test('test_day_envelope_tooltip_prioritizes_releases_before_active_versions', () => {
+  const dayEnvelopes = buildTokenTrendDayEnvelopes([
+    {
+      day: '2026-05-20',
+      hour: 8,
+      provider: 'anthropic',
+      traces: 1,
+      token_total: 100,
+      usd_cost: 0,
+    },
+  ])
+
+  const { container } = render(
+    <TokenTrendChart
+      dayEnvelopes={dayEnvelopes}
+      series={series}
+      versionIntervals={[
+        {
+          provider: 'anthropic',
+          client_name: 'codex-tui',
+          client_version: '0.120.0',
+          first_seen_at: '2026-05-20T12:00:00.000Z',
+          last_seen_at: '2026-05-20T13:10:00.000Z',
+          first_seen_day: '2026-05-20',
+          first_seen_hour: 8,
+          last_seen_day: '2026-05-20',
+          last_seen_hour: 8,
+          traces: 1,
+          token_total: 100,
+          usd_cost: 0,
+        },
+      ]}
+      dayDetail={{
+        metadata: {
+          date: '2026-05-20',
+          from: '2026-05-20',
+          to: '2026-05-21',
+        },
+        date: '2026-05-20',
+        rows: [
+          {
+            day: '2026-05-20',
+            hour: 8,
+            provider: 'anthropic',
+            client_name: 'claude-code',
+            client_version: '2.0.0',
+            first_seen_at: '2026-05-20T12:30:00.000Z',
+            last_seen_at: '2026-05-20T12:31:00.000Z',
+            traces: 1,
+            token_total: 25,
+            usd_cost: 0,
+          },
+        ],
+      }}
+    />
+  )
+
+  const tipWrap = container.querySelector('.tt-day-tip-wrap') as HTMLElement
+  fireEvent.pointerEnter(tipWrap)
+
+  const openTip = document.body.querySelector(
+    '.v9-tip[data-state="open"]'
+  ) as HTMLElement
+  expect(openTip).not.toBeNull()
+  expect(openTip.textContent).toContain('releases')
+  expect(openTip.textContent).toContain('codex-tui 0.120.0')
+  expect(openTip.textContent).not.toContain('active versions')
 })
 
 // ---------------------------------------------------------------------------

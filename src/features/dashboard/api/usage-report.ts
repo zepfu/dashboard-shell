@@ -142,6 +142,43 @@ export interface UsageReportTrendRow {
   usd_cost: number
 }
 
+export interface UsageReportTokenTrendHourRow {
+  day: string
+  hour: number
+  provider: string
+  traces: number
+  token_total: number
+  usd_cost: number
+}
+
+export interface UsageReportTokenTrendVersionIntervalRow {
+  provider: string
+  client_name: string
+  client_version: string
+  first_seen_at: string | null
+  last_seen_at: string | null
+  first_seen_day: string | null
+  first_seen_hour: number | null
+  last_seen_day: string | null
+  last_seen_hour: number | null
+  traces: number
+  token_total: number
+  usd_cost: number
+}
+
+export interface UsageReportTokenTrendDayDetailRow {
+  day: string
+  hour: number
+  provider: string
+  client_name: string
+  client_version: string
+  first_seen_at: string | null
+  last_seen_at: string | null
+  traces: number
+  token_total: number
+  usd_cost: number
+}
+
 export interface UsageReportClientRow {
   client_name: string
   client_version: string
@@ -358,6 +395,8 @@ export interface UsageReportResponse {
   }
   summary: UsageReportSummary
   trend: UsageReportTrendRow[]
+  tokenTrendHours?: UsageReportTokenTrendHourRow[]
+  tokenTrendVersions?: UsageReportTokenTrendVersionIntervalRow[]
   clients: UsageReportClientRow[]
   providerLatencyHealth: UsageReportProviderLatencyHealthRow[]
   providerErrorObservations: UsageReportProviderErrorObservationRow[]
@@ -381,6 +420,76 @@ export interface UsageReportQuotasResponse {
   quotas: UsageReportQuotaRow[]
 }
 
+export interface UsageReportTokenTrendDayParams extends UsageReportFilterParams {
+  from: string
+  to: string
+  date: string
+}
+
+export interface UsageReportTokenTrendSummaryParams extends UsageReportFilterParams {
+  from: string
+  to: string
+}
+
+export interface UsageReportTokenTrendSummaryResponse {
+  metadata: {
+    from: string
+    to: string
+    generatedAt?: string
+    cacheBackend?: string
+    cacheFreshUntil?: string | null
+    cacheGeneratedAt?: string | null
+    cacheKeyHash?: string
+    cacheScope?: string
+    cacheStaleUntil?: string | null
+    cacheStatus?: string
+    cacheRefreshing?: boolean
+  }
+  tokenTrendHours: UsageReportTokenTrendHourRow[]
+  tokenTrendVersions: UsageReportTokenTrendVersionIntervalRow[]
+}
+
+export interface UsageReportTokenTrendDayResponse {
+  metadata: {
+    date: string
+    from: string
+    to: string
+    generatedAt?: string
+    cacheBackend?: string
+    cacheFreshUntil?: string | null
+    cacheGeneratedAt?: string | null
+    cacheKeyHash?: string
+    cacheScope?: string
+    cacheStaleUntil?: string | null
+    cacheStatus?: string
+    cacheRefreshing?: boolean
+  }
+  date: string
+  rows: UsageReportTokenTrendDayDetailRow[]
+}
+
+function appendUsageReportFilters(
+  searchParams: URLSearchParams,
+  params: UsageReportFilterParams
+): void {
+  // 15-D.1: Append multi-value dimension filters as comma-separated params.
+  // The server's appendMultiValueFilter() calls parseCsv(searchParams.get(key))
+  // which splits on commas. Empty arrays → param omitted → no server-side filter.
+  const filterKeys = [
+    'provider',
+    'repository',
+    'client',
+    'environment',
+    'model',
+  ] as const
+  for (const key of filterKeys) {
+    const values = params[key]
+    if (values !== undefined && values.length > 0) {
+      searchParams.set(key, values.join(','))
+    }
+  }
+}
+
 export async function fetchUsageReport(
   params: UsageReportParams
 ): Promise<UsageReportResponse> {
@@ -401,22 +510,7 @@ export async function fetchUsageReport(
     sort: 'period_end',
   })
 
-  // 15-D.1: Append multi-value dimension filters as comma-separated params.
-  // The server's appendMultiValueFilter() calls parseCsv(searchParams.get(key))
-  // which splits on commas. Empty arrays → param omitted → no server-side filter.
-  const filterKeys = [
-    'provider',
-    'repository',
-    'client',
-    'environment',
-    'model',
-  ] as const
-  for (const key of filterKeys) {
-    const values = params[key]
-    if (values !== undefined && values.length > 0) {
-      searchParams.set(key, values.join(','))
-    }
-  }
+  appendUsageReportFilters(searchParams, params)
 
   const response = await fetch(`/api/shell/reports/usage?${searchParams}`)
   if (!response.ok) {
@@ -425,6 +519,59 @@ export async function fetchUsageReport(
       typeof payload?.error === 'string'
         ? payload.error
         : `Usage report request failed with ${response.status}`
+    throw new Error(message)
+  }
+
+  return response.json()
+}
+
+export async function fetchUsageReportTokenTrendSummary(
+  params: UsageReportTokenTrendSummaryParams,
+  signal?: AbortSignal
+): Promise<UsageReportTokenTrendSummaryResponse> {
+  const searchParams = new URLSearchParams({
+    from: params.from,
+    to: params.to,
+  })
+  appendUsageReportFilters(searchParams, params)
+
+  const response = await fetch(
+    `/api/shell/reports/usage/token-trend-summary?${searchParams}`,
+    { signal }
+  )
+  if (!response.ok) {
+    const payload = await response.json().catch(() => null)
+    const message =
+      typeof payload?.error === 'string'
+        ? payload.error
+        : `Token trend summary request failed with ${response.status}`
+    throw new Error(message)
+  }
+
+  return response.json()
+}
+
+export async function fetchUsageReportTokenTrendDay(
+  params: UsageReportTokenTrendDayParams,
+  signal?: AbortSignal
+): Promise<UsageReportTokenTrendDayResponse> {
+  const searchParams = new URLSearchParams({
+    from: params.from,
+    to: params.to,
+    date: params.date,
+  })
+  appendUsageReportFilters(searchParams, params)
+
+  const response = await fetch(
+    `/api/shell/reports/usage/token-trend-day?${searchParams}`,
+    { signal }
+  )
+  if (!response.ok) {
+    const payload = await response.json().catch(() => null)
+    const message =
+      typeof payload?.error === 'string'
+        ? payload.error
+        : `Token trend day request failed with ${response.status}`
     throw new Error(message)
   }
 

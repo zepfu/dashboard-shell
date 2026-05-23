@@ -45,8 +45,22 @@
  * Accessibility: the outer container carries a descriptive aria-label.
  */
 import type { CSSProperties, ReactElement, ReactNode } from 'react'
-import { formatBucketLabel } from '../lib/trend-utils'
-import { PROVIDER_BRAND_HEX } from '../lib/usage-report-display'
+import type {
+  UsageReportTokenTrendDayResponse,
+  UsageReportTokenTrendVersionIntervalRow,
+} from '../api/usage-report'
+import {
+  deriveTokenTrendVersionTracks,
+  formatBucketLabel,
+  tokenTrendDayHeightPct,
+  tokenTrendHourHeightPct,
+  type TokenTrendDayEnvelope,
+  type TokenTrendVersionTrack,
+} from '../lib/trend-utils'
+import {
+  canonicalProvider,
+  PROVIDER_BRAND_HEX,
+} from '../lib/usage-report-display'
 import { HoverTooltip } from './primitives/hover-tooltip'
 
 // ---------------------------------------------------------------------------
@@ -155,6 +169,282 @@ function buildBarTooltip(
   )
 }
 
+function formatCompactNumber(value: number): string {
+  return new Intl.NumberFormat('en-US', {
+    notation: 'compact',
+    maximumFractionDigits: 1,
+  }).format(value)
+}
+
+function formatDayLabel(day: string): string {
+  return formatBucketLabel(day)
+}
+
+function formatVersionLabel(clientName: string, clientVersion: string): string {
+  return `${clientName} ${clientVersion}`.trim()
+}
+
+function versionRowKey(row: {
+  provider: string
+  client_name: string
+  client_version: string
+}): string {
+  return [
+    canonicalProvider(row.provider),
+    row.client_name,
+    row.client_version,
+  ].join('|')
+}
+
+function intervalRowKey(row: UsageReportTokenTrendVersionIntervalRow): string {
+  return [
+    canonicalProvider(row.provider),
+    row.client_name,
+    row.client_version,
+  ].join('|')
+}
+
+interface DayVersionSummary {
+  provider: string
+  client_name: string
+  client_version: string
+  token_total: number
+}
+
+function summarizeDayDetailRows(
+  dayDetail: UsageReportTokenTrendDayResponse | null | undefined,
+  day: string,
+  releaseKeys: ReadonlySet<string>
+): DayVersionSummary[] {
+  if (dayDetail?.date !== day) return []
+
+  const byVersion = new Map<string, DayVersionSummary>()
+  for (const row of dayDetail.rows) {
+    if (row.day !== day || row.token_total <= 0) continue
+    if (releaseKeys.has(versionRowKey(row))) continue
+
+    const key = versionRowKey(row)
+    const existing = byVersion.get(key)
+    if (existing !== undefined) {
+      existing.token_total += row.token_total
+      continue
+    }
+
+    byVersion.set(key, {
+      provider: canonicalProvider(row.provider),
+      client_name: row.client_name,
+      client_version: row.client_version,
+      token_total: row.token_total,
+    })
+  }
+
+  return [...byVersion.values()].sort((a, b) => b.token_total - a.token_total)
+}
+
+function buildDayTooltip(
+  day: TokenTrendDayEnvelope,
+  series: readonly ProviderSeries[],
+  versionIntervals: readonly UsageReportTokenTrendVersionIntervalRow[],
+  dayDetail: UsageReportTokenTrendDayResponse | null | undefined,
+  detailLoading: boolean | undefined
+): ReactNode {
+  const labelMap = new Map<string, string>(series.map((s) => [s.key, s.label]))
+  const providerRows = Object.entries(day.totals)
+    .filter(([, count]) => count > 0)
+    .sort(([, a], [, b]) => b - a)
+
+  const releaseRows = versionIntervals
+    .filter((interval) => interval.first_seen_day === day.day)
+    .sort((a, b) => {
+      const hourDelta = (a.first_seen_hour ?? 99) - (b.first_seen_hour ?? 99)
+      if (hourDelta !== 0) return hourDelta
+      return b.token_total - a.token_total
+    })
+
+  const releaseKeys = new Set(releaseRows.map(intervalRowKey))
+  const detailRows = summarizeDayDetailRows(dayDetail, day.day, releaseKeys)
+
+  return (
+    <>
+      <div className='v9-tip-head'>{formatDayLabel(day.day)}</div>
+      {providerRows.map(([key, count]) => {
+        const providerLabel = labelMap.get(key) ?? key
+        const pct = day.total > 0 ? ((count / day.total) * 100).toFixed(0) : '0'
+        return (
+          <div
+            key={key}
+            className='v9-tip-row'
+            style={{ gridTemplateColumns: 'minmax(0,1fr) auto' }}
+          >
+            <span className='t-model'>{providerLabel}</span>
+            <span className='t-count'>
+              {formatCompactNumber(count)} ({pct}%)
+            </span>
+          </div>
+        )
+      })}
+      {releaseRows.length > 0 && (
+        <div className='v9-tip-head' style={{ marginTop: '6px' }}>
+          releases
+        </div>
+      )}
+      {releaseRows.slice(0, 8).map((row) => (
+        <div
+          key={intervalRowKey(row)}
+          className='v9-tip-row'
+          style={{ gridTemplateColumns: 'auto minmax(0,1fr) auto' }}
+        >
+          <span className='t-count'>
+            {typeof row.first_seen_hour === 'number'
+              ? `${row.first_seen_hour.toString().padStart(2, '0')}:00`
+              : '--'}
+          </span>
+          <span className='t-model'>
+            {formatVersionLabel(row.client_name, row.client_version)}
+          </span>
+          <span className='t-count'>{canonicalProvider(row.provider)}</span>
+        </div>
+      ))}
+      {releaseRows.length > 8 && (
+        <div className='v9-tip-row' style={{ gridTemplateColumns: '1fr' }}>
+          <span className='t-count'>
+            +{releaseRows.length - 8} more releases
+          </span>
+        </div>
+      )}
+      {releaseRows.length === 0 && detailRows.length > 0 && (
+        <div className='v9-tip-head' style={{ marginTop: '6px' }}>
+          active versions
+        </div>
+      )}
+      {releaseRows.length === 0 &&
+        detailRows.slice(0, 8).map((row) => (
+          <div
+            key={versionRowKey(row)}
+            className='v9-tip-row'
+            style={{ gridTemplateColumns: 'auto minmax(0,1fr) auto' }}
+          >
+            <span className='t-count'>{canonicalProvider(row.provider)}</span>
+            <span className='t-model'>
+              {formatVersionLabel(row.client_name, row.client_version)}
+            </span>
+            <span className='t-count'>
+              {formatCompactNumber(row.token_total)}
+            </span>
+          </div>
+        ))}
+      {releaseRows.length === 0 && detailRows.length > 8 && (
+        <div className='v9-tip-row' style={{ gridTemplateColumns: '1fr' }}>
+          <span className='t-count'>
+            +{detailRows.length - 8} more versions
+          </span>
+        </div>
+      )}
+      {releaseRows.length === 0 &&
+        detailRows.length === 0 &&
+        detailLoading === true && (
+          <div className='v9-tip-row' style={{ gridTemplateColumns: '1fr' }}>
+            <span className='t-model' style={{ color: 'var(--fg-muted)' }}>
+              loading version detail
+            </span>
+          </div>
+        )}
+      {providerRows.length === 0 && (
+        <div className='v9-tip-row' style={{ gridTemplateColumns: '1fr' }}>
+          <span className='t-model' style={{ color: 'var(--fg-muted)' }}>
+            no data
+          </span>
+        </div>
+      )}
+    </>
+  )
+}
+
+function trackPath(points: readonly { x: number; y: number }[]): string {
+  return points
+    .map(
+      (point, index) =>
+        `${index === 0 ? 'M' : 'L'} ${point.x.toFixed(3)} ${point.y.toFixed(3)}`
+    )
+    .join(' ')
+}
+
+function renderVersionOverlay(
+  tracks: readonly TokenTrendVersionTrack[],
+  widthUnits: number
+): ReactNode {
+  if (tracks.length === 0 || widthUnits <= 0) return null
+
+  return (
+    <svg
+      className='tt-version-overlay'
+      viewBox={`0 0 ${widthUnits.toString()} 100`}
+      preserveAspectRatio='none'
+      aria-hidden='true'
+      style={{
+        position: 'absolute',
+        inset: 0,
+        pointerEvents: 'none',
+        display: 'block',
+        width: '100%',
+        height: '100%',
+        overflow: 'hidden',
+        zIndex: 2,
+      }}
+    >
+      {tracks.flatMap((track) =>
+        track.segments.map((segment, index) => {
+          if (segment.length < 2) return null
+          const pathKey = `${track.id}|segment|${index.toString()}`
+          const pathData = trackPath(segment)
+          return (
+            <g key={pathKey}>
+              <path
+                className='tt-version-line-halo'
+                d={pathData}
+                fill='none'
+                stroke='var(--card)'
+                strokeLinecap='round'
+                strokeLinejoin='round'
+                strokeOpacity={0.86}
+                strokeWidth={5}
+                vectorEffect='non-scaling-stroke'
+              />
+              <path
+                className='tt-version-line'
+                d={pathData}
+                fill='none'
+                stroke={resolveSliceColor(track.provider, '')}
+                strokeLinecap='round'
+                strokeLinejoin='round'
+                strokeOpacity={0.96}
+                strokeWidth={2}
+                vectorEffect='non-scaling-stroke'
+              />
+            </g>
+          )
+        })
+      )}
+      {tracks.map((track) => {
+        if (track.releasePoint === null) return null
+        return (
+          <circle
+            key={`${track.id}|release`}
+            className='tt-release-dot'
+            cx={track.releasePoint.x}
+            cy={track.releasePoint.y}
+            r={0.72}
+            fill={resolveSliceColor(track.provider, '')}
+            stroke='var(--card)'
+            strokeWidth={0.62}
+            vectorEffect='non-scaling-stroke'
+          />
+        )
+      })}
+    </svg>
+  )
+}
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -178,8 +468,13 @@ export interface ProviderSeries {
 // ---------------------------------------------------------------------------
 
 export interface TokenTrendChartProps {
-  data: TrendBucket[]
+  data?: TrendBucket[]
   series: ProviderSeries[]
+  dayEnvelopes?: TokenTrendDayEnvelope[]
+  versionIntervals?: UsageReportTokenTrendVersionIntervalRow[]
+  dayDetail?: UsageReportTokenTrendDayResponse | null
+  detailLoading?: boolean
+  onHourHover?: (target: { day: string; hour: number }) => void
 }
 
 // ---------------------------------------------------------------------------
@@ -197,9 +492,329 @@ export interface TokenTrendChartProps {
  * at 24 buckets to prevent text crowding.
  */
 export function TokenTrendChart({
-  data,
+  data = [],
   series,
+  dayEnvelopes,
+  versionIntervals = [],
+  dayDetail,
+  detailLoading = false,
+  onHourHover,
 }: TokenTrendChartProps): ReactElement {
+  if (dayEnvelopes !== undefined) {
+    const maxDayTotal = Math.max(0, ...dayEnvelopes.map((day) => day.total))
+    const tracks = deriveTokenTrendVersionTracks(
+      dayEnvelopes,
+      versionIntervals,
+      series.map((s) => s.key),
+      { gapToleranceHours: 2 }
+    )
+    const widthUnits = Math.max(1, dayEnvelopes.length * 24)
+    const labelStride =
+      dayEnvelopes.length <= 14 ? 1 : Math.ceil(dayEnvelopes.length / 14)
+    const chartHeightPx = dayEnvelopes.length >= 21 ? 248 : 208
+
+    return (
+      <div
+        aria-label='Token usage by day and hour, stacked by provider'
+        style={{ width: '100%' }}
+      >
+        <div
+          className='token-trend-chart tt-day-chart'
+          style={{
+            background: 'var(--card)',
+            border: '1px solid var(--border)',
+            padding: '8px',
+            height: `${chartHeightPx.toString()}px`,
+            width: '100%',
+            boxSizing: 'border-box',
+          }}
+        >
+          <div
+            className='tt-day-strip'
+            style={{
+              position: 'relative',
+              display: 'flex',
+              alignItems: 'flex-end',
+              gap: '2px',
+              height: '100%',
+              width: '100%',
+              overflow: 'hidden',
+              isolation: 'isolate',
+            }}
+          >
+            {dayEnvelopes.map((day) => {
+              const dayHeightPct = tokenTrendDayHeightPct(
+                day.total,
+                maxDayTotal
+              )
+              const hoverHour =
+                day.hours.reduce(
+                  (best, hour) => (hour.total > best.total ? hour : best),
+                  day.hours[0] ?? {
+                    day: day.day,
+                    hour: 0,
+                    label: '00:00',
+                    totals: {},
+                    total: 0,
+                  }
+                ).hour ?? 0
+
+              const dayShell = (
+                <div
+                  className='tt-day-hover-shell'
+                  data-day={day.day}
+                  style={{
+                    width: '100%',
+                    height: '100%',
+                    display: 'flex',
+                    alignItems: 'flex-end',
+                    minWidth: 0,
+                    position: 'relative',
+                    zIndex: 1,
+                  }}
+                  onPointerEnter={() => {
+                    onHourHover?.({
+                      day: day.day,
+                      hour: hoverHour,
+                    })
+                  }}
+                >
+                  <div
+                    className='tt-day-envelope'
+                    data-day={day.day}
+                    style={{
+                      width: '100%',
+                      minWidth: 0,
+                      height: `${dayHeightPct.toFixed(1)}%`,
+                      display: 'flex',
+                      alignItems: 'flex-end',
+                      position: 'relative',
+                      border:
+                        '1px solid color-mix(in srgb, var(--border) 72%, transparent)',
+                      background:
+                        'color-mix(in srgb, var(--card) 88%, var(--fg-muted) 12%)',
+                      overflow: 'hidden',
+                    }}
+                  >
+                    <div
+                      className='tt-hour-row'
+                      style={{
+                        display: 'flex',
+                        alignItems: 'flex-end',
+                        gap: '1px',
+                        height: '100%',
+                        width: '100%',
+                      }}
+                    >
+                      {day.hours.map((hourBucket) => {
+                        const hourHeightPct = tokenTrendHourHeightPct(
+                          hourBucket.total,
+                          day.maxHourTotal
+                        )
+
+                        const hourBar = (
+                          <div
+                            className='tt-hour-bar trend-bar'
+                            data-day={hourBucket.day}
+                            data-hour={hourBucket.hour}
+                            style={{
+                              flex: '0 0 auto',
+                              width: '100%',
+                              height: `${hourHeightPct.toFixed(1)}%`,
+                              display: 'flex',
+                              flexDirection: 'column-reverse',
+                              overflow: 'hidden',
+                              minWidth: 0,
+                              border: '0',
+                              opacity: 0.66,
+                              position: 'relative',
+                              zIndex: 1,
+                            }}
+                          >
+                            {series.map((s) => {
+                              const tokens = hourBucket.totals[s.key] ?? 0
+                              if (tokens <= 0) return null
+
+                              const pct =
+                                hourBucket.total > 0
+                                  ? (tokens / hourBucket.total) * 100
+                                  : 0
+                              const sliceStyle: CSSProperties = {
+                                flexBasis: `${pct.toFixed(4)}%`,
+                                flexShrink: 0,
+                                minHeight: '1px',
+                                width: '100%',
+                                background: resolveSliceColor(s.key, s.color),
+                              }
+
+                              return (
+                                <div
+                                  key={s.key}
+                                  className={`tt-slice ${s.cssClass}`}
+                                  style={sliceStyle}
+                                />
+                              )
+                            })}
+                          </div>
+                        )
+
+                        const hourShell = (
+                          <div
+                            style={{
+                              width: '100%',
+                              height: '100%',
+                              display: 'flex',
+                              alignItems: 'flex-end',
+                            }}
+                          >
+                            {hourBar}
+                          </div>
+                        )
+
+                        return (
+                          <div
+                            key={`${hourBucket.day}-${hourBucket.hour.toString()}`}
+                            style={{
+                              flex: '1 1 0%',
+                              minWidth: 0,
+                              height: '100%',
+                              display: 'flex',
+                              alignItems: 'flex-end',
+                            }}
+                          >
+                            {hourShell}
+                          </div>
+                        )
+                      })}
+                    </div>
+                  </div>
+                </div>
+              )
+
+              return (
+                <HoverTooltip
+                  key={day.day}
+                  content={buildDayTooltip(
+                    day,
+                    series,
+                    versionIntervals,
+                    dayDetail,
+                    detailLoading && dayDetail?.date !== day.day
+                  )}
+                  variant='quota'
+                  className='tt-day-tip-wrap'
+                >
+                  {dayShell}
+                </HoverTooltip>
+              )
+            })}
+            {renderVersionOverlay(tracks, widthUnits)}
+          </div>
+        </div>
+
+        <div
+          className='tt-label-row'
+          style={{
+            display: 'flex',
+            alignItems: 'flex-start',
+            gap: '2px',
+            paddingTop: '3px',
+            paddingLeft: '8px',
+            paddingRight: '8px',
+            width: '100%',
+            boxSizing: 'border-box',
+          }}
+        >
+          {dayEnvelopes.map((day, idx) => {
+            const visible = idx % labelStride === 0
+            return (
+              <div
+                key={`lbl-${day.day}`}
+                style={{
+                  flex: '1 1 0%',
+                  minWidth: '14px',
+                  textAlign: 'center',
+                  fontFamily: 'var(--font-mono)',
+                  fontSize: '8px',
+                  color: 'var(--fg-muted)',
+                  overflow: 'hidden',
+                  whiteSpace: 'nowrap',
+                  textOverflow: 'clip',
+                  lineHeight: 1.2,
+                  letterSpacing: '0',
+                  userSelect: 'none',
+                  visibility: visible ? 'visible' : 'hidden',
+                }}
+                aria-hidden={visible ? undefined : true}
+              >
+                {visible ? day.label : ' '}
+              </div>
+            )
+          })}
+        </div>
+
+        <div
+          className='tt-legend'
+          style={{
+            display: 'flex',
+            gap: '12px',
+            flexWrap: 'wrap',
+            fontFamily: 'var(--font-mono)',
+            fontSize: '10px',
+            color: 'var(--fg-muted)',
+            padding: '6px 8px',
+            letterSpacing: '0',
+          }}
+        >
+          {series.map((s) => (
+            <div
+              key={s.key}
+              className='tt-leg-item'
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '4px',
+              }}
+            >
+              <span
+                className={`tt-swatch ${s.cssClass}`}
+                style={{
+                  display: 'inline-block',
+                  width: '10px',
+                  height: '10px',
+                  border: '1px solid var(--border)',
+                  flexShrink: 0,
+                  background: resolveSliceColor(s.key, s.color),
+                }}
+              />
+              {s.label}
+            </div>
+          ))}
+          <div
+            className='tt-leg-item'
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '4px',
+            }}
+          >
+            <span
+              style={{
+                display: 'inline-block',
+                width: '10px',
+                height: '10px',
+                borderRadius: '50%',
+                border: '1px solid var(--border)',
+                background: 'var(--fg)',
+              }}
+            />
+            Version release
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   // Determine whether to show every other label (crowding threshold).
   // At 24 bars the text would overlap at any practical chart width, so we
   // skip odd-indexed labels. Below 12 bars all labels can be shown.
@@ -386,7 +1001,7 @@ export function TokenTrendChart({
                 whiteSpace: 'nowrap',
                 textOverflow: 'clip',
                 lineHeight: 1.2,
-                letterSpacing: '0.02em',
+                letterSpacing: '0',
                 userSelect: 'none',
                 // Visually hidden placeholder for odd-indexed bars at 24-bar density
                 visibility: displayLabel === '' ? 'hidden' : 'visible',
@@ -410,7 +1025,7 @@ export function TokenTrendChart({
           fontSize: '10px',
           color: 'var(--fg-muted)',
           padding: '6px 8px',
-          letterSpacing: '0.02em',
+          letterSpacing: '0',
         }}
       >
         {series.map((s) => (

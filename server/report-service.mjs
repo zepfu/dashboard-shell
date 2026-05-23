@@ -126,7 +126,7 @@ const REPORT_CACHE_STALE_TTL_MS = Math.max(
 const REPORT_CACHE_REDIS_URL = process.env.SHELL_REPORT_REDIS_URL
 const REPORT_CACHE_PREFIX =
   process.env.SHELL_REPORT_CACHE_PREFIX ?? 'dashboard-shell:reports'
-const REPORT_CACHE_VERSION = process.env.SHELL_REPORT_CACHE_VERSION ?? 'v6'
+const REPORT_CACHE_VERSION = process.env.SHELL_REPORT_CACHE_VERSION ?? 'v7'
 const REPORT_CACHE_LOCK_TTL_MS = Math.max(
   1_000,
   Number(process.env.SHELL_REPORT_CACHE_LOCK_TTL_MS ?? 30 * 60 * 1000)
@@ -795,6 +795,17 @@ function parseDateParam(value, fallback) {
   return date.toISOString()
 }
 
+function parseDateOnlyParam(value) {
+  if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    throw new Error('A valid date=YYYY-MM-DD parameter is required.')
+  }
+  const date = new Date(`${value}T00:00:00.000Z`)
+  if (Number.isNaN(date.getTime()) || date.toISOString().slice(0, 10) !== value) {
+    throw new Error(`Invalid date: ${value}`)
+  }
+  return value
+}
+
 function defaultFromDate() {
   const now = new Date()
   return new Date(
@@ -992,6 +1003,138 @@ ORDER BY
 `
 
   return { sql, values }
+}
+
+function buildTokenTrendHoursQuery(searchParams) {
+  const { values, whereParts } = buildFilteredWhere(searchParams)
+  const dayExpression = `${createdAtEastern}::date`
+  const hourExpression = `EXTRACT(hour FROM ${createdAtEastern})::int`
+
+  const sql = `
+SELECT
+    to_char(${dayExpression}, 'YYYY-MM-DD') AS day,
+    ${hourExpression} AS hour,
+    ${providerDimension} AS provider,
+    COUNT(*)::double precision AS traces,
+    SUM(COALESCE(sh.input_tokens, 0)
+      + COALESCE(sh.output_tokens, 0)
+      + COALESCE(sh.cache_read_input_tokens, 0)
+      + COALESCE(sh.cache_creation_input_tokens, 0)
+      + COALESCE(sh.reasoning_tokens_reported, 0)
+      + COALESCE(sh.reasoning_tokens_estimated, 0))::double precision AS token_total,
+    SUM(COALESCE(sh.response_cost_usd, 0))::double precision AS usd_cost
+FROM public.session_history sh
+WHERE ${whereParts.join('\n  AND ')}
+GROUP BY
+    ${dayExpression},
+    ${hourExpression},
+    ${providerDimension}
+ORDER BY
+    ${dayExpression} ASC,
+    ${hourExpression} ASC,
+    ${providerDimension} ASC;
+`
+
+  return { sql, values }
+}
+
+function buildTokenTrendVersionIntervalsQuery(searchParams) {
+  const { values, whereParts } = buildFilteredWhere(searchParams)
+  const localTimestampExpression = `${createdAtEastern}`
+
+  const sql = `
+WITH version_usage AS (
+  SELECT
+      ${providerDimension} AS provider,
+      COALESCE(NULLIF(sh.client_name, ''), 'unknown') AS client_name,
+      COALESCE(NULLIF(sh.client_version, ''), '0.0.0') AS client_version,
+      MIN(sh.created_at) AS first_seen_at,
+      MAX(sh.created_at) AS last_seen_at,
+      MIN(${localTimestampExpression}) AS first_seen_local,
+      MAX(${localTimestampExpression}) AS last_seen_local,
+      COUNT(*)::double precision AS traces,
+      SUM(COALESCE(sh.input_tokens, 0)
+        + COALESCE(sh.output_tokens, 0)
+        + COALESCE(sh.cache_read_input_tokens, 0)
+        + COALESCE(sh.cache_creation_input_tokens, 0)
+        + COALESCE(sh.reasoning_tokens_reported, 0)
+        + COALESCE(sh.reasoning_tokens_estimated, 0))::double precision AS token_total,
+      SUM(COALESCE(sh.response_cost_usd, 0))::double precision AS usd_cost
+  FROM public.session_history sh
+  WHERE ${whereParts.join('\n    AND ')}
+    AND COALESCE(NULLIF(sh.client_name, ''), 'unknown') <> 'unknown'
+    AND COALESCE(NULLIF(sh.client_version, ''), '0.0.0') <> '0.0.0'
+  GROUP BY
+      ${providerDimension},
+      COALESCE(NULLIF(sh.client_name, ''), 'unknown'),
+      COALESCE(NULLIF(sh.client_version, ''), '0.0.0')
+)
+SELECT
+    provider,
+    client_name,
+    client_version,
+    first_seen_at,
+    last_seen_at,
+    to_char(first_seen_local::date, 'YYYY-MM-DD') AS first_seen_day,
+    EXTRACT(hour FROM first_seen_local)::int AS first_seen_hour,
+    to_char(last_seen_local::date, 'YYYY-MM-DD') AS last_seen_day,
+    EXTRACT(hour FROM last_seen_local)::int AS last_seen_hour,
+    traces,
+    token_total,
+    usd_cost
+FROM version_usage
+ORDER BY
+    first_seen_at ASC,
+    token_total DESC,
+    client_name ASC,
+    client_version ASC;
+`
+
+  return { sql, values }
+}
+
+function buildTokenTrendDayDetailQuery(searchParams) {
+  const date = parseDateOnlyParam(searchParams.get('date'))
+  const { from, to, values, whereParts } = buildFilteredWhere(searchParams)
+  values.push(date)
+  const dayExpression = `${createdAtEastern}::date`
+  const hourExpression = `EXTRACT(hour FROM ${createdAtEastern})::int`
+  whereParts.push(`${dayExpression} = $${values.length}::date`)
+
+  const sql = `
+SELECT
+    to_char(${dayExpression}, 'YYYY-MM-DD') AS day,
+    ${hourExpression} AS hour,
+    ${providerDimension} AS provider,
+    COALESCE(NULLIF(sh.client_name, ''), 'unknown') AS client_name,
+    COALESCE(NULLIF(sh.client_version, ''), '0.0.0') AS client_version,
+    MIN(sh.created_at) AS first_seen_at,
+    MAX(sh.created_at) AS last_seen_at,
+    COUNT(*)::double precision AS traces,
+    SUM(COALESCE(sh.input_tokens, 0)
+      + COALESCE(sh.output_tokens, 0)
+      + COALESCE(sh.cache_read_input_tokens, 0)
+      + COALESCE(sh.cache_creation_input_tokens, 0)
+      + COALESCE(sh.reasoning_tokens_reported, 0)
+      + COALESCE(sh.reasoning_tokens_estimated, 0))::double precision AS token_total,
+    SUM(COALESCE(sh.response_cost_usd, 0))::double precision AS usd_cost
+FROM public.session_history sh
+WHERE ${whereParts.join('\n  AND ')}
+GROUP BY
+    ${dayExpression},
+    ${hourExpression},
+    ${providerDimension},
+    COALESCE(NULLIF(sh.client_name, ''), 'unknown'),
+    COALESCE(NULLIF(sh.client_version, ''), '0.0.0')
+ORDER BY
+    ${hourExpression} ASC,
+    token_total DESC,
+    ${providerDimension} ASC,
+    COALESCE(NULLIF(sh.client_name, ''), 'unknown') ASC,
+    COALESCE(NULLIF(sh.client_version, ''), '0.0.0') ASC;
+`
+
+  return { sql, values, metadata: { date, from, to } }
 }
 
 function buildClientUsageQuery(searchParams) {
@@ -2352,6 +2495,49 @@ function normalizeTrendRow(row) {
   }
 }
 
+function normalizeTokenTrendHourRow(row) {
+  return {
+    day: row.day,
+    hour: normalizeNumber(row.hour) ?? 0,
+    provider: row.provider,
+    traces: normalizeNumber(row.traces) ?? 0,
+    token_total: normalizeNumber(row.token_total) ?? 0,
+    usd_cost: normalizeNumber(row.usd_cost) ?? 0,
+  }
+}
+
+function normalizeTokenTrendVersionIntervalRow(row) {
+  return {
+    provider: row.provider ?? 'unknown',
+    client_name: row.client_name ?? 'unknown',
+    client_version: row.client_version ?? '0.0.0',
+    first_seen_at: row.first_seen_at ?? null,
+    last_seen_at: row.last_seen_at ?? null,
+    first_seen_day: row.first_seen_day ?? null,
+    first_seen_hour: normalizeNumber(row.first_seen_hour),
+    last_seen_day: row.last_seen_day ?? null,
+    last_seen_hour: normalizeNumber(row.last_seen_hour),
+    traces: normalizeNumber(row.traces) ?? 0,
+    token_total: normalizeNumber(row.token_total) ?? 0,
+    usd_cost: normalizeNumber(row.usd_cost) ?? 0,
+  }
+}
+
+function normalizeTokenTrendDayDetailRow(row) {
+  return {
+    day: row.day,
+    hour: normalizeNumber(row.hour) ?? 0,
+    provider: row.provider ?? 'unknown',
+    client_name: row.client_name ?? 'unknown',
+    client_version: row.client_version ?? '0.0.0',
+    first_seen_at: row.first_seen_at ?? null,
+    last_seen_at: row.last_seen_at ?? null,
+    traces: normalizeNumber(row.traces) ?? 0,
+    token_total: normalizeNumber(row.token_total) ?? 0,
+    usd_cost: normalizeNumber(row.usd_cost) ?? 0,
+  }
+}
+
 function normalizeClientUsageRow(row) {
   return {
     client_name: row.client_name ?? 'unknown',
@@ -2992,6 +3178,40 @@ async function loadUsageReport(searchParams) {
   }
 }
 
+async function loadUsageTokenTrendSummary(searchParams) {
+  const hoursQuery = buildTokenTrendHoursQuery(searchParams)
+  const versionsQuery = buildTokenTrendVersionIntervalsQuery(searchParams)
+  const [hoursResult, versionsResult] = await runTasksWithConcurrency(
+    [
+      () => pool.query(hoursQuery.sql, hoursQuery.values),
+      () => pool.query(versionsQuery.sql, versionsQuery.values),
+    ],
+    REPORT_SQL_FANOUT_CONCURRENCY
+  )
+
+  return {
+    metadata: {
+      from: parseDateParam(searchParams.get('from'), defaultFromDate),
+      to: parseDateParam(searchParams.get('to'), defaultToDate),
+    },
+    tokenTrendHours: hoursResult.rows.map(normalizeTokenTrendHourRow),
+    tokenTrendVersions: versionsResult.rows.map(
+      normalizeTokenTrendVersionIntervalRow
+    ),
+  }
+}
+
+async function loadUsageTokenTrendDay(searchParams) {
+  const { sql, values, metadata } = buildTokenTrendDayDetailQuery(searchParams)
+  const result = await pool.query(sql, values)
+
+  return {
+    metadata,
+    date: metadata.date,
+    rows: result.rows.map(normalizeTokenTrendDayDetailRow),
+  }
+}
+
 async function handleUsageReport(req, res) {
   if (!pool) {
     sendJson(res, 503, {
@@ -3004,6 +3224,46 @@ async function handleUsageReport(req, res) {
   const body = await cachedReport('usage', () => loadUsageReport(requestUrl.searchParams), {
     searchParams: requestUrl.searchParams,
   })
+
+  sendJson(res, 200, body)
+}
+
+async function handleUsageTokenTrendSummary(req, res) {
+  if (!pool) {
+    sendJson(res, 503, {
+      error: 'DATABASE_URL is not configured for the shell report service.',
+    })
+    return
+  }
+
+  const requestUrl = new URL(req.url, `http://${req.headers.host}`)
+  const body = await cachedReport(
+    'usage-token-trend-summary',
+    () => loadUsageTokenTrendSummary(requestUrl.searchParams),
+    {
+      searchParams: requestUrl.searchParams,
+    }
+  )
+
+  sendJson(res, 200, body)
+}
+
+async function handleUsageTokenTrendDay(req, res) {
+  if (!pool) {
+    sendJson(res, 503, {
+      error: 'DATABASE_URL is not configured for the shell report service.',
+    })
+    return
+  }
+
+  const requestUrl = new URL(req.url, `http://${req.headers.host}`)
+  const body = await cachedReport(
+    'usage-token-trend-day',
+    () => loadUsageTokenTrendDay(requestUrl.searchParams),
+    {
+      searchParams: requestUrl.searchParams,
+    }
+  )
 
   sendJson(res, 200, body)
 }
@@ -3228,6 +3488,22 @@ async function handleRequest(req, res) {
     requestUrl.pathname === '/api/shell/reports/usage'
   ) {
     await handleUsageReport(req, res)
+    return
+  }
+
+  if (
+    req.method === 'GET' &&
+    requestUrl.pathname === '/api/shell/reports/usage/token-trend-summary'
+  ) {
+    await handleUsageTokenTrendSummary(req, res)
+    return
+  }
+
+  if (
+    req.method === 'GET' &&
+    requestUrl.pathname === '/api/shell/reports/usage/token-trend-day'
+  ) {
+    await handleUsageTokenTrendDay(req, res)
     return
   }
 

@@ -102,6 +102,8 @@ const MOCK_REPORT: UsageReportResponse = {
     latest_record_at: '2026-05-19T00:00:00.000Z',
   },
   trend: [],
+  tokenTrendHours: [],
+  tokenTrendVersions: [],
   clients: [],
   providerLatencyHealth: [],
   providerErrorObservations: [],
