@@ -112,12 +112,13 @@ const REPORT_SQL_FANOUT_CONCURRENCY = Math.max(
   Math.min(Number(process.env.SHELL_REPORT_SQL_FANOUT_CONCURRENCY ?? 2), 10)
 )
 // Cache up to 5 min — dashboard refreshes don't need real-time precision,
-// and the cold DB query is too expensive to repeat (10–54 s observed at
-// 2275×1280). A 30 s TTL meant every dashboard refresh hit the cold path.
-// Operators can lower via SHELL_REPORT_CACHE_TTL_MS env-override if needed.
+// and the cold DB query is too expensive to repeat on every render. Keep the
+// default aligned with the live dashboard's 60 s polling cadence so new session
+// rows can surface on the next scheduled refresh instead of waiting 5 minutes.
+// Operators can override via SHELL_REPORT_CACHE_TTL_MS when needed.
 const REPORT_CACHE_TTL_MS = Math.max(
   0,
-  Number(process.env.SHELL_REPORT_CACHE_TTL_MS ?? 5 * 60 * 1000)
+  Number(process.env.SHELL_REPORT_CACHE_TTL_MS ?? 60 * 1000)
 )
 const REPORT_CACHE_STALE_TTL_MS = Math.max(
   0,
@@ -126,7 +127,7 @@ const REPORT_CACHE_STALE_TTL_MS = Math.max(
 const REPORT_CACHE_REDIS_URL = process.env.SHELL_REPORT_REDIS_URL
 const REPORT_CACHE_PREFIX =
   process.env.SHELL_REPORT_CACHE_PREFIX ?? 'dashboard-shell:reports'
-const REPORT_CACHE_VERSION = process.env.SHELL_REPORT_CACHE_VERSION ?? 'v7'
+const REPORT_CACHE_VERSION = process.env.SHELL_REPORT_CACHE_VERSION ?? 'v10'
 const REPORT_CACHE_LOCK_TTL_MS = Math.max(
   1_000,
   Number(process.env.SHELL_REPORT_CACHE_LOCK_TTL_MS ?? 30 * 60 * 1000)
@@ -144,7 +145,7 @@ const REPORT_CACHE_LOCK_POLL_MS = Math.max(
   Number(process.env.SHELL_REPORT_CACHE_LOCK_POLL_MS ?? 500)
 )
 const REPORT_CACHE_PREWARM =
-  (process.env.SHELL_REPORT_CACHE_PREWARM ?? 'true').toLowerCase() !== 'false'
+  (process.env.SHELL_REPORT_CACHE_PREWARM ?? 'false').toLowerCase() !== 'false'
 const REPORT_CACHE_PREWARM_INTERVAL_MS = Math.max(
   0,
   Number(process.env.SHELL_REPORT_CACHE_PREWARM_INTERVAL_MS ?? 15 * 60 * 1000)
@@ -181,6 +182,7 @@ const CLIENT_AUTH_HEADERS = new Set([
 const pool = DATABASE_URL
   ? new Pool({
       connectionString: DATABASE_URL,
+      application_name: 'dashboard-shell-report-service',
       max: Number(process.env.SHELL_REPORT_DB_POOL_MAX ?? 12),
       idleTimeoutMillis: 30_000,
       connectionTimeoutMillis: 10_000,
@@ -327,7 +329,6 @@ async function cachedReport(scope, load, options = {}) {
 
   const refreshResult = await refreshReportCache(identity, load, {
     lockWaitMs: options.lockWaitMs ?? REPORT_CACHE_FOREGROUND_LOCK_WAIT_MS,
-    sharePromise: false,
   })
   return maybeDecorateCacheMetadata(
     refreshResult.entry.payload,
@@ -725,6 +726,7 @@ function envSecret(...names) {
   return undefined
 }
 
+const DASHBOARD_TIME_ZONE = 'America/New_York'
 const createdAtEastern = "(sh.created_at AT TIME ZONE 'America/New_York')"
 const providerDimension = `
 CASE
@@ -788,6 +790,9 @@ function sendJson(res, status, body) {
 
 function parseDateParam(value, fallback) {
   if (!value) return fallback()
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return parseDateOnlyParam(value)
+  }
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) {
     throw new Error(`Invalid date: ${value}`)
@@ -806,18 +811,76 @@ function parseDateOnlyParam(value) {
   return value
 }
 
+function datePartsInDashboardTimeZone(date) {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: DASHBOARD_TIME_ZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(date)
+  const byType = new Map(parts.map((part) => [part.type, part.value]))
+  return {
+    year: Number(byType.get('year')),
+    month: Number(byType.get('month')),
+    day: Number(byType.get('day')),
+    hour: Number(byType.get('hour')),
+    minute: Number(byType.get('minute')),
+    second: Number(byType.get('second')),
+  }
+}
+
+function formatDashboardDate(date) {
+  const parts = datePartsInDashboardTimeZone(date)
+  return [
+    parts.year.toString().padStart(4, '0'),
+    parts.month.toString().padStart(2, '0'),
+    parts.day.toString().padStart(2, '0'),
+  ].join('-')
+}
+
+function addDaysToDateString(value, days) {
+  const [year, month, day] = value.split('-').map(Number)
+  return new Date(Date.UTC(year, month - 1, day + days))
+    .toISOString()
+    .slice(0, 10)
+}
+
+function dashboardDateToUtcIso(value) {
+  const [year, month, day] = value.split('-').map(Number)
+  const targetAsUtc = Date.UTC(year, month - 1, day, 0, 0, 0)
+  let candidate = targetAsUtc
+  for (let i = 0; i < 4; i += 1) {
+    const parts = datePartsInDashboardTimeZone(new Date(candidate))
+    const localAsUtc = Date.UTC(
+      parts.year,
+      parts.month - 1,
+      parts.day,
+      parts.hour,
+      parts.minute,
+      parts.second
+    )
+    const delta = targetAsUtc - localAsUtc
+    candidate += delta
+    if (delta === 0) break
+  }
+  return new Date(candidate).toISOString()
+}
+
+function parseSearchDateOnly(value, fallback) {
+  if (!value) return fallback()
+  return parseDateOnlyParam(value)
+}
+
 function defaultFromDate() {
-  const now = new Date()
-  return new Date(
-    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - 6)
-  ).toISOString()
+  return addDaysToDateString(formatDashboardDate(new Date()), -6)
 }
 
 function defaultToDate() {
-  const now = new Date()
-  return new Date(
-    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1)
-  ).toISOString()
+  return addDaysToDateString(formatDashboardDate(new Date()), 1)
 }
 
 function resolveHealthWindow(from, to) {
@@ -1063,7 +1126,10 @@ WITH version_usage AS (
   FROM public.session_history sh
   WHERE ${whereParts.join('\n    AND ')}
     AND COALESCE(NULLIF(sh.client_name, ''), 'unknown') <> 'unknown'
-    AND COALESCE(NULLIF(sh.client_version, ''), '0.0.0') <> '0.0.0'
+    AND (
+      COALESCE(NULLIF(sh.client_version, ''), '0.0.0') <> '0.0.0'
+      OR ${providerDimension} = 'xai'
+    )
   GROUP BY
       ${providerDimension},
       COALESCE(NULLIF(sh.client_name, ''), 'unknown'),
@@ -1175,9 +1241,12 @@ LIMIT $${values.length};
 // default report `to` date is tomorrow; historical/prior ranges end at their
 // requested `to`, so comparison windows still remain distinct.
 function buildProviderLatencyHealthQuery(searchParams) {
-  const from = parseDateParam(searchParams.get('from'), defaultFromDate)
-  const to = parseDateParam(searchParams.get('to'), defaultToDate)
-  const healthWindow = resolveHealthWindow(from, to)
+  const fromDate = parseSearchDateOnly(searchParams.get('from'), defaultFromDate)
+  const toDate = parseSearchDateOnly(searchParams.get('to'), defaultToDate)
+  const healthWindow = resolveHealthWindow(
+    dashboardDateToUtcIso(fromDate),
+    dashboardDateToUtcIso(toDate)
+  )
 
   const sql = `
 WITH local_request_latency AS (
@@ -1348,8 +1417,10 @@ LIMIT $1;
 // MAX_PROVIDER_ERROR_ROWS remains 2_000 — at daily grain a 30-day window
 // with typical error rates stays well below this cap.
 function buildProviderErrorObservationQuery(searchParams) {
-  const from = parseDateParam(searchParams.get('from'), defaultFromDate)
-  const to = parseDateParam(searchParams.get('to'), defaultToDate)
+  const fromDate = parseSearchDateOnly(searchParams.get('from'), defaultFromDate)
+  const toDate = parseSearchDateOnly(searchParams.get('to'), defaultToDate)
+  const from = dashboardDateToUtcIso(fromDate)
+  const to = dashboardDateToUtcIso(toDate)
 
   const sql = `
 SELECT
@@ -1567,7 +1638,9 @@ usage_by_type AS (
         FROM public.session_history sh
         WHERE s.expected_reset_at IS NOT NULL
           AND sh.start_time >= s.expected_reset_at - CASE
-              WHEN s.provider = 'google' THEN INTERVAL '24 hours'
+              WHEN s.provider IN ('google', 'openrouter')
+                AND s.quota_type = 'short'
+              THEN INTERVAL '24 hours'
               WHEN s.quota_type = 'monthly' THEN INTERVAL '1 month'
               WHEN s.quota_type IN ('short', 'short_special') THEN INTERVAL '5 hours'
               ELSE INTERVAL '7 days'
@@ -1809,7 +1882,7 @@ selected_with_duration AS (
         COALESCE(
             CASE WHEN kh.gap_count >= 2 THEN kh.interval_hours END,
             CASE
-                WHEN s.provider = 'google' AND s.raw_quota_type = 'requests' THEN 24.0
+                WHEN s.provider <> 'xai' AND s.raw_quota_type = 'requests' THEN 24.0
                 WHEN s.quota_type = 'monthly' THEN 720.0
                 WHEN s.quota_type IN ('short', 'short_special') THEN 5.0
                 WHEN s.quota_type IN ('weekly', 'special') THEN 168.0
@@ -2032,8 +2105,18 @@ normalized AS (
         COALESCE(
             CASE WHEN kh.gap_count >= 2 THEN kh.interval_hours END,
             CASE
+                WHEN ri.quota_type = 'requests'
+                  AND lower(COALESCE(ri.provider, 'unknown')) NOT LIKE 'xai/%'
+                  AND lower(COALESCE(ri.provider, 'unknown')) NOT IN ('xai', 'x.ai')
+                THEN 24.0
                 WHEN ri.quota_type IN ('short', 'short_special') THEN 5.0
                 WHEN ri.quota_type IN ('weekly', 'weekly_special') THEN 168.0
+                WHEN ri.quota_type = 'requests'
+                  AND (
+                      lower(COALESCE(ri.provider, 'unknown')) LIKE 'xai/%'
+                      OR lower(COALESCE(ri.provider, 'unknown')) IN ('xai', 'x.ai')
+                  )
+                THEN 720.0
                 WHEN ri.quota_type = 'monthly'                    THEN 720.0
                 ELSE                                                   168.0
             END
@@ -2066,8 +2149,18 @@ normalized AS (
               COALESCE(
                   CASE WHEN kh.gap_count >= 2 THEN kh.interval_hours END,
                   CASE
+                      WHEN ri.quota_type = 'requests'
+                        AND lower(COALESCE(ri.provider, 'unknown')) NOT LIKE 'xai/%'
+                        AND lower(COALESCE(ri.provider, 'unknown')) NOT IN ('xai', 'x.ai')
+                      THEN 24.0
                       WHEN ri.quota_type IN ('short', 'short_special') THEN 5.0
                       WHEN ri.quota_type IN ('weekly', 'weekly_special') THEN 168.0
+                      WHEN ri.quota_type = 'requests'
+                        AND (
+                            lower(COALESCE(ri.provider, 'unknown')) LIKE 'xai/%'
+                            OR lower(COALESCE(ri.provider, 'unknown')) IN ('xai', 'x.ai')
+                        )
+                      THEN 720.0
                       WHEN ri.quota_type = 'monthly'                    THEN 720.0
                       ELSE                                                   168.0
                   END
@@ -2077,8 +2170,18 @@ normalized AS (
               COALESCE(
                   CASE WHEN kh.gap_count >= 2 THEN kh.interval_hours END,
                   CASE
+                      WHEN ri.quota_type = 'requests'
+                        AND lower(COALESCE(ri.provider, 'unknown')) NOT LIKE 'xai/%'
+                        AND lower(COALESCE(ri.provider, 'unknown')) NOT IN ('xai', 'x.ai')
+                      THEN 24.0
                       WHEN ri.quota_type IN ('short', 'short_special') THEN 5.0
                       WHEN ri.quota_type IN ('weekly', 'weekly_special') THEN 168.0
+                      WHEN ri.quota_type = 'requests'
+                        AND (
+                            lower(COALESCE(ri.provider, 'unknown')) LIKE 'xai/%'
+                            OR lower(COALESCE(ri.provider, 'unknown')) IN ('xai', 'x.ai')
+                        )
+                      THEN 720.0
                       WHEN ri.quota_type = 'monthly'                    THEN 720.0
                       ELSE                                                   168.0
                   END
@@ -3074,7 +3177,13 @@ LEFT JOIN LATERAL (
     FROM public.rate_limit_intervals ri
     WHERE ri.provider = replace(sh.provider, 'gemini', 'google')
       AND ri.quota_type = 'requests'
-      AND ri.model = sh.model
+      AND (
+        ri.model = sh.model
+        OR (
+          ri.provider = 'openrouter'
+          AND sh.model LIKE '%:free'
+        )
+      )
       AND ri.fromDate <= sh.start_time
       AND ri.toDate > sh.start_time
     ORDER BY ri.fromDate DESC
@@ -3374,32 +3483,31 @@ async function prewarmCachedReport(scope, searchParams, load) {
 }
 
 function buildPrewarmUsageWindows() {
-  const today = utcDateOnly(new Date())
-  const tomorrow = addUtcDays(today, 1)
-  const yearStart = new Date(Date.UTC(today.getUTCFullYear(), 0, 1))
-  const twoYearStart = new Date(today)
-  twoYearStart.setUTCFullYear(today.getUTCFullYear() - 2)
+  const today = formatDashboardDate(new Date())
+  const tomorrow = addDaysToDateString(today, 1)
+  const yearStart = `${today.slice(0, 4)}-01-01`
+  const twoYearStart = `${(Number(today.slice(0, 4)) - 2).toString()}${today.slice(4)}`
 
   return [
     {
       name: 'last-7-days',
-      from: toDateParam(addUtcDays(today, -6)),
-      to: toDateParam(tomorrow),
+      from: addDaysToDateString(today, -6),
+      to: tomorrow,
     },
     {
       name: 'last-30-days',
-      from: toDateParam(addUtcDays(today, -30)),
-      to: toDateParam(tomorrow),
+      from: addDaysToDateString(today, -30),
+      to: tomorrow,
     },
     {
       name: 'ytd',
-      from: toDateParam(yearStart),
-      to: toDateParam(tomorrow),
+      from: yearStart,
+      to: tomorrow,
     },
     {
       name: 'trailing-2-years',
-      from: toDateParam(twoYearStart),
-      to: toDateParam(tomorrow),
+      from: twoYearStart,
+      to: tomorrow,
     },
   ]
 }
@@ -3413,22 +3521,6 @@ function buildPrewarmUsageSearchParams(from, to) {
     limit: String(MAX_LIMIT),
     sort: 'period_end',
   })
-}
-
-function utcDateOnly(date) {
-  return new Date(
-    Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate())
-  )
-}
-
-function addUtcDays(date, days) {
-  const next = new Date(date)
-  next.setUTCDate(next.getUTCDate() + days)
-  return next
-}
-
-function toDateParam(date) {
-  return date.toISOString().slice(0, 10)
 }
 
 function findUpstreamApiProxy(pathname) {

@@ -5,10 +5,16 @@ import {
   RouterProvider,
 } from '@tanstack/react-router'
 import { act, render, screen, within } from '@testing-library/react'
+import type { DashboardAlertSummary } from '../hooks/use-alerts-from-anomalies'
 import { PhosphorSidebar } from './phosphor-sidebar'
 
-async function renderSidebar(initialPath = '/') {
-  const rootRoute = createRootRoute({ component: PhosphorSidebar })
+async function renderSidebar(
+  initialPath = '/',
+  dashboardAlerts?: DashboardAlertSummary
+) {
+  const rootRoute = createRootRoute({
+    component: () => <PhosphorSidebar dashboardAlerts={dashboardAlerts} />,
+  })
   const router = createRouter({
     routeTree: rootRoute,
     history: createMemoryHistory({ initialEntries: [initialPath] }),
@@ -61,4 +67,26 @@ test('does not confuse AAWM and AAWM TAP active prefixes', async () => {
 
   expect(screen.getByRole('link', { name: 'AAWM TAP' })).toHaveClass('active')
   expect(screen.getByRole('link', { name: 'AAWM' })).not.toHaveClass('active')
+})
+
+test('renders dashboard alert status dot with hover details', async () => {
+  await renderSidebar('/', {
+    severity: 'error',
+    issues: [
+      {
+        severity: 'error',
+        head: '10 529 errors from Anthropic',
+        sub: 'Observed in the last 90 minutes',
+      },
+    ],
+  })
+
+  const dashboardLink = screen.getByRole('link', { name: /Dashboard/ })
+  expect(dashboardLink).toHaveClass('sidebar-item-dashboard')
+
+  const status = screen.getByRole('status', {
+    name: 'Dashboard alert status: error',
+  })
+  expect(status).toHaveClass('sidebar-alert-dot', 'error')
+  expect(screen.getByText('10 529 errors from Anthropic')).toBeInTheDocument()
 })

@@ -53,3 +53,29 @@ test('test_date_controls_apply_not_fired_when_both_invalid', () => {
 
   expect(onRangeChange).not.toHaveBeenCalled()
 })
+
+test('test_date_controls_rejects_date_with_suffix', () => {
+  const onRangeChange = vi.fn()
+  render(
+    <DateControls
+      initialFrom='2025-01-01abc'
+      initialTo='2025-01-31'
+      onRangeChange={onRangeChange}
+    />
+  )
+
+  expect(screen.getByRole('button', { name: /apply/i })).toBeDisabled()
+})
+
+test('test_date_controls_rejects_non_ascending_range', () => {
+  const onRangeChange = vi.fn()
+  render(
+    <DateControls
+      initialFrom='2025-02-01'
+      initialTo='2025-01-31'
+      onRangeChange={onRangeChange}
+    />
+  )
+
+  expect(screen.getByRole('button', { name: /apply/i })).toBeDisabled()
+})

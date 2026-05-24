@@ -50,12 +50,13 @@ import type {
   UsageReportTokenTrendVersionIntervalRow,
 } from '../api/usage-report'
 import {
-  deriveTokenTrendVersionTracks,
+  deriveTokenTrendActiveVersionLanes,
   formatBucketLabel,
   tokenTrendDayHeightPct,
   tokenTrendHourHeightPct,
+  type TokenTrendActiveVersionFamilyLane,
+  type TokenTrendActiveVersionSegment,
   type TokenTrendDayEnvelope,
-  type TokenTrendVersionTrack,
 } from '../lib/trend-utils'
 import {
   canonicalProvider,
@@ -360,88 +361,301 @@ function buildDayTooltip(
   )
 }
 
-function trackPath(points: readonly { x: number; y: number }[]): string {
-  return points
-    .map(
-      (point, index) =>
-        `${index === 0 ? 'M' : 'L'} ${point.x.toFixed(3)} ${point.y.toFixed(3)}`
-    )
-    .join(' ')
+interface TokenScaleTick {
+  value: number
+  pct: number
+  label: string
 }
 
-function renderVersionOverlay(
-  tracks: readonly TokenTrendVersionTrack[],
-  widthUnits: number
-): ReactNode {
-  if (tracks.length === 0 || widthUnits <= 0) return null
+function buildTokenScaleTicks(maxValue: number): TokenScaleTick[] {
+  if (!Number.isFinite(maxValue) || maxValue <= 0) return []
 
-  return (
-    <svg
-      className='tt-version-overlay'
-      viewBox={`0 0 ${widthUnits.toString()} 100`}
-      preserveAspectRatio='none'
-      aria-hidden='true'
+  return [0.25, 0.5, 0.75, 1].map((pct) => {
+    const value = maxValue * pct
+    return {
+      value,
+      pct: pct * 100,
+      label: formatCompactNumber(value),
+    }
+  })
+}
+
+function renderTokenScaleMarkers(ticks: readonly TokenScaleTick[]): ReactNode {
+  if (ticks.length === 0) return null
+
+  return ticks.map((tick) => (
+    <div
+      key={`${tick.pct.toString()}-${tick.label}`}
+      className='tt-token-scale-marker'
       style={{
         position: 'absolute',
-        inset: 0,
+        left: 0,
+        right: 0,
+        bottom: `${tick.pct.toFixed(3)}%`,
+        borderTop:
+          '1px solid color-mix(in srgb, var(--fg-muted) 20%, transparent)',
         pointerEvents: 'none',
-        display: 'block',
-        width: '100%',
-        height: '100%',
-        overflow: 'hidden',
         zIndex: 2,
       }}
+      aria-hidden='true'
     >
-      {tracks.flatMap((track) =>
-        track.segments.map((segment, index) => {
-          if (segment.length < 2) return null
-          const pathKey = `${track.id}|segment|${index.toString()}`
-          const pathData = trackPath(segment)
-          return (
-            <g key={pathKey}>
-              <path
-                className='tt-version-line-halo'
-                d={pathData}
-                fill='none'
-                stroke='var(--card)'
-                strokeLinecap='round'
-                strokeLinejoin='round'
-                strokeOpacity={0.86}
-                strokeWidth={5}
-                vectorEffect='non-scaling-stroke'
-              />
-              <path
-                className='tt-version-line'
-                d={pathData}
-                fill='none'
-                stroke={resolveSliceColor(track.provider, '')}
-                strokeLinecap='round'
-                strokeLinejoin='round'
-                strokeOpacity={0.96}
-                strokeWidth={2}
-                vectorEffect='non-scaling-stroke'
-              />
-            </g>
-          )
-        })
-      )}
-      {tracks.map((track) => {
-        if (track.releasePoint === null) return null
+      <span
+        className='tt-token-scale-label'
+        style={{
+          position: 'absolute',
+          left: '4px',
+          top: '-1px',
+          transform: 'translateY(-50%)',
+          padding: '0 3px',
+          borderRadius: '3px',
+          background: 'color-mix(in srgb, var(--card) 88%, transparent)',
+          color: 'var(--fg-muted)',
+          fontFamily: 'var(--font-mono)',
+          fontSize: '8px',
+          lineHeight: 1.1,
+          letterSpacing: '0',
+        }}
+      >
+        {tick.label}
+      </span>
+    </div>
+  ))
+}
+
+function formatVersionHour(day: string | null, hour: number | null): string {
+  if (day === null || hour === null) return '--'
+  return `${formatDayLabel(day)} ${hour.toString().padStart(2, '0')}:00`
+}
+
+function formatVersionSegmentTitle(
+  segment: TokenTrendActiveVersionSegment
+): string {
+  const clientLabel =
+    segment.clientNames.length > 0
+      ? segment.clientNames.join(', ')
+      : segment.clientName
+  const providerLabel =
+    segment.providers.length > 0
+      ? segment.providers.join(', ')
+      : segment.provider
+  return [
+    formatVersionLabel(clientLabel, segment.clientVersion),
+    `providers ${providerLabel}`,
+    `${formatVersionHour(segment.firstSeenDay, segment.firstSeenHour)} -> ${formatVersionHour(
+      segment.lastSeenDay,
+      segment.lastSeenHour
+    )}`,
+    `${formatCompactNumber(segment.tokenTotal)} tokens`,
+  ].join(' · ')
+}
+
+function formatVersionSegmentText(
+  segment: TokenTrendActiveVersionSegment
+): string {
+  const version = segment.clientVersion.trim()
+  if (version !== '' && version !== '0.0.0') return version
+  return segment.clientName
+}
+
+const ACTIVE_VERSION_ROW_HEIGHT_PX = 18
+const ACTIVE_VERSION_VIEW_ROW_HEIGHT = 18
+const ACTIVE_VERSION_INLINE_LABEL_MIN_WIDTH_PCT = 1.2
+
+function renderActiveVersionLanes(
+  lanes: readonly TokenTrendActiveVersionFamilyLane[],
+  widthUnits: number,
+  dayCount: number
+): ReactNode {
+  const hasSegments = lanes.some((lane) => lane.segments.length > 0)
+  if (!hasSegments || widthUnits <= 0) return null
+
+  return (
+    <div
+      className='tt-active-version-lane'
+      aria-label='Active client versions by provider family'
+      style={{
+        marginTop: '6px',
+        padding: '6px 8px',
+        border: '1px solid var(--border)',
+        background: 'color-mix(in srgb, var(--card) 94%, var(--fg-muted) 6%)',
+      }}
+    >
+      {lanes.map((lane) => {
+        const separatorHeight = lane.key === 'claude' ? 0 : 7
+        const trackHeight = Math.max(
+          14,
+          lane.rowCount * ACTIVE_VERSION_ROW_HEIGHT_PX + 2
+        )
+        const viewHeight = Math.max(
+          ACTIVE_VERSION_VIEW_ROW_HEIGHT,
+          lane.rowCount * ACTIVE_VERSION_VIEW_ROW_HEIGHT
+        )
+
         return (
-          <circle
-            key={`${track.id}|release`}
-            className='tt-release-dot'
-            cx={track.releasePoint.x}
-            cy={track.releasePoint.y}
-            r={0.72}
-            fill={resolveSliceColor(track.provider, '')}
-            stroke='var(--card)'
-            strokeWidth={0.62}
-            vectorEffect='non-scaling-stroke'
-          />
+          <div
+            key={lane.key}
+            className='tt-active-version-family'
+            style={{
+              position: 'relative',
+              height: `${(trackHeight + separatorHeight).toString()}px`,
+              marginTop: lane.key === 'claude' ? 0 : '3px',
+              paddingTop: `${separatorHeight.toString()}px`,
+              borderTop:
+                lane.key === 'claude'
+                  ? '0'
+                  : '1px solid color-mix(in srgb, var(--fg-muted) 28%, transparent)',
+              boxSizing: 'border-box',
+            }}
+          >
+            <div
+              className='tt-active-version-family-label'
+              style={{
+                position: 'absolute',
+                left: 0,
+                top: '50%',
+                transform: 'translateY(-50%)',
+                zIndex: 4,
+                minWidth: '42px',
+                padding: '1px 4px',
+                borderRadius: '3px',
+                background: 'color-mix(in srgb, var(--card) 92%, transparent)',
+                color: 'var(--fg-muted)',
+                fontFamily: 'var(--font-mono)',
+                fontSize: '9px',
+                lineHeight: 1.1,
+                letterSpacing: '0',
+              }}
+            >
+              {lane.label}
+            </div>
+            <div
+              className='tt-active-version-track'
+              style={{
+                position: 'relative',
+                height: '100%',
+                width: '100%',
+                overflow: 'hidden',
+              }}
+            >
+              <svg
+                className='tt-active-version-svg'
+                viewBox={`0 0 ${widthUnits.toString()} ${viewHeight.toString()}`}
+                preserveAspectRatio='none'
+                aria-hidden='true'
+                style={{
+                  position: 'absolute',
+                  inset: 0,
+                  display: 'block',
+                  width: '100%',
+                  height: '100%',
+                  overflow: 'visible',
+                }}
+              >
+                {Array.from({ length: dayCount + 1 }, (_, index) => (
+                  <line
+                    key={`grid-${lane.key}-${index.toString()}`}
+                    className='tt-active-version-day-line'
+                    x1={index * 24}
+                    x2={index * 24}
+                    y1={0}
+                    y2={viewHeight}
+                    stroke='color-mix(in srgb, var(--border) 56%, transparent)'
+                    strokeWidth={0.5}
+                    vectorEffect='non-scaling-stroke'
+                  />
+                ))}
+                {lane.segments.map((segment) => {
+                  const y =
+                    segment.rowIndex * ACTIVE_VERSION_VIEW_ROW_HEIGHT + 5
+                  const title = formatVersionSegmentTitle(segment)
+                  return (
+                    <g key={`${segment.id}|line`}>
+                      <title>{title}</title>
+                      <line
+                        className='tt-active-version-line'
+                        x1={segment.xStart}
+                        x2={segment.xEnd}
+                        y1={y}
+                        y2={y}
+                        stroke={resolveSliceColor(segment.provider, '')}
+                        strokeWidth={4}
+                        strokeLinecap='round'
+                        strokeOpacity={0.9}
+                        vectorEffect='non-scaling-stroke'
+                      />
+                      <circle
+                        className='tt-active-version-release-dot'
+                        cx={segment.releaseX}
+                        cy={y}
+                        r={1.05}
+                        fill={resolveSliceColor(segment.provider, '')}
+                        stroke='var(--card)'
+                        strokeWidth={0.72}
+                        vectorEffect='non-scaling-stroke'
+                      />
+                    </g>
+                  )
+                })}
+              </svg>
+              {lane.segments.map((segment) => {
+                const leftPct = (segment.xStart / widthUnits) * 100
+                const widthPct =
+                  ((segment.xEnd - segment.xStart) / widthUnits) * 100
+                const isShortLabel =
+                  widthPct < ACTIVE_VERSION_INLINE_LABEL_MIN_WIDTH_PCT
+                const midpointPct =
+                  ((segment.xStart + segment.xEnd) / 2 / widthUnits) * 100
+                const topPx =
+                  segment.rowIndex * ACTIVE_VERSION_ROW_HEIGHT_PX +
+                  (isShortLabel ? 9 : 1)
+
+                return (
+                  <div
+                    key={`${segment.id}|label`}
+                    className={
+                      isShortLabel
+                        ? 'tt-active-version-segment-label is-under'
+                        : 'tt-active-version-segment-label'
+                    }
+                    title={formatVersionSegmentTitle(segment)}
+                    style={{
+                      position: 'absolute',
+                      left: isShortLabel
+                        ? `clamp(24px, ${midpointPct.toFixed(4)}%, calc(100% - 24px))`
+                        : `${leftPct.toFixed(4)}%`,
+                      top: `${topPx.toString()}px`,
+                      width: isShortLabel
+                        ? '48px'
+                        : `${Math.max(widthPct, 0.8).toFixed(4)}%`,
+                      height: '9px',
+                      padding: '0 3px',
+                      borderRadius: '3px',
+                      boxSizing: 'border-box',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                      color: 'var(--fg)',
+                      background:
+                        'color-mix(in srgb, var(--card) 82%, transparent)',
+                      border:
+                        '1px solid color-mix(in srgb, var(--border) 70%, transparent)',
+                      fontFamily: 'var(--font-mono)',
+                      fontSize: '8px',
+                      lineHeight: '8px',
+                      letterSpacing: '0',
+                      pointerEvents: 'auto',
+                      transform: isShortLabel ? 'translateX(-50%)' : undefined,
+                    }}
+                  >
+                    {formatVersionSegmentText(segment)}
+                  </div>
+                )
+              })}
+            </div>
+          </div>
         )
       })}
-    </svg>
+    </div>
   )
 }
 
@@ -502,16 +716,18 @@ export function TokenTrendChart({
 }: TokenTrendChartProps): ReactElement {
   if (dayEnvelopes !== undefined) {
     const maxDayTotal = Math.max(0, ...dayEnvelopes.map((day) => day.total))
-    const tracks = deriveTokenTrendVersionTracks(
+    const activeVersionLanes = deriveTokenTrendActiveVersionLanes(
       dayEnvelopes,
-      versionIntervals,
-      series.map((s) => s.key),
-      { gapToleranceHours: 2 }
+      versionIntervals
     )
+    const hasActiveVersionLanes = activeVersionLanes.some(
+      (lane) => lane.segments.length > 0
+    )
+    const tokenScaleTicks = buildTokenScaleTicks(maxDayTotal)
     const widthUnits = Math.max(1, dayEnvelopes.length * 24)
     const labelStride =
       dayEnvelopes.length <= 14 ? 1 : Math.ceil(dayEnvelopes.length / 14)
-    const chartHeightPx = dayEnvelopes.length >= 21 ? 248 : 208
+    const chartHeightPx = dayEnvelopes.length >= 21 ? 224 : 196
 
     return (
       <div
@@ -527,6 +743,7 @@ export function TokenTrendChart({
             height: `${chartHeightPx.toString()}px`,
             width: '100%',
             boxSizing: 'border-box',
+            position: 'relative',
           }}
         >
           <div
@@ -542,6 +759,7 @@ export function TokenTrendChart({
               isolation: 'isolate',
             }}
           >
+            {renderTokenScaleMarkers(tokenScaleTicks)}
             {dayEnvelopes.map((day) => {
               const dayHeightPct = tokenTrendDayHeightPct(
                 day.total,
@@ -708,7 +926,6 @@ export function TokenTrendChart({
                 </HoverTooltip>
               )
             })}
-            {renderVersionOverlay(tracks, widthUnits)}
           </div>
         </div>
 
@@ -753,6 +970,12 @@ export function TokenTrendChart({
           })}
         </div>
 
+        {renderActiveVersionLanes(
+          activeVersionLanes,
+          widthUnits,
+          dayEnvelopes.length
+        )}
+
         <div
           className='tt-legend'
           style={{
@@ -790,26 +1013,29 @@ export function TokenTrendChart({
               {s.label}
             </div>
           ))}
-          <div
-            className='tt-leg-item'
-            style={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: '4px',
-            }}
-          >
-            <span
+          {hasActiveVersionLanes && (
+            <div
+              className='tt-leg-item'
               style={{
-                display: 'inline-block',
-                width: '10px',
-                height: '10px',
-                borderRadius: '50%',
-                border: '1px solid var(--border)',
-                background: 'var(--fg)',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '4px',
               }}
-            />
-            Version release
-          </div>
+            >
+              <span
+                style={{
+                  display: 'inline-block',
+                  width: '14px',
+                  height: '4px',
+                  borderRadius: '999px',
+                  border: '1px solid var(--border)',
+                  background: 'var(--fg)',
+                  flexShrink: 0,
+                }}
+              />
+              Active version
+            </div>
+          )}
         </div>
       </div>
     )

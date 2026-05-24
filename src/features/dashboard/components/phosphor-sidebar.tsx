@@ -11,6 +11,8 @@ import {
   remoteDashboardHref,
   remoteDashboardMetadata,
 } from '@/shell/remote-dashboard-metadata'
+import type { DashboardAlertSummary } from '../hooks/use-alerts-from-anomalies'
+import { HoverTooltip } from './primitives/hover-tooltip'
 
 interface NavItem {
   readonly label: string
@@ -21,6 +23,10 @@ interface NavItem {
 interface NavSection {
   readonly title: string
   readonly items: readonly NavItem[]
+}
+
+interface PhosphorSidebarProps {
+  dashboardAlerts?: DashboardAlertSummary
 }
 
 const REMOTE_DASHBOARD_NAV_ITEMS: readonly NavItem[] =
@@ -61,7 +67,9 @@ const NAV_SECTIONS: readonly NavSection[] = [
   },
 ] as const
 
-export function PhosphorSidebar(): ReactElement {
+export function PhosphorSidebar({
+  dashboardAlerts,
+}: PhosphorSidebarProps): ReactElement {
   const location = useLocation()
   const pathname = location.pathname
 
@@ -74,15 +82,23 @@ export function PhosphorSidebar(): ReactElement {
           <div className='sidebar-group-title'>{section.title}</div>
           {section.items.map((item) => {
             const isActive = isNavItemActive(pathname, item)
+            const isDashboard = item.href === '/'
             return (
               <Link
                 key={item.href}
                 to={item.href}
-                className={['sidebar-item', isActive ? 'active' : '']
+                className={[
+                  'sidebar-item',
+                  isDashboard ? 'sidebar-item-dashboard' : '',
+                  isActive ? 'active' : '',
+                ]
                   .filter(Boolean)
                   .join(' ')}
               >
-                {item.label}
+                <span className='sidebar-item-label'>{item.label}</span>
+                {isDashboard && dashboardAlerts !== undefined ? (
+                  <SidebarAlertDot alerts={dashboardAlerts} />
+                ) : null}
               </Link>
             )
           })}
@@ -91,6 +107,60 @@ export function PhosphorSidebar(): ReactElement {
 
       <div className='sidebar-footer'>Local User</div>
     </>
+  )
+}
+
+function SidebarAlertDot({
+  alerts,
+}: {
+  alerts: DashboardAlertSummary
+}): ReactElement {
+  const tooltipContent = (
+    <div className='sidebar-alert-tip'>
+      <div className='v9-tip-head'>
+        Dashboard Alerts
+        <span className={`sidebar-alert-tip-status ${alerts.severity}`}>
+          {alerts.severity === 'ok'
+            ? 'OK'
+            : alerts.severity === 'error'
+              ? 'Errors'
+              : 'Warnings'}
+        </span>
+      </div>
+      {alerts.issues.length === 0 ? (
+        <div className='v9-tip-row'>No active issues</div>
+      ) : (
+        <div className='sidebar-alert-tip-list'>
+          {alerts.issues.map((issue, index) => (
+            <div
+              key={`${issue.severity}-${issue.head}-${index.toString()}`}
+              className={`sidebar-alert-tip-row ${issue.severity}`}
+            >
+              <div className='sidebar-alert-tip-row-head'>{issue.head}</div>
+              {issue.sub !== undefined ? (
+                <div className='sidebar-alert-tip-row-sub'>{issue.sub}</div>
+              ) : null}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+
+  return (
+    <HoverTooltip
+      content={tooltipContent}
+      panelStyle={{
+        minWidth: '260px',
+        maxWidth: 'min(420px, calc(100vw - 16px))',
+      }}
+    >
+      <span
+        aria-label={`Dashboard alert status: ${alerts.severity}`}
+        className={`sidebar-alert-dot ${alerts.severity}`}
+        role='status'
+      />
+    </HoverTooltip>
   )
 }
 

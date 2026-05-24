@@ -39,6 +39,7 @@
 import {
   useState,
   useRef,
+  useEffect,
   useLayoutEffect,
   useCallback,
   type ReactElement,
@@ -139,8 +140,10 @@ export function HoverTooltip({
   panelStyle: panelStyleOverride,
 }: HoverTooltipProps): ReactElement {
   const [isOpen, setIsOpen] = useState(false)
+  const [isPinned, setIsPinned] = useState(false)
   const [coords, setCoords] = useState<PanelCoords | null>(null)
   const wrapperRef = useRef<HTMLDivElement>(null)
+  const panelRef = useRef<HTMLDivElement>(null)
 
   const extraClass = variantClass(variant)
 
@@ -177,6 +180,39 @@ export function HoverTooltip({
       window.removeEventListener('resize', handleUpdate)
     }
   }, [isOpen, updateCoords])
+
+  useEffect(() => {
+    if (!isOpen) return
+
+    const handleKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === 'Control') {
+        setIsPinned(true)
+      } else if (event.key === 'Escape') {
+        setIsPinned(false)
+        setIsOpen(false)
+      }
+    }
+
+    const handlePointerDown = (event: PointerEvent): void => {
+      if (!isPinned) return
+      const target = event.target
+      if (!(target instanceof Node)) return
+      if (wrapperRef.current?.contains(target) === true) return
+      if (panelRef.current?.contains(target) === true) return
+      setIsPinned(false)
+      setIsOpen(false)
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+    window.addEventListener('pointerdown', handlePointerDown, { capture: true })
+
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown)
+      window.removeEventListener('pointerdown', handlePointerDown, {
+        capture: true,
+      })
+    }
+  }, [isOpen, isPinned])
 
   /** Build the `style` object for the portalled panel. */
   function panelStyle(): CSSProperties {
@@ -272,9 +308,11 @@ export function HoverTooltip({
 
   const panel = (
     <div
+      ref={panelRef}
       className={['v9-tip', extraClass, isOpen ? '' : 'hidden']
         .filter(Boolean)
         .join(' ')}
+      data-pinned={isPinned ? 'true' : 'false'}
       data-state={isOpen ? 'open' : 'closed'}
       style={panelStyle()}
     >
@@ -326,10 +364,13 @@ export function HoverTooltip({
           : {}),
       }}
       onPointerEnter={() => {
+        setIsPinned(false)
         setIsOpen(true)
       }}
       onPointerLeave={() => {
-        setIsOpen(false)
+        if (!isPinned) {
+          setIsOpen(false)
+        }
       }}
     >
       {children}

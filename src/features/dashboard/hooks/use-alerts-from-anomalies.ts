@@ -18,8 +18,17 @@
  * budget progress alerts have been deleted.
  */
 import { useMemo } from 'react'
+import type {
+  UsageReportProviderErrorObservationRow,
+  UsageReportProviderLatencyHealthRow,
+  UsageReportQuotaRow,
+} from '../api/usage-report'
 import type { AlertItem } from '../components/alerts-rail'
 import type { AnomalyFlags } from '../hooks/use-anomaly-detection'
+import {
+  canonicalProvider,
+  googleQuotaClass,
+} from '../lib/usage-report-display'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -45,6 +54,17 @@ export interface AlertQuotaShape {
   monthly_active: boolean
 }
 
+export interface DashboardAlertIssue {
+  severity: 'warning' | 'error'
+  head: string
+  sub?: string
+}
+
+export interface DashboardAlertSummary {
+  severity: 'ok' | 'warning' | 'error'
+  issues: DashboardAlertIssue[]
+}
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -62,6 +82,300 @@ const CANONICAL_PROVIDERS: ReadonlyArray<string> = [
   'OpenRouter',
   'Local',
 ]
+
+const PROVIDER_LABELS: Readonly<Record<string, string>> = {
+  anthropic: 'Anthropic',
+  openai: 'OpenAI',
+  google: 'Google',
+  xai: 'xAI',
+  nvidia_nim: 'NVIDIA',
+  openrouter: 'OpenRouter',
+  local: 'Local',
+}
+
+const NINETY_MINUTES_MS = 90 * 60 * 1000
+
+function providerLabel(provider: string): string {
+  const normalized = provider.toLowerCase()
+  const canonical =
+    normalized === 'nvidia' || normalized === 'nvidia_nim'
+      ? 'nvidia_nim'
+      : normalized === 'open-router'
+        ? 'openrouter'
+        : canonicalProvider(provider)
+  return PROVIDER_LABELS[canonical] ?? provider
+}
+
+function pluralize(count: number, singular: string, plural = `${singular}s`) {
+  return count === 1 ? singular : plural
+}
+
+function parseTime(value: string | null | undefined): number | null {
+  if (value == null || value === '') return null
+  const time = new Date(value).getTime()
+  return Number.isFinite(time) ? time : null
+}
+
+function quotaPeriodLabel(interval: string): string {
+  switch (interval) {
+    case 'short':
+      return '5h'
+    case 'weekly':
+      return '7d'
+    case 'special':
+      return '7d'
+    case 'short_special':
+      return '5h'
+    case 'monthly':
+      return '30d'
+    default:
+      return interval
+  }
+}
+
+function quotaLaneLabel(row: UsageReportQuotaRow, interval: string): string {
+  const provider = canonicalProvider(row.provider)
+  if (provider === 'google') {
+    const cls = googleQuotaClass(row.model)
+    const period = interval === 'short' ? '24h' : quotaPeriodLabel(interval)
+    const prefix =
+      cls === 'flash-lite'
+        ? 'Flash Lite'
+        : cls === 'flash'
+          ? 'Flash'
+          : cls === 'pro'
+            ? 'Pro'
+            : ''
+    if (prefix === '') return `${period} requests`
+    return `${prefix} ${period} requests`
+  }
+  if (provider === 'openrouter') {
+    const period = interval === 'short' ? '24h' : quotaPeriodLabel(interval)
+    if (row.model !== null && row.model.toLowerCase().includes(':free')) {
+      return `Free ${period} requests`
+    }
+    if (interval === 'monthly') return 'Monthly credits'
+    return `${period} requests`
+  }
+  if (provider === 'openai') {
+    if (interval === 'short_special') return 'Codex Spark 5h'
+    if (interval === 'special') return 'Codex Spark 7d'
+    if (interval === 'short') return 'All Models 5h'
+    if (interval === 'weekly') return 'All Models 7d'
+  }
+  if (provider === 'anthropic') {
+    if (interval === 'special') return 'Sonnet 7d'
+    if (interval === 'short_special') return 'Sonnet 5h'
+    if (interval === 'short') return 'All Models 5h'
+    if (interval === 'weekly') return 'All Models 7d'
+  }
+  if (provider === 'xai') return `Grok ${quotaPeriodLabel(interval)}`
+  if (provider === 'nvidia_nim') return 'NIM credits monthly'
+  return `${quotaPeriodLabel(interval)} quota`
+}
+
+function quotaStateText(usedPct: number): string {
+  if (usedPct >= 99.5) return 'exhausted'
+  return `at ${usedPct.toFixed(0)}% used`
+}
+
+function quotaCandidates(row: UsageReportQuotaRow) {
+  return [
+    {
+      interval: 'short',
+      active: row.short_active,
+      remainingPct: row.short_remaining_pct,
+    },
+    {
+      interval: 'weekly',
+      active: row.weekly_active,
+      remainingPct: row.weekly_remaining_pct,
+    },
+    {
+      interval: 'special',
+      active: row.special_active,
+      remainingPct: row.special_remaining_pct,
+    },
+    {
+      interval: 'short_special',
+      active: row.short_special_active,
+      remainingPct: row.short_special_remaining_pct,
+    },
+    {
+      interval: 'monthly',
+      active: row.monthly_active,
+      remainingPct: row.monthly_remaining_pct,
+    },
+  ] as const
+}
+
+export function buildDashboardAlertSummary({
+  anomalies,
+  summary,
+  quotas,
+  providerErrorObservations,
+  providerLatencyHealth,
+  now = new Date(),
+}: {
+  anomalies: AnomalyFlags
+  summary?: AlertSummaryShape
+  quotas?: UsageReportQuotaRow[]
+  providerErrorObservations?: UsageReportProviderErrorObservationRow[]
+  providerLatencyHealth?: UsageReportProviderLatencyHealthRow[]
+  now?: Date
+}): DashboardAlertSummary {
+  const issues: DashboardAlertIssue[] = []
+  const cutoff = now.getTime() - NINETY_MINUTES_MS
+
+  const recentProviderErrors = new Map<string, number>()
+  for (const row of providerErrorObservations ?? []) {
+    const observedAt = parseTime(row.observed_at)
+    if (observedAt === null || observedAt < cutoff) continue
+    const provider = providerLabel(row.provider)
+    const code =
+      row.status_code ?? row.error_code ?? row.error_class ?? 'provider'
+    const key = `${provider}\u0000${code}`
+    recentProviderErrors.set(key, (recentProviderErrors.get(key) ?? 0) + 1)
+  }
+
+  for (const [key, count] of recentProviderErrors) {
+    const [provider, code] = key.split('\u0000')
+    const codeText = /^\d+$/.test(code)
+      ? `${code} ${pluralize(count, 'error')}`
+      : `${code} ${pluralize(count, 'event')}`
+    issues.push({
+      severity: 'error',
+      head: `${count} ${codeText} from ${provider}`,
+      sub: 'Observed in the last 90 minutes',
+    })
+  }
+
+  const recentPingFailures = new Map<string, number>()
+  for (const row of providerLatencyHealth ?? []) {
+    const bucketStart = parseTime(row.bucket_start)
+    if (bucketStart === null || bucketStart < cutoff) continue
+    const count = row.status_probe_count ?? 0
+    let failures = 0
+    if (count > 0 && row.status_probe_success_pct !== null) {
+      failures += Math.round(count * (1 - row.status_probe_success_pct / 100))
+    }
+    if (count === 0) {
+      failures +=
+        (row.icmp_failures ?? 0) +
+        (row.dns_failures ?? 0) +
+        (row.tcp_failures ?? 0) +
+        (row.tls_failures ?? 0)
+    }
+    if (failures <= 0) continue
+    const provider = providerLabel(row.provider)
+    recentPingFailures.set(
+      provider,
+      (recentPingFailures.get(provider) ?? 0) + failures
+    )
+  }
+
+  for (const [provider, count] of recentPingFailures) {
+    issues.push({
+      severity: 'error',
+      head: `${count} failed ${pluralize(count, 'ping result')} from ${provider}`,
+      sub: 'Probe failures in the last 90 minutes',
+    })
+  }
+
+  for (const [provider, { prior, current }] of anomalies.earlyReset) {
+    issues.push({
+      severity: 'warning',
+      head: `Early reset from ${providerLabel(provider)}`,
+      sub: `Reset moved ${prior.slice(0, 10)} -> ${current.slice(0, 10)}`,
+    })
+  }
+
+  if (anomalies.cacheStale) {
+    issues.push({
+      severity: 'warning',
+      head: 'Report cache may be stale',
+      sub: 'Refresh if recent session rows are missing',
+    })
+  }
+
+  const traces = summary?.traces ?? 0
+  if (traces > 10_000) {
+    issues.push({
+      severity: 'warning',
+      head: `High request volume: ${new Intl.NumberFormat().format(traces)} traces`,
+    })
+  }
+
+  const quotaIssues = new Map<
+    string,
+    {
+      provider: string
+      lane: string
+      usedPct: number
+      remainingPct: number
+    }
+  >()
+  for (const row of quotas ?? []) {
+    for (const candidate of quotaCandidates(row)) {
+      if (!candidate.active || candidate.remainingPct === null) continue
+      const usedPct = Math.max(0, Math.min(100, 100 - candidate.remainingPct))
+      if (usedPct <= 75) continue
+      const provider = providerLabel(row.provider)
+      const lane = quotaLaneLabel(row, candidate.interval)
+      const key = `${provider}\u0000${lane}`
+      const existing = quotaIssues.get(key)
+      if (existing === undefined || usedPct > existing.usedPct) {
+        quotaIssues.set(key, {
+          provider,
+          lane,
+          usedPct,
+          remainingPct: candidate.remainingPct,
+        })
+      }
+    }
+  }
+
+  for (const issue of quotaIssues.values()) {
+    issues.push({
+      severity: 'warning',
+      head: `${issue.provider} ${issue.lane} ${quotaStateText(issue.usedPct)}`,
+      sub: `${issue.remainingPct.toFixed(0)}% remaining`,
+    })
+  }
+
+  const hasError = issues.some((issue) => issue.severity === 'error')
+  const hasWarning = issues.some((issue) => issue.severity === 'warning')
+  return {
+    severity: hasError ? 'error' : hasWarning ? 'warning' : 'ok',
+    issues,
+  }
+}
+
+export function useDashboardAlertSummary(
+  anomalies: AnomalyFlags,
+  summary?: AlertSummaryShape,
+  quotas?: UsageReportQuotaRow[],
+  providerErrorObservations?: UsageReportProviderErrorObservationRow[],
+  providerLatencyHealth?: UsageReportProviderLatencyHealthRow[]
+): DashboardAlertSummary {
+  return useMemo(
+    () =>
+      buildDashboardAlertSummary({
+        anomalies,
+        summary,
+        quotas,
+        providerErrorObservations,
+        providerLatencyHealth,
+      }),
+    [
+      anomalies,
+      summary,
+      quotas,
+      providerErrorObservations,
+      providerLatencyHealth,
+    ]
+  )
+}
 
 // ---------------------------------------------------------------------------
 // Hook

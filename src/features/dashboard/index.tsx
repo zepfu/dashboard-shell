@@ -22,6 +22,7 @@ import {
 } from 'react'
 import { formatDistanceToNow } from 'date-fns'
 import { useQuery } from '@tanstack/react-query'
+import { RefreshCw } from 'lucide-react'
 import { ConfigDrawer } from '@/components/config-drawer'
 import { ProfileDropdown } from '@/components/profile-dropdown'
 import { Search } from '@/components/search'
@@ -31,7 +32,6 @@ import {
   type UsageReportGrain,
   type UsageReportSummary,
 } from './api/usage-report'
-import { AlertsRail } from './components/alerts-rail'
 import AnchorBar from './components/anchor-bar'
 import { computeDeltaPct } from './components/comparison-panel'
 import { DateControls } from './components/date-controls'
@@ -45,28 +45,26 @@ import {
   type SlicerOptions,
   SLICER_EMPTY_FILTERS,
 } from './components/slicer-bar'
-import { useAlertsFromAnomalies } from './hooks/use-alerts-from-anomalies'
+import { useDashboardAlertSummary } from './hooks/use-alerts-from-anomalies'
 import { useAnomalyDetection } from './hooks/use-anomaly-detection'
-import { computeFleetErrors, computeFleetP95 } from './lib/usage-report-display'
+import {
+  addDaysToDateString,
+  computeFleetErrors,
+  computeFleetP95,
+  formatDashboardDate,
+} from './lib/usage-report-display'
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
 function defaultDateRange(): { from: string; to: string } {
-  const now = new Date()
-  // Wave 24-Index (operator F3): default range is 30 days back → today (UTC).
-  // Reverts Wave 16-V 1-day default per operator decision.
-  const from = new Date(
-    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - 30)
-  )
-  // Server uses exclusive upper bound `< $2::date`; add 1 day so today's data is included.
-  const to = new Date(
-    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1)
-  )
+  const today = formatDashboardDate(new Date())
   return {
-    from: from.toISOString().slice(0, 10),
-    to: to.toISOString().slice(0, 10),
+    from: addDaysToDateString(today, -30),
+    // Server uses exclusive upper bound `< $2::date`; add 1 Eastern calendar
+    // day so today's data is included.
+    to: addDaysToDateString(today, 1),
   }
 }
 
@@ -132,6 +130,9 @@ export function Dashboard(): ReactElement {
   // 15-D.5: slicer filter state — empty arrays mean "all" (no server-side filter)
   const [slicerFilters, setSlicerFilters] =
     useState<SlicerFilters>(SLICER_EMPTY_FILTERS)
+  const [reportCacheBust, setReportCacheBust] = useState<string | undefined>(
+    undefined
+  )
 
   // 15-D.3: slicer options derived from PhosphorDashboard's loaded data
   const [slicerOptions, setSlicerOptions] = useState<SlicerOptions>({
@@ -160,6 +161,8 @@ export function Dashboard(): ReactElement {
   const {
     data: summaryReport,
     isLoading: summaryLoading,
+    isFetching: summaryFetching,
+    refetch: refetchSummaryReport,
     dataUpdatedAt,
   } = useQuery({
     queryKey: [
@@ -172,6 +175,7 @@ export function Dashboard(): ReactElement {
       slicerFilters.clients,
       slicerFilters.environments,
       slicerFilters.models,
+      reportCacheBust,
     ],
     queryFn: () =>
       fetchUsageReport({
@@ -184,12 +188,12 @@ export function Dashboard(): ReactElement {
         client: slicerFilters.clients,
         environment: slicerFilters.environments,
         model: slicerFilters.models,
+        cacheBust: reportCacheBust,
       }),
-    // Wave 37 W37-2: align client staleTime with server REPORT_CACHE_TTL_MS
-    // (5 min). Without this, React Query marks data stale after the global
-    // default (10 s) and refetches on every tab-focus event even though the
-    // server returns cached responses for the full 5-minute window.
-    staleTime: 5 * 60 * 1000,
+    // Keep React Query freshness aligned with the report-service default TTL.
+    // The dashboard polls every minute, so new session rows should be eligible
+    // for display on the next scheduled refresh.
+    staleTime: LIVE_DASHBOARD_REFETCH_INTERVAL_MS,
     refetchInterval: LIVE_DASHBOARD_REFETCH_INTERVAL_MS,
     refetchIntervalInBackground: true,
   })
@@ -360,11 +364,15 @@ export function Dashboard(): ReactElement {
   // both subscribers into a single cache entry and fires only ONE HTTP request
   // per load. The previous key `['usage-report-quotas-shell']` differed in
   // shape and could never hash to the same entry as PhosphorDashboard's key.
-  // Wave 37 W37-2: staleTime aligned with server REPORT_CACHE_TTL_MS (5 min).
-  const { data: quotasData } = useQuery({
+  // Keep client freshness aligned with the report-service default TTL.
+  const {
+    data: quotasData,
+    isFetching: quotasFetching,
+    refetch: refetchQuotas,
+  } = useQuery({
     queryKey: ['usage-report-quotas', from, to],
     queryFn: fetchUsageReportQuotas,
-    staleTime: 5 * 60 * 1000,
+    staleTime: LIVE_DASHBOARD_REFETCH_INTERVAL_MS,
     refetchInterval: LIVE_DASHBOARD_REFETCH_INTERVAL_MS,
     refetchIntervalInBackground: true,
   })
@@ -374,15 +382,29 @@ export function Dashboard(): ReactElement {
     [quotasData?.quotas, summaryReport?.quotas]
   )
 
-  const alerts = useAlertsFromAnomalies(
+  const handleForceFreshnessRefresh = useCallback((): void => {
+    setReportCacheBust(Date.now().toString())
+  }, [])
+
+  const handleReportRefresh = useCallback(async (): Promise<void> => {
+    await refetchSummaryReport()
+  }, [refetchSummaryReport])
+
+  const handleQuotaRefresh = useCallback(async (): Promise<void> => {
+    await refetchQuotas()
+  }, [refetchQuotas])
+
+  const dashboardAlerts = useDashboardAlertSummary(
     anomalies,
     summaryReport?.summary,
-    quotaRows
+    quotaRows,
+    summaryReport?.providerErrorObservations,
+    summaryReport?.providerLatencyHealth
   )
 
   return (
     <PhosphorLayout
-      sidebar={<PhosphorSidebar />}
+      sidebar={<PhosphorSidebar dashboardAlerts={dashboardAlerts} />}
       header={
         <div
           style={{
@@ -479,6 +501,28 @@ export function Dashboard(): ReactElement {
                 <span className='pulse-dot' />
                 {freshnessStr}
               </span>
+              <button
+                type='button'
+                className='section-refresh-button freshness-refresh-button'
+                aria-label='Force refresh dashboard data'
+                title='Force refresh dashboard data'
+                disabled={summaryFetching}
+                onClick={handleForceFreshnessRefresh}
+              >
+                <RefreshCw
+                  aria-hidden='true'
+                  className={
+                    summaryFetching
+                      ? 'section-refresh-icon is-updating'
+                      : 'section-refresh-icon'
+                  }
+                  size={12}
+                  strokeWidth={1.8}
+                />
+                <span className='section-refresh-status'>
+                  {summaryFetching ? 'Updating' : 'Refresh'}
+                </span>
+              </button>
             </div>
           </div>
 
@@ -585,11 +629,14 @@ export function Dashboard(): ReactElement {
               reportLoading={summaryLoading}
               showComparison={showComparison}
               quotas={quotasData?.quotas}
+              reportFetching={summaryFetching}
+              quotasFetching={quotasFetching}
+              onRefreshReport={handleReportRefresh}
+              onRefreshQuotas={handleQuotaRefresh}
             />
           )}
         </div>
       }
-      alerts={<AlertsRail alerts={alerts} />}
     />
   )
 }

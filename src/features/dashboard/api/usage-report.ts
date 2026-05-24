@@ -61,6 +61,7 @@ export interface UsageReportParams extends UsageReportFilterParams {
   to: string
   grain: UsageReportGrain
   groupBy?: readonly UsageReportDimension[]
+  cacheBust?: string
 }
 
 export interface UsageReportRow {
@@ -511,6 +512,9 @@ export async function fetchUsageReport(
   })
 
   appendUsageReportFilters(searchParams, params)
+  if (params.cacheBust !== undefined && params.cacheBust !== '') {
+    searchParams.set('cache_bust', params.cacheBust)
+  }
 
   const response = await fetch(`/api/shell/reports/usage?${searchParams}`)
   if (!response.ok) {

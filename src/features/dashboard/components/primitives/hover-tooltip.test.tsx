@@ -66,6 +66,45 @@ test('test_hover_tooltip_visible_on_parent_hover', () => {
   expect(isStillHidden).toBe(false)
 })
 
+test('test_hover_tooltip_control_key_pins_open_after_pointer_leave', () => {
+  const { container } = render(
+    <HoverTooltip content={<span>Tooltip content</span>}>
+      <button type='button'>Hover me</button>
+    </HoverTooltip>
+  )
+
+  const trigger = container.firstChild as HTMLElement
+  fireEvent.pointerEnter(trigger)
+  fireEvent.keyDown(window, { key: 'Control' })
+  fireEvent.pointerLeave(trigger)
+
+  const tooltip = document.body.querySelector('.v9-tip') as HTMLElement | null
+
+  expect(tooltip).not.toBeNull()
+  expect(tooltip?.getAttribute('data-state')).toBe('open')
+  expect(tooltip?.getAttribute('data-pinned')).toBe('true')
+})
+
+test('test_hover_tooltip_escape_closes_pinned_tooltip', () => {
+  const { container } = render(
+    <HoverTooltip content={<span>Tooltip content</span>}>
+      <button type='button'>Hover me</button>
+    </HoverTooltip>
+  )
+
+  const trigger = container.firstChild as HTMLElement
+  fireEvent.pointerEnter(trigger)
+  fireEvent.keyDown(window, { key: 'Control' })
+  fireEvent.pointerLeave(trigger)
+  fireEvent.keyDown(window, { key: 'Escape' })
+
+  const tooltip = document.body.querySelector('.v9-tip') as HTMLElement | null
+
+  expect(tooltip).not.toBeNull()
+  expect(tooltip?.getAttribute('data-state')).toBe('closed')
+  expect(tooltip?.getAttribute('data-pinned')).toBe('false')
+})
+
 test('test_hover_tooltip_quota_variant_positions_above', () => {
   const { container } = render(
     <HoverTooltip content={<span>Quota tip</span>} variant='quota'>
