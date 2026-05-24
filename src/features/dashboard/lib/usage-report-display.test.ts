@@ -15,6 +15,7 @@ import {
   computeFleetErrors,
   computeFleetP95,
   canonicalProvider,
+  formatDashboardDate,
   formatLatency,
   formatUsd,
   formatModelDisplayName,
@@ -57,11 +58,10 @@ describe('computeFleetErrors', () => {
   })
 
   test('test_window_is_inclusive_lower_exclusive_upper', () => {
-    // Lower bound is inclusive: exact midnight of from date is included.
-    // Upper bound is exclusive: exact midnight of to date is excluded.
+    // Lower bound is inclusive at Eastern midnight; upper bound is exclusive.
     const obs = [
-      { observed_at: '2026-05-10T00:00:00.000Z' }, // = from → included
-      { observed_at: '2026-05-16T00:00:00.000Z' }, // = to   → excluded
+      { observed_at: '2026-05-10T04:00:00.000Z' }, // = from ET -> included
+      { observed_at: '2026-05-16T04:00:00.000Z' }, // = to ET   -> excluded
     ]
     expect(computeFleetErrors(obs, '2026-05-10', '2026-05-16')).toBe(1)
   })
@@ -81,13 +81,21 @@ describe('computeFleetErrors', () => {
   })
 
   test('test_single_observation_at_exact_from_boundary_is_included', () => {
-    const obs = [{ observed_at: '2026-05-10T00:00:00.000Z' }]
+    const obs = [{ observed_at: '2026-05-10T04:00:00.000Z' }]
     expect(computeFleetErrors(obs, '2026-05-10', '2026-05-11')).toBe(1)
   })
 
   test('test_single_observation_just_before_to_boundary_is_included', () => {
-    const obs = [{ observed_at: '2026-05-10T23:59:59.999Z' }]
+    const obs = [{ observed_at: '2026-05-11T03:59:59.999Z' }]
     expect(computeFleetErrors(obs, '2026-05-10', '2026-05-11')).toBe(1)
+  })
+})
+
+describe('dashboard timezone helpers', () => {
+  test('test_formatDashboardDate_uses_eastern_calendar_day', () => {
+    expect(formatDashboardDate(new Date('2026-05-23T03:30:00.000Z'))).toBe(
+      '2026-05-22'
+    )
   })
 })
 

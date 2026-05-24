@@ -1,9 +1,9 @@
 /**
  * Wave 45 — Unit tests for formatTipWindow absolute date+time format.
  *
- * Wave 45 changes formatTipWindow to emit `M/D HH:MM → M/D HH:MM` (absolute,
- * 30-min snapped) instead of relative labels like `−5h → now`.  Monthly quotas
- * still return `this month`.
+ * Wave 45 changes formatTipWindow to emit explicit Eastern `M/D HH:MM → M/D HH:MM`
+ * labels (absolute, 30-min snapped) instead of relative labels like `-5h → now`.
+ * Monthly quotas still return `this month`.
  *
  * Sentinel guard: the API uses year 9999 (e.g. "9999-12-31T00:00:00.000Z") to
  * mean "no fixed end" for ongoing intervals. For current bars the window end IS
@@ -35,8 +35,8 @@ describe('formatTipWindow — absolute date+time (Wave 45)', () => {
       '2026-05-19T10:00:00.000Z',
       '9999-12-31T00:00:00.000Z'
     )
-    // start snaps to 10:00, end = now = 15:00 (already on boundary)
-    expect(result).toBe('5/19 10:00 → 5/19 15:00')
+    // UTC 10:00-15:00 renders as 06:00-11:00 in Eastern daylight time.
+    expect(result).toBe('5/19 06:00 → 5/19 11:00')
   })
 
   it('uses current time as end for weekly interval with year-9999 sentinel', () => {
@@ -46,8 +46,8 @@ describe('formatTipWindow — absolute date+time (Wave 45)', () => {
       '2026-05-12T00:00:00.000Z',
       '9999-12-31T00:00:00.000Z'
     )
-    // start = 5/12 00:00, end = now = 5/19 12:00
-    expect(result).toBe('5/12 00:00 → 5/19 12:00')
+    // UTC 5/12 00:00-5/19 12:00 renders as 5/11 20:00-5/19 08:00 ET.
+    expect(result).toBe('5/11 20:00 → 5/19 08:00')
   })
 
   it('uses current time as end for special interval with year-9999 sentinel', () => {
@@ -57,8 +57,8 @@ describe('formatTipWindow — absolute date+time (Wave 45)', () => {
       '2026-04-19T00:00:00.000Z',
       '9999-12-31T00:00:00.000Z'
     )
-    // start = 4/19 00:00, end = now = 5/20 08:30
-    expect(result).toBe('4/19 00:00 → 5/20 08:30')
+    // UTC 4/19 00:00-5/20 08:30 renders as 4/18 20:00-5/20 04:30 ET.
+    expect(result).toBe('4/18 20:00 → 5/20 04:30')
   })
 
   it('uses current time as end for short_special interval with year-9999 sentinel', () => {
@@ -68,8 +68,8 @@ describe('formatTipWindow — absolute date+time (Wave 45)', () => {
       '2026-05-19T05:00:00.000Z',
       '9999-12-31T00:00:00.000Z'
     )
-    // start = 5/19 05:00, end = now = 5/19 10:00
-    expect(result).toBe('5/19 05:00 → 5/19 10:00')
+    // UTC 05:00-10:00 renders as 01:00-06:00 in Eastern daylight time.
+    expect(result).toBe('5/19 01:00 → 5/19 06:00')
   })
 
   it('does NOT treat year-8999 as a sentinel — emits absolute date+time', () => {
@@ -86,8 +86,8 @@ describe('formatTipWindow — absolute date+time (Wave 45)', () => {
     // Primary check: the result must not use the current time (5/19 12:00) as
     // the end — confirming 8999 was NOT treated as a sentinel.
     expect(result).not.toMatch(/→ 5\/19 12:00$/)
-    // The start is 2026-01-01 → snaps to 1/1 00:00
-    expect(result).toMatch(/^1\/1 00:00 →/)
+    // The start is 2026-01-01T00:00Z → 12/31 19:00 ET.
+    expect(result).toMatch(/^12\/31 19:00 →/)
   })
 
   it('emits absolute date+time for a 5h short interval', () => {
@@ -95,7 +95,7 @@ describe('formatTipWindow — absolute date+time (Wave 45)', () => {
     const start = '2026-05-19T10:00:00.000Z'
     const end = '2026-05-19T15:00:00.000Z'
     const result = _formatTipWindowForTest('short', start, end)
-    expect(result).toBe('5/19 10:00 → 5/19 15:00')
+    expect(result).toBe('5/19 06:00 → 5/19 11:00')
   })
 
   it('emits absolute date+time for a 7d weekly interval', () => {
@@ -103,7 +103,7 @@ describe('formatTipWindow — absolute date+time (Wave 45)', () => {
     const start = '2026-05-12T00:00:00.000Z'
     const end = '2026-05-19T00:00:00.000Z'
     const result = _formatTipWindowForTest('weekly', start, end)
-    expect(result).toBe('5/12 00:00 → 5/19 00:00')
+    expect(result).toBe('5/11 20:00 → 5/18 20:00')
   })
 
   it('returns "this month" for monthly regardless of timestamps', () => {
@@ -130,8 +130,8 @@ describe('formatTipWindow — absolute date+time (Wave 45)', () => {
       '2026-05-19T10:04:00.000Z',
       '2026-05-19T14:52:00.000Z'
     )
-    // :04 → 10:00, :52 → 15:00
-    expect(result).toBe('5/19 10:00 → 5/19 15:00')
+    // :04 → 06:00 ET, :52 → 11:00 ET
+    expect(result).toBe('5/19 06:00 → 5/19 11:00')
   })
 
   it('emits absolute date+time for a 24h short interval crossing a day boundary', () => {
@@ -139,6 +139,6 @@ describe('formatTipWindow — absolute date+time (Wave 45)', () => {
     const start = '2026-05-19T00:00:00.000Z'
     const end = '2026-05-20T00:00:00.000Z'
     const result = _formatTipWindowForTest('short', start, end)
-    expect(result).toBe('5/19 00:00 → 5/20 00:00')
+    expect(result).toBe('5/18 20:00 → 5/19 20:00')
   })
 })

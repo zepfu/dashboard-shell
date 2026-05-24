@@ -14,12 +14,10 @@ const SECTIONS = [
   { text: '[S]tatus', key: 's', value: 'status' },
   { text: '[T]okens', key: 't', value: 'tokens' },
   { text: '[M]odels', key: 'm', value: 'models' },
-  { text: '[R]epos', key: 'r', value: 'repos' },
-  { text: '[C]lients', key: 'c', value: 'clients' },
   { text: '[H]ealth', key: 'h', value: 'health' },
 ]
 
-test('test_anchor_bar_renders_all_six_links', () => {
+test('test_anchor_bar_renders_dashboard_links', () => {
   const onSectionChange = vi.fn()
   render(<AnchorBar activeSection='status' onSectionChange={onSectionChange} />)
 
@@ -28,9 +26,9 @@ test('test_anchor_bar_renders_all_six_links', () => {
     expect(screen.getByText(new RegExp(value, 'i'))).toBeInTheDocument()
   }
 
-  // Verify we have exactly 6 navigation links
+  // Verify we have exactly 4 navigation links
   const links = screen.getAllByRole('link')
-  expect(links.length).toBe(6)
+  expect(links.length).toBe(4)
 })
 
 test('test_anchor_bar_kbd_hint_spans_present', () => {
@@ -40,7 +38,7 @@ test('test_anchor_bar_kbd_hint_spans_present', () => {
   )
 
   const kbdHints = container.querySelectorAll('.kbd-hint')
-  expect(kbdHints.length).toBe(6)
+  expect(kbdHints.length).toBe(4)
 })
 
 test('test_anchor_bar_keyboard_s_navigates_to_status', () => {

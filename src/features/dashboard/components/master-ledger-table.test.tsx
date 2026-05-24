@@ -39,7 +39,6 @@ const mockRows = [
     p95_ms: 500,
     error_pct: 0.5,
     cost_usd: 0.1,
-    cost_per_1k: 0.05,
     cache_miss_pct: 12.5,
     cache_miss_usd_cost: 0.01,
     reasoning_reported: 500,
@@ -55,7 +54,6 @@ const mockRows = [
     p95_ms: 400,
     error_pct: 0.2,
     cost_usd: 0.5,
-    cost_per_1k: 0.08,
     cache_miss_pct: 8.0,
     cache_miss_usd_cost: 0.02,
     reasoning_reported: 0,
@@ -71,13 +69,23 @@ const mockRows = [
     p95_ms: 700,
     error_pct: 1.0,
     cost_usd: 0.2,
-    cost_per_1k: 0.06,
     cache_miss_pct: undefined,
     cache_miss_usd_cost: undefined,
     reasoning_reported: undefined,
     reasoning_estimated: undefined,
   },
 ]
+
+function expandLedger(
+  label: string,
+  level: 'provider' | 'family' | 'model' | 'repository'
+): void {
+  fireEvent.click(
+    screen.getByRole('button', {
+      name: new RegExp(`expand ${label} ${level} rows`, 'i'),
+    })
+  )
+}
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -119,6 +127,14 @@ test('test_quota_column_removed', () => {
   expect(quotaHeader).toBeNull()
 })
 
+test('test_cost_per_1k_columns_removed', () => {
+  render(<MasterLedgerTable rows={mockRows} />)
+
+  expect(screen.queryByRole('columnheader', { name: /^\$\/1k$/i })).toBeNull()
+  expect(screen.queryByRole('columnheader', { name: /\$\/1k in/i })).toBeNull()
+  expect(screen.queryByRole('columnheader', { name: /\$\/1k out/i })).toBeNull()
+})
+
 test('test_cache_reasoning_columns_present', () => {
   // Wave 26 (operator F#12): cache miss columns must appear.
   // Wave 29 Fix #7: reasoning_reported + reasoning_estimated consolidated into
@@ -153,7 +169,7 @@ test('test_click_sort_descending', () => {
   const rows = screen.getAllByRole('row')
   // rows[0] is thead, rows[1] is first data row
   const firstDataRow = rows[1]
-  expect(firstDataRow.textContent).toContain('GPT 4o')
+  expect(firstDataRow.textContent).toContain('OpenAI')
 })
 
 test('test_click_sort_toggles_ascending', () => {
@@ -165,7 +181,7 @@ test('test_click_sort_toggles_ascending', () => {
 
   const rows = screen.getAllByRole('row')
   const firstDataRow = rows[1]
-  expect(firstDataRow.textContent).toContain('Claude 3')
+  expect(firstDataRow.textContent).toContain('Anthropic')
 })
 
 test('test_no_tfoot_row', () => {
@@ -174,6 +190,162 @@ test('test_no_tfoot_row', () => {
 
   const tfoot = container.querySelector('tfoot')
   expect(tfoot).toBeNull()
+})
+
+test('test_model_ledger_collapses_to_provider_rows_by_default', () => {
+  render(
+    <MasterLedgerTable
+      rows={[
+        { ...mockRows[0], model: 'claude-opus-4-7', provider: 'anthropic' },
+        { ...mockRows[1], model: 'claude-sonnet-4-5', provider: 'anthropic' },
+        { ...mockRows[2], model: 'gpt-5.5', provider: 'openai' },
+        {
+          ...mockRows[2],
+          model: 'qwen/qwen3-coder:free',
+          provider: 'openrouter',
+        },
+      ]}
+    />
+  )
+
+  const bodyRows = document.querySelectorAll('tbody tr')
+  expect(bodyRows).toHaveLength(3)
+  expect(screen.getByText('Anthropic')).toBeInTheDocument()
+  expect(screen.getByText('OpenAI')).toBeInTheDocument()
+  expect(screen.getByText('OpenRouter')).toBeInTheDocument()
+  expect(screen.queryByText(/Claude Opus/i)).toBeNull()
+  expect(screen.queryByText(/GPT 5\.5/i)).toBeNull()
+})
+
+test('test_model_ledger_expands_provider_family_and_exact_model_rows', () => {
+  render(
+    <MasterLedgerTable
+      rows={[
+        { ...mockRows[0], model: 'claude-opus-4-7', provider: 'anthropic' },
+        { ...mockRows[1], model: 'claude-sonnet-4-5', provider: 'anthropic' },
+        { ...mockRows[2], model: 'gpt-5.5', provider: 'openai' },
+        {
+          ...mockRows[2],
+          model: 'qwen/qwen3-coder:free',
+          provider: 'openrouter',
+        },
+      ]}
+    />
+  )
+
+  expandLedger('Anthropic', 'provider')
+  expect(screen.getByText('Opus')).toBeInTheDocument()
+  expect(screen.getByText('Sonnet')).toBeInTheDocument()
+  expect(screen.queryByText(/Claude Opus/i)).toBeNull()
+
+  expandLedger('Opus', 'family')
+  expect(screen.getByText(/Opus 4\.7/i)).toBeInTheDocument()
+  expect(screen.queryByText(/Claude Opus 4 7/i)).toBeNull()
+
+  expandLedger('OpenRouter', 'provider')
+  expect(screen.getByText('Qwen')).toBeInTheDocument()
+  expandLedger('Qwen', 'family')
+  expect(screen.getByText(/Qwen3 Coder · free/i)).toBeInTheDocument()
+})
+
+test('test_model_ledger_expands_exact_model_to_repository_rows', () => {
+  render(
+    <MasterLedgerTable
+      rows={[
+        {
+          ...mockRows[0],
+          model: 'claude-opus-4-7',
+          provider: 'anthropic',
+          repositoryChildren: [
+            {
+              ...mockRows[0],
+              model: 'dashboard-shell',
+              provider: 'anthropic',
+              tokens_in: 600,
+              tokens_out: 100,
+              requests: 20,
+              cost_usd: 0.07,
+            },
+            {
+              ...mockRows[0],
+              model: 'aawm-tap',
+              provider: 'anthropic',
+              tokens_in: 400,
+              tokens_out: 80,
+              requests: 15,
+              cost_usd: 0.03,
+            },
+          ],
+        },
+      ]}
+    />
+  )
+
+  expandLedger('Anthropic', 'provider')
+  expandLedger('Opus', 'family')
+  expandLedger('Opus 4.7', 'model')
+
+  expect(screen.getByText('dashboard-shell')).toBeInTheDocument()
+  expect(screen.getByText('aawm-tap')).toBeInTheDocument()
+})
+
+test('test_repository_tab_pivots_ledger_to_repository_provider_family_model', () => {
+  render(
+    <MasterLedgerTable
+      rows={[
+        {
+          ...mockRows[0],
+          model: 'claude-opus-4-7',
+          provider: 'anthropic',
+          repositoryChildren: [
+            {
+              ...mockRows[0],
+              model: 'dashboard-shell',
+              provider: 'anthropic',
+              tokens_in: 600,
+              tokens_out: 100,
+              requests: 20,
+              cost_usd: 0.07,
+            },
+          ],
+        },
+        {
+          ...mockRows[1],
+          model: 'gpt-5.5',
+          provider: 'openai',
+          repositoryChildren: [
+            {
+              ...mockRows[1],
+              model: 'dashboard-shell',
+              provider: 'openai',
+              tokens_in: 500,
+              tokens_out: 90,
+              requests: 10,
+              cost_usd: 0.05,
+            },
+          ],
+        },
+      ]}
+    />
+  )
+
+  fireEvent.click(screen.getByRole('tab', { name: /^repository$/i }))
+
+  expect(screen.getByText('dashboard-shell')).toBeInTheDocument()
+  expandLedger('dashboard-shell', 'repository')
+  expect(screen.getByText('Anthropic')).toBeInTheDocument()
+  expect(screen.getByText('OpenAI')).toBeInTheDocument()
+  expandLedger('Anthropic', 'provider')
+  expect(screen.getByText('Opus')).toBeInTheDocument()
+  expandLedger('Opus', 'family')
+  expect(screen.getByText('Opus 4.7')).toBeInTheDocument()
+})
+
+test('test_model_ledger_removes_non_sparkline_microbars', () => {
+  const { container } = render(<MasterLedgerTable rows={mockRows} />)
+
+  expect(container.querySelectorAll('.microbar')).toHaveLength(0)
+  expect(container.querySelector('tbody svg')).not.toBeNull()
 })
 
 test('test_sparkline_column_renders_svg', () => {
@@ -261,7 +433,6 @@ const errorRow = {
   p95_ms: 500,
   error_pct: 9.0,
   cost_usd: 0.1,
-  cost_per_1k: 0.05,
   cache_miss_pct: 12.5,
   cache_miss_usd_cost: 0.01,
   reasoning_reported: 500,
@@ -312,6 +483,8 @@ test('test_err_pct_hover_tooltip_renders_when_observations_present', () => {
   render(
     <MasterLedgerTable rows={[errorRow]} errorObservations={matchingObs} />
   )
+  expandLedger('Anthropic', 'provider')
+  expandLedger('Other', 'family')
 
   // The static (hidden) tooltip content is always in the DOM; confirm the
   // heading text is present.
@@ -357,6 +530,8 @@ test('test_err_pct_tooltip_caps_at_ten_rows', () => {
     )
   )
   render(<MasterLedgerTable rows={[errorRow]} errorObservations={manyObs} />)
+  expandLedger('Anthropic', 'provider')
+  expandLedger('Other', 'family')
 
   // The heading says "10 most recent errors:" — not "12".
   expect(screen.getByText(/10 most recent errors/i)).toBeInTheDocument()
@@ -419,7 +594,6 @@ test('test_tool_hover_packs_small_mcp_groups_into_shared_columns', () => {
     p95_ms: 500,
     error_pct: 0,
     cost_usd: 0.5,
-    cost_per_1k: 0.05,
     tool: 89,
     toolActivity: buildToolActivity([
       makeToolActivityRow('mcp__aawm__search', 'outer', 35),
@@ -431,6 +605,8 @@ test('test_tool_hover_packs_small_mcp_groups_into_shared_columns', () => {
   }
 
   render(<MasterLedgerTable rows={[toolRow]} />)
+  expandLedger('Anthropic', 'provider')
+  expandLedger('Opus', 'family')
 
   expect(
     document.querySelectorAll('[data-tool-left-column="true"]')
@@ -639,7 +815,6 @@ test('test_tool_cell_hover_tooltip_rendered_when_tool_activity_present', () => {
     p95_ms: 500,
     error_pct: 0,
     cost_usd: 0.5,
-    cost_per_1k: 0.05,
     tool: 380,
     toolActivity: buildToolActivity([
       makeToolActivityRow('Read', 'outer', 245),
@@ -651,6 +826,8 @@ test('test_tool_cell_hover_tooltip_rendered_when_tool_activity_present', () => {
   }
 
   render(<MasterLedgerTable rows={[toolRow]} />)
+  expandLedger('Anthropic', 'provider')
+  expandLedger('Opus', 'family')
 
   // The shell header text should be present in the (hidden) tooltip DOM.
   // Pattern matches "SHELL (80 calls)" — Bash contributes 80 to shellTotalCalls.
@@ -684,7 +861,6 @@ test('test_tool_cell_hover_expands_shell_height_for_mcp_heavy_tools', () => {
     p95_ms: 500,
     error_pct: 0,
     cost_usd: 0.5,
-    cost_per_1k: 0.05,
     tool: 9000,
     toolActivity: buildToolActivity([
       makeToolActivityRow('Bash', 'outer', 500),
@@ -695,6 +871,8 @@ test('test_tool_cell_hover_expands_shell_height_for_mcp_heavy_tools', () => {
   }
 
   render(<MasterLedgerTable rows={[toolRow]} />)
+  expandLedger('Anthropic', 'provider')
+  expandLedger('Opus', 'family')
 
   expect(screen.getByText('MCP: aawm')).toBeInTheDocument()
   expect(screen.getByText(/tool25/)).toBeInTheDocument()
@@ -732,7 +910,6 @@ test('test_tool_cell_hover_keeps_second_column_detail_on_both_sides', () => {
     p95_ms: 500,
     error_pct: 0,
     cost_usd: 0.5,
-    cost_per_1k: 0.05,
     tool: 1860,
     toolActivity: buildToolActivity([
       makeToolActivityRow('Bash', 'outer', 500),
@@ -742,6 +919,8 @@ test('test_tool_cell_hover_keeps_second_column_detail_on_both_sides', () => {
   }
 
   render(<MasterLedgerTable rows={[toolRow]} />)
+  expandLedger('Anthropic', 'provider')
+  expandLedger('Opus', 'family')
 
   expect(screen.getByText('Tool 15')).toBeInTheDocument()
   expect(screen.getByText('cmd15')).toBeInTheDocument()
@@ -766,7 +945,6 @@ test('test_tool_hover_renders_highest_priority_tool_column_next_to_shell', () =>
     p95_ms: 500,
     error_pct: 0,
     cost_usd: 0.5,
-    cost_per_1k: 0.05,
     tool: 3500,
     toolActivity: buildToolActivity([
       makeToolActivityRow('Bash', 'outer', 500),
@@ -776,6 +954,8 @@ test('test_tool_hover_renders_highest_priority_tool_column_next_to_shell', () =>
   }
 
   render(<MasterLedgerTable rows={[toolRow]} />)
+  expandLedger('Anthropic', 'provider')
+  expandLedger('Opus', 'family')
 
   const renderedSourceIndexes = Array.from(
     document.querySelectorAll('[data-tool-left-column="true"]')
@@ -798,6 +978,10 @@ test('test_model_column_normalizes_names_and_preserves_context_suffixes', () => 
   ]
 
   render(<MasterLedgerTable rows={rows} />)
+  expandLedger('OpenAI', 'provider')
+  expandLedger('GPT', 'family')
+  expandLedger('OpenRouter', 'provider')
+  expandLedger('Qwen', 'family')
 
   expect(screen.getByText('GPT 5.5 · stealth')).toBeInTheDocument()
   expect(screen.getByText('Qwen3 Coder · free')).toBeInTheDocument()
@@ -815,7 +999,6 @@ test('test_tool_hover_heading_uses_normalized_model_display_name', () => {
     p95_ms: 500,
     error_pct: 0,
     cost_usd: 0.5,
-    cost_per_1k: 0.05,
     tool: 120,
     toolActivity: buildToolActivity([
       makeToolActivityRow('Read', 'outer', 80, 'openai', 'gpt-5.5:stealth'),
@@ -825,6 +1008,8 @@ test('test_tool_hover_heading_uses_normalized_model_display_name', () => {
   }
 
   render(<MasterLedgerTable rows={[toolRow]} />)
+  expandLedger('OpenAI', 'provider')
+  expandLedger('GPT', 'family')
 
   expect(
     screen.getByText(/GPT 5\.5 · stealth.*tool breakdown/i)
@@ -856,7 +1041,6 @@ test('test_tool_cell_renders_count_when_tool_scalar_is_set', () => {
     p95_ms: 400,
     error_pct: 0,
     cost_usd: 1.0,
-    cost_per_1k: 0.05,
     // Scalar `tool` mirrors toolActivity.totalCalls as produced by buildModelRows
     tool: totalCalls,
     toolActivity,
@@ -993,7 +1177,6 @@ test('test_tool_cell_renders_fmtCompact_value', () => {
     p95_ms: 500,
     error_pct: 0,
     cost_usd: 0.1,
-    cost_per_1k: 0.05,
     tool: 1200,
     toolActivity: buildToolActivity([
       makeToolActivityRow('Read', 'outer', 1200),

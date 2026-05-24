@@ -38,7 +38,6 @@ function makeRow(
     p95_ms: 300,
     error_pct: 0,
     cost_usd,
-    cost_per_1k: cost_usd / 1.5,
     quota_pct: 0,
     ...overrides,
   }

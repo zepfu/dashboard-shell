@@ -14,7 +14,7 @@
  */
 import type { ReactNode } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { render, act, fireEvent, waitFor } from '@testing-library/react'
+import { render, act, fireEvent, waitFor, screen } from '@testing-library/react'
 import { http, HttpResponse } from 'msw'
 import { server } from '../../../test/setup'
 import type {
@@ -24,8 +24,10 @@ import type {
   UsageReportQuotaRow,
   UsageReportQuotaUsageBreakdown,
   UsageReportResponse,
+  UsageReportTrendRow,
 } from '../api/usage-report'
 import PhosphorDashboard, {
+  _buildRepoRowsForTest,
   _formatTimeAgoForTest,
   _quotaTypeToPeriodTypeForTest,
   _tipModelsGoogleForTest,
@@ -109,11 +111,172 @@ const MOCK_REPORT: UsageReportResponse = {
   rows: [],
 }
 
+test('test_buildRepoRows_merges_trailing_memory_suffix_rows', () => {
+  const rows = [
+    {
+      repository: 'dashboard-shell',
+      token_total: 1000,
+      usd_cost: 0.1,
+      traces: 10,
+      model: 'gpt-5.5',
+    },
+    {
+      repository: 'dashboard-shell (memory)',
+      token_total: 500,
+      usd_cost: 0.05,
+      traces: 5,
+      model: 'gpt-5.5',
+    },
+    {
+      repository: 'aawm-tap',
+      token_total: 250,
+      usd_cost: 0.02,
+      traces: 2,
+      model: 'claude-sonnet-4-5',
+    },
+  ]
+  const trendRows: UsageReportTrendRow[] = [
+    {
+      bucket: '2026-05-20T00:00:00.000Z',
+      provider: 'openai',
+      model: 'gpt-5.5',
+      repository: 'dashboard-shell',
+      traces: 10,
+      token_total: 100,
+      usd_cost: 0.01,
+    },
+    {
+      bucket: '2026-05-20T00:00:00.000Z',
+      provider: 'openai',
+      model: 'gpt-5.5',
+      repository: 'dashboard-shell (memory)',
+      traces: 5,
+      token_total: 50,
+      usd_cost: 0.005,
+    },
+    {
+      bucket: '2026-05-20T01:00:00.000Z',
+      provider: 'openai',
+      model: 'gpt-5.5',
+      repository: 'dashboard-shell (memory)',
+      traces: 4,
+      token_total: 75,
+      usd_cost: 0.0075,
+    },
+  ]
+
+  const repoRows = _buildRepoRowsForTest(rows, trendRows)
+  const shellRows = repoRows.filter((row) =>
+    row.repository.startsWith('dashboard-shell')
+  )
+
+  expect(shellRows).toHaveLength(1)
+  expect(shellRows[0]).toMatchObject({
+    repository: 'dashboard-shell',
+    tokens: 1500,
+    traces: 15,
+    top_model: 'gpt-5.5',
+    spark: [150, 75],
+  })
+  expect(shellRows[0].cost_usd).toBeCloseTo(0.15)
+})
+
 // ---------------------------------------------------------------------------
 // TCG-1: Hoisted-query bypass — internal useQuery must NOT fire
 // ---------------------------------------------------------------------------
 
 describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
+  test('test_section_refresh_controls_render_and_call_refresh_handlers', async () => {
+    const onRefreshReport = vi.fn()
+    const onRefreshQuotas = vi.fn()
+
+    server.use(
+      http.get('/api/shell/reports/usage/token-trend-summary', () =>
+        HttpResponse.json({
+          metadata: {
+            from: '2026-05-20',
+            to: '2026-05-21',
+          },
+          tokenTrendHours: [],
+          tokenTrendVersions: [],
+        })
+      )
+    )
+
+    await act(async () => {
+      render(
+        <Wrapper>
+          <PhosphorDashboard
+            from='2026-05-20'
+            to='2026-05-21'
+            report={MOCK_REPORT}
+            reportLoading={false}
+            showComparison={false}
+            quotas={[]}
+            onRefreshReport={onRefreshReport}
+            onRefreshQuotas={onRefreshQuotas}
+          />
+        </Wrapper>
+      )
+    })
+
+    expect(
+      screen.getByRole('button', {
+        name: /refresh provider health summary data/i,
+      })
+    ).toBeInTheDocument()
+    expect(
+      screen.getByRole('button', { name: /refresh model ledger data/i })
+    ).toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', {
+        name: /refresh repository breakdown data/i,
+      })
+    ).toBeNull()
+    expect(
+      screen.getByRole('button', { name: /refresh token trend data/i })
+    ).toBeInTheDocument()
+
+    await act(async () => {
+      fireEvent.click(
+        screen.getByRole('button', { name: /refresh model ledger data/i })
+      )
+    })
+    expect(onRefreshReport).toHaveBeenCalledTimes(1)
+
+    await act(async () => {
+      fireEvent.click(
+        screen.getByRole('button', {
+          name: /refresh provider health summary data/i,
+        })
+      )
+    })
+    expect(onRefreshReport).toHaveBeenCalledTimes(2)
+    expect(onRefreshQuotas).toHaveBeenCalledTimes(1)
+  })
+
+  test('test_section_refresh_control_shows_updating_state', async () => {
+    await act(async () => {
+      render(
+        <Wrapper>
+          <PhosphorDashboard
+            from='2026-05-20'
+            to='2026-05-21'
+            report={MOCK_REPORT}
+            reportLoading={false}
+            reportFetching
+            showComparison={false}
+            quotas={[]}
+            onRefreshReport={vi.fn()}
+            onRefreshQuotas={vi.fn()}
+          />
+        </Wrapper>
+      )
+    })
+
+    expect(screen.getAllByText('Updating').length).toBeGreaterThan(0)
+  })
+
   test('test_phosphor_dashboard_provider_status_color_legend_renders', async () => {
     server.use(
       http.get('/api/shell/reports/quotas', () =>
@@ -241,7 +404,36 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
               usd_cost: 0,
             },
           ],
-          tokenTrendVersions: [],
+          tokenTrendVersions: [
+            {
+              provider: 'openai',
+              client_name: 'codex-tui',
+              client_version: '0.120.0',
+              first_seen_at: '2026-05-20T12:00:00.000Z',
+              last_seen_at: '2026-05-20T13:10:00.000Z',
+              first_seen_day: '2026-05-20',
+              first_seen_hour: 8,
+              last_seen_day: '2026-05-20',
+              last_seen_hour: 9,
+              traces: 2,
+              token_total: 150,
+              usd_cost: 0,
+            },
+            {
+              provider: 'xai',
+              client_name: 'xai-cli',
+              client_version: '0.0.0',
+              first_seen_at: '2026-05-20T12:00:00.000Z',
+              last_seen_at: '2026-05-20T13:10:00.000Z',
+              first_seen_day: '2026-05-20',
+              first_seen_hour: 8,
+              last_seen_day: '2026-05-20',
+              last_seen_hour: 9,
+              traces: 1,
+              token_total: 90,
+              usd_cost: 0,
+            },
+          ],
         })
       ),
       http.get('/api/shell/reports/usage/token-trend-day', ({ request }) => {
@@ -281,6 +473,12 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
         container.querySelector('.tt-day-hover-shell[data-day="2026-05-20"]')
       ).not.toBeNull()
     })
+    const activeVersionLane = container.querySelector(
+      '.tt-active-version-lane'
+    ) as HTMLElement
+    expect(activeVersionLane).not.toBeNull()
+    expect(activeVersionLane.textContent).toContain('Grok')
+    expect(activeVersionLane.textContent).toContain('xai-cli')
 
     const dayHoverShell = container.querySelector(
       '.tt-day-hover-shell[data-day="2026-05-20"]'
@@ -300,7 +498,7 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
     expect(dayDetailCallCount).toBe(1)
   })
 
-  test('test_token_trend_renders_after_model_and_repo_sections', async () => {
+  test('test_token_trend_renders_before_model_ledger_section', async () => {
     server.use(
       http.get('/api/shell/reports/usage/token-trend-summary', () =>
         HttpResponse.json({
@@ -332,17 +530,13 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
     })
 
     const models = container.querySelector('#models') as HTMLElement
-    const repos = container.querySelector('#repos') as HTMLElement
     const tokens = container.querySelector('#tokens') as HTMLElement
 
     expect(models).not.toBeNull()
-    expect(repos).not.toBeNull()
+    expect(container.querySelector('#repos')).toBeNull()
     expect(tokens).not.toBeNull()
     expect(
-      models.compareDocumentPosition(tokens) & Node.DOCUMENT_POSITION_FOLLOWING
-    ).toBeTruthy()
-    expect(
-      repos.compareDocumentPosition(tokens) & Node.DOCUMENT_POSITION_FOLLOWING
+      tokens.compareDocumentPosition(models) & Node.DOCUMENT_POSITION_FOLLOWING
     ).toBeTruthy()
   })
 })
@@ -1239,6 +1433,50 @@ describe('Wave 41 — buildProviderLanes', () => {
     expect(lanes[0].laneLabel).toBe('All Models · 30d')
   })
 
+  test('test_openrouter_has_daily_request_lane_with_prior_bars', () => {
+    const openrouterRow: UsageReportQuotaRow = {
+      ...makeAnthropicQuotaRow(),
+      provider: 'openrouter',
+      model: null,
+      short_remaining_pct: 99.4,
+      short_reset_at: '2026-05-24T00:00:00Z',
+      short_interval_start: '2026-05-23T00:00:00Z',
+      short_interval_end: '9999-12-31T00:00:00Z',
+      short_active: true,
+      short_usage_tokens: 159440,
+      weekly_remaining_pct: null,
+      weekly_active: false,
+      special_remaining_pct: null,
+      special_active: false,
+      monthly_remaining_pct: null,
+      monthly_active: false,
+    }
+    const historyRows: UsageReportQuotaHistoryRow[] = [
+      makeHistoryRow({
+        provider: 'openrouter',
+        model: null,
+        quota_type: 'short',
+        expected_reset_at: '2026-05-23T00:00:00Z',
+        interval_start: '2026-05-22T00:00:00Z',
+        interval_end: '2026-05-23T00:00:00Z',
+        min_remaining_pct: 82,
+      }),
+    ]
+
+    const lanes = _buildProviderLanesForTest(
+      'openrouter',
+      [openrouterRow],
+      historyRows
+    )
+
+    expect(lanes).toHaveLength(1)
+    expect(lanes[0].laneKey).toBe('openrouter/requests')
+    expect(lanes[0].laneLabel).toBe('Free Requests · 24h')
+    expect(lanes[0].currentBar?.consumedPct).toBeCloseTo(0.6, 1)
+    expect(lanes[0].priorBars).toHaveLength(1)
+    expect(lanes[0].priorBars[0].consumedPct).toBe(18)
+  })
+
   test('test_unknown_provider_returns_empty_lanes', () => {
     const lanes = _buildProviderLanesForTest('nvidia_nim', [], [])
     expect(lanes).toHaveLength(0)
@@ -1474,7 +1712,7 @@ describe('Wave 43 — fmtIntervalCompact', () => {
       '2026-05-19T10:00:00Z',
       '2026-05-20T10:00:00Z'
     )
-    expect(result).toBe('5/19 10:00 → 5/20 10:00')
+    expect(result).toBe('5/19 06:00 → 5/20 06:00')
   })
 
   test('test_fmt_interval_compact_snaps_to_nearest_30min', () => {
@@ -1484,7 +1722,7 @@ describe('Wave 43 — fmtIntervalCompact', () => {
       '2026-05-20T09:44:00Z',
       '2026-05-20T14:52:00Z'
     )
-    expect(result).toBe('5/20 09:30 → 5/20 15:00')
+    expect(result).toBe('5/20 05:30 → 5/20 11:00')
   })
 
   test('test_fmt_interval_compact_returns_dash_on_null_start', () => {
@@ -1503,7 +1741,7 @@ describe('Wave 43 — fmtIntervalCompact', () => {
       '2026-05-03T01:00:00Z',
       '2026-05-03T06:00:00Z'
     )
-    expect(result).toBe('5/3 01:00 → 5/3 06:00')
+    expect(result).toBe('5/2 21:00 → 5/3 02:00')
   })
 
   test('test_fmt_interval_compact_crosses_month_boundary', () => {
@@ -1511,7 +1749,7 @@ describe('Wave 43 — fmtIntervalCompact', () => {
       '2026-04-30T22:00:00Z',
       '2026-05-01T04:00:00Z'
     )
-    expect(result).toBe('4/30 22:00 → 5/1 04:00')
+    expect(result).toBe('4/30 18:00 → 5/1 00:00')
   })
 })
 
@@ -1544,7 +1782,7 @@ describe('Wave 43 — buildPriorBarFromHistory dateRangeLabel', () => {
       expected_reset_at: '2026-05-20T10:00:00Z',
     })
     const bar = _buildPriorBarFromHistoryForTest(h, 'anthropic')
-    expect(bar.dateRangeLabel).toBe('5/19 10:00 → 5/20 10:00')
+    expect(bar.dateRangeLabel).toBe('5/19 06:00 → 5/20 06:00')
   })
 
   test('test_prior_bar_dateRangeLabel_uses_snapped_boundaries', () => {
@@ -1555,7 +1793,7 @@ describe('Wave 43 — buildPriorBarFromHistory dateRangeLabel', () => {
     })
     const bar = _buildPriorBarFromHistoryForTest(h, 'anthropic')
     // Both snap to :00 of the hour
-    expect(bar.dateRangeLabel).toBe('5/19 10:00 → 5/20 10:00')
+    expect(bar.dateRangeLabel).toBe('5/19 06:00 → 5/20 06:00')
   })
 
   test('test_prior_bar_dateRangeLabel_undefined_when_interval_start_is_null', () => {

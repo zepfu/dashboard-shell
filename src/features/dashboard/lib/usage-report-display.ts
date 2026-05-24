@@ -9,6 +9,96 @@
  * health side). This map lets callers expand a canonical key to all its DB
  * aliases before filtering health rows.
  */
+export const DASHBOARD_TIME_ZONE = 'America/New_York'
+
+function datePartsInTimeZone(
+  date: Date,
+  timeZone: string
+): {
+  year: number
+  month: number
+  day: number
+  hour: number
+  minute: number
+  second: number
+} {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(date)
+  const byType = new Map(parts.map((part) => [part.type, part.value]))
+  return {
+    year: Number(byType.get('year')),
+    month: Number(byType.get('month')),
+    day: Number(byType.get('day')),
+    hour: Number(byType.get('hour')),
+    minute: Number(byType.get('minute')),
+    second: Number(byType.get('second')),
+  }
+}
+
+export function formatDashboardDate(date: Date): string {
+  const parts = datePartsInTimeZone(date, DASHBOARD_TIME_ZONE)
+  return [
+    parts.year.toString().padStart(4, '0'),
+    parts.month.toString().padStart(2, '0'),
+    parts.day.toString().padStart(2, '0'),
+  ].join('-')
+}
+
+export function addDaysToDateString(value: string, days: number): string {
+  const [year, month, day] = value.split('-').map(Number)
+  const date = new Date(Date.UTC(year, month - 1, day + days))
+  return date.toISOString().slice(0, 10)
+}
+
+export function dashboardDateToUtcMs(value: string): number {
+  const [year, month, day] = value.split('-').map(Number)
+  const targetAsUtc = Date.UTC(year, month - 1, day, 0, 0, 0)
+  let candidate = targetAsUtc
+  for (let i = 0; i < 4; i += 1) {
+    const parts = datePartsInTimeZone(new Date(candidate), DASHBOARD_TIME_ZONE)
+    const localAsUtc = Date.UTC(
+      parts.year,
+      parts.month - 1,
+      parts.day,
+      parts.hour,
+      parts.minute,
+      parts.second
+    )
+    const delta = targetAsUtc - localAsUtc
+    candidate += delta
+    if (delta === 0) break
+  }
+  return candidate
+}
+
+export function formatDashboardTime(value: string | Date): string {
+  const date = value instanceof Date ? value : new Date(value)
+  if (Number.isNaN(date.getTime())) return '--'
+  return new Intl.DateTimeFormat('en-US', {
+    timeZone: DASHBOARD_TIME_ZONE,
+    hour: 'numeric',
+    minute: '2-digit',
+  }).format(date)
+}
+
+export function formatDashboardIntervalCompact(start: Date, end: Date): string {
+  const format = (date: Date): string => {
+    const parts = datePartsInTimeZone(date, DASHBOARD_TIME_ZONE)
+    return `${parts.month.toString()}/${parts.day.toString()} ${parts.hour
+      .toString()
+      .padStart(2, '0')}:${parts.minute.toString().padStart(2, '0')}`
+  }
+  return `${format(start)} → ${format(end)}`
+}
+
 const PROVIDER_ALIASES: Record<string, readonly string[]> = {
   google: ['google', 'gemini'],
   local: [
@@ -402,8 +492,9 @@ export function formatUsd(usd: number | null | undefined): string {
  * Each row in `providerErrorObservations` is one discrete event (one 429, one
  * 529, etc.) queried server-side with a fixed 14-day window. Passing `from` /
  * `to` (ISO-8601 date strings) filters to only observations whose
- * `observed_at` falls within `[from, to)`, aligning the Errors KPI tile with
- * the user-selected date range used by all other KPI tiles.
+ * `observed_at` falls within the Eastern-calendar `[from, to)` window,
+ * aligning the Errors KPI tile with the user-selected date range used by all
+ * other KPI tiles.
  *
  * When `from` / `to` are absent the full observation array length is returned
  * (backward-compatible behaviour for callers without a date window).
@@ -417,8 +508,8 @@ export function computeFleetErrors(
   to?: string
 ): number {
   if (!from || !to) return observations.length
-  const fromMs = new Date(from).getTime()
-  const toMs = new Date(to).getTime()
+  const fromMs = dashboardDateToUtcMs(from)
+  const toMs = dashboardDateToUtcMs(to)
   return observations.filter((o) => {
     if (!o.observed_at) return false
     const t = new Date(o.observed_at).getTime()

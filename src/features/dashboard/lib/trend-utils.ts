@@ -167,9 +167,56 @@ export interface TokenTrendVersionTrack {
   segments: TokenTrendVersionTrackPoint[][]
 }
 
+export type TokenTrendActiveVersionFamilyKey =
+  | 'claude'
+  | 'codex'
+  | 'gemini'
+  | 'grok'
+
+export interface TokenTrendActiveVersionSegment {
+  id: string
+  familyKey: TokenTrendActiveVersionFamilyKey
+  provider: string
+  providers: string[]
+  clientName: string
+  clientNames: string[]
+  clientVersion: string
+  firstSeenAt: string | null
+  lastSeenAt: string | null
+  firstSeenDay: string | null
+  lastSeenDay: string | null
+  firstSeenHour: number | null
+  lastSeenHour: number | null
+  startGlobalHour: number
+  endGlobalHour: number
+  xStart: number
+  xEnd: number
+  releaseX: number
+  rowIndex: number
+  traces: number
+  tokenTotal: number
+}
+
+export interface TokenTrendActiveVersionFamilyLane {
+  key: TokenTrendActiveVersionFamilyKey
+  label: string
+  rowCount: number
+  segments: TokenTrendActiveVersionSegment[]
+}
+
 interface TokenTrendVersionTrackOptions {
   gapToleranceHours?: number
 }
+
+const TOKEN_TREND_ACTIVE_VERSION_FAMILIES: readonly {
+  key: TokenTrendActiveVersionFamilyKey
+  label: string
+}[] = [
+  { key: 'claude', label: 'Claude' },
+  { key: 'codex', label: 'Codex' },
+  { key: 'gemini', label: 'Gemini' },
+  { key: 'grok', label: 'Grok' },
+]
 
 export function tokenTrendDayHeightPct(
   dayTotal: number,
@@ -262,6 +309,47 @@ function versionHourIndex(
   const dayIndex = dayIndexByDay.get(day)
   if (dayIndex === undefined) return null
   return dayIndex * 24 + hour
+}
+
+function normalizedText(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, ' ')
+}
+
+export function normalizeTokenTrendClientVersionForLane(
+  clientVersion: string
+): string {
+  const trimmed = clientVersion.trim()
+  const hashedBuildMatch = /^(\d+\.\d+\.\d+)\.[0-9a-f]{3,}$/i.exec(trimmed)
+  if (hashedBuildMatch?.[1] !== undefined) return hashedBuildMatch[1]
+  return trimmed
+}
+
+export function classifyTokenTrendActiveVersionFamily(row: {
+  provider: string
+  client_name: string
+  client_version?: string
+}): TokenTrendActiveVersionFamilyKey | null {
+  const clientName = normalizedText(row.client_name)
+  const clientVersion = normalizedText(row.client_version ?? '')
+
+  if (clientName.includes('claude') || clientVersion.includes('claude')) {
+    return 'claude'
+  }
+  if (clientName.includes('codex') || clientVersion.includes('codex')) {
+    return 'codex'
+  }
+  if (clientName.includes('gemini') || clientVersion.includes('gemini')) {
+    return 'gemini'
+  }
+  if (clientName.includes('grok') || clientVersion.includes('grok')) {
+    return 'grok'
+  }
+
+  const provider = canonicalProvider(row.provider)
+  if (provider === 'xai') return 'grok'
+  if (provider === 'google') return 'gemini'
+
+  return null
 }
 
 function providerMidpointPct(
@@ -421,4 +509,207 @@ export function deriveTokenTrendVersionTracks(
   }
 
   return tracks
+}
+
+export function deriveTokenTrendActiveVersionLanes(
+  envelopes: readonly TokenTrendDayEnvelope[],
+  intervals: readonly UsageReportTokenTrendVersionIntervalRow[]
+): TokenTrendActiveVersionFamilyLane[] {
+  const dayIndexByDay = new Map(
+    envelopes.map((envelope, index) => [envelope.day, index])
+  )
+  const segmentsByFamily = new Map<
+    TokenTrendActiveVersionFamilyKey,
+    Omit<TokenTrendActiveVersionSegment, 'rowIndex'>[]
+  >(TOKEN_TREND_ACTIVE_VERSION_FAMILIES.map((family) => [family.key, []]))
+  const aggregateByVersion = new Map<
+    string,
+    {
+      familyKey: TokenTrendActiveVersionFamilyKey
+      provider: string
+      providerTotals: Map<string, number>
+      clientNames: Set<string>
+      clientName: string
+      clientVersion: string
+      firstSeenAt: string | null
+      lastSeenAt: string | null
+      firstSeenDay: string | null
+      lastSeenDay: string | null
+      firstSeenHour: number | null
+      lastSeenHour: number | null
+      startGlobalHour: number
+      endGlobalHour: number
+      releaseGlobalHour: number
+      traces: number
+      tokenTotal: number
+    }
+  >()
+
+  for (const interval of intervals) {
+    const familyKey = classifyTokenTrendActiveVersionFamily(interval)
+    if (familyKey === null) continue
+
+    const firstSeenHour =
+      typeof interval.first_seen_hour === 'number'
+        ? Math.trunc(interval.first_seen_hour)
+        : null
+    const lastSeenHour =
+      typeof interval.last_seen_hour === 'number'
+        ? Math.trunc(interval.last_seen_hour)
+        : null
+    const firstGlobalHour = versionHourIndex(
+      dayIndexByDay,
+      interval.first_seen_day,
+      firstSeenHour
+    )
+    const lastGlobalHour = versionHourIndex(
+      dayIndexByDay,
+      interval.last_seen_day,
+      lastSeenHour
+    )
+    if (firstGlobalHour === null || lastGlobalHour === null) continue
+
+    const startGlobalHour = Math.min(firstGlobalHour, lastGlobalHour)
+    const endGlobalHour = Math.max(firstGlobalHour, lastGlobalHour)
+    const provider = canonicalProvider(interval.provider)
+    const clientVersion = normalizeTokenTrendClientVersionForLane(
+      interval.client_version
+    )
+    const aggregateKey = [familyKey, clientVersion].join('|')
+    const existing = aggregateByVersion.get(aggregateKey)
+
+    if (existing === undefined) {
+      aggregateByVersion.set(aggregateKey, {
+        familyKey,
+        provider,
+        providerTotals: new Map([[provider, interval.token_total]]),
+        clientNames: new Set([interval.client_name]),
+        clientName: interval.client_name,
+        clientVersion,
+        firstSeenAt: interval.first_seen_at,
+        lastSeenAt: interval.last_seen_at,
+        firstSeenDay: interval.first_seen_day,
+        lastSeenDay: interval.last_seen_day,
+        firstSeenHour,
+        lastSeenHour,
+        startGlobalHour,
+        endGlobalHour,
+        releaseGlobalHour: firstGlobalHour,
+        traces: interval.traces,
+        tokenTotal: interval.token_total,
+      })
+      continue
+    }
+
+    existing.traces += interval.traces
+    existing.tokenTotal += interval.token_total
+    existing.clientNames.add(interval.client_name)
+    existing.providerTotals.set(
+      provider,
+      (existing.providerTotals.get(provider) ?? 0) + interval.token_total
+    )
+    existing.provider =
+      [...existing.providerTotals.entries()].sort(
+        ([, a], [, b]) => b - a
+      )[0]?.[0] ?? existing.provider
+    if (startGlobalHour < existing.startGlobalHour) {
+      existing.startGlobalHour = startGlobalHour
+      existing.releaseGlobalHour = firstGlobalHour
+      existing.firstSeenAt = interval.first_seen_at
+      existing.firstSeenDay = interval.first_seen_day
+      existing.firstSeenHour = firstSeenHour
+      existing.clientName = interval.client_name
+    }
+    if (endGlobalHour > existing.endGlobalHour) {
+      existing.endGlobalHour = endGlobalHour
+      existing.lastSeenAt = interval.last_seen_at
+      existing.lastSeenDay = interval.last_seen_day
+      existing.lastSeenHour = lastSeenHour
+    }
+  }
+
+  for (const aggregate of aggregateByVersion.values()) {
+    const xStart = aggregate.startGlobalHour + 0.12
+    const xEnd = Math.max(xStart + 0.62, aggregate.endGlobalHour + 0.88)
+
+    segmentsByFamily.get(aggregate.familyKey)?.push({
+      id: [
+        aggregate.familyKey,
+        aggregate.provider,
+        aggregate.clientVersion,
+        aggregate.firstSeenAt ?? aggregate.firstSeenDay ?? 'unknown',
+      ].join('|'),
+      familyKey: aggregate.familyKey,
+      provider: aggregate.provider,
+      providers: [...aggregate.providerTotals.entries()]
+        .sort(([, a], [, b]) => b - a)
+        .map(([providerKey]) => providerKey),
+      clientName: aggregate.clientName,
+      clientNames: [...aggregate.clientNames].sort(),
+      clientVersion: aggregate.clientVersion,
+      firstSeenAt: aggregate.firstSeenAt,
+      lastSeenAt: aggregate.lastSeenAt,
+      firstSeenDay: aggregate.firstSeenDay,
+      lastSeenDay: aggregate.lastSeenDay,
+      firstSeenHour: aggregate.firstSeenHour,
+      lastSeenHour: aggregate.lastSeenHour,
+      startGlobalHour: aggregate.startGlobalHour,
+      endGlobalHour: aggregate.endGlobalHour,
+      xStart,
+      xEnd,
+      releaseX: aggregate.releaseGlobalHour + 0.5,
+      traces: aggregate.traces,
+      tokenTotal: aggregate.tokenTotal,
+    })
+  }
+
+  return TOKEN_TREND_ACTIVE_VERSION_FAMILIES.map((family) => {
+    const familySegments = [...(segmentsByFamily.get(family.key) ?? [])].sort(
+      (a, b) => {
+        const startDelta = a.startGlobalHour - b.startGlobalHour
+        if (startDelta !== 0) return startDelta
+        const endDelta = a.endGlobalHour - b.endGlobalHour
+        if (endDelta !== 0) return endDelta
+        return b.tokenTotal - a.tokenTotal
+      }
+    )
+    const laneStates: {
+      endGlobalHour: number
+      lastPointHour: number | null
+    }[] = []
+    const packedSegments: TokenTrendActiveVersionSegment[] = []
+
+    for (const segment of familySegments) {
+      const isPoint = segment.startGlobalHour === segment.endGlobalHour
+      let rowIndex = laneStates.findIndex(
+        (state) =>
+          state.endGlobalHour < segment.startGlobalHour ||
+          (isPoint && state.lastPointHour === segment.startGlobalHour)
+      )
+      if (rowIndex === -1) {
+        rowIndex = laneStates.length
+        laneStates.push({
+          endGlobalHour: segment.endGlobalHour,
+          lastPointHour: isPoint ? segment.startGlobalHour : null,
+        })
+      } else {
+        const state = laneStates[rowIndex]
+        if (state !== undefined) {
+          state.endGlobalHour = Math.max(
+            state.endGlobalHour,
+            segment.endGlobalHour
+          )
+          state.lastPointHour = isPoint ? segment.startGlobalHour : null
+        }
+      }
+      packedSegments.push({ ...segment, rowIndex })
+    }
+
+    return {
+      key: family.key,
+      label: family.label,
+      rowCount: Math.max(1, laneStates.length),
+      segments: packedSegments,
+    }
+  })
 }

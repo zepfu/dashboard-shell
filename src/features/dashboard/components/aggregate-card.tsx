@@ -8,8 +8,7 @@
  *
  * Wave 11 PR2 (11-e):
  * - Adds `aggregate` class to the card wrapper via ProviderCard.wrapperClassName
- *   so `.provider-card.aggregate` CSS rules apply (dashed amber border, hidden
- *   below 2100px viewport width).
+ *   so `.provider-card.aggregate` CSS rules apply (dashed amber border).
  * - FLEET ACTIVITY moved inside card-pane-left using the pc-sub-title /
  *   pc-mini-table pattern consistent with TOKEN CACHE and REASONING sections.
  *
@@ -118,7 +117,7 @@ function FleetRow({
 
 /**
  * AggregateCard renders a ProviderCard with:
- *  - `aggregate` wrapper class (dashed amber border via CSS, hidden <2100px)
+ *  - `aggregate` wrapper class (dashed amber border via CSS)
  *  - FLEET ACTIVITY sub-section inside card-pane-left (pc-sub-title pattern)
  *  - Inline pulse-dot inside the "invalid tool calls" label when `invalidToolCalls > 0`
  *    (mockup L2766; trigger is `invalidToolCalls > 0`, not `recentErrors > 0`)

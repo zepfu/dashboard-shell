@@ -30,7 +30,6 @@ const mockLedgerRows = [
     p95_ms: 500,
     error_pct: 0.5,
     cost_usd: 0.1,
-    cost_per_1k: 0.05,
     quota_pct: 25,
   },
 ]

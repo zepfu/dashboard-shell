@@ -19,7 +19,15 @@ interface DateControlsProps {
   onRangeChange: (from: string, to: string) => void
 }
 
-const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}/
+const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/
+
+function isValidDateOnly(value: string): boolean {
+  if (!ISO_DATE_RE.test(value)) return false
+  const date = new Date(`${value}T00:00:00.000Z`)
+  return (
+    !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value
+  )
+}
 
 /**
  * DateControls renders From/To date inputs with an Apply button.
@@ -32,8 +40,7 @@ export function DateControls({
   const [from, setFrom] = useState(initialFrom)
   const [to, setTo] = useState(initialTo)
 
-  const isValidDate = (val: string): boolean => ISO_DATE_RE.test(val)
-  const canApply = isValidDate(from) && isValidDate(to)
+  const canApply = isValidDateOnly(from) && isValidDateOnly(to) && from < to
 
   const handleApply = (): void => {
     if (canApply) {

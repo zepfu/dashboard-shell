@@ -32,8 +32,6 @@ const SECTIONS: SectionDef[] = [
   { key: 's', value: 'status', label: 'Status', hint: '[S]' },
   { key: 't', value: 'tokens', label: 'Tokens', hint: '[T]' },
   { key: 'm', value: 'models', label: 'Models', hint: '[M]' },
-  { key: 'r', value: 'repos', label: 'Repos', hint: '[R]' },
-  { key: 'c', value: 'clients', label: 'Clients', hint: '[C]' },
   // Wave 11 PR7-lite (audit C26): h key re-anchors to #status (PR1 removed #health).
   // Visible label stays "[H]ealth" per reference mockup.
   { key: 'h', value: 'status', label: 'Health', hint: '[H]' },
@@ -43,8 +41,6 @@ const KEY_MAP: Record<string, string> = {
   s: 'status',
   t: 'tokens',
   m: 'models',
-  r: 'repos',
-  c: 'clients',
   // Wave 11 PR7-lite: h now maps to 'status' (provider health summary section).
   h: 'status',
 }

@@ -21,7 +21,7 @@ import {
   createRouter,
   RouterProvider,
 } from '@tanstack/react-router'
-import { render, act, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { http, HttpResponse } from 'msw'
 import { SidebarProvider } from '../../components/ui/sidebar'
 import { DirectionProvider } from '../../context/direction-provider'
@@ -127,6 +127,14 @@ function makeClient(): QueryClient {
   })
 }
 
+function registerTokenTrendSummaryHandler(): void {
+  server.use(
+    http.get('/api/shell/reports/usage/token-trend-summary', () =>
+      HttpResponse.json({ tokenTrendHours: [], tokenTrendVersions: [] })
+    )
+  )
+}
+
 /**
  * Renders the given Component wrapped in the full production provider chain
  * that the Dashboard route uses at runtime. The router renders Component as
@@ -178,6 +186,7 @@ async function importDashboard(): Promise<React.ComponentType> {
 
 describe('Dashboard — TCG-2: loading skeleton render path', () => {
   test('test_dashboard_shows_skeleton_while_loading', async () => {
+    registerTokenTrendSummaryHandler()
     // Register a handler that NEVER resolves so the query stays in loading state.
     let resolveUsageRequest: (() => void) | null = null
     server.use(
@@ -206,14 +215,19 @@ describe('Dashboard — TCG-2: loading skeleton render path', () => {
 
     const Dashboard = await importDashboard()
 
-    let container!: HTMLElement
-    await act(async () => {
-      const result = renderWithProviders(Dashboard)
-      container = result.container
-    })
+    const { container } = renderWithProviders(Dashboard)
 
-    // After initial render with a pending query, the skeleton should be present.
-    // The skeleton element has class "dashboard-loading-skeleton" and aria-busy="true".
+    // After initial router mount with a pending query, the skeleton should be
+    // present. The skeleton element has class "dashboard-loading-skeleton" and
+    // aria-busy="true".
+    await waitFor(
+      () => {
+        expect(
+          container.querySelector('.dashboard-loading-skeleton')
+        ).not.toBeNull()
+      },
+      { timeout: 5000 }
+    )
     const skeleton = container.querySelector('.dashboard-loading-skeleton')
     expect(skeleton).not.toBeNull()
     expect(skeleton?.getAttribute('aria-busy')).toBe('true')
@@ -224,9 +238,10 @@ describe('Dashboard — TCG-2: loading skeleton render path', () => {
 
     // Clean up by resolving the pending request to avoid test interference.
     resolveUsageRequest?.()
-  })
+  }, 15_000)
 
   test('test_dashboard_skeleton_disappears_after_data_arrives', async () => {
+    registerTokenTrendSummaryHandler()
     // Immediately resolve the usage query with data.
     server.use(
       http.get('/api/shell/reports/usage', () => HttpResponse.json(MOCK_REPORT))
@@ -248,25 +263,66 @@ describe('Dashboard — TCG-2: loading skeleton render path', () => {
 
     const Dashboard = await importDashboard()
 
-    let container!: HTMLElement
-    await act(async () => {
-      const result = renderWithProviders(Dashboard)
-      container = result.container
-    })
+    const { container } = renderWithProviders(Dashboard)
 
-    // Wait for the query to resolve and the skeleton to disappear.
+    // Wait for the query to resolve and the full dashboard to render.
     await waitFor(
       () => {
-        const skeleton = container.querySelector('.dashboard-loading-skeleton')
-        // Once data arrives, the skeleton should be gone (the ternary branch
-        // resolves to PhosphorDashboard instead of the skeleton div).
-        expect(skeleton).toBeNull()
+        expect(container.querySelector('.phosphor-dashboard')).not.toBeNull()
       },
       { timeout: 3000 }
     )
 
-    // The full dashboard content should now be rendered.
-    const fullDashboard = container.querySelector('.phosphor-dashboard')
-    expect(fullDashboard).not.toBeNull()
+    // Once data arrives, the skeleton should be gone (the ternary branch
+    // resolves to PhosphorDashboard instead of the skeleton div).
+    expect(container.querySelector('.dashboard-loading-skeleton')).toBeNull()
+  })
+
+  test('test_force_refresh_button_adds_cache_bust_to_usage_request', async () => {
+    registerTokenTrendSummaryHandler()
+    const usageUrls: string[] = []
+    server.use(
+      http.get('/api/shell/reports/usage', ({ request }) => {
+        usageUrls.push(request.url)
+        return HttpResponse.json(MOCK_REPORT)
+      })
+    )
+    server.use(
+      http.get('/api/shell/reports/quotas', () =>
+        HttpResponse.json({
+          metadata: {
+            generatedAt: '2026-05-19T00:00:00.000Z',
+            latestRecordAt: null,
+            latestRecordAgeMinutes: null,
+            latestRecordStale: false,
+            staleRecordThresholdMinutes: 60,
+          },
+          quotas: [],
+        })
+      )
+    )
+
+    const Dashboard = await importDashboard()
+    renderWithProviders(Dashboard)
+
+    await waitFor(
+      () => {
+        expect(
+          screen.getByLabelText('Force refresh dashboard data')
+        ).toBeEnabled()
+      },
+      { timeout: 3000 }
+    )
+
+    fireEvent.click(screen.getByLabelText('Force refresh dashboard data'))
+
+    await waitFor(
+      () => {
+        expect(
+          usageUrls.some((url) => new URL(url).searchParams.has('cache_bust'))
+        ).toBe(true)
+      },
+      { timeout: 3000 }
+    )
   })
 })

@@ -128,6 +128,64 @@
   min-width: 0;
 }
 
+.section-title-tools {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  min-width: 0;
+}
+
+.section-refresh-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 20px;
+  padding: 2px 6px;
+  border: 1px solid var(--border);
+  background: var(--card-2);
+  color: var(--fg-muted);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  line-height: 1;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.section-refresh-button:not(:disabled):hover {
+  border-color: var(--accent-chrome);
+  color: var(--fg);
+}
+
+.section-refresh-button:disabled {
+  cursor: default;
+  opacity: 0.85;
+}
+
+.section-refresh-icon {
+  flex: 0 0 auto;
+}
+
+.section-refresh-icon.is-updating {
+  animation: section-refresh-spin 0.8s linear infinite;
+}
+
+.freshness-refresh-button {
+  min-height: 18px;
+  margin-left: 6px;
+  padding: 1px 5px;
+  vertical-align: middle;
+}
+
+@keyframes section-refresh-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .status-color-legend {
   display: flex;
   align-items: center;
@@ -258,6 +316,12 @@
   .status-color-legend {
     justify-content: flex-start;
   }
+
+  .section-title-tools {
+    align-items: flex-start;
+    justify-content: flex-start;
+    flex-wrap: wrap;
+  }
 }
 
 /* Provider summary grid responsive breakpoints */
@@ -278,21 +342,12 @@
   .provider-summary {
     grid-template-columns: repeat(8, minmax(0, 1fr));
   }
-  .provider-card.aggregate {
-    display: flex !important;
-  }
 }
 
-/* Aggregate card: dashed amber border; hidden below 2100px (no room for 8th card).
-   !important beats inline style={{ display: 'flex' }} on ProviderCard root. */
+/* Aggregate card: dashed amber border. It stays visible at desktop widths so
+   the Σ Aggregate Totals health overlay does not disappear on 1920px screens. */
 .provider-card.aggregate {
   border: 1px dashed var(--accent-chrome) !important;
-  display: none !important;
-}
-@media (min-width: 2100px) {
-  .provider-card.aggregate {
-    display: flex !important;
-  }
 }
 
 @media (min-width: 3840px) {
@@ -564,6 +619,17 @@
   transition: all 50ms;
 }
 
+.sidebar-item-dashboard {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.sidebar-item-label {
+  min-width: 0;
+}
+
 .sidebar-item:hover {
   color: var(--fg);
   background: var(--card-2);
@@ -573,6 +639,122 @@
   color: var(--accent-chrome);
   background: var(--card-2);
   font-weight: 500;
+}
+
+.sidebar-alert-dot {
+  display: block;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  flex: 0 0 auto;
+  box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.8);
+}
+
+.sidebar-alert-dot.ok {
+  background: #22c55e;
+  box-shadow:
+    0 0 0 1px rgba(15, 23, 42, 0.8),
+    0 0 6px rgba(34, 197, 94, 0.55);
+}
+
+.sidebar-alert-dot.warning {
+  background: #f59e0b;
+  box-shadow:
+    0 0 0 1px rgba(15, 23, 42, 0.8),
+    0 0 7px rgba(245, 158, 11, 0.65);
+}
+
+.sidebar-alert-dot.error {
+  background: #ef4444;
+  box-shadow:
+    0 0 0 1px rgba(15, 23, 42, 0.8),
+    0 0 8px rgba(239, 68, 68, 0.7);
+}
+
+@keyframes sidebar-alert-blink {
+  0%,
+  68%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  78% {
+    opacity: 0.34;
+    transform: scale(0.82);
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .sidebar-alert-dot.warning {
+    animation: sidebar-alert-blink 4.8s ease-in-out infinite;
+  }
+
+  .sidebar-alert-dot.error {
+    animation: sidebar-alert-blink 2.4s ease-in-out infinite;
+  }
+}
+
+.sidebar-alert-tip {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.sidebar-alert-tip .v9-tip-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-weight: 700;
+}
+
+.sidebar-alert-tip-status {
+  font-size: 9px;
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+}
+
+.sidebar-alert-tip-status.ok {
+  color: #86efac;
+}
+
+.sidebar-alert-tip-status.warning {
+  color: #fbbf24;
+}
+
+.sidebar-alert-tip-status.error {
+  color: #fca5a5;
+}
+
+.sidebar-alert-tip-list {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.sidebar-alert-tip-row {
+  border-left: 2px solid;
+  padding-left: 6px;
+}
+
+.sidebar-alert-tip-row.warning {
+  border-left-color: #f59e0b;
+}
+
+.sidebar-alert-tip-row.error {
+  border-left-color: #ef4444;
+}
+
+.sidebar-alert-tip-row-head {
+  color: var(--fg);
+  font-weight: 600;
+}
+
+.sidebar-alert-tip-row-sub {
+  color: var(--fg-muted);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  margin-top: 1px;
 }
 
 .sidebar-team-switcher {
@@ -594,7 +776,7 @@
 }
 
 /* ============================================================
-   Wave 14-F — tables: .number / .gutter-* / .microbar / client-section
+   Wave 14-F — tables: .number / .gutter-* / client-section
    ============================================================ */
 
 /* 14-F.1: Numeric cell class — cool blue, tabular-nums, right-aligned, 500 weight */
@@ -629,30 +811,6 @@
 
 .gutter-cool {
   border-left-color: var(--accent-cool) !important;
-}
-
-/* 14-F.1: .microbar — mockup-spec gradient (cool→teal→warm→hot), absolute bottom */
-.microbar {
-  position: absolute;
-  bottom: 0;
-  left: 0;
-  height: 2px;
-  width: var(--microbar-fill, 100%);
-  background: linear-gradient(
-    90deg,
-    var(--accent-cool),
-    var(--accent-teal),
-    var(--accent-warm),
-    var(--accent-hot)
-  );
-  animation: microFill 0.6s ease-out forwards;
-  pointer-events: none;
-}
-
-/* 14-F.1: .metric-cell needs padding-bottom so .microbar doesn't overlap text */
-.metric-cell {
-  position: relative;
-  padding-bottom: 5px;
 }
 
 /* 14-F.4: Client section grid — 120px 1fr at ≥1600px (default 140px 1fr set inline) */
@@ -1726,10 +1884,6 @@ tbody tr {
     grid-column: 14 / 21;
     grid-row: 6;
   }
-  section[data-tab='clients'] {
-    grid-column: 1 / 14;
-    grid-row: 7;
-  }
 }
 
 /* Wave 18-CSS — 5120 C4: .errors-row-only-5k errors-summary row
@@ -1767,20 +1921,6 @@ tbody tr {
 @media (min-width: 5120px) {
   .col-5k-only {
     display: table-cell !important;
-  }
-}
-
-/* Wave 18-CSS — 2275 ⚠12: @keyframes microFill definition
-   .microbar references animation: microFill 0.6s (index.css L501) but the
-   keyframe was never defined — the CSS engine silently no-ops it. Adding the
-   definition restores the 0% → fill slide-in entrance animation.
-   Variable name is --microbar-fill (matching .microbar's width declaration). */
-@keyframes microFill {
-  from {
-    width: 0%;
-  }
-  to {
-    width: var(--microbar-fill, 100%);
   }
 }
 

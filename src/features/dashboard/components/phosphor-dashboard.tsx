@@ -1,9 +1,9 @@
 /**
  * PhosphorDashboard — Wave 9 reference-parity integration component.
  *
- * Composes the full set of Phosphor Atlas components into five anchored
+ * Composes the full set of Phosphor Atlas components into primary report
  * sections that match the AnchorBar shortcuts:
- *   status → tokens → models → repos → clients
+ *   status → tokens → models → repos
  *
  * Wave 9 changes:
  * - Section label inversion fix: id="models" now contains ProviderCards;
@@ -18,10 +18,9 @@
  * - Provider cards move from id="models" → id="status" (title: "Provider Health Summary").
  * - MasterLedgerTable moves from id="health" → id="models" (title: "Model Ledger").
  * - Standalone id="health" section removed; anchor `h` resolves in PR7.
- * - Section order: status → tokens → [models+repos row] → clients.
+ * - Section order: status → tokens → [models+repos row].
  * - models+repos wrapped in .ledger-repo-row: side-by-side 8fr/4fr at ≥1600px.
- * - Section titles: Models→Model Ledger, Repos→Repository Breakdown,
- *   Clients→Client Usage.
+ * - Section titles: Models→Model Ledger, Repos→Repository Breakdown.
  *
  * Data is fetched via fetchUsageReport + fetchUsageReportQuotas; anomaly
  * flags come from useAnomalyDetection.
@@ -35,6 +34,7 @@ import {
   type ReactNode,
 } from 'react'
 import { useQuery } from '@tanstack/react-query'
+import { RefreshCw } from 'lucide-react'
 import {
   fetchUsageReport,
   fetchUsageReportQuotas,
@@ -53,28 +53,27 @@ import {
   type UsageReportGrain,
 } from '../api/usage-report'
 import { useAnomalyDetection } from '../hooks/use-anomaly-detection'
-import { CLIENT_BRAND_COLORS } from '../lib/client-brand-colors'
 import {
   buildTokenTrendDayEnvelopes,
   normalizeTrendData,
 } from '../lib/trend-utils'
 import {
+  addDaysToDateString,
   canonicalProvider,
-  clientColorFor,
   computeFleetErrors,
   computeFleetP95,
-  PROVIDER_BRAND_HEX,
+  formatDashboardDate,
+  formatDashboardIntervalCompact,
+  formatDashboardTime,
   providerAliases,
   providerBrandHex,
 } from '../lib/usage-report-display'
 import { AggregateCard } from './aggregate-card'
-import { ClientBreakdownTable, type ClientRow } from './client-breakdown-table'
 import {
   buildCurrentStats,
   ComparisonPanel,
   type ProviderCurrentStats,
 } from './comparison-panel'
-import { DonutChart, type SliceConfig } from './donut-chart'
 import {
   buildToolActivity,
   MasterLedgerTable,
@@ -92,7 +91,7 @@ import {
   type QuotaTipModel,
   type TopModelRow,
 } from './provider-card'
-import { RepoBreakdownTable, type RepoRow } from './repo-breakdown-table'
+import type { RepoRow } from './repo-breakdown-table'
 import { type SlicerFilters, type SlicerOptions } from './slicer-bar'
 import { TokenTrendChart, type ProviderSeries } from './token-trend-chart'
 
@@ -103,6 +102,7 @@ import { TokenTrendChart, type ProviderSeries } from './token-trend-chart'
 /** Cell count expected by HealthStrip inside ProviderCard. */
 const HEALTH_CELL_COUNT = 288
 const HEALTH_BUCKET_MS = 5 * 60 * 1000
+const LIVE_DASHBOARD_REFETCH_INTERVAL_MS = 60_000
 
 /**
  * Ordered provider series for TokenTrendChart.
@@ -144,8 +144,7 @@ const PROVIDER_SERIES: ProviderSeries[] = [
     key: 'xai',
     label: 'xAI',
     // W28-TrendVisual Track A: was '#f5f5f5' (near-white, visually problematic).
-    // Changed to '#475569' to match PROVIDER_BRAND_HEX.xai for brand-color
-    // visibility per operator request (W26-Research Track A recommendation).
+    // Changed to '#475569' to match the xAI provider brand color.
     color: '#475569',
     cssClass: 'tt-xai',
   },
@@ -235,6 +234,8 @@ export interface PhosphorDashboardProps {
    * `report` is undefined), section skeletons are shown.
    */
   reportLoading?: boolean
+  /** True whenever the main usage report query is fetching/refetching. */
+  reportFetching?: boolean
   /**
    * Wave 36 Fix 4: Whether the ComparisonPanel is visible (viewport ≥3840px).
    * Controls the `enabled` flag on the priorReport useQuery so that the prior-
@@ -250,6 +251,12 @@ export interface PhosphorDashboardProps {
    * When provided, the internal quotas useQuery is bypassed.
    */
   quotas?: UsageReportQuotaRow[]
+  /** True whenever the quota query is fetching/refetching. */
+  quotasFetching?: boolean
+  /** Force-refresh the main usage report query. */
+  onRefreshReport?: () => Promise<unknown> | unknown
+  /** Force-refresh the quota query. */
+  onRefreshQuotas?: () => Promise<unknown> | unknown
 }
 
 // ---------------------------------------------------------------------------
@@ -296,6 +303,41 @@ function SectionTitle({
       {title}
       <div className='section-title-accessory'>{accessory}</div>
     </div>
+  )
+}
+
+function SectionRefreshButton({
+  label,
+  updating,
+  onRefresh,
+}: {
+  label: string
+  updating: boolean
+  onRefresh?: () => Promise<unknown> | unknown
+}): ReactElement {
+  return (
+    <button
+      type='button'
+      className='section-refresh-button'
+      aria-label={label}
+      title={label}
+      onClick={() => {
+        void onRefresh?.()
+      }}
+      disabled={onRefresh === undefined || updating}
+    >
+      <RefreshCw
+        aria-hidden='true'
+        className={
+          updating ? 'section-refresh-icon is-updating' : 'section-refresh-icon'
+        }
+        size={13}
+        strokeWidth={1.8}
+      />
+      <span className='section-refresh-status'>
+        {updating ? 'Updating' : 'Refresh'}
+      </span>
+    </button>
   )
 }
 
@@ -369,16 +411,10 @@ function ProviderStatusLegend(): ReactElement {
  * (wave35-code-css-audit ⚠-7).
  */
 function _localFallbackRange(): { from: string; to: string } {
-  const now = new Date()
-  const from = new Date(
-    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - 30)
-  )
-  const to = new Date(
-    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1)
-  )
+  const today = formatDashboardDate(new Date())
   return {
-    from: from.toISOString().slice(0, 10),
-    to: to.toISOString().slice(0, 10),
+    from: addDaysToDateString(today, -30),
+    to: addDaysToDateString(today, 1),
   }
 }
 
@@ -492,12 +528,7 @@ function bucketKeyFromIso(value: string | null): string | null {
 
 function formatHealthEventTime(value: string | null): string {
   if (value == null) return '--'
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return '--'
-  return `${new Intl.DateTimeFormat('en-US', {
-    hour: 'numeric',
-    minute: '2-digit',
-  }).format(date)}:`
+  return `${formatDashboardTime(value)}:`
 }
 
 function compactErrorMessage(value: string | null): string | null {
@@ -1425,7 +1456,11 @@ function quotaDurationHours(
   interval: QuotaIntervalKind
 ): number {
   const providerLower = provider.toLowerCase()
-  if (providerLower === 'google' && interval === 'short') return 24
+  if (
+    (providerLower === 'google' || providerLower === 'openrouter') &&
+    interval === 'short'
+  )
+    return 24
   if (interval === 'monthly') return 720
   if (interval === 'short' || interval === 'short_special') return 5
   return 168
@@ -1532,6 +1567,8 @@ export {
   classifyGeminiModel as _classifyGeminiModelForTest,
   fmtIntervalCompact as _fmtIntervalCompactForTest,
   buildPriorBarFromHistory as _buildPriorBarFromHistoryForTest,
+  // eslint-disable-next-line react-refresh/only-export-components -- test-only helper follows the existing local pattern.
+  buildRepoRows as _buildRepoRowsForTest,
 }
 
 /**
@@ -1898,7 +1935,7 @@ function makeQuotaBarGroupAlways(
  * | google     | gemini-pro·24h, gemini-flash·24h, gemini-flash-lite·24h (short) |
  * | xai        | grok·monthly                                                    |
  * | nvidia_nim | NIM credits·monthly                                             |
- * | openrouter | credits·monthly, gemma-4-31b free·monthly, qwen3-coder free·monthly |
+ * | openrouter | free requests·24h                                            |
  * | local      | [] (no quotas)                                                  |
  *
  * openai always emits exactly 4 bars (inactive intervals render at 0% consumed).
@@ -2125,14 +2162,7 @@ function fmtIntervalCompact(start: string | null, end: string | null): string {
   const s = roundToNearest30Min(start)
   const e = roundToNearest30Min(end)
   if (Number.isNaN(s.getTime()) || Number.isNaN(e.getTime())) return '—'
-  const fmt = (d: Date): string => {
-    const m = d.getUTCMonth() + 1
-    const dd = d.getUTCDate()
-    const hh = d.getUTCHours().toString().padStart(2, '0')
-    const mm = d.getUTCMinutes().toString().padStart(2, '0')
-    return `${m.toString()}/${dd.toString()} ${hh}:${mm}`
-  }
-  return `${fmt(s)} → ${fmt(e)}`
+  return formatDashboardIntervalCompact(s, e)
 }
 
 /**
@@ -2428,6 +2458,7 @@ function quotaTypeToBarPeriodType(
  *                      codex-spark·5h (short_special), codex-spark·7d (special)
  * Google:    3 lanes — flash·24h, flash-lite·24h, pro·24h (all short, per-class)
  * xAI:       1 lane  — all·monthly (monthly)
+ * OpenRouter: 1 lane — free requests·24h (short/request quota)
  */
 interface LaneDef {
   laneKey: string
@@ -2515,11 +2546,21 @@ const XAI_LANE_DEFS: LaneDef[] = [
   },
 ]
 
+const OPENROUTER_LANE_DEFS: LaneDef[] = [
+  {
+    laneKey: 'openrouter/requests',
+    laneLabel: 'Free Requests · 24h',
+    quotaType: 'short',
+    googleClass: null,
+  },
+]
+
 const PROVIDER_LANE_DEFS: Readonly<Record<string, LaneDef[]>> = {
   anthropic: ANTHROPIC_LANE_DEFS,
   openai: OPENAI_LANE_DEFS,
   google: GOOGLE_LANE_DEFS,
   xai: XAI_LANE_DEFS,
+  openrouter: OPENROUTER_LANE_DEFS,
 }
 
 /**
@@ -2802,8 +2843,8 @@ const CANONICAL_PROVIDERS = [
   'openai',
   'google',
   'xai',
-  'nvidia_nim',
   'openrouter',
+  'nvidia_nim',
   'local',
 ] as const
 
@@ -2816,6 +2857,12 @@ const CANONICAL_PROVIDERS = [
  */
 function deriveProviders(): string[] {
   return [...CANONICAL_PROVIDERS]
+}
+
+function canonicalRepositoryName(
+  repository: string | null | undefined
+): string {
+  return (repository ?? '(unknown)').replace(/\s+\(memory\)$/i, '')
 }
 
 /**
@@ -2839,7 +2886,7 @@ function buildRepoRows(
   // then sort chronologically so the polyline reads left-to-right oldest-to-newest.
   const bucketSumByRepo = new Map<string, Map<string, number>>()
   for (const t of trendRows) {
-    const repo = t.repository ?? '(unknown)'
+    const repo = canonicalRepositoryName(t.repository)
     const bucketMap = bucketSumByRepo.get(repo) ?? new Map<string, number>()
     bucketMap.set(t.bucket, (bucketMap.get(t.bucket) ?? 0) + t.token_total)
     bucketSumByRepo.set(repo, bucketMap)
@@ -2868,7 +2915,7 @@ function buildRepoRows(
   >()
 
   for (const row of rows) {
-    const repo = row.repository ?? '(unknown)'
+    const repo = canonicalRepositoryName(row.repository)
     const rowTokens = row.token_total ?? 0
     const existing = repoMap.get(repo)
     if (existing === undefined) {
@@ -3035,6 +3082,117 @@ function buildModelRows(
     sparkByKey.set(sparkKey, arr)
   }
 
+  const sparkByRepositoryKey = new Map<string, number[]>()
+  const bucketTokensByRepositoryKey = new Map<string, Map<string, number>>()
+  for (const t of trendRows) {
+    const p = canonicalProvider(t.provider ?? '')
+    const m = (t.model ?? '').toLowerCase()
+    if (!p || !m) continue
+    const repo = canonicalRepositoryName(t.repository)
+    const key = `${p}::${m}::${repo}`
+    const bucketMap = bucketTokensByRepositoryKey.get(key) ?? new Map()
+    bucketMap.set(t.bucket, (bucketMap.get(t.bucket) ?? 0) + t.token_total)
+    bucketTokensByRepositoryKey.set(key, bucketMap)
+  }
+  for (const [key, bucketMap] of bucketTokensByRepositoryKey) {
+    const sortedBuckets = [...bucketMap.entries()].sort(([a], [b]) =>
+      a < b ? -1 : a > b ? 1 : 0
+    )
+    sparkByRepositoryKey.set(
+      key,
+      sortedBuckets.map(([, tokens]) => tokens)
+    )
+  }
+
+  const repositoryChildrenByKey = new Map<string, Map<string, ModelRow>>()
+  for (const r of usageRows) {
+    const p = canonicalProvider(r.provider ?? '')
+    const m = (r.model ?? '').toLowerCase()
+    if (!p || !m) continue
+    const repo = canonicalRepositoryName(r.repository)
+    const modelKey = `${p}::${m}`
+    const repoMap = repositoryChildrenByKey.get(modelKey) ?? new Map()
+    const existing = repoMap.get(repo)
+    const cacheTokens =
+      (r.token_cache_input ?? 0) + (r.token_cache_creation ?? 0)
+    const cachePct =
+      (r.token_in ?? 0) > 0
+        ? Math.round((cacheTokens / Math.max(1, r.token_in ?? 0)) * 1000) / 10
+        : undefined
+    const cacheMissUsd = r.cache_miss_usd_cost ?? 0
+    const cost = r.usd_cost ?? 0
+    const cacheMissPct =
+      cacheMissUsd > 0 && cost > 0
+        ? Math.round((cacheMissUsd / cost) * 1000) / 10
+        : undefined
+
+    if (existing === undefined) {
+      repoMap.set(repo, {
+        model: repo,
+        provider: p,
+        tokens_in: r.token_in ?? 0,
+        tokens_out: r.token_out ?? 0,
+        requests: r.traces ?? 0,
+        p50_ms: r.llm_upstream_elapsed_average_ms ?? 0,
+        p95_ms: r.llm_upstream_elapsed_average_ms ?? 0,
+        error_pct: 0,
+        cost_usd: cost,
+        cache_pct: cachePct,
+        cache_miss_pct: cacheMissPct,
+        cache_miss_usd_cost: cacheMissUsd > 0 ? cacheMissUsd : undefined,
+        reasoning_reported: r.token_reasoning_reported ?? 0,
+        reasoning_estimated: r.token_reasoning_estimated ?? 0,
+        cache_toks: cacheTokens > 0 ? cacheTokens : undefined,
+        tool: r.tool_calls ?? undefined,
+        git_commits: r.git_commit ?? undefined,
+        git_pushes: r.git_push ?? undefined,
+        spark: sparkByRepositoryKey.get(`${modelKey}::${repo}`) ?? [
+          r.token_total ?? 0,
+        ],
+      })
+    } else {
+      existing.tokens_in += r.token_in ?? 0
+      existing.tokens_out += r.token_out ?? 0
+      existing.requests += r.traces ?? 0
+      existing.cost_usd += cost
+      existing.p50_ms = Math.max(
+        existing.p50_ms,
+        r.llm_upstream_elapsed_average_ms ?? 0
+      )
+      existing.p95_ms = Math.max(
+        existing.p95_ms,
+        r.llm_upstream_elapsed_average_ms ?? 0
+      )
+      existing.cache_miss_usd_cost =
+        (existing.cache_miss_usd_cost ?? 0) + cacheMissUsd
+      existing.reasoning_reported =
+        (existing.reasoning_reported ?? 0) + (r.token_reasoning_reported ?? 0)
+      existing.reasoning_estimated =
+        (existing.reasoning_estimated ?? 0) + (r.token_reasoning_estimated ?? 0)
+      existing.cache_toks = (existing.cache_toks ?? 0) + cacheTokens
+      existing.tool = (existing.tool ?? 0) + (r.tool_calls ?? 0)
+      existing.git_commits = (existing.git_commits ?? 0) + (r.git_commit ?? 0)
+      existing.git_pushes = (existing.git_pushes ?? 0) + (r.git_push ?? 0)
+      existing.spark = sparkByRepositoryKey.get(`${modelKey}::${repo}`) ?? [
+        ...((existing.spark ?? []).length > 0 ? (existing.spark ?? []) : []),
+        r.token_total ?? 0,
+      ]
+      existing.cache_pct =
+        existing.tokens_in > 0 && (existing.cache_toks ?? 0) > 0
+          ? Math.round(
+              ((existing.cache_toks ?? 0) / existing.tokens_in) * 1000
+            ) / 10
+          : undefined
+      existing.cache_miss_pct =
+        (existing.cache_miss_usd_cost ?? 0) > 0 && existing.cost_usd > 0
+          ? Math.round(
+              ((existing.cache_miss_usd_cost ?? 0) / existing.cost_usd) * 1000
+            ) / 10
+          : undefined
+    }
+    repositoryChildrenByKey.set(modelKey, repoMap)
+  }
+
   // Group health data by provider+model for latency lookups
   // 15-B.4: also accumulate upstream_p50_ms (previously always left null)
   const healthByKey = new Map<
@@ -3106,9 +3264,6 @@ function buildModelRows(
     const requests = health?.requests ?? row.traces
     const errors = health?.errors ?? 0
     const errorPct = requests > 0 ? (errors / requests) * 100 : 0
-    const costPer1k =
-      row.token_total > 0 ? (row.usd_cost / row.token_total) * 1000 : 0
-
     // 15-B.3: use real per-direction tokens from report.rows; fall back to
     // 60/40 split only when the usage rows don't have coverage for this model
     // (e.g. providerStatusUsage has data but report.rows cap was hit)
@@ -3163,7 +3318,6 @@ function buildModelRows(
       p95_ms: health?.p95 ?? 0,
       error_pct: Math.round(errorPct * 10) / 10,
       cost_usd: row.usd_cost,
-      cost_per_1k: Math.round(costPer1k * 10000) / 10000,
       // quota_pct removed — Wave 26 operator F#13
       cache_pct: cache_pct ?? undefined, // 20-PhosphorDash: null → undefined for optional field
       // 26-Bundle (operator F#12): cache miss + reasoning fields
@@ -3184,238 +3338,16 @@ function buildModelRows(
       ) ?? [row.token_total],
       tool: rowToolActivity?.totalCalls,
       toolActivity: rowToolActivity,
+      repositoryChildren: [
+        ...(repositoryChildrenByKey.get(key)?.values() ?? []),
+      ].sort(
+        (left, right) =>
+          right.tokens_in +
+          right.tokens_out -
+          (left.tokens_in + left.tokens_out)
+      ),
     }
   })
-}
-
-// ---------------------------------------------------------------------------
-// Client family aggregation (operator F7)
-// ---------------------------------------------------------------------------
-
-/**
- * Maps raw client_name variants → canonical { family, provider }.
- *
- * Wave 24-PhosphorDash (operator F7): collapses all observed client_name
- * variants (from live API + test fixtures) into four display families so the
- * Client Adoption chart matches the mockup. The normalization key is produced
- * by `normalizeClientKey()` which lowercases, trims, and collapses hyphens,
- * underscores and spaces to a single space.
- *
- * Observed live variants:
- *   claude-code, claude_code, claude-cli    → 'claude code' / anthropic
- *   codex, codex-cli, codex-exec, codex-tui → 'codex'       / openai
- *   gemini, gemini-cli                       → 'gemini'      / google
- *   grok-build, grok-cli, grok              → 'grok build'  / xai
- *   cursor                                   → 'cursor'      / openai (brand hex)
- *   aider                                    → 'aider'       / local  (brand hex)
- */
-const CLIENT_FAMILY_MAP: Record<string, { family: string; provider: string }> =
-  {
-    // Anthropic / Claude Code
-    'claude code': { family: 'claude code', provider: 'anthropic' },
-    'claude cli': { family: 'claude code', provider: 'anthropic' },
-    // OpenAI / Codex
-    codex: { family: 'codex', provider: 'openai' },
-    'codex cli': { family: 'codex', provider: 'openai' },
-    'codex exec': { family: 'codex', provider: 'openai' },
-    'codex tui': { family: 'codex', provider: 'openai' },
-    // Google / Gemini
-    gemini: { family: 'gemini', provider: 'google' },
-    'gemini cli': { family: 'gemini', provider: 'google' },
-    // xAI / Grok Build
-    'grok build': { family: 'grok build', provider: 'xai' },
-    'grok cli': { family: 'grok build', provider: 'xai' },
-    grok: { family: 'grok build', provider: 'xai' },
-    // Cursor (standalone; use openai brand hex as its color)
-    cursor: { family: 'cursor', provider: 'openai' },
-    // Aider (standalone; use local brand hex as its color)
-    aider: { family: 'aider', provider: 'local' },
-  }
-
-/**
- * Normalizes a raw client_name to a lookup key for CLIENT_FAMILY_MAP.
- * Lowercases, trims, and collapses all hyphens / underscores / spaces to a
- * single ASCII space so that 'claude-code', 'claude_code', 'Claude Code' all
- * map to 'claude code'.
- */
-function normalizeClientKey(name: string): string {
-  return name
-    .toLowerCase()
-    .trim()
-    .replace(/[-_ ]+/g, ' ')
-}
-
-/**
- * Returns the CSS color to use for a client family.
- *
- * Priority (F7):
- *   1. PROVIDER_BRAND_HEX[provider] from CLIENT_FAMILY_MAP entry.
- *   2. CLIENT_BRAND_COLORS[rawClientName] legacy lookup.
- *   3. clientColorFor hash fallback.
- */
-function clientFamilyColor(
-  rawName: string,
-  provider: string | undefined
-): string {
-  if (provider !== undefined) {
-    const brandHex = PROVIDER_BRAND_HEX[provider]
-    if (brandHex !== undefined) return brandHex
-  }
-  return CLIENT_BRAND_COLORS[rawName] ?? clientColorFor(rawName)
-}
-
-/**
- * Aggregates a flat list of client rows into family buckets.
- *
- * Wave 24-PhosphorDash (operator F7): collapses 'claude-code', 'claude_code',
- * etc. into a single 'claude code' entry, deriving color from provider brand.
- * Unknown client_name variants are left as-is (ungrouped) so new clients that
- * don't appear in CLIENT_FAMILY_MAP still surface rather than disappear.
- */
-function aggregateByClientFamily(
-  clients: {
-    client_name: string
-    traces: number
-    token_total: number
-    usd_cost: number
-    client_version?: string
-  }[]
-): {
-  family: string
-  provider: string | undefined
-  traces: number
-  token_total: number
-  usd_cost: number
-}[] {
-  const buckets = new Map<
-    string,
-    {
-      family: string
-      provider: string | undefined
-      traces: number
-      token_total: number
-      usd_cost: number
-    }
-  >()
-
-  for (const c of clients) {
-    const key = normalizeClientKey(c.client_name)
-    const mapping = CLIENT_FAMILY_MAP[key]
-    const family = mapping?.family ?? c.client_name
-    const provider = mapping?.provider
-    const bucketKey = family // one bucket per family
-
-    const existing = buckets.get(bucketKey)
-    if (existing === undefined) {
-      buckets.set(bucketKey, {
-        family,
-        provider,
-        traces: c.traces,
-        token_total: c.token_total,
-        usd_cost: c.usd_cost,
-      })
-    } else {
-      existing.traces += c.traces
-      existing.token_total += c.token_total
-      existing.usd_cost += c.usd_cost
-    }
-  }
-
-  return [...buckets.values()]
-}
-
-/**
- * Builds DonutChart SliceConfig[] from client usage data.
- *
- * Wave 24-PhosphorDash (operator F7): aggregates raw client_name variants into
- * canonical families (claude code, codex, gemini, grok build) before slicing.
- * Colors are derived from PROVIDER_BRAND_HEX for the family's provider.
- */
-function buildClientSlices(
-  clients: {
-    client_name: string
-    token_total: number
-  }[]
-): SliceConfig[] {
-  const families = aggregateByClientFamily(
-    clients.map((c) => ({
-      client_name: c.client_name,
-      traces: 0,
-      token_total: c.token_total,
-      usd_cost: 0,
-    }))
-  )
-  return families
-    .filter((f) => f.token_total > 0)
-    .sort((a, b) => b.token_total - a.token_total)
-    .slice(0, 7)
-    .map((f) => ({
-      client: f.family,
-      tokens: f.token_total,
-      color: clientFamilyColor(f.family, f.provider),
-    }))
-}
-
-/**
- * Builds ClientRow[] for ClientBreakdownTable from API client rows.
- *
- * Wave 24-PhosphorDash (operator F7): previously aggregated raw client_name
- * variants into canonical families before building rows. The donut chart
- * (buildClientSlices) retains that family-collapsed behavior.
- *
- * Wave 25-PhosphorDash (operator F#12): the breakout TABLE now emits one row
- * per (client_name, client_version) tuple from the raw API response so
- * individual versions are visible. Each row is still colored by its resolved
- * CLIENT_FAMILY_MAP provider so the visual grouping is preserved.
- *
- * Wave 35 cycle-2 (⚠-4): removed degenerate `spark: [c.token_total]` field.
- * The sparkline column was removed from ClientBreakdownTable in Wave 18 (§6.1).
- * The `spark` field was dead code — ClientRow does not include it and the column
- * was never rendered. Removed to eliminate the misleading placeholder.
- */
-function buildClientRows(
-  clients: {
-    client_name: string
-    client_version: string
-    first_seen_at?: string | null
-    last_seen_at?: string | null
-    traces: number
-    token_total: number
-    usd_cost: number
-  }[]
-): ClientRow[] {
-  return clients
-    .slice()
-    .sort((a, b) => b.token_total - a.token_total)
-    .map((c) => {
-      const key = normalizeClientKey(c.client_name)
-      const mapping = CLIENT_FAMILY_MAP[key]
-      // W31: Parse first_seen_at ISO string → YYYY-MM-DD compact date.
-      // Null / undefined / unparseable → empty string (cell renders blank).
-      const firstSeen =
-        c.first_seen_at != null
-          ? new Date(c.first_seen_at).toISOString().slice(0, 10)
-          : ''
-      // W32: Parse last_seen_at ISO string → YYYY-MM-DD compact date.
-      // Null / undefined / unparseable → empty string (cell renders blank).
-      const lastSeen =
-        c.last_seen_at != null
-          ? new Date(c.last_seen_at).toISOString().slice(0, 10)
-          : ''
-      return {
-        client: c.client_name,
-        version: c.client_version,
-        first_seen: firstSeen,
-        last_seen: lastSeen,
-        requests: c.traces,
-        tokens: c.token_total,
-        cost_usd: c.usd_cost,
-        // Color by family provider so visual grouping survives the un-collapse.
-        color: clientFamilyColor(c.client_name, mapping?.provider),
-        // family exposed for tests / W25-ClientTable consumption.
-        family: mapping?.family ?? c.client_name,
-      }
-    })
 }
 
 /**
@@ -3516,8 +3448,12 @@ export default function PhosphorDashboard({
   onPriorHealthReady,
   report: reportProp,
   reportLoading: reportLoadingProp = false,
+  reportFetching: reportFetchingProp = false,
   showComparison = false,
   quotas: quotasProp,
+  quotasFetching: quotasFetchingProp = false,
+  onRefreshReport,
+  onRefreshQuotas,
 }: PhosphorDashboardProps): ReactElement {
   const defaults = useMemo(() => _localFallbackRange(), [])
   const resolvedFrom = from ?? defaults.from
@@ -3529,7 +3465,12 @@ export default function PhosphorDashboard({
   // used when PhosphorDashboard is rendered in isolation (e.g. Storybook, tests)
   // without a parent supplying `report` + `reportLoading` props.
   const internalQueryEnabled = reportProp === undefined
-  const { data: internalReport, isLoading: internalLoading } = useQuery({
+  const {
+    data: internalReport,
+    isLoading: internalLoading,
+    isFetching: internalFetching,
+    refetch: refetchInternalReport,
+  } = useQuery({
     // 15-D.4: Include filter arrays directly in queryKey so React Query creates
     // a distinct cache entry for every unique slicer selection. Arrays are
     // JSON-serialised by React Query's key hashing.
@@ -3559,6 +3500,8 @@ export default function PhosphorDashboard({
       }),
     // Skip when the parent has already provided the report data.
     enabled: internalQueryEnabled,
+    refetchInterval: LIVE_DASHBOARD_REFETCH_INTERVAL_MS,
+    refetchIntervalInBackground: true,
   })
 
   // Resolve the effective report + loading state: prefer parent-supplied values
@@ -3567,6 +3510,9 @@ export default function PhosphorDashboard({
   const reportLoading = internalQueryEnabled
     ? internalLoading
     : reportLoadingProp
+  const reportFetching = internalQueryEnabled
+    ? internalFetching
+    : reportFetchingProp
 
   // 15-C.5 / Wave 37 SF-1: Include resolvedFrom/resolvedTo in the queryKey so
   // the quotas query re-fetches when the user changes the date range. The
@@ -3580,16 +3526,24 @@ export default function PhosphorDashboard({
   // index.tsx now hoists this query with the same key shape so React Query
   // deduplicates both subscribers into a single cache entry.
   const internalQuotasEnabled = quotasProp === undefined
-  const { data: quotasData } = useQuery({
+  const {
+    data: quotasData,
+    isFetching: internalQuotasFetching,
+    refetch: refetchInternalQuotas,
+  } = useQuery({
     queryKey: ['usage-report-quotas', resolvedFrom, resolvedTo],
     queryFn: fetchUsageReportQuotas,
     // Skip when the parent has already provided quota rows.
     enabled: internalQuotasEnabled,
-    // W38-2: match the staleTime override used by index.tsx so Storybook /
-    // standalone behaviour is consistent with production (index.tsx sets
-    // staleTime: 5 * 60 * 1000 on its hoisted copy of this query).
-    staleTime: 5 * 60 * 1000,
+    // Match the staleTime override used by index.tsx so Storybook /
+    // standalone behaviour is consistent with production.
+    staleTime: LIVE_DASHBOARD_REFETCH_INTERVAL_MS,
+    refetchInterval: LIVE_DASHBOARD_REFETCH_INTERVAL_MS,
+    refetchIntervalInBackground: true,
   })
+  const quotasFetching = internalQuotasEnabled
+    ? internalQuotasFetching
+    : quotasFetchingProp
 
   const anomalies = useAnomalyDetection(
     (report?.providerLatencyHealth ?? []).filter(
@@ -3625,7 +3579,11 @@ export default function PhosphorDashboard({
     ]
   )
 
-  const tokenTrendSummaryQuery = useQuery({
+  const {
+    data: tokenTrendSummaryData,
+    isFetching: tokenTrendSummaryFetching,
+    refetch: refetchTokenTrendSummary,
+  } = useQuery({
     queryKey: [
       'usage-report-token-trend-summary',
       tokenTrendScopeKey,
@@ -3650,28 +3608,25 @@ export default function PhosphorDashboard({
         },
         signal
       ),
-    staleTime: 5 * 60 * 1000,
+    staleTime: LIVE_DASHBOARD_REFETCH_INTERVAL_MS,
+    refetchInterval: LIVE_DASHBOARD_REFETCH_INTERVAL_MS,
+    refetchIntervalInBackground: true,
   })
 
   const tokenTrendVersions = useMemo(
     () =>
-      tokenTrendSummaryQuery.data?.tokenTrendVersions ??
+      tokenTrendSummaryData?.tokenTrendVersions ??
       report?.tokenTrendVersions ??
       [],
-    [
-      tokenTrendSummaryQuery.data?.tokenTrendVersions,
-      report?.tokenTrendVersions,
-    ]
+    [tokenTrendSummaryData?.tokenTrendVersions, report?.tokenTrendVersions]
   )
 
   const tokenTrendDayEnvelopes = useMemo(
     () =>
       buildTokenTrendDayEnvelopes(
-        tokenTrendSummaryQuery.data?.tokenTrendHours ??
-          report?.tokenTrendHours ??
-          []
+        tokenTrendSummaryData?.tokenTrendHours ?? report?.tokenTrendHours ?? []
       ),
-    [tokenTrendSummaryQuery.data?.tokenTrendHours, report?.tokenTrendHours]
+    [tokenTrendSummaryData?.tokenTrendHours, report?.tokenTrendHours]
   )
 
   const [tokenTrendHoverTarget, setTokenTrendHoverTarget] = useState<{
@@ -3710,7 +3665,11 @@ export default function PhosphorDashboard({
     }
   }, [tokenTrendHoverTarget])
 
-  const tokenTrendDayDetailQuery = useQuery({
+  const {
+    data: tokenTrendDayDetailData,
+    isFetching: tokenTrendDayDetailFetching,
+    refetch: refetchTokenTrendDayDetail,
+  } = useQuery({
     queryKey: [
       'usage-report-token-trend-day',
       tokenTrendScopeKey,
@@ -3744,7 +3703,12 @@ export default function PhosphorDashboard({
     enabled:
       tokenTrendDetailRequest !== null &&
       tokenTrendDetailRequest.scopeKey === tokenTrendScopeKey,
-    staleTime: 5 * 60 * 1000,
+    staleTime: LIVE_DASHBOARD_REFETCH_INTERVAL_MS,
+    refetchInterval:
+      tokenTrendDetailRequest !== null
+        ? LIVE_DASHBOARD_REFETCH_INTERVAL_MS
+        : false,
+    refetchIntervalInBackground: true,
   })
 
   const providers = useMemo(() => deriveProviders(), [])
@@ -3754,11 +3718,6 @@ export default function PhosphorDashboard({
   const quotaRows = useMemo(
     () => quotasProp ?? quotasData?.quotas ?? report?.quotas ?? [],
     [quotasProp, quotasData?.quotas, report?.quotas]
-  )
-
-  const repoRows = useMemo(
-    () => buildRepoRows(report?.rows ?? [], report?.trend ?? []),
-    [report?.rows, report?.trend]
   )
 
   const modelRows = useMemo(
@@ -3779,22 +3738,6 @@ export default function PhosphorDashboard({
       report?.trend,
       report?.toolActivity,
     ]
-  )
-
-  const clientSlices = useMemo(
-    () =>
-      buildClientSlices(
-        (report?.clients ?? []).map((c) => ({
-          client_name: c.client_name,
-          token_total: c.token_total,
-        }))
-      ),
-    [report?.clients]
-  )
-
-  const clientRows = useMemo(
-    () => buildClientRows(report?.clients ?? []),
-    [report?.clients]
   )
 
   // 15-D.3: Derive slicer option universes from the current report data.
@@ -3841,15 +3784,26 @@ export default function PhosphorDashboard({
     }
   }, [slicerOptions, onOptionsReady])
 
-  // 15-C.4: Client-side search filtering for Model Ledger, Repo Breakdown,
-  // and Client Usage tables. Case-insensitive substring match on the primary
-  // name field for each row type. When searchTerm is empty all rows are shown.
+  // 15-C.4: Client-side search filtering for Model Ledger.
+  // Case-insensitive substring match on model or repository child names. When
+  // searchTerm is empty all rows are shown.
   const lowerSearch = searchTerm.toLowerCase()
   const filteredModelRows = useMemo(
     () =>
       lowerSearch === ''
         ? modelRows
-        : modelRows.filter((r) => r.model.toLowerCase().includes(lowerSearch)),
+        : modelRows
+            .map((row) => ({
+              ...row,
+              repositoryChildren: row.repositoryChildren?.filter((repoRow) =>
+                repoRow.model.toLowerCase().includes(lowerSearch)
+              ),
+            }))
+            .filter(
+              (row) =>
+                row.model.toLowerCase().includes(lowerSearch) ||
+                (row.repositoryChildren?.length ?? 0) > 0
+            ),
     [modelRows, lowerSearch]
   )
 
@@ -3858,25 +3812,6 @@ export default function PhosphorDashboard({
       report?.providerErrorObservations ?? [],
     [report?.providerErrorObservations]
   )
-  const filteredRepoRows = useMemo(
-    () =>
-      lowerSearch === ''
-        ? repoRows
-        : repoRows.filter((r) =>
-            r.repository.toLowerCase().includes(lowerSearch)
-          ),
-    [repoRows, lowerSearch]
-  )
-  const filteredClientRows = useMemo(
-    () =>
-      lowerSearch === ''
-        ? clientRows
-        : clientRows.filter((r) =>
-            r.client.toLowerCase().includes(lowerSearch)
-          ),
-    [clientRows, lowerSearch]
-  )
-
   const summary = report?.summary
   const healthRows = useMemo(
     () => report?.providerLatencyHealth ?? [],
@@ -3932,7 +3867,11 @@ export default function PhosphorDashboard({
   // current report has loaded to avoid a redundant fetch on the initial render.
   // Reuses the same fetchUsageReport helper and filter params as the current
   // query so the prior-window data is structurally identical.
-  const { data: priorReport } = useQuery({
+  const {
+    data: priorReport,
+    isFetching: priorReportFetching,
+    refetch: refetchPriorReport,
+  } = useQuery({
     queryKey: [
       'usage-report-phosphor-prior',
       priorFrom,
@@ -4002,6 +3941,52 @@ export default function PhosphorDashboard({
     })
   }, [onPriorHealthReady, priorReport, priorFrom, priorTo])
 
+  const refreshReport = useCallback(async (): Promise<void> => {
+    if (onRefreshReport !== undefined) {
+      await onRefreshReport()
+      return
+    }
+    await refetchInternalReport()
+  }, [onRefreshReport, refetchInternalReport])
+
+  const refreshQuotas = useCallback(async (): Promise<void> => {
+    if (onRefreshQuotas !== undefined) {
+      await onRefreshQuotas()
+      return
+    }
+    await refetchInternalQuotas()
+  }, [onRefreshQuotas, refetchInternalQuotas])
+
+  const refreshStatusSection = useCallback(async (): Promise<void> => {
+    await Promise.all([refreshReport(), refreshQuotas()])
+  }, [refreshReport, refreshQuotas])
+
+  const refreshTokenSection = useCallback(async (): Promise<void> => {
+    const refreshes: Promise<unknown>[] = [
+      refreshReport(),
+      refetchTokenTrendSummary(),
+    ]
+    if (tokenTrendDetailRequest !== null) {
+      refreshes.push(refetchTokenTrendDayDetail())
+    }
+    await Promise.all(refreshes)
+  }, [
+    refreshReport,
+    refetchTokenTrendSummary,
+    refetchTokenTrendDayDetail,
+    tokenTrendDetailRequest,
+  ])
+
+  const refreshComparisonSection = useCallback(async (): Promise<void> => {
+    await Promise.all([refreshReport(), refetchPriorReport()])
+  }, [refreshReport, refetchPriorReport])
+
+  const statusUpdating = reportFetching || quotasFetching
+  const reportUpdating = reportFetching
+  const tokenTrendUpdating =
+    reportFetching || tokenTrendSummaryFetching || tokenTrendDayDetailFetching
+  const comparisonUpdating = reportFetching || priorReportFetching
+
   return (
     <div
       className='phosphor-dashboard main-content'
@@ -4016,7 +4001,7 @@ export default function PhosphorDashboard({
       {/* ── STATUS (Provider Health Summary) ─────────────────────────── */}
       {/* Wave 11 PR1 (11-b): provider cards move here from #models.     */}
       {/* D3: AggregateCard injected as the last peer in the grid;       */}
-      {/* CSS hides it below 2100px (see provider-card.module.css).      */}
+      {/* 1920px+ layouts wrap it onto a second row instead of hiding it. */}
       <section
         id='status'
         data-tab='status'
@@ -4024,7 +4009,16 @@ export default function PhosphorDashboard({
       >
         <SectionTitle
           id='section-status-heading'
-          accessory={<ProviderStatusLegend />}
+          accessory={
+            <div className='section-title-tools'>
+              <ProviderStatusLegend />
+              <SectionRefreshButton
+                label='Refresh Provider Health Summary data'
+                updating={statusUpdating}
+                onRefresh={refreshStatusSection}
+              />
+            </div>
+          }
         >
           Provider Health Summary
         </SectionTitle>
@@ -4051,9 +4045,9 @@ export default function PhosphorDashboard({
                 providerErrorObservations
               )
               // Wave 41: build structured QuotaLane[] for providers with lane
-              // definitions (anthropic, openai, google, xai). Each lane groups
+              // definitions. Each lane groups
               // the current bar + prior bars for a single quota type side-by-side.
-              // Providers without lane defs (nvidia_nim, openrouter, local) fall
+              // Providers without lane defs (nvidia_nim, local) fall
               // back to the flat quotaIntervals path via quotas prop.
               const lanes = buildProviderLanes(
                 provider,
@@ -4117,52 +4111,22 @@ export default function PhosphorDashboard({
         )}
       </section>
 
-      {/* ── MODEL LEDGER + REPOSITORY BREAKDOWN (side-by-side ≥1600px) ── */}
-      {/* Wave 11 PR1 (11-b, 11-c): ledger moves from #health → #models; */}
-      {/* repo stays in #repos; both wrapped for 8fr/4fr grid at 1600px+. */}
-      <div className={styles['ledger-repo-row']}>
-        <section
-          id='models'
-          data-tab='models'
-          aria-labelledby='section-models-heading'
-        >
-          <SectionTitle id='section-models-heading'>Model Ledger</SectionTitle>
-          {reportLoading ? (
-            <SectionSkeleton height={200} />
-          ) : (
-            // 15-C.4: use filteredModelRows to apply searchTerm filter
-            // Q8: pass providerErrorObservations for Err% hover tooltip
-            <MasterLedgerTable
-              rows={filteredModelRows}
-              errorObservations={providerErrorObservations}
-            />
-          )}
-        </section>
-
-        <section
-          id='repos'
-          data-tab='repos'
-          aria-labelledby='section-repos-heading'
-        >
-          <SectionTitle id='section-repos-heading'>
-            Repository Breakdown
-          </SectionTitle>
-          {reportLoading ? (
-            <SectionSkeleton height={120} />
-          ) : (
-            // 15-C.4: use filteredRepoRows to apply searchTerm filter
-            <RepoBreakdownTable rows={filteredRepoRows} />
-          )}
-        </section>
-      </div>
-
       {/* ── TOKENS ────────────────────────────────────────────────────── */}
       <section
         id='tokens'
         data-tab='tokens'
         aria-labelledby='section-tokens-heading'
       >
-        <SectionTitle id='section-tokens-heading'>
+        <SectionTitle
+          id='section-tokens-heading'
+          accessory={
+            <SectionRefreshButton
+              label='Refresh Token Trend data'
+              updating={tokenTrendUpdating}
+              onRefresh={refreshTokenSection}
+            />
+          }
+        >
           Token Trend · Hourly by Day · Stacked by Provider
         </SectionTitle>
         {reportLoading ? (
@@ -4177,52 +4141,40 @@ export default function PhosphorDashboard({
                 : undefined
             }
             versionIntervals={tokenTrendVersions}
-            dayDetail={tokenTrendDayDetailQuery.data}
-            detailLoading={tokenTrendDayDetailQuery.isFetching}
+            dayDetail={tokenTrendDayDetailData}
+            detailLoading={tokenTrendDayDetailFetching}
             onHourHover={handleTokenTrendHourHover}
           />
         )}
       </section>
 
-      {/* ── CLIENTS ───────────────────────────────────────────────────── */}
+      {/* ── MODEL LEDGER ──────────────────────────────────────────────── */}
       <section
-        id='clients'
-        data-tab='clients'
-        aria-labelledby='section-clients-heading'
+        id='models'
+        data-tab='models'
+        aria-labelledby='section-models-heading'
       >
-        <SectionTitle id='section-clients-heading'>Client Usage</SectionTitle>
-        {/* Wave 11 PR6 (11-o, C14): table caption */}
-        <div
-          className='table-caption'
-          style={{
-            fontSize: '9px',
-            color: 'var(--fg-muted)',
-            textTransform: 'uppercase',
-            letterSpacing: '0.05em',
-            padding: '2px 0 4px',
-          }}
+        <SectionTitle
+          id='section-models-heading'
+          accessory={
+            <SectionRefreshButton
+              label='Refresh Model Ledger data'
+              updating={reportUpdating}
+              onRefresh={refreshReport}
+            />
+          }
         >
-          By client · 24h aggregate
-        </div>
+          LEDGER
+        </SectionTitle>
         {reportLoading ? (
           <SectionSkeleton height={200} />
         ) : (
-          <div
-            className='client-section'
-            style={{
-              display: 'grid',
-              gridTemplateColumns: '140px 1fr',
-              gap: '4px',
-            }}
-          >
-            <div className='client-donut'>
-              <DonutChart slices={clientSlices} />
-            </div>
-            <div className='client-table-wrapper'>
-              {/* 15-C.4: use filteredClientRows to apply searchTerm filter */}
-              <ClientBreakdownTable rows={filteredClientRows} />
-            </div>
-          </div>
+          // 15-C.4: use filteredModelRows to apply searchTerm filter
+          // Q8: pass providerErrorObservations for Err% hover tooltip
+          <MasterLedgerTable
+            rows={filteredModelRows}
+            errorObservations={providerErrorObservations}
+          />
         )}
       </section>
 
@@ -4234,7 +4186,16 @@ export default function PhosphorDashboard({
         aria-labelledby='section-comparison-heading'
         className={styles['comparison-section']}
       >
-        <SectionTitle id='section-comparison-heading'>
+        <SectionTitle
+          id='section-comparison-heading'
+          accessory={
+            <SectionRefreshButton
+              label='Refresh Provider Comparison data'
+              updating={comparisonUpdating}
+              onRefresh={refreshComparisonSection}
+            />
+          }
+        >
           Provider Comparison
         </SectionTitle>
         <ComparisonPanel

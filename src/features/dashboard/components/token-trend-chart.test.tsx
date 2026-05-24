@@ -360,13 +360,14 @@ test('test_day_envelope_mode_renders_days_and_24_hour_bars_per_day', () => {
   expect(container.querySelectorAll('.tt-day-tip-wrap').length).toBe(2)
   expect(container.querySelectorAll('.tt-hour-bar').length).toBe(48)
   expect(container.querySelectorAll('.tt-hour-tip-wrap').length).toBe(0)
+  expect(container.querySelectorAll('.tt-token-scale-marker').length).toBe(4)
   expect(
     container.querySelector('.tt-day-envelope .tt-anthropic')
   ).not.toBeNull()
   expect(container.querySelector('.tt-day-envelope .tt-openai')).not.toBeNull()
 })
 
-test('test_day_envelope_mode_renders_release_dot_and_continuation_line', () => {
+test('test_day_envelope_mode_renders_active_version_lane_without_usage_overlay', () => {
   const dayEnvelopes = buildTokenTrendDayEnvelopes([
     {
       day: '2026-05-20',
@@ -405,22 +406,88 @@ test('test_day_envelope_mode_renders_release_dot_and_continuation_line', () => {
           token_total: 210,
           usd_cost: 0,
         },
+        {
+          provider: 'anthropic',
+          client_name: 'claude-code',
+          client_version: '2.0.0',
+          first_seen_at: '2026-05-20T12:00:00.000Z',
+          last_seen_at: '2026-05-20T13:10:00.000Z',
+          first_seen_day: '2026-05-20',
+          first_seen_hour: 8,
+          last_seen_day: '2026-05-20',
+          last_seen_hour: 9,
+          traces: 2,
+          token_total: 210,
+          usd_cost: 0,
+        },
       ]}
     />
   )
 
-  expect(container.querySelector('.tt-release-dot')).not.toBeNull()
-  expect(container.querySelector('.tt-version-line')).not.toBeNull()
-  expect(container.querySelector('.tt-version-line-halo')).not.toBeNull()
-  const overlay = container.querySelector('.tt-version-overlay') as SVGElement
-  expect(overlay.style.height).toBe('100%')
-  expect(overlay.style.overflow).toBe('hidden')
-  const versionLine = container.querySelector('.tt-version-line') as SVGElement
-  const versionHalo = container.querySelector(
-    '.tt-version-line-halo'
-  ) as SVGElement
-  expect(versionLine.getAttribute('stroke-width')).toBe('2')
-  expect(versionHalo.getAttribute('stroke-width')).toBe('5')
+  const lane = container.querySelector('.tt-active-version-lane') as HTMLElement
+  expect(lane).not.toBeNull()
+  expect(within(lane).getByText('Claude')).toBeInTheDocument()
+  expect(within(lane).getByText('Codex')).toBeInTheDocument()
+  expect(within(lane).getByText('2.0.0')).toBeInTheDocument()
+  expect(within(lane).getByText('0.120.0')).toBeInTheDocument()
+  const familyRows = container.querySelectorAll('.tt-active-version-family')
+  expect(familyRows).toHaveLength(4)
+  expect((familyRows[0] as HTMLElement | undefined)?.style.borderTop).toBe(
+    '0px'
+  )
+  expect((familyRows[1] as HTMLElement | undefined)?.style.borderTop).toContain(
+    'color-mix'
+  )
+  expect(container.querySelectorAll('.tt-active-version-line').length).toBe(2)
+  expect(
+    container.querySelectorAll('.tt-active-version-release-dot').length
+  ).toBe(2)
+  expect(container.querySelector('.tt-version-overlay')).toBeNull()
+  expect(container.querySelector('.tt-version-line')).toBeNull()
+  expect(container.querySelector('.tt-version-line-halo')).toBeNull()
+})
+
+test('test_day_envelope_mode_renders_tiny_version_labels_under_segment', () => {
+  const dayEnvelopes = buildTokenTrendDayEnvelopes(
+    Array.from({ length: 30 }, (_, index) => ({
+      day: `2026-05-${(index + 1).toString().padStart(2, '0')}`,
+      hour: 8,
+      provider: 'xai',
+      traces: 1,
+      token_total: 100,
+      usd_cost: 0,
+    }))
+  )
+
+  const { container } = render(
+    <TokenTrendChart
+      dayEnvelopes={dayEnvelopes}
+      series={series}
+      versionIntervals={[
+        {
+          provider: 'xai',
+          client_name: 'xai-cli',
+          client_version: '0.0.0',
+          first_seen_at: '2026-05-01T12:00:00.000Z',
+          last_seen_at: '2026-05-01T12:10:00.000Z',
+          first_seen_day: '2026-05-01',
+          first_seen_hour: 8,
+          last_seen_day: '2026-05-01',
+          last_seen_hour: 8,
+          traces: 1,
+          token_total: 100,
+          usd_cost: 0,
+        },
+      ]}
+    />
+  )
+
+  const underLabel = container.querySelector(
+    '.tt-active-version-segment-label.is-under'
+  ) as HTMLElement
+  expect(underLabel).not.toBeNull()
+  expect(underLabel.textContent).toBe('xai-cli')
+  expect(underLabel.style.transform).toBe('translateX(-50%)')
 })
 
 test('test_day_envelope_mode_uses_taller_chart_for_dense_ranges', () => {
@@ -439,7 +506,7 @@ test('test_day_envelope_mode_uses_taller_chart_for_dense_ranges', () => {
   )
 
   const chart = container.querySelector('.tt-day-chart') as HTMLElement
-  expect(chart.style.height).toBe('248px')
+  expect(chart.style.height).toBe('224px')
 })
 
 test('test_day_envelope_mode_hover_requests_day_detail', () => {
