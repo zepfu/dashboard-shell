@@ -296,6 +296,30 @@ export interface UsageReportTokenTrendScoreRow {
   agent_risk_evaluated?: number | null
   agent_risk_possible?: number | null
   agent_risk_events?: number | null
+  agent_discovery_inventory_coverage_score?: number | null
+  agent_discovery_inventory_coverage_evaluated?: number | null
+  agent_discovery_inventory_coverage_possible?: number | null
+  agent_discovery_inventory_coverage_failures?: number | null
+  agent_terminal_completion_score?: number | null
+  agent_terminal_completion_evaluated?: number | null
+  agent_terminal_completion_possible?: number | null
+  agent_terminal_completion_failures?: number | null
+  agent_ignored_path_tracking_policy_score?: number | null
+  agent_ignored_path_tracking_policy_evaluated?: number | null
+  agent_ignored_path_tracking_policy_possible?: number | null
+  agent_ignored_path_tracking_violation_count?: number | null
+  agent_baseline_deflection_attempted_score?: number | null
+  agent_baseline_deflection_attempted_evaluated?: number | null
+  agent_baseline_deflection_attempted_incidents?: number | null
+  agent_baseline_deflection_incident_score?: number | null
+  agent_baseline_deflection_incident_evaluated?: number | null
+  agent_baseline_deflection_incidents?: number | null
+  agent_sleep_wellness_interruption_attempted_score?: number | null
+  agent_sleep_wellness_interruption_attempted_evaluated?: number | null
+  agent_sleep_wellness_interruption_attempted_incidents?: number | null
+  agent_sleep_wellness_interruption_incident_score?: number | null
+  agent_sleep_wellness_interruption_incident_evaluated?: number | null
+  agent_sleep_wellness_interruption_incidents?: number | null
 }
 
 export interface UsageReportSummary {

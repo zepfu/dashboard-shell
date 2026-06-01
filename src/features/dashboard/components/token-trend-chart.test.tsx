@@ -167,6 +167,22 @@ const trendScoreRows = [
     agent_risk_evaluated: 5,
     agent_risk_possible: 5,
     agent_risk_events: 1,
+    agent_ignored_path_tracking_policy_score: 1,
+    agent_ignored_path_tracking_policy_evaluated: 5,
+    agent_ignored_path_tracking_policy_possible: 5,
+    agent_ignored_path_tracking_violation_count: 0,
+    agent_baseline_deflection_attempted_score: 0,
+    agent_baseline_deflection_attempted_evaluated: 5,
+    agent_baseline_deflection_attempted_incidents: 0,
+    agent_baseline_deflection_incident_score: 0,
+    agent_baseline_deflection_incident_evaluated: 5,
+    agent_baseline_deflection_incidents: 0,
+    agent_sleep_wellness_interruption_attempted_score: 0,
+    agent_sleep_wellness_interruption_attempted_evaluated: 5,
+    agent_sleep_wellness_interruption_attempted_incidents: 0,
+    agent_sleep_wellness_interruption_incident_score: 0,
+    agent_sleep_wellness_interruption_incident_evaluated: 5,
+    agent_sleep_wellness_interruption_incidents: 0,
     period_start: '2026-05-20',
     period_end: '2026-05-20',
   },
@@ -595,6 +611,7 @@ test('test_day_envelope_mode_renders_health_score_graph_above_token_chart', () =
   ).toHaveAttribute('aria-selected', 'true')
   expect(within(container).getByText('Req')).toBeInTheDocument()
   expect(within(container).getByText('Err')).toBeInTheDocument()
+  expect(within(container).getByText('Prb')).toBeInTheDocument()
   expect(container.querySelector('.tt-signal-graph')).not.toBeNull()
   expect(container.querySelector('.tt-signal-day-envelope')).not.toBeNull()
   expect(container.querySelector('.tt-signal-hour-bar')).not.toBeNull()
@@ -615,6 +632,9 @@ test('test_day_envelope_mode_renders_health_score_graph_above_token_chart', () =
   )
   expect(within(container).getByText('Q')).toBeInTheDocument()
   expect(within(container).getByText('R')).toBeInTheDocument()
+  expect(within(container).getByText('Ign')).toBeInTheDocument()
+  expect(within(container).getByText('Base')).toBeInTheDocument()
+  expect(within(container).getByText('SLP')).toBeInTheDocument()
 })
 
 test('test_day_envelope_mode_filters_health_score_graph_scope_and_metrics', () => {

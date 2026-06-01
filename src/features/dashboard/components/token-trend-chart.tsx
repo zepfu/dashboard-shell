@@ -162,6 +162,14 @@ const HEALTH_TREND_METRICS: TrendMetricDefinition[] = [
     color: '#a78bfa',
     kind: 'latency',
   },
+  {
+    key: 'probes',
+    mode: 'health',
+    label: 'Probes',
+    shortLabel: 'Prb',
+    color: '#10b981',
+    kind: 'count',
+  },
 ]
 
 const SCORE_TREND_METRICS: TrendMetricDefinition[] = [
@@ -219,6 +227,30 @@ const SCORE_TREND_METRICS: TrendMetricDefinition[] = [
     label: 'Risk',
     shortLabel: 'R',
     color: '#f43f5e',
+    kind: 'score',
+  },
+  {
+    key: 'ignored_path',
+    mode: 'score',
+    label: 'Ignored path pass',
+    shortLabel: 'Ign',
+    color: '#06b6d4',
+    kind: 'score',
+  },
+  {
+    key: 'baseline_clear',
+    mode: 'score',
+    label: 'Baseline clear',
+    shortLabel: 'Base',
+    color: '#f97316',
+    kind: 'score',
+  },
+  {
+    key: 'sleep_clear',
+    mode: 'score',
+    label: 'Sleep clear',
+    shortLabel: 'SLP',
+    color: '#ec4899',
     kind: 'score',
   },
 ]
@@ -733,9 +765,19 @@ function healthMetricValue(
         finiteMetricValue(row.total_p95_ms) ??
         finiteMetricValue(row.status_probe_p95_ms)
       )
+    case 'probes':
+      return finiteMetricValue(row.status_probe_count)
     default:
       return null
   }
+}
+
+function invertedIncidentScore(
+  value: number | null | undefined
+): number | null {
+  const score = finiteMetricValue(value)
+  if (score === null) return null
+  return 1 - normalizeMetricScore(score)
 }
 
 function scoreMetricValue(
@@ -757,6 +799,16 @@ function scoreMetricValue(
       return finiteMetricValue(row.agent_progress_score)
     case 'risk':
       return finiteMetricValue(row.agent_risk_score)
+    case 'ignored_path':
+      return finiteMetricValue(row.agent_ignored_path_tracking_policy_score)
+    case 'baseline_clear':
+      return invertedIncidentScore(
+        row.agent_baseline_deflection_attempted_score
+      )
+    case 'sleep_clear':
+      return invertedIncidentScore(
+        row.agent_sleep_wellness_interruption_attempted_score
+      )
     default:
       return null
   }
@@ -780,6 +832,22 @@ function scoreMetricWeight(
       return finiteMetricValue(row.agent_progress_evaluated) ?? fallback
     case 'risk':
       return finiteMetricValue(row.agent_risk_evaluated) ?? fallback
+    case 'ignored_path':
+      return (
+        finiteMetricValue(row.agent_ignored_path_tracking_policy_evaluated) ??
+        fallback
+      )
+    case 'baseline_clear':
+      return (
+        finiteMetricValue(row.agent_baseline_deflection_attempted_evaluated) ??
+        fallback
+      )
+    case 'sleep_clear':
+      return (
+        finiteMetricValue(
+          row.agent_sleep_wellness_interruption_attempted_evaluated
+        ) ?? fallback
+      )
     default:
       return fallback
   }

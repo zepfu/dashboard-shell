@@ -1716,11 +1716,40 @@ const tokenTrendScoreSelectParts = [
     buildAgentPassScoreSelects(family, columns)
   ),
   ...buildAgentRiskScoreSelects(),
+  ...buildAgentPassScoreSelects('discovery_inventory_coverage', [
+    'discovery_inventory_coverage_score',
+  ]),
+  ...buildAgentPassScoreSelects('terminal_completion', [
+    'terminal_completion_score',
+  ]),
+  'AVG(sh.ignored_path_tracking_policy_score)::double precision AS agent_ignored_path_tracking_policy_score',
+  'COUNT(sh.ignored_path_tracking_policy_score)::double precision AS agent_ignored_path_tracking_policy_evaluated',
+  'COUNT(*)::double precision AS agent_ignored_path_tracking_policy_possible',
+  'SUM(COALESCE(sh.ignored_path_tracking_violation_count, 0))::double precision AS agent_ignored_path_tracking_violation_count',
+  'AVG(sh.baseline_deflection_attempted_score)::double precision AS agent_baseline_deflection_attempted_score',
+  'COUNT(sh.baseline_deflection_attempted_score)::double precision AS agent_baseline_deflection_attempted_evaluated',
+  'COUNT(*) FILTER (WHERE sh.baseline_deflection_attempted_score = 1)::double precision AS agent_baseline_deflection_attempted_incidents',
+  'AVG(sh.baseline_deflection_incident_score)::double precision AS agent_baseline_deflection_incident_score',
+  'COUNT(sh.baseline_deflection_incident_score)::double precision AS agent_baseline_deflection_incident_evaluated',
+  'COUNT(*) FILTER (WHERE sh.baseline_deflection_incident_score = 1)::double precision AS agent_baseline_deflection_incidents',
+  'AVG(sh.sleep_wellness_interruption_attempted_score)::double precision AS agent_sleep_wellness_interruption_attempted_score',
+  'COUNT(sh.sleep_wellness_interruption_attempted_score)::double precision AS agent_sleep_wellness_interruption_attempted_evaluated',
+  'COUNT(*) FILTER (WHERE sh.sleep_wellness_interruption_attempted_score = 1)::double precision AS agent_sleep_wellness_interruption_attempted_incidents',
+  'AVG(sh.sleep_wellness_interruption_incident_score)::double precision AS agent_sleep_wellness_interruption_incident_score',
+  'COUNT(sh.sleep_wellness_interruption_incident_score)::double precision AS agent_sleep_wellness_interruption_incident_evaluated',
+  'COUNT(*) FILTER (WHERE sh.sleep_wellness_interruption_incident_score = 1)::double precision AS agent_sleep_wellness_interruption_incidents',
 ]
 
 const tokenTrendScoreSourceColumns = [
   ...Object.values(agentPassScoreFamilies).flat(),
   ...agentRiskScoreColumns,
+  'discovery_inventory_coverage_score',
+  'terminal_completion_score',
+  'ignored_path_tracking_policy_score',
+  'baseline_deflection_attempted_score',
+  'baseline_deflection_incident_score',
+  'sleep_wellness_interruption_attempted_score',
+  'sleep_wellness_interruption_incident_score',
 ]
 
 const tokenTrendVersionClientNames = [
@@ -4099,6 +4128,30 @@ const tokenTrendScoreNumericKeys = [
   'agent_risk_evaluated',
   'agent_risk_possible',
   'agent_risk_events',
+  'agent_discovery_inventory_coverage_score',
+  'agent_discovery_inventory_coverage_evaluated',
+  'agent_discovery_inventory_coverage_possible',
+  'agent_discovery_inventory_coverage_failures',
+  'agent_terminal_completion_score',
+  'agent_terminal_completion_evaluated',
+  'agent_terminal_completion_possible',
+  'agent_terminal_completion_failures',
+  'agent_ignored_path_tracking_policy_score',
+  'agent_ignored_path_tracking_policy_evaluated',
+  'agent_ignored_path_tracking_policy_possible',
+  'agent_ignored_path_tracking_violation_count',
+  'agent_baseline_deflection_attempted_score',
+  'agent_baseline_deflection_attempted_evaluated',
+  'agent_baseline_deflection_attempted_incidents',
+  'agent_baseline_deflection_incident_score',
+  'agent_baseline_deflection_incident_evaluated',
+  'agent_baseline_deflection_incidents',
+  'agent_sleep_wellness_interruption_attempted_score',
+  'agent_sleep_wellness_interruption_attempted_evaluated',
+  'agent_sleep_wellness_interruption_attempted_incidents',
+  'agent_sleep_wellness_interruption_incident_score',
+  'agent_sleep_wellness_interruption_incident_evaluated',
+  'agent_sleep_wellness_interruption_incidents',
 ]
 
 function normalizeTokenTrendScoreRow(row) {
