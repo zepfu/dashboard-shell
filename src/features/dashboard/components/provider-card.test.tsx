@@ -17,6 +17,7 @@
  * - F8: .t-model spans in quota tooltip use providerBrandHex() color.
  */
 import { fireEvent, render, screen } from '@testing-library/react'
+import { providerBrandHex } from '../lib/usage-report-display'
 import {
   ProviderCard,
   type QuotaBarGroup,
@@ -54,6 +55,14 @@ const mockHealthCells = Array.from({ length: 288 }, () => ({
 }))
 
 const QUOTA_SEGMENTS = 100
+
+function hexToRgbStyle(hex: string): string {
+  const normalized = hex.replace(/^#/, '')
+  const red = Number.parseInt(normalized.slice(0, 2), 16)
+  const green = Number.parseInt(normalized.slice(2, 4), 16)
+  const blue = Number.parseInt(normalized.slice(4, 6), 16)
+  return `rgb(${red.toString()}, ${green.toString()}, ${blue.toString()})`
+}
 
 // Wave 11 PR3 (11-h/11-i): QuotaBarGroup[] — each entry is a quota-type bar
 // with pre-built N=100 segment array.
@@ -390,6 +399,12 @@ test('test_provider_card_quota_tip_model_has_brand_color', () => {
           requests: 5,
           recentRequests90m: 1,
         },
+        {
+          model: 'oa_xai/grok-4.3',
+          costDelta: '+$3',
+          requests: 2,
+          recentRequests90m: 1,
+        },
       ],
     },
   ]
@@ -413,6 +428,11 @@ test('test_provider_card_quota_tip_model_has_brand_color', () => {
   expect(document.body.textContent).toContain('requests')
   expect(document.body.textContent).toContain('15')
   expect(document.body.textContent).toContain('10 req · 3 90m')
+  const xaiModelSpan = Array.from(tModelSpans).find(
+    (el) => el.textContent === 'oa_xai/grok-4.3'
+  ) as HTMLElement | undefined
+  expect(xaiModelSpan).not.toBeUndefined()
+  expect(xaiModelSpan?.style.color).toBe(hexToRgbStyle(providerBrandHex('xai')))
 })
 
 // ---------------------------------------------------------------------------
