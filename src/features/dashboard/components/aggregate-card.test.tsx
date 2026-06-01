@@ -27,7 +27,7 @@ const mockData = {
   cache_miss_usd: 0,
   reasoning_reported: 100,
   reasoning_estimated: 90,
-  no_reasoning_calls: 0,
+  recent_requests_90m: 12,
   traces: 5,
   rate_limits: 0,
   capacity: 0,

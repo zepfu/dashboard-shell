@@ -44,19 +44,32 @@
  *
  * Accessibility: the outer container carries a descriptive aria-label.
  */
-import type { CSSProperties, ReactElement, ReactNode } from 'react'
+import {
+  useMemo,
+  useState,
+  type CSSProperties,
+  type ReactElement,
+  type ReactNode,
+} from 'react'
 import type {
+  UsageReportProviderLatencyHealthRow,
+  UsageReportTokenTrendScoreRow,
   UsageReportTokenTrendDayResponse,
+  UsageReportTokenTrendModelFirstSeenRow,
   UsageReportTokenTrendVersionIntervalRow,
 } from '../api/usage-report'
 import {
   deriveTokenTrendActiveVersionLanes,
+  deriveTokenTrendModelFirstSeenGroups,
   formatBucketLabel,
+  isTokenTrendActiveVersionClient,
   tokenTrendDayHeightPct,
   tokenTrendHourHeightPct,
   type TokenTrendActiveVersionFamilyLane,
   type TokenTrendActiveVersionSegment,
   type TokenTrendDayEnvelope,
+  type TokenTrendModelFirstSeenGroup,
+  type TokenTrendModelFirstSeenMarker,
 } from '../lib/trend-utils'
 import {
   canonicalProvider,
@@ -102,6 +115,156 @@ const PROVIDER_COLOR_MAP: Readonly<Record<string, string>> = {
 function resolveSliceColor(key: string, color: string): string {
   if (color && color !== '') return color
   return PROVIDER_COLOR_MAP[key] ?? '#94a3b8'
+}
+
+type TrendSignalMode = 'health' | 'score'
+type TrendMetricKind = 'count' | 'latency' | 'score'
+
+interface TrendMetricDefinition {
+  key: string
+  mode: TrendSignalMode
+  label: string
+  shortLabel: string
+  color: string
+  kind: TrendMetricKind
+}
+
+const HEALTH_TREND_METRICS: TrendMetricDefinition[] = [
+  {
+    key: 'requests',
+    mode: 'health',
+    label: 'Requests',
+    shortLabel: 'Req',
+    color: '#38bdf8',
+    kind: 'count',
+  },
+  {
+    key: 'errors',
+    mode: 'health',
+    label: 'Errors',
+    shortLabel: 'Err',
+    color: '#ef4444',
+    kind: 'count',
+  },
+  {
+    key: 'rate_limits',
+    mode: 'health',
+    label: 'Rate limits',
+    shortLabel: '429',
+    color: '#f59e0b',
+    kind: 'count',
+  },
+  {
+    key: 'latency',
+    mode: 'health',
+    label: 'P95 latency',
+    shortLabel: 'P95',
+    color: '#a78bfa',
+    kind: 'latency',
+  },
+]
+
+const SCORE_TREND_METRICS: TrendMetricDefinition[] = [
+  {
+    key: 'evaluated',
+    mode: 'score',
+    label: 'Evaluated',
+    shortLabel: 'Eval',
+    color: '#64748b',
+    kind: 'count',
+  },
+  {
+    key: 'quality',
+    mode: 'score',
+    label: 'Quality',
+    shortLabel: 'Q',
+    color: '#22c55e',
+    kind: 'score',
+  },
+  {
+    key: 'instruction',
+    mode: 'score',
+    label: 'Instruction',
+    shortLabel: 'I',
+    color: '#14b8a6',
+    kind: 'score',
+  },
+  {
+    key: 'tool',
+    mode: 'score',
+    label: 'Tool',
+    shortLabel: 'T',
+    color: '#3b82f6',
+    kind: 'score',
+  },
+  {
+    key: 'contract',
+    mode: 'score',
+    label: 'Contract',
+    shortLabel: 'C',
+    color: '#8b5cf6',
+    kind: 'score',
+  },
+  {
+    key: 'progress',
+    mode: 'score',
+    label: 'Progress',
+    shortLabel: 'P',
+    color: '#eab308',
+    kind: 'score',
+  },
+  {
+    key: 'risk',
+    mode: 'score',
+    label: 'Risk',
+    shortLabel: 'R',
+    color: '#f43f5e',
+    kind: 'score',
+  },
+]
+
+interface TrendScopeOption {
+  key: string
+  label: string
+  provider: string | null
+  model: string | null
+  depth: 0 | 1 | 2
+}
+
+interface TrendSignalValue {
+  value: number | null
+  samples: number
+}
+
+type TrendSignalGrid = Map<string, Map<number, TrendSignalValue>>
+
+interface TrendSignalRow {
+  metric: TrendMetricDefinition
+  grid: TrendSignalGrid
+  maxValue: number
+  hasData: boolean
+}
+
+interface TrendSignalSlice {
+  metric: TrendMetricDefinition
+  value: number
+  scaleValue: number
+  samples: number
+}
+
+interface TrendSignalHour {
+  day: string
+  hour: number
+  total: number
+  slices: TrendSignalSlice[]
+}
+
+interface TrendSignalDay {
+  day: string
+  label: string
+  total: number
+  maxHourTotal: number
+  hours: TrendSignalHour[]
 }
 
 // ---------------------------------------------------------------------------
@@ -222,6 +385,7 @@ function summarizeDayDetailRows(
   const byVersion = new Map<string, DayVersionSummary>()
   for (const row of dayDetail.rows) {
     if (row.day !== day || row.token_total <= 0) continue
+    if (!isTokenTrendActiveVersionClient(row)) continue
     if (releaseKeys.has(versionRowKey(row))) continue
 
     const key = versionRowKey(row)
@@ -246,6 +410,7 @@ function buildDayTooltip(
   day: TokenTrendDayEnvelope,
   series: readonly ProviderSeries[],
   versionIntervals: readonly UsageReportTokenTrendVersionIntervalRow[],
+  modelFirstSeenGroups: readonly TokenTrendModelFirstSeenGroup[],
   dayDetail: UsageReportTokenTrendDayResponse | null | undefined,
   detailLoading: boolean | undefined
 ): ReactNode {
@@ -254,16 +419,35 @@ function buildDayTooltip(
     .filter(([, count]) => count > 0)
     .sort(([, a], [, b]) => b - a)
 
-  const releaseRows = versionIntervals
-    .filter((interval) => interval.first_seen_day === day.day)
+  const modelFirstSeenRows = modelFirstSeenGroups
+    .filter((group) => group.day === day.day)
+    .flatMap((group) => group.markers)
+    .sort((a, b) => {
+      const hourDelta = a.firstSeenHour - b.firstSeenHour
+      if (hourDelta !== 0) return hourDelta
+      return (
+        a.provider.localeCompare(b.provider) || a.model.localeCompare(b.model)
+      )
+    })
+
+  const clientFirstSeenRows = versionIntervals
+    .filter(
+      (interval) =>
+        interval.first_seen_day === day.day &&
+        isTokenTrendActiveVersionClient(interval)
+    )
     .sort((a, b) => {
       const hourDelta = (a.first_seen_hour ?? 99) - (b.first_seen_hour ?? 99)
       if (hourDelta !== 0) return hourDelta
       return b.token_total - a.token_total
     })
 
-  const releaseKeys = new Set(releaseRows.map(intervalRowKey))
-  const detailRows = summarizeDayDetailRows(dayDetail, day.day, releaseKeys)
+  const clientFirstSeenKeys = new Set(clientFirstSeenRows.map(intervalRowKey))
+  const detailRows = summarizeDayDetailRows(
+    dayDetail,
+    day.day,
+    clientFirstSeenKeys
+  )
 
   return (
     <>
@@ -284,12 +468,37 @@ function buildDayTooltip(
           </div>
         )
       })}
-      {releaseRows.length > 0 && (
+      {modelFirstSeenRows.length > 0 && (
         <div className='v9-tip-head' style={{ marginTop: '6px' }}>
-          releases
+          models first seen
         </div>
       )}
-      {releaseRows.slice(0, 8).map((row) => (
+      {modelFirstSeenRows.slice(0, 8).map((marker) => (
+        <div
+          key={`${marker.provider}|${marker.model}|${marker.firstSeenDay}|${marker.firstSeenHour.toString()}`}
+          className='v9-tip-row'
+          style={{ gridTemplateColumns: 'auto minmax(0,1fr) auto' }}
+        >
+          <span className='t-count'>
+            {marker.firstSeenHour.toString().padStart(2, '0')}:00
+          </span>
+          <span className='t-model'>{marker.model}</span>
+          <span className='t-count'>{marker.provider}</span>
+        </div>
+      ))}
+      {modelFirstSeenRows.length > 8 && (
+        <div className='v9-tip-row' style={{ gridTemplateColumns: '1fr' }}>
+          <span className='t-count'>
+            +{modelFirstSeenRows.length - 8} more models
+          </span>
+        </div>
+      )}
+      {clientFirstSeenRows.length > 0 && (
+        <div className='v9-tip-head' style={{ marginTop: '6px' }}>
+          client versions first seen
+        </div>
+      )}
+      {clientFirstSeenRows.slice(0, 8).map((row) => (
         <div
           key={intervalRowKey(row)}
           className='v9-tip-row'
@@ -306,19 +515,19 @@ function buildDayTooltip(
           <span className='t-count'>{canonicalProvider(row.provider)}</span>
         </div>
       ))}
-      {releaseRows.length > 8 && (
+      {clientFirstSeenRows.length > 8 && (
         <div className='v9-tip-row' style={{ gridTemplateColumns: '1fr' }}>
           <span className='t-count'>
-            +{releaseRows.length - 8} more releases
+            +{clientFirstSeenRows.length - 8} more client versions
           </span>
         </div>
       )}
-      {releaseRows.length === 0 && detailRows.length > 0 && (
+      {clientFirstSeenRows.length === 0 && detailRows.length > 0 && (
         <div className='v9-tip-head' style={{ marginTop: '6px' }}>
           active versions
         </div>
       )}
-      {releaseRows.length === 0 &&
+      {clientFirstSeenRows.length === 0 &&
         detailRows.slice(0, 8).map((row) => (
           <div
             key={versionRowKey(row)}
@@ -334,14 +543,14 @@ function buildDayTooltip(
             </span>
           </div>
         ))}
-      {releaseRows.length === 0 && detailRows.length > 8 && (
+      {clientFirstSeenRows.length === 0 && detailRows.length > 8 && (
         <div className='v9-tip-row' style={{ gridTemplateColumns: '1fr' }}>
           <span className='t-count'>
             +{detailRows.length - 8} more versions
           </span>
         </div>
       )}
-      {releaseRows.length === 0 &&
+      {clientFirstSeenRows.length === 0 &&
         detailRows.length === 0 &&
         detailLoading === true && (
           <div className='v9-tip-row' style={{ gridTemplateColumns: '1fr' }}>
@@ -422,6 +631,549 @@ function renderTokenScaleMarkers(ticks: readonly TokenScaleTick[]): ReactNode {
   ))
 }
 
+function metricScaleUnit(mode: Exclude<LowerLaneMode, 'tui'>): string {
+  return mode === 'requests' ? 'req' : 'tools'
+}
+
+function buildMetricScaleTicks(
+  maxValue: number,
+  mode: Exclude<LowerLaneMode, 'tui'>
+): TokenScaleTick[] {
+  return buildTokenScaleTicks(maxValue).map((tick) => ({
+    ...tick,
+    label: `${tick.label} ${metricScaleUnit(mode)}`,
+  }))
+}
+
+function renderMetricScaleMarkers(ticks: readonly TokenScaleTick[]): ReactNode {
+  if (ticks.length === 0) return null
+
+  return ticks.map((tick) => (
+    <div
+      key={`metric-${tick.pct.toString()}-${tick.label}`}
+      className='tt-metric-scale-marker'
+      style={{ top: `${tick.pct.toFixed(3)}%` }}
+      aria-hidden='true'
+    >
+      <span className='tt-metric-scale-label'>{tick.label}</span>
+    </div>
+  ))
+}
+
+function renderDayStripeLayer(dayCount: number): ReactNode {
+  if (dayCount <= 0) return null
+
+  return (
+    <div className='tt-day-stripe-layer' aria-hidden='true'>
+      {Array.from({ length: dayCount }, (_, index) => (
+        <div
+          key={`day-stripe-${index.toString()}`}
+          className={
+            index % 2 === 0 ? 'tt-day-stripe is-even' : 'tt-day-stripe is-odd'
+          }
+        />
+      ))}
+    </div>
+  )
+}
+
+function dayBandClass(index: number): 'is-even' | 'is-odd' {
+  return index % 2 === 0 ? 'is-even' : 'is-odd'
+}
+
+function dayEnvelopeBackground(index: number): string {
+  return index % 2 === 0
+    ? 'color-mix(in srgb, var(--card) 90%, var(--fg-muted) 10%)'
+    : 'color-mix(in srgb, var(--card) 82%, var(--fg-muted) 18%)'
+}
+
+function parseTrendDayHour(value: string | null | undefined): {
+  day: string
+  hour: number | null
+} | null {
+  if (value == null || value.trim() === '') return null
+  const dayMatch = value.match(/^(\d{4}-\d{2}-\d{2})/)
+  if (dayMatch === null) return null
+  const localHourMatch = value.match(/^\d{4}-\d{2}-\d{2}[T\s](\d{2})/)
+  if (localHourMatch !== null) {
+    return { day: dayMatch[1], hour: Number.parseInt(localHourMatch[1], 10) }
+  }
+  const hasTime = value.includes('T') || /\d{2}:\d{2}/.test(value)
+  if (!hasTime) return { day: dayMatch[1], hour: null }
+  const parsed = new Date(value)
+  if (Number.isNaN(parsed.getTime())) return { day: dayMatch[1], hour: null }
+  return { day: dayMatch[1], hour: parsed.getUTCHours() }
+}
+
+function finiteMetricValue(value: number | null | undefined): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null
+}
+
+function healthMetricValue(
+  metric: TrendMetricDefinition,
+  row: UsageReportProviderLatencyHealthRow
+): number | null {
+  switch (metric.key) {
+    case 'requests':
+      return finiteMetricValue(row.requests)
+    case 'errors':
+      return (
+        (finiteMetricValue(row.provider_error_events) ?? 0) +
+        (finiteMetricValue(row.provider_5xx_events) ?? 0) +
+        (finiteMetricValue(row.provider_timeout_events) ?? 0) +
+        (finiteMetricValue(row.network_error_events) ?? 0) +
+        (finiteMetricValue(row.auth_failed_events) ?? 0) +
+        (finiteMetricValue(row.adapter_error_events) ?? 0)
+      )
+    case 'rate_limits':
+      return finiteMetricValue(row.rate_limit_events)
+    case 'latency':
+      return (
+        finiteMetricValue(row.upstream_p95_ms) ??
+        finiteMetricValue(row.total_p95_ms) ??
+        finiteMetricValue(row.status_probe_p95_ms)
+      )
+    default:
+      return null
+  }
+}
+
+function scoreMetricValue(
+  metric: TrendMetricDefinition,
+  row: UsageReportTokenTrendScoreRow
+): number | null {
+  switch (metric.key) {
+    case 'evaluated':
+      return finiteMetricValue(row.agent_score_rows)
+    case 'quality':
+      return finiteMetricValue(row.agent_quality_score)
+    case 'instruction':
+      return finiteMetricValue(row.agent_instruction_score)
+    case 'tool':
+      return finiteMetricValue(row.agent_tool_score)
+    case 'contract':
+      return finiteMetricValue(row.agent_contract_score)
+    case 'progress':
+      return finiteMetricValue(row.agent_progress_score)
+    case 'risk':
+      return finiteMetricValue(row.agent_risk_score)
+    default:
+      return null
+  }
+}
+
+function scoreMetricWeight(
+  metric: TrendMetricDefinition,
+  row: UsageReportTokenTrendScoreRow
+): number {
+  const fallback = 1
+  switch (metric.key) {
+    case 'quality':
+      return finiteMetricValue(row.agent_quality_evaluated) ?? fallback
+    case 'instruction':
+      return finiteMetricValue(row.agent_instruction_evaluated) ?? fallback
+    case 'tool':
+      return finiteMetricValue(row.agent_tool_evaluated) ?? fallback
+    case 'contract':
+      return finiteMetricValue(row.agent_contract_evaluated) ?? fallback
+    case 'progress':
+      return finiteMetricValue(row.agent_progress_evaluated) ?? fallback
+    case 'risk':
+      return finiteMetricValue(row.agent_risk_evaluated) ?? fallback
+    default:
+      return fallback
+  }
+}
+
+function normalizeMetricScore(value: number): number {
+  if (value > 1) return Math.min(1, Math.max(0, value / 100))
+  return Math.min(1, Math.max(0, value))
+}
+
+function deriveTrendScopeOptions(
+  series: readonly ProviderSeries[],
+  healthRows: readonly UsageReportProviderLatencyHealthRow[],
+  scoreRows: readonly UsageReportTokenTrendScoreRow[]
+): TrendScopeOption[] {
+  const providerModels = new Map<string, Set<string>>()
+  for (const provider of series.map((item) => canonicalProvider(item.key))) {
+    providerModels.set(provider, providerModels.get(provider) ?? new Set())
+  }
+
+  const add = (
+    providerRaw: string | undefined,
+    modelRaw: string | undefined
+  ) => {
+    if (providerRaw === undefined || providerRaw.trim() === '') return
+    const provider = canonicalProvider(providerRaw)
+    const models = providerModels.get(provider) ?? new Set<string>()
+    if (modelRaw !== undefined && modelRaw.trim() !== '') {
+      models.add(modelRaw)
+    }
+    providerModels.set(provider, models)
+  }
+
+  for (const row of healthRows) add(row.provider, row.model)
+  for (const row of scoreRows) add(row.provider, row.model)
+
+  const options: TrendScopeOption[] = [
+    { key: 'all', label: 'All', provider: null, model: null, depth: 0 },
+  ]
+  for (const [provider, models] of [...providerModels.entries()].sort((a, b) =>
+    a[0].localeCompare(b[0])
+  )) {
+    options.push({
+      key: `provider:${provider}`,
+      label: provider,
+      provider,
+      model: null,
+      depth: 1,
+    })
+    for (const model of [...models].sort()) {
+      options.push({
+        key: `model:${provider}:${model}`,
+        label: model,
+        provider,
+        model,
+        depth: 2,
+      })
+    }
+  }
+
+  return options
+}
+
+function selectedKeysMatchScope(
+  selectedKeys: readonly string[],
+  providerRaw: string | undefined,
+  modelRaw: string | undefined
+): boolean {
+  if (selectedKeys.includes('all')) return true
+  if (selectedKeys.length === 0) return false
+  const provider = canonicalProvider(providerRaw ?? '')
+  const model = modelRaw ?? ''
+  return selectedKeys.some((key) => {
+    if (key === `provider:${provider}`) return true
+    return model !== '' && key === `model:${provider}:${model}`
+  })
+}
+
+function updateMultiSelectKeys(
+  selectedKeys: readonly string[],
+  key: string,
+  checked: boolean
+): string[] {
+  if (key === 'all') return checked ? ['all'] : []
+  const next = new Set(selectedKeys.filter((item) => item !== 'all'))
+  if (checked) {
+    next.add(key)
+  } else {
+    next.delete(key)
+  }
+  return [...next]
+}
+
+function summarizeSelectedOptions(
+  selectedKeys: readonly string[],
+  options: readonly { key: string; label: string }[],
+  fallback: string
+): string {
+  if (selectedKeys.includes('all')) return 'All'
+  if (selectedKeys.length === 0) return fallback
+  const labels = selectedKeys
+    .map((key) => options.find((option) => option.key === key)?.label)
+    .filter((label): label is string => label !== undefined)
+  if (labels.length === 0) return fallback
+  if (labels.length <= 2) return labels.join(', ')
+  return `${labels.slice(0, 2).join(', ')} +${(labels.length - 2).toString()}`
+}
+
+function metricDefinitionsForMode(
+  mode: TrendSignalMode
+): TrendMetricDefinition[] {
+  return mode === 'health' ? HEALTH_TREND_METRICS : SCORE_TREND_METRICS
+}
+
+function selectedMetricDefinitions(
+  mode: TrendSignalMode,
+  selectedKeys: readonly string[]
+): TrendMetricDefinition[] {
+  const definitions = metricDefinitionsForMode(mode)
+  if (selectedKeys.includes('all')) return definitions
+  if (selectedKeys.length === 0) return []
+  return definitions.filter((definition) =>
+    selectedKeys.includes(definition.key)
+  )
+}
+
+function addSignalValue(
+  cells: Map<string, { sum: number; weight: number; samples: number }>,
+  metric: TrendMetricDefinition,
+  day: string,
+  hour: number,
+  value: number,
+  weight = 1
+): void {
+  const key = `${metric.key}|${day}|${hour.toString()}`
+  const existing = cells.get(key) ?? { sum: 0, weight: 0, samples: 0 }
+  if (metric.kind === 'count') {
+    existing.sum += value
+    existing.weight = 1
+  } else {
+    existing.sum += value * weight
+    existing.weight += weight
+  }
+  existing.samples += 1
+  cells.set(key, existing)
+}
+
+function buildTrendSignalRows({
+  mode,
+  dayEnvelopes,
+  healthRows,
+  scoreRows,
+  selectedScopeKeys,
+  selectedMetrics,
+}: {
+  mode: TrendSignalMode
+  dayEnvelopes: readonly TokenTrendDayEnvelope[]
+  healthRows: readonly UsageReportProviderLatencyHealthRow[]
+  scoreRows: readonly UsageReportTokenTrendScoreRow[]
+  selectedScopeKeys: readonly string[]
+  selectedMetrics: readonly TrendMetricDefinition[]
+}): { rows: TrendSignalRow[]; sourceRowCount: number } {
+  const days = new Set(dayEnvelopes.map((day) => day.day))
+  const mutableCells = new Map<
+    string,
+    { sum: number; weight: number; samples: number }
+  >()
+  let sourceRowCount = 0
+
+  if (mode === 'health') {
+    for (const row of healthRows) {
+      if (!selectedKeysMatchScope(selectedScopeKeys, row.provider, row.model)) {
+        continue
+      }
+      const parsed = parseTrendDayHour(row.bucket_start)
+      if (parsed === null || !days.has(parsed.day)) continue
+      sourceRowCount += 1
+      const hours =
+        parsed.hour === null
+          ? Array.from({ length: 24 }, (_, hour) => hour)
+          : [parsed.hour]
+      for (const metric of selectedMetrics) {
+        const value = healthMetricValue(metric, row)
+        if (value === null) continue
+        for (const hour of hours) {
+          addSignalValue(mutableCells, metric, parsed.day, hour, value)
+        }
+      }
+    }
+  } else {
+    for (const row of scoreRows) {
+      if (!selectedKeysMatchScope(selectedScopeKeys, row.provider, row.model)) {
+        continue
+      }
+      const parsed = parseTrendDayHour(row.bucket)
+      if (parsed === null || !days.has(parsed.day)) continue
+      sourceRowCount += 1
+      const hours =
+        parsed.hour === null
+          ? Array.from({ length: 24 }, (_, hour) => hour)
+          : [parsed.hour]
+      for (const metric of selectedMetrics) {
+        const value = scoreMetricValue(metric, row)
+        if (value === null) continue
+        const normalized = normalizeMetricScore(value)
+        const weight = Math.max(1, scoreMetricWeight(metric, row))
+        for (const hour of hours) {
+          addSignalValue(
+            mutableCells,
+            metric,
+            parsed.day,
+            hour,
+            normalized,
+            weight
+          )
+        }
+      }
+    }
+  }
+
+  const rows = selectedMetrics.map((metric) => {
+    const grid: TrendSignalGrid = new Map()
+    let maxValue = metric.kind === 'score' ? 1 : 0
+    let hasData = false
+
+    for (const [key, cell] of mutableCells.entries()) {
+      const [metricKey, day, hourText] = key.split('|')
+      if (
+        metricKey !== metric.key ||
+        day === undefined ||
+        hourText === undefined
+      ) {
+        continue
+      }
+      const hour = Number.parseInt(hourText, 10)
+      const value =
+        metric.kind === 'count'
+          ? cell.sum
+          : cell.weight > 0
+            ? cell.sum / cell.weight
+            : null
+      if (value === null || !Number.isFinite(value)) continue
+      const dayMap = grid.get(day) ?? new Map<number, TrendSignalValue>()
+      dayMap.set(hour, { value, samples: cell.samples })
+      grid.set(day, dayMap)
+      maxValue = Math.max(maxValue, value)
+      hasData = true
+    }
+
+    return { metric, grid, maxValue, hasData }
+  })
+
+  return { rows, sourceRowCount }
+}
+
+function formatTrendSignalValue(
+  metric: TrendMetricDefinition,
+  value: number | null
+): string {
+  if (value === null) return 'no data'
+  if (metric.kind === 'score') return `${Math.round(value * 100).toString()}%`
+  if (metric.kind === 'latency') return `${Math.round(value).toString()} ms`
+  return formatCompactNumber(value)
+}
+
+function buildTrendSignalEnvelopes(
+  rows: readonly TrendSignalRow[],
+  dayEnvelopes: readonly TokenTrendDayEnvelope[]
+): TrendSignalDay[] {
+  return dayEnvelopes.map((day) => {
+    const hours = Array.from({ length: 24 }, (_, hour): TrendSignalHour => {
+      const slices = rows
+        .map((row): TrendSignalSlice | null => {
+          const cell = row.grid.get(day.day)?.get(hour)
+          const value = cell?.value ?? null
+          if (value === null || row.maxValue <= 0) return null
+          const scaleValue = Math.max(0, value / row.maxValue)
+          if (scaleValue <= 0) return null
+          return {
+            metric: row.metric,
+            value,
+            scaleValue,
+            samples: cell?.samples ?? 0,
+          }
+        })
+        .filter((slice): slice is TrendSignalSlice => slice !== null)
+      return {
+        day: day.day,
+        hour,
+        total: slices.reduce((sum, slice) => sum + slice.scaleValue, 0),
+        slices,
+      }
+    })
+    const total = hours.reduce((sum, hour) => sum + hour.total, 0)
+    return {
+      day: day.day,
+      label: day.label,
+      total,
+      maxHourTotal: Math.max(0, ...hours.map((hour) => hour.total)),
+      hours,
+    }
+  })
+}
+
+function formatTrendSignalHourTitle(hour: TrendSignalHour): string {
+  const details = hour.slices.map(
+    (slice) =>
+      `${slice.metric.label}: ${formatTrendSignalValue(slice.metric, slice.value)}`
+  )
+  const prefix = `${formatDayLabel(hour.day)} ${hour.hour
+    .toString()
+    .padStart(2, '0')}:00`
+  return details.length > 0 ? `${prefix} · ${details.join(' · ')}` : prefix
+}
+
+function renderTrendSignalGraph(
+  rows: readonly TrendSignalRow[],
+  dayEnvelopes: readonly TokenTrendDayEnvelope[]
+): ReactNode {
+  const metricRows = rows.filter((row) => row.hasData)
+  const signalDays = buildTrendSignalEnvelopes(metricRows, dayEnvelopes)
+  const maxDayTotal = Math.max(0, ...signalDays.map((day) => day.total))
+
+  return (
+    <>
+      <div className='tt-signal-legend'>
+        {metricRows.map((row) => (
+          <span key={row.metric.key} className='tt-signal-legend-item'>
+            <span
+              className='tt-signal-legend-swatch'
+              style={{ background: row.metric.color }}
+            />
+            <span>{row.metric.shortLabel}</span>
+          </span>
+        ))}
+      </div>
+      <div className='tt-signal-graph'>
+        {renderDayStripeLayer(signalDays.length)}
+        {signalDays.map((day, dayIndex) => {
+          const dayHeightPct = tokenTrendDayHeightPct(day.total, maxDayTotal)
+          return (
+            <div
+              key={`signal-${day.day}`}
+              className={`tt-signal-day-shell ${dayBandClass(dayIndex)}`}
+              data-day={day.day}
+            >
+              <div
+                className='tt-signal-day-envelope'
+                style={{ height: `${dayHeightPct.toFixed(1)}%` }}
+              >
+                {day.hours.map((hour) => {
+                  const hourHeightPct = tokenTrendHourHeightPct(
+                    hour.total,
+                    day.maxHourTotal
+                  )
+                  return (
+                    <div
+                      key={`signal-${day.day}-${hour.hour.toString()}`}
+                      className='tt-signal-hour-cell'
+                      title={formatTrendSignalHourTitle(hour)}
+                    >
+                      <div
+                        className='tt-signal-hour-bar'
+                        style={{ height: `${hourHeightPct.toFixed(1)}%` }}
+                      >
+                        {hour.slices.map((slice) => {
+                          const pct =
+                            hour.total > 0
+                              ? (slice.scaleValue / hour.total) * 100
+                              : 0
+                          return (
+                            <span
+                              key={slice.metric.key}
+                              className='tt-signal-slice'
+                              style={{
+                                flexBasis: `${pct.toFixed(4)}%`,
+                                background: slice.metric.color,
+                              }}
+                            />
+                          )
+                        })}
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          )
+        })}
+      </div>
+    </>
+  )
+}
+
 function formatVersionHour(day: string | null, hour: number | null): string {
   if (day === null || hour === null) return '--'
   return `${formatDayLabel(day)} ${hour.toString().padStart(2, '0')}:00`
@@ -457,6 +1209,85 @@ function formatVersionSegmentText(
   return segment.clientName
 }
 
+function formatModelFirstSeenDayMarker(
+  marker: TokenTrendModelFirstSeenMarker
+): string {
+  return `${marker.firstSeenHour.toString().padStart(2, '0')}:00 ${marker.provider} ${marker.model}`
+}
+
+function formatModelFirstSeenDayTitle(
+  day: string,
+  markers: readonly TokenTrendModelFirstSeenMarker[]
+): string {
+  const details = markers
+    .slice(0, 6)
+    .map((marker) => formatModelFirstSeenDayMarker(marker))
+  const suffix =
+    markers.length > details.length
+      ? ` · +${(markers.length - details.length).toString()} more`
+      : ''
+  return [
+    `${markers.length.toString()} model${markers.length === 1 ? '' : 's'} first seen on ${formatDayLabel(day)}`,
+    `${details.join(' · ')}${suffix}`,
+  ].join(' · ')
+}
+
+function groupModelFirstSeenMarkersByDay(
+  groups: readonly TokenTrendModelFirstSeenGroup[]
+): Map<string, TokenTrendModelFirstSeenMarker[]> {
+  const byDay = new Map<string, TokenTrendModelFirstSeenMarker[]>()
+
+  for (const group of groups) {
+    const dayMarkers = byDay.get(group.day)
+    if (dayMarkers === undefined) {
+      byDay.set(group.day, [...group.markers])
+      continue
+    }
+
+    dayMarkers.push(...group.markers)
+  }
+
+  for (const markers of byDay.values()) {
+    markers.sort(
+      (a, b) =>
+        a.firstSeenHour - b.firstSeenHour ||
+        a.provider.localeCompare(b.provider) ||
+        a.model.localeCompare(b.model)
+    )
+  }
+
+  return byDay
+}
+
+function renderModelFirstSeenDayOutline(
+  day: string,
+  markers: readonly TokenTrendModelFirstSeenMarker[]
+): ReactNode {
+  if (markers.length === 0) return null
+
+  const title = formatModelFirstSeenDayTitle(day, markers)
+
+  return (
+    <div
+      className='tt-model-first-seen-column'
+      role='img'
+      aria-label={title}
+      title={title}
+      style={{
+        position: 'absolute',
+        top: 0,
+        right: 0,
+        bottom: 0,
+        left: 0,
+        border: '1px solid color-mix(in srgb, #c084fc 70%, transparent)',
+        boxSizing: 'border-box',
+        pointerEvents: 'none',
+        zIndex: 2,
+      }}
+    />
+  )
+}
+
 const ACTIVE_VERSION_ROW_HEIGHT_PX = 18
 const ACTIVE_VERSION_VIEW_ROW_HEIGHT = 18
 const ACTIVE_VERSION_INLINE_LABEL_MIN_WIDTH_PCT = 1.2
@@ -464,23 +1295,40 @@ const ACTIVE_VERSION_INLINE_LABEL_MIN_WIDTH_PCT = 1.2
 function renderActiveVersionLanes(
   lanes: readonly TokenTrendActiveVersionFamilyLane[],
   widthUnits: number,
-  dayCount: number
+  dayCount: number,
+  heightPx: number
 ): ReactNode {
   const hasSegments = lanes.some((lane) => lane.segments.length > 0)
-  if (!hasSegments || widthUnits <= 0) return null
+  if (!hasSegments || widthUnits <= 0) {
+    return (
+      <div
+        className='tt-active-version-lane is-empty'
+        aria-label='Active client versions by provider family'
+        style={{ height: `${heightPx.toString()}px` }}
+      >
+        {renderDayStripeLayer(dayCount)}
+        <span>no version data</span>
+      </div>
+    )
+  }
 
   return (
     <div
       className='tt-active-version-lane'
       aria-label='Active client versions by provider family'
       style={{
-        marginTop: '6px',
+        height: `${heightPx.toString()}px`,
         padding: '6px 8px',
         border: '1px solid var(--border)',
         background: 'color-mix(in srgb, var(--card) 94%, var(--fg-muted) 6%)',
+        boxSizing: 'border-box',
+        overflow: 'hidden',
+        position: 'relative',
+        isolation: 'isolate',
       }}
     >
-      {lanes.map((lane) => {
+      {renderDayStripeLayer(dayCount)}
+      {lanes.map((lane, laneIndex) => {
         const separatorHeight = lane.key === 'claude' ? 0 : 7
         const trackHeight = Math.max(
           14,
@@ -504,7 +1352,12 @@ function renderActiveVersionLanes(
                 lane.key === 'claude'
                   ? '0'
                   : '1px solid color-mix(in srgb, var(--fg-muted) 28%, transparent)',
+              background:
+                laneIndex % 2 === 0
+                  ? 'color-mix(in srgb, var(--card) 82%, transparent)'
+                  : 'color-mix(in srgb, var(--fg-muted) 7%, transparent)',
               boxSizing: 'border-box',
+              zIndex: 1,
             }}
           >
             <div
@@ -549,6 +1402,7 @@ function renderActiveVersionLanes(
                   width: '100%',
                   height: '100%',
                   overflow: 'visible',
+                  zIndex: 2,
                 }}
               >
                 {Array.from({ length: dayCount + 1 }, (_, index) => (
@@ -645,6 +1499,7 @@ function renderActiveVersionLanes(
                       letterSpacing: '0',
                       pointerEvents: 'auto',
                       transform: isShortLabel ? 'translateX(-50%)' : undefined,
+                      zIndex: 3,
                     }}
                   >
                     {formatVersionSegmentText(segment)}
@@ -653,6 +1508,149 @@ function renderActiveVersionLanes(
               })}
             </div>
           </div>
+        )
+      })}
+    </div>
+  )
+}
+
+function metricLaneTitle(mode: Exclude<LowerLaneMode, 'tui'>): string {
+  return mode === 'requests' ? 'Requests' : 'Tool calls'
+}
+
+function buildMetricDayTooltip(
+  day: TokenTrendDayEnvelope,
+  series: readonly ProviderSeries[],
+  mode: Exclude<LowerLaneMode, 'tui'>
+): ReactNode {
+  const labelMap = new Map<string, string>(series.map((s) => [s.key, s.label]))
+  const rows = Object.entries(day.totals)
+    .filter(([, count]) => count > 0)
+    .sort(([, a], [, b]) => b - a)
+
+  return (
+    <>
+      <div className='v9-tip-head'>
+        {formatDayLabel(day.day)} · {metricLaneTitle(mode)}
+      </div>
+      {rows.map(([key, count]) => {
+        const pct = day.total > 0 ? ((count / day.total) * 100).toFixed(0) : '0'
+        return (
+          <div
+            key={key}
+            className='v9-tip-row'
+            style={{ gridTemplateColumns: 'minmax(0,1fr) auto' }}
+          >
+            <span className='t-model'>{labelMap.get(key) ?? key}</span>
+            <span className='t-count'>
+              {formatCompactNumber(count)} ({pct}%)
+            </span>
+          </div>
+        )
+      })}
+      {rows.length === 0 && (
+        <div className='v9-tip-row' style={{ gridTemplateColumns: '1fr' }}>
+          <span className='t-model' style={{ color: 'var(--fg-muted)' }}>
+            no data
+          </span>
+        </div>
+      )}
+    </>
+  )
+}
+
+function renderMetricLowerLane(
+  mode: Exclude<LowerLaneMode, 'tui'>,
+  envelopes: readonly TokenTrendDayEnvelope[],
+  series: readonly ProviderSeries[],
+  heightPx: number
+): ReactNode {
+  if (envelopes.length === 0) {
+    return (
+      <div
+        className={`tt-metric-lane tt-metric-lane-${mode} is-empty`}
+        aria-label={`${metricLaneTitle(mode)} by day and hour, stacked by provider`}
+        style={{ height: `${heightPx.toString()}px` }}
+      >
+        <span>no {metricLaneTitle(mode).toLowerCase()} data</span>
+      </div>
+    )
+  }
+
+  const maxDayTotal = Math.max(0, ...envelopes.map((day) => day.total))
+  const scaleTicks = buildMetricScaleTicks(maxDayTotal, mode)
+
+  return (
+    <div
+      className={`tt-metric-lane tt-metric-lane-${mode}`}
+      aria-label={`${metricLaneTitle(mode)} by day and hour, stacked by provider`}
+      style={{ height: `${heightPx.toString()}px` }}
+    >
+      {renderDayStripeLayer(envelopes.length)}
+      {renderMetricScaleMarkers(scaleTicks)}
+      {envelopes.map((day, dayIndex) => {
+        const dayHeightPct = tokenTrendDayHeightPct(day.total, maxDayTotal)
+        const dayShell = (
+          <div
+            className={`tt-metric-day-shell ${dayBandClass(dayIndex)}`}
+            data-day={day.day}
+          >
+            <div
+              className='tt-metric-day-envelope'
+              style={{ height: `${dayHeightPct.toFixed(1)}%` }}
+            >
+              {day.hours.map((hourBucket) => {
+                const hourHeightPct = tokenTrendHourHeightPct(
+                  hourBucket.total,
+                  day.maxHourTotal
+                )
+                return (
+                  <div
+                    key={`${mode}-${hourBucket.day}-${hourBucket.hour.toString()}`}
+                    className='tt-metric-hour-cell'
+                  >
+                    <div
+                      className='tt-metric-hour-bar'
+                      style={{ height: `${hourHeightPct.toFixed(1)}%` }}
+                    >
+                      {series.map((s) => {
+                        const value = hourBucket.totals[s.key] ?? 0
+                        if (value <= 0) return null
+                        const pct =
+                          hourBucket.total > 0
+                            ? (value / hourBucket.total) * 100
+                            : 0
+                        return (
+                          <div
+                            key={s.key}
+                            className={`tt-slice ${s.cssClass}`}
+                            style={{
+                              flexBasis: `${pct.toFixed(4)}%`,
+                              flexShrink: 0,
+                              minHeight: '1px',
+                              width: '100%',
+                              background: resolveSliceColor(s.key, s.color),
+                            }}
+                          />
+                        )
+                      })}
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        )
+
+        return (
+          <HoverTooltip
+            key={`${mode}-${day.day}`}
+            content={buildMetricDayTooltip(day, series, mode)}
+            variant='quota'
+            className='tt-day-tip-wrap'
+          >
+            {dayShell}
+          </HoverTooltip>
         )
       })}
     </div>
@@ -685,10 +1683,239 @@ export interface TokenTrendChartProps {
   data?: TrendBucket[]
   series: ProviderSeries[]
   dayEnvelopes?: TokenTrendDayEnvelope[]
+  requestDayEnvelopes?: TokenTrendDayEnvelope[]
+  toolDayEnvelopes?: TokenTrendDayEnvelope[]
   versionIntervals?: UsageReportTokenTrendVersionIntervalRow[]
+  modelFirstSeen?: UsageReportTokenTrendModelFirstSeenRow[]
+  healthRows?: UsageReportProviderLatencyHealthRow[]
+  scoreRows?: UsageReportTokenTrendScoreRow[]
   dayDetail?: UsageReportTokenTrendDayResponse | null
   detailLoading?: boolean
   onHourHover?: (target: { day: string; hour: number }) => void
+  lowerLaneMode?: LowerLaneMode
+  onLowerLaneModeChange?: (mode: LowerLaneMode) => void
+}
+
+export type LowerLaneMode = 'tui' | 'requests' | 'tools'
+
+interface TrendSignalPanelProps {
+  dayEnvelopes: readonly TokenTrendDayEnvelope[]
+  series: readonly ProviderSeries[]
+  healthRows: readonly UsageReportProviderLatencyHealthRow[]
+  scoreRows: readonly UsageReportTokenTrendScoreRow[]
+}
+
+function TrendSignalPanel({
+  dayEnvelopes,
+  series,
+  healthRows,
+  scoreRows,
+}: TrendSignalPanelProps): ReactElement {
+  const [signalMode, setSignalMode] = useState<TrendSignalMode>('health')
+  const [selectedScopeKeys, setSelectedScopeKeys] = useState<string[]>(['all'])
+  const [selectedHealthMetricKeys, setSelectedHealthMetricKeys] = useState<
+    string[]
+  >(['all'])
+  const [selectedScoreMetricKeys, setSelectedScoreMetricKeys] = useState<
+    string[]
+  >(['all'])
+  const [openSignalMenu, setOpenSignalMenu] = useState<
+    'scope' | 'metrics' | null
+  >(null)
+  const scopeOptions = useMemo(
+    () => deriveTrendScopeOptions(series, healthRows, scoreRows),
+    [series, healthRows, scoreRows]
+  )
+  const metricOptions = useMemo(
+    () => [
+      { key: 'all', label: 'All' },
+      ...metricDefinitionsForMode(signalMode).map((metric) => ({
+        key: metric.key,
+        label: metric.label,
+      })),
+    ],
+    [signalMode]
+  )
+  const selectedMetricKeys =
+    signalMode === 'health' ? selectedHealthMetricKeys : selectedScoreMetricKeys
+  const setSelectedMetricKeys =
+    signalMode === 'health'
+      ? setSelectedHealthMetricKeys
+      : setSelectedScoreMetricKeys
+  const selectedMetrics = useMemo(
+    () => selectedMetricDefinitions(signalMode, selectedMetricKeys),
+    [signalMode, selectedMetricKeys]
+  )
+  const signalRows = useMemo(
+    () =>
+      buildTrendSignalRows({
+        mode: signalMode,
+        dayEnvelopes,
+        healthRows,
+        scoreRows,
+        selectedScopeKeys,
+        selectedMetrics,
+      }),
+    [
+      signalMode,
+      dayEnvelopes,
+      healthRows,
+      scoreRows,
+      selectedScopeKeys,
+      selectedMetrics,
+    ]
+  )
+  const visibleSignalRows = useMemo(
+    () => signalRows.rows.filter((row) => row.hasData),
+    [signalRows.rows]
+  )
+  const signalEmptyText =
+    selectedMetrics.length === 0
+      ? 'no selected metrics'
+      : signalRows.sourceRowCount === 0
+        ? 'no matching data'
+        : visibleSignalRows.length === 0
+          ? 'unavailable metric categories'
+          : null
+  const signalGraphContent = useMemo(
+    () =>
+      signalEmptyText === null ? (
+        renderTrendSignalGraph(visibleSignalRows, dayEnvelopes)
+      ) : (
+        <div className='tt-signal-empty'>{signalEmptyText}</div>
+      ),
+    [dayEnvelopes, signalEmptyText, visibleSignalRows]
+  )
+
+  return (
+    <div
+      className={`tt-signal-panel tt-signal-panel-${signalMode}`}
+      aria-label='Trend health and score graph'
+    >
+      <div className='tt-signal-toolbar'>
+        <div
+          role='tablist'
+          aria-label='Trend signal graph'
+          className='tt-signal-tabs'
+        >
+          {(['health', 'score'] as const).map((mode) => (
+            <button
+              key={mode}
+              type='button'
+              role='tab'
+              aria-selected={signalMode === mode}
+              className={signalMode === mode ? 'is-active' : undefined}
+              onClick={() => {
+                setSignalMode(mode)
+                setOpenSignalMenu(null)
+              }}
+            >
+              {mode === 'health' ? 'Health' : 'Score'}
+            </button>
+          ))}
+        </div>
+        <div className='tt-multiselect'>
+          <button
+            type='button'
+            className='tt-multiselect-trigger'
+            aria-haspopup='true'
+            aria-expanded={openSignalMenu === 'scope'}
+            onClick={() => {
+              setOpenSignalMenu((current) =>
+                current === 'scope' ? null : 'scope'
+              )
+            }}
+            onKeyDown={(event) => {
+              if (event.key === 'Escape') setOpenSignalMenu(null)
+            }}
+          >
+            Scope:{' '}
+            {summarizeSelectedOptions(selectedScopeKeys, scopeOptions, 'None')}
+          </button>
+          <div
+            role='group'
+            aria-label='Trend scope options'
+            hidden={openSignalMenu !== 'scope'}
+          >
+            {scopeOptions.map((option) => (
+              <label
+                key={option.key}
+                className={`tt-multiselect-option depth-${option.depth.toString()}`}
+              >
+                <input
+                  type='checkbox'
+                  checked={selectedScopeKeys.includes(option.key)}
+                  onChange={(event) => {
+                    setSelectedScopeKeys(
+                      updateMultiSelectKeys(
+                        selectedScopeKeys,
+                        option.key,
+                        event.currentTarget.checked
+                      )
+                    )
+                  }}
+                />
+                <span>{option.label}</span>
+              </label>
+            ))}
+          </div>
+        </div>
+        <div className='tt-multiselect'>
+          <button
+            type='button'
+            className='tt-multiselect-trigger'
+            aria-haspopup='true'
+            aria-expanded={openSignalMenu === 'metrics'}
+            onClick={() => {
+              setOpenSignalMenu((current) =>
+                current === 'metrics' ? null : 'metrics'
+              )
+            }}
+            onKeyDown={(event) => {
+              if (event.key === 'Escape') setOpenSignalMenu(null)
+            }}
+          >
+            Metrics:{' '}
+            {summarizeSelectedOptions(
+              selectedMetricKeys,
+              metricOptions,
+              'None'
+            )}
+          </button>
+          <div
+            role='group'
+            aria-label='Trend metric options'
+            hidden={openSignalMenu !== 'metrics'}
+          >
+            {metricOptions.map((option) => (
+              <label key={option.key} className='tt-multiselect-option'>
+                <input
+                  type='checkbox'
+                  checked={selectedMetricKeys.includes(option.key)}
+                  onChange={(event) => {
+                    setSelectedMetricKeys(
+                      updateMultiSelectKeys(
+                        selectedMetricKeys,
+                        option.key,
+                        event.currentTarget.checked
+                      )
+                    )
+                  }}
+                />
+                <span>{option.label}</span>
+              </label>
+            ))}
+          </div>
+        </div>
+      </div>
+      <div
+        className='tt-signal-chart'
+        aria-label={`${signalMode === 'health' ? 'Health' : 'Score'} metrics by day and hour`}
+      >
+        {signalGraphContent}
+      </div>
+    </div>
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -709,31 +1936,63 @@ export function TokenTrendChart({
   data = [],
   series,
   dayEnvelopes,
+  requestDayEnvelopes = [],
+  toolDayEnvelopes = [],
   versionIntervals = [],
+  modelFirstSeen = [],
+  healthRows = [],
+  scoreRows = [],
   dayDetail,
   detailLoading = false,
   onHourHover,
+  lowerLaneMode: lowerLaneModeProp,
+  onLowerLaneModeChange,
 }: TokenTrendChartProps): ReactElement {
+  const [internalLowerLaneMode, setInternalLowerLaneMode] =
+    useState<LowerLaneMode>('tui')
+  const lowerLaneMode = lowerLaneModeProp ?? internalLowerLaneMode
+  const handleLowerLaneModeChange = (mode: LowerLaneMode): void => {
+    if (lowerLaneModeProp === undefined) {
+      setInternalLowerLaneMode(mode)
+    }
+    onLowerLaneModeChange?.(mode)
+  }
+
   if (dayEnvelopes !== undefined) {
     const maxDayTotal = Math.max(0, ...dayEnvelopes.map((day) => day.total))
     const activeVersionLanes = deriveTokenTrendActiveVersionLanes(
       dayEnvelopes,
       versionIntervals
     )
+    const modelFirstSeenGroups = deriveTokenTrendModelFirstSeenGroups(
+      dayEnvelopes,
+      modelFirstSeen
+    )
+    const modelFirstSeenMarkersByDay =
+      groupModelFirstSeenMarkersByDay(modelFirstSeenGroups)
     const hasActiveVersionLanes = activeVersionLanes.some(
       (lane) => lane.segments.length > 0
     )
+    const hasVersionsLaneData = hasActiveVersionLanes
     const tokenScaleTicks = buildTokenScaleTicks(maxDayTotal)
     const widthUnits = Math.max(1, dayEnvelopes.length * 24)
     const labelStride =
       dayEnvelopes.length <= 14 ? 1 : Math.ceil(dayEnvelopes.length / 14)
     const chartHeightPx = dayEnvelopes.length >= 21 ? 224 : 196
+    const lowerChartHeightPx = chartHeightPx
 
     return (
       <div
         aria-label='Token usage by day and hour, stacked by provider'
         style={{ width: '100%' }}
       >
+        <TrendSignalPanel
+          dayEnvelopes={dayEnvelopes}
+          series={series}
+          healthRows={healthRows}
+          scoreRows={scoreRows}
+        />
+
         <div
           className='token-trend-chart tt-day-chart'
           style={{
@@ -759,12 +2018,15 @@ export function TokenTrendChart({
               isolation: 'isolate',
             }}
           >
+            {renderDayStripeLayer(dayEnvelopes.length)}
             {renderTokenScaleMarkers(tokenScaleTicks)}
-            {dayEnvelopes.map((day) => {
+            {dayEnvelopes.map((day, dayIndex) => {
               const dayHeightPct = tokenTrendDayHeightPct(
                 day.total,
                 maxDayTotal
               )
+              const dayModelMarkers =
+                modelFirstSeenMarkersByDay.get(day.day) ?? []
               const hoverHour =
                 day.hours.reduce(
                   (best, hour) => (hour.total > best.total ? hour : best),
@@ -779,7 +2041,7 @@ export function TokenTrendChart({
 
               const dayShell = (
                 <div
-                  className='tt-day-hover-shell'
+                  className={`tt-day-hover-shell ${dayBandClass(dayIndex)}`}
                   data-day={day.day}
                   style={{
                     width: '100%',
@@ -809,8 +2071,7 @@ export function TokenTrendChart({
                       position: 'relative',
                       border:
                         '1px solid color-mix(in srgb, var(--border) 72%, transparent)',
-                      background:
-                        'color-mix(in srgb, var(--card) 88%, var(--fg-muted) 12%)',
+                      background: dayEnvelopeBackground(dayIndex),
                       overflow: 'hidden',
                     }}
                   >
@@ -905,6 +2166,7 @@ export function TokenTrendChart({
                         )
                       })}
                     </div>
+                    {renderModelFirstSeenDayOutline(day.day, dayModelMarkers)}
                   </div>
                 </div>
               )
@@ -916,6 +2178,7 @@ export function TokenTrendChart({
                     day,
                     series,
                     versionIntervals,
+                    modelFirstSeenGroups,
                     dayDetail,
                     detailLoading && dayDetail?.date !== day.day
                   )}
@@ -970,72 +2233,78 @@ export function TokenTrendChart({
           })}
         </div>
 
-        {renderActiveVersionLanes(
-          activeVersionLanes,
-          widthUnits,
-          dayEnvelopes.length
-        )}
+        {lowerLaneMode === 'tui'
+          ? renderActiveVersionLanes(
+              activeVersionLanes,
+              widthUnits,
+              dayEnvelopes.length,
+              lowerChartHeightPx
+            )
+          : renderMetricLowerLane(
+              lowerLaneMode,
+              lowerLaneMode === 'requests'
+                ? requestDayEnvelopes
+                : toolDayEnvelopes,
+              series,
+              lowerChartHeightPx
+            )}
 
-        <div
-          className='tt-legend'
-          style={{
-            display: 'flex',
-            gap: '12px',
-            flexWrap: 'wrap',
-            fontFamily: 'var(--font-mono)',
-            fontSize: '10px',
-            color: 'var(--fg-muted)',
-            padding: '6px 8px',
-            letterSpacing: '0',
-          }}
-        >
-          {series.map((s) => (
-            <div
-              key={s.key}
-              className='tt-leg-item'
-              style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: '4px',
-              }}
-            >
-              <span
-                className={`tt-swatch ${s.cssClass}`}
-                style={{
-                  display: 'inline-block',
-                  width: '10px',
-                  height: '10px',
-                  border: '1px solid var(--border)',
-                  flexShrink: 0,
-                  background: resolveSliceColor(s.key, s.color),
-                }}
-              />
-              {s.label}
-            </div>
-          ))}
-          {hasActiveVersionLanes && (
-            <div
-              className='tt-leg-item'
-              style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: '4px',
-              }}
-            >
-              <span
-                style={{
-                  display: 'inline-block',
-                  width: '14px',
-                  height: '4px',
-                  borderRadius: '999px',
-                  border: '1px solid var(--border)',
-                  background: 'var(--fg)',
-                  flexShrink: 0,
-                }}
-              />
-              Active version
-            </div>
-          )}
+        <div className='tt-chart-footer'>
+          <div
+            role='tablist'
+            aria-label='Trend detail lane'
+            className='tt-lower-tabs'
+          >
+            {(['tui', 'requests', 'tools'] as const).map((mode) => {
+              const selected = lowerLaneMode === mode
+              const label =
+                mode === 'tui'
+                  ? 'Version'
+                  : mode === 'requests'
+                    ? 'Request'
+                    : 'Tool'
+              return (
+                <button
+                  key={mode}
+                  type='button'
+                  role='tab'
+                  aria-selected={selected}
+                  className={selected ? 'is-active' : undefined}
+                  onClick={() => {
+                    handleLowerLaneModeChange(mode)
+                  }}
+                >
+                  {label}
+                </button>
+              )
+            })}
+          </div>
+
+          <div className='tt-legend'>
+            {series.map((s) => (
+              <div key={s.key} className='tt-leg-item'>
+                <span
+                  className={`tt-swatch ${s.cssClass}`}
+                  style={{
+                    background: resolveSliceColor(s.key, s.color),
+                  }}
+                />
+                {s.label}
+              </div>
+            ))}
+            {hasVersionsLaneData && (
+              <div className='tt-leg-item'>
+                <span className='tt-active-version-swatch' />
+                Active version
+              </div>
+            )}
+            {modelFirstSeenGroups.length > 0 && (
+              <div className='tt-leg-item'>
+                <span className='tt-model-first-seen-swatch' />
+                First seen model
+              </div>
+            )}
+          </div>
         </div>
       </div>
     )

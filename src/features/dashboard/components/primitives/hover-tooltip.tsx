@@ -76,6 +76,50 @@ interface PanelCoords {
   useRight: boolean
 }
 
+interface PanelSize {
+  width: number
+  height: number
+}
+
+const VIEWPORT_MARGIN_PX = 8
+const QUOTA_TOOLTIP_GAP_PX = 6
+const HEALTH_TOOLTIP_GAP_PX = 8
+
+function viewportWidth(): number {
+  return window.innerWidth || document.documentElement.clientWidth || 1024
+}
+
+function viewportHeight(): number {
+  return window.innerHeight || document.documentElement.clientHeight || 768
+}
+
+function clamp(value: number, min: number, max: number): number {
+  if (max < min) return min
+  return Math.min(Math.max(value, min), max)
+}
+
+function maxPanelLeft(panelWidth: number): number {
+  return Math.max(
+    VIEWPORT_MARGIN_PX,
+    viewportWidth() - panelWidth - VIEWPORT_MARGIN_PX
+  )
+}
+
+function maxPanelTop(panelHeight: number): number {
+  return Math.max(
+    VIEWPORT_MARGIN_PX,
+    viewportHeight() - panelHeight - VIEWPORT_MARGIN_PX
+  )
+}
+
+function clampPanelTop(top: number, panelHeight: number): number {
+  return clamp(top, VIEWPORT_MARGIN_PX, maxPanelTop(panelHeight))
+}
+
+function clampPanelRight(right: number, panelWidth: number): number {
+  return clamp(right, VIEWPORT_MARGIN_PX, maxPanelLeft(panelWidth))
+}
+
 /** Returns the variant-specific CSS class name(s) for positioning. */
 function variantClass(variant: TooltipVariant): string {
   if (variant === 'quota' || variant === 'quota-bar')
@@ -95,33 +139,57 @@ function variantClass(variant: TooltipVariant): string {
  * - `quota` / `quota-bar`: panel bottom edge at (rect.top - 6), right-aligned
  *   to rect.right, width 240px
  */
-function computeCoords(rect: DOMRect, variant: TooltipVariant): PanelCoords {
+function computeCoords(
+  rect: DOMRect,
+  variant: TooltipVariant,
+  panelSize: PanelSize = { width: 0, height: 0 }
+): PanelCoords {
+  const panelWidth = Math.max(0, panelSize.width)
+  const panelHeight = Math.max(0, panelSize.height)
+
   if (variant === 'health') {
+    const visualTop = rect.top + rect.height / 2 - panelHeight / 2
+    const clampedVisualTop = clampPanelTop(visualTop, panelHeight)
     return {
       // right edge of panel sits 8px left of trigger left edge
-      top: rect.top + rect.height / 2,
+      top: clampedVisualTop + panelHeight / 2,
       left: 0, // unused when useRight=true
-      right: window.innerWidth - rect.left + 8,
+      right: clampPanelRight(
+        viewportWidth() - rect.left + HEALTH_TOOLTIP_GAP_PX,
+        panelWidth
+      ),
       translateY: '-50%',
       useRight: true,
     }
   }
 
   if (variant === 'quota' || variant === 'quota-bar') {
+    const visualTop = rect.top - QUOTA_TOOLTIP_GAP_PX - panelHeight
+    const clampedVisualTop = clampPanelTop(visualTop, panelHeight)
     return {
       // bottom edge of panel sits 6px above trigger top
-      top: rect.top - 6,
+      top: clampedVisualTop + panelHeight,
       left: 0, // unused when useRight=true
-      right: window.innerWidth - rect.right,
+      right: clampPanelRight(viewportWidth() - rect.right, panelWidth),
       translateY: '-100%',
       useRight: true,
     }
   }
 
   // default: panel top-left at (rect.right, rect.top)
+  const desiredRight = rect.right
+  const leftOfTrigger = rect.left - panelWidth
+  const wouldOverflowRight =
+    panelWidth > 0 &&
+    desiredRight + panelWidth > viewportWidth() - VIEWPORT_MARGIN_PX
+  const left =
+    wouldOverflowRight && leftOfTrigger >= VIEWPORT_MARGIN_PX
+      ? leftOfTrigger
+      : clamp(desiredRight, VIEWPORT_MARGIN_PX, maxPanelLeft(panelWidth))
+
   return {
-    top: rect.top,
-    left: rect.right,
+    top: clampPanelTop(rect.top, panelHeight),
+    left,
     useRight: false,
   }
 }
@@ -151,7 +219,13 @@ export function HoverTooltip({
   const updateCoords = useCallback(() => {
     if (!wrapperRef.current) return
     const rect = wrapperRef.current.getBoundingClientRect()
-    setCoords(computeCoords(rect, variant))
+    const panelRect = panelRef.current?.getBoundingClientRect()
+    setCoords(
+      computeCoords(rect, variant, {
+        width: panelRect?.width ?? 0,
+        height: panelRect?.height ?? 0,
+      })
+    )
   }, [variant])
 
   /**
@@ -239,8 +313,12 @@ export function HoverTooltip({
       /* Wave 14-G: box-shadow per mockup line 2013 */
       boxShadow: '0 4px 12px rgba(0, 0, 0, 0.55)',
       lineHeight: 1.3,
+      maxHeight: `calc(100vh - ${String(VIEWPORT_MARGIN_PX * 2)}px)`,
+      overflowY: 'auto',
+      overscrollBehavior: 'contain',
       // Use 1000 to escape any stacking context created by transformed ancestors.
       zIndex: 1000,
+      transform: 'none',
       ...(isOpen
         ? { opacity: 1, pointerEvents: 'auto' }
         : { opacity: 0, pointerEvents: 'none' }),

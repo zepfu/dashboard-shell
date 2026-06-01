@@ -20,7 +20,7 @@ import {
   useState,
   type ReactElement,
 } from 'react'
-import { formatDistanceToNow } from 'date-fns'
+import { formatDistance, formatDistanceToNow } from 'date-fns'
 import { useQuery } from '@tanstack/react-query'
 import { RefreshCw } from 'lucide-react'
 import { ConfigDrawer } from '@/components/config-drawer'
@@ -28,15 +28,22 @@ import { ProfileDropdown } from '@/components/profile-dropdown'
 import { Search } from '@/components/search'
 import {
   fetchUsageReport,
+  fetchUsageReportQuotaHistory,
+  fetchUsageReportQuotaRangeHistory,
   fetchUsageReportQuotas,
   type UsageReportGrain,
+  type UsageReportProviderLatencyHealthRow,
+  type UsageReportQuotaRow,
   type UsageReportSummary,
 } from './api/usage-report'
 import AnchorBar from './components/anchor-bar'
 import { computeDeltaPct } from './components/comparison-panel'
 import { DateControls } from './components/date-controls'
 import { KpiStrip } from './components/kpi-strip'
-import PhosphorDashboard from './components/phosphor-dashboard'
+import type { LedgerView } from './components/master-ledger-table'
+import PhosphorDashboard, {
+  type ProviderSectionView,
+} from './components/phosphor-dashboard'
 import { PhosphorLayout } from './components/phosphor-layout'
 import { PhosphorSidebar } from './components/phosphor-sidebar'
 import {
@@ -45,6 +52,7 @@ import {
   type SlicerOptions,
   SLICER_EMPTY_FILTERS,
 } from './components/slicer-bar'
+import type { LowerLaneMode } from './components/token-trend-chart'
 import { useDashboardAlertSummary } from './hooks/use-alerts-from-anomalies'
 import { useAnomalyDetection } from './hooks/use-anomaly-detection'
 import {
@@ -69,6 +77,69 @@ function defaultDateRange(): { from: string; to: string } {
 }
 
 const LIVE_DASHBOARD_REFETCH_INTERVAL_MS = 60_000
+
+interface RecencyBreakoutItem {
+  label: string
+  value: string
+}
+
+function parseTimestampMs(value: string | null | undefined): number | null {
+  if (value == null || value === '') return null
+  const time = new Date(value).getTime()
+  return Number.isFinite(time) ? time : null
+}
+
+function maxIsoTimestamp(
+  values: Array<string | null | undefined>
+): string | null {
+  let maxMs: number | null = null
+  for (const value of values) {
+    const time = parseTimestampMs(value)
+    if (time === null) continue
+    if (maxMs === null || time > maxMs) maxMs = time
+  }
+  return maxMs === null ? null : new Date(maxMs).toISOString()
+}
+
+function latestQuotaObservationAt(rows: UsageReportQuotaRow[]): string | null {
+  return maxIsoTimestamp(
+    rows.flatMap((row) => [
+      row.weekly_interval_start,
+      row.short_interval_start,
+      row.special_interval_start,
+      row.short_special_interval_start,
+      row.monthly_interval_start,
+    ])
+  )
+}
+
+function latestHealthBucketAt(
+  rows: UsageReportProviderLatencyHealthRow[]
+): string | null {
+  return maxIsoTimestamp(rows.map((row) => row.bucket_start))
+}
+
+function formatRecencyValue(iso: string | null, now: Date): string {
+  if (iso === null) return '--'
+  const date = new Date(iso)
+  if (Number.isNaN(date.getTime())) return '--'
+  const timeUTC = date.toUTCString().split(' ')[4] ?? ''
+  const distance = formatDistance(date, now, { addSuffix: false })
+  return `${timeUTC} UTC / ${distance} ago`
+}
+
+function scrollDashboardTargetIntoView(targetId: string): void {
+  if (typeof document === 'undefined') return
+  const el = document.getElementById(targetId)
+  el?.scrollIntoView?.({ behavior: 'smooth' })
+}
+
+function focusDashboardShortcutTarget(selector: string): void {
+  if (typeof document === 'undefined') return
+  const el = document.querySelector<HTMLElement>(selector)
+  el?.scrollIntoView?.({ behavior: 'smooth', block: 'center' })
+  el?.focus()
+}
 
 // ---------------------------------------------------------------------------
 // KpiStrip summary adapter
@@ -118,6 +189,11 @@ function toKpiSummary(
  */
 export function Dashboard(): ReactElement {
   const [activeSection, setActiveSection] = useState('status')
+  const [providerSectionView, setProviderSectionView] =
+    useState<ProviderSectionView>('health')
+  const [trendLowerLaneMode, setTrendLowerLaneMode] =
+    useState<LowerLaneMode>('tui')
+  const [ledgerView, setLedgerView] = useState<LedgerView>('model')
 
   const defaults = useMemo(() => defaultDateRange(), [])
   const [from, setFrom] = useState(defaults.from)
@@ -133,6 +209,22 @@ export function Dashboard(): ReactElement {
   const [reportCacheBust, setReportCacheBust] = useState<string | undefined>(
     undefined
   )
+  const [quotaRangeHistoryCacheBust, setQuotaRangeHistoryCacheBust] = useState<
+    string | undefined
+  >(undefined)
+  const [quotaHistoryCacheBust, setQuotaHistoryCacheBust] = useState<
+    string | undefined
+  >(undefined)
+  const [recencyNow, setRecencyNow] = useState(() => new Date())
+
+  useEffect(() => {
+    const id = setInterval(() => {
+      setRecencyNow(new Date())
+    }, 10_000)
+    return () => {
+      clearInterval(id)
+    }
+  }, [])
 
   // 15-D.3: slicer options derived from PhosphorDashboard's loaded data
   const [slicerOptions, setSlicerOptions] = useState<SlicerOptions>({
@@ -377,13 +469,146 @@ export function Dashboard(): ReactElement {
     refetchIntervalInBackground: true,
   })
 
+  const { data: quotaRangeHistoryData, isFetching: quotaRangeHistoryFetching } =
+    useQuery({
+      queryKey: [
+        'usage-report-quota-range-history',
+        from,
+        to,
+        quotaRangeHistoryCacheBust,
+      ],
+      queryFn: ({ signal }) =>
+        fetchUsageReportQuotaRangeHistory(
+          {
+            from,
+            to,
+            cacheBust: quotaRangeHistoryCacheBust,
+          },
+          signal
+        ),
+      enabled: providerSectionView === 'quota',
+      staleTime: LIVE_DASHBOARD_REFETCH_INTERVAL_MS,
+      refetchInterval: false,
+      refetchIntervalInBackground: true,
+    })
+
+  const { data: quotaHistoryData, isFetching: quotaHistoryFetching } = useQuery(
+    {
+      queryKey: ['usage-report-quota-history', quotaHistoryCacheBust],
+      queryFn: ({ signal }) =>
+        fetchUsageReportQuotaHistory(
+          {
+            cacheBust: quotaHistoryCacheBust,
+          },
+          signal
+        ),
+      enabled: providerSectionView === 'health',
+      staleTime: LIVE_DASHBOARD_REFETCH_INTERVAL_MS,
+      refetchInterval: false,
+      refetchIntervalInBackground: true,
+    }
+  )
+
   const quotaRows = useMemo(
     () => quotasData?.quotas ?? summaryReport?.quotas ?? [],
     [quotasData?.quotas, summaryReport?.quotas]
   )
 
+  const recencyBreakout = useMemo<RecencyBreakoutItem[]>(() => {
+    const sessionAt =
+      summaryReport?.metadata?.latestRecordAt ??
+      summaryReport?.summary?.latest_record_at ??
+      null
+    const quotaAt = latestQuotaObservationAt(quotaRows)
+    const healthAt = latestHealthBucketAt(
+      summaryReport?.providerLatencyHealth ?? []
+    )
+    return [
+      {
+        label: 'Session',
+        value: formatRecencyValue(sessionAt, recencyNow),
+      },
+      {
+        label: 'Quota',
+        value: formatRecencyValue(quotaAt, recencyNow),
+      },
+      {
+        label: 'Health',
+        value: formatRecencyValue(healthAt, recencyNow),
+      },
+    ]
+  }, [
+    quotaRows,
+    recencyNow,
+    summaryReport?.metadata?.latestRecordAt,
+    summaryReport?.providerLatencyHealth,
+    summaryReport?.summary?.latest_record_at,
+  ])
+
   const handleForceFreshnessRefresh = useCallback((): void => {
     setReportCacheBust(Date.now().toString())
+  }, [])
+
+  const handleQuotaRangeHistoryRefresh = useCallback((): void => {
+    setQuotaRangeHistoryCacheBust(Date.now().toString())
+  }, [])
+
+  const handleQuotaHistoryRefresh = useCallback((): void => {
+    setQuotaHistoryCacheBust(Date.now().toString())
+  }, [])
+
+  const handleShortcutActivate = useCallback((shortcut: string): void => {
+    setActiveSection(shortcut)
+
+    switch (shortcut) {
+      case 'status':
+        scrollDashboardTargetIntoView('status')
+        break
+      case 'status-health':
+        setProviderSectionView('health')
+        scrollDashboardTargetIntoView('status')
+        break
+      case 'status-quota':
+        setProviderSectionView('quota')
+        scrollDashboardTargetIntoView('status')
+        break
+      case 'trend':
+        scrollDashboardTargetIntoView('tokens')
+        break
+      case 'trend-tui':
+      case 'trend-version':
+      case 'trend-versions':
+        setTrendLowerLaneMode('tui')
+        scrollDashboardTargetIntoView('tokens')
+        break
+      case 'trend-requests':
+        setTrendLowerLaneMode('requests')
+        scrollDashboardTargetIntoView('tokens')
+        break
+      case 'trend-tools':
+        setTrendLowerLaneMode('tools')
+        scrollDashboardTargetIntoView('tokens')
+        break
+      case 'ledger':
+        scrollDashboardTargetIntoView('models')
+        break
+      case 'ledger-model':
+        setLedgerView('model')
+        scrollDashboardTargetIntoView('models')
+        break
+      case 'ledger-repository':
+        setLedgerView('repository')
+        scrollDashboardTargetIntoView('models')
+        break
+      case 'filter':
+        focusDashboardShortcutTarget('[data-shortcut-target="first-filter"]')
+        break
+      case 'date':
+        focusDashboardShortcutTarget('[data-shortcut-target="first-date"]')
+        break
+      default:
+        break
+    }
   }, [])
 
   const handleReportRefresh = useCallback(async (): Promise<void> => {
@@ -399,6 +624,7 @@ export function Dashboard(): ReactElement {
     summaryReport?.summary,
     quotaRows,
     summaryReport?.providerErrorObservations,
+    summaryReport?.dockerLogErrors,
     summaryReport?.providerLatencyHealth
   )
 
@@ -523,6 +749,21 @@ export function Dashboard(): ReactElement {
                   {summaryFetching ? 'Updating' : 'Refresh'}
                 </span>
               </button>
+              <span
+                className='freshness-breakout'
+                aria-label='Underlying data recency'
+              >
+                {recencyBreakout.map((item) => (
+                  <span className='freshness-breakout-item' key={item.label}>
+                    <span className='freshness-breakout-label'>
+                      {item.label}
+                    </span>
+                    <span className='freshness-breakout-value'>
+                      {item.value}
+                    </span>
+                  </span>
+                ))}
+              </span>
             </div>
           </div>
 
@@ -531,11 +772,13 @@ export function Dashboard(): ReactElement {
           <AnchorBar
             activeSection={activeSection}
             onSectionChange={setActiveSection}
+            onActivate={handleShortcutActivate}
           />
 
           {/* Wave 16-V controls row: SlicerBar left, DateControls right (inline) */}
           {/* Period buttons + grain selector removed per operator decision.        */}
           <div
+            id='dashboard-controls'
             className='controls'
             style={{
               background: 'var(--card)',
@@ -628,11 +871,24 @@ export function Dashboard(): ReactElement {
               report={summaryReport}
               reportLoading={summaryLoading}
               showComparison={showComparison}
+              reportRefreshKey={reportCacheBust}
               quotas={quotasData?.quotas}
               reportFetching={summaryFetching}
               quotasFetching={quotasFetching}
+              quotaHistory={quotaHistoryData?.quotaHistory ?? []}
+              quotaHistoryFetching={quotaHistoryFetching}
+              quotaRangeHistory={quotaRangeHistoryData?.quotaRangeHistory ?? []}
+              quotaRangeHistoryFetching={quotaRangeHistoryFetching}
               onRefreshReport={handleReportRefresh}
               onRefreshQuotas={handleQuotaRefresh}
+              onRefreshQuotaHistory={handleQuotaHistoryRefresh}
+              onRefreshQuotaRangeHistory={handleQuotaRangeHistoryRefresh}
+              providerSectionView={providerSectionView}
+              onProviderSectionViewChange={setProviderSectionView}
+              trendLowerLaneMode={trendLowerLaneMode}
+              onTrendLowerLaneModeChange={setTrendLowerLaneMode}
+              ledgerView={ledgerView}
+              onLedgerViewChange={setLedgerView}
             />
           )}
         </div>

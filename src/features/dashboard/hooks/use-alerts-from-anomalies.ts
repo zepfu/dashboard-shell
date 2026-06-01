@@ -19,6 +19,7 @@
  */
 import { useMemo } from 'react'
 import type {
+  UsageReportDockerLogErrorRow,
   UsageReportProviderErrorObservationRow,
   UsageReportProviderLatencyHealthRow,
   UsageReportQuotaRow,
@@ -114,6 +115,12 @@ function parseTime(value: string | null | undefined): number | null {
   if (value == null || value === '') return null
   const time = new Date(value).getTime()
   return Number.isFinite(time) ? time : null
+}
+
+function compactAlertMessage(value: string | null | undefined): string | null {
+  const compact = value?.replace(/\s+/g, ' ').trim()
+  if (!compact) return null
+  return compact.length > 140 ? `${compact.slice(0, 137)}...` : compact
 }
 
 function quotaPeriodLabel(interval: string): string {
@@ -214,6 +221,7 @@ export function buildDashboardAlertSummary({
   summary,
   quotas,
   providerErrorObservations,
+  dockerLogErrors,
   providerLatencyHealth,
   now = new Date(),
 }: {
@@ -221,32 +229,63 @@ export function buildDashboardAlertSummary({
   summary?: AlertSummaryShape
   quotas?: UsageReportQuotaRow[]
   providerErrorObservations?: UsageReportProviderErrorObservationRow[]
+  dockerLogErrors?: UsageReportDockerLogErrorRow[]
   providerLatencyHealth?: UsageReportProviderLatencyHealthRow[]
   now?: Date
 }): DashboardAlertSummary {
   const issues: DashboardAlertIssue[] = []
   const cutoff = now.getTime() - NINETY_MINUTES_MS
 
-  const recentProviderErrors = new Map<string, number>()
+  const recentProviderErrors = new Map<
+    string,
+    { count: number; messages: string[] }
+  >()
+  const addProviderError = (
+    provider: string,
+    code: string | number | null | undefined,
+    message?: string | null
+  ): void => {
+    const key = `${provider}\u0000${code ?? 'provider'}`
+    const current = recentProviderErrors.get(key) ?? { count: 0, messages: [] }
+    current.count += 1
+    const compactMessage = compactAlertMessage(message)
+    if (compactMessage && !current.messages.includes(compactMessage)) {
+      current.messages.push(compactMessage)
+    }
+    recentProviderErrors.set(key, current)
+  }
+
   for (const row of providerErrorObservations ?? []) {
     const observedAt = parseTime(row.observed_at)
     if (observedAt === null || observedAt < cutoff) continue
     const provider = providerLabel(row.provider)
     const code =
       row.status_code ?? row.error_code ?? row.error_class ?? 'provider'
-    const key = `${provider}\u0000${code}`
-    recentProviderErrors.set(key, (recentProviderErrors.get(key) ?? 0) + 1)
+    addProviderError(provider, code, row.error_message)
   }
 
-  for (const [key, count] of recentProviderErrors) {
+  for (const row of dockerLogErrors ?? []) {
+    const observedAt = parseTime(row.observed_at)
+    if (observedAt === null || observedAt < cutoff) continue
+    const provider =
+      row.provider && row.provider !== 'unknown'
+        ? providerLabel(row.provider)
+        : row.container
+    addProviderError(provider, row.status_code ?? row.level, row.message)
+  }
+
+  for (const [key, { count, messages }] of recentProviderErrors) {
     const [provider, code] = key.split('\u0000')
     const codeText = /^\d+$/.test(code)
       ? `${code} ${pluralize(count, 'error')}`
       : `${code} ${pluralize(count, 'event')}`
+    const messageSummary = messages.slice(0, 2).join(' · ')
     issues.push({
       severity: 'error',
       head: `${count} ${codeText} from ${provider}`,
-      sub: 'Observed in the last 90 minutes',
+      sub: messageSummary
+        ? `Observed in the last 90 minutes · ${messageSummary}`
+        : 'Observed in the last 90 minutes',
     })
   }
 
@@ -356,6 +395,7 @@ export function useDashboardAlertSummary(
   summary?: AlertSummaryShape,
   quotas?: UsageReportQuotaRow[],
   providerErrorObservations?: UsageReportProviderErrorObservationRow[],
+  dockerLogErrors?: UsageReportDockerLogErrorRow[],
   providerLatencyHealth?: UsageReportProviderLatencyHealthRow[]
 ): DashboardAlertSummary {
   return useMemo(
@@ -365,6 +405,7 @@ export function useDashboardAlertSummary(
         summary,
         quotas,
         providerErrorObservations,
+        dockerLogErrors,
         providerLatencyHealth,
       }),
     [
@@ -372,6 +413,7 @@ export function useDashboardAlertSummary(
       summary,
       quotas,
       providerErrorObservations,
+      dockerLogErrors,
       providerLatencyHealth,
     ]
   )

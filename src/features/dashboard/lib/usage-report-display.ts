@@ -483,7 +483,10 @@ export function formatLatency(ms: number | null | undefined): string {
  */
 export function formatUsd(usd: number | null | undefined): string {
   if (usd == null) return '—'
-  return `$${usd.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+  return `$${usd.toLocaleString('en-US', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`
 }
 
 /**

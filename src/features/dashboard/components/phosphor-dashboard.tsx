@@ -37,11 +37,18 @@ import { useQuery } from '@tanstack/react-query'
 import { RefreshCw } from 'lucide-react'
 import {
   fetchUsageReport,
+  fetchUsageReportQuotaEstimator,
+  fetchUsageReportQuotaHistory,
   fetchUsageReportQuotas,
+  fetchUsageReportToolActivity,
   fetchUsageReportTokenTrendDay,
   fetchUsageReportTokenTrendSummary,
+  type UsageReportQuotaEstimatorCoefficient,
+  type UsageReportQuotaEstimatorEstimate,
+  type UsageReportQuotaEstimatorResponse,
   type UsageReportProviderErrorObservationRow,
   type UsageReportProviderLatencyHealthRow,
+  type UsageReportProviderStatusUsageRow,
   type UsageReportQuotaHistoryRow,
   type UsageReportQuotaRow,
   type UsageReportQuotaUsageBreakdown,
@@ -49,10 +56,16 @@ import {
   type UsageReportRow,
   type UsageReportSummary,
   type UsageReportToolActivityRow,
+  type UsageReportTokenTrendScoreRow,
   type UsageReportTrendRow,
   type UsageReportGrain,
 } from '../api/usage-report'
 import { useAnomalyDetection } from '../hooks/use-anomaly-detection'
+import {
+  agentQualityFromFlatRow,
+  combineAgentQualitySummaries,
+  type AgentQualitySummary,
+} from '../lib/agent-quality'
 import {
   buildTokenTrendDayEnvelopes,
   normalizeTrendData,
@@ -77,6 +90,8 @@ import {
 import {
   buildToolActivity,
   MasterLedgerTable,
+  type LedgerView,
+  type ModelLatencySummary,
   type ModelRow,
 } from './master-ledger-table'
 import styles from './phosphor-dashboard.module.css'
@@ -93,7 +108,11 @@ import {
 } from './provider-card'
 import type { RepoRow } from './repo-breakdown-table'
 import { type SlicerFilters, type SlicerOptions } from './slicer-bar'
-import { TokenTrendChart, type ProviderSeries } from './token-trend-chart'
+import {
+  TokenTrendChart,
+  type LowerLaneMode,
+  type ProviderSeries,
+} from './token-trend-chart'
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -178,6 +197,8 @@ const PROVIDER_SERIES: ProviderSeries[] = [
 // Types
 // ---------------------------------------------------------------------------
 
+export type ProviderSectionView = 'health' | 'quota' | 'weights'
+
 export interface PhosphorDashboardProps {
   /** ISO date string for the range start (YYYY-MM-DD). */
   from?: string
@@ -236,6 +257,8 @@ export interface PhosphorDashboardProps {
   reportLoading?: boolean
   /** True whenever the main usage report query is fetching/refetching. */
   reportFetching?: boolean
+  /** Cache-bust key from the shell Force Refresh action. */
+  reportRefreshKey?: string
   /**
    * Wave 36 Fix 4: Whether the ComparisonPanel is visible (viewport ≥3840px).
    * Controls the `enabled` flag on the priorReport useQuery so that the prior-
@@ -253,10 +276,34 @@ export interface PhosphorDashboardProps {
   quotas?: UsageReportQuotaRow[]
   /** True whenever the quota query is fetching/refetching. */
   quotasFetching?: boolean
+  /** Recent quota history rows for Provider Status health-tab quota lanes. */
+  quotaHistory?: UsageReportQuotaHistoryRow[]
+  /** True whenever the recent quota history query is fetching/refetching. */
+  quotaHistoryFetching?: boolean
+  /** Range-aware quota history rows for the Status / Quota tab. */
+  quotaRangeHistory?: UsageReportQuotaHistoryRow[]
+  /** True whenever the range-aware quota history query is fetching/refetching. */
+  quotaRangeHistoryFetching?: boolean
   /** Force-refresh the main usage report query. */
   onRefreshReport?: () => Promise<unknown> | unknown
   /** Force-refresh the quota query. */
   onRefreshQuotas?: () => Promise<unknown> | unknown
+  /** Force-refresh the recent quota history query. */
+  onRefreshQuotaHistory?: () => Promise<unknown> | unknown
+  /** Force-refresh the range-aware quota history query. */
+  onRefreshQuotaRangeHistory?: () => Promise<unknown> | unknown
+  /** Controlled Status section tab. */
+  providerSectionView?: ProviderSectionView
+  /** Called when the Status section tab changes. */
+  onProviderSectionViewChange?: (view: ProviderSectionView) => void
+  /** Controlled Ledger tab. */
+  ledgerView?: LedgerView
+  /** Called when the Ledger tab changes. */
+  onLedgerViewChange?: (view: LedgerView) => void
+  /** Controlled Trend lower detail lane. */
+  trendLowerLaneMode?: LowerLaneMode
+  /** Called when the Trend lower detail lane changes. */
+  onTrendLowerLaneModeChange?: (mode: LowerLaneMode) => void
 }
 
 // ---------------------------------------------------------------------------
@@ -268,10 +315,12 @@ function SectionTitle({
   id,
   children,
   accessory,
+  tabs,
 }: {
   id: string
   children: string
   accessory?: ReactNode
+  tabs?: ReactNode
 }): ReactElement {
   const title = (
     <h2
@@ -283,25 +332,22 @@ function SectionTitle({
         textTransform: 'uppercase',
         letterSpacing: '0.05em',
         fontWeight: 600,
-        margin: accessory === undefined ? undefined : 0,
-        marginBottom: accessory === undefined ? '6px' : 0,
-        borderBottom:
-          accessory === undefined ? '1px solid var(--border)' : undefined,
-        paddingBottom: accessory === undefined ? '4px' : 0,
+        margin: 0,
       }}
     >
       {children}
     </h2>
   )
 
-  if (accessory === undefined) {
-    return title
-  }
-
   return (
     <div className='section-title-row'>
-      {title}
-      <div className='section-title-accessory'>{accessory}</div>
+      <div className='section-title-main'>
+        {title}
+        {tabs}
+      </div>
+      {accessory === undefined ? null : (
+        <div className='section-title-accessory'>{accessory}</div>
+      )}
     </div>
   )
 }
@@ -338,6 +384,796 @@ function SectionRefreshButton({
         {updating ? 'Updating' : 'Refresh'}
       </span>
     </button>
+  )
+}
+
+function SectionTabs<T extends string>({
+  label,
+  value,
+  options,
+  onChange,
+}: {
+  label: string
+  value: T
+  options: readonly { value: T; label: string }[]
+  onChange: (value: T) => void
+}): ReactElement {
+  return (
+    <div role='tablist' aria-label={label} className='section-tabs'>
+      {options.map((option) => {
+        const selected = value === option.value
+        return (
+          <button
+            key={option.value}
+            type='button'
+            role='tab'
+            aria-selected={selected}
+            className={selected ? 'is-active' : undefined}
+            onClick={() => {
+              onChange(option.value)
+            }}
+          >
+            {option.label}
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
+function formatCompactQuantity(value: number): string {
+  return new Intl.NumberFormat('en-US', {
+    notation: 'compact',
+    maximumFractionDigits: 1,
+  }).format(value)
+}
+
+function quotaHistoryConsumedPct(row: UsageReportQuotaHistoryRow): number {
+  const remaining = row.min_remaining_pct ?? row.max_remaining_pct ?? 100
+  return Math.max(0, Math.min(100, 100 - remaining))
+}
+
+function quotaHistoryFillColor(consumedPct: number): string {
+  if (consumedPct >= 75) return 'var(--accent-hot)'
+  if (consumedPct >= 25) return 'var(--accent-warm)'
+  if (consumedPct >= 10) return 'var(--accent-teal)'
+  return 'var(--accent-cool)'
+}
+
+function quotaHistoryRequests(row: UsageReportQuotaHistoryRow): number {
+  return row.usage_breakdown.reduce((sum, entry) => sum + entry.traces, 0)
+}
+
+interface ProviderQuotaHistoryTab {
+  tabKey: string
+  label: string
+  rows: UsageReportQuotaHistoryRow[]
+}
+
+function compareQuotaHistoryResetDesc(
+  a: UsageReportQuotaHistoryRow,
+  b: UsageReportQuotaHistoryRow
+): number {
+  const resetCompare = String(b.expected_reset_at ?? '').localeCompare(
+    String(a.expected_reset_at ?? '')
+  )
+  if (resetCompare !== 0) return resetCompare
+  return String(b.interval_start ?? '').localeCompare(
+    String(a.interval_start ?? '')
+  )
+}
+
+function shouldHideQuotaHistoryLane(
+  providerLower: string,
+  def: { laneLabel: string }
+): boolean {
+  if (providerLower !== 'anthropic' && providerLower !== 'openai') {
+    return false
+  }
+  return def.laneLabel.toLowerCase().includes('5hr')
+}
+
+function quotaHistoryRowMatchesLane(
+  providerLower: string,
+  def: { quotaType: string; googleClass: string | null },
+  row: UsageReportQuotaHistoryRow
+): boolean {
+  if (quotaTypeToLaneKey(row.quota_type) !== quotaTypeToLaneKey(def.quotaType))
+    return false
+
+  if (providerLower === 'google' && def.googleClass !== null) {
+    if (row.model === null) return false
+    return classifyGeminiModel(row.model) === def.googleClass
+  }
+
+  return true
+}
+
+function quotaHistoryLaneRank(
+  providerLower: string,
+  def: { quotaType: string }
+): number {
+  if (providerLower === 'anthropic') {
+    switch (quotaTypeToLaneKey(def.quotaType)) {
+      case 'weekly':
+        return 0
+      case 'special':
+        return 1
+      default:
+        return 2
+    }
+  }
+
+  return 0
+}
+
+function googleQuotaHistoryFamilyLabel(
+  googleClass: string | null | undefined
+): string {
+  switch (googleClass) {
+    case 'gemini-flash-lite':
+      return 'Flash-Lite'
+    case 'gemini-flash':
+      return 'Flash'
+    case 'gemini-pro':
+      return 'Pro'
+    default:
+      return 'Google'
+  }
+}
+
+function minIso(values: (string | null)[]): string | null {
+  const concrete = values.filter((value): value is string => value !== null)
+  return concrete.length === 0 ? null : concrete.sort()[0]
+}
+
+function maxIso(values: (string | null)[]): string | null {
+  const concrete = values.filter((value): value is string => value !== null)
+  const sorted = concrete.sort()
+  return sorted.length === 0 ? null : sorted[sorted.length - 1]
+}
+
+function minNullableNumber(values: (number | null)[]): number | null {
+  const concrete = values.filter(
+    (value): value is number => value !== null && Number.isFinite(value)
+  )
+  return concrete.length === 0 ? null : Math.min(...concrete)
+}
+
+function maxNullableNumber(values: (number | null)[]): number | null {
+  const concrete = values.filter(
+    (value): value is number => value !== null && Number.isFinite(value)
+  )
+  return concrete.length === 0 ? null : Math.max(...concrete)
+}
+
+function aggregateQuotaUsageBreakdown(
+  breakdown: UsageReportQuotaUsageBreakdown[]
+): UsageReportQuotaUsageBreakdown[] {
+  const byModel = new Map<string, UsageReportQuotaUsageBreakdown>()
+
+  for (const entry of breakdown) {
+    const model = entry.model || 'unknown'
+    const existing = byModel.get(model)
+    if (existing === undefined) {
+      byModel.set(model, { ...entry, model })
+      continue
+    }
+    byModel.set(model, {
+      model,
+      tokens: existing.tokens + entry.tokens,
+      cost: existing.cost + entry.cost,
+      traces: existing.traces + entry.traces,
+      recent_traces_90m:
+        (existing.recent_traces_90m ?? 0) + (entry.recent_traces_90m ?? 0),
+    })
+  }
+
+  return [...byModel.values()].sort((a, b) => b.tokens - a.tokens)
+}
+
+function quotaHistoryResetGroupKey(row: UsageReportQuotaHistoryRow): string {
+  const reset = row.expected_reset_at ?? row.interval_end
+  if (reset === null) return 'unknown'
+  const rounded = roundToNearest30Min(reset)
+  return Number.isNaN(rounded.getTime()) ? reset : rounded.toISOString()
+}
+
+function aggregateGoogleQuotaHistoryRows(
+  def: { googleClass: string | null },
+  rows: UsageReportQuotaHistoryRow[]
+): UsageReportQuotaHistoryRow[] {
+  const grouped = new Map<string, UsageReportQuotaHistoryRow[]>()
+
+  for (const row of rows) {
+    const resetKey = quotaHistoryResetGroupKey(row)
+    const groupKey = [row.provider, row.quota_type, resetKey].join('|')
+    const group = grouped.get(groupKey) ?? []
+    group.push(row)
+    grouped.set(groupKey, group)
+  }
+
+  return [...grouped.values()]
+    .map((group) => {
+      const first = group[0]
+      const resetAt = maxIso(group.map((row) => row.expected_reset_at))
+      const usageBreakdown = aggregateQuotaUsageBreakdown(
+        group.flatMap((row) => row.usage_breakdown)
+      )
+      return {
+        provider: first.provider,
+        model: googleQuotaHistoryFamilyLabel(def.googleClass),
+        quota_type: first.quota_type,
+        expected_reset_at: resetAt,
+        interval_start: minIso(group.map((row) => row.interval_start)),
+        interval_end: resetAt ?? maxIso(group.map((row) => row.interval_end)),
+        min_remaining_pct: minNullableNumber(
+          group.map((row) => row.min_remaining_pct)
+        ),
+        max_remaining_pct: maxNullableNumber(
+          group.map((row) => row.max_remaining_pct)
+        ),
+        velocity_segments: [],
+        velocity_scores: [],
+        velocity_sample_count: 0,
+        usage_tokens: group.reduce((sum, row) => sum + row.usage_tokens, 0),
+        usage_breakdown: usageBreakdown,
+      }
+    })
+    .sort(compareQuotaHistoryResetDesc)
+}
+
+function fallbackQuotaHistoryLabel(quotaType: string): string {
+  switch (quotaTypeToLaneKey(quotaType)) {
+    case 'short':
+      return 'Requests · 24h'
+    case 'weekly':
+      return 'All Models · 7d'
+    case 'special':
+      return 'Special · 7d'
+    case 'short_special':
+      return 'Special · 5hr'
+    case 'monthly':
+      return 'All Models · 30d'
+    default:
+      return quotaType
+  }
+}
+
+function buildProviderQuotaHistoryTabs(
+  provider: string,
+  rows: UsageReportQuotaHistoryRow[]
+): ProviderQuotaHistoryTab[] {
+  const providerLower = canonicalProvider(provider).toLowerCase()
+  const laneDefs = (PROVIDER_LANE_DEFS[providerLower] ?? [])
+    .filter((def) => !shouldHideQuotaHistoryLane(providerLower, def))
+    .sort(
+      (a, b) =>
+        quotaHistoryLaneRank(providerLower, a) -
+        quotaHistoryLaneRank(providerLower, b)
+    )
+
+  if (laneDefs.length > 0) {
+    return laneDefs.map((def) => {
+      const laneRows = rows
+        .filter((row) => quotaHistoryRowMatchesLane(providerLower, def, row))
+        .sort(compareQuotaHistoryResetDesc)
+      return {
+        tabKey: def.laneKey,
+        label: def.laneLabel,
+        rows:
+          providerLower === 'google'
+            ? aggregateGoogleQuotaHistoryRows(def, laneRows)
+            : laneRows,
+      }
+    })
+  }
+
+  const grouped = new Map<string, UsageReportQuotaHistoryRow[]>()
+  for (const row of rows) {
+    const key = quotaTypeToLaneKey(row.quota_type)
+    const group = grouped.get(key) ?? []
+    group.push(row)
+    grouped.set(key, group)
+  }
+
+  return [...grouped.entries()]
+    .map(([quotaType, group]) => ({
+      tabKey: `${providerLower}/${quotaType}`,
+      label: fallbackQuotaHistoryLabel(quotaType),
+      rows: group.sort(compareQuotaHistoryResetDesc),
+    }))
+    .sort((a, b) => {
+      const aNewest = a.rows[0]?.expected_reset_at ?? ''
+      const bNewest = b.rows[0]?.expected_reset_at ?? ''
+      return String(bNewest).localeCompare(String(aNewest))
+    })
+}
+
+function ProviderQuotaHistoryBucket({
+  provider,
+  rows,
+  rangeFrom,
+  rangeTo,
+}: {
+  provider: string
+  rows: UsageReportQuotaHistoryRow[]
+  rangeFrom: string
+  rangeTo: string
+}): ReactElement {
+  const providerColor = providerBrandHex(provider)
+  const providerLabel = canonicalProvider(provider)
+  const rangeLabel =
+    rangeFrom.trim().length > 0 && rangeTo.trim().length > 0
+      ? `${rangeFrom} to ${rangeTo}`
+      : 'the selected range'
+  const quotaTabs = useMemo(
+    () => buildProviderQuotaHistoryTabs(provider, rows),
+    [provider, rows]
+  )
+  const [activeTabKey, setActiveTabKey] = useState<string | null>(null)
+  const defaultTab =
+    quotaTabs.find((tab) => tab.rows.length > 0) ?? quotaTabs[0]
+  const selectedTab =
+    quotaTabs.find((tab) => tab.tabKey === activeTabKey) ?? defaultTab ?? null
+  const selectedRows = selectedTab?.rows ?? []
+  const visibleRowCount = quotaTabs.reduce(
+    (sum, tab) => sum + tab.rows.length,
+    0
+  )
+
+  return (
+    <article
+      className='provider-quota-bucket'
+      style={{ borderTopColor: providerColor }}
+    >
+      <div className='provider-quota-bucket-head'>
+        <span style={{ color: providerColor }}>{provider}</span>
+        <span>{visibleRowCount.toLocaleString()} bars</span>
+      </div>
+      {quotaTabs.length === 0 ? null : (
+        <div
+          role='tablist'
+          aria-label={`${provider} quota bars`}
+          className='provider-quota-type-tabs'
+        >
+          {quotaTabs.map((tab) => {
+            const selected = selectedTab?.tabKey === tab.tabKey
+            return (
+              <button
+                key={tab.tabKey}
+                type='button'
+                role='tab'
+                aria-selected={selected}
+                className={selected ? 'is-active' : undefined}
+                onClick={() => {
+                  setActiveTabKey(tab.tabKey)
+                }}
+              >
+                <span>{tab.label}</span>
+                <span className='provider-quota-type-count'>
+                  {tab.rows.length}
+                </span>
+              </button>
+            )
+          })}
+        </div>
+      )}
+      <div className='provider-quota-bucket-scroll'>
+        {selectedRows.length === 0 ? (
+          <div className='provider-quota-empty'>
+            no quota history for {providerLabel} in {rangeLabel}
+          </div>
+        ) : (
+          selectedRows.map((row, rowIndex) => {
+            const consumedPct = quotaHistoryConsumedPct(row)
+            const requests = quotaHistoryRequests(row)
+            const modelLabel = row.model ?? 'all models'
+            const rangeLabel = fmtIntervalCompact(
+              row.interval_start,
+              row.interval_end
+            )
+            return (
+              <div
+                key={[
+                  row.provider,
+                  row.model ?? 'all',
+                  row.quota_type,
+                  row.expected_reset_at ?? rangeLabel,
+                  rowIndex,
+                ].join('|')}
+                className='provider-quota-history-row'
+              >
+                <div className='provider-quota-history-meta'>
+                  <span className='provider-quota-history-label'>
+                    {modelLabel}
+                  </span>
+                  <span className='provider-quota-history-pct'>
+                    {consumedPct.toFixed(0)}%
+                  </span>
+                </div>
+                <div className='provider-quota-static-bar'>
+                  <div
+                    className='provider-quota-static-fill'
+                    style={{
+                      width: `${consumedPct.toFixed(1)}%`,
+                      background: quotaHistoryFillColor(consumedPct),
+                    }}
+                  />
+                </div>
+                <div className='provider-quota-history-foot'>
+                  <span>{rangeLabel}</span>
+                  <span>
+                    {formatCompactQuantity(row.usage_tokens)} tok ·{' '}
+                    {formatCompactQuantity(requests)} req
+                  </span>
+                </div>
+              </div>
+            )
+          })
+        )}
+      </div>
+    </article>
+  )
+}
+
+function formatEstimatorPercent(
+  value: number | null | undefined,
+  decimals = 2
+): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) {
+    return '—'
+  }
+  return `${value.toFixed(decimals)}%`
+}
+
+function formatEstimatorNumber(
+  value: number | null | undefined,
+  decimals = 2
+): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) {
+    return '—'
+  }
+  return value.toFixed(decimals)
+}
+
+function formatEstimatorStatusLabel(status: string): string {
+  switch (status) {
+    case 'high_confidence':
+      return 'high_confidence'
+    case 'directional_only':
+      return 'directional_only'
+    case 'not_identifiable':
+      return 'not_identifiable'
+    case 'evaluated':
+      return 'evaluated'
+    case 'not_enough_holdout_data':
+      return 'holdout pending'
+    case 'anomalous':
+      return 'anomalous'
+    case 'consistent':
+      return 'consistent'
+    default:
+      return status.replace(/_/g, ' ')
+  }
+}
+
+function quotaEstimatorLaneLabel(
+  estimate: UsageReportQuotaEstimatorEstimate
+): string {
+  const provider = canonicalProvider(estimate.provider).toLowerCase()
+  const quotaType = estimate.quota_type.toLowerCase()
+  if (provider === 'openai') {
+    switch (quotaType) {
+      case 'short':
+        return 'all models · 5h'
+      case 'weekly':
+        return 'all models · 7d'
+      case 'short_special':
+        return 'codex-spark · 5h'
+      case 'special':
+        return 'codex-spark · 7d'
+      default:
+        return estimate.quota_lane
+    }
+  }
+  if (provider === 'anthropic') {
+    switch (quotaType) {
+      case 'short':
+        return 'all models · 5h'
+      case 'weekly':
+        return 'all models · 7d'
+      case 'special':
+        return 'sonnet-only · 7d'
+      default:
+        return estimate.quota_lane
+    }
+  }
+  return estimate.quota_lane
+}
+
+function groupEstimatorCoefficients(
+  coefficients: UsageReportQuotaEstimatorCoefficient[]
+): Array<{
+  tokenCategory: UsageReportQuotaEstimatorCoefficient['token_category']
+  families: Array<{
+    modelFamily: string
+    rows: UsageReportQuotaEstimatorCoefficient[]
+  }>
+}> {
+  const byCategory = new Map<
+    UsageReportQuotaEstimatorCoefficient['token_category'],
+    Map<string, UsageReportQuotaEstimatorCoefficient[]>
+  >()
+
+  for (const coefficient of coefficients) {
+    const category = coefficient.token_category
+    const familyRows = byCategory.get(category) ?? new Map()
+    const family = coefficient.model_family || 'unknown'
+    const rows = familyRows.get(family) ?? []
+    rows.push(coefficient)
+    familyRows.set(family, rows)
+    byCategory.set(category, familyRows)
+  }
+
+  return [...byCategory.entries()].map(([tokenCategory, familyRows]) => ({
+    tokenCategory,
+    families: [...familyRows.entries()]
+      .map(([modelFamily, rows]) => ({
+        modelFamily,
+        rows: rows.sort((a, b) =>
+          a.estimate_kind.localeCompare(b.estimate_kind)
+        ),
+      }))
+      .sort((a, b) => a.modelFamily.localeCompare(b.modelFamily)),
+  }))
+}
+
+function QuotaEstimatorWeightsPanel({
+  response,
+  loading,
+}: {
+  response: UsageReportQuotaEstimatorResponse | undefined
+  loading: boolean
+}): ReactElement {
+  const estimates = response?.estimates ?? []
+  const metadata = response?.metadata
+  const hasEstimates = estimates.length > 0
+
+  if (loading && !hasEstimates) {
+    return (
+      <div className='status-estimator-empty' role='status'>
+        Loading Phase 0-2 estimator detail…
+      </div>
+    )
+  }
+
+  if (!loading && !hasEstimates) {
+    return (
+      <div className='status-estimator-empty' role='status'>
+        No Phase 0-2 estimator lanes for the selected range.
+      </div>
+    )
+  }
+
+  return (
+    <div className='status-estimator-panel'>
+      <header className='status-estimator-header'>
+        <strong>Phase 0-2 estimator detail</strong>
+        <span>
+          {metadata?.phase === '0-2' ? 'Phase 0-2' : 'Phase unknown'} ·{' '}
+          {metadata?.estimatorVersion ?? 'version unknown'}
+        </span>
+      </header>
+      <div className='status-estimator-grid'>
+        {estimates.map((estimate, index) => {
+          const identStatus = estimate.identifiability.status
+          const statusClass = identStatus.replace(/_/g, '-')
+          const coefficientGroups = groupEstimatorCoefficients(
+            estimate.coefficients
+          )
+
+          return (
+            <article
+              key={[
+                estimate.provider,
+                estimate.quota_key,
+                estimate.quota_type,
+                estimate.quota_lane,
+                estimate.selected_lag_minutes,
+                index,
+              ].join('|')}
+              className='status-estimator-lane'
+            >
+              <div className='status-estimator-lane-head'>
+                <span style={{ color: providerBrandHex(estimate.provider) }}>
+                  {canonicalProvider(estimate.provider)}
+                </span>
+                <span>{quotaEstimatorLaneLabel(estimate)}</span>
+              </div>
+              <div className='status-estimator-lane-key'>
+                {estimate.quota_key} · {estimate.quota_lane}
+              </div>
+              <div
+                className={`status-estimator-lane-state is-${statusClass}`}
+                role='status'
+              >
+                {formatEstimatorStatusLabel(identStatus)}
+              </div>
+              <div className='status-estimator-meta-grid'>
+                <span>
+                  lag <strong>{estimate.selected_lag_minutes}m</strong>
+                </span>
+                <span>
+                  trainable{' '}
+                  <strong>
+                    {estimate.trainable_interval_count.toLocaleString()}
+                  </strong>
+                </span>
+                <span>
+                  effective sample{' '}
+                  <strong>
+                    {estimate.identifiability.effective_sample_size.toLocaleString()}
+                  </strong>
+                </span>
+              </div>
+              <div className='status-estimator-meta-grid'>
+                <span>
+                  intervals{' '}
+                  <strong>{estimate.interval_count.toLocaleString()}</strong>
+                </span>
+                <span>
+                  excluded{' '}
+                  <strong>
+                    {estimate.excluded_interval_count.toLocaleString()}
+                  </strong>
+                </span>
+                <span>
+                  active features{' '}
+                  <strong>
+                    {estimate.identifiability.active_feature_count.toLocaleString()}
+                  </strong>
+                </span>
+              </div>
+              <div className='status-estimator-block'>
+                <strong>Residuals</strong>
+                <span>
+                  static RMSE{' '}
+                  {formatEstimatorPercent(
+                    estimate.residuals.static_baseline.rmse_pct
+                  )}
+                  , MAE{' '}
+                  {formatEstimatorPercent(
+                    estimate.residuals.static_baseline.mae_pct
+                  )}
+                </span>
+                <span>
+                  rolling RMSE{' '}
+                  {formatEstimatorPercent(
+                    estimate.residuals.rolling_exponential.rmse_pct
+                  )}
+                  , MAE{' '}
+                  {formatEstimatorPercent(
+                    estimate.residuals.rolling_exponential.mae_pct
+                  )}
+                </span>
+                <span>
+                  backtest{' '}
+                  {formatEstimatorStatusLabel(estimate.backtest.status)} ·
+                  holdout{' '}
+                  {estimate.backtest.holdout_interval_count?.toLocaleString() ??
+                    '—'}{' '}
+                  · improved {estimate.backtest.rolling_improved ? 'yes' : 'no'}
+                </span>
+              </div>
+              <div className='status-estimator-block'>
+                <strong>Lag sensitivity</strong>
+                {estimate.lag_sensitivity.length === 0 ? (
+                  <span className='status-estimator-muted'>none</span>
+                ) : (
+                  estimate.lag_sensitivity.map((lag) => (
+                    <span
+                      key={`${estimate.quota_lane}-lag-${lag.lag_minutes}`}
+                      className='status-estimator-row'
+                    >
+                      {lag.lag_minutes}m: {formatEstimatorPercent(lag.rmse_pct)}{' '}
+                      RMSE · {lag.trainable_interval_count.toLocaleString()}{' '}
+                      trainable · {formatEstimatorStatusLabel(lag.status)}
+                    </span>
+                  ))
+                )}
+              </div>
+              <div className='status-estimator-block'>
+                <strong>Cache-read ratios</strong>
+                {estimate.cache_read_ratios.length === 0 ? (
+                  <span className='status-estimator-muted'>none</span>
+                ) : (
+                  estimate.cache_read_ratios.map((ratio) => (
+                    <span
+                      key={`${estimate.quota_lane}-${ratio.model_family}`}
+                      className='status-estimator-row'
+                    >
+                      {ratio.model_family}:&nbsp;
+                      {formatEstimatorNumber(
+                        ratio.cache_read_vs_uncached_workload_ratio,
+                        3
+                      )}{' '}
+                      ({formatEstimatorStatusLabel(ratio.status)})
+                    </span>
+                  ))
+                )}
+              </div>
+              <div className='status-estimator-block'>
+                <strong>Coefficients</strong>
+                {coefficientGroups.length === 0 ? (
+                  <span className='status-estimator-muted'>none</span>
+                ) : (
+                  coefficientGroups.map((group) => (
+                    <div key={`${estimate.quota_lane}-${group.tokenCategory}`}>
+                      <div className='status-estimator-token-category'>
+                        {group.tokenCategory === 'workload_excluding_cache_read'
+                          ? 'workload (uncached + output + cache create/write + reasoning)'
+                          : 'cache read'}
+                      </div>
+                      {group.families.map((family) => (
+                        <div
+                          key={`${estimate.quota_lane}-${group.tokenCategory}-${family.modelFamily}`}
+                          className='status-estimator-family'
+                        >
+                          <div className='status-estimator-family-name'>
+                            {family.modelFamily}
+                          </div>
+                          {family.rows.map((row) => (
+                            <span
+                              key={`${row.feature}-${row.estimate_kind}`}
+                              className='status-estimator-row'
+                            >
+                              {row.estimate_kind === 'rolling_exponential'
+                                ? 'rolling'
+                                : 'static'}
+                              :{' '}
+                              {formatEstimatorPercent(
+                                row.coefficient_pct_per_mtok
+                              )}{' '}
+                              / M tok, CI{' '}
+                              {formatEstimatorPercent(
+                                row.confidence_low_pct_per_mtok
+                              )}{' '}
+                              to{' '}
+                              {formatEstimatorPercent(
+                                row.confidence_high_pct_per_mtok
+                              )}{' '}
+                              ({formatEstimatorStatusLabel(row.estimate_status)}
+                              )
+                            </span>
+                          ))}
+                        </div>
+                      ))}
+                    </div>
+                  ))
+                )}
+              </div>
+              <div className='status-estimator-block'>
+                <strong>Diagnostics</strong>
+                {estimate.diagnostics.length === 0 ? (
+                  <span className='status-estimator-muted'>none</span>
+                ) : (
+                  estimate.diagnostics.map((diagnostic, diagnosticIndex) => (
+                    <span
+                      key={`${estimate.quota_lane}-${diagnostic.code}-${diagnosticIndex}`}
+                      className='status-estimator-row'
+                    >
+                      {diagnostic.severity}: {diagnostic.code} ·{' '}
+                      {diagnostic.detail}
+                    </span>
+                  ))
+                )}
+              </div>
+            </article>
+          )
+        })}
+      </div>
+    </div>
   )
 }
 
@@ -968,7 +1804,8 @@ function buildAggregateHealthCells(
 function buildProviderMetrics(
   provider: string,
   healthRows: UsageReportProviderLatencyHealthRow[],
-  rows: UsageReportRow[]
+  rows: UsageReportRow[],
+  now: Date = new Date()
 ): ProviderMetrics {
   // 15-B.2: expand canonical provider key to all DB aliases
   // (e.g. 'google' → ['google','gemini'] so gemini health rows are included)
@@ -981,6 +1818,14 @@ function buildProviderMetrics(
   )
 
   const requests = providerHealthRows.reduce((s, r) => s + r.requests, 0)
+  const recentCutoffMs = now.getTime() - 90 * 60 * 1000
+  const recent_requests_90m = providerHealthRows
+    .filter((row) => {
+      if (row.bucket_start === null) return false
+      const time = new Date(row.bucket_start).getTime()
+      return Number.isFinite(time) && time >= recentCutoffMs
+    })
+    .reduce((s, r) => s + r.requests, 0)
   const errors = providerHealthRows.reduce(
     (s, r) =>
       s +
@@ -1048,10 +1893,6 @@ function buildProviderMetrics(
     (s, r) => s + (r.token_reasoning_estimated ?? 0),
     0
   )
-  // TODO: API doesn't expose no_reasoning_calls yet — wired as zero.
-  // reasoning_tokens_sources field exists but holds a JSON string, not a count.
-  const no_reasoning_calls = 0
-
   return {
     tokens_in,
     tokens_out,
@@ -1064,7 +1905,7 @@ function buildProviderMetrics(
     cache_miss_usd,
     reasoning_reported,
     reasoning_estimated,
-    no_reasoning_calls,
+    recent_requests_90m,
     traces,
     rate_limits,
     capacity,
@@ -1088,9 +1929,18 @@ function buildProviderMetrics(
  */
 function buildAggregateMetrics(
   healthRows: UsageReportProviderLatencyHealthRow[],
-  summary: UsageReportSummary | undefined
+  summary: UsageReportSummary | undefined,
+  now: Date = new Date()
 ): ProviderMetrics {
   const requests = healthRows.reduce((s, r) => s + r.requests, 0)
+  const recentCutoffMs = now.getTime() - 90 * 60 * 1000
+  const recent_requests_90m = healthRows
+    .filter((row) => {
+      if (row.bucket_start === null) return false
+      const time = new Date(row.bucket_start).getTime()
+      return Number.isFinite(time) && time >= recentCutoffMs
+    })
+    .reduce((s, r) => s + r.requests, 0)
   const errors = healthRows.reduce(
     (s, r) =>
       s +
@@ -1128,9 +1978,6 @@ function buildAggregateMetrics(
   const cache_miss_usd = summary?.cache_miss_usd_cost ?? 0
   const reasoning_reported = summary?.token_reasoning_reported ?? 0
   const reasoning_estimated = summary?.token_reasoning_estimated ?? 0
-  // TODO: API doesn't expose no_reasoning_calls yet — wired as zero.
-  const no_reasoning_calls = 0
-
   return {
     tokens_in,
     tokens_out,
@@ -1143,7 +1990,7 @@ function buildAggregateMetrics(
     cache_miss_usd,
     reasoning_reported,
     reasoning_estimated,
-    no_reasoning_calls,
+    recent_requests_90m,
     traces,
     rate_limits,
     capacity,
@@ -1614,13 +2461,24 @@ function tipModelsFromBreakdown(
 ): QuotaTipModel[] | undefined {
   if (breakdown.length === 0) return undefined
 
-  // Aggregate cost per model (breakdown may have duplicates from multiple rows).
+  // Aggregate per model (breakdown may have duplicates from multiple rows).
   const costByModel = new Map<string, number>()
+  const requestsByModel = new Map<string, number>()
+  const recentRequests90mByModel = new Map<string, number>()
   for (const entry of breakdown) {
     if (!entry.model) continue
     costByModel.set(
       entry.model,
       (costByModel.get(entry.model) ?? 0) + entry.cost
+    )
+    requestsByModel.set(
+      entry.model,
+      (requestsByModel.get(entry.model) ?? 0) + entry.traces
+    )
+    recentRequests90mByModel.set(
+      entry.model,
+      (recentRequests90mByModel.get(entry.model) ?? 0) +
+        (entry.recent_traces_90m ?? 0)
     )
   }
   if (costByModel.size === 0) return undefined
@@ -1631,7 +2489,26 @@ function tipModelsFromBreakdown(
     .map(([model, cost]) => ({
       model,
       costDelta: `$${cost.toFixed(2)}`,
+      requests: requestsByModel.get(model) ?? 0,
+      recentRequests90m: recentRequests90mByModel.get(model) ?? 0,
     }))
+}
+
+function tipRequestTotalFromBreakdown(
+  breakdown: UsageReportQuotaUsageBreakdown[]
+): number | undefined {
+  if (breakdown.length === 0) return undefined
+  return breakdown.reduce((sum, entry) => sum + entry.traces, 0)
+}
+
+function tipRecentRequestTotal90mFromBreakdown(
+  breakdown: UsageReportQuotaUsageBreakdown[]
+): number | undefined {
+  if (breakdown.length === 0) return undefined
+  return breakdown.reduce(
+    (sum, entry) => sum + (entry.recent_traces_90m ?? 0),
+    0
+  )
 }
 
 /**
@@ -1650,6 +2527,8 @@ function tipModelsFromBreakdownGoogleAggregated(
 
   // Aggregate cost into Gemini class buckets.
   const costByClass = new Map<string, number>()
+  const requestsByClass = new Map<string, number>()
+  const recentRequests90mByClass = new Map<string, number>()
   for (const entry of breakdown) {
     if (!entry.model) continue
     const lower = entry.model.toLowerCase()
@@ -1665,6 +2544,11 @@ function tipModelsFromBreakdownGoogleAggregated(
       cls = 'other'
     }
     costByClass.set(cls, (costByClass.get(cls) ?? 0) + entry.cost)
+    requestsByClass.set(cls, (requestsByClass.get(cls) ?? 0) + entry.traces)
+    recentRequests90mByClass.set(
+      cls,
+      (recentRequests90mByClass.get(cls) ?? 0) + (entry.recent_traces_90m ?? 0)
+    )
   }
   if (costByClass.size === 0) return undefined
 
@@ -1674,6 +2558,8 @@ function tipModelsFromBreakdownGoogleAggregated(
     .map(([cls, cost]) => ({
       model: cls,
       costDelta: `$${cost.toFixed(2)}`,
+      requests: requestsByClass.get(cls) ?? 0,
+      recentRequests90m: recentRequests90mByClass.get(cls) ?? 0,
     }))
 }
 
@@ -1695,7 +2581,19 @@ function tipModelsFromBreakdownSingleLabel(
 ): QuotaTipModel[] | undefined {
   if (breakdown.length === 0) return undefined
   const totalCost = breakdown.reduce((s, e) => s + e.cost, 0)
-  return [{ model: displayLabel, costDelta: `$${totalCost.toFixed(2)}` }]
+  const requests = breakdown.reduce((s, e) => s + e.traces, 0)
+  const recentRequests90m = breakdown.reduce(
+    (s, e) => s + (e.recent_traces_90m ?? 0),
+    0
+  )
+  return [
+    {
+      model: displayLabel,
+      costDelta: `$${totalCost.toFixed(2)}`,
+      requests,
+      recentRequests90m,
+    },
+  ]
 }
 
 /**
@@ -1838,6 +2736,8 @@ function makeQuotaBarGroup(
       durationHours
     ),
     tipModels: tipModelsFromBreakdown(breakdown),
+    tipRequestTotal: tipRequestTotalFromBreakdown(breakdown),
+    tipRecentRequestTotal90m: tipRecentRequestTotal90mFromBreakdown(breakdown),
   }
 }
 
@@ -1909,6 +2809,8 @@ function makeQuotaBarGroupAlways(
       durationHours
     ),
     tipModels: tipModelsFromBreakdown(breakdown),
+    tipRequestTotal: tipRequestTotalFromBreakdown(breakdown),
+    tipRecentRequestTotal90m: tipRecentRequestTotal90mFromBreakdown(breakdown),
   }
 }
 
@@ -2377,6 +3279,10 @@ function buildHistoryBarsForProvider(
       ),
       tipWindow: fmtIntervalCompact(h.interval_start, h.interval_end),
       tipModels,
+      tipRequestTotal: tipRequestTotalFromBreakdown(h.usage_breakdown),
+      tipRecentRequestTotal90m: tipRecentRequestTotal90mFromBreakdown(
+        h.usage_breakdown
+      ),
       // Wave 40 #3: no slice — all history bars returned (1.5× lookback from server).
       // Wave 40 #4/#5: time-ago label for the reset cell.
       timeAgoLabel,
@@ -2623,6 +3529,10 @@ function buildPriorBarFromHistory(
     ),
     tipWindow: fmtIntervalCompact(h.interval_start, h.interval_end),
     tipModels,
+    tipRequestTotal: tipRequestTotalFromBreakdown(h.usage_breakdown),
+    tipRecentRequestTotal90m: tipRecentRequestTotal90mFromBreakdown(
+      h.usage_breakdown
+    ),
     timeAgoLabel,
     dateRangeLabel,
     periodType: quotaTypeToBarPeriodType(quotaTypeLower),
@@ -2709,6 +3619,9 @@ function buildProviderLanes(
             ...g,
             label: def.laneLabel,
             tipModels: aggregatedTipModels,
+            tipRequestTotal: tipRequestTotalFromBreakdown(mergedBreakdown),
+            tipRecentRequestTotal90m:
+              tipRecentRequestTotal90mFromBreakdown(mergedBreakdown),
           }
         }
       }
@@ -2977,6 +3890,174 @@ function buildRepoRows(
     })
 }
 
+function latencySummaryFromReportRow(
+  row: UsageReportRow | UsageReportProviderStatusUsageRow
+): ModelLatencySummary | undefined {
+  const summary: ModelLatencySummary = {
+    sampleRows: row.latency_sample_rows ?? row.traces ?? 0,
+    totalServerP50Ms: row.total_server_elapsed_p50_ms,
+    totalServerP95Ms: row.total_server_elapsed_p95_ms,
+    totalServerCount: row.total_server_elapsed_count,
+    upstreamElapsedP50Ms: row.llm_upstream_elapsed_p50_ms,
+    upstreamElapsedP95Ms: row.llm_upstream_elapsed_p95_ms,
+    upstreamElapsedCount: row.llm_upstream_elapsed_count,
+    ttftP95Ms: row.ttft_p95_ms,
+    ttftCount: row.ttft_count,
+    litellmProcessingP95Ms: row.litellm_processing_p95_ms,
+    litellmProcessingCount: row.litellm_processing_count,
+    upstreamStreamP95Ms: row.llm_upstream_stream_p95_ms,
+    upstreamStreamCount: row.llm_upstream_stream_count,
+    unclassifiedP95Ms: row.latency_unclassified_p95_ms,
+    unclassifiedCount: row.latency_unclassified_count,
+    previousResponseGapP95Ms: row.previous_response_to_current_request_p95_ms,
+    previousResponseGapCount: row.previous_response_to_current_request_count,
+    upstreamOutputTokensPerSecondP50:
+      row.llm_upstream_output_tokens_per_second_p50,
+    upstreamOutputTokensPerSecondP95:
+      row.llm_upstream_output_tokens_per_second_p95,
+    upstreamOutputTokensPerSecondCount:
+      row.llm_upstream_output_tokens_per_second_count,
+    streamOutputTokensPerSecondP50: row.llm_stream_output_tokens_per_second_p50,
+    streamOutputTokensPerSecondP95: row.llm_stream_output_tokens_per_second_p95,
+    streamOutputTokensPerSecondCount:
+      row.llm_stream_output_tokens_per_second_count,
+  }
+  const hasLatencyCoverage =
+    (summary.totalServerCount ?? 0) > 0 ||
+    (summary.upstreamElapsedCount ?? 0) > 0 ||
+    (summary.ttftCount ?? 0) > 0 ||
+    (summary.litellmProcessingCount ?? 0) > 0
+  return hasLatencyCoverage ? summary : undefined
+}
+
+function maxOptionalNumber(
+  left: number | null | undefined,
+  right: number | null | undefined
+): number | null {
+  if (left == null) return right ?? null
+  if (right == null) return left
+  return Math.max(left, right)
+}
+
+function sumOptionalNumber(
+  left: number | null | undefined,
+  right: number | null | undefined
+): number | null {
+  if (left == null && right == null) return null
+  return (left ?? 0) + (right ?? 0)
+}
+
+function mergeLatencySummaries(
+  left: ModelLatencySummary | undefined,
+  right: ModelLatencySummary | undefined
+): ModelLatencySummary | undefined {
+  if (left === undefined) return right
+  if (right === undefined) return left
+  return {
+    sampleRows: left.sampleRows + right.sampleRows,
+    totalServerP50Ms: maxOptionalNumber(
+      left.totalServerP50Ms,
+      right.totalServerP50Ms
+    ),
+    totalServerP95Ms: maxOptionalNumber(
+      left.totalServerP95Ms,
+      right.totalServerP95Ms
+    ),
+    totalServerCount: sumOptionalNumber(
+      left.totalServerCount,
+      right.totalServerCount
+    ),
+    upstreamElapsedP50Ms: maxOptionalNumber(
+      left.upstreamElapsedP50Ms,
+      right.upstreamElapsedP50Ms
+    ),
+    upstreamElapsedP95Ms: maxOptionalNumber(
+      left.upstreamElapsedP95Ms,
+      right.upstreamElapsedP95Ms
+    ),
+    upstreamElapsedCount: sumOptionalNumber(
+      left.upstreamElapsedCount,
+      right.upstreamElapsedCount
+    ),
+    ttftP95Ms: maxOptionalNumber(left.ttftP95Ms, right.ttftP95Ms),
+    ttftCount: sumOptionalNumber(left.ttftCount, right.ttftCount),
+    litellmProcessingP95Ms: maxOptionalNumber(
+      left.litellmProcessingP95Ms,
+      right.litellmProcessingP95Ms
+    ),
+    litellmProcessingCount: sumOptionalNumber(
+      left.litellmProcessingCount,
+      right.litellmProcessingCount
+    ),
+    upstreamStreamP95Ms: maxOptionalNumber(
+      left.upstreamStreamP95Ms,
+      right.upstreamStreamP95Ms
+    ),
+    upstreamStreamCount: sumOptionalNumber(
+      left.upstreamStreamCount,
+      right.upstreamStreamCount
+    ),
+    unclassifiedP95Ms: maxOptionalNumber(
+      left.unclassifiedP95Ms,
+      right.unclassifiedP95Ms
+    ),
+    unclassifiedCount: sumOptionalNumber(
+      left.unclassifiedCount,
+      right.unclassifiedCount
+    ),
+    previousResponseGapP95Ms: maxOptionalNumber(
+      left.previousResponseGapP95Ms,
+      right.previousResponseGapP95Ms
+    ),
+    previousResponseGapCount: sumOptionalNumber(
+      left.previousResponseGapCount,
+      right.previousResponseGapCount
+    ),
+    upstreamOutputTokensPerSecondP50: maxOptionalNumber(
+      left.upstreamOutputTokensPerSecondP50,
+      right.upstreamOutputTokensPerSecondP50
+    ),
+    upstreamOutputTokensPerSecondP95: maxOptionalNumber(
+      left.upstreamOutputTokensPerSecondP95,
+      right.upstreamOutputTokensPerSecondP95
+    ),
+    upstreamOutputTokensPerSecondCount: sumOptionalNumber(
+      left.upstreamOutputTokensPerSecondCount,
+      right.upstreamOutputTokensPerSecondCount
+    ),
+    streamOutputTokensPerSecondP50: maxOptionalNumber(
+      left.streamOutputTokensPerSecondP50,
+      right.streamOutputTokensPerSecondP50
+    ),
+    streamOutputTokensPerSecondP95: maxOptionalNumber(
+      left.streamOutputTokensPerSecondP95,
+      right.streamOutputTokensPerSecondP95
+    ),
+    streamOutputTokensPerSecondCount: sumOptionalNumber(
+      left.streamOutputTokensPerSecondCount,
+      right.streamOutputTokensPerSecondCount
+    ),
+  }
+}
+
+function ledgerP50Ms(
+  summary: ModelLatencySummary | undefined,
+  fallback: number | null | undefined
+): number {
+  return (
+    summary?.totalServerP50Ms ?? summary?.upstreamElapsedP50Ms ?? fallback ?? 0
+  )
+}
+
+function ledgerP95Ms(
+  summary: ModelLatencySummary | undefined,
+  fallback: number | null | undefined
+): number {
+  return (
+    summary?.totalServerP95Ms ?? summary?.upstreamElapsedP95Ms ?? fallback ?? 0
+  )
+}
+
 /**
  * Builds ModelRow[] for MasterLedgerTable from providerStatusUsage rows
  * aggregated by provider+model key.
@@ -2988,13 +4069,7 @@ function buildRepoRows(
  * - 15-B.5: quota_pct computed from quotaRows (was always hardcoded 0).
  */
 function buildModelRows(
-  rows: {
-    provider: string
-    model: string
-    traces: number
-    token_total: number
-    usd_cost: number
-  }[],
+  rows: UsageReportProviderStatusUsageRow[],
   healthRows: UsageReportProviderLatencyHealthRow[],
   usageRows: UsageReportRow[],
   quotaRows: UsageReportQuotaRow[],
@@ -3025,6 +4100,7 @@ function buildModelRows(
       cache_miss_usd: number
       reasoning_reported: number
       reasoning_estimated: number
+      agentQuality?: AgentQualitySummary
     }
   >()
   for (const r of usageRows) {
@@ -3040,6 +4116,7 @@ function buildModelRows(
     const cm_usd = r.cache_miss_usd_cost ?? 0
     const rr = r.token_reasoning_reported ?? 0
     const re = r.token_reasoning_estimated ?? 0
+    const agentQuality = agentQualityFromFlatRow(r)
     if (existing === undefined) {
       tokensByKey.set(key, {
         token_in: tin,
@@ -3049,6 +4126,7 @@ function buildModelRows(
         cache_miss_usd: cm_usd,
         reasoning_reported: rr,
         reasoning_estimated: re,
+        agentQuality,
       })
     } else {
       existing.token_in += tin
@@ -3058,6 +4136,10 @@ function buildModelRows(
       existing.cache_miss_usd += cm_usd
       existing.reasoning_reported += rr
       existing.reasoning_estimated += re
+      existing.agentQuality = combineAgentQualitySummaries([
+        existing.agentQuality,
+        agentQuality,
+      ])
     }
   }
 
@@ -3125,6 +4207,8 @@ function buildModelRows(
       cacheMissUsd > 0 && cost > 0
         ? Math.round((cacheMissUsd / cost) * 1000) / 10
         : undefined
+    const agentQuality = agentQualityFromFlatRow(r)
+    const latencySummary = latencySummaryFromReportRow(r)
 
     if (existing === undefined) {
       repoMap.set(repo, {
@@ -3133,8 +4217,8 @@ function buildModelRows(
         tokens_in: r.token_in ?? 0,
         tokens_out: r.token_out ?? 0,
         requests: r.traces ?? 0,
-        p50_ms: r.llm_upstream_elapsed_average_ms ?? 0,
-        p95_ms: r.llm_upstream_elapsed_average_ms ?? 0,
+        p50_ms: ledgerP50Ms(latencySummary, r.llm_upstream_elapsed_average_ms),
+        p95_ms: ledgerP95Ms(latencySummary, r.llm_upstream_elapsed_average_ms),
         error_pct: 0,
         cost_usd: cost,
         cache_pct: cachePct,
@@ -3146,6 +4230,8 @@ function buildModelRows(
         tool: r.tool_calls ?? undefined,
         git_commits: r.git_commit ?? undefined,
         git_pushes: r.git_push ?? undefined,
+        agentQuality,
+        latencySummary,
         spark: sparkByRepositoryKey.get(`${modelKey}::${repo}`) ?? [
           r.token_total ?? 0,
         ],
@@ -3155,13 +4241,17 @@ function buildModelRows(
       existing.tokens_out += r.token_out ?? 0
       existing.requests += r.traces ?? 0
       existing.cost_usd += cost
+      existing.latencySummary = mergeLatencySummaries(
+        existing.latencySummary,
+        latencySummary
+      )
       existing.p50_ms = Math.max(
         existing.p50_ms,
-        r.llm_upstream_elapsed_average_ms ?? 0
+        ledgerP50Ms(latencySummary, r.llm_upstream_elapsed_average_ms)
       )
       existing.p95_ms = Math.max(
         existing.p95_ms,
-        r.llm_upstream_elapsed_average_ms ?? 0
+        ledgerP95Ms(latencySummary, r.llm_upstream_elapsed_average_ms)
       )
       existing.cache_miss_usd_cost =
         (existing.cache_miss_usd_cost ?? 0) + cacheMissUsd
@@ -3173,6 +4263,10 @@ function buildModelRows(
       existing.tool = (existing.tool ?? 0) + (r.tool_calls ?? 0)
       existing.git_commits = (existing.git_commits ?? 0) + (r.git_commit ?? 0)
       existing.git_pushes = (existing.git_pushes ?? 0) + (r.git_push ?? 0)
+      existing.agentQuality = combineAgentQualitySummaries([
+        existing.agentQuality,
+        agentQuality,
+      ])
       existing.spark = sparkByRepositoryKey.get(`${modelKey}::${repo}`) ?? [
         ...((existing.spark ?? []).length > 0 ? (existing.spark ?? []) : []),
         r.token_total ?? 0,
@@ -3261,6 +4355,7 @@ function buildModelRows(
     const modelKey = row.model.toLowerCase()
     const key = `${providerKey}::${modelKey}`
     const health = healthByKey.get(key)
+    const latencySummary = latencySummaryFromReportRow(row)
     const requests = health?.requests ?? row.traces
     const errors = health?.errors ?? 0
     const errorPct = requests > 0 ? (errors / requests) * 100 : 0
@@ -3314,8 +4409,8 @@ function buildModelRows(
       tokens_in,
       tokens_out,
       requests,
-      p50_ms: health?.p50 ?? 0, // 15-B.4: wired upstream_p50_ms
-      p95_ms: health?.p95 ?? 0,
+      p50_ms: ledgerP50Ms(latencySummary, health?.p50), // 15-B.4: wired upstream_p50_ms
+      p95_ms: ledgerP95Ms(latencySummary, health?.p95),
       error_pct: Math.round(errorPct * 10) / 10,
       cost_usd: row.usd_cost,
       // quota_pct removed — Wave 26 operator F#13
@@ -3338,6 +4433,8 @@ function buildModelRows(
       ) ?? [row.token_total],
       tool: rowToolActivity?.totalCalls,
       toolActivity: rowToolActivity,
+      agentQuality: tokenAgg?.agentQuality,
+      latencySummary,
       repositoryChildren: [
         ...(repositoryChildrenByKey.get(key)?.values() ?? []),
       ].sort(
@@ -3449,16 +4546,54 @@ export default function PhosphorDashboard({
   report: reportProp,
   reportLoading: reportLoadingProp = false,
   reportFetching: reportFetchingProp = false,
+  reportRefreshKey,
   showComparison = false,
   quotas: quotasProp,
   quotasFetching: quotasFetchingProp = false,
+  quotaHistory: quotaHistoryProp,
+  quotaHistoryFetching: quotaHistoryFetchingProp = false,
+  quotaRangeHistory: quotaRangeHistoryProp,
+  quotaRangeHistoryFetching = false,
   onRefreshReport,
   onRefreshQuotas,
+  onRefreshQuotaHistory,
+  onRefreshQuotaRangeHistory,
+  providerSectionView: providerSectionViewProp,
+  onProviderSectionViewChange,
+  ledgerView: ledgerViewProp,
+  onLedgerViewChange,
+  trendLowerLaneMode,
+  onTrendLowerLaneModeChange,
 }: PhosphorDashboardProps): ReactElement {
   const defaults = useMemo(() => _localFallbackRange(), [])
   const resolvedFrom = from ?? defaults.from
   const resolvedTo = to ?? defaults.to
   const resolvedGrain: UsageReportGrain = grain ?? 'day'
+  const [internalProviderSectionView, setInternalProviderSectionView] =
+    useState<ProviderSectionView>('health')
+  const [internalLedgerView, setInternalLedgerView] =
+    useState<LedgerView>('model')
+  const providerSectionView =
+    providerSectionViewProp ?? internalProviderSectionView
+  const ledgerView = ledgerViewProp ?? internalLedgerView
+  const setProviderSectionView = useCallback(
+    (view: ProviderSectionView): void => {
+      if (providerSectionViewProp === undefined) {
+        setInternalProviderSectionView(view)
+      }
+      onProviderSectionViewChange?.(view)
+    },
+    [onProviderSectionViewChange, providerSectionViewProp]
+  )
+  const setLedgerView = useCallback(
+    (view: LedgerView): void => {
+      if (ledgerViewProp === undefined) {
+        setInternalLedgerView(view)
+      }
+      onLedgerViewChange?.(view)
+    },
+    [ledgerViewProp, onLedgerViewChange]
+  )
 
   // Wave 36 Fix 1: the /usage query is hoisted to index.tsx so a single HTTP
   // request is shared across the whole dashboard. This internal query is ONLY
@@ -3545,6 +4680,55 @@ export default function PhosphorDashboard({
     ? internalQuotasFetching
     : quotasFetchingProp
 
+  const internalQuotaHistoryEnabled = quotaHistoryProp === undefined
+  const {
+    data: internalQuotaHistoryData,
+    isFetching: internalQuotaHistoryFetching,
+    refetch: refetchInternalQuotaHistory,
+  } = useQuery({
+    queryKey: ['usage-report-quota-history'],
+    queryFn: ({ signal }) => fetchUsageReportQuotaHistory({}, signal),
+    enabled: internalQuotaHistoryEnabled && providerSectionView === 'health',
+    staleTime: LIVE_DASHBOARD_REFETCH_INTERVAL_MS,
+    refetchInterval: false,
+    refetchIntervalInBackground: true,
+  })
+  const quotaHistoryFetching = internalQuotaHistoryEnabled
+    ? internalQuotaHistoryFetching
+    : quotaHistoryFetchingProp
+
+  const {
+    data: quotaEstimatorData,
+    isFetching: quotaEstimatorFetching,
+    isLoading: quotaEstimatorLoading,
+    refetch: refetchQuotaEstimator,
+  } = useQuery({
+    queryKey: [
+      'usage-report-quota-estimator',
+      resolvedFrom,
+      resolvedTo,
+      filters?.providers,
+      filters?.repositories,
+      filters?.clients,
+      filters?.environments,
+      filters?.models,
+      reportRefreshKey,
+    ],
+    queryFn: ({ signal }) =>
+      fetchUsageReportQuotaEstimator(
+        {
+          from: resolvedFrom,
+          to: resolvedTo,
+          cacheBust: reportRefreshKey,
+        },
+        signal
+      ),
+    enabled: providerSectionView === 'weights',
+    staleTime: LIVE_DASHBOARD_REFETCH_INTERVAL_MS,
+    refetchInterval: false,
+    refetchIntervalInBackground: true,
+  })
+
   const anomalies = useAnomalyDetection(
     (report?.providerLatencyHealth ?? []).filter(
       (r): r is typeof r & { bucket_start: string } => r.bucket_start !== null
@@ -3594,6 +4778,7 @@ export default function PhosphorDashboard({
       filters?.clients,
       filters?.environments,
       filters?.models,
+      reportRefreshKey,
     ],
     queryFn: ({ signal }) =>
       fetchUsageReportTokenTrendSummary(
@@ -3605,6 +4790,7 @@ export default function PhosphorDashboard({
           client: filters?.clients,
           environment: filters?.environments,
           model: filters?.models,
+          cacheBust: reportRefreshKey,
         },
         signal
       ),
@@ -3620,11 +4806,63 @@ export default function PhosphorDashboard({
       [],
     [tokenTrendSummaryData?.tokenTrendVersions, report?.tokenTrendVersions]
   )
+  const tokenTrendModelFirstSeen = useMemo(
+    () =>
+      tokenTrendSummaryData?.tokenTrendModelFirstSeen ??
+      report?.tokenTrendModelFirstSeen ??
+      [],
+    [
+      tokenTrendSummaryData?.tokenTrendModelFirstSeen,
+      report?.tokenTrendModelFirstSeen,
+    ]
+  )
+  const tokenTrendHealthRows = useMemo(
+    () =>
+      tokenTrendSummaryData?.tokenTrendHealth ??
+      report?.tokenTrendHealth ??
+      report?.providerLatencyHealth ??
+      [],
+    [
+      tokenTrendSummaryData?.tokenTrendHealth,
+      report?.tokenTrendHealth,
+      report?.providerLatencyHealth,
+    ]
+  )
+  const summaryTokenTrendScores = tokenTrendSummaryData?.tokenTrendScores
+  const reportTokenTrendScores = report?.tokenTrendScores
+  const reportRows = report?.rows
+  const tokenTrendScoreRows = useMemo<UsageReportTokenTrendScoreRow[]>(() => {
+    if (summaryTokenTrendScores !== undefined) {
+      return summaryTokenTrendScores
+    }
+    if (reportTokenTrendScores !== undefined) return reportTokenTrendScores
+    return (reportRows ?? []).map((row) => ({
+      ...row,
+      provider: row.provider ?? 'unknown',
+      model: row.model ?? 'unknown',
+    }))
+  }, [summaryTokenTrendScores, reportTokenTrendScores, reportRows])
 
   const tokenTrendDayEnvelopes = useMemo(
     () =>
       buildTokenTrendDayEnvelopes(
         tokenTrendSummaryData?.tokenTrendHours ?? report?.tokenTrendHours ?? []
+      ),
+    [tokenTrendSummaryData?.tokenTrendHours, report?.tokenTrendHours]
+  )
+  const tokenTrendRequestDayEnvelopes = useMemo(
+    () =>
+      buildTokenTrendDayEnvelopes(
+        tokenTrendSummaryData?.tokenTrendHours ?? report?.tokenTrendHours ?? [],
+        'requests'
+      ),
+    [tokenTrendSummaryData?.tokenTrendHours, report?.tokenTrendHours]
+  )
+  const tokenTrendToolDayEnvelopes = useMemo(
+    () =>
+      buildTokenTrendDayEnvelopes(
+        tokenTrendSummaryData?.tokenTrendHours ?? report?.tokenTrendHours ?? [],
+        'tools'
       ),
     [tokenTrendSummaryData?.tokenTrendHours, report?.tokenTrendHours]
   )
@@ -3711,6 +4949,39 @@ export default function PhosphorDashboard({
     refetchIntervalInBackground: true,
   })
 
+  const {
+    data: toolActivityData,
+    isFetching: toolActivityFetching,
+    refetch: refetchToolActivity,
+  } = useQuery({
+    queryKey: [
+      'usage-report-tool-activity',
+      resolvedFrom,
+      resolvedTo,
+      filters?.providers,
+      filters?.repositories,
+      filters?.clients,
+      filters?.environments,
+      filters?.models,
+    ],
+    queryFn: ({ signal }) =>
+      fetchUsageReportToolActivity(
+        {
+          from: resolvedFrom,
+          to: resolvedTo,
+          provider: filters?.providers,
+          repository: filters?.repositories,
+          client: filters?.clients,
+          environment: filters?.environments,
+          model: filters?.models,
+        },
+        signal
+      ),
+    staleTime: LIVE_DASHBOARD_REFETCH_INTERVAL_MS,
+    refetchInterval: LIVE_DASHBOARD_REFETCH_INTERVAL_MS,
+    refetchIntervalInBackground: true,
+  })
+
   const providers = useMemo(() => deriveProviders(), [])
 
   // Wave 37 SF-1: prefer parent-supplied quotas (dedup fix); fall back to the
@@ -3720,6 +4991,39 @@ export default function PhosphorDashboard({
     [quotasProp, quotasData?.quotas, report?.quotas]
   )
 
+  const quotaHistoryRows = useMemo(
+    () =>
+      quotaHistoryProp ??
+      internalQuotaHistoryData?.quotaHistory ??
+      report?.quotaHistory ??
+      [],
+    [
+      quotaHistoryProp,
+      internalQuotaHistoryData?.quotaHistory,
+      report?.quotaHistory,
+    ]
+  )
+
+  const quotaRangeHistoryByProvider = useMemo(() => {
+    const map = new Map<string, UsageReportQuotaHistoryRow[]>()
+    for (const row of quotaRangeHistoryProp ??
+      report?.quotaRangeHistory ??
+      []) {
+      const provider = canonicalProvider(row.provider)
+      const rows = map.get(provider) ?? []
+      rows.push(row)
+      map.set(provider, rows)
+    }
+    for (const rows of map.values()) {
+      rows.sort((a, b) =>
+        String(b.expected_reset_at ?? '').localeCompare(
+          String(a.expected_reset_at ?? '')
+        )
+      )
+    }
+    return map
+  }, [quotaRangeHistoryProp, report?.quotaRangeHistory])
+
   const modelRows = useMemo(
     () =>
       buildModelRows(
@@ -3728,7 +5032,7 @@ export default function PhosphorDashboard({
         report?.rows ?? [], // 15-B.3: real token_in/token_out
         quotaRows, // 15-B.5: quota_pct from quota rows
         report?.trend ?? [], // Wave 30 Track 4: real 24h sparkline data
-        report?.toolActivity ?? [] // W33: tool activity for TOOL cell hover
+        toolActivityData?.toolActivity ?? report?.toolActivity ?? [] // W33: tool activity for TOOL cell hover
       ),
     [
       report?.providerStatusUsage,
@@ -3736,6 +5040,7 @@ export default function PhosphorDashboard({
       report?.rows,
       quotaRows,
       report?.trend,
+      toolActivityData?.toolActivity,
       report?.toolActivity,
     ]
   )
@@ -3957,9 +5262,44 @@ export default function PhosphorDashboard({
     await refetchInternalQuotas()
   }, [onRefreshQuotas, refetchInternalQuotas])
 
+  const refreshQuotaHistory = useCallback(async (): Promise<void> => {
+    if (onRefreshQuotaHistory !== undefined) {
+      await onRefreshQuotaHistory()
+      return
+    }
+    await refetchInternalQuotaHistory()
+  }, [onRefreshQuotaHistory, refetchInternalQuotaHistory])
+
+  const refreshQuotaRangeHistory = useCallback(async (): Promise<void> => {
+    if (onRefreshQuotaRangeHistory !== undefined) {
+      await onRefreshQuotaRangeHistory()
+      return
+    }
+    await refreshReport()
+  }, [onRefreshQuotaRangeHistory, refreshReport])
+
+  const refreshQuotaEstimator = useCallback(async (): Promise<void> => {
+    await refetchQuotaEstimator()
+  }, [refetchQuotaEstimator])
+
   const refreshStatusSection = useCallback(async (): Promise<void> => {
-    await Promise.all([refreshReport(), refreshQuotas()])
-  }, [refreshReport, refreshQuotas])
+    if (providerSectionView === 'quota') {
+      await Promise.all([refreshQuotas(), refreshQuotaRangeHistory()])
+      return
+    }
+    if (providerSectionView === 'weights') {
+      await refreshQuotaEstimator()
+      return
+    }
+    await Promise.all([refreshReport(), refreshQuotas(), refreshQuotaHistory()])
+  }, [
+    providerSectionView,
+    refreshQuotaEstimator,
+    refreshQuotaHistory,
+    refreshQuotaRangeHistory,
+    refreshQuotas,
+    refreshReport,
+  ])
 
   const refreshTokenSection = useCallback(async (): Promise<void> => {
     const refreshes: Promise<unknown>[] = [
@@ -3981,8 +5321,17 @@ export default function PhosphorDashboard({
     await Promise.all([refreshReport(), refetchPriorReport()])
   }, [refreshReport, refetchPriorReport])
 
-  const statusUpdating = reportFetching || quotasFetching
-  const reportUpdating = reportFetching
+  const refreshLedgerSection = useCallback(async (): Promise<void> => {
+    await Promise.all([refreshReport(), refetchToolActivity()])
+  }, [refreshReport, refetchToolActivity])
+
+  const statusUpdating =
+    providerSectionView === 'quota'
+      ? quotasFetching || quotaRangeHistoryFetching
+      : providerSectionView === 'weights'
+        ? quotaEstimatorFetching
+        : reportFetching || quotasFetching || quotaHistoryFetching
+  const reportUpdating = reportFetching || toolActivityFetching
   const tokenTrendUpdating =
     reportFetching || tokenTrendSummaryFetching || tokenTrendDayDetailFetching
   const comparisonUpdating = reportFetching || priorReportFetching
@@ -3998,7 +5347,7 @@ export default function PhosphorDashboard({
         gap: '8px',
       }}
     >
-      {/* ── STATUS (Provider Health Summary) ─────────────────────────── */}
+      {/* ── STATUS ────────────────────────────────────────────────────── */}
       {/* Wave 11 PR1 (11-b): provider cards move here from #models.     */}
       {/* D3: AggregateCard injected as the last peer in the grid;       */}
       {/* 1920px+ layouts wrap it onto a second row instead of hiding it. */}
@@ -4009,22 +5358,34 @@ export default function PhosphorDashboard({
       >
         <SectionTitle
           id='section-status-heading'
+          tabs={
+            <SectionTabs
+              label='Status view'
+              value={providerSectionView}
+              options={[
+                { value: 'health', label: 'Health' },
+                { value: 'quota', label: 'Quota' },
+                { value: 'weights', label: 'Weights' },
+              ]}
+              onChange={setProviderSectionView}
+            />
+          }
           accessory={
             <div className='section-title-tools'>
               <ProviderStatusLegend />
               <SectionRefreshButton
-                label='Refresh Provider Health Summary data'
+                label='Refresh provider data'
                 updating={statusUpdating}
                 onRefresh={refreshStatusSection}
               />
             </div>
           }
         >
-          Provider Health Summary
+          STATUS
         </SectionTitle>
         {reportLoading ? (
           <SectionSkeleton height={120} />
-        ) : (
+        ) : providerSectionView === 'health' ? (
           <div
             className={`provider-summary ${styles['provider-summary-grid']}`}
           >
@@ -4052,7 +5413,7 @@ export default function PhosphorDashboard({
               const lanes = buildProviderLanes(
                 provider,
                 quotaRows,
-                report?.quotaHistory ?? []
+                quotaHistoryRows
               )
               // Flat quota list is still needed for providers without lane defs.
               const currentBars =
@@ -4061,7 +5422,7 @@ export default function PhosphorDashboard({
                 lanes.length === 0
                   ? buildHistoryBarsForProvider(
                       provider,
-                      report?.quotaHistory ?? [],
+                      quotaHistoryRows,
                       currentBars
                     )
                   : []
@@ -4083,6 +5444,9 @@ export default function PhosphorDashboard({
                   lanes={lanes.length > 0 ? lanes : undefined}
                   anomalies={anomalies}
                   topModels={topModels}
+                  localHealthItems={
+                    provider === 'local' ? (report?.localHealth ?? []) : []
+                  }
                 />
               )
             })}
@@ -4108,6 +5472,25 @@ export default function PhosphorDashboard({
               anomalies={anomalies}
             />
           </div>
+        ) : providerSectionView === 'quota' ? (
+          <div
+            className={`provider-summary provider-quota-summary ${styles['provider-summary-grid']}`}
+          >
+            {providers.map((provider) => (
+              <ProviderQuotaHistoryBucket
+                key={`quota-${provider}`}
+                provider={provider}
+                rows={quotaRangeHistoryByProvider.get(provider) ?? []}
+                rangeFrom={resolvedFrom}
+                rangeTo={resolvedTo}
+              />
+            ))}
+          </div>
+        ) : (
+          <QuotaEstimatorWeightsPanel
+            response={quotaEstimatorData}
+            loading={quotaEstimatorLoading || quotaEstimatorFetching}
+          />
         )}
       </section>
 
@@ -4127,7 +5510,7 @@ export default function PhosphorDashboard({
             />
           }
         >
-          Token Trend · Hourly by Day · Stacked by Provider
+          TREND
         </SectionTitle>
         {reportLoading ? (
           <SectionSkeleton height={280} />
@@ -4140,10 +5523,17 @@ export default function PhosphorDashboard({
                 ? tokenTrendDayEnvelopes
                 : undefined
             }
+            requestDayEnvelopes={tokenTrendRequestDayEnvelopes}
+            toolDayEnvelopes={tokenTrendToolDayEnvelopes}
             versionIntervals={tokenTrendVersions}
+            modelFirstSeen={tokenTrendModelFirstSeen}
+            healthRows={tokenTrendHealthRows}
+            scoreRows={tokenTrendScoreRows}
             dayDetail={tokenTrendDayDetailData}
             detailLoading={tokenTrendDayDetailFetching}
             onHourHover={handleTokenTrendHourHover}
+            lowerLaneMode={trendLowerLaneMode}
+            onLowerLaneModeChange={onTrendLowerLaneModeChange}
           />
         )}
       </section>
@@ -4156,11 +5546,22 @@ export default function PhosphorDashboard({
       >
         <SectionTitle
           id='section-models-heading'
+          tabs={
+            <SectionTabs
+              label='Ledger view'
+              value={ledgerView}
+              options={[
+                { value: 'model', label: 'Model' },
+                { value: 'repository', label: 'Repository' },
+              ]}
+              onChange={setLedgerView}
+            />
+          }
           accessory={
             <SectionRefreshButton
               label='Refresh Model Ledger data'
               updating={reportUpdating}
-              onRefresh={refreshReport}
+              onRefresh={refreshLedgerSection}
             />
           }
         >
@@ -4174,6 +5575,8 @@ export default function PhosphorDashboard({
           <MasterLedgerTable
             rows={filteredModelRows}
             errorObservations={providerErrorObservations}
+            ledgerView={ledgerView}
+            onLedgerViewChange={setLedgerView}
           />
         )}
       </section>

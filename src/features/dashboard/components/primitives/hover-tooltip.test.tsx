@@ -14,6 +14,71 @@
 import { render, fireEvent } from '@testing-library/react'
 import { HoverTooltip } from '../primitives/hover-tooltip'
 
+function makeRect({
+  top,
+  left,
+  width,
+  height,
+}: {
+  top: number
+  left: number
+  width: number
+  height: number
+}): DOMRect {
+  return {
+    x: left,
+    y: top,
+    top,
+    left,
+    width,
+    height,
+    right: left + width,
+    bottom: top + height,
+    toJSON: () => ({}),
+  } as DOMRect
+}
+
+function installTooltipRectMocks({
+  viewportWidth,
+  viewportHeight,
+  triggerRect,
+  panelRect,
+}: {
+  viewportWidth: number
+  viewportHeight: number
+  triggerRect: DOMRect
+  panelRect: DOMRect
+}): () => void {
+  const originalGetBoundingClientRect =
+    HTMLElement.prototype.getBoundingClientRect
+  const originalInnerWidth = window.innerWidth
+  const originalInnerHeight = window.innerHeight
+
+  Object.defineProperty(window, 'innerWidth', {
+    configurable: true,
+    value: viewportWidth,
+  })
+  Object.defineProperty(window, 'innerHeight', {
+    configurable: true,
+    value: viewportHeight,
+  })
+  HTMLElement.prototype.getBoundingClientRect = function (): DOMRect {
+    return this.classList.contains('v9-tip') ? panelRect : triggerRect
+  }
+
+  return () => {
+    HTMLElement.prototype.getBoundingClientRect = originalGetBoundingClientRect
+    Object.defineProperty(window, 'innerWidth', {
+      configurable: true,
+      value: originalInnerWidth,
+    })
+    Object.defineProperty(window, 'innerHeight', {
+      configurable: true,
+      value: originalInnerHeight,
+    })
+  }
+}
+
 test('test_hover_tooltip_hidden_by_default', () => {
   const { container } = render(
     <HoverTooltip content={<span>Tooltip content</span>}>
@@ -170,6 +235,62 @@ test('test_hover_tooltip_accepts_panel_style_override', () => {
   expect(tooltip).not.toBeNull()
   expect(tooltip?.style.maxWidth).toBe('calc(100vw - 16px)')
   expect(tooltip?.style.width).toBe('720px')
+})
+
+test('test_hover_tooltip_default_variant_clamps_bottom_overflow', () => {
+  const restore = installTooltipRectMocks({
+    viewportWidth: 800,
+    viewportHeight: 300,
+    triggerRect: makeRect({ top: 260, left: 100, width: 12, height: 12 }),
+    panelRect: makeRect({ top: -9999, left: -9999, width: 260, height: 220 }),
+  })
+
+  try {
+    const { container } = render(
+      <HoverTooltip content={<span>Large score tooltip</span>}>
+        <button type='button'>Hover me</button>
+      </HoverTooltip>
+    )
+
+    const trigger = container.firstChild as HTMLElement
+    fireEvent.pointerEnter(trigger)
+
+    const tooltip = document.body.querySelector('.v9-tip') as HTMLElement | null
+
+    expect(tooltip).not.toBeNull()
+    expect(tooltip?.style.top).toBe('72px')
+    expect(tooltip?.style.maxHeight).toBe('calc(100vh - 16px)')
+    expect(tooltip?.style.overflowY).toBe('auto')
+  } finally {
+    restore()
+  }
+})
+
+test('test_hover_tooltip_default_variant_flips_left_at_right_edge', () => {
+  const restore = installTooltipRectMocks({
+    viewportWidth: 300,
+    viewportHeight: 400,
+    triggerRect: makeRect({ top: 40, left: 260, width: 15, height: 12 }),
+    panelRect: makeRect({ top: -9999, left: -9999, width: 160, height: 90 }),
+  })
+
+  try {
+    const { container } = render(
+      <HoverTooltip content={<span>Wide score tooltip</span>}>
+        <button type='button'>Hover me</button>
+      </HoverTooltip>
+    )
+
+    const trigger = container.firstChild as HTMLElement
+    fireEvent.pointerEnter(trigger)
+
+    const tooltip = document.body.querySelector('.v9-tip') as HTMLElement | null
+
+    expect(tooltip).not.toBeNull()
+    expect(tooltip?.style.left).toBe('100px')
+  } finally {
+    restore()
+  }
 })
 
 test('test_hover_tooltip_does_not_inject_style_tag', () => {

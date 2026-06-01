@@ -62,13 +62,15 @@ services:
       SHELL_REPORT_PORT: "3010"
       SHELL_REPORT_REDIS_URL: "${SHELL_REPORT_REDIS_URL:-redis://dashboard-shell-redis:6379}"
       SHELL_REPORT_CACHE_PREFIX: "${SHELL_REPORT_CACHE_PREFIX:-dashboard-shell:reports}"
-      SHELL_REPORT_CACHE_VERSION: "${SHELL_REPORT_CACHE_VERSION:-v10}"
+      SHELL_REPORT_CACHE_VERSION: "${SHELL_REPORT_CACHE_VERSION:-v14}"
       SHELL_REPORT_CACHE_STALE_TTL_MS: "${SHELL_REPORT_CACHE_STALE_TTL_MS:-86400000}"
       SHELL_REPORT_CACHE_LOCK_TTL_MS: "${SHELL_REPORT_CACHE_LOCK_TTL_MS:-1800000}"
       SHELL_REPORT_CACHE_LOCK_WAIT_MS: "${SHELL_REPORT_CACHE_LOCK_WAIT_MS:-60000}"
       SHELL_REPORT_CACHE_PREWARM: "${SHELL_REPORT_CACHE_PREWARM:-false}"
       SHELL_REPORT_CACHE_PREWARM_INTERVAL_MS: "${SHELL_REPORT_CACHE_PREWARM_INTERVAL_MS:-900000}"
       SHELL_REPORT_CACHE_PREWARM_LOCK_TTL_MS: "${SHELL_REPORT_CACHE_PREWARM_LOCK_TTL_MS:-7200000}"
+      SHELL_REPORT_DOCKER_LOG_ROOT: "${SHELL_REPORT_DOCKER_LOG_ROOT:-/host/docker/containers}"
+      SHELL_REPORT_DOCKER_LOG_CONTAINERS: "${SHELL_REPORT_DOCKER_LOG_CONTAINERS:-aawm-litellm,litellm-dev}"
     expose:
       - "3010"
     depends_on:
@@ -76,6 +78,7 @@ services:
         condition: service_healthy
     volumes:
       - ./server:/app/server:ro
+      - /var/lib/docker/containers:/host/docker/containers:ro
     healthcheck:
       test:
         [

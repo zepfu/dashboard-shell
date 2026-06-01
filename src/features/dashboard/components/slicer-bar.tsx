@@ -99,6 +99,7 @@ interface DimensionDropdownProps {
   options: string[]
   onToggle: (value: string) => void
   onClear: () => void
+  shortcutTarget?: string
 }
 
 /**
@@ -113,6 +114,7 @@ function DimensionDropdown({
   options,
   onToggle,
   onClear,
+  shortcutTarget,
 }: DimensionDropdownProps): ReactElement {
   const [open, setOpen] = useState(false)
   const wrapperRef = useRef<HTMLDivElement>(null)
@@ -175,6 +177,7 @@ function DimensionDropdown({
         aria-haspopup='listbox'
         aria-expanded={open}
         aria-controls={dropdownId}
+        data-shortcut-target={shortcutTarget}
         onClick={() => {
           setOpen((prev) => !prev)
         }}
@@ -327,12 +330,13 @@ export function SlicerBar({
     >
       <span className='slicer-bar-label'>Filters</span>
 
-      {DIMENSIONS.map((dim) => (
+      {DIMENSIONS.map((dim, index) => (
         <DimensionDropdown
           key={dim.key}
           label={dim.label}
           selected={filters[dim.key]}
           options={options[dim.optionsKey]}
+          shortcutTarget={index === 0 ? 'first-filter' : undefined}
           onToggle={(value) => {
             handleToggle(dim.key, value)
           }}

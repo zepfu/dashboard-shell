@@ -1,5 +1,8 @@
 import crypto from 'node:crypto'
+import { open, readdir, readFile } from 'node:fs/promises'
 import http from 'node:http'
+import net from 'node:net'
+import path from 'node:path'
 import process from 'node:process'
 import { URL } from 'node:url'
 import { promisify } from 'node:util'
@@ -102,6 +105,90 @@ const MAX_HEALTH_ROWS = Math.max(
   Math.min(Number(process.env.SHELL_REPORT_HEALTH_MAX_ROWS ?? 20_000), 20_000)
 )
 const MAX_PROVIDER_ERROR_ROWS = 2_000
+const MAX_DOCKER_LOG_ERROR_ROWS = Math.max(
+  0,
+  Math.min(Number(process.env.SHELL_REPORT_DOCKER_LOG_ERROR_ROWS ?? 200), 1_000)
+)
+const DOCKER_LOG_TAIL_BYTES = Math.max(
+  64 * 1024,
+  Math.min(
+    Number(process.env.SHELL_REPORT_DOCKER_LOG_TAIL_BYTES ?? 4 * 1024 * 1024),
+    32 * 1024 * 1024
+  )
+)
+const DOCKER_LOG_ROOT =
+  process.env.SHELL_REPORT_DOCKER_LOG_ROOT ?? '/host/docker/containers'
+const DOCKER_LOG_CONTAINER_NAMES = parseCsv(
+  process.env.SHELL_REPORT_DOCKER_LOG_CONTAINERS ?? 'aawm-litellm,litellm-dev'
+)
+const LOCAL_HEALTH_TIMEOUT_MS = Math.max(
+  250,
+  Math.min(Number(process.env.SHELL_REPORT_LOCAL_HEALTH_TIMEOUT_MS ?? 900), 5_000)
+)
+const LOCAL_CONTAINER_HEALTH_PROBES = [
+  {
+    key: 'aawm-litellm',
+    label: 'LiteLLM',
+    kind: 'http',
+    url: 'http://aawm-litellm:4000/health/liveliness',
+  },
+  {
+    key: 'litellm-dev',
+    label: 'LiteLLM Dev',
+    kind: 'http',
+    url: 'http://host.docker.internal:4001/health/liveliness',
+  },
+  {
+    key: 'aawm-langfuse-web',
+    label: 'Langfuse Web',
+    kind: 'http',
+    url: 'http://langfuse-web:3000/api/public/health',
+  },
+  {
+    key: 'aawm-langfuse-worker',
+    label: 'Langfuse Worker',
+    kind: 'http',
+    url: 'http://langfuse-worker:3030/api/health',
+  },
+  {
+    key: 'aawm-langfuse-redis',
+    label: 'Langfuse Redis',
+    kind: 'redis',
+    host: 'langfuse-redis',
+    port: 6379,
+  },
+  {
+    key: 'aawm-clickhouse',
+    label: 'ClickHouse',
+    kind: 'http',
+    url: 'http://clickhouse:8123/ping',
+  },
+  {
+    key: 'aawm-minio',
+    label: 'MinIO',
+    kind: 'http',
+    url: 'http://minio:9000/minio/health/live',
+  },
+]
+const LOCAL_MODEL_HEALTH_PROBES = [
+  ['nomic-code-gguf', 'Nomic Code', 8082],
+  ['tei-medcpt-article', 'MedCPT Article', 8083],
+  ['tei-medcpt-query', 'MedCPT Query', 8084],
+  ['specter2-adapter', 'SPECTER2', 8086],
+  ['tei-indus', 'Indus', 8087],
+  ['tei-sapbert', 'SapBERT', 8088],
+  ['tei-reranker', 'Reranker', 8090],
+  ['qwen3-heretic-gguf', 'Qwen3 Heretic', 8093],
+  ['biomed-scispacy', 'SciSpacy', 8094],
+  ['biomed-tinybern2', 'TinyBERT/BERN2', 8095],
+  ['ministral3-adjudicator-gguf', 'Ministral Adjudicator', 8096],
+  ['aawm-tap-grobid', 'GROBID', 8070, '/api/isalive'],
+].map(([key, label, port, healthPath = '/health']) => ({
+  key,
+  label,
+  kind: 'http',
+  url: `http://host.docker.internal:${port}${healthPath}`,
+}))
 const MAX_PROVIDER_STATUS_ROWS = 500
 const STALE_RECORD_THRESHOLD_MINUTES = 120
 const REPORT_DB_DISABLE_PARALLELISM =
@@ -127,7 +214,7 @@ const REPORT_CACHE_STALE_TTL_MS = Math.max(
 const REPORT_CACHE_REDIS_URL = process.env.SHELL_REPORT_REDIS_URL
 const REPORT_CACHE_PREFIX =
   process.env.SHELL_REPORT_CACHE_PREFIX ?? 'dashboard-shell:reports'
-const REPORT_CACHE_VERSION = process.env.SHELL_REPORT_CACHE_VERSION ?? 'v10'
+const REPORT_CACHE_VERSION = process.env.SHELL_REPORT_CACHE_VERSION ?? 'v14'
 const REPORT_CACHE_LOCK_TTL_MS = Math.max(
   1_000,
   Number(process.env.SHELL_REPORT_CACHE_LOCK_TTL_MS ?? 30 * 60 * 1000)
@@ -156,6 +243,23 @@ const REPORT_CACHE_PREWARM_LOCK_TTL_MS = Math.max(
 )
 const MAX_REPORT_CACHE_ENTRIES = 20
 const QUOTA_VELOCITY_SEGMENT_COUNT = 100
+const QUOTA_ESTIMATOR_LAG_MINUTES = [0, 1, 5, 10, 30, 60]
+const QUOTA_ESTIMATOR_MIN_TRAINING_ROWS = 4
+const QUOTA_ESTIMATOR_HIGH_CONFIDENCE_ROWS = 20
+const QUOTA_ESTIMATOR_MAX_INTERVALS_PER_LANE = Math.max(
+  10,
+  Math.min(
+    Number(process.env.SHELL_REPORT_QUOTA_ESTIMATOR_MAX_INTERVALS_PER_LANE ?? 40),
+    500
+  )
+)
+const QUOTA_ESTIMATOR_ROLLING_HALF_LIFE_HOURS = {
+  short: 5,
+  short_special: 5,
+  weekly: 72,
+  special: 72,
+  monthly: 168,
+}
 const UPSTREAM_FETCH_TIMEOUT_MS = Number(
   process.env.SHELL_REPORT_UPSTREAM_TIMEOUT_MS ?? 30_000
 )
@@ -731,6 +835,10 @@ const createdAtEastern = "(sh.created_at AT TIME ZONE 'America/New_York')"
 const providerDimension = `
 CASE
     WHEN lower(COALESCE(sh.provider, 'unknown')) IN ('google', 'gemini') THEN 'google'
+    WHEN lower(COALESCE(sh.provider, 'unknown')) IN ('claude', 'anthropic') THEN 'anthropic'
+    WHEN lower(COALESCE(sh.provider, 'unknown')) LIKE 'claude/%' THEN 'anthropic'
+    WHEN lower(COALESCE(sh.provider, 'unknown')) LIKE 'anthropic/%' THEN 'anthropic'
+    WHEN lower(COALESCE(sh.provider, 'unknown')) LIKE 'deepseek/%' THEN 'deepseek'
     WHEN lower(COALESCE(sh.provider, 'unknown')) IN ('xai', 'x.ai') THEN 'xai'
     WHEN lower(COALESCE(sh.provider, 'unknown')) LIKE 'xai/%' THEN 'xai'
     WHEN lower(COALESCE(sh.provider, 'unknown')) = 'nvidia' THEN 'nvidia_nim'
@@ -740,6 +848,8 @@ CASE
     WHEN lower(COALESCE(sh.provider, 'unknown')) LIKE 'local_%' THEN 'local'
     ELSE COALESCE(sh.provider, 'unknown')
 END`
+const providerDimensionRecent = providerDimension.replaceAll('sh.', 'sh_recent.')
+const healthProviderDimension = providerDimension.replaceAll('sh.', 'h.')
 
 const grains = {
   day: `${createdAtEastern}::date`,
@@ -774,9 +884,219 @@ const sortColumns = {
   usd_cost: 'usd_cost',
   token_total: 'token_total',
 }
-const createdAtDateRangeWhere = [
-  "sh.created_at >= ($1::date::timestamp AT TIME ZONE 'America/New_York')",
-  "sh.created_at < ($2::date::timestamp AT TIME ZONE 'America/New_York')",
+const startTimeDateRangeWhere = [
+  "sh.start_time >= ($1::date::timestamp AT TIME ZONE 'America/New_York')",
+  "sh.start_time < ($2::date::timestamp AT TIME ZONE 'America/New_York')",
+]
+
+function appendStartTimeDateRangeWhere(whereParts, values, from, to) {
+  const fromIndex = values.length + 1
+  values.push(from)
+  const toIndex = values.length + 1
+  values.push(to)
+  whereParts.push(
+    `sh.start_time >= ($${fromIndex.toString()}::date::timestamp AT TIME ZONE 'America/New_York')`,
+    `sh.start_time < ($${toIndex.toString()}::date::timestamp AT TIME ZONE 'America/New_York')`
+  )
+}
+
+function appendCreatedAtDateRangeWhere(whereParts, values, from, to) {
+  const fromIndex = values.length + 1
+  values.push(from)
+  const toIndex = values.length + 1
+  values.push(to)
+  whereParts.push(
+    `sh.created_at >= ($${fromIndex.toString()}::date::timestamp AT TIME ZONE 'America/New_York')`,
+    `sh.created_at < ($${toIndex.toString()}::date::timestamp AT TIME ZONE 'America/New_York')`
+  )
+}
+
+const agentPassScoreFamilies = {
+  quality: [
+    'trace_quality_score',
+    'response_meaningfulness_score',
+    'answer_completeness_score',
+    'evidence_fidelity_score',
+    'context_retention_score',
+  ],
+  instruction: [
+    'instruction_adherence_score',
+    'read_only_policy_compliance_score',
+    'scope_control_score',
+    'destructive_action_policy_score',
+  ],
+  tool: [
+    'tool_use_validity_score',
+    'tool_result_fidelity_score',
+    'tool_error_recovery_score',
+    'error_attribution_quality_score',
+  ],
+  contract: ['output_contract_compliance_score'],
+  progress: ['task_progress_score'],
+}
+
+const agentRiskScoreColumns = [
+  'repetition_loop_risk_score',
+  'stall_risk_score',
+]
+
+function buildLatencyMetricSelects(column, alias) {
+  return [
+    `percentile_cont(0.50) WITHIN GROUP (ORDER BY sh.${column})
+        FILTER (WHERE sh.${column} IS NOT NULL) AS ${alias}_p50_ms`,
+    `percentile_cont(0.95) WITHIN GROUP (ORDER BY sh.${column})
+        FILTER (WHERE sh.${column} IS NOT NULL) AS ${alias}_p95_ms`,
+    `percentile_cont(0.99) WITHIN GROUP (ORDER BY sh.${column})
+        FILTER (WHERE sh.${column} IS NOT NULL) AS ${alias}_p99_ms`,
+    `COUNT(sh.${column})::double precision AS ${alias}_count`,
+  ]
+}
+
+const latencyMetricSelectParts = [
+  'COUNT(*)::double precision AS latency_sample_rows',
+  ...buildLatencyMetricSelects('litellm_pre_send_ms', 'litellm_pre_send'),
+  ...buildLatencyMetricSelects(
+    'litellm_post_response_ms',
+    'litellm_post_response'
+  ),
+  ...buildLatencyMetricSelects('litellm_processing_ms', 'litellm_processing'),
+  ...buildLatencyMetricSelects(
+    'llm_upstream_time_to_first_byte_ms',
+    'llm_upstream_time_to_first_byte'
+  ),
+  ...buildLatencyMetricSelects(
+    'llm_upstream_elapsed_ms',
+    'llm_upstream_elapsed'
+  ),
+  ...buildLatencyMetricSelects('llm_upstream_stream_ms', 'llm_upstream_stream'),
+  ...buildLatencyMetricSelects('ttft_ms', 'ttft'),
+  ...buildLatencyMetricSelects(
+    'total_server_elapsed_ms',
+    'total_server_elapsed'
+  ),
+  ...buildLatencyMetricSelects(
+    'latency_unclassified_ms',
+    'latency_unclassified'
+  ),
+  ...buildLatencyMetricSelects(
+    'previous_response_to_current_request_ms',
+    'previous_response_to_current_request'
+  ),
+  `percentile_cont(0.50) WITHIN GROUP (
+        ORDER BY (COALESCE(sh.output_tokens, 0) / NULLIF(sh.llm_upstream_elapsed_ms / 1000.0, 0))
+    ) FILTER (WHERE sh.llm_upstream_elapsed_ms > 0) AS llm_upstream_output_tokens_per_second_p50`,
+  `percentile_cont(0.95) WITHIN GROUP (
+        ORDER BY (COALESCE(sh.output_tokens, 0) / NULLIF(sh.llm_upstream_elapsed_ms / 1000.0, 0))
+    ) FILTER (WHERE sh.llm_upstream_elapsed_ms > 0) AS llm_upstream_output_tokens_per_second_p95`,
+  `COUNT(*) FILTER (WHERE sh.llm_upstream_elapsed_ms > 0)::double precision AS llm_upstream_output_tokens_per_second_count`,
+  `percentile_cont(0.50) WITHIN GROUP (
+        ORDER BY (COALESCE(sh.output_tokens, 0) / NULLIF(sh.llm_upstream_stream_ms / 1000.0, 0))
+    ) FILTER (WHERE sh.llm_upstream_stream_ms > 0) AS llm_stream_output_tokens_per_second_p50`,
+  `percentile_cont(0.95) WITHIN GROUP (
+        ORDER BY (COALESCE(sh.output_tokens, 0) / NULLIF(sh.llm_upstream_stream_ms / 1000.0, 0))
+    ) FILTER (WHERE sh.llm_upstream_stream_ms > 0) AS llm_stream_output_tokens_per_second_p95`,
+  `COUNT(*) FILTER (WHERE sh.llm_upstream_stream_ms > 0)::double precision AS llm_stream_output_tokens_per_second_count`,
+]
+
+function buildAgentPassScoreSelects(family, columns) {
+  const scoreSum = columns
+    .map(
+      (column) =>
+        `COALESCE(SUM(sh.${column}) FILTER (WHERE sh.${column} IS NOT NULL), 0)`
+    )
+    .join(' + ')
+  const evaluated = columns.map((column) => `COUNT(sh.${column})`).join(' + ')
+  const failures = columns
+    .map((column) => `COUNT(*) FILTER (WHERE sh.${column} = 0)`)
+    .join(' + ')
+
+  return [
+    `ROUND(CAST(((${scoreSum}) / NULLIF((${evaluated}), 0)) AS numeric), 4)::double precision AS agent_${family}_score`,
+    `((${evaluated}))::double precision AS agent_${family}_evaluated`,
+    `(COUNT(*) * ${columns.length.toString()})::double precision AS agent_${family}_possible`,
+    `((${failures}))::double precision AS agent_${family}_failures`,
+  ]
+}
+
+function buildAgentRiskScoreSelects() {
+  const scoreSum = agentRiskScoreColumns
+    .map(
+      (column) =>
+        `COALESCE(SUM(sh.${column}) FILTER (WHERE sh.${column} IS NOT NULL), 0)`
+    )
+    .join(' + ')
+  const evaluated = agentRiskScoreColumns
+    .map((column) => `COUNT(sh.${column})`)
+    .join(' + ')
+  const risks = agentRiskScoreColumns
+    .map((column) => `COUNT(*) FILTER (WHERE sh.${column} = 1)`)
+    .join(' + ')
+
+  return [
+    `ROUND(CAST(((${scoreSum}) / NULLIF((${evaluated}), 0)) AS numeric), 4)::double precision AS agent_risk_score`,
+    `((${evaluated}))::double precision AS agent_risk_evaluated`,
+    `(COUNT(*) * ${agentRiskScoreColumns.length.toString()})::double precision AS agent_risk_possible`,
+    `((${risks}))::double precision AS agent_risk_events`,
+  ]
+}
+
+const agentScoreSelectParts = [
+  'COUNT(*)::double precision AS agent_score_rows',
+  ...Object.entries(agentPassScoreFamilies).flatMap(([family, columns]) =>
+    buildAgentPassScoreSelects(family, columns)
+  ),
+  ...buildAgentRiskScoreSelects(),
+  ...buildAgentPassScoreSelects('discovery_inventory_coverage', [
+    'discovery_inventory_coverage_score',
+  ]),
+  'SUM(COALESCE(sh.discovery_inventory_missing_count, 0))::double precision AS agent_discovery_inventory_missing_count',
+  ...buildAgentPassScoreSelects('terminal_completion', [
+    'terminal_completion_score',
+  ]),
+  "COUNT(*) FILTER (WHERE sh.empty_completion_failure IS TRUE)::double precision AS agent_empty_completion_failures",
+  "COUNT(*) FILTER (WHERE sh.invalid_tool_call_error IS TRUE)::double precision AS agent_invalid_tool_call_errors",
+  "COUNT(*) FILTER (WHERE sh.destructive_checkout_after_work IS TRUE)::double precision AS agent_destructive_checkout_failures",
+  "COUNT(*) FILTER (WHERE sh.large_tool_result_payload_risk IS TRUE)::double precision AS agent_large_payload_risks",
+  'SUM(COALESCE(sh.read_only_policy_violation_count, 0))::double precision AS agent_read_only_policy_violations',
+  'AVG(sh.ignored_path_tracking_policy_score)::double precision AS agent_ignored_path_tracking_policy_score',
+  'COUNT(sh.ignored_path_tracking_policy_score)::double precision AS agent_ignored_path_tracking_policy_evaluated',
+  'COUNT(*)::double precision AS agent_ignored_path_tracking_policy_possible',
+  'SUM(COALESCE(sh.ignored_path_tracking_violation_count, 0))::double precision AS agent_ignored_path_tracking_violation_count',
+  'AVG(sh.baseline_deflection_attempted_score)::double precision AS agent_baseline_deflection_attempted_score',
+  'COUNT(sh.baseline_deflection_attempted_score)::double precision AS agent_baseline_deflection_attempted_evaluated',
+  'COUNT(*) FILTER (WHERE sh.baseline_deflection_attempted_score = 1)::double precision AS agent_baseline_deflection_attempted_incidents',
+  'AVG(sh.baseline_deflection_incident_score)::double precision AS agent_baseline_deflection_incident_score',
+  'COUNT(sh.baseline_deflection_incident_score)::double precision AS agent_baseline_deflection_incident_evaluated',
+  'COUNT(*) FILTER (WHERE sh.baseline_deflection_incident_score = 1)::double precision AS agent_baseline_deflection_incidents',
+  'SUM(COALESCE(sh.baseline_deflection_attempt_count, 0))::double precision AS agent_baseline_deflection_attempt_count',
+  'SUM(COALESCE(sh.baseline_deflection_tool_call_count, 0))::double precision AS agent_baseline_deflection_tool_call_count',
+  'SUM(COALESCE(sh.baseline_deflection_input_tokens, 0))::double precision AS agent_baseline_deflection_input_tokens',
+  'SUM(COALESCE(sh.baseline_deflection_elapsed_ms, 0))::double precision AS agent_baseline_deflection_elapsed_ms',
+  'SUM(COALESCE(sh.quality_gate_trigger_count, 0))::double precision AS agent_quality_gate_trigger_count',
+  'SUM(COALESCE(sh.quality_gate_fix_attempt_count, 0))::double precision AS agent_quality_gate_fix_attempt_count',
+  'SUM(COALESCE(sh.quality_gate_rerun_count, 0))::double precision AS agent_quality_gate_rerun_count',
+  'AVG(sh.sleep_wellness_interruption_attempted_score)::double precision AS agent_sleep_wellness_interruption_attempted_score',
+  'COUNT(sh.sleep_wellness_interruption_attempted_score)::double precision AS agent_sleep_wellness_interruption_attempted_evaluated',
+  'COUNT(*) FILTER (WHERE sh.sleep_wellness_interruption_attempted_score = 1)::double precision AS agent_sleep_wellness_interruption_attempted_incidents',
+  'AVG(sh.sleep_wellness_interruption_incident_score)::double precision AS agent_sleep_wellness_interruption_incident_score',
+  'COUNT(sh.sleep_wellness_interruption_incident_score)::double precision AS agent_sleep_wellness_interruption_incident_evaluated',
+  'COUNT(*) FILTER (WHERE sh.sleep_wellness_interruption_incident_score = 1)::double precision AS agent_sleep_wellness_interruption_incidents',
+  'SUM(COALESCE(sh.sleep_wellness_interruption_count, 0))::double precision AS agent_sleep_wellness_interruption_count',
+  'SUM(COALESCE(sh.sleep_wellness_interruption_output_tokens, 0))::double precision AS agent_sleep_wellness_interruption_output_tokens',
+  'SUM(COALESCE(sh.sleep_wellness_interruption_input_tokens, 0))::double precision AS agent_sleep_wellness_interruption_input_tokens',
+  'SUM(COALESCE(sh.sleep_wellness_interruption_elapsed_ms, 0))::double precision AS agent_sleep_wellness_interruption_elapsed_ms',
+  'SUM(COALESCE(sh.sleep_wellness_interruption_after_user_pushback_count, 0))::double precision AS agent_sleep_wellness_interruption_after_user_pushback_count',
+  'SUM(COALESCE(sh.sleep_wellness_interruption_repeated_count, 0))::double precision AS agent_sleep_wellness_interruption_repeated_count',
+  'COUNT(*) FILTER (WHERE sh.is_compact_summary IS TRUE)::double precision AS agent_compact_summary_events',
+  "COUNT(DISTINCT (COALESCE(sh.session_id::text, 'unknown') || ':' || sh.compact_summary_id)) FILTER (WHERE sh.is_compact_summary IS TRUE AND sh.compact_summary_id IS NOT NULL AND sh.compact_summary_id <> '')::double precision AS agent_compact_summary_thread_count",
+  "COUNT(*) FILTER (WHERE sh.is_compact_summary IS TRUE AND sh.compact_summary_id IS NOT NULL AND sh.compact_summary_id <> '')::double precision AS agent_compact_summary_id_count",
+  "COUNT(*) FILTER (WHERE sh.is_compact_summary IS NOT TRUE AND sh.compact_summary_role = 'resume_context')::double precision AS agent_compact_summary_resume_contexts",
+  "COUNT(*) FILTER (WHERE sh.is_compact_summary IS NOT TRUE AND sh.compact_summary_role = 'verify')::double precision AS agent_compact_summary_verify_contexts",
+  `jsonb_build_object(
+      'claude-code', COUNT(*) FILTER (WHERE sh.is_compact_summary IS TRUE AND sh.compact_summary_source = 'claude-code'),
+      'codex', COUNT(*) FILTER (WHERE sh.is_compact_summary IS TRUE AND sh.compact_summary_source = 'codex'),
+      'gemini-cli', COUNT(*) FILTER (WHERE sh.is_compact_summary IS TRUE AND sh.compact_summary_source = 'gemini-cli')
+  ) AS agent_compact_summary_source_counts`,
 ]
 
 function sendJson(res, status, body) {
@@ -946,6 +1266,62 @@ function firstRow(result) {
   return result.rows[0] ?? {}
 }
 
+const latencyAggregateNumericKeys = [
+  'latency_sample_rows',
+  'litellm_pre_send_p50_ms',
+  'litellm_pre_send_p95_ms',
+  'litellm_pre_send_p99_ms',
+  'litellm_pre_send_count',
+  'litellm_post_response_p50_ms',
+  'litellm_post_response_p95_ms',
+  'litellm_post_response_p99_ms',
+  'litellm_post_response_count',
+  'litellm_processing_p50_ms',
+  'litellm_processing_p95_ms',
+  'litellm_processing_p99_ms',
+  'litellm_processing_count',
+  'llm_upstream_time_to_first_byte_p50_ms',
+  'llm_upstream_time_to_first_byte_p95_ms',
+  'llm_upstream_time_to_first_byte_p99_ms',
+  'llm_upstream_time_to_first_byte_count',
+  'llm_upstream_elapsed_p50_ms',
+  'llm_upstream_elapsed_p95_ms',
+  'llm_upstream_elapsed_p99_ms',
+  'llm_upstream_elapsed_count',
+  'llm_upstream_stream_p50_ms',
+  'llm_upstream_stream_p95_ms',
+  'llm_upstream_stream_p99_ms',
+  'llm_upstream_stream_count',
+  'ttft_p50_ms',
+  'ttft_p95_ms',
+  'ttft_p99_ms',
+  'ttft_count',
+  'total_server_elapsed_p50_ms',
+  'total_server_elapsed_p95_ms',
+  'total_server_elapsed_p99_ms',
+  'total_server_elapsed_count',
+  'latency_unclassified_p50_ms',
+  'latency_unclassified_p95_ms',
+  'latency_unclassified_p99_ms',
+  'latency_unclassified_count',
+  'previous_response_to_current_request_p50_ms',
+  'previous_response_to_current_request_p95_ms',
+  'previous_response_to_current_request_p99_ms',
+  'previous_response_to_current_request_count',
+  'llm_upstream_output_tokens_per_second_p50',
+  'llm_upstream_output_tokens_per_second_p95',
+  'llm_upstream_output_tokens_per_second_count',
+  'llm_stream_output_tokens_per_second_p50',
+  'llm_stream_output_tokens_per_second_p95',
+  'llm_stream_output_tokens_per_second_count',
+]
+
+function normalizeLatencyAggregateFields(row) {
+  return Object.fromEntries(
+    latencyAggregateNumericKeys.map((key) => [key, normalizeNumber(row[key])])
+  )
+}
+
 function normalizeRow(row) {
   const numericKeys = [
     'min_weekly_pct',
@@ -974,6 +1350,126 @@ function normalizeRow(row) {
     'litellm_processing_average_ms',
     'llm_upstream_elapsed_total_ms',
     'llm_upstream_elapsed_average_ms',
+    'latency_sample_rows',
+    'litellm_pre_send_p50_ms',
+    'litellm_pre_send_p95_ms',
+    'litellm_pre_send_p99_ms',
+    'litellm_pre_send_count',
+    'litellm_post_response_p50_ms',
+    'litellm_post_response_p95_ms',
+    'litellm_post_response_p99_ms',
+    'litellm_post_response_count',
+    'litellm_processing_p50_ms',
+    'litellm_processing_p95_ms',
+    'litellm_processing_p99_ms',
+    'litellm_processing_count',
+    'llm_upstream_time_to_first_byte_p50_ms',
+    'llm_upstream_time_to_first_byte_p95_ms',
+    'llm_upstream_time_to_first_byte_p99_ms',
+    'llm_upstream_time_to_first_byte_count',
+    'llm_upstream_elapsed_p50_ms',
+    'llm_upstream_elapsed_p95_ms',
+    'llm_upstream_elapsed_p99_ms',
+    'llm_upstream_elapsed_count',
+    'llm_upstream_stream_p50_ms',
+    'llm_upstream_stream_p95_ms',
+    'llm_upstream_stream_p99_ms',
+    'llm_upstream_stream_count',
+    'ttft_p50_ms',
+    'ttft_p95_ms',
+    'ttft_p99_ms',
+    'ttft_count',
+    'total_server_elapsed_p50_ms',
+    'total_server_elapsed_p95_ms',
+    'total_server_elapsed_p99_ms',
+    'total_server_elapsed_count',
+    'latency_unclassified_p50_ms',
+    'latency_unclassified_p95_ms',
+    'latency_unclassified_p99_ms',
+    'latency_unclassified_count',
+    'previous_response_to_current_request_p50_ms',
+    'previous_response_to_current_request_p95_ms',
+    'previous_response_to_current_request_p99_ms',
+    'previous_response_to_current_request_count',
+    'llm_upstream_output_tokens_per_second_p50',
+    'llm_upstream_output_tokens_per_second_p95',
+    'llm_upstream_output_tokens_per_second_count',
+    'llm_stream_output_tokens_per_second_p50',
+    'llm_stream_output_tokens_per_second_p95',
+    'llm_stream_output_tokens_per_second_count',
+    'agent_score_rows',
+    'agent_quality_score',
+    'agent_quality_evaluated',
+    'agent_quality_possible',
+    'agent_quality_failures',
+    'agent_instruction_score',
+    'agent_instruction_evaluated',
+    'agent_instruction_possible',
+    'agent_instruction_failures',
+    'agent_tool_score',
+    'agent_tool_evaluated',
+    'agent_tool_possible',
+    'agent_tool_failures',
+    'agent_contract_score',
+    'agent_contract_evaluated',
+    'agent_contract_possible',
+    'agent_contract_failures',
+    'agent_progress_score',
+    'agent_progress_evaluated',
+    'agent_progress_possible',
+    'agent_progress_failures',
+    'agent_risk_score',
+    'agent_risk_evaluated',
+    'agent_risk_possible',
+    'agent_risk_events',
+    'agent_empty_completion_failures',
+    'agent_invalid_tool_call_errors',
+    'agent_destructive_checkout_failures',
+    'agent_large_payload_risks',
+    'agent_read_only_policy_violations',
+    'agent_ignored_path_tracking_policy_score',
+    'agent_ignored_path_tracking_policy_evaluated',
+    'agent_ignored_path_tracking_policy_possible',
+    'agent_ignored_path_tracking_violation_count',
+    'agent_baseline_deflection_attempted_score',
+    'agent_baseline_deflection_attempted_evaluated',
+    'agent_baseline_deflection_attempted_incidents',
+    'agent_baseline_deflection_incident_score',
+    'agent_baseline_deflection_incident_evaluated',
+    'agent_baseline_deflection_incidents',
+    'agent_baseline_deflection_attempt_count',
+    'agent_baseline_deflection_tool_call_count',
+    'agent_baseline_deflection_input_tokens',
+    'agent_baseline_deflection_elapsed_ms',
+    'agent_quality_gate_trigger_count',
+    'agent_quality_gate_fix_attempt_count',
+    'agent_quality_gate_rerun_count',
+    'agent_sleep_wellness_interruption_attempted_score',
+    'agent_sleep_wellness_interruption_attempted_evaluated',
+    'agent_sleep_wellness_interruption_attempted_incidents',
+    'agent_sleep_wellness_interruption_incident_score',
+    'agent_sleep_wellness_interruption_incident_evaluated',
+    'agent_sleep_wellness_interruption_incidents',
+    'agent_sleep_wellness_interruption_count',
+    'agent_sleep_wellness_interruption_output_tokens',
+    'agent_sleep_wellness_interruption_input_tokens',
+    'agent_sleep_wellness_interruption_elapsed_ms',
+    'agent_sleep_wellness_interruption_after_user_pushback_count',
+    'agent_sleep_wellness_interruption_repeated_count',
+    'agent_discovery_inventory_coverage_score',
+    'agent_discovery_inventory_coverage_evaluated',
+    'agent_discovery_inventory_coverage_possible',
+    'agent_discovery_inventory_coverage_failures',
+    'agent_discovery_inventory_missing_count',
+    'agent_terminal_completion_score',
+    'agent_terminal_completion_evaluated',
+    'agent_terminal_completion_possible',
+    'agent_terminal_completion_failures',
+    'agent_compact_summary_events',
+    'agent_compact_summary_thread_count',
+    'agent_compact_summary_id_count',
+    'agent_compact_summary_resume_contexts',
+    'agent_compact_summary_verify_contexts',
   ]
 
   const normalized = { ...row }
@@ -983,11 +1479,30 @@ function normalizeRow(row) {
   return normalized
 }
 
-function buildFilteredWhere(searchParams) {
+function buildFilteredWhere(searchParams, options = {}) {
   const from = parseDateParam(searchParams.get('from'), defaultFromDate)
   const to = parseDateParam(searchParams.get('to'), defaultToDate)
-  const values = [from, to]
-  const whereParts = [...createdAtDateRangeWhere]
+  const values = options.values ?? []
+  const whereParts = []
+
+  if (options.includeDateRange !== false) {
+    appendStartTimeDateRangeWhere(whereParts, values, from, to)
+  }
+
+  for (const key of Object.keys(filterColumns)) {
+    appendMultiValueFilter(searchParams, key, whereParts, values)
+  }
+
+  return { from, to, values, whereParts }
+}
+
+function buildTokenTrendFilteredWhere(searchParams) {
+  const from = parseDateParam(searchParams.get('from'), defaultFromDate)
+  const to = parseDateParam(searchParams.get('to'), defaultToDate)
+  const values = []
+  const whereParts = []
+
+  appendCreatedAtDateRangeWhere(whereParts, values, from, to)
 
   for (const key of Object.keys(filterColumns)) {
     appendMultiValueFilter(searchParams, key, whereParts, values)
@@ -1051,7 +1566,10 @@ SELECT
       + COALESCE(sh.cache_creation_input_tokens, 0)
       + COALESCE(sh.reasoning_tokens_reported, 0)
       + COALESCE(sh.reasoning_tokens_estimated, 0))::double precision AS token_total,
-    SUM(COALESCE(sh.response_cost_usd, 0))::double precision AS usd_cost
+    SUM(COALESCE(sh.response_cost_usd, 0))::double precision AS usd_cost,
+    SUM(COALESCE(sh.tool_call_count, 0))::double precision AS tool_calls,
+    SUM(COALESCE(sh.git_commit_count, 0))::double precision AS git_commit,
+    SUM(COALESCE(sh.git_push_count, 0))::double precision AS git_push
 FROM public.session_history sh
 WHERE ${whereParts.join('\n  AND ')}
 GROUP BY
@@ -1068,8 +1586,8 @@ ORDER BY
   return { sql, values }
 }
 
-function buildTokenTrendHoursQuery(searchParams) {
-  const { values, whereParts } = buildFilteredWhere(searchParams)
+export function buildTokenTrendHoursQuery(searchParams) {
+  const { values, whereParts } = buildTokenTrendFilteredWhere(searchParams)
   const dayExpression = `${createdAtEastern}::date`
   const hourExpression = `EXTRACT(hour FROM ${createdAtEastern})::int`
 
@@ -1085,7 +1603,10 @@ SELECT
       + COALESCE(sh.cache_creation_input_tokens, 0)
       + COALESCE(sh.reasoning_tokens_reported, 0)
       + COALESCE(sh.reasoning_tokens_estimated, 0))::double precision AS token_total,
-    SUM(COALESCE(sh.response_cost_usd, 0))::double precision AS usd_cost
+    SUM(COALESCE(sh.response_cost_usd, 0))::double precision AS usd_cost,
+    SUM(COALESCE(sh.tool_call_count, 0))::double precision AS tool_calls,
+    SUM(COALESCE(sh.git_commit_count, 0))::double precision AS git_commit,
+    SUM(COALESCE(sh.git_push_count, 0))::double precision AS git_push
 FROM public.session_history sh
 WHERE ${whereParts.join('\n  AND ')}
 GROUP BY
@@ -1101,8 +1622,162 @@ ORDER BY
   return { sql, values }
 }
 
+export function buildTokenTrendHealthQuery(searchParams) {
+  const fromDate = parseSearchDateOnly(searchParams.get('from'), defaultFromDate)
+  const toDate = parseSearchDateOnly(searchParams.get('to'), defaultToDate)
+  const values = [dashboardDateToUtcIso(fromDate), dashboardDateToUtcIso(toDate)]
+  const whereParts = [
+    'h.bucket_start >= $1::timestamptz',
+    'h.bucket_start < $2::timestamptz',
+  ]
+
+  const filterMap = {
+    environment: "COALESCE(h.environment, 'unknown')",
+    provider: healthProviderDimension,
+    model: "COALESCE(h.model, 'unknown')",
+  }
+  for (const [key, column] of Object.entries(filterMap)) {
+    const selected = parseCsv(searchParams.get(key))
+    if (!selected.length) continue
+    values.push(selected)
+    whereParts.push(`${column} = ANY($${values.length.toString()}::text[])`)
+  }
+
+  const bucketExpression = `date_trunc('hour', h.bucket_start AT TIME ZONE 'America/New_York')`
+
+  const sql = `
+SELECT
+    to_char(${bucketExpression}, 'YYYY-MM-DD"T"HH24:00:00') AS bucket_start,
+    COALESCE(h.environment, 'unknown') AS environment,
+    ${healthProviderDimension} AS provider,
+    COALESCE(h.model, 'unknown') AS model,
+    COALESCE(h.model_group, 'unknown') AS model_group,
+    SUM(COALESCE(h.requests, 0))::double precision AS requests,
+    CASE
+        WHEN SUM(COALESCE(h.requests, 0)) = 0 THEN 'no_traffic'
+        WHEN SUM(COALESCE(h.requests, 0)) < 5 THEN 'low_sample'
+        ELSE 'normal'
+    END AS passive_latency_sample_status,
+    AVG(h.upstream_p50_ms) FILTER (WHERE h.upstream_p50_ms IS NOT NULL)::double precision AS upstream_p50_ms,
+    AVG(h.upstream_p95_ms) FILTER (WHERE h.upstream_p95_ms IS NOT NULL)::double precision AS upstream_p95_ms,
+    AVG(h.upstream_p99_ms) FILTER (WHERE h.upstream_p99_ms IS NOT NULL)::double precision AS upstream_p99_ms,
+    AVG(h.total_p95_ms) FILTER (WHERE h.total_p95_ms IS NOT NULL)::double precision AS total_p95_ms,
+    AVG(h.proxy_processing_p95_ms) FILTER (WHERE h.proxy_processing_p95_ms IS NOT NULL)::double precision AS proxy_processing_p95_ms,
+    SUM(COALESCE(h.missing_upstream_latency, 0))::double precision AS missing_upstream_latency,
+    SUM(COALESCE(h.provider_error_events, 0))::double precision AS provider_error_events,
+    SUM(COALESCE(h.rate_limit_events, 0))::double precision AS rate_limit_events,
+    SUM(COALESCE(h.capacity_events, 0))::double precision AS capacity_events,
+    SUM(COALESCE(h.provider_5xx_events, 0))::double precision AS provider_5xx_events,
+    SUM(COALESCE(h.provider_timeout_events, 0))::double precision AS provider_timeout_events,
+    SUM(COALESCE(h.network_error_events, 0))::double precision AS network_error_events,
+    SUM(COALESCE(h.auth_failed_events, 0))::double precision AS auth_failed_events,
+    SUM(COALESCE(h.adapter_error_events, 0))::double precision AS adapter_error_events,
+    SUM(COALESCE(h.status_probe_count, 0))::double precision AS status_probe_count,
+    AVG(h.status_probe_success_pct) FILTER (WHERE h.status_probe_success_pct IS NOT NULL)::double precision AS status_probe_success_pct,
+    AVG(h.status_probe_p95_ms) FILTER (WHERE h.status_probe_p95_ms IS NOT NULL)::double precision AS status_probe_p95_ms,
+    AVG(h.provider_ping_avg_ms) FILTER (WHERE h.provider_ping_avg_ms IS NOT NULL)::double precision AS provider_ping_avg_ms,
+    AVG(h.provider_ping_packet_loss_pct) FILTER (WHERE h.provider_ping_packet_loss_pct IS NOT NULL)::double precision AS provider_ping_packet_loss_pct,
+    AVG(h.control_ping_avg_ms) FILTER (WHERE h.control_ping_avg_ms IS NOT NULL)::double precision AS control_ping_avg_ms,
+    AVG(h.control_packet_loss_pct) FILTER (WHERE h.control_packet_loss_pct IS NOT NULL)::double precision AS control_packet_loss_pct,
+    AVG(h.control_probe_success_pct) FILTER (WHERE h.control_probe_success_pct IS NOT NULL)::double precision AS control_probe_success_pct,
+    AVG(h.provider_ping_minus_control_ms) FILTER (WHERE h.provider_ping_minus_control_ms IS NOT NULL)::double precision AS provider_ping_minus_control_ms,
+    SUM(COALESCE(h.dns_failures, 0))::double precision AS dns_failures,
+    SUM(COALESCE(h.tcp_failures, 0))::double precision AS tcp_failures,
+    SUM(COALESCE(h.tls_failures, 0))::double precision AS tls_failures,
+    SUM(COALESCE(h.icmp_failures, 0))::double precision AS icmp_failures,
+    string_agg(DISTINCT NULLIF(h.probed_endpoints, ''), ', ') AS probed_endpoints,
+    string_agg(DISTINCT NULLIF(h.status_error_classes, ''), ', ') AS status_error_classes,
+    MIN(h.min_remaining_pct)::double precision AS min_remaining_pct,
+    MAX(h.max_remaining_pct)::double precision AS max_remaining_pct,
+    MIN(h.next_expected_reset_at) AS next_expected_reset_at,
+    string_agg(DISTINCT NULLIF(h.quota_keys, ''), ', ') AS quota_keys,
+    MIN(h.request_period_start) AS request_period_start,
+    MAX(h.request_period_end) AS request_period_end
+FROM public.provider_latency_health_5m h
+WHERE ${whereParts.join('\n  AND ')}
+GROUP BY
+    ${bucketExpression},
+    COALESCE(h.environment, 'unknown'),
+    ${healthProviderDimension},
+    COALESCE(h.model, 'unknown'),
+    COALESCE(h.model_group, 'unknown')
+ORDER BY
+    ${bucketExpression} ASC,
+    ${healthProviderDimension} ASC,
+    COALESCE(h.model, 'unknown') ASC;
+`
+
+  return { sql, values }
+}
+
+const tokenTrendScoreSelectParts = [
+  'COUNT(*)::double precision AS agent_score_rows',
+  ...Object.entries(agentPassScoreFamilies).flatMap(([family, columns]) =>
+    buildAgentPassScoreSelects(family, columns)
+  ),
+  ...buildAgentRiskScoreSelects(),
+]
+
+const tokenTrendScoreSourceColumns = [
+  ...Object.values(agentPassScoreFamilies).flat(),
+  ...agentRiskScoreColumns,
+]
+
+const tokenTrendVersionClientNames = [
+  'claude-cli',
+  'claude-code',
+  'codex-tui',
+  'gemini-cli',
+  'GeminiCLI-tui',
+  'grok-build',
+  'grok-cli',
+  'xai-cli',
+]
+
+function sqlTextLiteral(value) {
+  return `'${value.replaceAll("'", "''")}'`
+}
+
+const tokenTrendVersionClientNameList = tokenTrendVersionClientNames
+  .map(sqlTextLiteral)
+  .join(', ')
+
+export function buildTokenTrendScoreQuery(searchParams) {
+  const { values, whereParts } = buildTokenTrendFilteredWhere(searchParams)
+  const bucketExpression = `date_trunc('hour', ${createdAtEastern})`
+  const scorePresence = tokenTrendScoreSourceColumns
+    .map((column) => `COUNT(sh.${column}) > 0`)
+    .join('\n    OR ')
+  const scorePresenceWhere = tokenTrendScoreSourceColumns
+    .map((column) => `sh.${column} IS NOT NULL`)
+    .join('\n    OR ')
+
+  const sql = `
+SELECT
+    to_char(${bucketExpression}, 'YYYY-MM-DD"T"HH24:00:00') AS bucket,
+    ${providerDimension} AS provider,
+    COALESCE(sh.model, 'unknown') AS model,
+    ${tokenTrendScoreSelectParts.join(',\n    ')}
+FROM public.session_history sh
+WHERE ${whereParts.join('\n  AND ')}
+  AND (${scorePresenceWhere})
+GROUP BY
+    ${bucketExpression},
+    ${providerDimension},
+    COALESCE(sh.model, 'unknown')
+HAVING
+    ${scorePresence}
+ORDER BY
+    ${bucketExpression} ASC,
+    ${providerDimension} ASC,
+    COALESCE(sh.model, 'unknown') ASC;
+`
+
+  return { sql, values }
+}
+
 function buildTokenTrendVersionIntervalsQuery(searchParams) {
-  const { values, whereParts } = buildFilteredWhere(searchParams)
+  const { values, whereParts } = buildTokenTrendFilteredWhere(searchParams)
   const localTimestampExpression = `${createdAtEastern}`
 
   const sql = `
@@ -1122,9 +1797,13 @@ WITH version_usage AS (
         + COALESCE(sh.cache_creation_input_tokens, 0)
         + COALESCE(sh.reasoning_tokens_reported, 0)
         + COALESCE(sh.reasoning_tokens_estimated, 0))::double precision AS token_total,
-      SUM(COALESCE(sh.response_cost_usd, 0))::double precision AS usd_cost
+      SUM(COALESCE(sh.response_cost_usd, 0))::double precision AS usd_cost,
+      SUM(COALESCE(sh.tool_call_count, 0))::double precision AS tool_calls,
+      SUM(COALESCE(sh.git_commit_count, 0))::double precision AS git_commit,
+      SUM(COALESCE(sh.git_push_count, 0))::double precision AS git_push
   FROM public.session_history sh
   WHERE ${whereParts.join('\n    AND ')}
+    AND sh.client_name IN (${tokenTrendVersionClientNameList})
     AND COALESCE(NULLIF(sh.client_name, ''), 'unknown') <> 'unknown'
     AND (
       COALESCE(NULLIF(sh.client_version, ''), '0.0.0') <> '0.0.0'
@@ -1147,13 +1826,69 @@ SELECT
     EXTRACT(hour FROM last_seen_local)::int AS last_seen_hour,
     traces,
     token_total,
-    usd_cost
+    usd_cost,
+    tool_calls
 FROM version_usage
 ORDER BY
     first_seen_at ASC,
     token_total DESC,
     client_name ASC,
     client_version ASC;
+`
+
+  return { sql, values }
+}
+
+export function buildTokenTrendModelFirstSeenQuery(searchParams) {
+  const { from, to, values, whereParts } = buildFilteredWhere(searchParams, {
+    includeDateRange: false,
+  })
+  const modelExpression = "COALESCE(NULLIF(sh.model, ''), 'unknown')"
+  values.push(from)
+  const visibleFromIndex = values.length
+  values.push(to)
+  const visibleToIndex = values.length
+  const modelWhereParts = [
+    ...whereParts,
+    `${providerDimension} IN ('anthropic', 'openai', 'xai', 'google')`,
+    `${modelExpression} <> 'unknown'`,
+  ]
+
+  const sql = `
+WITH model_usage AS (
+  SELECT
+      ${providerDimension} AS provider,
+      ${modelExpression} AS model,
+      MIN(sh.created_at) AS first_seen_at,
+      MIN(${createdAtEastern}) AS first_seen_local,
+      COUNT(*)::double precision AS observations,
+      SUM(COALESCE(sh.input_tokens, 0)
+        + COALESCE(sh.output_tokens, 0)
+        + COALESCE(sh.cache_read_input_tokens, 0)
+        + COALESCE(sh.cache_creation_input_tokens, 0)
+        + COALESCE(sh.reasoning_tokens_reported, 0)
+        + COALESCE(sh.reasoning_tokens_estimated, 0))::double precision AS token_total
+  FROM public.session_history sh
+  WHERE ${modelWhereParts.join('\n    AND ')}
+  GROUP BY
+      ${providerDimension},
+      ${modelExpression}
+)
+SELECT
+    provider,
+    model,
+    first_seen_at,
+    to_char(first_seen_local::date, 'YYYY-MM-DD') AS first_seen_day,
+    EXTRACT(hour FROM first_seen_local)::int AS first_seen_hour,
+    observations,
+    token_total
+FROM model_usage
+WHERE first_seen_local::date >= $${visibleFromIndex.toString()}::date
+  AND first_seen_local::date < $${visibleToIndex.toString()}::date
+ORDER BY
+    first_seen_at ASC,
+    provider ASC,
+    model ASC;
 `
 
   return { sql, values }
@@ -1183,7 +1918,10 @@ SELECT
       + COALESCE(sh.cache_creation_input_tokens, 0)
       + COALESCE(sh.reasoning_tokens_reported, 0)
       + COALESCE(sh.reasoning_tokens_estimated, 0))::double precision AS token_total,
-    SUM(COALESCE(sh.response_cost_usd, 0))::double precision AS usd_cost
+    SUM(COALESCE(sh.response_cost_usd, 0))::double precision AS usd_cost,
+    SUM(COALESCE(sh.tool_call_count, 0))::double precision AS tool_calls,
+    SUM(COALESCE(sh.git_commit_count, 0))::double precision AS git_commit,
+    SUM(COALESCE(sh.git_push_count, 0))::double precision AS git_push
 FROM public.session_history sh
 WHERE ${whereParts.join('\n  AND ')}
 GROUP BY
@@ -1220,7 +1958,10 @@ SELECT
       + COALESCE(sh.cache_creation_input_tokens, 0)
       + COALESCE(sh.reasoning_tokens_reported, 0)
       + COALESCE(sh.reasoning_tokens_estimated, 0))::double precision AS token_total,
-    SUM(COALESCE(sh.response_cost_usd, 0))::double precision AS usd_cost
+    SUM(COALESCE(sh.response_cost_usd, 0))::double precision AS usd_cost,
+    SUM(COALESCE(sh.tool_call_count, 0))::double precision AS tool_calls,
+    SUM(COALESCE(sh.git_commit_count, 0))::double precision AS git_commit,
+    SUM(COALESCE(sh.git_push_count, 0))::double precision AS git_push
 FROM public.session_history sh
 WHERE ${whereParts.join('\n  AND ')}
 GROUP BY
@@ -1275,8 +2016,8 @@ WITH local_request_latency AS (
         MIN(COALESCE(sh.start_time, sh.created_at)) AS request_period_start,
         MAX(COALESCE(sh.end_time, sh.created_at)) AS request_period_end
     FROM public.session_history sh
-    WHERE sh.created_at >= $2::timestamptz
-      AND sh.created_at < $3::timestamptz
+    WHERE sh.start_time >= $2::timestamptz
+      AND sh.start_time < $3::timestamptz
       AND COALESCE(sh.start_time, sh.created_at) >= $2::timestamptz
       AND COALESCE(sh.start_time, sh.created_at) < $3::timestamptz
       AND (
@@ -1297,6 +2038,11 @@ SELECT
     bucket_start,
     COALESCE(environment, 'unknown') AS environment,
     CASE
+        WHEN lower(COALESCE(provider, 'unknown')) IN ('google', 'gemini') THEN 'google'
+        WHEN lower(COALESCE(provider, 'unknown')) IN ('claude', 'anthropic') THEN 'anthropic'
+        WHEN lower(COALESCE(provider, 'unknown')) LIKE 'claude/%' THEN 'anthropic'
+        WHEN lower(COALESCE(provider, 'unknown')) LIKE 'anthropic/%' THEN 'anthropic'
+        WHEN lower(COALESCE(provider, 'unknown')) LIKE 'deepseek/%' THEN 'deepseek'
         WHEN lower(COALESCE(provider, 'unknown')) IN ('xai', 'x.ai') THEN 'xai'
         WHEN lower(COALESCE(provider, 'unknown')) LIKE 'xai/%' THEN 'xai'
         WHEN lower(COALESCE(provider, 'unknown')) = 'nvidia' THEN 'nvidia_nim'
@@ -1481,6 +2227,10 @@ SELECT
       + COALESCE(sh.reasoning_tokens_reported, 0)
       + COALESCE(sh.reasoning_tokens_estimated, 0))::double precision AS token_total,
     SUM(COALESCE(sh.response_cost_usd, 0))::double precision AS usd_cost,
+    SUM(COALESCE(sh.tool_call_count, 0))::double precision AS tool_calls,
+    SUM(COALESCE(sh.git_commit_count, 0))::double precision AS git_commit,
+    SUM(COALESCE(sh.git_push_count, 0))::double precision AS git_push,
+    ${latencyMetricSelectParts.join(',\n    ')},
     MIN(COALESCE(sh.start_time, sh.created_at)) AS period_start,
     MAX(COALESCE(sh.end_time, sh.start_time, sh.created_at)) AS period_end
 FROM public.session_history sh
@@ -1502,6 +2252,11 @@ function buildQuotaQuery() {
 WITH normalized AS (
     SELECT
         CASE
+            WHEN lower(COALESCE(ri.provider, 'unknown')) IN ('google', 'gemini') THEN 'google'
+            WHEN lower(COALESCE(ri.provider, 'unknown')) IN ('claude', 'anthropic') THEN 'anthropic'
+            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'claude/%' THEN 'anthropic'
+            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'anthropic/%' THEN 'anthropic'
+            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'deepseek/%' THEN 'deepseek'
             WHEN lower(COALESCE(ri.provider, 'unknown')) IN ('xai', 'x.ai') THEN 'xai'
             WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'xai/%' THEN 'xai'
             WHEN lower(COALESCE(ri.provider, 'unknown')) = 'nvidia' THEN 'nvidia_nim'
@@ -1617,7 +2372,8 @@ usage_by_type AS (
                     'model', model_usage.model,
                     'tokens', model_usage.token_total,
                     'cost', model_usage.usd_cost,
-                    'traces', model_usage.traces
+                    'traces', model_usage.traces,
+                    'recent_traces_90m', model_usage.recent_traces_90m
                 )
                 ORDER BY model_usage.token_total DESC
             ) FILTER (WHERE model_usage.model IS NOT NULL),
@@ -1635,6 +2391,37 @@ usage_by_type AS (
               + COALESCE(sh.reasoning_tokens_reported, 0)
               + COALESCE(sh.reasoning_tokens_estimated, 0))::double precision AS token_total,
             SUM(COALESCE(sh.response_cost_usd, 0))::double precision AS usd_cost
+            ,
+            (
+                SELECT COUNT(*)::double precision
+                FROM public.session_history sh_recent
+                WHERE COALESCE(sh_recent.start_time, sh_recent.created_at) >= now() - INTERVAL '90 minutes'
+                  AND COALESCE(sh_recent.start_time, sh_recent.created_at) < now()
+                  AND (
+                      (s.provider = 'google'
+                        AND ${providerDimensionRecent} = 'google'
+                        AND COALESCE(sh_recent.model, 'unknown') = COALESCE(s.model, 'unknown'))
+                      OR
+                      (s.provider <> 'google'
+                        AND ${providerDimensionRecent} = s.provider)
+                  )
+                  AND COALESCE(sh_recent.model, 'unknown') = COALESCE(sh.model, 'unknown')
+                  AND (
+                      s.provider <> 'openai'
+                      OR s.quota_type NOT IN ('weekly', 'short')
+                      OR COALESCE(sh_recent.model, '') NOT ILIKE '%spark%'
+                  )
+                  AND (
+                      s.provider <> 'openai'
+                      OR s.quota_type NOT IN ('special', 'short_special')
+                      OR COALESCE(sh_recent.model, '') ILIKE '%spark%'
+                  )
+                  AND (
+                      s.provider <> 'anthropic'
+                      OR s.quota_type <> 'special'
+                      OR COALESCE(sh_recent.model, '') ILIKE '%sonnet%'
+                  )
+            ) AS recent_traces_90m
         FROM public.session_history sh
         WHERE s.expected_reset_at IS NOT NULL
           AND sh.start_time >= s.expected_reset_at - CASE
@@ -1672,7 +2459,7 @@ usage_by_type AS (
               OR s.quota_type <> 'special'
               OR COALESCE(sh.model, '') ILIKE '%sonnet%'
           )
-        GROUP BY COALESCE(sh.model, 'unknown')
+        GROUP BY COALESCE(sh.model, 'unknown'), sh.model
     ) model_usage ON true
     GROUP BY s.provider, s.model, s.quota_type
 )
@@ -1765,6 +2552,11 @@ normalized AS (
     SELECT
         ri.provider AS raw_provider,
         CASE
+            WHEN lower(COALESCE(ri.provider, 'unknown')) IN ('google', 'gemini') THEN 'google'
+            WHEN lower(COALESCE(ri.provider, 'unknown')) IN ('claude', 'anthropic') THEN 'anthropic'
+            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'claude/%' THEN 'anthropic'
+            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'anthropic/%' THEN 'anthropic'
+            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'deepseek/%' THEN 'deepseek'
             WHEN lower(COALESCE(ri.provider, 'unknown')) IN ('xai', 'x.ai') THEN 'xai'
             WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'xai/%' THEN 'xai'
             WHEN lower(COALESCE(ri.provider, 'unknown')) = 'nvidia' THEN 'nvidia_nim'
@@ -2058,6 +2850,11 @@ normalized AS (
         ri.quota_type AS raw_quota_type,
         ri.quota_key,
         CASE
+            WHEN lower(COALESCE(ri.provider, 'unknown')) IN ('google', 'gemini') THEN 'google'
+            WHEN lower(COALESCE(ri.provider, 'unknown')) IN ('claude', 'anthropic') THEN 'anthropic'
+            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'claude/%' THEN 'anthropic'
+            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'anthropic/%' THEN 'anthropic'
+            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'deepseek/%' THEN 'deepseek'
             WHEN lower(COALESCE(ri.provider, 'unknown')) IN ('xai', 'x.ai') THEN 'xai'
             WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'xai/%' THEN 'xai'
             WHEN lower(COALESCE(ri.provider, 'unknown')) = 'nvidia' THEN 'nvidia_nim'
@@ -2312,12 +3109,25 @@ per_model_usage AS (
             + COALESCE(sh.reasoning_tokens_estimated, 0)
         )::double precision AS tokens,
         SUM(COALESCE(sh.response_cost_usd, 0))::double precision AS cost,
-        COUNT(*)::double precision AS traces
+        COUNT(*)::double precision AS traces,
+        (
+            SELECT COUNT(*)::double precision
+            FROM public.session_history sh_recent
+            WHERE COALESCE(sh_recent.start_time, sh_recent.created_at) >= now() - INTERVAL '90 minutes'
+              AND COALESCE(sh_recent.start_time, sh_recent.created_at) < now()
+              AND ${providerDimensionRecent} = wb.provider
+              AND COALESCE(sh_recent.model, 'unknown') = COALESCE(sh.model, 'unknown')
+              AND (wb.model IS NULL OR sh_recent.model = wb.model)
+        ) AS recent_traces_90m
     FROM window_bounds wb
     JOIN public.session_history sh
       ON (
               CASE
                   WHEN lower(COALESCE(sh.provider, 'unknown')) IN ('google', 'gemini') THEN 'google'
+                  WHEN lower(COALESCE(sh.provider, 'unknown')) IN ('claude', 'anthropic') THEN 'anthropic'
+                  WHEN lower(COALESCE(sh.provider, 'unknown')) LIKE 'claude/%' THEN 'anthropic'
+                  WHEN lower(COALESCE(sh.provider, 'unknown')) LIKE 'anthropic/%' THEN 'anthropic'
+                  WHEN lower(COALESCE(sh.provider, 'unknown')) LIKE 'deepseek/%' THEN 'deepseek'
                   WHEN lower(COALESCE(sh.provider, 'unknown')) IN ('xai', 'x.ai') THEN 'xai'
                   WHEN lower(COALESCE(sh.provider, 'unknown')) LIKE 'xai/%' THEN 'xai'
                   WHEN lower(COALESCE(sh.provider, 'unknown')) = 'nvidia' THEN 'nvidia_nim'
@@ -2336,7 +3146,7 @@ per_model_usage AS (
       AND COALESCE(sh.start_time, sh.created_at) >= wb.interval_start
       AND COALESCE(sh.start_time, sh.created_at) < wb.expected_reset_at
       AND (wb.model IS NULL OR sh.model = wb.model)
-    GROUP BY wb.provider, wb.model, wb.quota_type, wb.expected_reset_at, COALESCE(sh.model, 'unknown')
+    GROUP BY wb.provider, wb.model, wb.quota_type, wb.expected_reset_at, COALESCE(sh.model, 'unknown'), sh.model
 )
 SELECT
     wb.provider,
@@ -2357,7 +3167,8 @@ SELECT
                 'model', pmu.sh_model,
                 'tokens', pmu.tokens,
                 'cost', pmu.cost,
-                'traces', pmu.traces
+                'traces', pmu.traces,
+                'recent_traces_90m', pmu.recent_traces_90m
             )
             ORDER BY pmu.tokens DESC
         ) FILTER (WHERE pmu.sh_model IS NOT NULL),
@@ -2391,6 +3202,623 @@ ORDER BY wb.expected_reset_at DESC;
   return { sql, values: [] }
 }
 
+export function buildQuotaRangeHistoryQuery(searchParams) {
+  const from = parseSearchDateOnly(searchParams.get('from'), defaultFromDate)
+  const to = parseSearchDateOnly(searchParams.get('to'), defaultToDate)
+
+  const sql = `
+WITH normalized AS (
+    SELECT
+        CASE
+            WHEN lower(COALESCE(ri.provider, 'unknown')) IN ('google', 'gemini') THEN 'google'
+            WHEN lower(COALESCE(ri.provider, 'unknown')) IN ('claude', 'anthropic') THEN 'anthropic'
+            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'claude/%' THEN 'anthropic'
+            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'anthropic/%' THEN 'anthropic'
+            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'deepseek/%' THEN 'deepseek'
+            WHEN lower(COALESCE(ri.provider, 'unknown')) IN ('xai', 'x.ai') THEN 'xai'
+            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'xai/%' THEN 'xai'
+            WHEN lower(COALESCE(ri.provider, 'unknown')) = 'nvidia' THEN 'nvidia_nim'
+            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'nvidia_nim/%' THEN 'nvidia_nim'
+            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'nvidia/%' THEN 'nvidia_nim'
+            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'local/%' THEN 'local'
+            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'local_%' THEN 'local'
+            ELSE COALESCE(ri.provider, 'unknown')
+        END AS provider,
+        CASE
+            WHEN ri.quota_type IN ('monthly', 'requests')
+              AND (
+                  lower(COALESCE(ri.provider, 'unknown')) LIKE 'xai/%'
+                  OR lower(COALESCE(ri.provider, 'unknown')) IN ('xai', 'x.ai')
+              )
+            THEN NULL
+            ELSE NULLIF(ri.model, '')
+        END AS model,
+        CASE
+            WHEN ri.quota_type = 'requests'
+              AND (
+                  lower(COALESCE(ri.provider, 'unknown')) LIKE 'xai/%'
+                  OR lower(COALESCE(ri.provider, 'unknown')) IN ('xai', 'x.ai')
+              )
+            THEN 'monthly'
+            WHEN ri.quota_type = 'weekly_special' THEN 'special'
+            WHEN ri.quota_type = 'short_special' THEN 'short_special'
+            WHEN ri.quota_type = 'requests' THEN 'short'
+            ELSE ri.quota_type
+        END AS quota_type,
+        ri.expected_reset_at,
+        ri.fromDate AS interval_start,
+        ri.toDate AS interval_end,
+        ri.remaining_pct
+    FROM public.rate_limit_intervals ri
+    WHERE ri.quota_type IN ('weekly', 'weekly_special', 'short', 'short_special', 'requests', 'monthly')
+      AND ri.expected_reset_at IS NOT NULL
+      AND ri.fromDate < ($2::date::timestamp AT TIME ZONE 'America/New_York')
+      AND ri.expected_reset_at >= ($1::date::timestamp AT TIME ZONE 'America/New_York')
+),
+window_bounds AS (
+    SELECT
+        provider,
+        model,
+        quota_type,
+        expected_reset_at,
+        MIN(interval_start) AS interval_start,
+        MAX(interval_end) AS interval_end,
+        MIN(remaining_pct)::double precision AS min_remaining_pct,
+        MAX(remaining_pct)::double precision AS max_remaining_pct
+    FROM normalized
+    GROUP BY provider, model, quota_type, expected_reset_at
+),
+per_model_usage AS (
+    SELECT
+        wb.provider,
+        wb.model AS quota_model,
+        wb.quota_type,
+        wb.expected_reset_at,
+        COALESCE(sh.model, 'unknown') AS sh_model,
+        SUM(
+            COALESCE(sh.input_tokens, 0)
+            + COALESCE(sh.output_tokens, 0)
+            + COALESCE(sh.cache_read_input_tokens, 0)
+            + COALESCE(sh.cache_creation_input_tokens, 0)
+            + COALESCE(sh.reasoning_tokens_reported, 0)
+            + COALESCE(sh.reasoning_tokens_estimated, 0)
+        )::double precision AS tokens,
+        SUM(COALESCE(sh.response_cost_usd, 0))::double precision AS cost,
+        COUNT(*)::double precision AS traces
+    FROM window_bounds wb
+    JOIN public.session_history sh
+      ON ${providerDimension} = wb.provider
+     AND COALESCE(sh.start_time, sh.created_at) >= wb.interval_start
+     AND COALESCE(sh.start_time, sh.created_at) < wb.expected_reset_at
+     AND (wb.model IS NULL OR sh.model = wb.model)
+    GROUP BY wb.provider, wb.model, wb.quota_type, wb.expected_reset_at, COALESCE(sh.model, 'unknown')
+)
+SELECT
+    wb.provider,
+    wb.model,
+    wb.quota_type,
+    wb.expected_reset_at,
+    wb.interval_start,
+    wb.expected_reset_at AS interval_end,
+    wb.min_remaining_pct,
+    wb.max_remaining_pct,
+    0::double precision AS velocity_sample_count,
+    '[]'::jsonb AS velocity_segments,
+    '[]'::jsonb AS velocity_scores,
+    COALESCE(SUM(pmu.tokens), 0)::double precision AS usage_tokens,
+    COALESCE(
+        json_agg(
+            json_build_object(
+                'model', pmu.sh_model,
+                'tokens', pmu.tokens,
+                'cost', pmu.cost,
+                'traces', pmu.traces,
+                'recent_traces_90m', 0
+            )
+            ORDER BY pmu.tokens DESC
+        ) FILTER (WHERE pmu.sh_model IS NOT NULL),
+        '[]'::json
+    ) AS usage_breakdown
+FROM window_bounds wb
+LEFT JOIN per_model_usage pmu
+  ON pmu.provider = wb.provider
+ AND pmu.quota_type = wb.quota_type
+ AND pmu.expected_reset_at = wb.expected_reset_at
+ AND (pmu.quota_model IS NOT DISTINCT FROM wb.model)
+GROUP BY
+    wb.provider,
+    wb.model,
+    wb.quota_type,
+    wb.expected_reset_at,
+    wb.interval_start,
+    wb.interval_end,
+    wb.min_remaining_pct,
+    wb.max_remaining_pct
+ORDER BY wb.provider ASC, wb.expected_reset_at DESC, wb.quota_type ASC;
+`
+
+  return { sql, values: [from, to] }
+}
+
+export function buildQuotaEstimatorDatasetQuery(searchParams, lagMinutes = 0) {
+  const from = parseSearchDateOnly(searchParams.get('from'), defaultFromDate)
+  const to = parseSearchDateOnly(searchParams.get('to'), defaultToDate)
+  const lag = Number(lagMinutes)
+  if (!Number.isFinite(lag) || lag < 0 || lag > 24 * 60) {
+    throw new Error(`Unsupported quota estimator lag: ${lagMinutes}`)
+  }
+  const lagInterval = `${lag.toString()} minutes`
+
+  const sql = `
+WITH reset_windows AS (
+    SELECT
+        ri.provider AS raw_provider,
+        CASE
+            WHEN lower(COALESCE(ri.provider, 'unknown')) IN ('claude', 'anthropic') THEN 'anthropic'
+            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'claude/%' THEN 'anthropic'
+            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'anthropic/%' THEN 'anthropic'
+            WHEN lower(COALESCE(ri.provider, 'unknown')) = 'openai' THEN 'openai'
+            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'openai/%' THEN 'openai'
+            ELSE lower(COALESCE(ri.provider, 'unknown'))
+        END AS provider,
+        ri.quota_key,
+        CASE
+            WHEN ri.provider = 'anthropic' AND ri.quota_key = 'anthropic_unified_5h:5h' THEN 'short'
+            WHEN ri.provider = 'anthropic' AND ri.quota_key = 'anthropic_unified_7d:7d' THEN 'weekly'
+            WHEN ri.provider = 'anthropic' AND ri.quota_key = 'anthropic_unified_7d_sonnet:7d_sonnet' THEN 'special'
+            WHEN ri.provider = 'openai' AND ri.quota_key = 'codex:primary' THEN 'short'
+            WHEN ri.provider = 'openai' AND ri.quota_key = 'codex:secondary' THEN 'weekly'
+            WHEN ri.provider = 'openai' AND ri.quota_key = 'codex_bengalfox:primary' THEN 'short_special'
+            WHEN ri.provider = 'openai' AND ri.quota_key = 'codex_bengalfox:secondary' THEN 'special'
+            WHEN ri.quota_type = 'weekly_special' THEN 'special'
+            WHEN ri.quota_type = 'short_special' THEN 'short_special'
+            WHEN ri.quota_type = 'requests' THEN 'short'
+            ELSE ri.quota_type
+        END AS quota_type,
+        ri.quota_type AS raw_interval_quota_type,
+        ri.expected_reset_at,
+        MIN(ri.fromDate) AS reset_start_at,
+        MAX(ri.toDate) AS reset_end_at
+    FROM public.rate_limit_intervals ri
+    WHERE ri.provider IN ('anthropic', 'openai')
+      AND ri.quota_key IN (
+          'anthropic_unified_5h:5h',
+          'anthropic_unified_7d:7d',
+          'anthropic_unified_7d_sonnet:7d_sonnet',
+          'codex:primary',
+          'codex:secondary',
+          'codex_bengalfox:primary',
+          'codex_bengalfox:secondary'
+      )
+      AND ri.expected_reset_at IS NOT NULL
+    GROUP BY
+        ri.provider,
+        ri.quota_key,
+        ri.quota_type,
+        ri.expected_reset_at
+),
+observations AS (
+    SELECT
+        o.provider AS raw_provider,
+        CASE
+            WHEN lower(COALESCE(o.provider, 'unknown')) IN ('claude', 'anthropic') THEN 'anthropic'
+            WHEN lower(COALESCE(o.provider, 'unknown')) LIKE 'claude/%' THEN 'anthropic'
+            WHEN lower(COALESCE(o.provider, 'unknown')) LIKE 'anthropic/%' THEN 'anthropic'
+            WHEN lower(COALESCE(o.provider, 'unknown')) = 'openai' THEN 'openai'
+            WHEN lower(COALESCE(o.provider, 'unknown')) LIKE 'openai/%' THEN 'openai'
+            ELSE lower(COALESCE(o.provider, 'unknown'))
+        END AS provider,
+        o.quota_key,
+        CASE
+            WHEN o.provider = 'anthropic' AND o.quota_key = 'anthropic_unified_5h:5h' THEN 'short'
+            WHEN o.provider = 'anthropic' AND o.quota_key = 'anthropic_unified_7d:7d' THEN 'weekly'
+            WHEN o.provider = 'anthropic' AND o.quota_key = 'anthropic_unified_7d_sonnet:7d_sonnet' THEN 'special'
+            WHEN o.provider = 'openai' AND o.quota_key = 'codex:primary' THEN 'short'
+            WHEN o.provider = 'openai' AND o.quota_key = 'codex:secondary' THEN 'weekly'
+            WHEN o.provider = 'openai' AND o.quota_key = 'codex_bengalfox:primary' THEN 'short_special'
+            WHEN o.provider = 'openai' AND o.quota_key = 'codex_bengalfox:secondary' THEN 'special'
+            ELSE NULL
+        END AS quota_type,
+        o.quota_type AS raw_observation_quota_type,
+        o.expected_reset_at,
+        o.observed_at,
+        MAX(GREATEST(0, LEAST(100, 100 - o.remaining_pct)))::double precision AS consumed_pct
+    FROM public.rate_limit_observations o
+    WHERE o.provider IN ('anthropic', 'openai')
+      AND o.quota_key IN (
+          'anthropic_unified_5h:5h',
+          'anthropic_unified_7d:7d',
+          'anthropic_unified_7d_sonnet:7d_sonnet',
+          'codex:primary',
+          'codex:secondary',
+          'codex_bengalfox:primary',
+          'codex_bengalfox:secondary'
+      )
+      AND o.remaining_pct IS NOT NULL
+      AND o.remaining_pct >= 0
+      AND o.observed_at IS NOT NULL
+      AND o.observed_at >= ($1::date::timestamp AT TIME ZONE 'America/New_York')
+      AND o.observed_at < ($2::date::timestamp AT TIME ZONE 'America/New_York')
+    GROUP BY
+        o.provider,
+        o.quota_key,
+        o.quota_type,
+        o.expected_reset_at,
+        o.observed_at
+),
+ordered_observations AS (
+    SELECT
+        o.*,
+        LAG(o.consumed_pct) OVER (
+            PARTITION BY o.provider, o.quota_key, o.expected_reset_at
+            ORDER BY o.observed_at ASC
+        ) AS previous_consumed_pct,
+        LAG(o.observed_at) OVER (
+            PARTITION BY o.provider, o.quota_key, o.expected_reset_at
+            ORDER BY o.observed_at ASC
+        ) AS previous_observed_at
+    FROM observations o
+),
+quota_pct_interval AS (
+    SELECT
+        o.provider,
+        o.raw_provider,
+        o.quota_key,
+        o.quota_type,
+        CASE
+            WHEN o.provider = 'anthropic' AND o.quota_type = 'short' THEN 'anthropic_5h_all_model'
+            WHEN o.provider = 'anthropic' AND o.quota_type = 'weekly' THEN 'anthropic_weekly_all_model'
+            WHEN o.provider = 'anthropic' AND o.quota_type = 'special' THEN 'anthropic_weekly_sonnet'
+            WHEN o.provider = 'openai' AND o.quota_type = 'short' THEN 'openai_5h_all_model'
+            WHEN o.provider = 'openai' AND o.quota_type = 'weekly' THEN 'openai_weekly_all_model'
+            WHEN o.provider = 'openai' AND o.quota_type = 'short_special' THEN 'openai_codex_spark_5h'
+            WHEN o.provider = 'openai' AND o.quota_type = 'special' THEN 'openai_codex_spark_weekly'
+            ELSE o.provider || '_' || COALESCE(o.quota_type, 'unknown')
+        END AS quota_lane,
+        o.raw_observation_quota_type,
+        rw.raw_interval_quota_type,
+        o.expected_reset_at,
+        rw.reset_start_at,
+        COALESCE(rw.reset_end_at, o.expected_reset_at) AS reset_end_at,
+        o.previous_observed_at AS interval_start_at,
+        o.observed_at AS interval_end_at,
+        o.previous_consumed_pct,
+        o.consumed_pct AS current_consumed_pct,
+        (o.consumed_pct - o.previous_consumed_pct)::double precision AS delta_pct,
+        CASE
+            WHEN o.previous_observed_at IS NULL THEN true
+            WHEN o.consumed_pct < o.previous_consumed_pct THEN true
+            ELSE false
+        END AS is_reset_boundary,
+        CASE
+            WHEN o.previous_consumed_pct >= 99.5 OR o.consumed_pct >= 99.5 THEN true
+            ELSE false
+        END AS is_capped_at_100,
+        CASE
+            WHEN o.previous_observed_at IS NULL THEN false
+            WHEN o.consumed_pct <= o.previous_consumed_pct THEN false
+            WHEN o.previous_consumed_pct >= 99.5 OR o.consumed_pct >= 99.5 THEN false
+            ELSE true
+        END AS trainable,
+        CASE
+            WHEN o.previous_observed_at IS NULL THEN 'first_observation_in_reset_period'
+            WHEN o.consumed_pct < o.previous_consumed_pct THEN 'reset_or_measurement_boundary'
+            WHEN o.consumed_pct = o.previous_consumed_pct THEN 'plateau_no_positive_delta'
+            WHEN o.previous_consumed_pct >= 99.5 OR o.consumed_pct >= 99.5 THEN 'capped_at_100'
+            ELSE NULL
+        END AS exclude_reason
+    FROM ordered_observations o
+    LEFT JOIN reset_windows rw
+           ON rw.provider = o.provider
+          AND rw.quota_key = o.quota_key
+          AND rw.expected_reset_at IS NOT DISTINCT FROM o.expected_reset_at
+    WHERE o.quota_type IS NOT NULL
+),
+ranked_quota_interval AS (
+    SELECT
+        *,
+        ROW_NUMBER() OVER (
+            PARTITION BY provider, quota_key, quota_type
+            ORDER BY interval_end_at DESC
+        ) AS interval_rank
+    FROM quota_pct_interval
+),
+llm_usage_event AS (
+    SELECT
+        ${providerDimension} AS provider,
+        COALESCE(sh.model, 'unknown') AS model,
+        CASE
+            WHEN ${providerDimension} = 'anthropic' AND COALESCE(sh.model, '') ILIKE '%haiku%' THEN 'haiku'
+            WHEN ${providerDimension} = 'anthropic' AND COALESCE(sh.model, '') ILIKE '%sonnet%' THEN 'sonnet'
+            WHEN ${providerDimension} = 'anthropic' AND COALESCE(sh.model, '') ILIKE '%opus%' THEN 'opus'
+            WHEN ${providerDimension} = 'openai' AND COALESCE(sh.model, '') ILIKE '%spark%' THEN 'spark'
+            WHEN ${providerDimension} = 'openai' AND COALESCE(sh.model, '') ILIKE '%codex%' THEN 'codex'
+            WHEN ${providerDimension} = 'openai' AND COALESCE(sh.model, '') ILIKE 'gpt%' THEN 'gpt'
+            ELSE 'other'
+        END AS model_family,
+        COALESCE(sh.end_time, sh.start_time, sh.created_at) + INTERVAL '${lagInterval}' AS effective_request_at,
+        COALESCE(sh.input_tokens, 0)::double precision AS uncached_input_tokens,
+        COALESCE(sh.output_tokens, 0)::double precision AS output_tokens,
+        COALESCE(sh.cache_read_input_tokens, 0)::double precision AS cache_read_tokens,
+        COALESCE(sh.cache_creation_input_tokens, 0)::double precision AS cache_create_tokens,
+        (COALESCE(sh.reasoning_tokens_reported, 0)
+          + COALESCE(sh.reasoning_tokens_estimated, 0))::double precision AS reasoning_tokens,
+        COALESCE(sh.response_cost_usd, 0)::double precision AS usd_cost,
+        COALESCE(sh.tool_call_count, 0)::double precision AS tool_calls
+    FROM public.session_history sh
+    WHERE COALESCE(sh.end_time, sh.start_time, sh.created_at) >= ($1::date::timestamp AT TIME ZONE 'America/New_York') - INTERVAL '1 hour'
+      AND COALESCE(sh.end_time, sh.start_time, sh.created_at) < ($2::date::timestamp AT TIME ZONE 'America/New_York') + INTERVAL '1 hour'
+      AND ${providerDimension} IN ('anthropic', 'openai')
+),
+aggregated AS (
+    SELECT
+        q.provider,
+        q.quota_key,
+        q.quota_type,
+        q.quota_lane,
+        q.raw_observation_quota_type,
+        q.raw_interval_quota_type,
+        q.expected_reset_at,
+        q.reset_start_at,
+        q.reset_end_at,
+        q.interval_start_at,
+        q.interval_end_at,
+        q.previous_consumed_pct,
+        q.current_consumed_pct,
+        q.delta_pct,
+        q.is_reset_boundary,
+        q.is_capped_at_100,
+        q.trainable,
+        q.exclude_reason,
+        COALESCE(u.model_family, 'no_usage') AS model_family,
+        COUNT(u.model)::double precision AS traces,
+        SUM(COALESCE(u.uncached_input_tokens, 0))::double precision AS uncached_input_tokens,
+        SUM(COALESCE(u.output_tokens, 0))::double precision AS output_tokens,
+        SUM(COALESCE(u.cache_read_tokens, 0))::double precision AS cache_read_tokens,
+        SUM(COALESCE(u.cache_create_tokens, 0))::double precision AS cache_create_tokens,
+        SUM(COALESCE(u.reasoning_tokens, 0))::double precision AS reasoning_tokens,
+        SUM(COALESCE(u.usd_cost, 0))::double precision AS usd_cost,
+        SUM(COALESCE(u.tool_calls, 0))::double precision AS tool_calls
+    FROM ranked_quota_interval q
+    LEFT JOIN llm_usage_event u
+      ON u.provider = q.provider
+     AND u.effective_request_at >= q.interval_start_at
+     AND u.effective_request_at < q.interval_end_at
+     AND (
+          q.provider <> 'openai'
+          OR (q.quota_type IN ('short', 'weekly') AND u.model_family <> 'spark')
+          OR (q.quota_type IN ('short_special', 'special') AND u.model_family = 'spark')
+     )
+    WHERE q.interval_rank <= ${QUOTA_ESTIMATOR_MAX_INTERVALS_PER_LANE}
+    GROUP BY
+        q.provider,
+        q.quota_key,
+        q.quota_type,
+        q.quota_lane,
+        q.raw_observation_quota_type,
+        q.raw_interval_quota_type,
+        q.expected_reset_at,
+        q.reset_start_at,
+        q.reset_end_at,
+        q.interval_start_at,
+        q.interval_end_at,
+        q.previous_consumed_pct,
+        q.current_consumed_pct,
+        q.delta_pct,
+        q.is_reset_boundary,
+        q.is_capped_at_100,
+        q.trainable,
+        q.exclude_reason,
+        COALESCE(u.model_family, 'no_usage')
+)
+SELECT
+    ${lag}::double precision AS lag_minutes,
+    provider,
+    quota_key,
+    quota_type,
+    quota_lane,
+    raw_observation_quota_type,
+    raw_interval_quota_type,
+    expected_reset_at,
+    reset_start_at,
+    reset_end_at,
+    interval_start_at,
+    interval_end_at,
+    previous_consumed_pct,
+    current_consumed_pct,
+    delta_pct,
+    is_reset_boundary,
+    is_capped_at_100,
+    trainable,
+    exclude_reason,
+    model_family,
+    traces,
+    uncached_input_tokens,
+    output_tokens,
+    cache_read_tokens,
+    cache_create_tokens,
+    reasoning_tokens,
+    usd_cost,
+    tool_calls
+FROM aggregated
+ORDER BY provider ASC, quota_type ASC, quota_key ASC, interval_end_at ASC, model_family ASC;
+`
+
+  return { sql, values: [from, to], metadata: { from, to, lagMinutes: lag } }
+}
+
+export function buildQuotaEstimatorObservationQuery(searchParams) {
+  const from = parseSearchDateOnly(searchParams.get('from'), defaultFromDate)
+  const to = parseSearchDateOnly(searchParams.get('to'), defaultToDate)
+
+  const sql = `
+WITH reset_windows AS (
+    SELECT
+        ri.provider AS raw_provider,
+        CASE
+            WHEN lower(COALESCE(ri.provider, 'unknown')) IN ('claude', 'anthropic') THEN 'anthropic'
+            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'claude/%' THEN 'anthropic'
+            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'anthropic/%' THEN 'anthropic'
+            WHEN lower(COALESCE(ri.provider, 'unknown')) = 'openai' THEN 'openai'
+            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'openai/%' THEN 'openai'
+            ELSE lower(COALESCE(ri.provider, 'unknown'))
+        END AS provider,
+        ri.quota_key,
+        ri.quota_type AS raw_interval_quota_type,
+        ri.expected_reset_at,
+        MIN(ri.fromDate) AS reset_start_at,
+        MAX(ri.toDate) AS reset_end_at
+    FROM public.rate_limit_intervals ri
+    WHERE ri.provider IN ('anthropic', 'openai')
+      AND ri.quota_key IN (
+          'anthropic_unified_5h:5h',
+          'anthropic_unified_7d:7d',
+          'anthropic_unified_7d_sonnet:7d_sonnet',
+          'codex:primary',
+          'codex:secondary',
+          'codex_bengalfox:primary',
+          'codex_bengalfox:secondary'
+      )
+      AND ri.expected_reset_at IS NOT NULL
+    GROUP BY ri.provider, ri.quota_key, ri.quota_type, ri.expected_reset_at
+),
+observations AS (
+    SELECT
+        o.provider AS raw_provider,
+        CASE
+            WHEN lower(COALESCE(o.provider, 'unknown')) IN ('claude', 'anthropic') THEN 'anthropic'
+            WHEN lower(COALESCE(o.provider, 'unknown')) LIKE 'claude/%' THEN 'anthropic'
+            WHEN lower(COALESCE(o.provider, 'unknown')) LIKE 'anthropic/%' THEN 'anthropic'
+            WHEN lower(COALESCE(o.provider, 'unknown')) = 'openai' THEN 'openai'
+            WHEN lower(COALESCE(o.provider, 'unknown')) LIKE 'openai/%' THEN 'openai'
+            ELSE lower(COALESCE(o.provider, 'unknown'))
+        END AS provider,
+        o.quota_key,
+        CASE
+            WHEN o.provider = 'anthropic' AND o.quota_key = 'anthropic_unified_5h:5h' THEN 'short'
+            WHEN o.provider = 'anthropic' AND o.quota_key = 'anthropic_unified_7d:7d' THEN 'weekly'
+            WHEN o.provider = 'anthropic' AND o.quota_key = 'anthropic_unified_7d_sonnet:7d_sonnet' THEN 'special'
+            WHEN o.provider = 'openai' AND o.quota_key = 'codex:primary' THEN 'short'
+            WHEN o.provider = 'openai' AND o.quota_key = 'codex:secondary' THEN 'weekly'
+            WHEN o.provider = 'openai' AND o.quota_key = 'codex_bengalfox:primary' THEN 'short_special'
+            WHEN o.provider = 'openai' AND o.quota_key = 'codex_bengalfox:secondary' THEN 'special'
+            ELSE NULL
+        END AS quota_type,
+        CASE
+            WHEN o.provider = 'anthropic' AND o.quota_key = 'anthropic_unified_5h:5h' THEN 'anthropic_5h_all_model'
+            WHEN o.provider = 'anthropic' AND o.quota_key = 'anthropic_unified_7d:7d' THEN 'anthropic_weekly_all_model'
+            WHEN o.provider = 'anthropic' AND o.quota_key = 'anthropic_unified_7d_sonnet:7d_sonnet' THEN 'anthropic_weekly_sonnet'
+            WHEN o.provider = 'openai' AND o.quota_key = 'codex:primary' THEN 'openai_5h_all_model'
+            WHEN o.provider = 'openai' AND o.quota_key = 'codex:secondary' THEN 'openai_weekly_all_model'
+            WHEN o.provider = 'openai' AND o.quota_key = 'codex_bengalfox:primary' THEN 'openai_codex_spark_5h'
+            WHEN o.provider = 'openai' AND o.quota_key = 'codex_bengalfox:secondary' THEN 'openai_codex_spark_weekly'
+            ELSE o.provider || '_unknown'
+        END AS quota_lane,
+        o.quota_type AS raw_observation_quota_type,
+        o.expected_reset_at,
+        o.observed_at,
+        MAX(GREATEST(0, LEAST(100, 100 - o.remaining_pct)))::double precision AS consumed_pct
+    FROM public.rate_limit_observations o
+    WHERE o.provider IN ('anthropic', 'openai')
+      AND o.quota_key IN (
+          'anthropic_unified_5h:5h',
+          'anthropic_unified_7d:7d',
+          'anthropic_unified_7d_sonnet:7d_sonnet',
+          'codex:primary',
+          'codex:secondary',
+          'codex_bengalfox:primary',
+          'codex_bengalfox:secondary'
+      )
+      AND o.remaining_pct IS NOT NULL
+      AND o.remaining_pct >= 0
+      AND o.observed_at IS NOT NULL
+      AND o.observed_at >= ($1::date::timestamp AT TIME ZONE 'America/New_York')
+      AND o.observed_at < ($2::date::timestamp AT TIME ZONE 'America/New_York')
+    GROUP BY
+        o.provider,
+        o.quota_key,
+        o.quota_type,
+        o.expected_reset_at,
+        o.observed_at
+)
+SELECT
+    o.provider,
+    o.raw_provider,
+    o.quota_key,
+    o.quota_type,
+    o.quota_lane,
+    o.raw_observation_quota_type,
+    rw.raw_interval_quota_type,
+    o.expected_reset_at,
+    rw.reset_start_at,
+    COALESCE(rw.reset_end_at, o.expected_reset_at) AS reset_end_at,
+    o.observed_at,
+    o.consumed_pct
+FROM observations o
+LEFT JOIN reset_windows rw
+       ON rw.provider = o.provider
+      AND rw.quota_key = o.quota_key
+      AND rw.expected_reset_at IS NOT DISTINCT FROM o.expected_reset_at
+WHERE o.quota_type IS NOT NULL
+ORDER BY o.provider ASC, o.quota_key ASC, o.expected_reset_at ASC NULLS LAST, o.observed_at ASC;
+`
+
+  return { sql, values: [from, to], metadata: { from, to } }
+}
+
+export function buildQuotaEstimatorUsageBucketQuery(searchParams) {
+  const from = parseSearchDateOnly(searchParams.get('from'), defaultFromDate)
+  const to = parseSearchDateOnly(searchParams.get('to'), defaultToDate)
+
+  const sql = `
+WITH usage_events AS (
+    SELECT
+        ${providerDimension} AS provider,
+        CASE
+            WHEN ${providerDimension} = 'anthropic' AND COALESCE(sh.model, '') ILIKE '%haiku%' THEN 'haiku'
+            WHEN ${providerDimension} = 'anthropic' AND COALESCE(sh.model, '') ILIKE '%sonnet%' THEN 'sonnet'
+            WHEN ${providerDimension} = 'anthropic' AND COALESCE(sh.model, '') ILIKE '%opus%' THEN 'opus'
+            WHEN ${providerDimension} = 'openai' AND COALESCE(sh.model, '') ILIKE '%spark%' THEN 'spark'
+            WHEN ${providerDimension} = 'openai' AND COALESCE(sh.model, '') ILIKE '%codex%' THEN 'codex'
+            WHEN ${providerDimension} = 'openai' AND COALESCE(sh.model, '') ILIKE 'gpt%' THEN 'gpt'
+            ELSE 'other'
+        END AS model_family,
+        to_timestamp(
+            floor(extract(epoch from COALESCE(sh.end_time, sh.start_time, sh.created_at)) / 300) * 300
+        ) AS bucket_start_at,
+        COALESCE(sh.input_tokens, 0)::double precision AS uncached_input_tokens,
+        COALESCE(sh.output_tokens, 0)::double precision AS output_tokens,
+        COALESCE(sh.cache_read_input_tokens, 0)::double precision AS cache_read_tokens,
+        COALESCE(sh.cache_creation_input_tokens, 0)::double precision AS cache_create_tokens,
+        (COALESCE(sh.reasoning_tokens_reported, 0)
+          + COALESCE(sh.reasoning_tokens_estimated, 0))::double precision AS reasoning_tokens,
+        COALESCE(sh.response_cost_usd, 0)::double precision AS usd_cost,
+        COALESCE(sh.tool_call_count, 0)::double precision AS tool_calls
+    FROM public.session_history sh
+    WHERE COALESCE(sh.end_time, sh.start_time, sh.created_at) >= ($1::date::timestamp AT TIME ZONE 'America/New_York') - INTERVAL '1 hour'
+      AND COALESCE(sh.end_time, sh.start_time, sh.created_at) < ($2::date::timestamp AT TIME ZONE 'America/New_York') + INTERVAL '2 hours'
+      AND ${providerDimension} IN ('anthropic', 'openai')
+)
+SELECT
+    provider,
+    model_family,
+    bucket_start_at,
+    COUNT(*)::double precision AS traces,
+    SUM(uncached_input_tokens)::double precision AS uncached_input_tokens,
+    SUM(output_tokens)::double precision AS output_tokens,
+    SUM(cache_read_tokens)::double precision AS cache_read_tokens,
+    SUM(cache_create_tokens)::double precision AS cache_create_tokens,
+    SUM(reasoning_tokens)::double precision AS reasoning_tokens,
+    SUM(usd_cost)::double precision AS usd_cost,
+    SUM(tool_calls)::double precision AS tool_calls
+FROM usage_events
+GROUP BY provider, model_family, bucket_start_at
+ORDER BY provider ASC, bucket_start_at ASC, model_family ASC;
+`
+
+  return { sql, values: [from, to], metadata: { from, to } }
+}
+
 function buildFreshnessQuery() {
   return {
     sql: 'SELECT MAX(sh.created_at) AS latest_record_at FROM public.session_history sh;',
@@ -2416,6 +3844,10 @@ function buildToolActivityQuery(searchParams) {
   const providerExpr = `
 CASE
     WHEN lower(COALESCE(sh.provider, 'unknown')) IN ('google', 'gemini') THEN 'google'
+    WHEN lower(COALESCE(sh.provider, 'unknown')) IN ('claude', 'anthropic') THEN 'anthropic'
+    WHEN lower(COALESCE(sh.provider, 'unknown')) LIKE 'claude/%' THEN 'anthropic'
+    WHEN lower(COALESCE(sh.provider, 'unknown')) LIKE 'anthropic/%' THEN 'anthropic'
+    WHEN lower(COALESCE(sh.provider, 'unknown')) LIKE 'deepseek/%' THEN 'deepseek'
     WHEN lower(COALESCE(sh.provider, 'unknown')) IN ('xai', 'x.ai') THEN 'xai'
     WHEN lower(COALESCE(sh.provider, 'unknown')) LIKE 'xai/%' THEN 'xai'
     WHEN lower(COALESCE(sh.provider, 'unknown')) = 'nvidia' THEN 'nvidia_nim'
@@ -2436,7 +3868,7 @@ WITH outer_counts AS (
         COUNT(*)::bigint AS calls
     FROM public.session_history_tool_activity a
     JOIN public.session_history sh ON a.litellm_call_id = sh.litellm_call_id
-    WHERE ${createdAtDateRangeWhere.join('\n      AND ')}
+    WHERE ${startTimeDateRangeWhere.join('\n      AND ')}
     GROUP BY
         ${providerExpr},
         COALESCE(sh.model, 'unknown'),
@@ -2469,7 +3901,7 @@ shell_labels AS (
         COUNT(*)::bigint AS calls
     FROM public.session_history_tool_activity a
     JOIN public.session_history sh ON a.litellm_call_id = sh.litellm_call_id
-    WHERE ${createdAtDateRangeWhere.join('\n      AND ')}
+    WHERE ${startTimeDateRangeWhere.join('\n      AND ')}
       AND a.tool_kind = 'command'
       AND a.command_text IS NOT NULL
       AND a.command_text <> ''
@@ -2595,6 +4027,7 @@ function normalizeTrendRow(row) {
     traces: normalizeNumber(row.traces) ?? 0,
     token_total: normalizeNumber(row.token_total) ?? 0,
     usd_cost: normalizeNumber(row.usd_cost) ?? 0,
+    tool_calls: normalizeNumber(row.tool_calls) ?? 0,
   }
 }
 
@@ -2606,6 +4039,7 @@ function normalizeTokenTrendHourRow(row) {
     traces: normalizeNumber(row.traces) ?? 0,
     token_total: normalizeNumber(row.token_total) ?? 0,
     usd_cost: normalizeNumber(row.usd_cost) ?? 0,
+    tool_calls: normalizeNumber(row.tool_calls) ?? 0,
   }
 }
 
@@ -2623,7 +4057,60 @@ function normalizeTokenTrendVersionIntervalRow(row) {
     traces: normalizeNumber(row.traces) ?? 0,
     token_total: normalizeNumber(row.token_total) ?? 0,
     usd_cost: normalizeNumber(row.usd_cost) ?? 0,
+    tool_calls: normalizeNumber(row.tool_calls) ?? 0,
   }
+}
+
+function normalizeTokenTrendModelFirstSeenRow(row) {
+  return {
+    provider: row.provider ?? 'unknown',
+    model: row.model ?? 'unknown',
+    first_seen_at: row.first_seen_at ?? null,
+    first_seen_day: row.first_seen_day ?? null,
+    first_seen_hour: normalizeNumber(row.first_seen_hour),
+    observations: normalizeNumber(row.observations) ?? 0,
+    token_total: normalizeNumber(row.token_total) ?? 0,
+  }
+}
+
+const tokenTrendScoreNumericKeys = [
+  'agent_score_rows',
+  'agent_quality_score',
+  'agent_quality_evaluated',
+  'agent_quality_possible',
+  'agent_quality_failures',
+  'agent_instruction_score',
+  'agent_instruction_evaluated',
+  'agent_instruction_possible',
+  'agent_instruction_failures',
+  'agent_tool_score',
+  'agent_tool_evaluated',
+  'agent_tool_possible',
+  'agent_tool_failures',
+  'agent_contract_score',
+  'agent_contract_evaluated',
+  'agent_contract_possible',
+  'agent_contract_failures',
+  'agent_progress_score',
+  'agent_progress_evaluated',
+  'agent_progress_possible',
+  'agent_progress_failures',
+  'agent_risk_score',
+  'agent_risk_evaluated',
+  'agent_risk_possible',
+  'agent_risk_events',
+]
+
+function normalizeTokenTrendScoreRow(row) {
+  const normalized = {
+    bucket: row.bucket,
+    provider: row.provider ?? 'unknown',
+    model: row.model ?? 'unknown',
+  }
+  for (const key of tokenTrendScoreNumericKeys) {
+    normalized[key] = normalizeNumber(row[key])
+  }
+  return normalized
 }
 
 function normalizeTokenTrendDayDetailRow(row) {
@@ -2638,6 +4125,7 @@ function normalizeTokenTrendDayDetailRow(row) {
     traces: normalizeNumber(row.traces) ?? 0,
     token_total: normalizeNumber(row.token_total) ?? 0,
     usd_cost: normalizeNumber(row.usd_cost) ?? 0,
+    tool_calls: normalizeNumber(row.tool_calls) ?? 0,
   }
 }
 
@@ -2650,6 +4138,7 @@ function normalizeClientUsageRow(row) {
     traces: normalizeNumber(row.traces) ?? 0,
     token_total: normalizeNumber(row.token_total) ?? 0,
     usd_cost: normalizeNumber(row.usd_cost) ?? 0,
+    tool_calls: normalizeNumber(row.tool_calls) ?? 0,
   }
 }
 
@@ -2732,6 +4221,35 @@ function normalizeProviderErrorObservationRow(row) {
   }
 }
 
+function normalizeDockerLogErrorRow(row) {
+  return {
+    observed_at: row.observed_at ?? null,
+    container: row.container ?? 'unknown',
+    stream: row.stream ?? 'unknown',
+    provider: row.provider ?? 'unknown',
+    status_code: normalizeNumber(row.status_code),
+    level: row.level ?? 'error',
+    message: row.message ?? '',
+  }
+}
+
+function normalizeLocalHealthRow(row) {
+  const status = String(row.status ?? 'red')
+  return {
+    checked_at: row.checked_at ?? null,
+    category: row.category === 'model' ? 'model' : 'container',
+    key: row.key ?? 'unknown',
+    label: row.label ?? row.key ?? 'unknown',
+    status:
+      status === 'green' || status === 'yellow' || status === 'red'
+        ? status
+        : 'red',
+    detail: row.detail ?? '',
+    target: row.target ?? null,
+    latency_ms: normalizeNumber(row.latency_ms),
+  }
+}
+
 function normalizeProviderStatusUsageRow(row) {
   return {
     provider: row.provider ?? 'unknown',
@@ -2739,6 +4257,7 @@ function normalizeProviderStatusUsageRow(row) {
     traces: normalizeNumber(row.traces) ?? 0,
     token_total: normalizeNumber(row.token_total) ?? 0,
     usd_cost: normalizeNumber(row.usd_cost) ?? 0,
+    ...normalizeLatencyAggregateFields(row),
     period_start: row.period_start ?? null,
     period_end: row.period_end ?? null,
   }
@@ -2751,6 +4270,7 @@ function normalizeUsageBreakdown(value) {
     tokens: normalizeNumber(item?.tokens) ?? 0,
     cost: normalizeNumber(item?.cost) ?? 0,
     traces: normalizeNumber(item?.traces) ?? 0,
+    recent_traces_90m: normalizeNumber(item?.recent_traces_90m) ?? 0,
   }))
 }
 
@@ -2921,8 +4441,870 @@ function normalizeQuotaHistoryRow(row) {
           tokens: normalizeNumber(b.tokens) ?? 0,
           cost: normalizeNumber(b.cost) ?? 0,
           traces: normalizeNumber(b.traces) ?? 0,
+          recent_traces_90m: normalizeNumber(b.recent_traces_90m) ?? 0,
         }))
       : [],
+  }
+}
+
+function normalizeQuotaEstimatorDatasetRow(row) {
+  return {
+    lag_minutes: normalizeNumber(row.lag_minutes) ?? 0,
+    provider: row.provider ?? 'unknown',
+    quota_key: row.quota_key ?? 'unknown',
+    quota_type: row.quota_type ?? 'unknown',
+    quota_lane: row.quota_lane ?? 'unknown',
+    raw_observation_quota_type: row.raw_observation_quota_type ?? null,
+    raw_interval_quota_type: row.raw_interval_quota_type ?? null,
+    expected_reset_at: row.expected_reset_at ?? null,
+    reset_start_at: row.reset_start_at ?? null,
+    reset_end_at: row.reset_end_at ?? null,
+    interval_start_at: row.interval_start_at ?? null,
+    interval_end_at: row.interval_end_at ?? null,
+    previous_consumed_pct: normalizeNumber(row.previous_consumed_pct),
+    current_consumed_pct: normalizeNumber(row.current_consumed_pct),
+    delta_pct: normalizeNumber(row.delta_pct),
+    is_reset_boundary: Boolean(row.is_reset_boundary),
+    is_capped_at_100: Boolean(row.is_capped_at_100),
+    trainable: Boolean(row.trainable),
+    exclude_reason: row.exclude_reason ?? null,
+    model_family: row.model_family ?? 'no_usage',
+    traces: normalizeNumber(row.traces) ?? 0,
+    uncached_input_tokens: normalizeNumber(row.uncached_input_tokens) ?? 0,
+    output_tokens: normalizeNumber(row.output_tokens) ?? 0,
+    cache_read_tokens: normalizeNumber(row.cache_read_tokens) ?? 0,
+    cache_create_tokens: normalizeNumber(row.cache_create_tokens) ?? 0,
+    reasoning_tokens: normalizeNumber(row.reasoning_tokens) ?? 0,
+    usd_cost: normalizeNumber(row.usd_cost) ?? 0,
+    tool_calls: normalizeNumber(row.tool_calls) ?? 0,
+  }
+}
+
+function normalizeQuotaEstimatorObservationRow(row) {
+  return {
+    provider: row.provider ?? 'unknown',
+    raw_provider: row.raw_provider ?? null,
+    quota_key: row.quota_key ?? 'unknown',
+    quota_type: row.quota_type ?? 'unknown',
+    quota_lane: row.quota_lane ?? 'unknown',
+    raw_observation_quota_type: row.raw_observation_quota_type ?? null,
+    raw_interval_quota_type: row.raw_interval_quota_type ?? null,
+    expected_reset_at: row.expected_reset_at ?? null,
+    reset_start_at: row.reset_start_at ?? null,
+    reset_end_at: row.reset_end_at ?? null,
+    observed_at: row.observed_at ?? null,
+    consumed_pct: normalizeNumber(row.consumed_pct),
+  }
+}
+
+function normalizeQuotaEstimatorUsageBucketRow(row) {
+  return {
+    provider: row.provider ?? 'unknown',
+    model_family: row.model_family ?? 'other',
+    bucket_start_at: row.bucket_start_at ?? null,
+    traces: normalizeNumber(row.traces) ?? 0,
+    uncached_input_tokens: normalizeNumber(row.uncached_input_tokens) ?? 0,
+    output_tokens: normalizeNumber(row.output_tokens) ?? 0,
+    cache_read_tokens: normalizeNumber(row.cache_read_tokens) ?? 0,
+    cache_create_tokens: normalizeNumber(row.cache_create_tokens) ?? 0,
+    reasoning_tokens: normalizeNumber(row.reasoning_tokens) ?? 0,
+    usd_cost: normalizeNumber(row.usd_cost) ?? 0,
+    tool_calls: normalizeNumber(row.tool_calls) ?? 0,
+  }
+}
+
+function buildQuotaEstimatorPhase0Audit() {
+  return {
+    source_database: 'aawm_tristore',
+    usage_event_shape: {
+      source_table: 'public.session_history',
+      timestamp_policy: 'COALESCE(end_time, start_time, created_at)',
+      token_categories: [
+        'uncached_input_tokens',
+        'output_tokens',
+        'cache_read_tokens',
+        'cache_create_tokens',
+        'reasoning_tokens',
+      ],
+      cache_read_policy:
+        'cache_read_input_tokens is kept as a separate feature and is not summed into uncached input.',
+      cache_write_policy:
+        'cache_creation_input_tokens is preserved as one generic cache create/write bucket; duration-specific 5m/1h cache write fields were not verified in session_history.',
+    },
+    quota_pct_interval_shape: {
+      source_table: 'public.rate_limit_observations',
+      reset_context_table: 'public.rate_limit_intervals',
+      value_policy: 'consumed_pct = 100 - remaining_pct',
+      interval_policy:
+        'consecutive observations per provider/quota_key/expected_reset_at form plateau intervals.',
+      excluded_training_rows: [
+        'first_observation_in_reset_period',
+        'reset_or_measurement_boundary',
+        'plateau_no_positive_delta',
+        'capped_at_100',
+      ],
+    },
+    provider_lane_policy: {
+      anthropic: [
+        'short -> 5-hour all-model',
+        'weekly -> weekly all-model',
+        'special -> weekly Sonnet-only; Haiku/Opus coefficients are diagnostics',
+      ],
+      openai: [
+        'short/weekly -> Codex all-model lanes',
+        'short_special/special -> Codex Spark lanes',
+        'single-observation unknown-window keys are excluded from training',
+      ],
+    },
+    known_missing_fields: [
+      'cache_write_5m_tokens',
+      'cache_write_1h_tokens',
+      'shared account_id across session_history and rate_limit_observations',
+    ],
+  }
+}
+
+function quotaEstimatorIntervalKey(row) {
+  return [
+    row.lag_minutes,
+    row.provider,
+    row.quota_key,
+    row.quota_type,
+    row.expected_reset_at ?? '',
+    row.interval_start_at ?? '',
+    row.interval_end_at ?? '',
+  ].join('|')
+}
+
+function quotaEstimatorLaneKey(row) {
+  return [row.provider, row.quota_key, row.quota_type, row.quota_lane].join('|')
+}
+
+function buildQuotaEstimatorIntervals(rows) {
+  const intervalsByKey = new Map()
+  for (const row of rows) {
+    const key = quotaEstimatorIntervalKey(row)
+    let interval = intervalsByKey.get(key)
+    if (!interval) {
+      interval = {
+        lagMinutes: row.lag_minutes,
+        provider: row.provider,
+        quotaKey: row.quota_key,
+        quotaType: row.quota_type,
+        quotaLane: row.quota_lane,
+        expectedResetAt: row.expected_reset_at,
+        resetStartAt: row.reset_start_at,
+        resetEndAt: row.reset_end_at,
+        intervalStartAt: row.interval_start_at,
+        intervalEndAt: row.interval_end_at,
+        previousConsumedPct: row.previous_consumed_pct,
+        currentConsumedPct: row.current_consumed_pct,
+        deltaPct: row.delta_pct,
+        isResetBoundary: row.is_reset_boundary,
+        isCappedAt100: row.is_capped_at_100,
+        trainable: row.trainable,
+        excludeReason: row.exclude_reason,
+        featureTotals: {},
+        traces: 0,
+        usdCost: 0,
+        toolCalls: 0,
+      }
+      intervalsByKey.set(key, interval)
+    }
+    if (row.model_family !== 'no_usage') {
+      const family = row.model_family
+      interval.featureTotals[family] ??= {
+        uncachedInputMtok: 0,
+        outputMtok: 0,
+        cacheReadMtok: 0,
+        cacheCreateMtok: 0,
+        reasoningMtok: 0,
+      }
+      interval.featureTotals[family].uncachedInputMtok +=
+        row.uncached_input_tokens / 1_000_000
+      interval.featureTotals[family].outputMtok += row.output_tokens / 1_000_000
+      interval.featureTotals[family].cacheReadMtok +=
+        row.cache_read_tokens / 1_000_000
+      interval.featureTotals[family].cacheCreateMtok +=
+        row.cache_create_tokens / 1_000_000
+      interval.featureTotals[family].reasoningMtok +=
+        row.reasoning_tokens / 1_000_000
+    }
+    interval.traces += row.traces
+    interval.usdCost += row.usd_cost
+    interval.toolCalls += row.tool_calls
+  }
+  return [...intervalsByKey.values()].sort((a, b) =>
+    String(a.intervalEndAt ?? '').localeCompare(String(b.intervalEndAt ?? ''))
+  )
+}
+
+function quotaEstimatorFeatureNames(intervals) {
+  const families = new Set()
+  for (const interval of intervals) {
+    for (const family of Object.keys(interval.featureTotals)) {
+      families.add(family)
+    }
+  }
+  const orderedFamilies = [...families].sort()
+  const names = []
+  for (const family of orderedFamilies) {
+    names.push(`${family}:workload`)
+    names.push(`${family}:cache_read`)
+  }
+  return names
+}
+
+function quotaEstimatorFeatureVector(interval, featureNames) {
+  return featureNames.map((name) => {
+    const [family, category] = name.split(':')
+    const totals = interval.featureTotals[family]
+    if (!totals) return 0
+    if (category === 'cache_read') return totals.cacheReadMtok
+    return (
+      totals.uncachedInputMtok +
+      totals.outputMtok +
+      totals.cacheCreateMtok +
+      totals.reasoningMtok
+    )
+  })
+}
+
+function fitNonNegativeRidge(samples, featureNames, options = {}) {
+  const ridge = options.ridge ?? 1e-6
+  const weights = options.weights ?? samples.map(() => 1)
+  const xs = samples.map((sample) =>
+    quotaEstimatorFeatureVector(sample, featureNames)
+  )
+  const ys = samples.map((sample) => sample.deltaPct ?? 0)
+  const featureCount = featureNames.length
+  const beta = Array(featureCount).fill(0)
+  const predictions = Array(samples.length).fill(0)
+
+  for (let iteration = 0; iteration < 500; iteration += 1) {
+    let maxChange = 0
+    for (let featureIndex = 0; featureIndex < featureCount; featureIndex += 1) {
+      let numerator = 0
+      let denominator = ridge
+      for (let rowIndex = 0; rowIndex < samples.length; rowIndex += 1) {
+        const x = xs[rowIndex][featureIndex]
+        if (x === 0) continue
+        const weight = weights[rowIndex] ?? 1
+        const predictionWithoutFeature =
+          predictions[rowIndex] - beta[featureIndex] * x
+        numerator += weight * x * (ys[rowIndex] - predictionWithoutFeature)
+        denominator += weight * x * x
+      }
+      if (denominator <= 0) continue
+      const next = Math.max(0, numerator / denominator)
+      const change = next - beta[featureIndex]
+      if (change !== 0) {
+        beta[featureIndex] = next
+        maxChange = Math.max(maxChange, Math.abs(change))
+        for (let rowIndex = 0; rowIndex < samples.length; rowIndex += 1) {
+          predictions[rowIndex] += change * xs[rowIndex][featureIndex]
+        }
+      }
+    }
+    if (maxChange < 1e-9) break
+  }
+
+  return {
+    coefficients: Object.fromEntries(
+      featureNames.map((name, index) => [name, beta[index]])
+    ),
+    predictions,
+  }
+}
+
+function quotaEstimatorResidualMetrics(samples, predictions, weights = []) {
+  if (!samples.length) {
+    return { rmse_pct: null, mae_pct: null, max_abs_error_pct: null }
+  }
+  let weightedSquared = 0
+  let weightedAbsolute = 0
+  let totalWeight = 0
+  let maxAbs = 0
+  for (let index = 0; index < samples.length; index += 1) {
+    const weight = weights[index] ?? 1
+    const error = (samples[index].deltaPct ?? 0) - (predictions[index] ?? 0)
+    const abs = Math.abs(error)
+    weightedSquared += weight * error * error
+    weightedAbsolute += weight * abs
+    totalWeight += weight
+    maxAbs = Math.max(maxAbs, abs)
+  }
+  return {
+    rmse_pct: Math.sqrt(weightedSquared / Math.max(totalWeight, 1)),
+    mae_pct: weightedAbsolute / Math.max(totalWeight, 1),
+    max_abs_error_pct: maxAbs,
+  }
+}
+
+function quotaEstimatorWeights(samples, halfLifeHours) {
+  if (!samples.length) return []
+  const latest = Math.max(
+    ...samples.map((sample) => new Date(sample.intervalEndAt).getTime())
+  )
+  return samples.map((sample) => {
+    const ageHours = Math.max(
+      0,
+      (latest - new Date(sample.intervalEndAt).getTime()) / 3_600_000
+    )
+    return Math.exp((-Math.LN2 * ageHours) / Math.max(halfLifeHours, 1))
+  })
+}
+
+function effectiveSampleSize(weights) {
+  const sum = weights.reduce((total, weight) => total + weight, 0)
+  const sumSquares = weights.reduce((total, weight) => total + weight * weight, 0)
+  if (sumSquares <= 0) return 0
+  return (sum * sum) / sumSquares
+}
+
+function maxFeatureCorrelation(samples, featureNames) {
+  if (samples.length < 3 || featureNames.length < 2) return 0
+  const xs = samples.map((sample) =>
+    quotaEstimatorFeatureVector(sample, featureNames)
+  )
+  let maxCorrelation = 0
+  for (let a = 0; a < featureNames.length; a += 1) {
+    for (let b = a + 1; b < featureNames.length; b += 1) {
+      const valuesA = xs.map((row) => row[a])
+      const valuesB = xs.map((row) => row[b])
+      const meanA =
+        valuesA.reduce((total, value) => total + value, 0) / valuesA.length
+      const meanB =
+        valuesB.reduce((total, value) => total + value, 0) / valuesB.length
+      let covariance = 0
+      let varianceA = 0
+      let varianceB = 0
+      for (let index = 0; index < valuesA.length; index += 1) {
+        const deltaA = valuesA[index] - meanA
+        const deltaB = valuesB[index] - meanB
+        covariance += deltaA * deltaB
+        varianceA += deltaA * deltaA
+        varianceB += deltaB * deltaB
+      }
+      if (varianceA <= 0 || varianceB <= 0) continue
+      maxCorrelation = Math.max(
+        maxCorrelation,
+        Math.abs(covariance / Math.sqrt(varianceA * varianceB))
+      )
+    }
+  }
+  return maxCorrelation
+}
+
+function quotaEstimatorIdentifiability(samples, featureNames, weights = []) {
+  const activeFeatures = featureNames.filter((featureName) =>
+    samples.some(
+      (sample) => quotaEstimatorFeatureVector(sample, [featureName])[0] > 0
+    )
+  )
+  const familyMix = new Set(
+    activeFeatures.map((featureName) => featureName.split(':')[0])
+  )
+  const maxCorrelation = maxFeatureCorrelation(samples, activeFeatures)
+  const sampleSize = samples.length
+  const effectiveN = weights.length ? effectiveSampleSize(weights) : sampleSize
+  let status = 'high_confidence'
+  const risks = []
+  if (
+    sampleSize < QUOTA_ESTIMATOR_MIN_TRAINING_ROWS ||
+    activeFeatures.length === 0
+  ) {
+    status = 'not_identifiable'
+    risks.push('too_few_trainable_intervals')
+  }
+  if (familyMix.size < 2) {
+    status = status === 'not_identifiable' ? status : 'directional_only'
+    risks.push('low_model_family_mix')
+  }
+  if (sampleSize < QUOTA_ESTIMATOR_HIGH_CONFIDENCE_ROWS) {
+    status = status === 'not_identifiable' ? status : 'directional_only'
+    risks.push('small_sample_window')
+  }
+  if (maxCorrelation >= 0.95) {
+    status = status === 'not_identifiable' ? status : 'directional_only'
+    risks.push('high_feature_correlation')
+  }
+  if (activeFeatures.length >= sampleSize) {
+    status = status === 'not_identifiable' ? status : 'directional_only'
+    risks.push('feature_count_near_sample_count')
+  }
+
+  return {
+    status,
+    trainable_interval_count: sampleSize,
+    effective_sample_size: effectiveN,
+    active_feature_count: activeFeatures.length,
+    model_family_mix_count: familyMix.size,
+    max_feature_correlation: maxCorrelation,
+    risks,
+  }
+}
+
+function quotaEstimatorCoefficientRows({
+  coefficients,
+  featureNames,
+  identifiability,
+  residuals,
+  samples,
+  estimateKind,
+  halfLifeHours,
+}) {
+  const sonnetBase = coefficients['sonnet:workload'] ?? 0
+  const rows = []
+  for (const featureName of featureNames) {
+    const [family, category] = featureName.split(':')
+    const coefficient = coefficients[featureName] ?? 0
+    const featureValues = samples.map(
+      (sample) => quotaEstimatorFeatureVector(sample, [featureName])[0]
+    )
+    const featureScale = Math.sqrt(
+      featureValues.reduce((total, value) => total + value * value, 0) /
+        Math.max(featureValues.length, 1)
+    )
+    const widen =
+      identifiability.status === 'high_confidence'
+        ? 1
+        : identifiability.status === 'directional_only'
+          ? 2.5
+          : 6
+    const standardError =
+      ((residuals.rmse_pct ?? 0) /
+        Math.sqrt(Math.max(identifiability.effective_sample_size, 1)) /
+        Math.max(featureScale, 1e-6)) *
+      widen
+    rows.push({
+      estimate_kind: estimateKind,
+      feature: featureName,
+      model_family: family,
+      token_category:
+        category === 'cache_read'
+          ? 'cache_read'
+          : 'workload_excluding_cache_read',
+      coefficient_pct_per_mtok: coefficient,
+      relative_weight_vs_sonnet:
+        category === 'workload' && sonnetBase > 0
+          ? coefficient / sonnetBase
+          : null,
+      confidence_low_pct_per_mtok: Math.max(0, coefficient - 1.96 * standardError),
+      confidence_high_pct_per_mtok: coefficient + 1.96 * standardError,
+      half_life_hours: halfLifeHours,
+      effective_sample_size: identifiability.effective_sample_size,
+      estimate_status: identifiability.status,
+    })
+  }
+  return rows
+}
+
+function quotaEstimatorCacheReadRatios(coefficients) {
+  const ratios = []
+  const families = new Set(
+    Object.keys(coefficients).map((featureName) => featureName.split(':')[0])
+  )
+  for (const family of families) {
+    const workload = coefficients[`${family}:workload`] ?? 0
+    const cacheRead = coefficients[`${family}:cache_read`] ?? 0
+    ratios.push({
+      model_family: family,
+      cache_read_vs_uncached_workload_ratio:
+        workload > 0 ? cacheRead / workload : null,
+      expected_lower_than_uncached: true,
+      status:
+        workload > 0 && cacheRead / workload <= 1
+          ? 'consistent'
+          : workload > 0
+            ? 'anomalous'
+            : 'not_identifiable',
+    })
+  }
+  return ratios
+}
+
+function quotaEstimatorBacktest(samples, featureNames, halfLifeHours) {
+  const trainable = samples.filter((sample) => sample.trainable)
+  if (trainable.length < 8 || featureNames.length === 0) {
+    return {
+      status: 'not_enough_holdout_data',
+      static_rmse_pct: null,
+      rolling_rmse_pct: null,
+      rolling_improved: false,
+    }
+  }
+  const splitIndex = Math.max(4, Math.floor(trainable.length * 0.7))
+  const training = trainable.slice(0, splitIndex)
+  const holdout = trainable.slice(splitIndex)
+  if (!holdout.length) {
+    return {
+      status: 'not_enough_holdout_data',
+      static_rmse_pct: null,
+      rolling_rmse_pct: null,
+      rolling_improved: false,
+    }
+  }
+  const staticFit = fitNonNegativeRidge(training, featureNames)
+  const rollingWeights = quotaEstimatorWeights(training, halfLifeHours)
+  const rollingFit = fitNonNegativeRidge(training, featureNames, {
+    weights: rollingWeights,
+  })
+  const predict = (coefficients) =>
+    holdout.map((sample) => {
+      const vector = quotaEstimatorFeatureVector(sample, featureNames)
+      return vector.reduce(
+        (total, value, index) =>
+          total + value * (coefficients[featureNames[index]] ?? 0),
+        0
+      )
+    })
+  const staticResiduals = quotaEstimatorResidualMetrics(
+    holdout,
+    predict(staticFit.coefficients)
+  )
+  const rollingResiduals = quotaEstimatorResidualMetrics(
+    holdout,
+    predict(rollingFit.coefficients)
+  )
+  const staticRmse = staticResiduals.rmse_pct
+  const rollingRmse = rollingResiduals.rmse_pct
+  return {
+    status: 'evaluated',
+    holdout_interval_count: holdout.length,
+    static_rmse_pct: staticRmse,
+    rolling_rmse_pct: rollingRmse,
+    rolling_improved:
+      staticRmse !== null && rollingRmse !== null && rollingRmse < staticRmse,
+  }
+}
+
+function buildQuotaEstimatorLaneEstimate(laggedIntervals) {
+  const intervalsByLag = new Map()
+  for (const interval of laggedIntervals) {
+    const key = interval.lagMinutes
+    const rows = intervalsByLag.get(key) ?? []
+    rows.push(interval)
+    intervalsByLag.set(key, rows)
+  }
+  const lagSensitivity = []
+  for (const [lagMinutes, intervals] of intervalsByLag.entries()) {
+    const trainable = intervals.filter((interval) => interval.trainable)
+    const featureNames = quotaEstimatorFeatureNames(trainable)
+    if (
+      trainable.length < QUOTA_ESTIMATOR_MIN_TRAINING_ROWS ||
+      featureNames.length === 0
+    ) {
+      lagSensitivity.push({
+        lag_minutes: lagMinutes,
+        trainable_interval_count: trainable.length,
+        rmse_pct: null,
+        status: 'not_identifiable',
+      })
+      continue
+    }
+    const fit = fitNonNegativeRidge(trainable, featureNames)
+    const residuals = quotaEstimatorResidualMetrics(trainable, fit.predictions)
+    lagSensitivity.push({
+      lag_minutes: lagMinutes,
+      trainable_interval_count: trainable.length,
+      rmse_pct: residuals.rmse_pct,
+      status: 'evaluated',
+    })
+  }
+  const selectedLag =
+    lagSensitivity
+      .filter((entry) => entry.rmse_pct !== null)
+      .sort((a, b) => a.rmse_pct - b.rmse_pct)[0]?.lag_minutes ??
+    lagSensitivity[0]?.lag_minutes ??
+    0
+  const intervals = intervalsByLag.get(selectedLag) ?? []
+  const trainable = intervals.filter((interval) => interval.trainable)
+  const featureNames = quotaEstimatorFeatureNames(trainable)
+  const halfLifeHours =
+    QUOTA_ESTIMATOR_ROLLING_HALF_LIFE_HOURS[intervals[0]?.quotaType] ?? 72
+  const staticFit =
+    trainable.length >= QUOTA_ESTIMATOR_MIN_TRAINING_ROWS
+      ? fitNonNegativeRidge(trainable, featureNames)
+      : { coefficients: {}, predictions: [] }
+  const staticResiduals = quotaEstimatorResidualMetrics(
+    trainable,
+    staticFit.predictions
+  )
+  const rollingWeights = quotaEstimatorWeights(trainable, halfLifeHours)
+  const rollingFit =
+    trainable.length >= QUOTA_ESTIMATOR_MIN_TRAINING_ROWS
+      ? fitNonNegativeRidge(trainable, featureNames, { weights: rollingWeights })
+      : { coefficients: {}, predictions: [] }
+  const rollingResiduals = quotaEstimatorResidualMetrics(
+    trainable,
+    rollingFit.predictions,
+    rollingWeights
+  )
+  const identifiability = quotaEstimatorIdentifiability(
+    trainable,
+    featureNames,
+    rollingWeights
+  )
+  const excludedReasons = {}
+  for (const interval of intervals) {
+    if (interval.trainable) continue
+    const reason = interval.excludeReason ?? 'not_trainable'
+    excludedReasons[reason] = (excludedReasons[reason] ?? 0) + 1
+  }
+  const coefficients = [
+    ...quotaEstimatorCoefficientRows({
+      coefficients: staticFit.coefficients,
+      featureNames,
+      identifiability,
+      residuals: staticResiduals,
+      samples: trainable,
+      estimateKind: 'static_baseline',
+      halfLifeHours: null,
+    }),
+    ...quotaEstimatorCoefficientRows({
+      coefficients: rollingFit.coefficients,
+      featureNames,
+      identifiability,
+      residuals: rollingResiduals,
+      samples: trainable,
+      estimateKind: 'rolling_exponential',
+      halfLifeHours,
+    }),
+  ]
+  const diagnostics = []
+  if (identifiability.status !== 'high_confidence') {
+    diagnostics.push({
+      code: 'limited_identifiability',
+      severity:
+        identifiability.status === 'not_identifiable' ? 'warning' : 'info',
+      detail: identifiability.risks.join(', '),
+    })
+  }
+  if (intervals[0]?.provider === 'anthropic' && intervals[0]?.quotaType === 'special') {
+    for (const family of ['haiku', 'opus']) {
+      const coefficient = rollingFit.coefficients[`${family}:workload`] ?? 0
+      const sonnet = rollingFit.coefficients['sonnet:workload'] ?? 0
+      if (sonnet > 0 && coefficient / sonnet > 0.1) {
+        diagnostics.push({
+          code: 'sonnet_only_non_sonnet_signal',
+          severity: 'warning',
+          detail: `${family} coefficient is positive on Anthropic Sonnet-only quota; investigate lag, reset contamination, mapping, or external Claude usage.`,
+        })
+      }
+    }
+  }
+  for (const ratio of quotaEstimatorCacheReadRatios(rollingFit.coefficients)) {
+    if (ratio.status === 'anomalous') {
+      diagnostics.push({
+        code: 'cache_read_ratio_above_uncached',
+        severity: 'warning',
+        detail: `${ratio.model_family} cache-read coefficient is above uncached workload; treat as telemetry, lag, or provider-policy risk until confirmed.`,
+      })
+    }
+  }
+  diagnostics.push({
+    code: 'cache_write_duration_unavailable',
+    severity: 'info',
+    detail:
+      'Only cache_creation_input_tokens is available; 5-minute vs 1-hour cache-write buckets are not modeled separately.',
+  })
+
+  return {
+    provider: intervals[0]?.provider ?? 'unknown',
+    quota_key: intervals[0]?.quotaKey ?? 'unknown',
+    quota_type: intervals[0]?.quotaType ?? 'unknown',
+    quota_lane: intervals[0]?.quotaLane ?? 'unknown',
+    selected_lag_minutes: selectedLag,
+    lag_sensitivity: lagSensitivity.sort(
+      (a, b) => a.lag_minutes - b.lag_minutes
+    ),
+    interval_count: intervals.length,
+    trainable_interval_count: trainable.length,
+    excluded_interval_count: intervals.length - trainable.length,
+    excluded_reasons: excludedReasons,
+    residuals: {
+      static_baseline: staticResiduals,
+      rolling_exponential: rollingResiduals,
+    },
+    identifiability,
+    backtest: quotaEstimatorBacktest(trainable, featureNames, halfLifeHours),
+    cache_read_ratios: quotaEstimatorCacheReadRatios(rollingFit.coefficients),
+    coefficients,
+    diagnostics,
+  }
+}
+
+function quotaEstimatorUsageBucketMatchesLane(bucket, interval) {
+  if (bucket.provider !== interval.provider) return false
+  if (interval.provider !== 'openai') return true
+  if (['short', 'weekly'].includes(interval.quota_type)) {
+    return bucket.model_family !== 'spark'
+  }
+  if (['short_special', 'special'].includes(interval.quota_type)) {
+    return bucket.model_family === 'spark'
+  }
+  return true
+}
+
+function buildQuotaEstimatorRowsFromReadModels(observations, usageBuckets) {
+  const observationsByLane = new Map()
+  for (const observation of observations) {
+    if (observation.observed_at === null || observation.consumed_pct === null) {
+      continue
+    }
+    const key = [
+      observation.provider,
+      observation.quota_key,
+      observation.quota_type,
+      observation.expected_reset_at ?? '',
+    ].join('|')
+    const laneObservations = observationsByLane.get(key) ?? []
+    laneObservations.push(observation)
+    observationsByLane.set(key, laneObservations)
+  }
+
+  const bucketsByProvider = new Map()
+  for (const bucket of usageBuckets) {
+    if (bucket.bucket_start_at === null) continue
+    const providerBuckets = bucketsByProvider.get(bucket.provider) ?? []
+    providerBuckets.push(bucket)
+    bucketsByProvider.set(bucket.provider, providerBuckets)
+  }
+
+  const rows = []
+  for (const laneObservations of observationsByLane.values()) {
+    laneObservations.sort((a, b) =>
+      String(a.observed_at).localeCompare(String(b.observed_at))
+    )
+    const capped = laneObservations.slice(
+      Math.max(0, laneObservations.length - QUOTA_ESTIMATOR_MAX_INTERVALS_PER_LANE - 1)
+    )
+    for (let index = 1; index < capped.length; index += 1) {
+      const previous = capped[index - 1]
+      const current = capped[index]
+      const previousConsumed = previous.consumed_pct ?? 0
+      const currentConsumed = current.consumed_pct ?? 0
+      const deltaPct = currentConsumed - previousConsumed
+      const isResetBoundary = currentConsumed < previousConsumed
+      const isCappedAt100 = previousConsumed >= 99.5 || currentConsumed >= 99.5
+      const trainable = deltaPct > 0 && !isResetBoundary && !isCappedAt100
+      const excludeReason =
+        trainable
+          ? null
+          : isResetBoundary
+            ? 'reset_or_measurement_boundary'
+            : deltaPct === 0
+              ? 'plateau_no_positive_delta'
+              : isCappedAt100
+                ? 'capped_at_100'
+                : 'non_positive_delta'
+      const baseInterval = {
+        provider: current.provider,
+        quota_key: current.quota_key,
+        quota_type: current.quota_type,
+        quota_lane: current.quota_lane,
+        raw_observation_quota_type: current.raw_observation_quota_type,
+        raw_interval_quota_type: current.raw_interval_quota_type,
+        expected_reset_at: current.expected_reset_at,
+        reset_start_at: current.reset_start_at,
+        reset_end_at: current.reset_end_at,
+        interval_start_at: previous.observed_at,
+        interval_end_at: current.observed_at,
+        previous_consumed_pct: previousConsumed,
+        current_consumed_pct: currentConsumed,
+        delta_pct: deltaPct,
+        is_reset_boundary: isResetBoundary,
+        is_capped_at_100: isCappedAt100,
+        trainable,
+        exclude_reason: excludeReason,
+      }
+      const providerBuckets = bucketsByProvider.get(current.provider) ?? []
+      for (const lagMinutes of QUOTA_ESTIMATOR_LAG_MINUTES) {
+        const startMs = new Date(previous.observed_at).getTime()
+        const endMs = new Date(current.observed_at).getTime()
+        const familyTotals = new Map()
+        for (const bucket of providerBuckets) {
+          if (!quotaEstimatorUsageBucketMatchesLane(bucket, current)) continue
+          const effectiveMs =
+            new Date(bucket.bucket_start_at).getTime() + lagMinutes * 60_000
+          if (effectiveMs < startMs || effectiveMs >= endMs) continue
+          const totals = familyTotals.get(bucket.model_family) ?? {
+            traces: 0,
+            uncached_input_tokens: 0,
+            output_tokens: 0,
+            cache_read_tokens: 0,
+            cache_create_tokens: 0,
+            reasoning_tokens: 0,
+            usd_cost: 0,
+            tool_calls: 0,
+          }
+          totals.traces += bucket.traces
+          totals.uncached_input_tokens += bucket.uncached_input_tokens
+          totals.output_tokens += bucket.output_tokens
+          totals.cache_read_tokens += bucket.cache_read_tokens
+          totals.cache_create_tokens += bucket.cache_create_tokens
+          totals.reasoning_tokens += bucket.reasoning_tokens
+          totals.usd_cost += bucket.usd_cost
+          totals.tool_calls += bucket.tool_calls
+          familyTotals.set(bucket.model_family, totals)
+        }
+        if (familyTotals.size === 0) {
+          rows.push({
+            ...baseInterval,
+            lag_minutes: lagMinutes,
+            model_family: 'no_usage',
+            traces: 0,
+            uncached_input_tokens: 0,
+            output_tokens: 0,
+            cache_read_tokens: 0,
+            cache_create_tokens: 0,
+            reasoning_tokens: 0,
+            usd_cost: 0,
+            tool_calls: 0,
+          })
+          continue
+        }
+        for (const [modelFamily, totals] of familyTotals.entries()) {
+          rows.push({
+            ...baseInterval,
+            lag_minutes: lagMinutes,
+            model_family: modelFamily,
+            ...totals,
+          })
+        }
+      }
+    }
+  }
+  return rows
+}
+
+export function buildQuotaEstimatorReport(rows, metadata = {}) {
+  const intervals = buildQuotaEstimatorIntervals(rows)
+  const lanes = new Map()
+  for (const interval of intervals) {
+    const key = quotaEstimatorLaneKey({
+      provider: interval.provider,
+      quota_key: interval.quotaKey,
+      quota_type: interval.quotaType,
+      quota_lane: interval.quotaLane,
+    })
+    const laneIntervals = lanes.get(key) ?? []
+    laneIntervals.push(interval)
+    lanes.set(key, laneIntervals)
+  }
+
+  return {
+    metadata: {
+      from: metadata.from ?? null,
+      to: metadata.to ?? null,
+      generatedAt: new Date().toISOString(),
+      phase: '0-2',
+      lagCandidatesMinutes: QUOTA_ESTIMATOR_LAG_MINUTES,
+      estimatorVersion: 'quota-weight-phase0-2-v1',
+    },
+    phase0Audit: buildQuotaEstimatorPhase0Audit(),
+    estimates: [...lanes.values()].map(buildQuotaEstimatorLaneEstimate),
   }
 }
 
@@ -2951,7 +5333,7 @@ function buildFreshnessMetadata(latestRecordAt) {
   }
 }
 
-function proxyTargetUrl(req, proxyConfig) {
+export function proxyTargetUrl(req, proxyConfig) {
   const requestUrl = new URL(req.url, `http://${req.headers.host}`)
   const base = new URL(proxyConfig.target)
   const prefixPattern = new RegExp(`^${escapeRegExp(proxyConfig.prefix)}\\/?`)
@@ -3026,7 +5408,7 @@ async function readRequestBody(req) {
   return chunks.length ? Buffer.concat(chunks) : undefined
 }
 
-function buildUsageQuery(searchParams) {
+export function buildUsageQuery(searchParams) {
   const grain = searchParams.get('grain') ?? 'day'
   if (!grains[grain]) {
     throw new Error(`Unsupported grain: ${grain}`)
@@ -3045,7 +5427,7 @@ function buildUsageQuery(searchParams) {
     searchParams.get('direction')?.toLowerCase() === 'asc' ? 'ASC' : 'DESC'
 
   const values = [from, to]
-  const whereParts = [...createdAtDateRangeWhere]
+  const whereParts = [...startTimeDateRangeWhere]
 
   for (const key of Object.keys(filterColumns)) {
     appendMultiValueFilter(searchParams, key, whereParts, values)
@@ -3060,30 +5442,41 @@ function buildUsageQuery(searchParams) {
   const dimensionGroups = groupBy.map((key) => dimensions[key])
   const selectParts = [`${bucketExpression} AS bucket`, ...dimensionSelects]
   const groupParts = [bucketExpression, ...dimensionGroups]
+  const outputColumns = ['bucket', ...groupBy]
+  const reasonJoinParts = outputColumns.map(
+    (column) =>
+      `base.${column} IS NOT DISTINCT FROM reason_summary.${column}`
+  )
 
   const sql = `
+WITH filtered AS (
+    SELECT sh.*
+    FROM public.session_history sh
+    WHERE ${whereParts.join('\n      AND ')}
+),
+base AS (
 SELECT
     ${selectParts.join(',\n    ')},
 
-    MIN(weekly.expected_reset_at) AS weekly_reset_first,
-    MAX(weekly.expected_reset_at) AS weekly_reset_last,
-    MIN(weekly.remaining_pct) AS min_weekly_pct,
-    MAX(weekly.remaining_pct) AS max_weekly_pct,
+    NULL::timestamp with time zone AS weekly_reset_first,
+    NULL::timestamp with time zone AS weekly_reset_last,
+    NULL::double precision AS min_weekly_pct,
+    NULL::double precision AS max_weekly_pct,
 
-    MIN(COALESCE(short.expected_reset_at, requests.expected_reset_at)) AS short_reset_first,
-    MAX(COALESCE(short.expected_reset_at, requests.expected_reset_at)) AS short_reset_last,
-    MIN(COALESCE(short.remaining_pct, requests.remaining_pct)) AS min_short_pct,
-    MAX(COALESCE(short.remaining_pct, requests.remaining_pct)) AS max_short_pct,
+    NULL::timestamp with time zone AS short_reset_first,
+    NULL::timestamp with time zone AS short_reset_last,
+    NULL::double precision AS min_short_pct,
+    NULL::double precision AS max_short_pct,
 
-    MIN(weekly_special.expected_reset_at) AS weekly_reset_special_first,
-    MAX(weekly_special.expected_reset_at) AS weekly_reset_special_last,
-    MIN(weekly_special.remaining_pct) AS min_weekly_pct_special,
-    MAX(weekly_special.remaining_pct) AS max_weekly_pct_special,
+    NULL::timestamp with time zone AS weekly_reset_special_first,
+    NULL::timestamp with time zone AS weekly_reset_special_last,
+    NULL::double precision AS min_weekly_pct_special,
+    NULL::double precision AS max_weekly_pct_special,
 
-    MIN(short_special.expected_reset_at) AS short_reset_special_first,
-    MAX(short_special.expected_reset_at) AS short_reset_special_last,
-    MIN(short_special.remaining_pct) AS min_short_pct_special,
-    MAX(short_special.remaining_pct) AS max_short_pct_special,
+    NULL::timestamp with time zone AS short_reset_special_first,
+    NULL::timestamp with time zone AS short_reset_special_last,
+    NULL::double precision AS min_short_pct_special,
+    NULL::double precision AS max_short_pct_special,
 
     COUNT(*)::double precision AS traces,
     SUM(COALESCE(sh.input_tokens, 0))::double precision AS token_in,
@@ -3129,74 +5522,394 @@ SELECT
     ROUND(CAST(SUM(COALESCE(sh.llm_upstream_elapsed_ms, 0)) AS numeric), 2)::double precision AS llm_upstream_elapsed_total_ms,
     ROUND(CAST(AVG(sh.llm_upstream_elapsed_ms) AS numeric), 2)::double precision AS llm_upstream_elapsed_average_ms,
 
+    ${latencyMetricSelectParts.join(',\n    ')},
+
+    ${agentScoreSelectParts.join(',\n    ')},
+
     MIN(sh.start_time) AS period_start,
     MAX(sh.end_time) AS period_end
-FROM public.session_history sh
-LEFT JOIN LATERAL (
-    SELECT ri.expected_reset_at, ri.remaining_pct
-    FROM public.rate_limit_intervals ri
-    WHERE ri.provider = sh.provider
-      AND ri.quota_type = 'weekly'
-      AND ri.fromDate <= sh.start_time
-      AND ri.toDate > sh.start_time
-    ORDER BY ri.fromDate DESC
-    LIMIT 1
-) weekly ON true
-LEFT JOIN LATERAL (
-    SELECT ri.expected_reset_at, ri.remaining_pct
-    FROM public.rate_limit_intervals ri
-    WHERE ri.provider = sh.provider
-      AND ri.quota_type = 'short'
-      AND ri.fromDate <= sh.start_time
-      AND ri.toDate > sh.start_time
-    ORDER BY ri.fromDate DESC
-    LIMIT 1
-) short ON true
-LEFT JOIN LATERAL (
-    SELECT ri.expected_reset_at, ri.remaining_pct
-    FROM public.rate_limit_intervals ri
-    WHERE ri.provider = sh.provider
-      AND ri.quota_type = 'weekly_special'
-      AND ri.fromDate <= sh.start_time
-      AND ri.toDate > sh.start_time
-    ORDER BY ri.fromDate DESC
-    LIMIT 1
-) weekly_special ON true
-LEFT JOIN LATERAL (
-    SELECT ri.expected_reset_at, ri.remaining_pct
-    FROM public.rate_limit_intervals ri
-    WHERE ri.provider = sh.provider
-      AND ri.quota_type = 'short_special'
-      AND ri.fromDate <= sh.start_time
-      AND ri.toDate > sh.start_time
-    ORDER BY ri.fromDate DESC
-    LIMIT 1
-) short_special ON true
-LEFT JOIN LATERAL (
-    SELECT ri.expected_reset_at, ri.remaining_pct
-    FROM public.rate_limit_intervals ri
-    WHERE ri.provider = replace(sh.provider, 'gemini', 'google')
-      AND ri.quota_type = 'requests'
-      AND (
-        ri.model = sh.model
-        OR (
-          ri.provider = 'openrouter'
-          AND sh.model LIKE '%:free'
-        )
-      )
-      AND ri.fromDate <= sh.start_time
-      AND ri.toDate > sh.start_time
-    ORDER BY ri.fromDate DESC
-    LIMIT 1
-) requests ON true
-WHERE ${whereParts.join('\n  AND ')}
+FROM filtered sh
 GROUP BY
     ${groupParts.join(',\n    ')}
+),
+reason_counts AS (
+SELECT
+    ${selectParts.join(',\n    ')},
+    reason_family.family,
+    CASE
+        WHEN jsonb_typeof(reason_value.value) = 'string'
+        THEN reason_value.value #>> '{}'
+        WHEN jsonb_typeof(reason_value.value) = 'object'
+        THEN COALESCE(
+            reason_value.value ->> 'reason',
+            reason_value.value ->> 'code',
+            reason_value.value ->> 'evidence_mode',
+            reason_value.value ->> 'rule',
+            reason_value.value ->> 'catalog_version'
+        )
+        ELSE NULL
+    END AS reason,
+    COUNT(*)::double precision AS reason_count
+FROM filtered sh
+CROSS JOIN LATERAL jsonb_each(
+    CASE
+        WHEN jsonb_typeof(sh.agent_score_reasons) = 'object'
+        THEN sh.agent_score_reasons
+        ELSE '{}'::jsonb
+    END
+) AS reason_family(family, reasons)
+CROSS JOIN LATERAL jsonb_array_elements(
+    CASE
+        WHEN jsonb_typeof(reason_family.reasons) = 'array'
+        THEN reason_family.reasons
+        WHEN jsonb_typeof(reason_family.reasons) = 'string'
+        THEN jsonb_build_array(reason_family.reasons)
+        WHEN jsonb_typeof(reason_family.reasons) = 'object'
+        THEN jsonb_build_array(reason_family.reasons)
+        ELSE '[]'::jsonb
+    END
+) AS reason_value(value)
+WHERE sh.agent_score_reasons IS NOT NULL
+  AND sh.agent_score_reasons <> '{}'::jsonb
+  AND (
+      jsonb_typeof(reason_value.value) = 'string'
+      OR (
+          jsonb_typeof(reason_value.value) = 'object'
+          AND COALESCE(
+              reason_value.value ->> 'reason',
+              reason_value.value ->> 'code',
+              reason_value.value ->> 'evidence_mode',
+              reason_value.value ->> 'rule',
+              reason_value.value ->> 'catalog_version'
+          ) IS NOT NULL
+      )
+  )
+GROUP BY
+    ${groupParts.join(',\n    ')},
+    reason_family.family,
+    CASE
+        WHEN jsonb_typeof(reason_value.value) = 'string'
+        THEN reason_value.value #>> '{}'
+        WHEN jsonb_typeof(reason_value.value) = 'object'
+        THEN COALESCE(
+            reason_value.value ->> 'reason',
+            reason_value.value ->> 'code',
+            reason_value.value ->> 'evidence_mode',
+            reason_value.value ->> 'rule',
+            reason_value.value ->> 'catalog_version'
+        )
+        ELSE NULL
+    END
+),
+reason_ranked AS (
+SELECT
+    reason_counts.*,
+    ROW_NUMBER() OVER (
+        PARTITION BY ${outputColumns.join(', ')}
+        ORDER BY reason_count DESC, family, reason
+    ) AS reason_rank
+FROM reason_counts
+),
+reason_summary AS (
+SELECT
+    ${outputColumns.join(',\n    ')},
+    jsonb_agg(
+        jsonb_build_object(
+            'family', family,
+            'reason', reason,
+            'count', reason_count
+        )
+        ORDER BY reason_count DESC, family, reason
+    ) AS agent_score_reasons_top
+FROM reason_ranked
+WHERE reason_rank <= 8
+GROUP BY
+    ${outputColumns.join(',\n    ')}
+)
+SELECT
+    base.*,
+    COALESCE(reason_summary.agent_score_reasons_top, '[]'::jsonb) AS agent_score_reasons_top
+FROM base
+LEFT JOIN reason_summary
+  ON ${reasonJoinParts.join('\n  AND ')}
 ORDER BY ${sort} ${sortDirection}
 LIMIT $${values.length};
 `
 
   return { sql, values, metadata: { from, to, grain, groupBy, limit } }
+}
+
+async function findDockerJsonLogSources() {
+  if (!DOCKER_LOG_CONTAINER_NAMES.length || MAX_DOCKER_LOG_ERROR_ROWS <= 0) {
+    return []
+  }
+
+  let entries
+  try {
+    entries = await readdir(DOCKER_LOG_ROOT, { withFileTypes: true })
+  } catch (error) {
+    if (error?.code !== 'ENOENT') {
+      process.stderr.write(
+        `[report-service] WARN: unable to scan Docker log root ${DOCKER_LOG_ROOT}: ${formatError(error)}\n`
+      )
+    }
+    return []
+  }
+
+  const wanted = new Set(DOCKER_LOG_CONTAINER_NAMES)
+  const sources = []
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue
+    const containerDir = path.join(DOCKER_LOG_ROOT, entry.name)
+    let config
+    try {
+      config = JSON.parse(
+        await readFile(path.join(containerDir, 'config.v2.json'), 'utf8')
+      )
+    } catch {
+      continue
+    }
+
+    const containerName = String(config?.Name ?? '').replace(/^\//, '')
+    if (!wanted.has(containerName)) continue
+
+    sources.push({
+      container: containerName,
+      logPath: path.join(containerDir, `${entry.name}-json.log`),
+    })
+  }
+  return sources
+}
+
+async function readFileTail(filePath, maxBytes) {
+  const handle = await open(filePath, 'r')
+  try {
+    const stats = await handle.stat()
+    const length = Math.min(stats.size, maxBytes)
+    const offset = Math.max(0, stats.size - length)
+    const buffer = Buffer.alloc(length)
+    await handle.read(buffer, 0, length, offset)
+    return { text: buffer.toString('utf8'), truncated: offset > 0 }
+  } finally {
+    await handle.close()
+  }
+}
+
+function stripAnsi(value) {
+  return value.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, '')
+}
+
+function compactLogMessage(value) {
+  return stripAnsi(value).replace(/\s+/g, ' ').trim().slice(0, 280)
+}
+
+function inferLogProvider(message) {
+  const lower = message.toLowerCase()
+  if (lower.includes('anthropic') || lower.includes('claude')) return 'anthropic'
+  if (lower.includes('openrouter')) return 'openrouter'
+  if (lower.includes('openai') || lower.includes('gpt-')) return 'openai'
+  if (lower.includes('google') || lower.includes('gemini')) return 'google'
+  if (lower.includes('xai') || lower.includes('grok')) return 'xai'
+  if (lower.includes('nvidia') || lower.includes('nim')) return 'nvidia_nim'
+  if (lower.includes('local')) return 'local'
+  return 'unknown'
+}
+
+function inferLogLevel(message) {
+  const lower = message.toLowerCase()
+  if (/\bcritical\b|\bfatal\b/.test(lower)) return 'critical'
+  if (/\berror\b|\bexception\b|\btraceback\b|\bfailed\b/.test(lower)) {
+    return 'error'
+  }
+  if (/\bwarn(?:ing)?\b/.test(lower)) return 'warning'
+  return 'error'
+}
+
+function inferLogStatusCode(message) {
+  const match = message.match(/(?<!\d)(4\d{2}|5\d{2})(?!\d)/)
+  return match ? Number(match[1]) : null
+}
+
+function isActionableErrorLog(message) {
+  const lower = message.toLowerCase()
+  if (/health\/(?:liveliness|readiness)|"get \/health\b/.test(lower)) {
+    return false
+  }
+  if (/\b(?:4\d{2}|5\d{2})\b/.test(lower)) return true
+  return /\b(?:critical|fatal|error|exception|traceback|failed|timeout|rate limit|overloaded)\b/.test(
+    lower
+  )
+}
+
+async function loadDockerLogErrors() {
+  const sources = await findDockerJsonLogSources()
+  if (!sources.length) return []
+
+  const cutoffMs = Date.now() - 90 * 60 * 1000
+  const rows = []
+  for (const source of sources) {
+    let tail
+    try {
+      tail = await readFileTail(source.logPath, DOCKER_LOG_TAIL_BYTES)
+    } catch (error) {
+      process.stderr.write(
+        `[report-service] WARN: unable to read Docker log ${source.container}: ${formatError(error)}\n`
+      )
+      continue
+    }
+
+    const lines = tail.text.split('\n')
+    if (tail.truncated) lines.shift()
+    for (const line of lines) {
+      if (!line.trim()) continue
+      let parsed
+      try {
+        parsed = JSON.parse(line)
+      } catch {
+        continue
+      }
+
+      const observedAt = Date.parse(parsed?.time ?? '')
+      if (!Number.isFinite(observedAt) || observedAt < cutoffMs) continue
+
+      const message = compactLogMessage(String(parsed?.log ?? ''))
+      if (!message || !isActionableErrorLog(message)) continue
+
+      rows.push({
+        observed_at: new Date(observedAt).toISOString(),
+        container: source.container,
+        stream: String(parsed?.stream ?? 'unknown'),
+        provider: inferLogProvider(message),
+        status_code: inferLogStatusCode(message),
+        level: inferLogLevel(message),
+        message,
+      })
+    }
+  }
+
+  return rows
+    .sort((a, b) => String(b.observed_at).localeCompare(String(a.observed_at)))
+    .slice(0, MAX_DOCKER_LOG_ERROR_ROWS)
+}
+
+function compactProbeMessage(value) {
+  return stripAnsi(String(value ?? ''))
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 120)
+}
+
+function localHealthStatusForHttp(response) {
+  if (response.ok) return 'green'
+  if (response.status >= 500) return 'red'
+  return 'yellow'
+}
+
+async function probeHttpHealth(probe, checkedAt) {
+  const startedAt = Date.now()
+  const controller = new AbortController()
+  const timeout = setTimeout(() => {
+    controller.abort()
+  }, LOCAL_HEALTH_TIMEOUT_MS)
+
+  try {
+    const response = await fetch(probe.url, {
+      headers: probe.headers,
+      signal: controller.signal,
+    })
+    const body = compactProbeMessage(await response.text().catch(() => ''))
+    const latencyMs = Date.now() - startedAt
+    return {
+      checked_at: checkedAt,
+      category: probe.category,
+      key: probe.key,
+      label: probe.label,
+      status: localHealthStatusForHttp(response),
+      detail: body ? `HTTP ${response.status}: ${body}` : `HTTP ${response.status}`,
+      target: probe.url,
+      latency_ms: latencyMs,
+    }
+  } catch (error) {
+    return {
+      checked_at: checkedAt,
+      category: probe.category,
+      key: probe.key,
+      label: probe.label,
+      status: 'red',
+      detail: compactProbeMessage(error?.message ?? error),
+      target: probe.url,
+      latency_ms: Date.now() - startedAt,
+    }
+  } finally {
+    clearTimeout(timeout)
+  }
+}
+
+function probeRedisHealth(probe, checkedAt) {
+  const startedAt = Date.now()
+
+  return new Promise((resolve) => {
+    let settled = false
+    let timeout
+    const socket = net.createConnection({
+      host: probe.host,
+      port: probe.port,
+    })
+
+    const finish = (status, detail) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timeout)
+      socket.destroy()
+      resolve({
+        checked_at: checkedAt,
+        category: probe.category,
+        key: probe.key,
+        label: probe.label,
+        status,
+        detail: compactProbeMessage(detail),
+        target: `${probe.host}:${probe.port}`,
+        latency_ms: Date.now() - startedAt,
+      })
+    }
+
+    timeout = setTimeout(() => {
+      finish('red', `timeout after ${LOCAL_HEALTH_TIMEOUT_MS}ms`)
+    }, LOCAL_HEALTH_TIMEOUT_MS)
+
+    socket.once('connect', () => {
+      socket.write('PING\r\n')
+    })
+    socket.once('error', (error) => {
+      finish('red', error.message)
+    })
+    socket.once('data', (buffer) => {
+      const response = buffer.toString('utf8').trim()
+      finish(response.startsWith('+PONG') ? 'green' : 'yellow', response)
+    })
+  })
+}
+
+async function loadLocalHealth() {
+  const checkedAt = new Date().toISOString()
+  const probes = [
+    ...LOCAL_CONTAINER_HEALTH_PROBES.map((probe) => ({
+      ...probe,
+      category: 'container',
+    })),
+    ...LOCAL_MODEL_HEALTH_PROBES.map((probe) => ({
+      ...probe,
+      category: 'model',
+    })),
+  ]
+
+  return Promise.all(
+    probes.map((probe) =>
+      probe.kind === 'redis'
+        ? probeRedisHealth(probe, checkedAt)
+        : probeHttpHealth(probe, checkedAt)
+    )
+  )
 }
 
 async function loadUsageReport(searchParams) {
@@ -3208,8 +5921,6 @@ async function loadUsageReport(searchParams) {
   const providerErrorObservationQuery =
     buildProviderErrorObservationQuery(searchParams)
   const providerStatusUsageQuery = buildProviderStatusUsageQuery(searchParams)
-  const quotaHistoryQuery = buildQuotaHistoryQuery(searchParams)
-  const toolActivityQuery = buildToolActivityQuery(searchParams)
 
   const [
     result,
@@ -3219,9 +5930,8 @@ async function loadUsageReport(searchParams) {
     providerLatencyHealthResult,
     providerErrorObservationResult,
     providerStatusUsageResult,
-    quotaHistoryResult,
-    toolActivityResult,
-    quotaReport,
+    dockerLogErrors,
+    localHealth,
   ] = await runTasksWithConcurrency(
     [
       () => pool.query(sql, values),
@@ -3239,9 +5949,8 @@ async function loadUsageReport(searchParams) {
           providerErrorObservationQuery.values
         ),
       () => pool.query(providerStatusUsageQuery.sql, providerStatusUsageQuery.values),
-      () => pool.query(quotaHistoryQuery.sql, quotaHistoryQuery.values),
-      () => pool.query(toolActivityQuery.sql, toolActivityQuery.values),
-      () => loadQuotaReport({ decorateMetadata: false }),
+      () => loadDockerLogErrors(),
+      () => loadLocalHealth(),
     ],
     REPORT_SQL_FANOUT_CONCURRENCY
   )
@@ -3265,7 +5974,6 @@ async function loadUsageReport(searchParams) {
   return {
     metadata: {
       ...metadata,
-      ...quotaReport.metadata,
       staleRecordThresholdMinutes: STALE_RECORD_THRESHOLD_MINUTES,
     },
     summary,
@@ -3277,23 +5985,98 @@ async function loadUsageReport(searchParams) {
     providerErrorObservations: providerErrorObservationResult.rows.map(
       normalizeProviderErrorObservationRow
     ),
+    dockerLogErrors: dockerLogErrors.map(normalizeDockerLogErrorRow),
+    localHealth: localHealth.map(normalizeLocalHealthRow),
     providerStatusUsage: providerStatusUsageResult.rows.map(
       normalizeProviderStatusUsageRow
     ),
-    quotas: quotaReport.quotas,
-    quotaHistory: quotaHistoryResult.rows.map(normalizeQuotaHistoryRow),
-    toolActivity: toolActivityResult.rows.map(normalizeToolActivityRow),
+    quotas: [],
+    quotaHistory: [],
+    toolActivity: [],
     rows,
+  }
+}
+
+async function loadUsageQuotaHistory(searchParams) {
+  const query = buildQuotaHistoryQuery(searchParams)
+  const result = await pool.query(query.sql, query.values)
+  return {
+    metadata: {
+      generatedAt: new Date().toISOString(),
+    },
+    quotaHistory: result.rows.map(normalizeQuotaHistoryRow),
+  }
+}
+
+async function loadUsageQuotaRangeHistory(searchParams) {
+  const query = buildQuotaRangeHistoryQuery(searchParams)
+  const result = await pool.query(query.sql, query.values)
+  return {
+    metadata: {
+      from: parseSearchDateOnly(searchParams.get('from'), defaultFromDate),
+      to: parseSearchDateOnly(searchParams.get('to'), defaultToDate),
+      generatedAt: new Date().toISOString(),
+    },
+    quotaRangeHistory: result.rows.map(normalizeQuotaHistoryRow),
+  }
+}
+
+async function loadUsageQuotaEstimator(searchParams) {
+  const observationQuery = buildQuotaEstimatorObservationQuery(searchParams)
+  const usageBucketQuery = buildQuotaEstimatorUsageBucketQuery(searchParams)
+  const [observationResult, usageBucketResult] = await runTasksWithConcurrency(
+    [
+      () => pool.query(observationQuery.sql, observationQuery.values),
+      () => pool.query(usageBucketQuery.sql, usageBucketQuery.values),
+    ],
+    REPORT_SQL_FANOUT_CONCURRENCY
+  )
+  const observations = observationResult.rows.map(
+    normalizeQuotaEstimatorObservationRow
+  )
+  const usageBuckets = usageBucketResult.rows.map(
+    normalizeQuotaEstimatorUsageBucketRow
+  )
+  const rows = buildQuotaEstimatorRowsFromReadModels(observations, usageBuckets)
+  return buildQuotaEstimatorReport(rows, {
+    from: observationQuery.metadata.from,
+    to: observationQuery.metadata.to,
+  })
+}
+
+async function loadUsageToolActivity(searchParams) {
+  const query = buildToolActivityQuery(searchParams)
+  const result = await pool.query(query.sql, query.values)
+  return {
+    metadata: {
+      from: parseDateParam(searchParams.get('from'), defaultFromDate),
+      to: parseDateParam(searchParams.get('to'), defaultToDate),
+      generatedAt: new Date().toISOString(),
+    },
+    toolActivity: result.rows.map(normalizeToolActivityRow),
   }
 }
 
 async function loadUsageTokenTrendSummary(searchParams) {
   const hoursQuery = buildTokenTrendHoursQuery(searchParams)
+  const healthQuery = buildTokenTrendHealthQuery(searchParams)
+  const scoreQuery = buildTokenTrendScoreQuery(searchParams)
   const versionsQuery = buildTokenTrendVersionIntervalsQuery(searchParams)
-  const [hoursResult, versionsResult] = await runTasksWithConcurrency(
+  const modelFirstSeenQuery = buildTokenTrendModelFirstSeenQuery(searchParams)
+  const [
+    hoursResult,
+    healthResult,
+    scoreResult,
+    versionsResult,
+    modelFirstSeenResult,
+  ] =
+    await runTasksWithConcurrency(
     [
       () => pool.query(hoursQuery.sql, hoursQuery.values),
+      () => pool.query(healthQuery.sql, healthQuery.values),
+      () => pool.query(scoreQuery.sql, scoreQuery.values),
       () => pool.query(versionsQuery.sql, versionsQuery.values),
+      () => pool.query(modelFirstSeenQuery.sql, modelFirstSeenQuery.values),
     ],
     REPORT_SQL_FANOUT_CONCURRENCY
   )
@@ -3304,8 +6087,13 @@ async function loadUsageTokenTrendSummary(searchParams) {
       to: parseDateParam(searchParams.get('to'), defaultToDate),
     },
     tokenTrendHours: hoursResult.rows.map(normalizeTokenTrendHourRow),
+    tokenTrendHealth: healthResult.rows.map(normalizeProviderLatencyHealthRow),
+    tokenTrendScores: scoreResult.rows.map(normalizeTokenTrendScoreRow),
     tokenTrendVersions: versionsResult.rows.map(
       normalizeTokenTrendVersionIntervalRow
+    ),
+    tokenTrendModelFirstSeen: modelFirstSeenResult.rows.map(
+      normalizeTokenTrendModelFirstSeenRow
     ),
   }
 }
@@ -3337,6 +6125,86 @@ async function handleUsageReport(req, res) {
   sendJson(res, 200, body)
 }
 
+async function handleUsageQuotaRangeHistory(req, res) {
+  if (!pool) {
+    sendJson(res, 503, {
+      error: 'DATABASE_URL is not configured for the shell report service.',
+    })
+    return
+  }
+
+  const requestUrl = new URL(req.url, `http://${req.headers.host}`)
+  const body = await cachedReport(
+    'usage-quota-range-history',
+    () => loadUsageQuotaRangeHistory(requestUrl.searchParams),
+    {
+      searchParams: requestUrl.searchParams,
+    }
+  )
+
+  sendJson(res, 200, body)
+}
+
+async function handleUsageQuotaHistory(req, res) {
+  if (!pool) {
+    sendJson(res, 503, {
+      error: 'DATABASE_URL is not configured for the shell report service.',
+    })
+    return
+  }
+
+  const requestUrl = new URL(req.url, `http://${req.headers.host}`)
+  const body = await cachedReport(
+    'usage-quota-history',
+    () => loadUsageQuotaHistory(requestUrl.searchParams),
+    {
+      searchParams: requestUrl.searchParams,
+    }
+  )
+
+  sendJson(res, 200, body)
+}
+
+async function handleUsageQuotaEstimator(req, res) {
+  if (!pool) {
+    sendJson(res, 503, {
+      error: 'DATABASE_URL is not configured for the shell report service.',
+    })
+    return
+  }
+
+  const requestUrl = new URL(req.url, `http://${req.headers.host}`)
+  const body = await cachedReport(
+    'usage-quota-estimator-v1',
+    () => loadUsageQuotaEstimator(requestUrl.searchParams),
+    {
+      searchParams: requestUrl.searchParams,
+    }
+  )
+
+  sendJson(res, 200, body)
+}
+
+async function handleUsageToolActivity(req, res) {
+  if (!pool) {
+    sendJson(res, 503, {
+      error: 'DATABASE_URL is not configured for the shell report service.',
+    })
+    return
+  }
+
+  const requestUrl = new URL(req.url, `http://${req.headers.host}`)
+  const body = await cachedReport(
+    'usage-tool-activity',
+    () => loadUsageToolActivity(requestUrl.searchParams),
+    {
+      searchParams: requestUrl.searchParams,
+    }
+  )
+
+  sendJson(res, 200, body)
+}
+
 async function handleUsageTokenTrendSummary(req, res) {
   if (!pool) {
     sendJson(res, 503, {
@@ -3347,7 +6215,7 @@ async function handleUsageTokenTrendSummary(req, res) {
 
   const requestUrl = new URL(req.url, `http://${req.headers.host}`)
   const body = await cachedReport(
-    'usage-token-trend-summary',
+    'usage-token-trend-summary-v3',
     () => loadUsageTokenTrendSummary(requestUrl.searchParams),
     {
       searchParams: requestUrl.searchParams,
@@ -3523,7 +6391,7 @@ function buildPrewarmUsageSearchParams(from, to) {
   })
 }
 
-function findUpstreamApiProxy(pathname) {
+export function findUpstreamApiProxy(pathname) {
   return UPSTREAM_API_PROXIES.find(
     (proxyConfig) =>
       pathname === proxyConfig.prefix ||
@@ -3593,6 +6461,38 @@ async function handleRequest(req, res) {
 
   if (
     req.method === 'GET' &&
+    requestUrl.pathname === '/api/shell/reports/usage/quota-range-history'
+  ) {
+    await handleUsageQuotaRangeHistory(req, res)
+    return
+  }
+
+  if (
+    req.method === 'GET' &&
+    requestUrl.pathname === '/api/shell/reports/usage/quota-history'
+  ) {
+    await handleUsageQuotaHistory(req, res)
+    return
+  }
+
+  if (
+    req.method === 'GET' &&
+    requestUrl.pathname === '/api/shell/reports/usage/quota-estimator'
+  ) {
+    await handleUsageQuotaEstimator(req, res)
+    return
+  }
+
+  if (
+    req.method === 'GET' &&
+    requestUrl.pathname === '/api/shell/reports/usage/tool-activity'
+  ) {
+    await handleUsageToolActivity(req, res)
+    return
+  }
+
+  if (
+    req.method === 'GET' &&
     requestUrl.pathname === '/api/shell/reports/usage/token-trend-day'
   ) {
     await handleUsageTokenTrendDay(req, res)
@@ -3626,16 +6526,21 @@ const server = http.createServer((req, res) => {
   })
 })
 
-server.listen(PORT, '0.0.0.0', () => {
-  process.stdout.write(`dashboard-shell report service listening on ${PORT}\n`)
-  connectRedisCache()
-    .then(startReportCachePrewarm)
-    .catch((error) => {
-      process.stderr.write(
-        `[report-service] WARN: Redis startup failed: ${formatError(error)}\n`
-      )
-    })
-})
+const shouldStartServer =
+  process.env.NODE_ENV !== 'test' && process.env.VITEST !== 'true'
+
+if (shouldStartServer) {
+  server.listen(PORT, '0.0.0.0', () => {
+    process.stdout.write(`dashboard-shell report service listening on ${PORT}\n`)
+    connectRedisCache()
+      .then(startReportCachePrewarm)
+      .catch((error) => {
+        process.stderr.write(
+          `[report-service] WARN: Redis startup failed: ${formatError(error)}\n`
+        )
+      })
+  })
+}
 
 async function shutdown() {
   if (prewarmTimer) {
@@ -3649,9 +6554,11 @@ async function shutdown() {
   server.close(() => process.exit(0))
 }
 
-process.on('SIGTERM', () => {
-  void shutdown()
-})
-process.on('SIGINT', () => {
-  void shutdown()
-})
+if (shouldStartServer) {
+  process.on('SIGTERM', () => {
+    void shutdown()
+  })
+  process.on('SIGINT', () => {
+    void shutdown()
+  })
+}

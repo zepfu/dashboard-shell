@@ -5,17 +5,18 @@
  * Expected export: ProviderCard (named)
  *
  * Wave 14-C: tests updated to match 9-row metric grid, lowercase Token Cache
- * and Reasoning labels, est-mark on estimated value, integer no-reasoning calls.
+ * and consolidated Reasoning value, est-mark on estimated contribution, recent
+ * request counts.
  *
  * Wave 26: tests updated for restructured section layout:
- * - REQUESTS section (pc-sub-title + pc-mini-table): requests / no-reasoning requests
+ * - REQUESTS section (pc-sub-title + pc-mini-table): requests / requests 90m
  * - 6 provider-metric rows (p95 Latency → Status; Requests/Tokens/Cost removed)
  * - TOKENS section (pc-sub-title + pc-mini-table): in/out/cost/cache in/cache creation/
- *   cache miss $/reasoning reported/reasoning estimated*
+ *   cache miss $/reasoning*
  * - TOKEN CACHE and REASONING sub-sections removed.
  * - F8: .t-model spans in quota tooltip use providerBrandHex() color.
  */
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import {
   ProviderCard,
   type QuotaBarGroup,
@@ -39,7 +40,7 @@ const mockData = {
   cache_miss_usd: 0,
   reasoning_reported: 100,
   reasoning_estimated: 90,
-  no_reasoning_calls: 5,
+  recent_requests_90m: 12,
   traces: 5,
   rate_limits: 0,
   capacity: 0,
@@ -106,8 +107,7 @@ test('test_provider_card_renders_requests_section', () => {
   const requestsLabels = screen.getAllByText(/^requests$/i)
   expect(requestsLabels.length).toBeGreaterThanOrEqual(1)
 
-  // Wave 26 F2: no-reasoning requests row (renamed from 'no-reasoning calls')
-  expect(screen.getByText('no-reasoning requests')).toBeInTheDocument()
+  expect(screen.getByText('requests 90m')).toBeInTheDocument()
 })
 
 test('test_provider_card_renders_6_metric_rows', () => {
@@ -174,7 +174,7 @@ test('test_provider_card_renders_tokens_section', () => {
   expect(screen.getByText('TOKENS')).toBeInTheDocument()
 
   // Rows: in / out / cost / cache in / cache creation / cache miss $ /
-  //       reasoning reported / reasoning estimated
+  //       reasoning
   // Use exact string queries for labels that contain regex-special chars (e.g. '$').
   const tokensRowLabels = [
     'in',
@@ -183,8 +183,7 @@ test('test_provider_card_renders_tokens_section', () => {
     'cache in',
     'cache creation',
     'cache miss $',
-    'reasoning reported',
-    'reasoning estimated',
+    'reasoning',
   ]
 
   let foundCount = 0
@@ -194,9 +193,11 @@ test('test_provider_card_renders_tokens_section', () => {
     if (els.length > 0) foundCount++
   }
   expect(foundCount).toBeGreaterThanOrEqual(tokensRowLabels.length)
+  expect(screen.queryByText('reasoning reported', { exact: true })).toBeNull()
+  expect(screen.queryByText('reasoning estimated', { exact: true })).toBeNull()
 })
 
-test('test_provider_card_tokens_section_reasoning_estimated_has_est_mark', () => {
+test('test_provider_card_tokens_section_reasoning_combines_estimated_with_hover_breakdown', () => {
   const { container } = render(
     <ProviderCard
       config={anthropicConfig}
@@ -206,27 +207,34 @@ test('test_provider_card_tokens_section_reasoning_estimated_has_est_mark', () =>
     />
   )
 
-  // Wave 26 F2 (preserves 14-C.8): est-mark asterisk on reasoning estimated value
+  expect(container.querySelector('.reasoning-token-value')?.textContent).toBe(
+    '190*'
+  )
   const estMark = container.querySelector('.est-mark')
   expect(estMark).not.toBeNull()
   expect(estMark?.textContent).toBe('*')
+
+  fireEvent.pointerEnter(container.querySelector('.reasoning-token-value')!)
+  expect(screen.getAllByText('Reasoning tokens').length).toBeGreaterThan(0)
+  expect(screen.getAllByText('reported').length).toBeGreaterThan(0)
+  expect(screen.getAllByText('100').length).toBeGreaterThan(0)
+  expect(screen.getAllByText('estimated').length).toBeGreaterThan(0)
+  expect(screen.getAllByText('90').length).toBeGreaterThan(0)
 })
 
-test('test_provider_card_no_reasoning_requests_row_shows_value', () => {
+test('test_provider_card_recent_requests_row_shows_value', () => {
   render(
     <ProviderCard
       config={anthropicConfig}
-      data={{ ...mockData, no_reasoning_calls: 5 }}
+      data={{ ...mockData, recent_requests_90m: 12 }}
       healthCells={mockHealthCells}
       quotas={mockQuotas}
     />
   )
 
-  // Wave 26 F2: 'no-reasoning requests' label (renamed from 'no-reasoning calls')
-  // must be present and show the integer value.
-  expect(screen.getByText('no-reasoning requests')).toBeInTheDocument()
-  // fmtCompact(5) = '5' — but '5' may also appear elsewhere; check via label proximity
-  // at minimum the label exists (value assertion via integration would need RTL queries)
+  expect(screen.getByText('requests 90m')).toBeInTheDocument()
+  expect(screen.getByText('12')).toBeInTheDocument()
+  expect(screen.queryByText('no-reasoning requests')).toBeNull()
   expect(screen.queryByText('no-reasoning calls')).toBeNull()
 })
 
@@ -256,6 +264,43 @@ test('test_provider_card_renders_health_strip', () => {
     expect((cellEls[0] as HTMLElement).style.flexGrow).toBe('288')
     expect((cellEls[0] as HTMLElement).style.flexBasis).toBe('0px')
   }
+})
+
+test('test_local_provider_card_renders_local_health_indicators', () => {
+  render(
+    <ProviderCard
+      config={{ provider: 'local', color: '#a1a1aa' }}
+      data={mockData}
+      healthCells={mockHealthCells}
+      quotas={[]}
+      localHealthItems={[
+        {
+          checked_at: '2026-05-25T20:00:00.000Z',
+          category: 'container',
+          key: 'aawm-langfuse-redis',
+          label: 'Langfuse Redis',
+          status: 'green',
+          detail: 'PONG',
+          target: 'langfuse-redis:6379',
+          latency_ms: 2,
+        },
+        {
+          checked_at: '2026-05-25T20:00:00.000Z',
+          category: 'model',
+          key: 'aawm-tap-grobid',
+          label: 'GROBID',
+          status: 'yellow',
+          detail: 'HTTP 404',
+          target: 'http://host.docker.internal:8070/api/isalive',
+          latency_ms: 4,
+        },
+      ]}
+    />
+  )
+
+  expect(screen.getByText('LOCAL HEALTH')).toBeInTheDocument()
+  expect(screen.getByLabelText('Langfuse Redis: healthy')).toBeInTheDocument()
+  expect(screen.getByLabelText('GROBID: warning')).toBeInTheDocument()
 })
 
 test('test_provider_card_quota_bar_renders_intervals', () => {
@@ -330,9 +375,21 @@ test('test_provider_card_quota_tip_model_has_brand_color', () => {
       remainingPct: 70,
       resetAt: '2026-05-19',
       segments: makeSegments(),
+      tipRequestTotal: 15,
+      tipRecentRequestTotal90m: 4,
       tipModels: [
-        { model: 'claude-3-5-sonnet-20241022', costDelta: '+$24' },
-        { model: 'gpt-4o', costDelta: '+$12' },
+        {
+          model: 'claude-3-5-sonnet-20241022',
+          costDelta: '+$24',
+          requests: 10,
+          recentRequests90m: 3,
+        },
+        {
+          model: 'gpt-4o',
+          costDelta: '+$12',
+          requests: 5,
+          recentRequests90m: 1,
+        },
       ],
     },
   ]
@@ -353,6 +410,9 @@ test('test_provider_card_quota_tip_model_has_brand_color', () => {
     (el) => (el as HTMLElement).style.color !== ''
   )
   expect(coloredSpans.length).toBeGreaterThanOrEqual(1)
+  expect(document.body.textContent).toContain('requests')
+  expect(document.body.textContent).toContain('15')
+  expect(document.body.textContent).toContain('10 req · 3 90m')
 })
 
 // ---------------------------------------------------------------------------
