@@ -192,6 +192,12 @@ describe('provider alias canonicalization', () => {
   test('test_canonical_provider_maps_local_embed_to_local', () => {
     expect(canonicalProvider('local_embed')).toBe('local')
   })
+
+  test('test_canonical_provider_maps_oa_xai_route_to_xai', () => {
+    expect(providerAliases('xai')).toEqual(expect.arrayContaining(['oa_xai']))
+    expect(canonicalProvider('oa_xai')).toBe('xai')
+    expect(canonicalProvider('oa_xai/grok-4.3')).toBe('xai')
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -446,6 +452,10 @@ describe('modelBrandHex via modelToProviderKey branches', () => {
 
   test('test_grok_prefix_maps_to_xai', () => {
     expect(modelBrandHex('grok-3')).toBe(XAI_HEX)
+  })
+
+  test('test_oa_xai_public_model_path_maps_to_xai_not_openrouter', () => {
+    expect(modelBrandHex('oa_xai/grok-4.3')).toBe(XAI_HEX)
   })
 
   test('test_nvidia_prefix_maps_to_nvidia_nim', () => {

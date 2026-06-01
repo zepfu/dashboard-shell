@@ -91,6 +91,44 @@ Verification:
 Follow-up:
 - Cold-cache token-trend summary generation is still slow on live DB misses; this pass fixed missing/sparse signal categories but did not change the query plan.
 
+### 2026-06-01 - D1-172 - Support xAI OAuth public model labels
+
+Status: Completed
+
+Initiated: 2026-06-01 15:40:14 America/New_York
+Resumed: 2026-06-01 16:01:55 America/New_York
+Completed: 2026-06-01 16:12:03 America/New_York
+Duration: 31 minutes 49 seconds from initiation; 10 minutes 8 seconds from resume
+
+Changed paths:
+- `.analysis/completed.md`
+- `.analysis/completed-handoff/handoff-xai-oauth-session-history-d1-172.md`
+- `.analysis/todo.md`
+- `suggestion.md`
+- `src/features/dashboard/lib/usage-report-display.ts`
+- `src/features/dashboard/lib/usage-report-display.test.ts`
+- `src/features/dashboard/components/provider-card.test.tsx`
+- `src/features/dashboard/components/phosphor-dashboard.test.tsx`
+
+Evidence:
+- Processed `.analysis/handoff-xai-oauth-session-history-d1-172.md`, which documented LiteLLM `oa_xai/*` OAuth-managed model labels with expected top-level `provider: xai`.
+- Added `oa_xai` and `oa_xai/*` to dashboard provider/model inference so public model labels such as `oa_xai/grok-4.3` keep their visible public label but infer xAI brand color and canonical provider behavior.
+- Left server quota SQL unchanged because the handoff contract is provider-led (`session_history.provider = xai`) and existing quota history/status lanes already group xAI provider rows into the single Grok monthly pool.
+- Updated Provider Status lane coverage so a quota row with `provider: xai` and `model: oa_xai/grok-4.3` still renders `xai/monthly` with `All Models · 30d`.
+- Updated ProviderCard tooltip coverage so `oa_xai/grok-4.3` model rows use xAI brand color rather than OpenRouter color.
+- Read-only live DB probe with `model >= 'oa_xai/' AND model < 'oa_xai0'` returned no current rows; a broad `model LIKE 'oa_xai/%'` count hit the 5 second statement timeout, so live row presence is not claimed as verification evidence.
+- The read-only `gpt-5.4-mini` agent confirmed the narrow implementation plan and reported `No files were modified.` A prior `aawm-codex-agent-auto` explorer returned a non-actionable completion and was closed.
+
+Verification:
+- `pnpm exec vitest run src/features/dashboard/lib/usage-report-display.test.ts src/features/dashboard/components/provider-card.test.tsx src/features/dashboard/components/phosphor-dashboard.test.tsx` passed: 3 files, 207 tests.
+- `pnpm exec vitest run` passed: 39 files, 541 tests.
+- `pnpm exec tsc -b --pretty false` passed.
+- `pnpm exec eslint src/features/dashboard/lib/usage-report-display.ts src/features/dashboard/lib/usage-report-display.test.ts src/features/dashboard/components/provider-card.test.tsx src/features/dashboard/components/phosphor-dashboard.test.tsx` passed.
+- `git diff --check` passed.
+
+Follow-up:
+- If future LiteLLM telemetry ever stores top-level provider as `oa_xai` instead of `xai`, add server-side provider normalization for that raw-provider shape. Current handoff evidence says top-level provider is `xai`, so this pass intentionally avoided broad SQL churn.
+
 ### 2026-06-01 - D1-102 - Fix TREND Health/Score scaling and selector responsiveness
 
 Status: Completed

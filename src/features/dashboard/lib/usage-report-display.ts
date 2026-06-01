@@ -109,7 +109,7 @@ const PROVIDER_ALIASES: Record<string, readonly string[]> = {
     'local_llm',
     'local_rerank',
   ],
-  xai: ['xai', 'x.ai'],
+  xai: ['xai', 'x.ai', 'oa_xai'],
 }
 
 /**
@@ -136,6 +136,7 @@ export function providerAliases(provider: string): readonly string[] {
  */
 export function canonicalProvider(provider: string): string {
   const key = provider.toLowerCase()
+  if (key.startsWith('xai/') || key.startsWith('oa_xai/')) return 'xai'
   for (const [canonical, aliases] of Object.entries(PROVIDER_ALIASES)) {
     if (aliases.includes(key)) return canonical
   }
@@ -206,7 +207,7 @@ export function providerBrandHex(provider: string): string {
  *   gpt-*, o1-*, o3-*, o4-*, chatgpt*, codex*,
  *     text-embedding*, text-davinci*             -> 'openai'
  *   gemini*, embeddinggemma*                     -> 'google'
- *   grok*                                        -> 'xai'
+ *   grok*, xai/*, oa_xai/*                      -> 'xai'
  *   nvidia*, nemo*, nim-*                        -> 'nvidia_nim'
  *   strings containing '/' (vendor/model paths)  -> 'openrouter'
  *   llama*, mistral*, mixtral*, qwen*, phi*,
@@ -248,7 +249,9 @@ function modelToProviderKey(model: string): string {
   if (m.startsWith('gemini') || m.startsWith('embeddinggemma')) return 'google'
 
   // xAI - Grok family
-  if (m.startsWith('grok')) return 'xai'
+  if (m.startsWith('grok') || m.startsWith('xai/') || m.startsWith('oa_xai/')) {
+    return 'xai'
+  }
 
   // NVIDIA NIM - branded prefixes
   if (m.startsWith('nvidia') || m.startsWith('nemo') || m.startsWith('nim-')) {
@@ -422,7 +425,15 @@ export function providerColorFor(provider: string) {
 function providerColorKey(provider: string) {
   const normalized = provider.toLowerCase()
   if (normalized === 'google' || normalized === 'gemini') return 'google'
-  if (normalized === 'x.ai' || normalized === 'xai') return 'xai'
+  if (
+    normalized === 'x.ai' ||
+    normalized === 'xai' ||
+    normalized === 'oa_xai' ||
+    normalized.startsWith('xai/') ||
+    normalized.startsWith('oa_xai/')
+  ) {
+    return 'xai'
+  }
   if (normalized === 'nvidia') return 'nvidia_nim'
   if (normalized === 'open-router') return 'openrouter'
   if (normalized === 'local' || normalized.startsWith('local_')) return 'local'

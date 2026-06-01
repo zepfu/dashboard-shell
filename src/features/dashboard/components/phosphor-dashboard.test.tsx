@@ -2148,7 +2148,7 @@ describe('Wave 41 — buildProviderLanes', () => {
     const xaiRow: UsageReportQuotaRow = {
       ...makeAnthropicQuotaRow(),
       provider: 'xai',
-      model: null,
+      model: 'oa_xai/grok-4.3',
       monthly_remaining_pct: 0,
       monthly_reset_at: '2026-06-01T00:00:00Z',
       monthly_interval_start: '2026-05-01T00:00:00Z',
