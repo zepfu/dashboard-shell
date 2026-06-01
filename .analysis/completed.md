@@ -55,6 +55,42 @@ Verification:
 Follow-up:
 - Cold-cache token-trend summary generation can still exceed a 60s client cap under current live DB I/O because the endpoint still has to build hourly token/version/model metadata from `session_history`. The cached path is fast and dense; if cold misses become operationally noisy, add a separate performance item for preaggregation or a split summary endpoint.
 
+### 2026-06-01 - D1-104 - Fill TREND Health/Score sparse signal gaps
+
+Status: Completed
+
+Initiated: 2026-06-01 15:45:00 America/New_York
+Completed: 2026-06-01 15:57:45 America/New_York
+Duration: 13 minutes
+
+Changed paths:
+- `.analysis/completed.md`
+- `.analysis/todo.md`
+- `server/report-service.mjs`
+- `src/features/dashboard/api/usage-report.ts`
+- `src/features/dashboard/components/token-trend-chart.tsx`
+- `src/features/dashboard/components/token-trend-chart.test.tsx`
+- `src/features/dashboard/lib/report-service-query-builders.test.ts`
+
+Evidence:
+- Confirmed the sparse display was not a timezone parse issue. The summary endpoint emits local wall-clock bucket strings and the chart parser already reads local hours directly.
+- Added Health `Probes` as a selectable signal metric backed by `status_probe_count`, so probe-backed health rows remain visible even when passive request/error/rate-limit traffic is sparse.
+- Expanded `/api/shell/reports/usage/token-trend-summary` Score rows to include the newer deterministic score fields already used elsewhere in the dashboard: discovery inventory coverage, terminal completion, ignored-path tracking policy, baseline deflection, and sleep/wellness interruption.
+- Added chart Score metrics for `Ignored path pass`, `Baseline clear`, and `Sleep clear`; incident-oriented baseline/sleep scores are inverted for this chart so evaluated clean rows render as signal coverage instead of disappearing as zero-valued incidents.
+- Restarted `dashboard-shell-reports-dev` after the report-service change.
+- Live cache-miss probe on `http://127.0.0.1:3006/api/shell/reports/usage/token-trend-summary?from=2026-05-30&to=2026-06-02&cacheBust=debug-score-density-after-patch` returned `cacheScope: usage-token-trend-summary-v3`, `tokenTrendHealth: 692`, `tokenTrendScores: 145`, and score days `2026-05-30`, `2026-05-31`, and `2026-06-01`. The response had non-null counts `ignored: 121`, `baseline: 145`, `sleep: 145`, `quality: 43`, `risk: 67`, plus `691` health rows with `status_probe_count > 0`.
+
+Verification:
+- `node --check server/report-service.mjs` passed.
+- `pnpm exec vitest run src/features/dashboard/lib/report-service-query-builders.test.ts src/features/dashboard/components/token-trend-chart.test.tsx` passed: 2 files, 42 tests.
+- `pnpm exec tsc -b --pretty false` passed.
+- `pnpm exec eslint server/report-service.mjs src/features/dashboard/api/usage-report.ts src/features/dashboard/components/token-trend-chart.tsx src/features/dashboard/components/token-trend-chart.test.tsx src/features/dashboard/lib/report-service-query-builders.test.ts` passed.
+- `pnpm exec vitest run` passed: 39 files, 539 tests.
+- `git diff --check` passed.
+
+Follow-up:
+- Cold-cache token-trend summary generation is still slow on live DB misses; this pass fixed missing/sparse signal categories but did not change the query plan.
+
 ### 2026-06-01 - D1-102 - Fix TREND Health/Score scaling and selector responsiveness
 
 Status: Completed

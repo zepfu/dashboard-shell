@@ -165,8 +165,23 @@ describe('report-service query builders', () => {
     expect(scoreQuery.sql).toContain('sh.trace_quality_score IS NOT NULL')
     expect(scoreQuery.sql).toContain('AS agent_quality_score')
     expect(scoreQuery.sql).toContain('AS agent_risk_score')
+    expect(scoreQuery.sql).toContain(
+      'AS agent_ignored_path_tracking_policy_score'
+    )
+    expect(scoreQuery.sql).toContain(
+      'AS agent_baseline_deflection_attempted_score'
+    )
+    expect(scoreQuery.sql).toContain(
+      'AS agent_sleep_wellness_interruption_attempted_score'
+    )
     expect(scoreQuery.sql).toContain('HAVING')
     expect(scoreQuery.sql).toContain('COUNT(sh.trace_quality_score) > 0')
+    expect(scoreQuery.sql).toContain(
+      'sh.ignored_path_tracking_policy_score IS NOT NULL'
+    )
+    expect(scoreQuery.sql).toContain(
+      'COUNT(sh.ignored_path_tracking_policy_score) > 0'
+    )
     expect(scoreQuery.sql).not.toContain('COALESCE(sh.trace_quality_score, 0)')
   })
 
