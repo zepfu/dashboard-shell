@@ -10,6 +10,8 @@ forwarding, runtime theme tokens, and production proxying.
 For the shell-side setup sequence, including live dev containers and
 static/prod-style containers, see
 [`sibling-dashboard-setup.md`](sibling-dashboard-setup.md).
+For federated runtime ownership, source-map policy, and lazy-route expectations,
+see [`runtime-contracts.md`](runtime-contracts.md).
 
 ## Integration Boundary
 
@@ -199,6 +201,23 @@ The shell toggles `.dark` on the document root. A remote that uses token-backed
 Tailwind classes and imports `src/styles/theme.css` in standalone mode will
 inherit the same light and dark palettes in both standalone and shell-mounted
 modes.
+
+## Component And Lint Expectations
+
+Remote dashboards should use their vendored shadcn-compatible primitives for
+tabs, tables, buttons, dialogs, forms, cards, skeleton loading states, and status
+badges. Keep the interaction semantics from those primitives intact instead of
+replacing them with ad hoc div/button markup.
+
+Cards should frame repeated items, modals, or genuinely bounded tools. Page
+sections should usually be unframed layouts or full-width bands. Skeleton states
+should reserve the same rough footprint as loaded content so shell-mounted pages
+do not shift heavily after remote data arrives.
+
+The scaffold installs a page-code lint guard against JSX inline `style`
+attributes. The shell does not currently make `jsx-a11y` a shell-wide required
+lint plugin for remotes; if a remote adopts it, treat that as a remote-local
+policy until this contract is explicitly revised.
 
 ## Scaffold
 

@@ -6,6 +6,7 @@
  */
 import type {
   UsageReportTokenTrendHourRow,
+  UsageReportTokenTrendModelFirstSeenRow,
   UsageReportTokenTrendVersionIntervalRow,
   UsageReportTrendRow,
 } from '../api/usage-report'
@@ -148,6 +149,8 @@ export interface TokenTrendDayEnvelope {
   hours: TokenTrendHourBucket[]
 }
 
+export type TokenTrendEnvelopeMetric = 'tokens' | 'requests' | 'tools'
+
 export interface TokenTrendVersionTrackPoint {
   day: string
   hour: number
@@ -204,6 +207,25 @@ export interface TokenTrendActiveVersionFamilyLane {
   segments: TokenTrendActiveVersionSegment[]
 }
 
+export interface TokenTrendModelFirstSeenMarker {
+  provider: string
+  model: string
+  firstSeenAt: string | null
+  firstSeenDay: string
+  firstSeenHour: number
+  globalHour: number
+  observations: number
+  tokenTotal: number
+}
+
+export interface TokenTrendModelFirstSeenGroup {
+  id: string
+  day: string
+  hour: number
+  globalHour: number
+  markers: TokenTrendModelFirstSeenMarker[]
+}
+
 interface TokenTrendVersionTrackOptions {
   gapToleranceHours?: number
 }
@@ -247,21 +269,27 @@ function createEmptyHours(day: string): TokenTrendHourBucket[] {
 }
 
 export function buildTokenTrendDayEnvelopes(
-  rows: readonly UsageReportTokenTrendHourRow[]
+  rows: readonly UsageReportTokenTrendHourRow[],
+  metric: TokenTrendEnvelopeMetric = 'tokens'
 ): TokenTrendDayEnvelope[] {
   const dayMap = new Map<string, TokenTrendDayEnvelope>()
 
   for (const row of rows) {
     const day = row.day?.slice(0, 10)
     const hour = Math.trunc(row.hour)
-    const tokens = Number(row.token_total)
+    const metricValue =
+      metric === 'requests'
+        ? Number(row.traces)
+        : metric === 'tools'
+          ? Number(row.tool_calls ?? 0)
+          : Number(row.token_total)
     if (
       day === undefined ||
       !ISO_DATE_RE.test(day) ||
       hour < 0 ||
       hour > 23 ||
-      !Number.isFinite(tokens) ||
-      tokens <= 0
+      !Number.isFinite(metricValue) ||
+      metricValue <= 0
     ) {
       continue
     }
@@ -283,10 +311,11 @@ export function buildTokenTrendDayEnvelopes(
     const hourBucket = envelope.hours[hour]
     if (hourBucket === undefined) continue
 
-    hourBucket.totals[provider] = (hourBucket.totals[provider] ?? 0) + tokens
-    hourBucket.total += tokens
-    envelope.totals[provider] = (envelope.totals[provider] ?? 0) + tokens
-    envelope.total += tokens
+    hourBucket.totals[provider] =
+      (hourBucket.totals[provider] ?? 0) + metricValue
+    hourBucket.total += metricValue
+    envelope.totals[provider] = (envelope.totals[provider] ?? 0) + metricValue
+    envelope.total += metricValue
   }
 
   const envelopes = [...dayMap.values()].sort((a, b) =>
@@ -315,6 +344,40 @@ function normalizedText(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, ' ')
 }
 
+function hasTokenSequence(value: string, sequence: string): boolean {
+  return value.split(/\s+/).filter(Boolean).join(' ').includes(sequence)
+}
+
+export function isTokenTrendActiveVersionClient(row: {
+  client_name: string
+  client_version?: string
+}): boolean {
+  const clientName = normalizedText(row.client_name)
+  const clientVersion = normalizedText(row.client_version ?? '')
+
+  if (
+    hasTokenSequence(clientName, 'claude cli') ||
+    hasTokenSequence(clientName, 'claude code')
+  ) {
+    return true
+  }
+  if (hasTokenSequence(clientName, 'codex tui')) return true
+  if (hasTokenSequence(clientName, 'gemini cli')) return true
+  if (
+    hasTokenSequence(clientName, 'grok build') ||
+    hasTokenSequence(clientName, 'grok cli') ||
+    hasTokenSequence(clientName, 'xai cli')
+  ) {
+    return true
+  }
+
+  return (
+    clientVersion.includes('claude') ||
+    clientVersion.includes('gemini') ||
+    clientVersion.includes('grok')
+  )
+}
+
 export function normalizeTokenTrendClientVersionForLane(
   clientVersion: string
 ): string {
@@ -329,6 +392,8 @@ export function classifyTokenTrendActiveVersionFamily(row: {
   client_name: string
   client_version?: string
 }): TokenTrendActiveVersionFamilyKey | null {
+  if (!isTokenTrendActiveVersionClient(row)) return null
+
   const clientName = normalizedText(row.client_name)
   const clientVersion = normalizedText(row.client_version ?? '')
 
@@ -712,4 +777,71 @@ export function deriveTokenTrendActiveVersionLanes(
       segments: packedSegments,
     }
   })
+}
+
+export function deriveTokenTrendModelFirstSeenGroups(
+  envelopes: readonly TokenTrendDayEnvelope[],
+  rows: readonly UsageReportTokenTrendModelFirstSeenRow[]
+): TokenTrendModelFirstSeenGroup[] {
+  const dayIndexByDay = new Map(
+    envelopes.map((envelope, index) => [envelope.day, index])
+  )
+  const groupsByHour = new Map<string, TokenTrendModelFirstSeenGroup>()
+
+  for (const row of rows) {
+    const day = row.first_seen_day
+    const hour =
+      typeof row.first_seen_hour === 'number'
+        ? Math.trunc(row.first_seen_hour)
+        : null
+    const globalHour = versionHourIndex(dayIndexByDay, day, hour)
+    if (day === null || hour === null || globalHour === null) continue
+
+    const provider = canonicalProvider(row.provider)
+    if (
+      provider !== 'anthropic' &&
+      provider !== 'openai' &&
+      provider !== 'xai' &&
+      provider !== 'google'
+    ) {
+      continue
+    }
+
+    const model = row.model.trim()
+    if (model === '' || model === 'unknown') continue
+
+    const key = `${day}|${hour.toString()}`
+    let group = groupsByHour.get(key)
+    if (group === undefined) {
+      group = {
+        id: key,
+        day,
+        hour,
+        globalHour,
+        markers: [],
+      }
+      groupsByHour.set(key, group)
+    }
+
+    group.markers.push({
+      provider,
+      model,
+      firstSeenAt: row.first_seen_at,
+      firstSeenDay: day,
+      firstSeenHour: hour,
+      globalHour,
+      observations: row.observations,
+      tokenTotal: row.token_total,
+    })
+  }
+
+  return [...groupsByHour.values()]
+    .map((group) => ({
+      ...group,
+      markers: [...group.markers].sort(
+        (a, b) =>
+          a.provider.localeCompare(b.provider) || a.model.localeCompare(b.model)
+      ),
+    }))
+    .sort((a, b) => a.globalHour - b.globalHour)
 }

@@ -108,6 +108,9 @@ entries such as `AAWM_DASHBOARD_REMOTE_ENTRY`, `AAWM_TAP_REMOTE_ENTRY`,
 
 Dashboard remotes should follow the shell contract in
 [`docs/remote-dashboard-integration-contract.md`](docs/remote-dashboard-integration-contract.md).
+Runtime boundaries for the shared QueryClient, lazy remote routes, source maps,
+and static-host CSP are documented in
+[`docs/runtime-contracts.md`](docs/runtime-contracts.md).
 The shell-side process for adding a sibling repo, including live dev containers
 and static/prod-style containers, is documented in
 [`docs/sibling-dashboard-setup.md`](docs/sibling-dashboard-setup.md).

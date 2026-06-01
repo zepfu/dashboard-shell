@@ -2,6 +2,7 @@ import {
   buildTokenTrendDayEnvelopes,
   classifyTokenTrendActiveVersionFamily,
   deriveTokenTrendActiveVersionLanes,
+  deriveTokenTrendModelFirstSeenGroups,
   deriveTokenTrendVersionTracks,
   normalizeTokenTrendClientVersionForLane,
 } from './trend-utils'
@@ -39,6 +40,37 @@ test('test_buildTokenTrendDayEnvelopes_groups_hours_by_day_and_provider', () => 
   expect(envelopes[0]?.hours[8]?.totals.xai).toBe(150)
   expect(envelopes[0]?.total).toBe(150)
   expect(envelopes[1]?.hours[9]?.totals.google).toBe(25)
+})
+
+test('test_buildTokenTrendDayEnvelopes_supports_request_and_tool_metrics', () => {
+  const rows = [
+    {
+      day: '2026-05-20',
+      hour: 8,
+      provider: 'openai',
+      traces: 5,
+      token_total: 1000,
+      usd_cost: 0,
+      tool_calls: 12,
+    },
+    {
+      day: '2026-05-20',
+      hour: 9,
+      provider: 'openai',
+      traces: 2,
+      token_total: 250,
+      usd_cost: 0,
+      tool_calls: 3,
+    },
+  ]
+
+  const requestEnvelopes = buildTokenTrendDayEnvelopes(rows, 'requests')
+  const toolEnvelopes = buildTokenTrendDayEnvelopes(rows, 'tools')
+
+  expect(requestEnvelopes[0]?.total).toBe(7)
+  expect(requestEnvelopes[0]?.hours[8]?.totals.openai).toBe(5)
+  expect(toolEnvelopes[0]?.total).toBe(15)
+  expect(toolEnvelopes[0]?.hours[9]?.totals.openai).toBe(3)
 })
 
 test('test_deriveTokenTrendVersionTracks_breaks_lines_across_large_gaps', () => {
@@ -157,18 +189,53 @@ test('test_classifyTokenTrendActiveVersionFamily_normalizes_client_and_provider_
   ).toBe('codex')
   expect(
     classifyTokenTrendActiveVersionFamily({
+      provider: 'openai',
+      client_name: 'codex dev smoke 2026-05-24',
+      client_version: '2026.05.24',
+    })
+  ).toBeNull()
+  expect(
+    classifyTokenTrendActiveVersionFamily({
+      provider: 'openai',
+      client_name: 'dev-smoke',
+      client_version: 'codex-dev-smoke-2026',
+    })
+  ).toBeNull()
+  expect(
+    classifyTokenTrendActiveVersionFamily({
       provider: 'gemini',
       client_name: 'unknown-client',
       client_version: '1.0.0',
     })
-  ).toBe('gemini')
+  ).toBeNull()
   expect(
     classifyTokenTrendActiveVersionFamily({
       provider: 'x.ai',
       client_name: 'some-router',
       client_version: '1.0.0',
     })
+  ).toBeNull()
+  expect(
+    classifyTokenTrendActiveVersionFamily({
+      provider: 'x.ai',
+      client_name: 'grok-build',
+      client_version: '1.0.0',
+    })
   ).toBe('grok')
+  expect(
+    classifyTokenTrendActiveVersionFamily({
+      provider: 'google',
+      client_name: 'python-httpx',
+      client_version: '0.28.1',
+    })
+  ).toBeNull()
+  expect(
+    classifyTokenTrendActiveVersionFamily({
+      provider: 'xai',
+      client_name: 'curl',
+      client_version: '8.5.0',
+    })
+  ).toBeNull()
   expect(
     classifyTokenTrendActiveVersionFamily({
       provider: 'openrouter',
@@ -325,7 +392,7 @@ test('test_deriveTokenTrendActiveVersionLanes_filters_families_and_packs_concurr
     },
     {
       provider: 'x.ai',
-      client_name: 'router-client',
+      client_name: 'grok-build',
       client_version: '0.0.0',
       first_seen_at: '2026-05-21T12:00:00.000Z',
       last_seen_at: '2026-05-21T13:00:00.000Z',
@@ -368,4 +435,73 @@ test('test_deriveTokenTrendActiveVersionLanes_filters_families_and_packs_concurr
   expect(grokLane?.segments[0]?.clientVersion).toBe('0.0.0')
   expect(geminiLane?.segments).toHaveLength(0)
   expect(lanes.flatMap((lane) => lane.segments)).toHaveLength(4)
+})
+
+test('test_deriveTokenTrendModelFirstSeenGroups_maps_supported_provider_models_to_hour_columns', () => {
+  const envelopes = buildTokenTrendDayEnvelopes([
+    {
+      day: '2026-05-20',
+      hour: 8,
+      provider: 'anthropic',
+      traces: 1,
+      token_total: 100,
+      usd_cost: 0,
+    },
+    {
+      day: '2026-05-21',
+      hour: 9,
+      provider: 'x.ai',
+      traces: 1,
+      token_total: 100,
+      usd_cost: 0,
+    },
+  ])
+
+  const groups = deriveTokenTrendModelFirstSeenGroups(envelopes, [
+    {
+      provider: 'anthropic',
+      model: 'claude-sonnet-4-6',
+      first_seen_at: '2026-05-20T12:00:00.000Z',
+      first_seen_day: '2026-05-20',
+      first_seen_hour: 8,
+      observations: 2,
+      token_total: 250,
+    },
+    {
+      provider: 'openai',
+      model: 'gpt-5.5',
+      first_seen_at: '2026-05-20T12:10:00.000Z',
+      first_seen_day: '2026-05-20',
+      first_seen_hour: 8,
+      observations: 1,
+      token_total: 100,
+    },
+    {
+      provider: 'x.ai',
+      model: 'grok-5',
+      first_seen_at: '2026-05-21T13:00:00.000Z',
+      first_seen_day: '2026-05-21',
+      first_seen_hour: 9,
+      observations: 3,
+      token_total: 300,
+    },
+    {
+      provider: 'openrouter',
+      model: 'router-model',
+      first_seen_at: '2026-05-21T13:00:00.000Z',
+      first_seen_day: '2026-05-21',
+      first_seen_hour: 9,
+      observations: 3,
+      token_total: 300,
+    },
+  ])
+
+  expect(groups).toHaveLength(2)
+  expect(groups[0]?.globalHour).toBe(8)
+  expect(groups[0]?.markers.map((marker) => marker.model)).toEqual([
+    'claude-sonnet-4-6',
+    'gpt-5.5',
+  ])
+  expect(groups[1]?.globalHour).toBe(33)
+  expect(groups[1]?.markers[0]?.provider).toBe('xai')
 })

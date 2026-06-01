@@ -14,10 +14,18 @@
  */
 import type { ReactNode } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { render, act, fireEvent, waitFor, screen } from '@testing-library/react'
+import {
+  render,
+  act,
+  fireEvent,
+  waitFor,
+  screen,
+  within,
+} from '@testing-library/react'
 import { http, HttpResponse } from 'msw'
 import { server } from '../../../test/setup'
 import type {
+  UsageReportQuotaEstimatorResponse,
   UsageReportProviderErrorObservationRow,
   UsageReportProviderLatencyHealthRow,
   UsageReportQuotaHistoryRow,
@@ -62,6 +70,53 @@ function Wrapper({ children }: { readonly children: ReactNode }): ReactNode {
     <QueryClientProvider client={makeClient()}>{children}</QueryClientProvider>
   )
 }
+
+beforeEach(() => {
+  server.use(
+    http.get('/api/shell/reports/usage/tool-activity', () =>
+      HttpResponse.json({
+        metadata: {
+          from: '2026-04-19',
+          to: '2026-05-19',
+          generatedAt: '2026-05-19T00:00:00.000Z',
+        },
+        toolActivity: [],
+      })
+    )
+  )
+  server.use(
+    http.get('/api/shell/reports/usage/quota-history', () =>
+      HttpResponse.json({
+        metadata: {
+          generatedAt: '2026-05-19T00:00:00.000Z',
+        },
+        quotaHistory: [],
+      })
+    )
+  )
+  server.use(
+    http.get('/api/shell/reports/usage/quota-estimator', () =>
+      HttpResponse.json({
+        metadata: {
+          from: '2026-04-19',
+          to: '2026-05-19',
+          generatedAt: '2026-05-19T00:00:00.000Z',
+          phase: '0-2',
+          lagCandidatesMinutes: [0, 1, 5, 10, 30, 60],
+          estimatorVersion: 'quota-weight-phase0-2-v1',
+        },
+        phase0Audit: {
+          source_database: 'aawm_tristore',
+          usage_event_shape: {},
+          quota_pct_interval_shape: {},
+          provider_lane_policy: {},
+          known_missing_fields: [],
+        },
+        estimates: [],
+      } satisfies UsageReportQuotaEstimatorResponse)
+    )
+  )
+})
 
 // ---------------------------------------------------------------------------
 // Minimal mock UsageReportResponse
@@ -189,6 +244,8 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
   test('test_section_refresh_controls_render_and_call_refresh_handlers', async () => {
     const onRefreshReport = vi.fn()
     const onRefreshQuotas = vi.fn()
+    const onRefreshQuotaHistory = vi.fn()
+    const onRefreshQuotaRangeHistory = vi.fn()
 
     server.use(
       http.get('/api/shell/reports/usage/token-trend-summary', () =>
@@ -213,8 +270,11 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
             reportLoading={false}
             showComparison={false}
             quotas={[]}
+            quotaHistory={[]}
             onRefreshReport={onRefreshReport}
             onRefreshQuotas={onRefreshQuotas}
+            onRefreshQuotaHistory={onRefreshQuotaHistory}
+            onRefreshQuotaRangeHistory={onRefreshQuotaRangeHistory}
           />
         </Wrapper>
       )
@@ -222,7 +282,7 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
 
     expect(
       screen.getByRole('button', {
-        name: /refresh provider health summary data/i,
+        name: /refresh provider data/i,
       })
     ).toBeInTheDocument()
     expect(
@@ -237,6 +297,11 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
       screen.getByRole('button', { name: /refresh token trend data/i })
     ).toBeInTheDocument()
 
+    await waitFor(() => {
+      expect(
+        screen.getByRole('button', { name: /refresh model ledger data/i })
+      ).toBeEnabled()
+    })
     await act(async () => {
       fireEvent.click(
         screen.getByRole('button', { name: /refresh model ledger data/i })
@@ -247,12 +312,636 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
     await act(async () => {
       fireEvent.click(
         screen.getByRole('button', {
-          name: /refresh provider health summary data/i,
+          name: /refresh provider data/i,
         })
       )
     })
     expect(onRefreshReport).toHaveBeenCalledTimes(2)
     expect(onRefreshQuotas).toHaveBeenCalledTimes(1)
+    expect(onRefreshQuotaHistory).toHaveBeenCalledTimes(1)
+    expect(onRefreshQuotaRangeHistory).not.toHaveBeenCalled()
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('tab', { name: 'Quota' }))
+    })
+    await act(async () => {
+      fireEvent.click(
+        screen.getByRole('button', {
+          name: /refresh provider data/i,
+        })
+      )
+    })
+    expect(onRefreshReport).toHaveBeenCalledTimes(2)
+    expect(onRefreshQuotas).toHaveBeenCalledTimes(2)
+    expect(onRefreshQuotaHistory).toHaveBeenCalledTimes(1)
+    expect(onRefreshQuotaRangeHistory).toHaveBeenCalledTimes(1)
+  })
+
+  test('test_providers_section_has_health_and_quota_tabs', async () => {
+    const quotaHistoryRow = (
+      overrides: Partial<UsageReportQuotaHistoryRow>
+    ): UsageReportQuotaHistoryRow => ({
+      provider: 'openai',
+      model: null,
+      quota_type: 'weekly',
+      expected_reset_at: '2026-05-21T00:00:00.000Z',
+      interval_start: '2026-05-14T00:00:00.000Z',
+      interval_end: '2026-05-21T00:00:00.000Z',
+      min_remaining_pct: 60,
+      max_remaining_pct: 100,
+      velocity_segments: [],
+      velocity_scores: [],
+      velocity_sample_count: 0,
+      usage_tokens: 1000,
+      usage_breakdown: [
+        {
+          model: 'gpt-5.5',
+          tokens: 1000,
+          cost: 1,
+          traces: 5,
+          recent_traces_90m: 0,
+        },
+      ],
+      ...overrides,
+    })
+    const report: UsageReportResponse = {
+      ...MOCK_REPORT,
+      quotaRangeHistory: [
+        quotaHistoryRow({}),
+        quotaHistoryRow({
+          expected_reset_at: '2026-05-22T00:00:00.000Z',
+          interval_start: '2026-05-15T00:00:00.000Z',
+          interval_end: '2026-05-22T00:00:00.000Z',
+          min_remaining_pct: 45,
+          usage_tokens: 2000,
+          usage_breakdown: [
+            {
+              model: 'gpt-5.5',
+              tokens: 2000,
+              cost: 2,
+              traces: 8,
+              recent_traces_90m: 0,
+            },
+          ],
+        }),
+        quotaHistoryRow({
+          quota_type: 'special',
+          expected_reset_at: '2026-05-23T00:00:00.000Z',
+          interval_start: '2026-05-16T00:00:00.000Z',
+          interval_end: '2026-05-23T00:00:00.000Z',
+          min_remaining_pct: 80,
+          usage_tokens: 500,
+          usage_breakdown: [
+            {
+              model: 'codex-spark',
+              tokens: 500,
+              cost: 0.5,
+              traces: 2,
+              recent_traces_90m: 0,
+            },
+          ],
+        }),
+        quotaHistoryRow({
+          quota_type: 'short',
+          expected_reset_at: '2026-05-23T05:00:00.000Z',
+          interval_start: '2026-05-23T00:00:00.000Z',
+          interval_end: '2026-05-23T05:00:00.000Z',
+          usage_tokens: 700,
+        }),
+        quotaHistoryRow({
+          provider: 'anthropic',
+          quota_type: 'weekly',
+          expected_reset_at: '2026-05-22T00:00:00.000Z',
+          interval_start: '2026-05-15T00:00:00.000Z',
+          interval_end: '2026-05-22T00:00:00.000Z',
+          usage_tokens: 1200,
+        }),
+        quotaHistoryRow({
+          provider: 'anthropic',
+          quota_type: 'short',
+          expected_reset_at: '2026-05-22T05:00:00.000Z',
+          interval_start: '2026-05-22T00:00:00.000Z',
+          interval_end: '2026-05-22T05:00:00.000Z',
+          usage_tokens: 800,
+        }),
+        quotaHistoryRow({
+          provider: 'google',
+          model: 'gemini-2.5-flash-lite',
+          quota_type: 'short',
+          expected_reset_at: '2026-05-24T00:00:00.000Z',
+          interval_start: '2026-05-23T00:00:00.000Z',
+          interval_end: '2026-05-24T00:00:00.000Z',
+          min_remaining_pct: 55,
+          usage_tokens: 300,
+          usage_breakdown: [
+            {
+              model: 'gemini-2.5-flash-lite',
+              tokens: 300,
+              cost: 0.3,
+              traces: 3,
+              recent_traces_90m: 0,
+            },
+          ],
+        }),
+        quotaHistoryRow({
+          provider: 'google',
+          model: 'gemini-3.1-flash-lite-preview',
+          quota_type: 'short',
+          expected_reset_at: '2026-05-24T00:00:00.000Z',
+          interval_start: '2026-05-23T00:00:00.000Z',
+          interval_end: '2026-05-24T00:00:00.000Z',
+          min_remaining_pct: 50,
+          usage_tokens: 700,
+          usage_breakdown: [
+            {
+              model: 'gemini-3.1-flash-lite-preview',
+              tokens: 700,
+              cost: 0.7,
+              traces: 7,
+              recent_traces_90m: 0,
+            },
+          ],
+        }),
+        quotaHistoryRow({
+          provider: 'xai',
+          quota_type: 'monthly',
+          expected_reset_at: '2026-06-15T00:00:00.000Z',
+          interval_start: '2026-05-16T00:00:00.000Z',
+          interval_end: '2026-06-15T00:00:00.000Z',
+          min_remaining_pct: 70,
+          usage_tokens: 321,
+          usage_breakdown: [
+            {
+              model: 'grok-4',
+              tokens: 321,
+              cost: 0.3,
+              traces: 4,
+              recent_traces_90m: 0,
+            },
+          ],
+        }),
+      ],
+    }
+
+    await act(async () => {
+      render(
+        <Wrapper>
+          <PhosphorDashboard
+            from='2026-05-20'
+            to='2026-05-21'
+            report={report}
+            reportLoading={false}
+            showComparison={false}
+            quotas={[]}
+          />
+        </Wrapper>
+      )
+    })
+
+    expect(screen.getByRole('heading', { name: 'STATUS' })).toBeInTheDocument()
+    expect(screen.queryByText('Provider Health Summary')).toBeNull()
+    expect(screen.getByRole('tab', { name: 'Health' })).toHaveAttribute(
+      'aria-selected',
+      'true'
+    )
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Quota' }))
+
+    const openaiBucket = screen
+      .getByRole('tablist', { name: /openai quota bars/i })
+      .closest('article')
+    expect(openaiBucket).not.toBeNull()
+    const openai = within(openaiBucket as HTMLElement)
+    expect(
+      openai.getByRole('tab', { name: /all models · 7d/i })
+    ).toHaveAttribute('aria-selected', 'true')
+    expect(
+      openai.getByRole('tab', { name: /codex-spark · 7d/i })
+    ).toBeInTheDocument()
+    expect(openai.queryByRole('tab', { name: /5hr/i })).toBeNull()
+
+    const weeklyRows = Array.from(
+      (openaiBucket as HTMLElement).querySelectorAll(
+        '.provider-quota-history-row'
+      )
+    ).map((row) => row.textContent ?? '')
+    expect(weeklyRows[0]).toContain('2K tok · 8 req')
+    expect(weeklyRows[1]).toContain('1K tok · 5 req')
+
+    fireEvent.click(openai.getByRole('tab', { name: /codex-spark · 7d/i }))
+    expect(openai.getByText(/500 tok · 2 req/i)).toBeInTheDocument()
+
+    const anthropicBucket = screen
+      .getByRole('tablist', { name: /anthropic quota bars/i })
+      .closest('article')
+    expect(anthropicBucket).not.toBeNull()
+    const anthropic = within(anthropicBucket as HTMLElement)
+    const anthropicTabs = anthropic.getAllByRole('tab')
+    expect(anthropicTabs[0]).toHaveTextContent(/all models · 7d/i)
+    expect(anthropicTabs[0]).toHaveAttribute('aria-selected', 'true')
+    expect(anthropic.queryByRole('tab', { name: /5hr/i })).toBeNull()
+    expect(anthropic.queryByText(/800 tok/i)).toBeNull()
+
+    const googleBucket = screen
+      .getByRole('tablist', { name: /google quota bars/i })
+      .closest('article')
+    expect(googleBucket).not.toBeNull()
+    const google = within(googleBucket as HTMLElement)
+    expect(
+      google.getByRole('tab', { name: /flash-lite · 24h/i })
+    ).toHaveAttribute('aria-selected', 'true')
+    expect(
+      (googleBucket as HTMLElement).querySelector(
+        '.provider-quota-history-label'
+      )
+    ).toHaveTextContent('Flash-Lite')
+    expect(google.getByText(/1K tok · 10 req/i)).toBeInTheDocument()
+    expect(
+      (googleBucket as HTMLElement).querySelectorAll(
+        '.provider-quota-history-row'
+      )
+    ).toHaveLength(1)
+    expect(google.queryByText(/gemini-2\.5-flash-lite/i)).toBeNull()
+    expect(google.queryByText(/gemini-3\.1-flash-lite-preview/i)).toBeNull()
+
+    const xaiBucket = screen
+      .getByRole('tablist', { name: /xai quota bars/i })
+      .closest('article')
+    expect(xaiBucket).not.toBeNull()
+    const xai = within(xaiBucket as HTMLElement)
+    expect(xai.getByRole('tab', { name: /all models · 30d/i })).toHaveAttribute(
+      'aria-selected',
+      'true'
+    )
+    expect(xai.getByText(/321 tok · 4 req/i)).toBeInTheDocument()
+  })
+
+  test('test_status_quota_tab_shows_provider_range_empty_state', async () => {
+    server.use(
+      http.get('/api/shell/reports/usage/token-trend-summary', () =>
+        HttpResponse.json({
+          metadata: {
+            from: '2026-05-20',
+            to: '2026-05-21',
+          },
+          tokenTrendHours: [],
+          tokenTrendVersions: [],
+        })
+      )
+    )
+
+    await act(async () => {
+      render(
+        <Wrapper>
+          <PhosphorDashboard
+            from='2026-05-20'
+            to='2026-05-21'
+            report={MOCK_REPORT}
+            reportLoading={false}
+            showComparison={false}
+            quotas={[]}
+            quotaRangeHistory={[]}
+          />
+        </Wrapper>
+      )
+    })
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Quota' }))
+
+    const openaiBucket = screen.getByText('openai').closest('article')
+    expect(openaiBucket).not.toBeNull()
+    expect(
+      within(openaiBucket as HTMLElement).getByText(
+        'no quota history for openai in 2026-05-20 to 2026-05-21'
+      )
+    ).toBeInTheDocument()
+    expect(
+      within(openaiBucket as HTMLElement).getByRole('tab', {
+        name: /all models · 7d/i,
+      })
+    ).toHaveTextContent('0')
+  })
+
+  test('test_status_weights_tab_fetches_quota_estimator_and_renders_lane_detail', async () => {
+    let seenFrom: string | null = null
+    let seenTo: string | null = null
+    server.use(
+      http.get('/api/shell/reports/usage/token-trend-summary', () =>
+        HttpResponse.json({
+          metadata: {
+            from: '2026-05-20',
+            to: '2026-05-21',
+          },
+          tokenTrendHours: [],
+          tokenTrendVersions: [],
+        })
+      ),
+      http.get('/api/shell/reports/usage/quota-estimator', ({ request }) => {
+        const url = new URL(request.url)
+        seenFrom = url.searchParams.get('from')
+        seenTo = url.searchParams.get('to')
+        return HttpResponse.json({
+          metadata: {
+            from: '2026-05-20',
+            to: '2026-05-21',
+            generatedAt: '2026-05-21T00:00:00.000Z',
+            phase: '0-2',
+            lagCandidatesMinutes: [0, 1, 5, 10, 30, 60],
+            estimatorVersion: 'quota-weight-phase0-2-v1',
+          },
+          phase0Audit: {
+            source_database: 'aawm_tristore',
+            usage_event_shape: {},
+            quota_pct_interval_shape: {},
+            provider_lane_policy: {},
+            known_missing_fields: ['cache_write_5m_tokens'],
+          },
+          estimates: [
+            {
+              provider: 'anthropic',
+              quota_key: 'anthropic_unified_7d_sonnet:7d_sonnet',
+              quota_type: 'special',
+              quota_lane: 'anthropic_weekly_sonnet',
+              selected_lag_minutes: 5,
+              lag_sensitivity: [
+                {
+                  lag_minutes: 0,
+                  trainable_interval_count: 8,
+                  rmse_pct: 3.1,
+                  status: 'evaluated',
+                },
+              ],
+              interval_count: 12,
+              trainable_interval_count: 8,
+              excluded_interval_count: 4,
+              excluded_reasons: { missing_usage: 2 },
+              residuals: {
+                static_baseline: {
+                  rmse_pct: 4.8,
+                  mae_pct: 2.4,
+                  max_abs_error_pct: 11.2,
+                },
+                rolling_exponential: {
+                  rmse_pct: 3.1,
+                  mae_pct: 1.9,
+                  max_abs_error_pct: 7.6,
+                },
+              },
+              identifiability: {
+                status: 'directional_only',
+                trainable_interval_count: 8,
+                effective_sample_size: 7,
+                active_feature_count: 3,
+                model_family_mix_count: 2,
+                max_feature_correlation: 0.78,
+                risks: ['limited_mix'],
+              },
+              backtest: {
+                status: 'evaluated',
+                holdout_interval_count: 2,
+                static_rmse_pct: 6.2,
+                rolling_rmse_pct: 4.4,
+                rolling_improved: true,
+              },
+              cache_read_ratios: [
+                {
+                  model_family: 'sonnet',
+                  cache_read_vs_uncached_workload_ratio: 0.31,
+                  expected_lower_than_uncached: true,
+                  status: 'consistent',
+                },
+              ],
+              coefficients: [
+                {
+                  estimate_kind: 'rolling_exponential',
+                  feature: 'sonnet:workload',
+                  model_family: 'sonnet',
+                  token_category: 'workload_excluding_cache_read',
+                  coefficient_pct_per_mtok: 3.12,
+                  relative_weight_vs_sonnet: 1,
+                  confidence_low_pct_per_mtok: 2.1,
+                  confidence_high_pct_per_mtok: 4.4,
+                  half_life_hours: 24,
+                  effective_sample_size: 7,
+                  estimate_status: 'directional_only',
+                },
+                {
+                  estimate_kind: 'rolling_exponential',
+                  feature: 'sonnet:cache_read',
+                  model_family: 'sonnet',
+                  token_category: 'cache_read',
+                  coefficient_pct_per_mtok: 0.72,
+                  relative_weight_vs_sonnet: 0.23,
+                  confidence_low_pct_per_mtok: 0.33,
+                  confidence_high_pct_per_mtok: 1.1,
+                  half_life_hours: 24,
+                  effective_sample_size: 7,
+                  estimate_status: 'directional_only',
+                },
+              ],
+              diagnostics: [
+                {
+                  code: 'limited_identifiability',
+                  severity: 'warning',
+                  detail: 'limited family mix in selected range',
+                },
+              ],
+            },
+            {
+              provider: 'openai',
+              quota_key: 'codex_bengalfox:secondary',
+              quota_type: 'special',
+              quota_lane: 'openai_codex_spark_weekly',
+              selected_lag_minutes: 0,
+              lag_sensitivity: [
+                {
+                  lag_minutes: 0,
+                  trainable_interval_count: 1,
+                  rmse_pct: null,
+                  status: 'not_identifiable',
+                },
+              ],
+              interval_count: 2,
+              trainable_interval_count: 1,
+              excluded_interval_count: 1,
+              excluded_reasons: { weak_signal: 1 },
+              residuals: {
+                static_baseline: {
+                  rmse_pct: null,
+                  mae_pct: null,
+                  max_abs_error_pct: null,
+                },
+                rolling_exponential: {
+                  rmse_pct: null,
+                  mae_pct: null,
+                  max_abs_error_pct: null,
+                },
+              },
+              identifiability: {
+                status: 'not_identifiable',
+                trainable_interval_count: 1,
+                effective_sample_size: 1,
+                active_feature_count: 1,
+                model_family_mix_count: 1,
+                max_feature_correlation: 1,
+                risks: ['insufficient_variation'],
+              },
+              backtest: {
+                status: 'not_enough_holdout_data',
+                static_rmse_pct: null,
+                rolling_rmse_pct: null,
+                rolling_improved: false,
+              },
+              cache_read_ratios: [],
+              coefficients: [],
+              diagnostics: [
+                {
+                  code: 'limited_identifiability',
+                  severity: 'warning',
+                  detail: 'not enough lane variation',
+                },
+              ],
+            },
+          ],
+        } satisfies UsageReportQuotaEstimatorResponse)
+      })
+    )
+
+    await act(async () => {
+      render(
+        <Wrapper>
+          <PhosphorDashboard
+            from='2026-05-20'
+            to='2026-05-21'
+            report={MOCK_REPORT}
+            reportLoading={false}
+            showComparison={false}
+            quotas={[]}
+          />
+        </Wrapper>
+      )
+    })
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Weights' }))
+
+    await waitFor(() => {
+      expect(screen.getByText('Phase 0-2 estimator detail')).toBeInTheDocument()
+    })
+    expect(seenFrom).toBe('2026-05-20')
+    expect(seenTo).toBe('2026-05-21')
+    expect(screen.getByText(/sonnet-only · 7d/i)).toBeInTheDocument()
+    expect(screen.getByText(/codex-spark · 7d/i)).toBeInTheDocument()
+    expect(screen.getAllByText('directional_only').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('not_identifiable').length).toBeGreaterThan(0)
+    expect(screen.getAllByText(/cache-read ratios/i).length).toBeGreaterThan(0)
+    expect(
+      screen.getByText(/workload \(uncached \+ output/i)
+    ).toBeInTheDocument()
+    expect(
+      screen.getAllByText(/limited_identifiability/i).length
+    ).toBeGreaterThan(0)
+  })
+
+  test('test_status_weights_tab_loading_and_empty_states', async () => {
+    server.use(
+      http.get('/api/shell/reports/usage/token-trend-summary', () =>
+        HttpResponse.json({
+          metadata: {
+            from: '2026-05-20',
+            to: '2026-05-21',
+          },
+          tokenTrendHours: [],
+          tokenTrendVersions: [],
+        })
+      ),
+      http.get('/api/shell/reports/usage/quota-estimator', async () => {
+        await new Promise((resolve) => setTimeout(resolve, 40))
+        return HttpResponse.json({
+          metadata: {
+            from: '2026-05-20',
+            to: '2026-05-21',
+            generatedAt: '2026-05-21T00:00:00.000Z',
+            phase: '0-2',
+            lagCandidatesMinutes: [0, 1, 5, 10, 30, 60],
+            estimatorVersion: 'quota-weight-phase0-2-v1',
+          },
+          phase0Audit: {
+            source_database: 'aawm_tristore',
+            usage_event_shape: {},
+            quota_pct_interval_shape: {},
+            provider_lane_policy: {},
+            known_missing_fields: [],
+          },
+          estimates: [],
+        } satisfies UsageReportQuotaEstimatorResponse)
+      })
+    )
+
+    await act(async () => {
+      render(
+        <Wrapper>
+          <PhosphorDashboard
+            from='2026-05-20'
+            to='2026-05-21'
+            report={MOCK_REPORT}
+            reportLoading={false}
+            showComparison={false}
+            quotas={[]}
+          />
+        </Wrapper>
+      )
+    })
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Weights' }))
+    expect(
+      screen.getByText('Loading Phase 0-2 estimator detail…')
+    ).toBeInTheDocument()
+
+    await waitFor(() => {
+      expect(
+        screen.getByText('No Phase 0-2 estimator lanes for the selected range.')
+      ).toBeInTheDocument()
+    })
+  })
+
+  test('test_section_tabs_render_inline_with_provider_and_ledger_headings', async () => {
+    await act(async () => {
+      render(
+        <Wrapper>
+          <PhosphorDashboard
+            from='2026-05-20'
+            to='2026-05-21'
+            report={MOCK_REPORT}
+            reportLoading={false}
+            showComparison={false}
+            quotas={[]}
+          />
+        </Wrapper>
+      )
+    })
+
+    const providersHeading = screen.getByRole('heading', { name: 'STATUS' })
+    const providersTitleMain = providersHeading.parentElement as HTMLElement
+    expect(providersTitleMain).toHaveClass('section-title-main')
+    expect(
+      within(providersTitleMain).getByRole('tab', { name: 'Health' })
+    ).toBeInTheDocument()
+    expect(
+      within(providersTitleMain).getByRole('tab', { name: 'Quota' })
+    ).toBeInTheDocument()
+    expect(
+      within(providersTitleMain).getByRole('tab', { name: 'Weights' })
+    ).toBeInTheDocument()
+
+    const ledgerHeading = screen.getByRole('heading', { name: 'LEDGER' })
+    const ledgerTitleMain = ledgerHeading.parentElement as HTMLElement
+    expect(ledgerTitleMain).toHaveClass('section-title-main')
+    expect(
+      within(ledgerTitleMain).getByRole('tab', { name: 'Model' })
+    ).toBeInTheDocument()
+    expect(
+      within(ledgerTitleMain).getByRole('tab', { name: 'Repository' })
+    ).toBeInTheDocument()
   })
 
   test('test_section_refresh_control_shows_updating_state', async () => {
@@ -1031,9 +1720,20 @@ describe('Wave 40 — quotaTypeToPeriodType', () => {
 
 describe('Wave 40 — tipModelsFromBreakdownGoogleAggregated', () => {
   const makeBreakdown = (
-    entries: ReadonlyArray<{ model: string; cost: number }>
+    entries: ReadonlyArray<{
+      model: string
+      cost: number
+      traces?: number
+      recent_traces_90m?: number
+    }>
   ): UsageReportQuotaUsageBreakdown[] =>
-    entries.map(({ model, cost }) => ({ model, cost, tokens: 0, traces: 0 }))
+    entries.map(({ model, cost, traces = 0, recent_traces_90m = 0 }) => ({
+      model,
+      cost,
+      tokens: 0,
+      traces,
+      recent_traces_90m,
+    }))
 
   test('test_google_aggregated_empty_returns_undefined', () => {
     expect(_tipModelsGoogleForTest([])).toBeUndefined()
@@ -1073,22 +1773,45 @@ describe('Wave 40 — tipModelsFromBreakdownGoogleAggregated', () => {
   test('test_google_aggregated_sums_costs_within_class', () => {
     const result = _tipModelsGoogleForTest(
       makeBreakdown([
-        { model: 'gemini-2.0-flash-001', cost: 3 },
-        { model: 'gemini-2.5-flash-preview', cost: 5 },
+        {
+          model: 'gemini-2.0-flash-001',
+          cost: 3,
+          traces: 2,
+          recent_traces_90m: 1,
+        },
+        {
+          model: 'gemini-2.5-flash-preview',
+          cost: 5,
+          traces: 4,
+          recent_traces_90m: 3,
+        },
       ])
     )
     // Both map to 'flash'; combined cost = 8
     expect(result).toHaveLength(1)
     expect(result![0].model).toBe('flash')
     expect(result![0].costDelta).toBe('$8.00')
+    expect(result![0].requests).toBe(6)
+    expect(result![0].recentRequests90m).toBe(4)
   })
 })
 
 describe('Wave 40 — tipModelsFromBreakdownSingleLabel', () => {
   const makeBreakdown = (
-    entries: ReadonlyArray<{ model: string; cost: number }>
+    entries: ReadonlyArray<{
+      model: string
+      cost: number
+      traces?: number
+      recent_traces_90m?: number
+    }>
   ): UsageReportQuotaUsageBreakdown[] =>
-    entries.map(({ model, cost }) => ({ model, cost, tokens: 0, traces: 0 }))
+    entries.map(({ model, cost, traces = 0, recent_traces_90m = 0 }) => ({
+      model,
+      cost,
+      tokens: 0,
+      traces,
+      recent_traces_90m,
+    }))
 
   test('test_single_label_empty_returns_undefined', () => {
     expect(_tipModelsSingleLabelForTest([], 'sonnet')).toBeUndefined()
@@ -1097,14 +1820,26 @@ describe('Wave 40 — tipModelsFromBreakdownSingleLabel', () => {
   test('test_single_label_returns_one_entry_with_display_label', () => {
     const result = _tipModelsSingleLabelForTest(
       makeBreakdown([
-        { model: 'claude-sonnet-4-6', cost: 10 },
-        { model: 'claude-opus-4-7', cost: 5 },
+        {
+          model: 'claude-sonnet-4-6',
+          cost: 10,
+          traces: 7,
+          recent_traces_90m: 3,
+        },
+        {
+          model: 'claude-opus-4-7',
+          cost: 5,
+          traces: 2,
+          recent_traces_90m: 1,
+        },
       ]),
       'sonnet'
     )
     expect(result).toHaveLength(1)
     expect(result![0].model).toBe('sonnet')
     expect(result![0].costDelta).toBe('$15.00')
+    expect(result![0].requests).toBe(9)
+    expect(result![0].recentRequests90m).toBe(4)
   })
 
   test('test_single_label_codex_spark_for_openai', () => {

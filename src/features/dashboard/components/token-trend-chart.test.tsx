@@ -12,6 +12,10 @@
  */
 import { render, fireEvent, within } from '@testing-library/react'
 import { vi } from 'vitest'
+import type {
+  UsageReportProviderLatencyHealthRow,
+  UsageReportTokenTrendScoreRow,
+} from '../api/usage-report'
 import {
   buildTokenTrendDayEnvelopes,
   formatBucketLabel,
@@ -46,6 +50,127 @@ const mock24Buckets = Array.from({ length: 24 }, (_, i) => ({
   label: `${i}h`,
   totals: { anthropic: 100 + i, openai: 50, google: 25 },
 }))
+
+const trendHealthRows = [
+  {
+    bucket_start: '2026-05-20T08:00:00.000Z',
+    environment: 'local',
+    provider: 'anthropic',
+    model: 'claude-sonnet-4-6',
+    model_group: 'claude',
+    requests: 5,
+    passive_latency_sample_status: 'ok',
+    upstream_p50_ms: 120,
+    upstream_p95_ms: 240,
+    upstream_p99_ms: 300,
+    total_p95_ms: 260,
+    proxy_processing_p95_ms: 20,
+    missing_upstream_latency: 0,
+    provider_error_events: 1,
+    rate_limit_events: 2,
+    capacity_events: 0,
+    provider_5xx_events: 0,
+    provider_timeout_events: 0,
+    network_error_events: 0,
+    auth_failed_events: 0,
+    adapter_error_events: 0,
+    status_probe_count: 1,
+    status_probe_success_pct: 100,
+    status_probe_p95_ms: 180,
+    provider_ping_avg_ms: 30,
+    provider_ping_packet_loss_pct: 0,
+    control_ping_avg_ms: 20,
+    control_packet_loss_pct: 0,
+    control_probe_success_pct: 100,
+    provider_ping_minus_control_ms: 10,
+    dns_failures: 0,
+    tcp_failures: 0,
+    tls_failures: 0,
+    icmp_failures: 0,
+    probed_endpoints: null,
+    status_error_classes: null,
+    min_remaining_pct: null,
+    max_remaining_pct: null,
+    next_expected_reset_at: null,
+    quota_keys: null,
+    request_period_start: null,
+    request_period_end: null,
+  },
+] as UsageReportProviderLatencyHealthRow[]
+
+const trendScoreRows = [
+  {
+    bucket: '2026-05-20',
+    provider: 'anthropic',
+    model: 'claude-sonnet-4-6',
+    repository: 'dashboard-shell',
+    weekly_reset_first: null,
+    weekly_reset_last: null,
+    min_weekly_pct: null,
+    max_weekly_pct: null,
+    short_reset_first: null,
+    short_reset_last: null,
+    min_short_pct: null,
+    max_short_pct: null,
+    weekly_reset_special_first: null,
+    weekly_reset_special_last: null,
+    min_weekly_pct_special: null,
+    max_weekly_pct_special: null,
+    short_reset_special_first: null,
+    short_reset_special_last: null,
+    min_short_pct_special: null,
+    max_short_pct_special: null,
+    traces: 5,
+    token_in: 10,
+    token_out: 20,
+    token_cache_input: 0,
+    token_cache_creation: 0,
+    reasoning_tokens_sources: null,
+    token_reasoning_reported: 0,
+    token_reasoning_estimated: 0,
+    cache_attempted_summary: null,
+    cache_miss_summary: null,
+    cache_miss_reasons: null,
+    token_cache_miss: null,
+    token_total: 30,
+    cache_miss_usd_cost: 0,
+    usd_cost: 0,
+    tool_calls: 1,
+    git_commit: 0,
+    git_push: 0,
+    litellm_processing_total_ms: null,
+    litellm_processing_average_ms: null,
+    llm_upstream_elapsed_total_ms: null,
+    llm_upstream_elapsed_average_ms: null,
+    agent_score_rows: 5,
+    agent_quality_score: 0.8,
+    agent_quality_evaluated: 5,
+    agent_quality_possible: 5,
+    agent_quality_failures: 1,
+    agent_instruction_score: 0.9,
+    agent_instruction_evaluated: 5,
+    agent_instruction_possible: 5,
+    agent_instruction_failures: 0,
+    agent_tool_score: 0.7,
+    agent_tool_evaluated: 5,
+    agent_tool_possible: 5,
+    agent_tool_failures: 1,
+    agent_contract_score: 0.6,
+    agent_contract_evaluated: 5,
+    agent_contract_possible: 5,
+    agent_contract_failures: 2,
+    agent_progress_score: 0.95,
+    agent_progress_evaluated: 5,
+    agent_progress_possible: 5,
+    agent_progress_failures: 0,
+    agent_risk_score: 0.2,
+    agent_risk_evaluated: 5,
+    agent_risk_possible: 5,
+    agent_risk_events: 1,
+    period_start: '2026-05-20',
+    period_end: '2026-05-20',
+  },
+] as UsageReportTokenTrendScoreRow[]
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -357,6 +482,18 @@ test('test_day_envelope_mode_renders_days_and_24_hour_bars_per_day', () => {
   )
 
   expect(container.querySelectorAll('.tt-day-envelope').length).toBe(2)
+  const dayShells = container.querySelectorAll('.tt-day-hover-shell')
+  expect(dayShells[0]).toHaveClass('is-even')
+  expect(dayShells[1]).toHaveClass('is-odd')
+  expect(
+    container.querySelectorAll('.tt-day-chart .tt-day-stripe')
+  ).toHaveLength(2)
+  expect(
+    container.querySelector('.tt-day-chart .tt-day-stripe.is-even')
+  ).not.toBeNull()
+  expect(
+    container.querySelector('.tt-day-chart .tt-day-stripe.is-odd')
+  ).not.toBeNull()
   expect(container.querySelectorAll('.tt-day-tip-wrap').length).toBe(2)
   expect(container.querySelectorAll('.tt-hour-bar').length).toBe(48)
   expect(container.querySelectorAll('.tt-hour-tip-wrap').length).toBe(0)
@@ -365,6 +502,180 @@ test('test_day_envelope_mode_renders_days_and_24_hour_bars_per_day', () => {
     container.querySelector('.tt-day-envelope .tt-anthropic')
   ).not.toBeNull()
   expect(container.querySelector('.tt-day-envelope .tt-openai')).not.toBeNull()
+})
+
+test('test_day_envelope_mode_alternates_lower_lane_day_backgrounds', () => {
+  const rows = [
+    {
+      day: '2026-05-20',
+      hour: 8,
+      provider: 'anthropic',
+      traces: 4,
+      token_total: 100,
+      usd_cost: 0,
+      tool_calls: 7,
+    },
+    {
+      day: '2026-05-21',
+      hour: 9,
+      provider: 'openai',
+      traces: 2,
+      token_total: 50,
+      usd_cost: 0,
+      tool_calls: 3,
+    },
+  ]
+
+  const { container } = render(
+    <TokenTrendChart
+      dayEnvelopes={buildTokenTrendDayEnvelopes(rows)}
+      requestDayEnvelopes={buildTokenTrendDayEnvelopes(rows, 'requests')}
+      toolDayEnvelopes={buildTokenTrendDayEnvelopes(rows, 'tools')}
+      series={series}
+    />
+  )
+
+  const activeLaneStripes = container.querySelectorAll(
+    '.tt-active-version-lane .tt-day-stripe'
+  )
+  expect(activeLaneStripes).toHaveLength(2)
+  expect(activeLaneStripes[0]).toHaveClass('is-even')
+  expect(activeLaneStripes[1]).toHaveClass('is-odd')
+
+  fireEvent.click(within(container).getByRole('tab', { name: 'Request' }))
+  const requestDayShells = container.querySelectorAll(
+    '.tt-metric-lane-requests .tt-metric-day-shell'
+  )
+  expect(requestDayShells).toHaveLength(2)
+  expect(requestDayShells[0]).toHaveClass('is-even')
+  expect(requestDayShells[1]).toHaveClass('is-odd')
+
+  fireEvent.click(within(container).getByRole('tab', { name: 'Tool' }))
+  const toolDayShells = container.querySelectorAll(
+    '.tt-metric-lane-tools .tt-metric-day-shell'
+  )
+  expect(toolDayShells).toHaveLength(2)
+  expect(toolDayShells[0]).toHaveClass('is-even')
+  expect(toolDayShells[1]).toHaveClass('is-odd')
+})
+
+test('test_day_envelope_mode_renders_health_score_graph_above_token_chart', () => {
+  const rows = [
+    {
+      day: '2026-05-20',
+      hour: 8,
+      provider: 'anthropic',
+      traces: 4,
+      token_total: 100,
+      usd_cost: 0,
+      tool_calls: 7,
+    },
+  ]
+
+  const { container } = render(
+    <TokenTrendChart
+      dayEnvelopes={buildTokenTrendDayEnvelopes(rows)}
+      series={series}
+      healthRows={trendHealthRows}
+      scoreRows={trendScoreRows}
+    />
+  )
+
+  const signalPanel = container.querySelector('.tt-signal-panel')
+  const tokenChart = container.querySelector('.tt-day-chart')
+  expect(signalPanel).not.toBeNull()
+  expect(tokenChart).not.toBeNull()
+  expect(
+    (signalPanel as HTMLElement).compareDocumentPosition(
+      tokenChart as HTMLElement
+    ) & Node.DOCUMENT_POSITION_FOLLOWING
+  ).toBeTruthy()
+  expect(
+    within(container).getByRole('tab', { name: 'Health' })
+  ).toHaveAttribute('aria-selected', 'true')
+  expect(within(container).getByText('Req')).toBeInTheDocument()
+  expect(within(container).getByText('Err')).toBeInTheDocument()
+  expect(container.querySelector('.tt-signal-graph')).not.toBeNull()
+  expect(container.querySelector('.tt-signal-day-envelope')).not.toBeNull()
+  expect(container.querySelector('.tt-signal-hour-bar')).not.toBeNull()
+  expect(container.querySelector('.tt-signal-slice')).not.toBeNull()
+  expect(
+    (container.querySelector('.tt-signal-day-envelope') as HTMLElement).style
+      .height
+  ).toMatch(/%$/)
+  expect(
+    (container.querySelector('.tt-signal-hour-bar') as HTMLElement).style.height
+  ).toMatch(/%$/)
+
+  fireEvent.click(within(container).getByRole('tab', { name: 'Score' }))
+
+  expect(within(container).getByRole('tab', { name: 'Score' })).toHaveAttribute(
+    'aria-selected',
+    'true'
+  )
+  expect(within(container).getByText('Q')).toBeInTheDocument()
+  expect(within(container).getByText('R')).toBeInTheDocument()
+})
+
+test('test_day_envelope_mode_filters_health_score_graph_scope_and_metrics', () => {
+  const rows = [
+    {
+      day: '2026-05-20',
+      hour: 8,
+      provider: 'anthropic',
+      traces: 4,
+      token_total: 100,
+      usd_cost: 0,
+      tool_calls: 7,
+    },
+  ]
+
+  const { container } = render(
+    <TokenTrendChart
+      dayEnvelopes={buildTokenTrendDayEnvelopes(rows)}
+      series={series}
+      healthRows={trendHealthRows}
+      scoreRows={trendScoreRows}
+    />
+  )
+
+  const scopeTrigger = within(container).getByRole('button', {
+    name: /Scope: All/i,
+  })
+  const scopeGroup = container.querySelector(
+    '[aria-label="Trend scope options"]'
+  ) as HTMLElement
+  expect(scopeGroup).toHaveAttribute('hidden')
+  expect(scopeTrigger).toHaveAttribute('aria-expanded', 'false')
+  fireEvent.click(scopeTrigger)
+  expect(scopeTrigger).toHaveAttribute('aria-expanded', 'true')
+  expect(scopeGroup).not.toHaveAttribute('hidden')
+  const scopeOptions = within(scopeGroup)
+  fireEvent.click(scopeOptions.getByLabelText('All'))
+  fireEvent.click(scopeOptions.getByLabelText('claude-sonnet-4-6'))
+  expect(
+    within(container).getByText(/Scope: claude-sonnet-4-6/i)
+  ).toBeInTheDocument()
+
+  const metricTrigger = within(container).getByRole('button', {
+    name: /Metrics: All/i,
+  })
+  const metricGroup = container.querySelector(
+    '[aria-label="Trend metric options"]'
+  ) as HTMLElement
+  expect(metricGroup).toHaveAttribute('hidden')
+  expect(metricTrigger).toHaveAttribute('aria-expanded', 'false')
+  fireEvent.click(metricTrigger)
+  expect(metricTrigger).toHaveAttribute('aria-expanded', 'true')
+  expect(scopeTrigger).toHaveAttribute('aria-expanded', 'false')
+  expect(scopeGroup).toHaveAttribute('hidden')
+  expect(metricGroup).not.toHaveAttribute('hidden')
+  const metricOptions = within(metricGroup)
+  fireEvent.click(metricOptions.getByLabelText('All'))
+  expect(within(container).getByText('no selected metrics')).toBeInTheDocument()
+  fireEvent.click(metricOptions.getByLabelText('Requests'))
+  expect(within(container).getByText('Req')).toBeInTheDocument()
+  expect(within(container).queryByText('Err')).toBeNull()
 })
 
 test('test_day_envelope_mode_renders_active_version_lane_without_usage_overlay', () => {
@@ -420,16 +731,52 @@ test('test_day_envelope_mode_renders_active_version_lane_without_usage_overlay',
           token_total: 210,
           usd_cost: 0,
         },
+        {
+          provider: 'google',
+          client_name: 'python-httpx',
+          client_version: '0.28.1',
+          first_seen_at: '2026-05-20T12:00:00.000Z',
+          last_seen_at: '2026-05-20T13:10:00.000Z',
+          first_seen_day: '2026-05-20',
+          first_seen_hour: 8,
+          last_seen_day: '2026-05-20',
+          last_seen_hour: 9,
+          traces: 2,
+          token_total: 210,
+          usd_cost: 0,
+        },
+      ]}
+      modelFirstSeen={[
+        {
+          provider: 'anthropic',
+          model: 'claude-sonnet-4-6',
+          first_seen_at: '2026-05-20T12:00:00.000Z',
+          first_seen_day: '2026-05-20',
+          first_seen_hour: 8,
+          observations: 2,
+          token_total: 210,
+        },
+        {
+          provider: 'openai',
+          model: 'gpt-5.5',
+          first_seen_at: '2026-05-20T14:10:00.000Z',
+          first_seen_day: '2026-05-20',
+          first_seen_hour: 10,
+          observations: 1,
+          token_total: 100,
+        },
       ]}
     />
   )
 
   const lane = container.querySelector('.tt-active-version-lane') as HTMLElement
   expect(lane).not.toBeNull()
+  expect(lane.querySelectorAll('.tt-day-stripe')).toHaveLength(1)
   expect(within(lane).getByText('Claude')).toBeInTheDocument()
   expect(within(lane).getByText('Codex')).toBeInTheDocument()
   expect(within(lane).getByText('2.0.0')).toBeInTheDocument()
   expect(within(lane).getByText('0.120.0')).toBeInTheDocument()
+  expect(within(lane).queryByText('0.28.1')).toBeNull()
   const familyRows = container.querySelectorAll('.tt-active-version-family')
   expect(familyRows).toHaveLength(4)
   expect((familyRows[0] as HTMLElement | undefined)?.style.borderTop).toBe(
@@ -438,13 +785,335 @@ test('test_day_envelope_mode_renders_active_version_lane_without_usage_overlay',
   expect((familyRows[1] as HTMLElement | undefined)?.style.borderTop).toContain(
     'color-mix'
   )
+  expect(
+    (familyRows[0] as HTMLElement | undefined)?.style.background
+  ).toContain('color-mix')
+  expect(
+    (familyRows[1] as HTMLElement | undefined)?.style.background
+  ).toContain('color-mix')
   expect(container.querySelectorAll('.tt-active-version-line').length).toBe(2)
   expect(
     container.querySelectorAll('.tt-active-version-release-dot').length
   ).toBe(2)
+  expect(
+    lane.querySelector('.tt-model-first-seen-column')
+  ).not.toBeInTheDocument()
+  const firstSeenColumns = container.querySelectorAll(
+    '.tt-day-chart .tt-model-first-seen-column'
+  )
+  expect(firstSeenColumns).toHaveLength(1)
+  expect(firstSeenColumns[0]).toHaveAttribute(
+    'aria-label',
+    expect.stringContaining('2 models first seen on 05/20')
+  )
+  expect(firstSeenColumns[0]).toHaveAttribute(
+    'aria-label',
+    expect.stringContaining('claude-sonnet-4-6')
+  )
+  expect(firstSeenColumns[0]).toHaveAttribute(
+    'aria-label',
+    expect.stringContaining('08:00 anthropic claude-sonnet-4-6')
+  )
+  expect(firstSeenColumns[0]).toHaveAttribute(
+    'aria-label',
+    expect.stringContaining('gpt-5.5')
+  )
+  expect(firstSeenColumns[0]).toHaveAttribute(
+    'aria-label',
+    expect.stringContaining('10:00 openai gpt-5.5')
+  )
+  expect((firstSeenColumns[0] as HTMLElement).style.position).toBe('absolute')
+  expect((firstSeenColumns[0] as HTMLElement).style.top).toBe('0px')
+  expect((firstSeenColumns[0] as HTMLElement).style.right).toBe('0px')
+  expect((firstSeenColumns[0] as HTMLElement).style.bottom).toBe('0px')
+  expect((firstSeenColumns[0] as HTMLElement).style.left).toBe('0px')
+  expect(within(container).getByText('First seen model')).toBeInTheDocument()
   expect(container.querySelector('.tt-version-overlay')).toBeNull()
   expect(container.querySelector('.tt-version-line')).toBeNull()
   expect(container.querySelector('.tt-version-line-halo')).toBeNull()
+})
+
+test('test_day_envelope_mode_model_first_seen_marks_token_chart_not_versions_lane', () => {
+  const dayEnvelopes = buildTokenTrendDayEnvelopes([
+    {
+      day: '2026-05-20',
+      hour: 8,
+      provider: 'anthropic',
+      traces: 1,
+      token_total: 100,
+      usd_cost: 0,
+    },
+  ])
+
+  const { container } = render(
+    <TokenTrendChart
+      dayEnvelopes={dayEnvelopes}
+      series={series}
+      modelFirstSeen={[
+        {
+          provider: 'anthropic',
+          model: 'claude-sonnet-4-6',
+          first_seen_at: '2026-05-20T12:00:00.000Z',
+          first_seen_day: '2026-05-20',
+          first_seen_hour: 8,
+          observations: 2,
+          token_total: 210,
+        },
+      ]}
+    />
+  )
+
+  const tokenChartMarkers = container.querySelectorAll(
+    '.tt-day-chart .tt-model-first-seen-column'
+  )
+  expect(tokenChartMarkers).toHaveLength(1)
+  expect(tokenChartMarkers[0]).toHaveAttribute(
+    'aria-label',
+    expect.stringContaining('claude-sonnet-4-6')
+  )
+  expect(
+    container.querySelector(
+      '.tt-active-version-lane .tt-model-first-seen-column'
+    )
+  ).toBeNull()
+  expect(within(container).getByText('no version data')).toBeInTheDocument()
+  expect(within(container).getByText('First seen model')).toBeInTheDocument()
+  expect(within(container).queryByText('Active version')).toBeNull()
+})
+
+test('test_day_envelope_mode_client_version_only_data_has_no_first_seen_model_legend', () => {
+  const dayEnvelopes = buildTokenTrendDayEnvelopes([
+    {
+      day: '2026-05-20',
+      hour: 8,
+      provider: 'anthropic',
+      traces: 1,
+      token_total: 100,
+      usd_cost: 0,
+    },
+  ])
+
+  const { container } = render(
+    <TokenTrendChart
+      dayEnvelopes={dayEnvelopes}
+      series={series}
+      versionIntervals={[
+        {
+          provider: 'anthropic',
+          client_name: 'codex-tui',
+          client_version: '0.120.0',
+          first_seen_at: '2026-05-20T12:00:00.000Z',
+          last_seen_at: '2026-05-20T13:10:00.000Z',
+          first_seen_day: '2026-05-20',
+          first_seen_hour: 8,
+          last_seen_day: '2026-05-20',
+          last_seen_hour: 9,
+          traces: 2,
+          token_total: 150,
+          usd_cost: 0,
+        },
+      ]}
+    />
+  )
+
+  expect(
+    container.querySelector('.tt-day-chart .tt-model-first-seen-column')
+  ).toBeNull()
+  expect(within(container).queryByText('First seen model')).toBeNull()
+  expect(within(container).getByText('Active version')).toBeInTheDocument()
+})
+
+test('test_day_envelope_mode_lower_lane_tabs_switch_to_requests_and_tools', () => {
+  const rows = [
+    {
+      day: '2026-05-20',
+      hour: 8,
+      provider: 'anthropic',
+      traces: 4,
+      token_total: 100,
+      usd_cost: 0,
+      tool_calls: 7,
+    },
+    {
+      day: '2026-05-20',
+      hour: 9,
+      provider: 'openai',
+      traces: 2,
+      token_total: 50,
+      usd_cost: 0,
+      tool_calls: 3,
+    },
+  ]
+  const dayEnvelopes = buildTokenTrendDayEnvelopes(rows)
+  const requestDayEnvelopes = buildTokenTrendDayEnvelopes(rows, 'requests')
+  const toolDayEnvelopes = buildTokenTrendDayEnvelopes(rows, 'tools')
+
+  const { container } = render(
+    <TokenTrendChart
+      dayEnvelopes={dayEnvelopes}
+      requestDayEnvelopes={requestDayEnvelopes}
+      toolDayEnvelopes={toolDayEnvelopes}
+      series={series}
+      versionIntervals={[
+        {
+          provider: 'anthropic',
+          client_name: 'codex-tui',
+          client_version: '0.120.0',
+          first_seen_at: '2026-05-20T12:00:00.000Z',
+          last_seen_at: '2026-05-20T13:10:00.000Z',
+          first_seen_day: '2026-05-20',
+          first_seen_hour: 8,
+          last_seen_day: '2026-05-20',
+          last_seen_hour: 9,
+          traces: 2,
+          token_total: 150,
+          usd_cost: 0,
+        },
+      ]}
+    />
+  )
+
+  expect(container.querySelector('.tt-active-version-lane')).not.toBeNull()
+  expect(
+    container.querySelector('.tt-day-chart .tt-model-first-seen-column')
+  ).toBeNull()
+  expect(within(container).queryByText('First seen model')).toBeNull()
+  expect(
+    container.querySelector('.tt-chart-footer .tt-lower-tabs')
+  ).not.toBeNull()
+  expect(
+    within(container).getByRole('tab', { name: 'Version' })
+  ).toHaveAttribute('aria-selected', 'true')
+  expect(
+    Array.from(
+      container.querySelectorAll('.tt-active-version-lane, .tt-chart-footer')
+    )[0]
+  ).toHaveClass('tt-active-version-lane')
+
+  fireEvent.click(within(container).getByRole('tab', { name: 'Request' }))
+  expect(container.querySelector('.tt-active-version-lane')).toBeNull()
+  expect(container.querySelector('.tt-metric-lane-requests')).not.toBeNull()
+  expect(
+    container.querySelectorAll('.tt-metric-lane-requests .tt-day-stripe')
+  ).toHaveLength(1)
+  expect(container.querySelectorAll('.tt-metric-hour-bar')).toHaveLength(24)
+  expect(container.querySelector('.tt-metric-scale-label')).toHaveTextContent(
+    /req/i
+  )
+  const requestScaleMarker = container.querySelector(
+    '.tt-metric-scale-marker'
+  ) as HTMLElement
+  expect(requestScaleMarker.style.top).toBe('25%')
+  expect(requestScaleMarker.style.bottom).toBe('')
+  expect(
+    Array.from(
+      container.querySelectorAll('.tt-metric-lane-requests, .tt-chart-footer')
+    )[0]
+  ).toHaveClass('tt-metric-lane-requests')
+
+  fireEvent.click(within(container).getByRole('tab', { name: 'Tool' }))
+  expect(container.querySelector('.tt-metric-lane-tools')).not.toBeNull()
+  expect(container.querySelector('.tt-metric-lane-requests')).toBeNull()
+  expect(
+    container.querySelectorAll('.tt-metric-lane-tools .tt-day-stripe')
+  ).toHaveLength(1)
+  expect(container.querySelector('.tt-metric-scale-label')).toHaveTextContent(
+    /tools/i
+  )
+  const toolScaleMarker = container.querySelector(
+    '.tt-metric-scale-marker'
+  ) as HTMLElement
+  expect(toolScaleMarker.style.top).toBe('25%')
+  expect(toolScaleMarker.style.bottom).toBe('')
+
+  fireEvent.click(within(container).getByRole('tab', { name: 'Version' }))
+  expect(container.querySelector('.tt-active-version-lane')).not.toBeNull()
+})
+
+test('test_day_envelope_mode_lower_lane_can_be_controlled', () => {
+  const rows = [
+    {
+      day: '2026-05-20',
+      hour: 8,
+      provider: 'anthropic',
+      traces: 4,
+      token_total: 100,
+      usd_cost: 0,
+      tool_calls: 7,
+    },
+  ]
+  const onLowerLaneModeChange = vi.fn()
+
+  const { container } = render(
+    <TokenTrendChart
+      dayEnvelopes={buildTokenTrendDayEnvelopes(rows)}
+      requestDayEnvelopes={buildTokenTrendDayEnvelopes(rows, 'requests')}
+      toolDayEnvelopes={buildTokenTrendDayEnvelopes(rows, 'tools')}
+      lowerLaneMode='requests'
+      onLowerLaneModeChange={onLowerLaneModeChange}
+      series={series}
+    />
+  )
+
+  expect(container.querySelector('.tt-metric-lane-requests')).not.toBeNull()
+  fireEvent.click(within(container).getByRole('tab', { name: 'Tool' }))
+
+  expect(onLowerLaneModeChange).toHaveBeenCalledWith('tools')
+  expect(container.querySelector('.tt-metric-lane-requests')).not.toBeNull()
+  expect(container.querySelector('.tt-metric-lane-tools')).toBeNull()
+})
+
+test('test_day_envelope_mode_lower_lane_matches_token_chart_height', () => {
+  const rows = [
+    {
+      day: '2026-05-20',
+      hour: 8,
+      provider: 'anthropic',
+      traces: 4,
+      token_total: 100,
+      usd_cost: 0,
+      tool_calls: 7,
+    },
+  ]
+  const dayEnvelopes = buildTokenTrendDayEnvelopes(rows)
+  const requestDayEnvelopes = buildTokenTrendDayEnvelopes(rows, 'requests')
+
+  const { container } = render(
+    <TokenTrendChart
+      dayEnvelopes={dayEnvelopes}
+      requestDayEnvelopes={requestDayEnvelopes}
+      series={series}
+      versionIntervals={[
+        {
+          provider: 'anthropic',
+          client_name: 'codex-tui',
+          client_version: '0.120.0',
+          first_seen_at: '2026-05-20T12:00:00.000Z',
+          last_seen_at: '2026-05-20T13:10:00.000Z',
+          first_seen_day: '2026-05-20',
+          first_seen_hour: 8,
+          last_seen_day: '2026-05-20',
+          last_seen_hour: 8,
+          traces: 1,
+          token_total: 100,
+          usd_cost: 0,
+        },
+      ]}
+    />
+  )
+
+  const tokenChart = container.querySelector('.tt-day-chart') as HTMLElement
+  const tuiLane = container.querySelector(
+    '.tt-active-version-lane'
+  ) as HTMLElement
+  expect(tuiLane.style.height).toBe(tokenChart.style.height)
+
+  fireEvent.click(within(container).getByRole('tab', { name: 'Request' }))
+  const requestLane = container.querySelector(
+    '.tt-metric-lane-requests'
+  ) as HTMLElement
+  expect(requestLane.style.height).toBe(tokenChart.style.height)
+  expect(container.querySelector('.tt-chart-footer')).not.toBeNull()
 })
 
 test('test_day_envelope_mode_renders_tiny_version_labels_under_segment', () => {
@@ -539,7 +1208,7 @@ test('test_day_envelope_mode_hover_requests_day_detail', () => {
   expect(onHourHover).toHaveBeenCalledWith({ day: '2026-05-20', hour: 8 })
 })
 
-test('test_day_envelope_tooltip_prioritizes_releases_before_active_versions', () => {
+test('test_day_envelope_tooltip_separates_models_from_client_versions', () => {
   const dayEnvelopes = buildTokenTrendDayEnvelopes([
     {
       day: '2026-05-20',
@@ -569,6 +1238,17 @@ test('test_day_envelope_tooltip_prioritizes_releases_before_active_versions', ()
           traces: 1,
           token_total: 100,
           usd_cost: 0,
+        },
+      ]}
+      modelFirstSeen={[
+        {
+          provider: 'openai',
+          model: 'gpt-5.5',
+          first_seen_at: '2026-05-20T12:00:00.000Z',
+          first_seen_day: '2026-05-20',
+          first_seen_hour: 8,
+          observations: 1,
+          token_total: 100,
         },
       ]}
       dayDetail={{
@@ -603,9 +1283,12 @@ test('test_day_envelope_tooltip_prioritizes_releases_before_active_versions', ()
     '.v9-tip[data-state="open"]'
   ) as HTMLElement
   expect(openTip).not.toBeNull()
-  expect(openTip.textContent).toContain('releases')
+  expect(openTip.textContent).toContain('models first seen')
+  expect(openTip.textContent).toContain('gpt-5.5')
+  expect(openTip.textContent).toContain('client versions first seen')
   expect(openTip.textContent).toContain('codex-tui 0.120.0')
   expect(openTip.textContent).not.toContain('active versions')
+  expect(openTip.textContent).not.toContain('releases')
 })
 
 // ---------------------------------------------------------------------------

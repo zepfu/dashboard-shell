@@ -17,9 +17,9 @@
  * - 9-row metric grid per mockup lines 2424-2432.
  * - Token Cache labels lowercase: in/create/miss/miss $.
  * - miss $ row shows cache_miss_usd dollar value.
- * - Reasoning labels lowercase: reported/estimated/no-reasoning calls.
- * - est-mark asterisk on estimated value.
- * - no-reasoning calls wired to integer.
+ * - Reasoning shown as reported+estimated total, with est-mark asterisk when
+ *   estimated tokens contribute and a hover breakdown for reported/estimated.
+ * - Recent request count derived from provider health buckets.
  *
  * Wave 20 changes (F2 / F3 / F6):
  * - F2: TOKEN CACHE + REASONING sections moved ABOVE Quotas per mockup line 2434.
@@ -32,14 +32,15 @@
  *
  * Wave 26 changes (F2 / F8):
  * - F2: REQUESTS section (pc-sub-title + pc-mini-table) replaces the old
- *       'Requests' provider-metric row; contains requests + no-reasoning requests.
+ *       'Requests' provider-metric row; contains requests + last-90m requests.
  *       TOKENS section (pc-sub-title + pc-mini-table) replaces the old TOKEN CACHE
  *       and REASONING blocks; contains in / out / cost / cache in / cache creation /
- *       cache miss $ / reasoning reported / reasoning estimated.
+ *       cache miss $ / reasoning.
  *       Rows 1-3 (Requests, Tokens, Cost) removed from provider-metric grid.
  * - F8: Quota hover .t-model spans colored with providerBrandHex() for brand color.
  */
 import type { ReactElement, ReactNode } from 'react'
+import type { UsageReportLocalHealthRow } from '../api/usage-report'
 import { fmtCompact } from '../lib/format-utils'
 import {
   formatLatency,
@@ -50,6 +51,7 @@ import {
 } from '../lib/usage-report-display'
 import { HealthStrip } from './primitives/health-strip'
 import { QuotaIntervalBar } from './primitives/quota-interval-bar'
+import { ReasoningTokenValue } from './primitives/reasoning-token-value'
 
 // ---------------------------------------------------------------------------
 // Types (exported for use by AggregateCard and dashboard)
@@ -75,8 +77,8 @@ export interface ProviderMetrics {
   cache_miss_usd: number
   reasoning_reported: number
   reasoning_estimated: number
-  /** Count of no-reasoning calls (from no_reasoning_calls API field if available). */
-  no_reasoning_calls: number
+  /** Requests observed in provider health buckets from the last 90 minutes. */
+  recent_requests_90m: number
   traces: number
   /** Rate limit events from UsageReportProviderLatencyHealthRow.rate_limit_events. */
   rate_limits: number
@@ -110,6 +112,10 @@ export interface QuotaTipModel {
   model: string
   /** Signed dollar delta string, e.g. '+$24'. */
   costDelta: string
+  /** Requests observed for this model during the bar's quota window. */
+  requests?: number
+  /** Requests observed for this model in the most recent 90 minutes. */
+  recentRequests90m?: number
 }
 
 /**
@@ -154,6 +160,10 @@ export interface QuotaBarGroup {
    * Wired from buildQuotaIntervals (W24/W35). Optional: falls back to empty placeholder.
    */
   tipModels?: QuotaTipModel[]
+  /** Total requests observed across the full quota-window breakdown. */
+  tipRequestTotal?: number
+  /** Total requests observed across those models in the most recent 90 minutes. */
+  tipRecentRequestTotal90m?: number
   /**
    * Period type for prior-reset history bars used to group them into stacked
    * display lanes within the ProviderCard quota section.
@@ -256,6 +266,49 @@ function fmtPacketLoss(pct: number | null): string {
   return `${pct.toFixed(1)}%`
 }
 
+function fmtRequestCount(count: number | undefined): string {
+  if (count === undefined) return '—'
+  return Math.round(count).toLocaleString()
+}
+
+function renderQuotaRequestTotals(
+  quotaBar: QuotaBarGroup
+): ReactElement | null {
+  if (
+    quotaBar.tipRequestTotal === undefined &&
+    quotaBar.tipRecentRequestTotal90m === undefined
+  ) {
+    return null
+  }
+
+  return (
+    <>
+      {quotaBar.tipRequestTotal !== undefined && (
+        <div
+          className='v9-tip-row quota-tip-total'
+          style={{ gridTemplateColumns: 'minmax(0, 1fr) auto' }}
+        >
+          <span className='t-model'>requests</span>
+          <span className='t-count'>
+            {fmtRequestCount(quotaBar.tipRequestTotal)}
+          </span>
+        </div>
+      )}
+      {quotaBar.tipRecentRequestTotal90m !== undefined && (
+        <div
+          className='v9-tip-row quota-tip-total'
+          style={{ gridTemplateColumns: 'minmax(0, 1fr) auto' }}
+        >
+          <span className='t-model'>requests 90m</span>
+          <span className='t-count'>
+            {fmtRequestCount(quotaBar.tipRecentRequestTotal90m)}
+          </span>
+        </div>
+      )}
+    </>
+  )
+}
+
 /**
  * Returns the CSS modifier class for a `.quota-row-pct` element based on
  * consumed percentage.
@@ -353,6 +406,48 @@ function PcMiniRow({ label, value, valueMod }: PcMiniRowProps): ReactElement {
   )
 }
 
+function localHealthStatusLabel(
+  status: UsageReportLocalHealthRow['status']
+): string {
+  if (status === 'green') return 'healthy'
+  if (status === 'yellow') return 'warning'
+  return 'down'
+}
+
+function LocalHealthIndicators({
+  items,
+}: {
+  items: UsageReportLocalHealthRow[]
+}): ReactElement | null {
+  if (items.length === 0) return null
+
+  return (
+    <>
+      <PcSubTitle title='LOCAL HEALTH' />
+      <div className='local-health-list'>
+        {items.map((item) => (
+          <div
+            key={`${item.category}-${item.key}`}
+            className={`local-health-chip is-${item.status}`}
+            title={[
+              item.label,
+              localHealthStatusLabel(item.status),
+              item.detail,
+              item.target,
+            ]
+              .filter(Boolean)
+              .join(' · ')}
+            aria-label={`${item.label}: ${localHealthStatusLabel(item.status)}`}
+          >
+            <span className='local-health-dot' aria-hidden='true' />
+            <span className='local-health-label'>{item.label}</span>
+          </div>
+        ))}
+      </div>
+    </>
+  )
+}
+
 interface QuotaSectionTitleProps {
   title: string
 }
@@ -444,6 +539,8 @@ export interface ProviderCardProps {
   anomalies?: AnomalyFlags
   /** Per-model mini-table rows shown in card-pane-right at ≥3840px. */
   topModels?: TopModelRow[]
+  /** Local infrastructure and model health chips shown only on the Local card. */
+  localHealthItems?: UsageReportLocalHealthRow[]
   /**
    * Additional class name(s) merged into the root `provider-card` div.
    * Used by AggregateCard to add the `aggregate` class for CSS targeting.
@@ -464,13 +561,13 @@ export interface ProviderCardProps {
  *  - Absolutely positioned vertical HealthStrip at right edge (v9w1 update)
  *  - card-pane-left:
  *      1. REQUESTS section (pc-sub-title + pc-mini-table):
- *         requests / no-reasoning requests
+ *         requests / requests 90m
  *      2. 6 provider-metric rows: p95 Latency / Errors / Rate Limits /
  *         Capacity / Packet Loss / Status
  *      3. health-strip (via HealthStrip component, absolutely positioned)
  *      4. TOKENS section (pc-sub-title + pc-mini-table):
  *         in / out / cost / cache in / cache creation / cache miss $ /
- *         reasoning reported / reasoning estimated*
+ *         reasoning*
  *      5. Quotas section title + quota lanes (Wave 41) or quota-list (legacy)
  *  - card-pane-right (≥3840px): per-model mini-table
  *
@@ -486,6 +583,7 @@ export function ProviderCard({
   lanes,
   anomalies,
   topModels = [],
+  localHealthItems = [],
   wrapperClassName,
   extraPaneLeft,
 }: ProviderCardProps): ReactElement {
@@ -559,16 +657,20 @@ export function ProviderCard({
       >
         {/*
          * Wave 26 F2: REQUESTS section replaces the old 'Requests' provider-metric
-         * row. Contains requests total and no-reasoning requests count.
+         * row. Contains selected-window requests total and last-90m request count.
          */}
         <PcSubTitle title='REQUESTS' />
         <div className='pc-mini-table'>
           <PcMiniRow label='requests' value={data.requests.toLocaleString()} />
           <PcMiniRow
-            label='no-reasoning requests'
-            value={data.no_reasoning_calls.toLocaleString()}
+            label='requests 90m'
+            value={data.recent_requests_90m.toLocaleString()}
           />
         </div>
+
+        {config.provider.toLowerCase() === 'local' ? (
+          <LocalHealthIndicators items={localHealthItems} />
+        ) : null}
 
         {/*
          * Wave 26 F2: Remaining 6 provider-metric rows (Requests, Tokens, Cost
@@ -617,7 +719,7 @@ export function ProviderCard({
          * Wave 26 F2: TOKENS section consolidates the old TOKEN CACHE and REASONING
          * sub-sections, and absorbs the old Tokens + Cost provider-metric rows.
          * Order: in / out / cost / cache in / cache creation / cache miss $ /
-         *        reasoning reported / reasoning estimated*
+         *        reasoning*
          */}
         <PcSubTitle title='TOKENS' />
         <div className='pc-mini-table'>
@@ -641,18 +743,14 @@ export function ProviderCard({
             value={formatUsd(data.cache_miss_usd)}
             valueMod='cost'
           />
-          {/* Reasoning sub-rows (moved from old REASONING section) */}
+          {/* Reasoning total: reported + estimated, with hover breakdown. */}
           <PcMiniRow
-            label='reasoning reported'
-            value={fmtCompact(data.reasoning_reported)}
-          />
-          <PcMiniRow
-            label='reasoning estimated'
+            label='reasoning'
             value={
-              <>
-                {fmtCompact(data.reasoning_estimated)}
-                <span className='est-mark'>*</span>
-              </>
+              <ReasoningTokenValue
+                reported={data.reasoning_reported}
+                estimated={data.reasoning_estimated}
+              />
             }
           />
         </div>
@@ -749,6 +847,7 @@ export function ProviderCard({
                               {tipVelocity !== undefined && (
                                 <div className='v9-tip-sub'>{tipVelocity}</div>
                               )}
+                              {renderQuotaRequestTotals(quotaBar)}
                               {tipModelRows.map((tm, mi) => (
                                 <div key={mi} className='v9-tip-row'>
                                   <span
@@ -756,6 +855,12 @@ export function ProviderCard({
                                     style={{ color: modelBrandHex(tm.model) }}
                                   >
                                     {tm.model}
+                                  </span>
+                                  <span className='t-count'>
+                                    {fmtRequestCount(tm.requests)} req
+                                    {tm.recentRequests90m !== undefined
+                                      ? ` · ${fmtRequestCount(tm.recentRequests90m)} 90m`
+                                      : ''}
                                   </span>
                                   <span className='t-count'>
                                     {tm.costDelta}
@@ -926,6 +1031,7 @@ export function ProviderCard({
                       {tipVelocity !== undefined && (
                         <div className='v9-tip-sub'>{tipVelocity}</div>
                       )}
+                      {renderQuotaRequestTotals(quotaBar)}
                       {tipModelRows.map((tm, mi) => (
                         <div key={mi} className='v9-tip-row'>
                           <span
@@ -933,6 +1039,12 @@ export function ProviderCard({
                             style={{ color: modelBrandHex(tm.model) }}
                           >
                             {tm.model}
+                          </span>
+                          <span className='t-count'>
+                            {fmtRequestCount(tm.requests)} req
+                            {tm.recentRequests90m !== undefined
+                              ? ` · ${fmtRequestCount(tm.recentRequests90m)} 90m`
+                              : ''}
                           </span>
                           <span className='t-count'>{tm.costDelta}</span>
                         </div>

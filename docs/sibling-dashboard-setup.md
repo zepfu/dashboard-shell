@@ -7,6 +7,11 @@ Sibling repos own their internal build, page, test, and backend docs. This file
 only covers the pieces the shell must know so the dashboard loads in shell
 chrome in both live dev containers and static/prod-style containers.
 
+For the component-sharing, token, and manifest contract, see
+[`remote-dashboard-integration-contract.md`](remote-dashboard-integration-contract.md).
+For QueryClient ownership, lazy route behavior, source maps, and CSP/asset
+loading, see [`runtime-contracts.md`](runtime-contracts.md).
+
 ## Current Siblings
 
 | Dashboard | Repo | Module id | Base path | API base | Dev port | Static module path |

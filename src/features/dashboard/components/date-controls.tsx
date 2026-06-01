@@ -64,6 +64,7 @@ export function DateControls({
         From
         <input
           id='date-from'
+          data-shortcut-target='first-date'
           type='text'
           value={from}
           onChange={(e: ChangeEvent<HTMLInputElement>) => {

@@ -21,7 +21,14 @@ import {
   createRouter,
   RouterProvider,
 } from '@tanstack/react-router'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from '@testing-library/react'
 import { http, HttpResponse } from 'msw'
 import { SidebarProvider } from '../../components/ui/sidebar'
 import { DirectionProvider } from '../../context/direction-provider'
@@ -64,6 +71,22 @@ beforeAll(() => {
       /* noop */
     }
   }
+})
+
+beforeEach(() => {
+  server.use(
+    http.get('/api/shell/reports/usage/tool-activity', () =>
+      HttpResponse.json({
+        metadata: {
+          from: '2026-04-19',
+          to: '2026-05-19',
+          generatedAt: '2026-05-19T00:00:00.000Z',
+        },
+        toolActivity: [],
+      })
+    )
+  )
+  registerQuotaHistoryHandler()
 })
 
 // ---------------------------------------------------------------------------
@@ -127,11 +150,46 @@ function makeClient(): QueryClient {
   })
 }
 
-function registerTokenTrendSummaryHandler(): void {
+function registerTokenTrendSummaryHandler(
+  onRequest?: (url: string) => void
+): void {
   server.use(
-    http.get('/api/shell/reports/usage/token-trend-summary', () =>
-      HttpResponse.json({ tokenTrendHours: [], tokenTrendVersions: [] })
-    )
+    http.get('/api/shell/reports/usage/token-trend-summary', ({ request }) => {
+      onRequest?.(request.url)
+      return HttpResponse.json({ tokenTrendHours: [], tokenTrendVersions: [] })
+    })
+  )
+}
+
+function registerQuotaRangeHistoryHandler(
+  onRequest?: (url: string) => void
+): void {
+  server.use(
+    http.get('/api/shell/reports/usage/quota-range-history', ({ request }) => {
+      onRequest?.(request.url)
+      return HttpResponse.json({
+        metadata: {
+          from: '2026-04-19',
+          to: '2026-05-19',
+          generatedAt: '2026-05-19T00:00:00.000Z',
+        },
+        quotaRangeHistory: [],
+      })
+    })
+  )
+}
+
+function registerQuotaHistoryHandler(onRequest?: (url: string) => void): void {
+  server.use(
+    http.get('/api/shell/reports/usage/quota-history', ({ request }) => {
+      onRequest?.(request.url)
+      return HttpResponse.json({
+        metadata: {
+          generatedAt: '2026-05-19T00:00:00.000Z',
+        },
+        quotaHistory: [],
+      })
+    })
   )
 }
 
@@ -276,11 +334,27 @@ describe('Dashboard — TCG-2: loading skeleton render path', () => {
     // Once data arrives, the skeleton should be gone (the ternary branch
     // resolves to PhosphorDashboard instead of the skeleton div).
     expect(container.querySelector('.dashboard-loading-skeleton')).toBeNull()
+    const recency = screen.getByLabelText('Underlying data recency')
+    expect(recency).toBeInTheDocument()
+    expect(within(recency).getByText('Session')).toBeInTheDocument()
+    expect(within(recency).getByText('Quota')).toBeInTheDocument()
+    expect(within(recency).getByText('Health')).toBeInTheDocument()
   })
 
   test('test_force_refresh_button_adds_cache_bust_to_usage_request', async () => {
-    registerTokenTrendSummaryHandler()
     const usageUrls: string[] = []
+    const tokenTrendUrls: string[] = []
+    const quotaHistoryUrls: string[] = []
+    const quotaRangeUrls: string[] = []
+    registerTokenTrendSummaryHandler((url) => {
+      tokenTrendUrls.push(url)
+    })
+    registerQuotaHistoryHandler((url) => {
+      quotaHistoryUrls.push(url)
+    })
+    registerQuotaRangeHistoryHandler((url) => {
+      quotaRangeUrls.push(url)
+    })
     server.use(
       http.get('/api/shell/reports/usage', ({ request }) => {
         usageUrls.push(request.url)
@@ -313,6 +387,13 @@ describe('Dashboard — TCG-2: loading skeleton render path', () => {
       },
       { timeout: 3000 }
     )
+    await waitFor(
+      () => {
+        expect(quotaHistoryUrls.length).toBeGreaterThan(0)
+      },
+      { timeout: 3000 }
+    )
+    const quotaHistoryRequestsBeforeRefresh = quotaHistoryUrls.length
 
     fireEvent.click(screen.getByLabelText('Force refresh dashboard data'))
 
@@ -324,5 +405,212 @@ describe('Dashboard — TCG-2: loading skeleton render path', () => {
       },
       { timeout: 3000 }
     )
+    await waitFor(
+      () => {
+        expect(
+          tokenTrendUrls.some((url) =>
+            new URL(url).searchParams.has('cache_bust')
+          )
+        ).toBe(true)
+      },
+      { timeout: 3000 }
+    )
+    expect(quotaRangeUrls).toHaveLength(0)
+    expect(quotaHistoryUrls).toHaveLength(quotaHistoryRequestsBeforeRefresh)
+    expect(
+      quotaHistoryUrls.some((url) =>
+        new URL(url).searchParams.has('cache_bust')
+      )
+    ).toBe(false)
+  })
+
+  test('test_dashboard_shortcut_keys_switch_tabs_and_focus_controls', async () => {
+    const quotaHistoryUrls: string[] = []
+    const quotaRangeUrls: string[] = []
+    registerQuotaHistoryHandler((url) => {
+      quotaHistoryUrls.push(url)
+    })
+    registerQuotaRangeHistoryHandler((url) => {
+      quotaRangeUrls.push(url)
+    })
+    server.use(
+      http.get('/api/shell/reports/usage', () => HttpResponse.json(MOCK_REPORT))
+    )
+    server.use(
+      http.get('/api/shell/reports/quotas', () =>
+        HttpResponse.json({
+          metadata: {
+            generatedAt: '2026-05-19T00:00:00.000Z',
+            latestRecordAt: null,
+            latestRecordAgeMinutes: null,
+            latestRecordStale: false,
+            staleRecordThresholdMinutes: 60,
+          },
+          quotas: [],
+        })
+      )
+    )
+    server.use(
+      http.get('/api/shell/reports/usage/token-trend-summary', () =>
+        HttpResponse.json({
+          metadata: {
+            from: '2026-05-20',
+            to: '2026-05-21',
+          },
+          tokenTrendHours: [
+            {
+              day: '2026-05-20',
+              hour: 8,
+              provider: 'anthropic',
+              traces: 4,
+              token_total: 100,
+              usd_cost: 0,
+              tool_calls: 7,
+            },
+          ],
+          tokenTrendVersions: [],
+        })
+      )
+    )
+
+    const Dashboard = await importDashboard()
+    const { container } = renderWithProviders(Dashboard)
+
+    await waitFor(
+      () => {
+        expect(screen.getByRole('heading', { name: 'STATUS' })).toBeVisible()
+      },
+      { timeout: 3000 }
+    )
+    await waitFor(
+      () => {
+        expect(
+          screen.getByRole('tablist', { name: 'Trend detail lane' })
+        ).toBeInTheDocument()
+      },
+      { timeout: 3000 }
+    )
+
+    const shortcutNav = screen.getByRole('navigation', {
+      name: 'Sections (keyboard shortcuts: bracketed letter)',
+    })
+    expect(
+      within(shortcutNav)
+        .getAllByRole('link')
+        .map((link) => link.textContent)
+    ).toEqual([
+      '[S]tatus',
+      '[H]ealth',
+      '[Q]uota',
+      '[T]rend',
+      '[V]ersion',
+      '[R]equest',
+      'T[O]ol',
+      '[L]edger',
+      '[M]odel',
+      'R[E]pository',
+      '[F]ilter',
+      '[D]ate',
+    ])
+
+    const statusTabs = screen.getByRole('tablist', { name: 'Status view' })
+    fireEvent.keyDown(document, { key: 'q' })
+    expect(
+      within(statusTabs).getByRole('tab', { name: 'Quota' })
+    ).toHaveAttribute('aria-selected', 'true')
+    await waitFor(
+      () => {
+        expect(quotaRangeUrls).toHaveLength(1)
+      },
+      { timeout: 3000 }
+    )
+    expect(
+      new URL(quotaRangeUrls[0] ?? '').searchParams.has('cache_bust')
+    ).toBe(false)
+
+    await waitFor(
+      () => {
+        expect(
+          screen.getByRole('button', { name: /refresh provider data/i })
+        ).toBeEnabled()
+      },
+      { timeout: 3000 }
+    )
+    fireEvent.click(
+      screen.getByRole('button', { name: /refresh provider data/i })
+    )
+    await waitFor(
+      () => {
+        expect(
+          quotaRangeUrls.some((url) =>
+            new URL(url).searchParams.has('cache_bust')
+          )
+        ).toBe(true)
+      },
+      { timeout: 3000 }
+    )
+
+    fireEvent.keyDown(document, { key: 'h' })
+    expect(
+      within(statusTabs).getByRole('tab', { name: 'Health' })
+    ).toHaveAttribute('aria-selected', 'true')
+    await act(async () => {
+      fireEvent.click(
+        screen.getByRole('button', {
+          name: /refresh provider data/i,
+        })
+      )
+    })
+    await waitFor(
+      () => {
+        expect(
+          quotaHistoryUrls.some((url) =>
+            new URL(url).searchParams.has('cache_bust')
+          )
+        ).toBe(true)
+      },
+      { timeout: 3000 }
+    )
+
+    const trendTabs = screen.getByRole('tablist', {
+      name: 'Trend detail lane',
+    })
+    fireEvent.keyDown(document, { key: 'r' })
+    expect(
+      within(trendTabs).getByRole('tab', { name: 'Request' })
+    ).toHaveAttribute('aria-selected', 'true')
+    fireEvent.keyDown(document, { key: 'o' })
+    expect(
+      within(trendTabs).getByRole('tab', { name: 'Tool' })
+    ).toHaveAttribute('aria-selected', 'true')
+    fireEvent.keyDown(document, { key: 'v' })
+    expect(
+      within(trendTabs).getByRole('tab', { name: 'Version' })
+    ).toHaveAttribute('aria-selected', 'true')
+
+    const ledgerTabs = screen.getByRole('tablist', { name: 'Ledger view' })
+    fireEvent.keyDown(document, { key: 'e' })
+    expect(
+      within(ledgerTabs).getByRole('tab', { name: 'Repository' })
+    ).toHaveAttribute('aria-selected', 'true')
+    fireEvent.keyDown(document, { key: 'm' })
+    expect(
+      within(ledgerTabs).getByRole('tab', { name: 'Model' })
+    ).toHaveAttribute('aria-selected', 'true')
+
+    const firstFilter = container.querySelector(
+      '[data-shortcut-target="first-filter"]'
+    )
+    const firstDate = container.querySelector(
+      '[data-shortcut-target="first-date"]'
+    )
+    expect(firstFilter).not.toBeNull()
+    expect(firstDate).not.toBeNull()
+
+    fireEvent.keyDown(document, { key: 'f' })
+    expect(document.activeElement).toBe(firstFilter)
+
+    fireEvent.keyDown(document, { key: 'd' })
+    expect(document.activeElement).toBe(firstDate)
   })
 })

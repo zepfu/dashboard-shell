@@ -1,4 +1,5 @@
 import type {
+  UsageReportDockerLogErrorRow,
   UsageReportProviderErrorObservationRow,
   UsageReportProviderLatencyHealthRow,
   UsageReportQuotaRow,
@@ -111,6 +112,55 @@ test('buildDashboardAlertSummary aggregates recent provider errors as red issues
     severity: 'error',
     head: '2 529 errors from Anthropic',
     sub: 'Observed in the last 90 minutes',
+  })
+})
+
+test('buildDashboardAlertSummary includes provider and Docker log error messages', () => {
+  const providerErrorObservations: UsageReportProviderErrorObservationRow[] = [
+    {
+      observed_at: '2026-05-23T11:40:00.000Z',
+      environment: 'prod',
+      provider: 'anthropic',
+      model: 'claude-sonnet-4-6',
+      model_group: 'sonnet',
+      route_family: 'llm',
+      status_code: 529,
+      error_type: 'provider_error',
+      error_code: 'overloaded',
+      error_class: 'provider_error',
+      error_message: 'Anthropic overloaded_error: Overloaded',
+      retry_after_seconds: null,
+      expected_reset_at: null,
+    },
+  ]
+  const dockerLogErrors: UsageReportDockerLogErrorRow[] = [
+    {
+      observed_at: '2026-05-23T11:42:00.000Z',
+      container: 'litellm-dev',
+      stream: 'stderr',
+      provider: 'google',
+      status_code: 429,
+      level: 'error',
+      message: 'Google quota exceeded for requests',
+    },
+  ]
+
+  const summary = buildDashboardAlertSummary({
+    anomalies: emptyAnomalies,
+    providerErrorObservations,
+    dockerLogErrors,
+    now: new Date('2026-05-23T12:00:00.000Z'),
+  })
+
+  expect(summary.issues).toContainEqual({
+    severity: 'error',
+    head: '1 529 error from Anthropic',
+    sub: 'Observed in the last 90 minutes · Anthropic overloaded_error: Overloaded',
+  })
+  expect(summary.issues).toContainEqual({
+    severity: 'error',
+    head: '1 429 error from Google',
+    sub: 'Observed in the last 90 minutes · Google quota exceeded for requests',
   })
 })
 

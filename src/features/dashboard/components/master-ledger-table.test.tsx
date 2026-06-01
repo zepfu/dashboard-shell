@@ -139,7 +139,7 @@ test('test_cache_reasoning_columns_present', () => {
   // Wave 26 (operator F#12): cache miss columns must appear.
   // Wave 29 Fix #7: reasoning_reported + reasoning_estimated consolidated into
   // single "Reasoning" column; old separate columns must NOT appear.
-  render(<MasterLedgerTable rows={mockRows} />)
+  const { container } = render(<MasterLedgerTable rows={mockRows} />)
   expect(
     screen.getByRole('columnheader', { name: /cache miss %/i })
   ).toBeInTheDocument()
@@ -157,6 +157,316 @@ test('test_cache_reasoning_columns_present', () => {
   expect(
     screen.queryByRole('columnheader', { name: /reasoning estimated/i })
   ).toBeNull()
+
+  const reasoningValues = Array.from(
+    container.querySelectorAll('.reasoning-token-value')
+  ).map((el) => el.textContent)
+  expect(reasoningValues).toContain('1.1K*')
+  expect(container.textContent).not.toContain('(+')
+
+  const estimatedReasoningValue = Array.from(
+    container.querySelectorAll('.reasoning-token-value')
+  ).find((el) => el.textContent === '1.1K*')
+  expect(estimatedReasoningValue).not.toBeUndefined()
+  fireEvent.pointerEnter(estimatedReasoningValue!.parentElement!)
+  expect(screen.getAllByText('Reasoning tokens').length).toBeGreaterThan(0)
+  expect(screen.getAllByText('reported').length).toBeGreaterThan(0)
+  expect(screen.getAllByText('500').length).toBeGreaterThan(0)
+  expect(screen.getAllByText('estimated').length).toBeGreaterThan(0)
+  expect(screen.getAllByText('600').length).toBeGreaterThan(0)
+})
+
+test('test_score_column_renders_indicator_only_and_reason_hover', () => {
+  const { container } = render(
+    <MasterLedgerTable
+      rows={[
+        {
+          ...mockRows[0],
+          agentQuality: {
+            totalRows: 20,
+            quality: {
+              score: 0.95,
+              evaluated: 80,
+              possible: 100,
+              issueCount: 2,
+            },
+            instruction: {
+              score: 1,
+              evaluated: 40,
+              possible: 80,
+              issueCount: 0,
+            },
+            tool: {
+              score: 0.875,
+              evaluated: 32,
+              possible: 80,
+              issueCount: 4,
+            },
+            contract: {
+              score: 0.9,
+              evaluated: 20,
+              possible: 20,
+              issueCount: 2,
+            },
+            progress: {
+              score: 0.8,
+              evaluated: 20,
+              possible: 20,
+              issueCount: 4,
+            },
+            risk: {
+              score: 0.05,
+              evaluated: 40,
+              possible: 40,
+              issueCount: 2,
+            },
+            discoveryInventoryCoverage: {
+              score: 0.75,
+              evaluated: 12,
+              possible: 20,
+              issueCount: 3,
+            },
+            discoveryInventoryMissingCount: 5,
+            terminalCompletion: {
+              score: 1,
+              evaluated: 8,
+              possible: 8,
+              issueCount: 0,
+            },
+            emptyCompletionFailures: 1,
+            invalidToolCallErrors: 2,
+            destructiveCheckoutFailures: 0,
+            largePayloadRisks: 0,
+            readOnlyPolicyViolations: 3,
+            reasons: [
+              {
+                family: 'tool_use_validity',
+                reason: 'invalid_tool_call_error',
+                count: 2,
+              },
+              {
+                family: 'discovery_inventory_coverage',
+                reason: 'inventory_contract_missing',
+                count: 1,
+              },
+              {
+                family: 'discovery_inventory_evidence',
+                reason: 'candidate_accounting_missing',
+                count: 1,
+              },
+              {
+                family: 'terminal_completion',
+                reason: 'empty_final_output',
+                count: 1,
+              },
+            ],
+          },
+        },
+      ]}
+    />
+  )
+
+  expect(
+    screen.getByRole('columnheader', { name: /^score$/i })
+  ).toBeInTheDocument()
+  expect(screen.queryByText('Review')).toBeNull()
+  expect(screen.queryByText(/80% · 64% cov · 20 issues/i)).toBeNull()
+
+  const scoreIndicator = container.querySelector(
+    '[data-agent-score-indicator="true"]'
+  )
+  expect(scoreIndicator).not.toBeNull()
+  expect(scoreIndicator).toHaveAttribute('data-agent-score-state', 'review')
+  expect(scoreIndicator).toHaveAttribute('aria-label', 'Score: review')
+
+  expect(screen.getByText('Agent health')).toBeInTheDocument()
+  expect(screen.getByText('Quality 95%')).toBeInTheDocument()
+  expect(screen.getByText('Risk 5%')).toBeInTheDocument()
+  expect(screen.getByText('Discovery inventory 75%')).toBeInTheDocument()
+  expect(screen.getByText('Terminal completion 100%')).toBeInTheDocument()
+  expect(screen.getByText(/5 missing/)).toBeInTheDocument()
+  expect(
+    screen.getByText(/Tool Use Validity · Invalid Tool Call Error/i)
+  ).toBeInTheDocument()
+  expect(
+    screen.getByText(
+      /Discovery Inventory Coverage · Inventory Contract Missing/i
+    )
+  ).toBeInTheDocument()
+  expect(
+    screen.getByText(
+      /Discovery Inventory Evidence · Candidate Accounting Missing/i
+    )
+  ).toBeInTheDocument()
+  expect(
+    screen.getByText(/Terminal Completion · Empty Final Output/i)
+  ).toBeInTheDocument()
+  expect(screen.getByText('Read-only violations')).toBeInTheDocument()
+})
+
+test('test_score_tooltip_surfaces_handoff_quality_signals', () => {
+  render(
+    <MasterLedgerTable
+      rows={[
+        {
+          ...mockRows[0],
+          agentQuality: {
+            totalRows: 4,
+            quality: { score: null, evaluated: 0, possible: 0, issueCount: 0 },
+            instruction: {
+              score: null,
+              evaluated: 0,
+              possible: 0,
+              issueCount: 0,
+            },
+            tool: { score: null, evaluated: 0, possible: 0, issueCount: 0 },
+            contract: {
+              score: null,
+              evaluated: 0,
+              possible: 0,
+              issueCount: 0,
+            },
+            progress: {
+              score: null,
+              evaluated: 0,
+              possible: 0,
+              issueCount: 0,
+            },
+            risk: { score: null, evaluated: 0, possible: 0, issueCount: 0 },
+            discoveryInventoryCoverage: {
+              score: null,
+              evaluated: 0,
+              possible: 0,
+              issueCount: 0,
+            },
+            discoveryInventoryMissingCount: 0,
+            terminalCompletion: {
+              score: null,
+              evaluated: 0,
+              possible: 0,
+              issueCount: 0,
+            },
+            emptyCompletionFailures: 0,
+            invalidToolCallErrors: 0,
+            destructiveCheckoutFailures: 0,
+            largePayloadRisks: 0,
+            readOnlyPolicyViolations: 0,
+            ignoredPathTracking: {
+              score: 0.75,
+              evaluated: 4,
+              possible: 4,
+              violationCount: 1,
+            },
+            baselineDeflection: {
+              attemptedScore: 0.5,
+              attemptedEvaluated: 4,
+              attemptedIncidents: 2,
+              incidentScore: 0.25,
+              incidentEvaluated: 4,
+              incidentIncidents: 1,
+              attemptCount: 2,
+              toolCallCount: 8,
+              inputTokens: 1200,
+              elapsedMs: 9000,
+              qualityGateTriggerCount: 3,
+              qualityGateFixAttemptCount: 1,
+              qualityGateRerunCount: 2,
+            },
+            sleepWellnessInterruption: {
+              attemptedScore: 0.25,
+              attemptedEvaluated: 4,
+              attemptedIncidents: 1,
+              incidentScore: 0.25,
+              incidentEvaluated: 4,
+              incidentIncidents: 1,
+              interruptionCount: 1,
+              outputTokens: 100,
+              inputTokens: 500,
+              elapsedMs: 2000,
+              afterUserPushbackCount: 1,
+              repeatedCount: 1,
+            },
+            reasons: [
+              {
+                family: 'ignored_path_tracking_evidence',
+                reason: 'confirmed_ignored',
+                count: 1,
+              },
+            ],
+          },
+        },
+      ]}
+    />
+  )
+
+  expect(screen.getByText('Handoff signals')).toBeInTheDocument()
+  expect(screen.getByText('Ignored paths')).toBeInTheDocument()
+  expect(screen.getByText('Baseline incident')).toBeInTheDocument()
+  expect(screen.getByText('Sleep incident')).toBeInTheDocument()
+  expect(screen.getByText('Gate path')).toBeInTheDocument()
+  expect(
+    screen.getByText(/Ignored Path Tracking Evidence · Confirmed Ignored/i)
+  ).toBeInTheDocument()
+})
+
+test('test_latency_cells_expose_split_coverage_tooltip', () => {
+  render(
+    <MasterLedgerTable
+      rows={[
+        {
+          ...mockRows[0],
+          p50_ms: 1200,
+          p95_ms: 3400,
+          latencySummary: {
+            sampleRows: 10,
+            totalServerP50Ms: 1200,
+            totalServerP95Ms: 3400,
+            totalServerCount: 10,
+            upstreamElapsedP50Ms: 900,
+            upstreamElapsedP95Ms: 2800,
+            upstreamElapsedCount: 8,
+            ttftP95Ms: 450,
+            ttftCount: 7,
+            litellmProcessingP95Ms: 80,
+            litellmProcessingCount: 10,
+            upstreamStreamP95Ms: 2100,
+            upstreamStreamCount: 6,
+            unclassifiedP95Ms: 200,
+            unclassifiedCount: 5,
+            previousResponseGapP95Ms: 6000,
+            previousResponseGapCount: 3,
+            upstreamOutputTokensPerSecondP50: 18.5,
+            upstreamOutputTokensPerSecondP95: 40.2,
+            upstreamOutputTokensPerSecondCount: 8,
+            streamOutputTokensPerSecondP50: 22.5,
+            streamOutputTokensPerSecondP95: 44.2,
+            streamOutputTokensPerSecondCount: 6,
+          },
+        },
+      ]}
+    />
+  )
+
+  expect(screen.getAllByText('Latency split').length).toBeGreaterThan(0)
+  expect(screen.getAllByText('Server total p50/p95').length).toBeGreaterThan(0)
+  expect(screen.getAllByText('Upstream output tok/s').length).toBeGreaterThan(0)
+  expect(screen.getAllByText('10 rows').length).toBeGreaterThan(0)
+})
+
+test('test_score_column_uses_blue_indicator_for_missing_score_data', () => {
+  const { container } = render(<MasterLedgerTable rows={[mockRows[2]]} />)
+
+  const scoreIndicator = container.querySelector(
+    '[data-agent-score-indicator="true"]'
+  )
+  expect(scoreIndicator).not.toBeNull()
+  expect(scoreIndicator).toHaveAttribute('data-agent-score-state', 'none')
+  expect(scoreIndicator).toHaveAttribute('aria-label', 'Score: no data')
+  expect(scoreIndicator).toHaveStyle({
+    background: 'var(--accent-cool, #38bdf8)',
+  })
+  expect(screen.queryByText('Unscored')).toBeNull()
+  expect(screen.getByText('No score data')).toBeInTheDocument()
 })
 
 test('test_click_sort_descending', () => {

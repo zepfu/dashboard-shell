@@ -29,8 +29,8 @@
  * Wave 29 Fix #7:
  * - Requests moved up to col 3 (right after Provider).
  * - reasoning_reported + reasoning_estimated consolidated into single "Reasoning"
- *   column (col 8). Sorts on combined value. Estimated shown as "(+N*)" suffix
- *   only when reasoning_estimated > 0.
+ *   column (col 8). Sorts on combined value. Estimated contribution is marked
+ *   with an asterisk and exposed in a hover breakdown.
  *
  * Wave 30 operator reorder:
  * - Columns reordered per operator spec.
@@ -65,6 +65,13 @@ import {
   type UsageReportProviderErrorObservationRow,
   type UsageReportToolActivityRow,
 } from '../api/usage-report'
+import {
+  agentQualityIssueSortValue,
+  combineAgentQualitySummaries,
+  type AgentQualityFamilyKey,
+  type AgentQualityFamilySummary,
+  type AgentQualitySummary,
+} from '../lib/agent-quality'
 import { fmtCompact, numFmt } from '../lib/format-utils'
 import {
   providerBrandHex,
@@ -74,6 +81,7 @@ import {
   formatUsd,
 } from '../lib/usage-report-display'
 import { HoverTooltip } from './primitives/hover-tooltip'
+import { ReasoningTokenValue } from './primitives/reasoning-token-value'
 import { Sparkline } from './primitives/sparkline'
 
 // ---------------------------------------------------------------------------
@@ -478,6 +486,32 @@ export function buildToolActivity(
 }
 
 /** One row in the master ledger table. */
+export interface ModelLatencySummary {
+  sampleRows: number
+  totalServerP50Ms?: number | null
+  totalServerP95Ms?: number | null
+  totalServerCount?: number | null
+  upstreamElapsedP50Ms?: number | null
+  upstreamElapsedP95Ms?: number | null
+  upstreamElapsedCount?: number | null
+  ttftP95Ms?: number | null
+  ttftCount?: number | null
+  litellmProcessingP95Ms?: number | null
+  litellmProcessingCount?: number | null
+  upstreamStreamP95Ms?: number | null
+  upstreamStreamCount?: number | null
+  unclassifiedP95Ms?: number | null
+  unclassifiedCount?: number | null
+  previousResponseGapP95Ms?: number | null
+  previousResponseGapCount?: number | null
+  upstreamOutputTokensPerSecondP50?: number | null
+  upstreamOutputTokensPerSecondP95?: number | null
+  upstreamOutputTokensPerSecondCount?: number | null
+  streamOutputTokensPerSecondP50?: number | null
+  streamOutputTokensPerSecondP95?: number | null
+  streamOutputTokensPerSecondCount?: number | null
+}
+
 export interface ModelRow {
   model: string
   provider: string
@@ -514,12 +548,16 @@ export interface ModelRow {
   spark?: number[]
   // W33: pre-processed tool activity for TOOL cell hover tooltip
   toolActivity?: ModelToolActivity
+  /** Deterministic session-history agent-quality score rollup. */
+  agentQuality?: AgentQualitySummary
+  /** Millisecond timing split and throughput rollup from session_history. */
+  latencySummary?: ModelLatencySummary
   /** Display-only repository children for exact model drilldown. */
   repositoryChildren?: ModelRow[]
 }
 
 type LedgerLevel = 'provider' | 'family' | 'model' | 'repository'
-type LedgerView = 'model' | 'repository'
+export type LedgerView = 'model' | 'repository'
 
 interface LedgerDisplayRow extends ModelRow {
   ledgerLevel: LedgerLevel
@@ -761,6 +799,93 @@ function sumSpark(rows: readonly ModelRow[]): number[] | undefined {
   )
 }
 
+function maxNullable(values: readonly (number | null | undefined)[]) {
+  const present = values.filter((value): value is number => value != null)
+  return present.length > 0 ? Math.max(...present) : null
+}
+
+function sumNullable(values: readonly (number | null | undefined)[]) {
+  const present = values.filter((value): value is number => value != null)
+  return present.length > 0
+    ? present.reduce((sum, value) => sum + value, 0)
+    : null
+}
+
+function combineModelLatencySummaries(
+  rows: readonly ModelRow[]
+): ModelLatencySummary | undefined {
+  const summaries = rows
+    .map((row) => row.latencySummary)
+    .filter((summary): summary is ModelLatencySummary => summary !== undefined)
+  if (summaries.length === 0) return undefined
+
+  return {
+    sampleRows: summaries.reduce((sum, summary) => sum + summary.sampleRows, 0),
+    totalServerP50Ms: maxNullable(
+      summaries.map((summary) => summary.totalServerP50Ms)
+    ),
+    totalServerP95Ms: maxNullable(
+      summaries.map((summary) => summary.totalServerP95Ms)
+    ),
+    totalServerCount: sumNullable(
+      summaries.map((summary) => summary.totalServerCount)
+    ),
+    upstreamElapsedP50Ms: maxNullable(
+      summaries.map((summary) => summary.upstreamElapsedP50Ms)
+    ),
+    upstreamElapsedP95Ms: maxNullable(
+      summaries.map((summary) => summary.upstreamElapsedP95Ms)
+    ),
+    upstreamElapsedCount: sumNullable(
+      summaries.map((summary) => summary.upstreamElapsedCount)
+    ),
+    ttftP95Ms: maxNullable(summaries.map((summary) => summary.ttftP95Ms)),
+    ttftCount: sumNullable(summaries.map((summary) => summary.ttftCount)),
+    litellmProcessingP95Ms: maxNullable(
+      summaries.map((summary) => summary.litellmProcessingP95Ms)
+    ),
+    litellmProcessingCount: sumNullable(
+      summaries.map((summary) => summary.litellmProcessingCount)
+    ),
+    upstreamStreamP95Ms: maxNullable(
+      summaries.map((summary) => summary.upstreamStreamP95Ms)
+    ),
+    upstreamStreamCount: sumNullable(
+      summaries.map((summary) => summary.upstreamStreamCount)
+    ),
+    unclassifiedP95Ms: maxNullable(
+      summaries.map((summary) => summary.unclassifiedP95Ms)
+    ),
+    unclassifiedCount: sumNullable(
+      summaries.map((summary) => summary.unclassifiedCount)
+    ),
+    previousResponseGapP95Ms: maxNullable(
+      summaries.map((summary) => summary.previousResponseGapP95Ms)
+    ),
+    previousResponseGapCount: sumNullable(
+      summaries.map((summary) => summary.previousResponseGapCount)
+    ),
+    upstreamOutputTokensPerSecondP50: maxNullable(
+      summaries.map((summary) => summary.upstreamOutputTokensPerSecondP50)
+    ),
+    upstreamOutputTokensPerSecondP95: maxNullable(
+      summaries.map((summary) => summary.upstreamOutputTokensPerSecondP95)
+    ),
+    upstreamOutputTokensPerSecondCount: sumNullable(
+      summaries.map((summary) => summary.upstreamOutputTokensPerSecondCount)
+    ),
+    streamOutputTokensPerSecondP50: maxNullable(
+      summaries.map((summary) => summary.streamOutputTokensPerSecondP50)
+    ),
+    streamOutputTokensPerSecondP95: maxNullable(
+      summaries.map((summary) => summary.streamOutputTokensPerSecondP95)
+    ),
+    streamOutputTokensPerSecondCount: sumNullable(
+      summaries.map((summary) => summary.streamOutputTokensPerSecondCount)
+    ),
+  }
+}
+
 function aggregateRows(
   rows: readonly ModelRow[],
   overrides: Pick<
@@ -835,6 +960,10 @@ function aggregateRows(
     inval: optionalSum((row) => row.inval),
     spark: sumSpark(rows),
     toolActivity: undefined,
+    agentQuality: combineAgentQualitySummaries(
+      rows.map((row) => row.agentQuality)
+    ),
+    latencySummary: combineModelLatencySummaries(rows),
     ...overrides,
   }
 }
@@ -917,6 +1046,8 @@ function compareLedgerValues(
         return row.provider
       case 'reasoning':
         return (row.reasoning_reported ?? 0) + (row.reasoning_estimated ?? 0)
+      case 'agent_quality':
+        return agentQualityIssueSortValue(row.agentQuality)
       case 'sparkline':
         return row.spark?.reduce((sum, value) => sum + value, 0) ?? 0
       default: {
@@ -1045,6 +1176,604 @@ function formatPercent(pct: number): string {
   return `${pct.toFixed(1)}%`
 }
 
+const AGENT_FAMILY_LABELS: Record<AgentQualityFamilyKey, string> = {
+  quality: 'Quality',
+  instruction: 'Instruction',
+  tool: 'Tool',
+  contract: 'Contract',
+  progress: 'Progress',
+  risk: 'Risk',
+  discoveryInventoryCoverage: 'Discovery inventory',
+  terminalCompletion: 'Terminal completion',
+}
+
+function formatAgentPercent(score: number | null): string {
+  return score === null ? '--' : `${Math.round(score * 100).toString()}%`
+}
+
+function humanizeReasonCode(value: string): string {
+  return value
+    .replace(/[:/_-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/\b\w/g, (match) => match.toUpperCase())
+}
+
+function agentFamilyColor(
+  family: AgentQualityFamilyKey,
+  summary: AgentQualityFamilySummary
+): string {
+  if (summary.score === null) return 'var(--fg-muted, #64748b)'
+  if (family === 'risk') {
+    if (summary.score >= 0.1) return 'var(--accent-hot, #ef4444)'
+    if (summary.score > 0) return 'var(--accent-warm, #f59e0b)'
+    return 'var(--accent-teal, #14b8a6)'
+  }
+  if (summary.score < 0.9) return 'var(--accent-hot, #ef4444)'
+  if (summary.score < 0.98) return 'var(--accent-warm, #f59e0b)'
+  return 'var(--accent-teal, #14b8a6)'
+}
+
+function formatCoverage(summary: AgentQualityFamilySummary): string {
+  const coverage =
+    summary.possible > 0 ? (summary.evaluated / summary.possible) * 100 : 0
+  return `${numFmt(summary.evaluated)} / ${numFmt(summary.possible)} checks (${numFmt(coverage, 0)}%)`
+}
+
+function formatSignalRate(count: number, evaluated: number): string {
+  if (evaluated <= 0) return `${numFmt(count)} / --`
+  return `${numFmt(count)} / ${numFmt(evaluated)} (${numFmt((count / evaluated) * 100, 0)}%)`
+}
+
+interface AgentQualityDisplaySummary {
+  label: string
+  color: string
+  state: 'review' | 'watch' | 'healthy' | 'unscored'
+}
+
+const AGENT_NO_DATA_COLOR = 'var(--accent-cool, #38bdf8)'
+
+function summarizeAgentQuality(
+  summary: AgentQualitySummary
+): AgentQualityDisplaySummary {
+  const passFamilies: AgentQualityFamilyKey[] = [
+    'quality',
+    'instruction',
+    'tool',
+    'contract',
+    'progress',
+  ]
+  const passScores = passFamilies
+    .map((family) => summary[family].score)
+    .filter((score): score is number => score !== null)
+  const discovery = summary.discoveryInventoryCoverage
+  const terminal = summary.terminalCompletion
+  if (discovery.score !== null) passScores.push(discovery.score)
+  if (terminal.score !== null) passScores.push(terminal.score)
+  const worstPassScore = passScores.length > 0 ? Math.min(...passScores) : null
+  const evaluated = passFamilies.reduce(
+    (sum, family) => sum + summary[family].evaluated,
+    0
+  )
+  const possible = passFamilies.reduce(
+    (sum, family) => sum + summary[family].possible,
+    0
+  )
+  const coveragePct = possible > 0 ? (evaluated / possible) * 100 : null
+  const riskScore = summary.risk.score ?? 0
+  const handoffIncidentCount =
+    (summary.ignoredPathTracking?.violationCount ?? 0) +
+    (summary.baselineDeflection?.incidentIncidents ?? 0) +
+    (summary.sleepWellnessInterruption?.incidentIncidents ?? 0) +
+    discovery.issueCount +
+    terminal.issueCount
+  const handoffAttemptCount =
+    (summary.baselineDeflection?.attemptedIncidents ?? 0) +
+    (summary.sleepWellnessInterruption?.attemptedIncidents ?? 0)
+  const issueCount =
+    passFamilies.reduce((sum, family) => sum + summary[family].issueCount, 0) +
+    summary.risk.issueCount +
+    discovery.issueCount +
+    summary.discoveryInventoryMissingCount +
+    terminal.issueCount +
+    summary.emptyCompletionFailures +
+    summary.invalidToolCallErrors +
+    summary.destructiveCheckoutFailures +
+    summary.largePayloadRisks +
+    summary.readOnlyPolicyViolations +
+    handoffIncidentCount +
+    handoffAttemptCount
+
+  if (
+    summary.destructiveCheckoutFailures > 0 ||
+    summary.emptyCompletionFailures > 0 ||
+    discovery.issueCount > 0 ||
+    summary.discoveryInventoryMissingCount > 0 ||
+    terminal.issueCount > 0 ||
+    handoffIncidentCount > 0 ||
+    riskScore >= 0.1 ||
+    (worstPassScore !== null && worstPassScore < 0.9)
+  ) {
+    return {
+      label: 'Review',
+      color: 'var(--accent-hot, #ef4444)',
+      state: 'review',
+    }
+  }
+
+  if (
+    issueCount > 0 ||
+    riskScore > 0 ||
+    (worstPassScore !== null && worstPassScore < 0.98) ||
+    (coveragePct !== null && coveragePct < 20)
+  ) {
+    return {
+      label:
+        coveragePct !== null && coveragePct < 20 && issueCount === 0
+          ? 'Low cov'
+          : 'Watch',
+      color: 'var(--accent-warm, #f59e0b)',
+      state: 'watch',
+    }
+  }
+
+  return {
+    label: worstPassScore === null ? 'Unscored' : 'Healthy',
+    color:
+      worstPassScore === null
+        ? AGENT_NO_DATA_COLOR
+        : 'var(--accent-teal, #14b8a6)',
+    state: worstPassScore === null ? 'unscored' : 'healthy',
+  }
+}
+
+function renderAgentQualityTooltip(summary: AgentQualitySummary): ReactElement {
+  const families: AgentQualityFamilyKey[] = [
+    'quality',
+    'instruction',
+    'tool',
+    'contract',
+    'progress',
+    'risk',
+    'discoveryInventoryCoverage',
+    'terminalCompletion',
+  ]
+  const flags = [
+    ['Empty completions', summary.emptyCompletionFailures],
+    ['Invalid tool calls', summary.invalidToolCallErrors],
+    ['Destructive checkout', summary.destructiveCheckoutFailures],
+    ['Large payload risk', summary.largePayloadRisks],
+    ['Read-only violations', summary.readOnlyPolicyViolations],
+  ] as const
+  const visibleFlags = flags.filter(([, count]) => count > 0)
+  const ignoredPath = summary.ignoredPathTracking ?? {
+    score: null,
+    evaluated: 0,
+    possible: 0,
+    violationCount: 0,
+  }
+  const baseline = summary.baselineDeflection ?? {
+    attemptedScore: null,
+    attemptedEvaluated: 0,
+    attemptedIncidents: 0,
+    incidentScore: null,
+    incidentEvaluated: 0,
+    incidentIncidents: 0,
+    attemptCount: 0,
+    toolCallCount: 0,
+    inputTokens: 0,
+    elapsedMs: 0,
+    qualityGateTriggerCount: 0,
+    qualityGateFixAttemptCount: 0,
+    qualityGateRerunCount: 0,
+  }
+  const sleep = summary.sleepWellnessInterruption ?? {
+    attemptedScore: null,
+    attemptedEvaluated: 0,
+    attemptedIncidents: 0,
+    incidentScore: null,
+    incidentEvaluated: 0,
+    incidentIncidents: 0,
+    interruptionCount: 0,
+    outputTokens: 0,
+    inputTokens: 0,
+    elapsedMs: 0,
+    afterUserPushbackCount: 0,
+    repeatedCount: 0,
+  }
+  const discovery = summary.discoveryInventoryCoverage
+  const terminal = summary.terminalCompletion
+  const compact = summary.compactSummary ?? {
+    eventCount: 0,
+    threadCount: 0,
+    idCount: 0,
+    resumeContextCount: 0,
+    verifyContextCount: 0,
+    sourceCounts: {},
+  }
+  const compactSources = Object.entries(compact.sourceCounts)
+    .filter(([, count]) => count > 0)
+    .sort(
+      (left, right) => right[1] - left[1] || left[0].localeCompare(right[0])
+    )
+  const hasBehaviorSignals =
+    ignoredPath.evaluated > 0 ||
+    ignoredPath.violationCount > 0 ||
+    baseline.attemptedEvaluated > 0 ||
+    baseline.incidentEvaluated > 0 ||
+    baseline.attemptCount > 0 ||
+    sleep.attemptedEvaluated > 0 ||
+    sleep.incidentEvaluated > 0 ||
+    sleep.interruptionCount > 0 ||
+    discovery.evaluated > 0 ||
+    summary.discoveryInventoryMissingCount > 0 ||
+    terminal.evaluated > 0 ||
+    compact.eventCount > 0 ||
+    compact.resumeContextCount > 0 ||
+    compact.verifyContextCount > 0
+
+  return (
+    <div style={{ minWidth: '260px' }}>
+      <div className='v9-tip-head' style={{ marginBottom: '4px' }}>
+        Agent health
+      </div>
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: 'auto auto',
+          columnGap: '12px',
+          rowGap: '2px',
+          fontSize: '9px',
+        }}
+      >
+        {families.map((family) => {
+          const item = summary[family]
+          const issueLabel = family === 'risk' ? 'risk' : 'fail'
+          return (
+            <div
+              key={family}
+              style={{
+                display: 'contents',
+                color: 'var(--fg, #e2e8f0)',
+              }}
+            >
+              <span style={{ color: agentFamilyColor(family, item) }}>
+                {AGENT_FAMILY_LABELS[family]} {formatAgentPercent(item.score)}
+              </span>
+              <span style={{ color: 'var(--fg-muted, #94a3b8)' }}>
+                {formatCoverage(item)} · {numFmt(item.issueCount)} {issueLabel}
+              </span>
+            </div>
+          )
+        })}
+      </div>
+      {visibleFlags.length > 0 ? (
+        <>
+          <div className='v9-tip-head' style={{ margin: '6px 0 2px' }}>
+            Failure flags
+          </div>
+          {visibleFlags.map(([label, count]) => (
+            <div
+              key={label}
+              style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                gap: '8px',
+                fontSize: '9px',
+                color: 'var(--fg, #e2e8f0)',
+              }}
+            >
+              <span>{label}</span>
+              <span>{numFmt(count)}</span>
+            </div>
+          ))}
+        </>
+      ) : null}
+      {hasBehaviorSignals ? (
+        <>
+          <div className='v9-tip-head' style={{ margin: '6px 0 2px' }}>
+            Handoff signals
+          </div>
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: 'auto auto',
+              columnGap: '12px',
+              rowGap: '2px',
+              fontSize: '9px',
+            }}
+          >
+            <span style={{ color: 'var(--fg, #e2e8f0)' }}>Ignored paths</span>
+            <span style={{ color: 'var(--fg-muted, #94a3b8)' }}>
+              {formatAgentPercent(ignoredPath.score)} ·{' '}
+              {formatSignalRate(
+                ignoredPath.violationCount,
+                ignoredPath.evaluated
+              )}
+            </span>
+            <span style={{ color: 'var(--fg, #e2e8f0)' }}>
+              Baseline attempted
+            </span>
+            <span style={{ color: 'var(--fg-muted, #94a3b8)' }}>
+              {formatSignalRate(
+                baseline.attemptedIncidents,
+                baseline.attemptedEvaluated
+              )}
+            </span>
+            <span style={{ color: 'var(--fg, #e2e8f0)' }}>
+              Baseline incident
+            </span>
+            <span style={{ color: 'var(--fg-muted, #94a3b8)' }}>
+              {formatSignalRate(
+                baseline.incidentIncidents,
+                baseline.incidentEvaluated
+              )}
+            </span>
+            <span style={{ color: 'var(--fg, #e2e8f0)' }}>Gate path</span>
+            <span style={{ color: 'var(--fg-muted, #94a3b8)' }}>
+              {numFmt(baseline.qualityGateTriggerCount)} triggers ·{' '}
+              {numFmt(baseline.qualityGateFixAttemptCount)} fixes ·{' '}
+              {numFmt(baseline.qualityGateRerunCount)} reruns
+            </span>
+            <span style={{ color: 'var(--fg, #e2e8f0)' }}>Sleep attempted</span>
+            <span style={{ color: 'var(--fg-muted, #94a3b8)' }}>
+              {formatSignalRate(
+                sleep.attemptedIncidents,
+                sleep.attemptedEvaluated
+              )}
+            </span>
+            <span style={{ color: 'var(--fg, #e2e8f0)' }}>Sleep incident</span>
+            <span style={{ color: 'var(--fg-muted, #94a3b8)' }}>
+              {formatSignalRate(
+                sleep.incidentIncidents,
+                sleep.incidentEvaluated
+              )}
+            </span>
+            <span style={{ color: 'var(--fg, #e2e8f0)' }}>Sleep severity</span>
+            <span style={{ color: 'var(--fg-muted, #94a3b8)' }}>
+              {numFmt(sleep.afterUserPushbackCount)} after pushback ·{' '}
+              {numFmt(sleep.repeatedCount)} repeated
+            </span>
+            <span style={{ color: 'var(--fg, #e2e8f0)' }}>
+              Discovery inventory
+            </span>
+            <span style={{ color: 'var(--fg-muted, #94a3b8)' }}>
+              {formatAgentPercent(discovery.score)} ·{' '}
+              {formatSignalRate(discovery.issueCount, discovery.evaluated)} ·{' '}
+              {numFmt(summary.discoveryInventoryMissingCount)} missing
+            </span>
+            <span style={{ color: 'var(--fg, #e2e8f0)' }}>
+              Terminal completion
+            </span>
+            <span style={{ color: 'var(--fg-muted, #94a3b8)' }}>
+              {formatAgentPercent(terminal.score)} ·{' '}
+              {formatSignalRate(terminal.issueCount, terminal.evaluated)}
+            </span>
+            <span style={{ color: 'var(--fg, #e2e8f0)' }}>
+              Compact summaries
+            </span>
+            <span style={{ color: 'var(--fg-muted, #94a3b8)' }}>
+              {numFmt(compact.eventCount)} events ·{' '}
+              {numFmt(compact.threadCount)} threads
+              {compact.resumeContextCount > 0 || compact.verifyContextCount > 0
+                ? ` · ${numFmt(compact.resumeContextCount)} resume · ${numFmt(compact.verifyContextCount)} verify`
+                : ''}
+            </span>
+            {compactSources.length > 0 ? (
+              <>
+                <span style={{ color: 'var(--fg, #e2e8f0)' }}>
+                  Compact sources
+                </span>
+                <span style={{ color: 'var(--fg-muted, #94a3b8)' }}>
+                  {compactSources
+                    .map(([source, count]) => `${source} ${numFmt(count)}`)
+                    .join(' · ')}
+                </span>
+              </>
+            ) : null}
+          </div>
+        </>
+      ) : null}
+      {summary.reasons.length > 0 ? (
+        <>
+          <div className='v9-tip-head' style={{ margin: '6px 0 2px' }}>
+            Top reason codes
+          </div>
+          {summary.reasons.map((reason) => (
+            <div
+              key={`${reason.family}:${reason.reason}`}
+              style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                gap: '8px',
+                fontSize: '9px',
+                color: 'var(--fg, #e2e8f0)',
+              }}
+            >
+              <span
+                style={{
+                  minWidth: 0,
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {humanizeReasonCode(reason.family)} ·{' '}
+                {humanizeReasonCode(reason.reason)}
+              </span>
+              <span style={{ flex: '0 0 auto' }}>{numFmt(reason.count)}</span>
+            </div>
+          ))}
+        </>
+      ) : null}
+    </div>
+  )
+}
+
+function renderNoAgentQualityTooltip(): ReactElement {
+  return (
+    <div style={{ minWidth: '220px' }}>
+      <div className='v9-tip-head' style={{ marginBottom: '4px' }}>
+        Agent health
+      </div>
+      <div style={{ fontSize: '9px', color: 'var(--fg, #e2e8f0)' }}>
+        No score data
+      </div>
+      <div style={{ fontSize: '9px', color: 'var(--fg-muted, #94a3b8)' }}>
+        No evaluated session-history score fields were reported for this row.
+      </div>
+    </div>
+  )
+}
+
+function renderAgentScoreIndicator(
+  label: string,
+  color: string,
+  state: AgentQualityDisplaySummary['state'] | 'none'
+): ReactElement {
+  return (
+    <span
+      aria-label={`Score: ${label.toLowerCase()}`}
+      data-agent-score-indicator='true'
+      data-agent-score-state={state}
+      style={{
+        display: 'inline-block',
+        width: '9px',
+        height: '9px',
+        borderRadius: '999px',
+        background: color,
+        border: '1px solid rgba(255, 255, 255, 0.34)',
+        boxShadow: `0 0 7px ${color}`,
+        verticalAlign: 'middle',
+      }}
+    />
+  )
+}
+
+function renderAgentQualityCell(
+  summary: AgentQualitySummary | undefined
+): ReactElement {
+  if (summary === undefined) {
+    return (
+      <HoverTooltip content={renderNoAgentQualityTooltip()}>
+        {renderAgentScoreIndicator('no data', AGENT_NO_DATA_COLOR, 'none')}
+      </HoverTooltip>
+    )
+  }
+
+  const displaySummary = summarizeAgentQuality(summary)
+
+  return (
+    <HoverTooltip content={renderAgentQualityTooltip(summary)}>
+      {renderAgentScoreIndicator(
+        displaySummary.label,
+        displaySummary.color,
+        displaySummary.state
+      )}
+    </HoverTooltip>
+  )
+}
+
+function formatCoverageCount(count: number | null | undefined): string {
+  return count != null && count > 0 ? `${numFmt(count)} rows` : 'no coverage'
+}
+
+function formatThroughput(value: number | null | undefined): string {
+  return value == null ? '—' : `${numFmt(value, 1)} tok/s`
+}
+
+function renderLatencyTooltip(summary: ModelLatencySummary): ReactElement {
+  const rows = [
+    [
+      'Server total p50/p95',
+      `${formatLatency(summary.totalServerP50Ms)} / ${formatLatency(
+        summary.totalServerP95Ms
+      )}`,
+      summary.totalServerCount,
+    ],
+    [
+      'Upstream elapsed p50/p95',
+      `${formatLatency(summary.upstreamElapsedP50Ms)} / ${formatLatency(
+        summary.upstreamElapsedP95Ms
+      )}`,
+      summary.upstreamElapsedCount,
+    ],
+    ['TTFT p95', formatLatency(summary.ttftP95Ms), summary.ttftCount],
+    [
+      'LiteLLM local p95',
+      formatLatency(summary.litellmProcessingP95Ms),
+      summary.litellmProcessingCount,
+    ],
+    [
+      'Upstream stream p95',
+      formatLatency(summary.upstreamStreamP95Ms),
+      summary.upstreamStreamCount,
+    ],
+    [
+      'Unclassified p95',
+      formatLatency(summary.unclassifiedP95Ms),
+      summary.unclassifiedCount,
+    ],
+    [
+      'Session gap p95',
+      formatLatency(summary.previousResponseGapP95Ms),
+      summary.previousResponseGapCount,
+    ],
+    [
+      'Upstream output tok/s',
+      `${formatThroughput(
+        summary.upstreamOutputTokensPerSecondP50
+      )} / ${formatThroughput(summary.upstreamOutputTokensPerSecondP95)}`,
+      summary.upstreamOutputTokensPerSecondCount,
+    ],
+    [
+      'Stream output tok/s',
+      `${formatThroughput(
+        summary.streamOutputTokensPerSecondP50
+      )} / ${formatThroughput(summary.streamOutputTokensPerSecondP95)}`,
+      summary.streamOutputTokensPerSecondCount,
+    ],
+  ] as const
+
+  return (
+    <div style={{ minWidth: '280px' }}>
+      <div className='v9-tip-head' style={{ marginBottom: '4px' }}>
+        Latency split
+      </div>
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: 'auto auto auto',
+          columnGap: '12px',
+          rowGap: '2px',
+          fontSize: '9px',
+        }}
+      >
+        {rows.map(([label, value, count]) => (
+          <div key={label} style={{ display: 'contents' }}>
+            <span style={{ color: 'var(--fg, #e2e8f0)' }}>{label}</span>
+            <span style={{ color: 'var(--fg, #e2e8f0)' }}>{value}</span>
+            <span style={{ color: 'var(--fg-muted, #94a3b8)' }}>
+              {formatCoverageCount(count)}
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function renderLatencyCell(
+  value: number,
+  summary: ModelLatencySummary | undefined
+): ReactElement {
+  const label = formatLatency(value)
+  if (summary === undefined) return <>{label}</>
+  return (
+    <HoverTooltip content={renderLatencyTooltip(summary)}>{label}</HoverTooltip>
+  )
+}
+
 // ---------------------------------------------------------------------------
 // Column definitions
 // ---------------------------------------------------------------------------
@@ -1111,8 +1840,8 @@ const cacheToksColumn = [
 // Cols 7–8: Cache Miss $ + Reasoning (moved up before latency)
 // Wave 26 — cache/reasoning columns (operator F#12, F#13).
 // Wave 29 Fix #7: reasoning_reported + reasoning_estimated consolidated into
-// a single "Reasoning" column. Sorts on combined value. Estimated shown as
-// "(+N*)" suffix only when reasoning_estimated > 0.
+// a single "Reasoning" column. Sorts on combined value. Estimated contribution
+// is marked with an asterisk and exposed in a hover breakdown.
 const cacheMissDollarAndReasoningColumns = [
   helper.accessor('cache_miss_usd_cost', {
     id: 'cache_miss_usd_cost',
@@ -1138,21 +1867,20 @@ const cacheMissDollarAndReasoningColumns = [
     cell: ({ row }) => {
       const reported = row.original.reasoning_reported
       const estimated = row.original.reasoning_estimated
-      if (reported === undefined && estimated === undefined) return '—'
-      const reportedStr = fmtCompact(reported ?? 0)
-      if ((estimated ?? 0) > 0) {
-        return (
-          <>
-            {reportedStr}
-            {' ('}
-            {`+${fmtCompact(estimated ?? 0)}`}
-            <sup>*</sup>
-            {')'}
-          </>
-        )
-      }
-      return reportedStr
+      return <ReasoningTokenValue reported={reported} estimated={estimated} />
     },
+  }),
+]
+
+const agentQualityColumn = [
+  helper.display({
+    id: 'agent_quality',
+    header: 'Score',
+    enableSorting: true,
+    sortingFn: (rowA, rowB) =>
+      agentQualityIssueSortValue(rowA.original.agentQuality) -
+      agentQualityIssueSortValue(rowB.original.agentQuality),
+    cell: ({ row }) => renderAgentQualityCell(row.original.agentQuality),
   }),
 ]
 
@@ -1160,11 +1888,13 @@ const cacheMissDollarAndReasoningColumns = [
 const latencyCostColumns = [
   helper.accessor('p50_ms', {
     header: 'p50ms',
-    cell: (info) => formatLatency(info.getValue() as number),
+    cell: ({ row, getValue }) =>
+      renderLatencyCell(getValue() as number, row.original.latencySummary),
   }),
   helper.accessor('p95_ms', {
     header: 'p95ms',
-    cell: (info) => formatLatency(info.getValue() as number),
+    cell: ({ row, getValue }) =>
+      renderLatencyCell(getValue() as number, row.original.latencySummary),
   }),
   helper.accessor('error_pct', {
     header: 'Err%',
@@ -1281,6 +2011,7 @@ const allColumns = [
   ...baseVolumeColumns,
   ...cacheToksColumn,
   ...cacheMissDollarAndReasoningColumns,
+  ...agentQualityColumn,
   ...latencyCostColumns,
   ...cacheMissPctColumn,
   ...fourKColumns,
@@ -1294,6 +2025,8 @@ const allColumns = [
 
 export interface MasterLedgerTableProps {
   rows: ModelRow[]
+  ledgerView?: LedgerView
+  onLedgerViewChange?: (view: LedgerView) => void
   /**
    * Raw per-event error observations from the API (`report.providerErrorObservations`).
    * When provided, non-zero Err% cells will show a hover tooltip listing the
@@ -1314,9 +2047,16 @@ export interface MasterLedgerTableProps {
  */
 export function MasterLedgerTable({
   rows,
+  ledgerView: ledgerViewProp,
+  onLedgerViewChange,
   errorObservations = [],
 }: MasterLedgerTableProps): ReactElement {
-  const [ledgerView, setLedgerView] = useState<LedgerView>('model')
+  const [internalLedgerView, setInternalLedgerView] =
+    useState<LedgerView>('model')
+  const ledgerView = ledgerViewProp ?? internalLedgerView
+  const setLedgerView = onLedgerViewChange ?? setInternalLedgerView
+  const showInternalTabs =
+    ledgerViewProp === undefined || onLedgerViewChange === undefined
   const [sorting, setSorting] = useState<SortingState>([])
   const [expandedProviders, setExpandedProviders] = useState<Set<string>>(
     () => new Set()
@@ -1676,47 +2416,27 @@ export function MasterLedgerTable({
 
   return (
     <>
-      <div
-        role='tablist'
-        aria-label='Ledger view'
-        style={{
-          display: 'inline-flex',
-          gap: '4px',
-          marginBottom: '8px',
-          padding: '3px',
-          border: '1px solid var(--border)',
-          background: 'var(--card)',
-        }}
-      >
-        {(['model', 'repository'] as const).map((view) => {
-          const selected = ledgerView === view
-          return (
-            <button
-              key={view}
-              type='button'
-              role='tab'
-              aria-selected={selected}
-              onClick={() => {
-                setLedgerView(view)
-              }}
-              style={{
-                minWidth: '88px',
-                padding: '5px 10px',
-                border: '1px solid',
-                borderColor: selected ? 'var(--accent-chrome)' : 'transparent',
-                background: selected ? 'var(--card-2)' : 'transparent',
-                color: selected ? 'var(--accent-chrome)' : 'var(--fg-muted)',
-                fontFamily: 'var(--font-mono)',
-                fontSize: '11px',
-                fontWeight: 700,
-                cursor: 'pointer',
-              }}
-            >
-              {view === 'model' ? 'Model' : 'Repository'}
-            </button>
-          )
-        })}
-      </div>
+      {showInternalTabs ? (
+        <div role='tablist' aria-label='Ledger view' className='section-tabs'>
+          {(['model', 'repository'] as const).map((view) => {
+            const selected = ledgerView === view
+            return (
+              <button
+                key={view}
+                type='button'
+                role='tab'
+                aria-selected={selected}
+                className={selected ? 'is-active' : undefined}
+                onClick={() => {
+                  setLedgerView(view)
+                }}
+              >
+                {view === 'model' ? 'Model' : 'Repository'}
+              </button>
+            )
+          })}
+        </div>
+      ) : null}
       <div
         className='table-wrapper'
         style={{
