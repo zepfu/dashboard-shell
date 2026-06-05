@@ -245,6 +245,23 @@ const REPORT_CACHE_PREWARM_LOCK_TTL_MS = Math.max(
   60_000,
   Number(process.env.SHELL_REPORT_CACHE_PREWARM_LOCK_TTL_MS ?? 2 * 60 * 60 * 1000)
 )
+const RATE_LIMIT_INTERVALS_REFRESH =
+  (process.env.SHELL_REPORT_RATE_LIMIT_INTERVALS_REFRESH ?? 'true').toLowerCase() !==
+  'false'
+const RATE_LIMIT_INTERVALS_REFRESH_INTERVAL_MS = Math.max(
+  0,
+  Number(process.env.SHELL_REPORT_RATE_LIMIT_INTERVALS_REFRESH_INTERVAL_MS ?? 60_000)
+)
+const RATE_LIMIT_INTERVALS_REFRESH_START_DELAY_MS = Math.max(
+  0,
+  Number(process.env.SHELL_REPORT_RATE_LIMIT_INTERVALS_REFRESH_START_DELAY_MS ?? 1_000)
+)
+const RATE_LIMIT_INTERVALS_REFRESH_LOCK_KEY_1 = Math.trunc(
+  Number(process.env.SHELL_REPORT_RATE_LIMIT_INTERVALS_REFRESH_LOCK_KEY_1 ?? 0x44534851)
+)
+const RATE_LIMIT_INTERVALS_REFRESH_LOCK_KEY_2 = Math.trunc(
+  Number(process.env.SHELL_REPORT_RATE_LIMIT_INTERVALS_REFRESH_LOCK_KEY_2 ?? 0x524c4956)
+)
 const MAX_REPORT_CACHE_ENTRIES = 20
 const QUOTA_VELOCITY_SEGMENT_COUNT = 100
 const QUOTA_ESTIMATOR_LAG_MINUTES = [0, 1, 5, 10, 30, 60]
@@ -299,29 +316,49 @@ function buildPostgresSessionOptions() {
   return settings.map((setting) => `-c ${setting}`).join(' ')
 }
 
+function buildPostgresPoolOptions(applicationName, max) {
+  return {
+    connectionString: DATABASE_URL,
+    application_name: applicationName,
+    max,
+    idleTimeoutMillis: 30_000,
+    connectionTimeoutMillis: 10_000,
+    statement_timeout:
+      REPORT_DB_STATEMENT_TIMEOUT_MS > 0 ? REPORT_DB_STATEMENT_TIMEOUT_MS : undefined,
+    query_timeout:
+      REPORT_DB_STATEMENT_TIMEOUT_MS > 0
+        ? REPORT_DB_STATEMENT_TIMEOUT_MS + 5_000
+        : undefined,
+    options: buildPostgresSessionOptions(),
+  }
+}
+
 const pool = DATABASE_URL
-  ? new Pool({
-      connectionString: DATABASE_URL,
-      application_name: 'dashboard-shell-report-service',
-      max: Number(process.env.SHELL_REPORT_DB_POOL_MAX ?? 12),
-      idleTimeoutMillis: 30_000,
-      connectionTimeoutMillis: 10_000,
-      statement_timeout:
-        REPORT_DB_STATEMENT_TIMEOUT_MS > 0
-          ? REPORT_DB_STATEMENT_TIMEOUT_MS
-          : undefined,
-      query_timeout:
-        REPORT_DB_STATEMENT_TIMEOUT_MS > 0
-          ? REPORT_DB_STATEMENT_TIMEOUT_MS + 5_000
-          : undefined,
-      options: buildPostgresSessionOptions(),
-    })
+  ? new Pool(
+      buildPostgresPoolOptions(
+        'dashboard-shell-report-service',
+        Number(process.env.SHELL_REPORT_DB_POOL_MAX ?? 12)
+      )
+    )
   : null
+const rateLimitIntervalsRefreshPool =
+  DATABASE_URL && RATE_LIMIT_INTERVALS_REFRESH
+    ? new Pool(
+        buildPostgresPoolOptions('dashboard-shell-rate-limit-refresh', 1)
+      )
+    : null
 
 if (pool) {
   pool.on('error', (error) => {
     process.stderr.write(
       `[report-service] WARN: idle database client error: ${formatError(error)}\n`
+    )
+  })
+}
+if (rateLimitIntervalsRefreshPool) {
+  rateLimitIntervalsRefreshPool.on('error', (error) => {
+    process.stderr.write(
+      `[report-service] WARN: idle rate_limit_intervals refresh client error: ${formatError(error)}\n`
     )
   })
 }
@@ -343,6 +380,9 @@ const redisClient = REPORT_CACHE_REDIS_URL
   : null
 let prewarmTimer = null
 let prewarmPromise = null
+let rateLimitIntervalsRefreshTimer = null
+let rateLimitIntervalsRefreshStartTimer = null
+let rateLimitIntervalsRefreshPromise = null
 
 if (redisClient) {
   redisClient.on('error', (error) => {
@@ -526,6 +566,20 @@ function setLocalReportCache(cacheKey, entry) {
     entry,
   })
   pruneReportCache()
+}
+
+async function invalidateReportCacheIdentity(identity, reason) {
+  reportCache.delete(identity.cacheKey)
+
+  if (!redisClient?.isReady) return
+
+  try {
+    await redisClient.del(identity.cacheKey)
+  } catch (error) {
+    process.stderr.write(
+      `[report-service] WARN: Redis cache invalidation failed for ${identity.scope}:${identity.hash} after ${reason}: ${formatError(error)}\n`
+    )
+  }
 }
 
 function buildReportCacheEntry(payload) {
@@ -6411,6 +6465,90 @@ async function handleUsageQuotas(req, res) {
   )
 }
 
+function startRateLimitIntervalsRefresh() {
+  if (
+    !rateLimitIntervalsRefreshPool ||
+    !RATE_LIMIT_INTERVALS_REFRESH ||
+    rateLimitIntervalsRefreshTimer ||
+    rateLimitIntervalsRefreshStartTimer
+  ) {
+    return
+  }
+
+  const run = () => {
+    if (rateLimitIntervalsRefreshPromise) return
+
+    rateLimitIntervalsRefreshPromise = refreshRateLimitIntervalsMaterializedView()
+      .catch((error) => {
+        process.stderr.write(
+          `[report-service] WARN: rate_limit_intervals refresh failed: ${formatError(error)}\n`
+        )
+      })
+      .finally(() => {
+        rateLimitIntervalsRefreshPromise = null
+      })
+  }
+
+  rateLimitIntervalsRefreshStartTimer = setTimeout(() => {
+    rateLimitIntervalsRefreshStartTimer = null
+    run()
+  }, RATE_LIMIT_INTERVALS_REFRESH_START_DELAY_MS)
+  rateLimitIntervalsRefreshStartTimer.unref?.()
+
+  if (RATE_LIMIT_INTERVALS_REFRESH_INTERVAL_MS > 0) {
+    rateLimitIntervalsRefreshTimer = setInterval(
+      run,
+      RATE_LIMIT_INTERVALS_REFRESH_INTERVAL_MS
+    )
+    rateLimitIntervalsRefreshTimer.unref?.()
+  }
+}
+
+async function refreshRateLimitIntervalsMaterializedView() {
+  if (!rateLimitIntervalsRefreshPool) return
+
+  const client = await rateLimitIntervalsRefreshPool.connect()
+  let lockAcquired = false
+  const startedAt = Date.now()
+
+  try {
+    const lockResult = await client.query(
+      'SELECT pg_try_advisory_lock($1, $2) AS locked',
+      [
+        RATE_LIMIT_INTERVALS_REFRESH_LOCK_KEY_1,
+        RATE_LIMIT_INTERVALS_REFRESH_LOCK_KEY_2,
+      ]
+    )
+    lockAcquired = Boolean(firstRow(lockResult).locked)
+    if (!lockAcquired) return
+
+    await client.query(
+      'REFRESH MATERIALIZED VIEW CONCURRENTLY public.rate_limit_intervals'
+    )
+    await invalidateReportCacheIdentity(
+      buildReportCacheIdentity('quotas'),
+      'rate_limit_intervals refresh'
+    )
+    process.stdout.write(
+      `[report-service] refreshed public.rate_limit_intervals in ${Date.now() - startedAt}ms\n`
+    )
+  } finally {
+    if (lockAcquired) {
+      await client
+        .query('SELECT pg_advisory_unlock($1, $2)', [
+          RATE_LIMIT_INTERVALS_REFRESH_LOCK_KEY_1,
+          RATE_LIMIT_INTERVALS_REFRESH_LOCK_KEY_2,
+        ])
+        .catch((error) => {
+          process.stderr.write(
+            `[report-service] WARN: rate_limit_intervals refresh lock release failed: ${formatError(error)}\n`
+          )
+        })
+    }
+    client.release()
+  }
+}
+
 function startReportCachePrewarm() {
   if (!pool || !redisClient || !REPORT_CACHE_PREWARM || prewarmTimer) return
 
@@ -6687,6 +6825,7 @@ const shouldStartServer =
 if (shouldStartServer) {
   server.listen(PORT, '0.0.0.0', () => {
     process.stdout.write(`dashboard-shell report service listening on ${PORT}\n`)
+    startRateLimitIntervalsRefresh()
     connectRedisCache()
       .then(startReportCachePrewarm)
       .catch((error) => {
@@ -6698,13 +6837,23 @@ if (shouldStartServer) {
 }
 
 async function shutdown() {
+  if (rateLimitIntervalsRefreshStartTimer) {
+    clearTimeout(rateLimitIntervalsRefreshStartTimer)
+    rateLimitIntervalsRefreshStartTimer = null
+  }
+  if (rateLimitIntervalsRefreshTimer) {
+    clearInterval(rateLimitIntervalsRefreshTimer)
+    rateLimitIntervalsRefreshTimer = null
+  }
   if (prewarmTimer) {
     clearInterval(prewarmTimer)
     prewarmTimer = null
   }
+  await rateLimitIntervalsRefreshPromise?.catch(() => {})
   if (redisClient?.isOpen) {
     await redisClient.quit()
   }
+  await rateLimitIntervalsRefreshPool?.end()
   await pool?.end()
   server.close(() => process.exit(0))
 }
