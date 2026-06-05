@@ -198,6 +198,10 @@ const REPORT_SQL_FANOUT_CONCURRENCY = Math.max(
   1,
   Math.min(Number(process.env.SHELL_REPORT_SQL_FANOUT_CONCURRENCY ?? 2), 10)
 )
+const REPORT_DB_STATEMENT_TIMEOUT_MS = Math.max(
+  0,
+  Number(process.env.SHELL_REPORT_DB_STATEMENT_TIMEOUT_MS ?? 120_000)
+)
 // Cache up to 5 min — dashboard refreshes don't need real-time precision,
 // and the cold DB query is too expensive to repeat on every render. Keep the
 // default aligned with the live dashboard's 60 s polling cadence so new session
@@ -283,6 +287,18 @@ const CLIENT_AUTH_HEADERS = new Set([
   'x-api-key',
 ])
 
+function buildPostgresSessionOptions() {
+  const settings = []
+  if (REPORT_DB_DISABLE_PARALLELISM) {
+    settings.push('max_parallel_workers_per_gather=0')
+  }
+  if (REPORT_DB_STATEMENT_TIMEOUT_MS > 0) {
+    settings.push(`statement_timeout=${Math.round(REPORT_DB_STATEMENT_TIMEOUT_MS)}`)
+  }
+  if (settings.length === 0) return undefined
+  return settings.map((setting) => `-c ${setting}`).join(' ')
+}
+
 const pool = DATABASE_URL
   ? new Pool({
       connectionString: DATABASE_URL,
@@ -290,11 +306,25 @@ const pool = DATABASE_URL
       max: Number(process.env.SHELL_REPORT_DB_POOL_MAX ?? 12),
       idleTimeoutMillis: 30_000,
       connectionTimeoutMillis: 10_000,
-      options: REPORT_DB_DISABLE_PARALLELISM
-        ? '-c max_parallel_workers_per_gather=0'
-        : undefined,
+      statement_timeout:
+        REPORT_DB_STATEMENT_TIMEOUT_MS > 0
+          ? REPORT_DB_STATEMENT_TIMEOUT_MS
+          : undefined,
+      query_timeout:
+        REPORT_DB_STATEMENT_TIMEOUT_MS > 0
+          ? REPORT_DB_STATEMENT_TIMEOUT_MS + 5_000
+          : undefined,
+      options: buildPostgresSessionOptions(),
     })
   : null
+
+if (pool) {
+  pool.on('error', (error) => {
+    process.stderr.write(
+      `[report-service] WARN: idle database client error: ${formatError(error)}\n`
+    )
+  })
+}
 const reportCache = new Map()
 const releaseCacheLockScript = `
 if redis.call("GET", KEYS[1]) == ARGV[1] then
@@ -2389,6 +2419,140 @@ selected_with_fallbacks AS (
             AND short_special.quota_type = 'short_special'
       )
 ),
+usage_bounds AS (
+    SELECT
+        MIN(s.expected_reset_at - CASE
+            WHEN s.provider IN ('google', 'openrouter')
+              AND s.quota_type = 'short'
+            THEN INTERVAL '24 hours'
+            WHEN s.quota_type = 'monthly' THEN INTERVAL '1 month'
+            WHEN s.quota_type IN ('short', 'short_special') THEN INTERVAL '5 hours'
+            ELSE INTERVAL '7 days'
+        END) AS min_started_at,
+        MAX(CASE
+            WHEN s.expected_reset_at > now() THEN now()
+            ELSE s.expected_reset_at
+        END) AS max_started_at
+    FROM selected_with_fallbacks s
+    WHERE s.expected_reset_at IS NOT NULL
+),
+usage_sessions AS MATERIALIZED (
+    SELECT
+        ${providerDimension} AS provider,
+        COALESCE(sh.model, 'unknown') AS model,
+        COALESCE(sh.start_time, sh.created_at) AS session_started_at,
+        (COALESCE(sh.input_tokens, 0)
+          + COALESCE(sh.output_tokens, 0)
+          + COALESCE(sh.cache_read_input_tokens, 0)
+          + COALESCE(sh.cache_creation_input_tokens, 0)
+          + COALESCE(sh.reasoning_tokens_reported, 0)
+          + COALESCE(sh.reasoning_tokens_estimated, 0))::double precision AS token_total,
+        COALESCE(sh.response_cost_usd, 0)::double precision AS usd_cost
+    FROM public.session_history sh
+    CROSS JOIN usage_bounds bounds
+    WHERE bounds.min_started_at IS NOT NULL
+      AND COALESCE(sh.start_time, sh.created_at) >= bounds.min_started_at
+      AND COALESCE(sh.start_time, sh.created_at) < bounds.max_started_at
+      AND ${providerDimension} IN (
+          SELECT DISTINCT provider
+          FROM selected_with_fallbacks
+      )
+),
+recent_sessions AS MATERIALIZED (
+    SELECT
+        ${providerDimension} AS provider,
+        COALESCE(sh.model, 'unknown') AS model
+    FROM public.session_history sh
+    WHERE COALESCE(sh.start_time, sh.created_at) >= now() - INTERVAL '90 minutes'
+      AND COALESCE(sh.start_time, sh.created_at) < now()
+      AND ${providerDimension} IN (
+          SELECT DISTINCT provider
+          FROM selected_with_fallbacks
+      )
+),
+usage_model_groups AS (
+    SELECT
+        s.provider,
+        s.model AS quota_model,
+        s.quota_type,
+        us.model AS model,
+        COUNT(*)::double precision AS traces,
+        SUM(us.token_total)::double precision AS token_total,
+        SUM(us.usd_cost)::double precision AS usd_cost
+    FROM selected_with_fallbacks s
+    JOIN usage_sessions us
+      ON s.expected_reset_at IS NOT NULL
+     AND us.session_started_at >= s.expected_reset_at - CASE
+          WHEN s.provider IN ('google', 'openrouter')
+            AND s.quota_type = 'short'
+          THEN INTERVAL '24 hours'
+          WHEN s.quota_type = 'monthly' THEN INTERVAL '1 month'
+          WHEN s.quota_type IN ('short', 'short_special') THEN INTERVAL '5 hours'
+          ELSE INTERVAL '7 days'
+      END
+     AND us.session_started_at < CASE
+          WHEN s.expected_reset_at > now() THEN now()
+          ELSE s.expected_reset_at
+      END
+     AND (
+          (s.provider = 'google'
+            AND us.provider = 'google'
+            AND us.model = COALESCE(s.model, 'unknown'))
+          OR
+          (s.provider <> 'google'
+            AND us.provider = s.provider)
+      )
+     AND (
+          s.provider <> 'openai'
+          OR s.quota_type NOT IN ('weekly', 'short')
+          OR us.model NOT ILIKE '%spark%'
+      )
+     AND (
+          s.provider <> 'openai'
+          OR s.quota_type NOT IN ('special', 'short_special')
+          OR us.model ILIKE '%spark%'
+      )
+     AND (
+          s.provider <> 'anthropic'
+          OR s.quota_type <> 'special'
+          OR us.model ILIKE '%sonnet%'
+      )
+    GROUP BY s.provider, s.model, s.quota_type, us.model
+),
+recent_model_counts AS (
+    SELECT
+        s.provider,
+        s.model AS quota_model,
+        s.quota_type,
+        rs.model AS model,
+        COUNT(*)::double precision AS recent_traces_90m
+    FROM selected_with_fallbacks s
+    JOIN recent_sessions rs
+      ON (
+          (s.provider = 'google'
+            AND rs.provider = 'google'
+            AND rs.model = COALESCE(s.model, 'unknown'))
+          OR
+          (s.provider <> 'google'
+            AND rs.provider = s.provider)
+      )
+     AND (
+          s.provider <> 'openai'
+          OR s.quota_type NOT IN ('weekly', 'short')
+          OR rs.model NOT ILIKE '%spark%'
+      )
+     AND (
+          s.provider <> 'openai'
+          OR s.quota_type NOT IN ('special', 'short_special')
+          OR rs.model ILIKE '%spark%'
+      )
+     AND (
+          s.provider <> 'anthropic'
+          OR s.quota_type <> 'special'
+          OR rs.model ILIKE '%sonnet%'
+      )
+    GROUP BY s.provider, s.model, s.quota_type, rs.model
+),
 usage_by_type AS (
     SELECT
         s.provider,
@@ -2402,94 +2566,22 @@ usage_by_type AS (
                     'tokens', model_usage.token_total,
                     'cost', model_usage.usd_cost,
                     'traces', model_usage.traces,
-                    'recent_traces_90m', model_usage.recent_traces_90m
+                    'recent_traces_90m', COALESCE(recent.recent_traces_90m, 0)
                 )
                 ORDER BY model_usage.token_total DESC
             ) FILTER (WHERE model_usage.model IS NOT NULL),
             '[]'::jsonb
         ) AS usage_breakdown
     FROM selected_with_fallbacks s
-    LEFT JOIN LATERAL (
-        SELECT
-            COALESCE(sh.model, 'unknown') AS model,
-            COUNT(*)::double precision AS traces,
-            SUM(COALESCE(sh.input_tokens, 0)
-              + COALESCE(sh.output_tokens, 0)
-              + COALESCE(sh.cache_read_input_tokens, 0)
-              + COALESCE(sh.cache_creation_input_tokens, 0)
-              + COALESCE(sh.reasoning_tokens_reported, 0)
-              + COALESCE(sh.reasoning_tokens_estimated, 0))::double precision AS token_total,
-            SUM(COALESCE(sh.response_cost_usd, 0))::double precision AS usd_cost
-            ,
-            (
-                SELECT COUNT(*)::double precision
-                FROM public.session_history sh_recent
-                WHERE COALESCE(sh_recent.start_time, sh_recent.created_at) >= now() - INTERVAL '90 minutes'
-                  AND COALESCE(sh_recent.start_time, sh_recent.created_at) < now()
-                  AND (
-                      (s.provider = 'google'
-                        AND ${providerDimensionRecent} = 'google'
-                        AND COALESCE(sh_recent.model, 'unknown') = COALESCE(s.model, 'unknown'))
-                      OR
-                      (s.provider <> 'google'
-                        AND ${providerDimensionRecent} = s.provider)
-                  )
-                  AND COALESCE(sh_recent.model, 'unknown') = COALESCE(sh.model, 'unknown')
-                  AND (
-                      s.provider <> 'openai'
-                      OR s.quota_type NOT IN ('weekly', 'short')
-                      OR COALESCE(sh_recent.model, '') NOT ILIKE '%spark%'
-                  )
-                  AND (
-                      s.provider <> 'openai'
-                      OR s.quota_type NOT IN ('special', 'short_special')
-                      OR COALESCE(sh_recent.model, '') ILIKE '%spark%'
-                  )
-                  AND (
-                      s.provider <> 'anthropic'
-                      OR s.quota_type <> 'special'
-                      OR COALESCE(sh_recent.model, '') ILIKE '%sonnet%'
-                  )
-            ) AS recent_traces_90m
-        FROM public.session_history sh
-        WHERE s.expected_reset_at IS NOT NULL
-          AND sh.start_time >= s.expected_reset_at - CASE
-              WHEN s.provider IN ('google', 'openrouter')
-                AND s.quota_type = 'short'
-              THEN INTERVAL '24 hours'
-              WHEN s.quota_type = 'monthly' THEN INTERVAL '1 month'
-              WHEN s.quota_type IN ('short', 'short_special') THEN INTERVAL '5 hours'
-              ELSE INTERVAL '7 days'
-          END
-          AND sh.start_time < CASE
-              WHEN s.expected_reset_at > now() THEN now()
-              ELSE s.expected_reset_at
-          END
-          AND (
-              (s.provider = 'google'
-                AND ${providerDimension} = 'google'
-                AND COALESCE(sh.model, 'unknown') = COALESCE(s.model, 'unknown'))
-              OR
-              (s.provider <> 'google'
-                AND ${providerDimension} = s.provider)
-          )
-          AND (
-              s.provider <> 'openai'
-              OR s.quota_type NOT IN ('weekly', 'short')
-              OR COALESCE(sh.model, '') NOT ILIKE '%spark%'
-          )
-          AND (
-              s.provider <> 'openai'
-              OR s.quota_type NOT IN ('special', 'short_special')
-              OR COALESCE(sh.model, '') ILIKE '%spark%'
-          )
-          AND (
-              s.provider <> 'anthropic'
-              OR s.quota_type <> 'special'
-              OR COALESCE(sh.model, '') ILIKE '%sonnet%'
-          )
-        GROUP BY COALESCE(sh.model, 'unknown'), sh.model
-    ) model_usage ON true
+    LEFT JOIN usage_model_groups model_usage
+      ON model_usage.provider = s.provider
+     AND model_usage.quota_model IS NOT DISTINCT FROM s.model
+     AND model_usage.quota_type = s.quota_type
+    LEFT JOIN recent_model_counts recent
+      ON recent.provider = model_usage.provider
+     AND recent.quota_model IS NOT DISTINCT FROM model_usage.quota_model
+     AND recent.quota_type = model_usage.quota_type
+     AND recent.model = model_usage.model
     GROUP BY s.provider, s.model, s.quota_type
 )
 SELECT
@@ -3994,6 +4086,7 @@ function normalizeToolActivityRow(row) {
 async function loadQuotaReport(options = {}) {
   return cachedReport('quotas', loadQuotaReportFromDatabase, {
     decorateMetadata: options.decorateMetadata,
+    searchParams: options.searchParams,
   })
 }
 
@@ -4001,11 +4094,15 @@ async function loadQuotaReportFromDatabase() {
   const quotaQuery = buildQuotaQuery()
   const quotaVelocityQuery = buildQuotaVelocityQuery()
   const freshnessQuery = buildFreshnessQuery()
-  const [quotaResult, quotaVelocityResult, freshnessResult] = await Promise.all([
-    pool.query(quotaQuery.sql, quotaQuery.values),
-    pool.query(quotaVelocityQuery.sql, quotaVelocityQuery.values),
-    pool.query(freshnessQuery.sql, freshnessQuery.values),
-  ])
+  const [quotaResult, quotaVelocityResult, freshnessResult] =
+    await runTasksWithConcurrency(
+      [
+        () => pool.query(quotaQuery.sql, quotaQuery.values),
+        () => pool.query(quotaVelocityQuery.sql, quotaVelocityQuery.values),
+        () => pool.query(freshnessQuery.sql, freshnessQuery.values),
+      ],
+      REPORT_SQL_FANOUT_CONCURRENCY
+    )
   const freshness = buildFreshnessMetadata(
     firstRow(freshnessResult).latest_record_at
   )
@@ -6298,7 +6395,7 @@ async function handleUsageTokenTrendDay(req, res) {
   sendJson(res, 200, body)
 }
 
-async function handleUsageQuotas(_req, res) {
+async function handleUsageQuotas(req, res) {
   if (!pool) {
     sendJson(res, 503, {
       error: 'DATABASE_URL is not configured for the shell report service.',
@@ -6306,7 +6403,12 @@ async function handleUsageQuotas(_req, res) {
     return
   }
 
-  sendJson(res, 200, await loadQuotaReport())
+  const requestUrl = new URL(req.url, `http://${req.headers.host}`)
+  sendJson(
+    res,
+    200,
+    await loadQuotaReport({ searchParams: requestUrl.searchParams })
+  )
 }
 
 function startReportCachePrewarm() {

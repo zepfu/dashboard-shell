@@ -136,6 +136,10 @@ export interface UsageReportQuotaEstimatorParams {
   cacheBust?: string
 }
 
+export interface UsageReportQuotasParams {
+  cacheBust?: string
+}
+
 export interface UsageReportToolActivityParams extends UsageReportFilterParams {
   from: string
   to: string
@@ -1104,8 +1108,20 @@ export async function fetchUsageReportTokenTrendDay(
   return response.json()
 }
 
-export async function fetchUsageReportQuotas(): Promise<UsageReportQuotasResponse> {
-  const response = await fetch('/api/shell/reports/quotas')
+export async function fetchUsageReportQuotas(
+  params: UsageReportQuotasParams = {},
+  signal?: AbortSignal
+): Promise<UsageReportQuotasResponse> {
+  const searchParams = new URLSearchParams()
+  if (params.cacheBust !== undefined && params.cacheBust !== '') {
+    searchParams.set('cache_bust', params.cacheBust)
+  }
+
+  const queryString = searchParams.toString()
+  const response = await fetch(
+    `/api/shell/reports/quotas${queryString === '' ? '' : `?${queryString}`}`,
+    { signal }
+  )
   if (!response.ok) {
     const payload = await response.json().catch(() => null)
     const message =

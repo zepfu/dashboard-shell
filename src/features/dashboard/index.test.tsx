@@ -427,6 +427,7 @@ describe('Dashboard — TCG-2: loading skeleton render path', () => {
   test('test_dashboard_shortcut_keys_switch_tabs_and_focus_controls', async () => {
     const quotaHistoryUrls: string[] = []
     const quotaRangeUrls: string[] = []
+    const quotaUrls: string[] = []
     registerQuotaHistoryHandler((url) => {
       quotaHistoryUrls.push(url)
     })
@@ -437,8 +438,9 @@ describe('Dashboard — TCG-2: loading skeleton render path', () => {
       http.get('/api/shell/reports/usage', () => HttpResponse.json(MOCK_REPORT))
     )
     server.use(
-      http.get('/api/shell/reports/quotas', () =>
-        HttpResponse.json({
+      http.get('/api/shell/reports/quotas', ({ request }) => {
+        quotaUrls.push(request.url)
+        return HttpResponse.json({
           metadata: {
             generatedAt: '2026-05-19T00:00:00.000Z',
             latestRecordAt: null,
@@ -448,7 +450,7 @@ describe('Dashboard — TCG-2: loading skeleton render path', () => {
           },
           quotas: [],
         })
-      )
+      })
     )
     server.use(
       http.get('/api/shell/reports/usage/token-trend-summary', () =>
@@ -545,6 +547,14 @@ describe('Dashboard — TCG-2: loading skeleton render path', () => {
           quotaRangeUrls.some((url) =>
             new URL(url).searchParams.has('cache_bust')
           )
+        ).toBe(true)
+      },
+      { timeout: 3000 }
+    )
+    await waitFor(
+      () => {
+        expect(
+          quotaUrls.some((url) => new URL(url).searchParams.has('cache_bust'))
         ).toBe(true)
       },
       { timeout: 3000 }
