@@ -196,11 +196,39 @@ const REPORT_DB_DISABLE_PARALLELISM =
   'false'
 const REPORT_SQL_FANOUT_CONCURRENCY = Math.max(
   1,
-  Math.min(Number(process.env.SHELL_REPORT_SQL_FANOUT_CONCURRENCY ?? 2), 10)
+  Math.min(Number(process.env.SHELL_REPORT_SQL_FANOUT_CONCURRENCY ?? 1), 4)
 )
 const REPORT_DB_STATEMENT_TIMEOUT_MS = Math.max(
   0,
   Number(process.env.SHELL_REPORT_DB_STATEMENT_TIMEOUT_MS ?? 120_000)
+)
+const REPORT_DB_POOL_MAX = Math.max(
+  1,
+  Math.min(Number(process.env.SHELL_REPORT_DB_POOL_MAX ?? 4), 8)
+)
+const REPORT_DB_CONNECTION_TIMEOUT_MS = Math.max(
+  500,
+  Number(process.env.SHELL_REPORT_DB_CONNECTION_TIMEOUT_MS ?? 5_000)
+)
+const HEALTH_DB_STATEMENT_TIMEOUT_MS = Math.max(
+  500,
+  Number(process.env.SHELL_REPORT_HEALTH_DB_STATEMENT_TIMEOUT_MS ?? 2_000)
+)
+const HEALTH_DB_CONNECTION_TIMEOUT_MS = Math.max(
+  500,
+  Number(process.env.SHELL_REPORT_HEALTH_DB_CONNECTION_TIMEOUT_MS ?? 1_000)
+)
+const MATERIALIZED_VIEW_HEALTH_CACHE_TTL_MS = Math.max(
+  1_000,
+  Number(process.env.SHELL_REPORT_MV_HEALTH_CACHE_TTL_MS ?? 30_000)
+)
+const QUOTA_MV_STALE_AFTER_MS = Math.max(
+  60_000,
+  Number(process.env.SHELL_REPORT_QUOTA_MV_STALE_AFTER_MS ?? 30 * 60 * 1000)
+)
+const PROVIDER_HEALTH_MV_STALE_AFTER_MS = Math.max(
+  60_000,
+  Number(process.env.SHELL_REPORT_PROVIDER_HEALTH_MV_STALE_AFTER_MS ?? 60 * 60 * 1000)
 )
 // Cache up to 5 min — dashboard refreshes don't need real-time precision,
 // and the cold DB query is too expensive to repeat on every render. Keep the
@@ -245,23 +273,6 @@ const REPORT_CACHE_PREWARM_LOCK_TTL_MS = Math.max(
   60_000,
   Number(process.env.SHELL_REPORT_CACHE_PREWARM_LOCK_TTL_MS ?? 2 * 60 * 60 * 1000)
 )
-const RATE_LIMIT_INTERVALS_REFRESH =
-  (process.env.SHELL_REPORT_RATE_LIMIT_INTERVALS_REFRESH ?? 'true').toLowerCase() !==
-  'false'
-const RATE_LIMIT_INTERVALS_REFRESH_INTERVAL_MS = Math.max(
-  0,
-  Number(process.env.SHELL_REPORT_RATE_LIMIT_INTERVALS_REFRESH_INTERVAL_MS ?? 60_000)
-)
-const RATE_LIMIT_INTERVALS_REFRESH_START_DELAY_MS = Math.max(
-  0,
-  Number(process.env.SHELL_REPORT_RATE_LIMIT_INTERVALS_REFRESH_START_DELAY_MS ?? 1_000)
-)
-const RATE_LIMIT_INTERVALS_REFRESH_LOCK_KEY_1 = Math.trunc(
-  Number(process.env.SHELL_REPORT_RATE_LIMIT_INTERVALS_REFRESH_LOCK_KEY_1 ?? 0x44534851)
-)
-const RATE_LIMIT_INTERVALS_REFRESH_LOCK_KEY_2 = Math.trunc(
-  Number(process.env.SHELL_REPORT_RATE_LIMIT_INTERVALS_REFRESH_LOCK_KEY_2 ?? 0x524c4956)
-)
 const MAX_REPORT_CACHE_ENTRIES = 20
 const QUOTA_VELOCITY_SEGMENT_COUNT = 100
 const QUOTA_ESTIMATOR_LAG_MINUTES = [0, 1, 5, 10, 30, 60]
@@ -304,49 +315,56 @@ const CLIENT_AUTH_HEADERS = new Set([
   'x-api-key',
 ])
 
-function buildPostgresSessionOptions() {
+function buildPostgresSessionOptions(statementTimeoutMs = REPORT_DB_STATEMENT_TIMEOUT_MS) {
   const settings = []
   if (REPORT_DB_DISABLE_PARALLELISM) {
     settings.push('max_parallel_workers_per_gather=0')
   }
-  if (REPORT_DB_STATEMENT_TIMEOUT_MS > 0) {
-    settings.push(`statement_timeout=${Math.round(REPORT_DB_STATEMENT_TIMEOUT_MS)}`)
+  if (statementTimeoutMs > 0) {
+    settings.push(`statement_timeout=${Math.round(statementTimeoutMs)}`)
   }
   if (settings.length === 0) return undefined
   return settings.map((setting) => `-c ${setting}`).join(' ')
 }
 
-function buildPostgresPoolOptions(applicationName, max) {
+function buildPostgresPoolOptions(
+  applicationName,
+  {
+    max,
+    connectionTimeoutMillis = REPORT_DB_CONNECTION_TIMEOUT_MS,
+    statementTimeoutMs = REPORT_DB_STATEMENT_TIMEOUT_MS,
+    queryTimeoutMs = statementTimeoutMs > 0 ? statementTimeoutMs + 5_000 : 0,
+  }
+) {
   return {
     connectionString: DATABASE_URL,
     application_name: applicationName,
     max,
     idleTimeoutMillis: 30_000,
-    connectionTimeoutMillis: 10_000,
-    statement_timeout:
-      REPORT_DB_STATEMENT_TIMEOUT_MS > 0 ? REPORT_DB_STATEMENT_TIMEOUT_MS : undefined,
-    query_timeout:
-      REPORT_DB_STATEMENT_TIMEOUT_MS > 0
-        ? REPORT_DB_STATEMENT_TIMEOUT_MS + 5_000
-        : undefined,
-    options: buildPostgresSessionOptions(),
+    connectionTimeoutMillis,
+    statement_timeout: statementTimeoutMs > 0 ? statementTimeoutMs : undefined,
+    query_timeout: queryTimeoutMs > 0 ? queryTimeoutMs : undefined,
+    options: buildPostgresSessionOptions(statementTimeoutMs),
   }
 }
 
 const pool = DATABASE_URL
   ? new Pool(
-      buildPostgresPoolOptions(
-        'dashboard-shell-report-service',
-        Number(process.env.SHELL_REPORT_DB_POOL_MAX ?? 12)
-      )
+      buildPostgresPoolOptions('dashboard-shell-report-service', {
+        max: REPORT_DB_POOL_MAX,
+      })
     )
   : null
-const rateLimitIntervalsRefreshPool =
-  DATABASE_URL && RATE_LIMIT_INTERVALS_REFRESH
-    ? new Pool(
-        buildPostgresPoolOptions('dashboard-shell-rate-limit-refresh', 1)
-      )
-    : null
+const healthPool = DATABASE_URL
+  ? new Pool(
+      buildPostgresPoolOptions('dashboard-shell-health', {
+        max: 1,
+        connectionTimeoutMillis: HEALTH_DB_CONNECTION_TIMEOUT_MS,
+        statementTimeoutMs: HEALTH_DB_STATEMENT_TIMEOUT_MS,
+        queryTimeoutMs: HEALTH_DB_STATEMENT_TIMEOUT_MS + 500,
+      })
+    )
+  : null
 
 if (pool) {
   pool.on('error', (error) => {
@@ -355,10 +373,10 @@ if (pool) {
     )
   })
 }
-if (rateLimitIntervalsRefreshPool) {
-  rateLimitIntervalsRefreshPool.on('error', (error) => {
+if (healthPool) {
+  healthPool.on('error', (error) => {
     process.stderr.write(
-      `[report-service] WARN: idle rate_limit_intervals refresh client error: ${formatError(error)}\n`
+      `[report-service] WARN: idle health database client error: ${formatError(error)}\n`
     )
   })
 }
@@ -380,9 +398,8 @@ const redisClient = REPORT_CACHE_REDIS_URL
   : null
 let prewarmTimer = null
 let prewarmPromise = null
-let rateLimitIntervalsRefreshTimer = null
-let rateLimitIntervalsRefreshStartTimer = null
-let rateLimitIntervalsRefreshPromise = null
+let materializedViewHealthCache = null
+let materializedViewHealthPromise = null
 
 if (redisClient) {
   redisClient.on('error', (error) => {
@@ -436,6 +453,31 @@ async function cachedReport(scope, load, options = {}) {
   }
 
   if (redisEntry.status === 'stale') {
+    if (options.refreshStaleInForeground) {
+      try {
+        const refreshResult = await refreshReportCache(identity, load, {
+          lockWaitMs: options.lockWaitMs ?? REPORT_CACHE_FOREGROUND_LOCK_WAIT_MS,
+          requireFreshOnLockWait: true,
+        })
+        if (refreshResult.entry) {
+          return maybeDecorateCacheMetadata(
+            refreshResult.entry.payload,
+            {
+              ...identity,
+              backend: refreshResult.backend,
+              status: refreshResult.status,
+              entry: refreshResult.entry,
+            },
+            decorateMetadata
+          )
+        }
+      } catch (error) {
+        process.stderr.write(
+          `[report-service] WARN: foreground cache refresh failed for ${identity.scope}:${identity.hash}: ${formatError(error)}\n`
+        )
+      }
+    }
+
     setLocalReportCache(identity.cacheKey, redisEntry.entry)
     refreshReportCache(identity, load).catch((error) => {
       process.stderr.write(
@@ -568,20 +610,6 @@ function setLocalReportCache(cacheKey, entry) {
   pruneReportCache()
 }
 
-async function invalidateReportCacheIdentity(identity, reason) {
-  reportCache.delete(identity.cacheKey)
-
-  if (!redisClient?.isReady) return
-
-  try {
-    await redisClient.del(identity.cacheKey)
-  } catch (error) {
-    process.stderr.write(
-      `[report-service] WARN: Redis cache invalidation failed for ${identity.scope}:${identity.hash} after ${reason}: ${formatError(error)}\n`
-    )
-  }
-}
-
 function buildReportCacheEntry(payload) {
   const now = Date.now()
   const freshUntil = now + REPORT_CACHE_TTL_MS
@@ -694,7 +722,8 @@ async function refreshReportCacheUnshared(identity, load, options) {
         }
         const waitedEntry = await waitForRedisCacheEntry(
           identity,
-          options.lockWaitMs
+          options.lockWaitMs,
+          { requireFresh: options.requireFreshOnLockWait }
         )
         if (waitedEntry) {
           setLocalReportCache(identity.cacheKey, waitedEntry.entry)
@@ -791,7 +820,8 @@ async function releaseRedisNamedLock(lockKey, token, label) {
 
 async function waitForRedisCacheEntry(
   identity,
-  waitMs = REPORT_CACHE_LOCK_WAIT_MS
+  waitMs = REPORT_CACHE_LOCK_WAIT_MS,
+  options = {}
 ) {
   const effectiveWaitMs = Math.max(
     0,
@@ -803,9 +833,10 @@ async function waitForRedisCacheEntry(
   while (Date.now() < deadline) {
     await sleep(Math.min(REPORT_CACHE_LOCK_POLL_MS, deadline - Date.now()))
     const redisEntry = await readRedisCacheEntry(identity)
-    if (redisEntry.status === 'fresh' || redisEntry.status === 'stale') {
+    if (redisEntry.status === 'fresh') {
       return redisEntry
     }
+    if (redisEntry.status === 'stale' && !options.requireFresh) return redisEntry
   }
 
   process.stderr.write(
@@ -846,6 +877,278 @@ function maybeDecorateCacheMetadata(value, cacheDetails, decorateMetadata) {
       cacheStatus: cacheDetails.status,
       cacheRefreshing: Boolean(cacheDetails.refreshing),
     },
+  }
+}
+
+async function loadMaterializedViewHealth() {
+  if (!healthPool) {
+    return {
+      status: 'unconfigured',
+      error: 'DATABASE_URL is not configured.',
+      views: [],
+      cronJobs: [],
+    }
+  }
+
+  const now = Date.now()
+  if (materializedViewHealthCache?.expiresAt > now) {
+    return materializedViewHealthCache.value
+  }
+  if (materializedViewHealthPromise) return materializedViewHealthPromise
+
+  materializedViewHealthPromise = loadMaterializedViewHealthFromDatabase()
+    .then((value) => {
+      materializedViewHealthCache = {
+        expiresAt: Date.now() + MATERIALIZED_VIEW_HEALTH_CACHE_TTL_MS,
+        value,
+      }
+      return value
+    })
+    .catch((error) => {
+      const value = {
+        status: 'unknown',
+        error: formatError(error),
+        views: [],
+        cronJobs: [],
+      }
+      materializedViewHealthCache = {
+        expiresAt: Date.now() + MATERIALIZED_VIEW_HEALTH_CACHE_TTL_MS,
+        value,
+      }
+      return value
+    })
+    .finally(() => {
+      materializedViewHealthPromise = null
+    })
+
+  return materializedViewHealthPromise
+}
+
+async function loadMaterializedViewHealthFromDatabase() {
+  const client = await healthPool.connect()
+  try {
+    const viewResult = await client.query(`
+WITH rel AS (
+  SELECT relname, GREATEST(reltuples, 0)::bigint AS estimated_row_count
+  FROM pg_class
+  WHERE oid IN (
+    'public.rate_limit_intervals'::regclass,
+    'public.provider_latency_health_5m'::regclass
+  )
+)
+SELECT
+  'rate_limit_intervals' AS view_name,
+  'quota' AS category,
+  (SELECT MAX(fromdate) FROM public.rate_limit_intervals) AS latest_data_at,
+  (SELECT estimated_row_count FROM rel WHERE relname = 'rate_limit_intervals') AS row_count
+UNION ALL
+SELECT
+  'provider_latency_health_5m' AS view_name,
+  'provider_health' AS category,
+  (SELECT MAX(bucket_start) FROM public.provider_latency_health_5m) AS latest_data_at,
+  (SELECT estimated_row_count FROM rel WHERE relname = 'provider_latency_health_5m') AS row_count
+ORDER BY view_name ASC;
+`)
+    const jobResult = await client.query(`
+WITH dashboard_jobs AS (
+  SELECT jobid, schedule, command, active, jobname
+  FROM cron.job
+  WHERE jobname IN (
+    'aawm_rate_limit_intervals_refresh',
+    'aawm_rate_limit_intervals_analyze',
+    'aawm_provider_latency_health_5m_refresh',
+    'aawm_provider_latency_health_5m_analyze'
+  )
+), latest_runs AS (
+  SELECT DISTINCT ON (jobid)
+    jobid,
+    runid,
+    status,
+    return_message,
+    start_time,
+    end_time
+  FROM cron.job_run_details
+  WHERE jobid IN (SELECT jobid FROM dashboard_jobs)
+  ORDER BY jobid, start_time DESC NULLS LAST, runid DESC
+), last_success AS (
+  SELECT DISTINCT ON (jobid)
+    jobid,
+    start_time AS last_success_start_time,
+    end_time AS last_success_end_time,
+    return_message AS last_success_message
+  FROM cron.job_run_details
+  WHERE jobid IN (SELECT jobid FROM dashboard_jobs)
+    AND status = 'succeeded'
+  ORDER BY jobid, start_time DESC NULLS LAST, runid DESC
+), last_failure AS (
+  SELECT DISTINCT ON (jobid)
+    jobid,
+    start_time AS last_failure_start_time,
+    end_time AS last_failure_end_time,
+    return_message AS last_failure_message
+  FROM cron.job_run_details
+  WHERE jobid IN (SELECT jobid FROM dashboard_jobs)
+    AND status = 'failed'
+  ORDER BY jobid, start_time DESC NULLS LAST, runid DESC
+)
+SELECT
+  j.jobid,
+  j.jobname,
+  j.schedule,
+  j.command,
+  j.active,
+  lr.status AS last_status,
+  lr.return_message AS last_message,
+  lr.start_time AS last_start_time,
+  lr.end_time AS last_end_time,
+  ls.last_success_start_time,
+  ls.last_success_end_time,
+  ls.last_success_message,
+  lf.last_failure_start_time,
+  lf.last_failure_end_time,
+  lf.last_failure_message
+FROM dashboard_jobs j
+LEFT JOIN latest_runs lr USING (jobid)
+LEFT JOIN last_success ls USING (jobid)
+LEFT JOIN last_failure lf USING (jobid)
+ORDER BY j.jobid ASC;
+`)
+    const activeResult = await client.query(`
+SELECT
+  pid,
+  now() - query_start AS age,
+  query
+FROM pg_stat_activity
+WHERE datname = current_database()
+  AND application_name = 'pg_cron'
+  AND (
+    query ILIKE '%rate_limit_intervals%'
+    OR query ILIKE '%provider_latency_health_5m%'
+    OR query ILIKE '%dashboard_shell_maintain_materialized_view%'
+)
+ORDER BY query_start ASC NULLS LAST;
+`)
+
+    const activeRows = activeResult.rows.map((row) => ({
+      pid: normalizeNumber(row.pid),
+      age: row.age ? String(row.age) : null,
+      query: String(row.query ?? '').slice(0, 160),
+    }))
+    const cronJobs = jobResult.rows.map((row) =>
+      normalizeMaterializedViewCronJob(row, activeRows)
+    )
+    const jobsByView = cronJobs.reduce((acc, job) => {
+      const viewName = job.viewName
+      if (!viewName) return acc
+      acc[viewName] = [...(acc[viewName] ?? []), job]
+      return acc
+    }, {})
+
+    const views = viewResult.rows.map((row) =>
+      normalizeMaterializedViewHealthRow(row, jobsByView[row.view_name] ?? [])
+    )
+    const status = views.some((view) => view.status === 'stale')
+      ? 'stale'
+      : views.some((view) => view.status === 'unknown')
+        ? 'unknown'
+        : 'ok'
+
+    return {
+      status,
+      checkedAt: new Date().toISOString(),
+      cacheTtlMs: MATERIALIZED_VIEW_HEALTH_CACHE_TTL_MS,
+      views,
+      cronJobs,
+    }
+  } finally {
+    client.release()
+  }
+}
+
+function normalizeMaterializedViewHealthRow(row, jobs) {
+  const latestDataAt = row.latest_data_at
+    ? new Date(row.latest_data_at).toISOString()
+    : null
+  const latestDataAgeMs = latestDataAt
+    ? Math.max(0, Date.now() - new Date(latestDataAt).getTime())
+    : null
+  const staleAfterMs =
+    row.view_name === 'provider_latency_health_5m'
+      ? PROVIDER_HEALTH_MV_STALE_AFTER_MS
+      : QUOTA_MV_STALE_AFTER_MS
+  const status =
+    latestDataAgeMs === null
+      ? 'unknown'
+      : latestDataAgeMs > staleAfterMs
+        ? 'stale'
+        : 'ok'
+
+  return {
+    viewName: row.view_name,
+    category: row.category,
+    status,
+    latestDataAt,
+    latestDataAgeMinutes:
+      latestDataAgeMs === null ? null : Math.round(latestDataAgeMs / 60_000),
+    rowCount: normalizeNumber(row.row_count) ?? 0,
+    staleAfterMinutes: Math.round(staleAfterMs / 60_000),
+    refreshOwner: 'pg_cron',
+    jobs,
+  }
+}
+
+function normalizeMaterializedViewCronJob(row, activeRows) {
+  const command = String(row.command ?? '')
+  const viewName = command.includes('provider_latency_health_5m')
+    ? 'provider_latency_health_5m'
+    : command.includes('rate_limit_intervals')
+      ? 'rate_limit_intervals'
+      : null
+  const jobName = String(row.jobname ?? '')
+  const kind =
+    jobName.endsWith('_analyze') ||
+    command.includes("'analyze'") ||
+    command.includes('ANALYZE')
+      ? 'analyze'
+      : 'refresh'
+  const activeRun = activeRows.find((activeRow) => {
+    if (!viewName) return false
+    return (
+      activeRow.query.includes(`public.${viewName}`) ||
+      activeRow.query.includes(viewName)
+    )
+  })
+
+  return {
+    jobId: normalizeNumber(row.jobid),
+    jobName: row.jobname,
+    viewName,
+    kind,
+    schedule: row.schedule,
+    active: Boolean(row.active),
+    inFlight: Boolean(activeRun),
+    activePid: activeRun?.pid ?? null,
+    activeAge: activeRun?.age ?? null,
+    lastStatus: row.last_status ?? null,
+    lastMessage: row.last_message ?? null,
+    lastStartTime: row.last_start_time
+      ? new Date(row.last_start_time).toISOString()
+      : null,
+    lastEndTime: row.last_end_time ? new Date(row.last_end_time).toISOString() : null,
+    lastSuccessStartTime: row.last_success_start_time
+      ? new Date(row.last_success_start_time).toISOString()
+      : null,
+    lastSuccessEndTime: row.last_success_end_time
+      ? new Date(row.last_success_end_time).toISOString()
+      : null,
+    lastSuccessMessage: row.last_success_message ?? null,
+    lastFailureStartTime: row.last_failure_start_time
+      ? new Date(row.last_failure_start_time).toISOString()
+      : null,
+    lastFailureEndTime: row.last_failure_end_time
+      ? new Date(row.last_failure_end_time).toISOString()
+      : null,
+    lastFailureMessage: row.last_failure_message ?? null,
   }
 }
 
@@ -4140,6 +4443,8 @@ function normalizeToolActivityRow(row) {
 async function loadQuotaReport(options = {}) {
   return cachedReport('quotas', loadQuotaReportFromDatabase, {
     decorateMetadata: options.decorateMetadata,
+    lockWaitMs: 10_000,
+    refreshStaleInForeground: true,
     searchParams: options.searchParams,
   })
 }
@@ -6465,90 +6770,6 @@ async function handleUsageQuotas(req, res) {
   )
 }
 
-function startRateLimitIntervalsRefresh() {
-  if (
-    !rateLimitIntervalsRefreshPool ||
-    !RATE_LIMIT_INTERVALS_REFRESH ||
-    rateLimitIntervalsRefreshTimer ||
-    rateLimitIntervalsRefreshStartTimer
-  ) {
-    return
-  }
-
-  const run = () => {
-    if (rateLimitIntervalsRefreshPromise) return
-
-    rateLimitIntervalsRefreshPromise = refreshRateLimitIntervalsMaterializedView()
-      .catch((error) => {
-        process.stderr.write(
-          `[report-service] WARN: rate_limit_intervals refresh failed: ${formatError(error)}\n`
-        )
-      })
-      .finally(() => {
-        rateLimitIntervalsRefreshPromise = null
-      })
-  }
-
-  rateLimitIntervalsRefreshStartTimer = setTimeout(() => {
-    rateLimitIntervalsRefreshStartTimer = null
-    run()
-  }, RATE_LIMIT_INTERVALS_REFRESH_START_DELAY_MS)
-  rateLimitIntervalsRefreshStartTimer.unref?.()
-
-  if (RATE_LIMIT_INTERVALS_REFRESH_INTERVAL_MS > 0) {
-    rateLimitIntervalsRefreshTimer = setInterval(
-      run,
-      RATE_LIMIT_INTERVALS_REFRESH_INTERVAL_MS
-    )
-    rateLimitIntervalsRefreshTimer.unref?.()
-  }
-}
-
-async function refreshRateLimitIntervalsMaterializedView() {
-  if (!rateLimitIntervalsRefreshPool) return
-
-  const client = await rateLimitIntervalsRefreshPool.connect()
-  let lockAcquired = false
-  const startedAt = Date.now()
-
-  try {
-    const lockResult = await client.query(
-      'SELECT pg_try_advisory_lock($1, $2) AS locked',
-      [
-        RATE_LIMIT_INTERVALS_REFRESH_LOCK_KEY_1,
-        RATE_LIMIT_INTERVALS_REFRESH_LOCK_KEY_2,
-      ]
-    )
-    lockAcquired = Boolean(firstRow(lockResult).locked)
-    if (!lockAcquired) return
-
-    await client.query(
-      'REFRESH MATERIALIZED VIEW CONCURRENTLY public.rate_limit_intervals'
-    )
-    await invalidateReportCacheIdentity(
-      buildReportCacheIdentity('quotas'),
-      'rate_limit_intervals refresh'
-    )
-    process.stdout.write(
-      `[report-service] refreshed public.rate_limit_intervals in ${Date.now() - startedAt}ms\n`
-    )
-  } finally {
-    if (lockAcquired) {
-      await client
-        .query('SELECT pg_advisory_unlock($1, $2)', [
-          RATE_LIMIT_INTERVALS_REFRESH_LOCK_KEY_1,
-          RATE_LIMIT_INTERVALS_REFRESH_LOCK_KEY_2,
-        ])
-        .catch((error) => {
-          process.stderr.write(
-            `[report-service] WARN: rate_limit_intervals refresh lock release failed: ${formatError(error)}\n`
-          )
-        })
-    }
-    client.release()
-  }
-}
-
 function startReportCachePrewarm() {
   if (!pool || !redisClient || !REPORT_CACHE_PREWARM || prewarmTimer) return
 
@@ -6730,8 +6951,26 @@ async function handleRequest(req, res) {
     sendJson(res, 200, {
       ok: true,
       databaseConfigured: Boolean(pool),
+      databasePool: pool
+        ? {
+            max: REPORT_DB_POOL_MAX,
+            total: pool.totalCount,
+            idle: pool.idleCount,
+            waiting: pool.waitingCount,
+            sqlFanoutConcurrency: REPORT_SQL_FANOUT_CONCURRENCY,
+          }
+        : null,
+      healthDatabasePool: healthPool
+        ? {
+            max: 1,
+            total: healthPool.totalCount,
+            idle: healthPool.idleCount,
+            waiting: healthPool.waitingCount,
+          }
+        : null,
       redisConfigured: Boolean(redisClient),
       redisReady: Boolean(redisClient?.isReady),
+      materializedViews: await loadMaterializedViewHealth(),
     })
     return
   }
@@ -6825,7 +7064,6 @@ const shouldStartServer =
 if (shouldStartServer) {
   server.listen(PORT, '0.0.0.0', () => {
     process.stdout.write(`dashboard-shell report service listening on ${PORT}\n`)
-    startRateLimitIntervalsRefresh()
     connectRedisCache()
       .then(startReportCachePrewarm)
       .catch((error) => {
@@ -6837,23 +7075,14 @@ if (shouldStartServer) {
 }
 
 async function shutdown() {
-  if (rateLimitIntervalsRefreshStartTimer) {
-    clearTimeout(rateLimitIntervalsRefreshStartTimer)
-    rateLimitIntervalsRefreshStartTimer = null
-  }
-  if (rateLimitIntervalsRefreshTimer) {
-    clearInterval(rateLimitIntervalsRefreshTimer)
-    rateLimitIntervalsRefreshTimer = null
-  }
   if (prewarmTimer) {
     clearInterval(prewarmTimer)
     prewarmTimer = null
   }
-  await rateLimitIntervalsRefreshPromise?.catch(() => {})
   if (redisClient?.isOpen) {
     await redisClient.quit()
   }
-  await rateLimitIntervalsRefreshPool?.end()
+  await healthPool?.end()
   await pool?.end()
   server.close(() => process.exit(0))
 }
