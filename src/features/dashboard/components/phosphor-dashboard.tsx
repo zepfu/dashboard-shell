@@ -4658,16 +4658,27 @@ export default function PhosphorDashboard({
   //
   // Wave 37 SF-1: this query is ONLY used when PhosphorDashboard is rendered
   // in isolation (e.g. Storybook, tests) without a parent supplying `quotas`.
-  // index.tsx now hoists this query with the same key shape so React Query
-  // deduplicates both subscribers into a single cache entry.
+  // index.tsx hoists this query with the same prefix/date shape; the optional
+  // cache-bust element is only populated by explicit refresh.
   const internalQuotasEnabled = quotasProp === undefined
   const {
     data: quotasData,
     isFetching: internalQuotasFetching,
     refetch: refetchInternalQuotas,
   } = useQuery({
-    queryKey: ['usage-report-quotas', resolvedFrom, resolvedTo],
-    queryFn: fetchUsageReportQuotas,
+    queryKey: [
+      'usage-report-quotas',
+      resolvedFrom,
+      resolvedTo,
+      reportRefreshKey,
+    ],
+    queryFn: ({ signal }) =>
+      fetchUsageReportQuotas(
+        {
+          cacheBust: reportRefreshKey,
+        },
+        signal
+      ),
     // Skip when the parent has already provided quota rows.
     enabled: internalQuotasEnabled,
     // Match the staleTime override used by index.tsx so Storybook /
@@ -5478,7 +5489,7 @@ export default function PhosphorDashboard({
           >
             {providers.map((provider) => (
               <ProviderQuotaHistoryBucket
-                key={`quota-${provider}`}
+                key={`quota-${provider}-${resolvedFrom}-${resolvedTo}`}
                 provider={provider}
                 rows={quotaRangeHistoryByProvider.get(provider) ?? []}
                 rangeFrom={resolvedFrom}

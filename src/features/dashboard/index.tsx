@@ -21,7 +21,7 @@ import {
   type ReactElement,
 } from 'react'
 import { formatDistance, formatDistanceToNow } from 'date-fns'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { RefreshCw } from 'lucide-react'
 import { ConfigDrawer } from '@/components/config-drawer'
 import { ProfileDropdown } from '@/components/profile-dropdown'
@@ -188,6 +188,7 @@ function toKpiSummary(
  * and alerts hook into PhosphorLayout.
  */
 export function Dashboard(): ReactElement {
+  const queryClient = useQueryClient()
   const [activeSection, setActiveSection] = useState('status')
   const [providerSectionView, setProviderSectionView] =
     useState<ProviderSectionView>('health')
@@ -207,6 +208,9 @@ export function Dashboard(): ReactElement {
   const [slicerFilters, setSlicerFilters] =
     useState<SlicerFilters>(SLICER_EMPTY_FILTERS)
   const [reportCacheBust, setReportCacheBust] = useState<string | undefined>(
+    undefined
+  )
+  const [quotaCacheBust, setQuotaCacheBust] = useState<string | undefined>(
     undefined
   )
   const [quotaRangeHistoryCacheBust, setQuotaRangeHistoryCacheBust] = useState<
@@ -451,19 +455,18 @@ export function Dashboard(): ReactElement {
     summaryReport?.metadata
   )
 
-  // Wave 37 SF-1 / W37-1: queryKey now matches PhosphorDashboard's key shape
-  // exactly (`['usage-report-quotas', from, to]`) so React Query deduplicates
-  // both subscribers into a single cache entry and fires only ONE HTTP request
-  // per load. The previous key `['usage-report-quotas-shell']` differed in
-  // shape and could never hash to the same entry as PhosphorDashboard's key.
-  // Keep client freshness aligned with the report-service default TTL.
-  const {
-    data: quotasData,
-    isFetching: quotasFetching,
-    refetch: refetchQuotas,
-  } = useQuery({
-    queryKey: ['usage-report-quotas', from, to],
-    queryFn: fetchUsageReportQuotas,
+  // Wave 37 SF-1 / W37-1: queryKey matches PhosphorDashboard's key prefix and
+  // date shape so React Query can dedupe normal load subscribers. The optional
+  // cache-bust element is only populated by manual quota refresh.
+  const { data: quotasData, isFetching: quotasFetching } = useQuery({
+    queryKey: ['usage-report-quotas', from, to, quotaCacheBust],
+    queryFn: ({ signal }) =>
+      fetchUsageReportQuotas(
+        {
+          cacheBust: quotaCacheBust,
+        },
+        signal
+      ),
     staleTime: LIVE_DASHBOARD_REFETCH_INTERVAL_MS,
     refetchInterval: LIVE_DASHBOARD_REFETCH_INTERVAL_MS,
     refetchIntervalInBackground: true,
@@ -549,13 +552,40 @@ export function Dashboard(): ReactElement {
     setReportCacheBust(Date.now().toString())
   }, [])
 
-  const handleQuotaRangeHistoryRefresh = useCallback((): void => {
-    setQuotaRangeHistoryCacheBust(Date.now().toString())
-  }, [])
+  const handleQuotaRangeHistoryRefresh =
+    useCallback(async (): Promise<void> => {
+      const cacheBust = Date.now().toString()
+      setQuotaRangeHistoryCacheBust(cacheBust)
+      await queryClient.fetchQuery({
+        queryKey: ['usage-report-quota-range-history', from, to, cacheBust],
+        queryFn: ({ signal }) =>
+          fetchUsageReportQuotaRangeHistory(
+            {
+              from,
+              to,
+              cacheBust,
+            },
+            signal
+          ),
+        staleTime: LIVE_DASHBOARD_REFETCH_INTERVAL_MS,
+      })
+    }, [from, queryClient, to])
 
-  const handleQuotaHistoryRefresh = useCallback((): void => {
-    setQuotaHistoryCacheBust(Date.now().toString())
-  }, [])
+  const handleQuotaHistoryRefresh = useCallback(async (): Promise<void> => {
+    const cacheBust = Date.now().toString()
+    setQuotaHistoryCacheBust(cacheBust)
+    await queryClient.fetchQuery({
+      queryKey: ['usage-report-quota-history', cacheBust],
+      queryFn: ({ signal }) =>
+        fetchUsageReportQuotaHistory(
+          {
+            cacheBust,
+          },
+          signal
+        ),
+      staleTime: LIVE_DASHBOARD_REFETCH_INTERVAL_MS,
+    })
+  }, [queryClient])
 
   const handleShortcutActivate = useCallback((shortcut: string): void => {
     setActiveSection(shortcut)
@@ -616,8 +646,20 @@ export function Dashboard(): ReactElement {
   }, [refetchSummaryReport])
 
   const handleQuotaRefresh = useCallback(async (): Promise<void> => {
-    await refetchQuotas()
-  }, [refetchQuotas])
+    const cacheBust = Date.now().toString()
+    setQuotaCacheBust(cacheBust)
+    await queryClient.fetchQuery({
+      queryKey: ['usage-report-quotas', from, to, cacheBust],
+      queryFn: ({ signal }) =>
+        fetchUsageReportQuotas(
+          {
+            cacheBust,
+          },
+          signal
+        ),
+      staleTime: LIVE_DASHBOARD_REFETCH_INTERVAL_MS,
+    })
+  }, [from, queryClient, to])
 
   const dashboardAlerts = useDashboardAlertSummary(
     anomalies,

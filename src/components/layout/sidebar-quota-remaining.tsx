@@ -36,7 +36,7 @@ export function SidebarQuotaRemaining() {
   const collapsed = state === 'collapsed'
   const quotaQuery = useQuery({
     queryKey: ['shell-sidebar-quota-remaining'],
-    queryFn: fetchUsageReportQuotas,
+    queryFn: ({ signal }) => fetchUsageReportQuotas({}, signal),
     refetchInterval: 60_000,
     staleTime: 30_000,
   })
