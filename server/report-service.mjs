@@ -238,14 +238,17 @@ const PROVIDER_HEALTH_MV_STALE_AFTER_MS = Math.max(
   60_000,
   Number(process.env.SHELL_REPORT_PROVIDER_HEALTH_MV_STALE_AFTER_MS ?? 60 * 60 * 1000)
 )
-// Cache up to 5 min — dashboard refreshes don't need real-time precision,
-// and the cold DB query is too expensive to repeat on every render. Keep the
-// default aligned with the live dashboard's 60 s polling cadence so new session
-// rows can surface on the next scheduled refresh instead of waiting 5 minutes.
+// Keep the generic report cache short for quota-style endpoints that still need
+// near-live semantics. Heavy usage-summary reports get a longer Redis freshness
+// window below so browser polling does not force SQL refreshes every minute.
 // Operators can override via SHELL_REPORT_CACHE_TTL_MS when needed.
 const REPORT_CACHE_TTL_MS = Math.max(
   0,
   Number(process.env.SHELL_REPORT_CACHE_TTL_MS ?? 60 * 1000)
+)
+const REPORT_CACHE_USAGE_TTL_MS = Math.max(
+  0,
+  Number(process.env.SHELL_REPORT_USAGE_CACHE_TTL_MS ?? 10 * 60 * 1000)
 )
 const REPORT_CACHE_STALE_TTL_MS = Math.max(
   0,
@@ -282,6 +285,12 @@ const REPORT_CACHE_PREWARM_LOCK_TTL_MS = Math.max(
   Number(process.env.SHELL_REPORT_CACHE_PREWARM_LOCK_TTL_MS ?? 2 * 60 * 60 * 1000)
 )
 const MAX_REPORT_CACHE_ENTRIES = 20
+const USAGE_REPORT_CACHE_SCOPES = new Set([
+  'usage',
+  'usage-token-trend-summary-v3',
+  'usage-tool-activity',
+  'usage-token-trend-day',
+])
 const QUOTA_VELOCITY_SEGMENT_COUNT = 100
 const QUOTA_ESTIMATOR_LAG_MINUTES = [0, 1, 5, 10, 30, 60]
 const QUOTA_ESTIMATOR_MIN_TRAINING_ROWS = 4
@@ -641,8 +650,9 @@ async function connectRedisCache() {
 async function cachedReport(scope, load, options = {}) {
   const identity = buildReportCacheIdentity(scope, options.searchParams)
   const decorateMetadata = options.decorateMetadata !== false
+  const cacheTtlMs = resolveReportCacheTtlMs(scope, options)
 
-  if (REPORT_CACHE_TTL_MS <= 0) {
+  if (cacheTtlMs <= 0) {
     const value = await load()
     return maybeDecorateCacheMetadata(value, {
       ...identity,
@@ -670,6 +680,7 @@ async function cachedReport(scope, load, options = {}) {
     if (options.refreshStaleInForeground) {
       try {
         const refreshResult = await refreshReportCache(identity, load, {
+          cacheTtlMs,
           lockWaitMs: options.lockWaitMs ?? REPORT_CACHE_FOREGROUND_LOCK_WAIT_MS,
           requireFreshOnLockWait: true,
         })
@@ -693,7 +704,7 @@ async function cachedReport(scope, load, options = {}) {
     }
 
     setLocalReportCache(identity.cacheKey, redisEntry.entry)
-    refreshReportCache(identity, load).catch((error) => {
+    refreshReportCache(identity, load, { cacheTtlMs }).catch((error) => {
       process.stderr.write(
         `[report-service] WARN: background cache refresh failed for ${identity.scope}:${identity.hash}: ${formatError(error)}\n`
       )
@@ -714,7 +725,7 @@ async function cachedReport(scope, load, options = {}) {
   const localEntry = readLocalReportCache(identity.cacheKey)
   if (localEntry?.status === 'fresh' || localEntry?.status === 'stale') {
     if (localEntry.status === 'stale') {
-      refreshReportCache(identity, load).catch((error) => {
+      refreshReportCache(identity, load, { cacheTtlMs }).catch((error) => {
         process.stderr.write(
           `[report-service] WARN: background cache refresh failed for ${identity.scope}:${identity.hash}: ${formatError(error)}\n`
         )
@@ -737,7 +748,10 @@ async function cachedReport(scope, load, options = {}) {
     const localEntry = readLocalReportCache(identity.cacheKey)
     if (localEntry?.status === 'fresh' || localEntry?.status === 'stale') {
       if (localEntry.status === 'stale') {
-        refreshReportCache(identity, load, { useRedis: false }).catch((error) => {
+        refreshReportCache(identity, load, {
+          cacheTtlMs,
+          useRedis: false,
+        }).catch((error) => {
           process.stderr.write(
             `[report-service] WARN: local cache refresh failed for ${identity.scope}:${identity.hash}: ${formatError(error)}\n`
           )
@@ -758,6 +772,7 @@ async function cachedReport(scope, load, options = {}) {
   }
 
   const refreshResult = await refreshReportCache(identity, load, {
+    cacheTtlMs,
     lockWaitMs: options.lockWaitMs ?? REPORT_CACHE_FOREGROUND_LOCK_WAIT_MS,
   })
   return maybeDecorateCacheMetadata(
@@ -770,6 +785,15 @@ async function cachedReport(scope, load, options = {}) {
     },
     decorateMetadata
   )
+}
+
+function resolveReportCacheTtlMs(scope, options = {}) {
+  if (Number.isFinite(options.cacheTtlMs)) {
+    return Math.max(0, Number(options.cacheTtlMs))
+  }
+  return USAGE_REPORT_CACHE_SCOPES.has(scope)
+    ? REPORT_CACHE_USAGE_TTL_MS
+    : REPORT_CACHE_TTL_MS
 }
 
 function buildReportCacheIdentity(scope, searchParams) {
@@ -824,9 +848,9 @@ function setLocalReportCache(cacheKey, entry) {
   pruneReportCache()
 }
 
-function buildReportCacheEntry(payload) {
+function buildReportCacheEntry(payload, options = {}) {
   const now = Date.now()
-  const freshUntil = now + REPORT_CACHE_TTL_MS
+  const freshUntil = now + resolveReportCacheTtlMs(options.scope, options)
   const staleUntil = freshUntil + REPORT_CACHE_STALE_TTL_MS
 
   return {
@@ -951,7 +975,10 @@ async function refreshReportCacheUnshared(identity, load, options) {
     }
 
     const payload = await load()
-    const entry = buildReportCacheEntry(payload)
+    const entry = buildReportCacheEntry(payload, {
+      cacheTtlMs: options.cacheTtlMs,
+      scope: identity.scope,
+    })
     setLocalReportCache(identity.cacheKey, entry)
 
     let backend = 'sql'
@@ -8184,4 +8211,12 @@ if (shouldStartServer) {
   process.on('SIGINT', () => {
     void shutdown()
   })
+}
+
+export {
+  buildReportCacheEntry,
+  buildReportCacheIdentity,
+  canonicalizeSearchParams,
+  classifyCacheEntry,
+  resolveReportCacheTtlMs,
 }
