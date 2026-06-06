@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'vitest'
 import {
   buildToolActivityQuery,
+  buildSourceTableHealthQuery,
   buildUsageQuery,
   buildQuotaEstimatorDatasetQuery,
   buildQuotaEstimatorReport,
@@ -199,6 +200,23 @@ describe('report-service query builders', () => {
     expect(query.sql).toContain(
       "COALESCE(NULLIF(sh.model, ''), 'unknown') = 'unknown'"
     )
+  })
+
+  test('test_buildSourceTableHealthQuery_uses_latest_row_source_table_probes', () => {
+    const query = buildSourceTableHealthQuery()
+
+    expect(query.values).toEqual([])
+    expect(query.sql).toContain("'public.session_history'::regclass")
+    expect(query.sql).toContain("'public.rate_limit_observations'::regclass")
+    expect(query.sql).toContain(
+      'FROM public.session_history ORDER BY id DESC LIMIT 1'
+    )
+    expect(query.sql).toContain(
+      'FROM public.rate_limit_observations ORDER BY id DESC LIMIT 1'
+    )
+    expect(query.sql).toContain('latest_persisted_at')
+    expect(query.sql).toContain('latest_event_at')
+    expect(query.sql).not.toContain('COUNT(*)')
   })
 
   test('test_session_history_reportable_filter_reaches_reporting_query_paths', () => {
