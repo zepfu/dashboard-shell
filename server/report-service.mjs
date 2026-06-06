@@ -388,7 +388,11 @@ async function queryPostgresWithLocalSettings(
     transactionOpen = false
     return result
   } catch (error) {
-    if (transactionOpen) {
+    const clientSideTimeout = isClientSideDatabaseTimeoutError(error)
+    if (clientSideTimeout) {
+      discardClient = true
+    }
+    if (transactionOpen && !clientSideTimeout) {
       try {
         await client.query('ROLLBACK')
       } catch (rollbackError) {
@@ -402,6 +406,31 @@ async function queryPostgresWithLocalSettings(
   } finally {
     client.release(discardClient)
   }
+}
+
+function isDatabaseTimeoutError(error) {
+  if (!(error instanceof Error)) return false
+  const code = typeof error.code === 'string' ? error.code : ''
+  const message = error.message.toLowerCase()
+  return (
+    code === '57014' ||
+    message.includes('statement timeout') ||
+    message.includes('query timeout') ||
+    message.includes('query read timeout') ||
+    message.includes('timeout exceeded')
+  )
+}
+
+function isClientSideDatabaseTimeoutError(error) {
+  if (!(error instanceof Error)) return false
+  const code = typeof error.code === 'string' ? error.code : ''
+  const message = error.message.toLowerCase()
+  return (
+    code !== '57014' &&
+    (message.includes('query timeout') ||
+      message.includes('query read timeout') ||
+      message.includes('timeout exceeded'))
+  )
 }
 
 const pool = DATABASE_URL
@@ -437,16 +466,79 @@ if (healthPool) {
   })
 }
 
+const activeReportQueries = new Map()
+const reportQueryMetrics = {
+  nextQueryId: 1,
+  started: 0,
+  completed: 0,
+  errors: 0,
+  timeouts: 0,
+  lastStartedAt: null,
+  lastCompletedAt: null,
+  lastErrorAt: null,
+  lastErrorMessage: null,
+  lastTimeoutAt: null,
+  lastDurationMs: null,
+  maxDurationMs: 0,
+}
+
+function summarizeReportSql(sql) {
+  return String(sql ?? '')
+    .replace(/--.*$/gm, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 180)
+}
+
 async function queryReportDatabase(sql, values) {
   if (!pool) {
     throw new Error('DATABASE_URL is not configured for the shell report service.')
   }
-  return queryPostgresWithLocalSettings(
-    pool,
-    sql,
-    values,
-    REPORT_DB_STATEMENT_TIMEOUT_MS
-  )
+  const queryId = reportQueryMetrics.nextQueryId
+  reportQueryMetrics.nextQueryId += 1
+  const startedAtMs = Date.now()
+  reportQueryMetrics.started += 1
+  reportQueryMetrics.lastStartedAt = new Date(startedAtMs).toISOString()
+  activeReportQueries.set(queryId, {
+    id: queryId,
+    startedAtMs,
+    label: summarizeReportSql(sql),
+  })
+
+  try {
+    const result = await queryPostgresWithLocalSettings(
+      pool,
+      sql,
+      values,
+      REPORT_DB_STATEMENT_TIMEOUT_MS
+    )
+    const durationMs = Date.now() - startedAtMs
+    reportQueryMetrics.completed += 1
+    reportQueryMetrics.lastCompletedAt = new Date().toISOString()
+    reportQueryMetrics.lastDurationMs = durationMs
+    reportQueryMetrics.maxDurationMs = Math.max(
+      reportQueryMetrics.maxDurationMs,
+      durationMs
+    )
+    return result
+  } catch (error) {
+    const durationMs = Date.now() - startedAtMs
+    reportQueryMetrics.errors += 1
+    reportQueryMetrics.lastErrorAt = new Date().toISOString()
+    reportQueryMetrics.lastErrorMessage = formatError(error)
+    reportQueryMetrics.lastDurationMs = durationMs
+    reportQueryMetrics.maxDurationMs = Math.max(
+      reportQueryMetrics.maxDurationMs,
+      durationMs
+    )
+    if (isDatabaseTimeoutError(error)) {
+      reportQueryMetrics.timeouts += 1
+      reportQueryMetrics.lastTimeoutAt = reportQueryMetrics.lastErrorAt
+    }
+    throw error
+  } finally {
+    activeReportQueries.delete(queryId)
+  }
 }
 
 async function queryHealthDatabase(sql, values) {
@@ -1004,6 +1096,162 @@ async function loadMaterializedViewHealth() {
     })
 
   return materializedViewHealthPromise
+}
+
+export function buildReportQueryPressureQuery() {
+  return {
+    sql: `
+WITH activity AS (
+  SELECT
+    application_name,
+    COALESCE(state, 'unknown') AS state,
+    wait_event_type,
+    wait_event,
+    query_start,
+    GREATEST(
+      EXTRACT(EPOCH FROM (clock_timestamp() - query_start)) * 1000,
+      0
+    )::double precision AS active_age_ms,
+    left(regexp_replace(COALESCE(query, ''), '\\s+', ' ', 'g'), 180) AS query_prefix
+  FROM pg_stat_activity
+  WHERE datname = current_database()
+    AND application_name IN (
+      'dashboard-shell-report-service',
+      'dashboard-shell-health'
+    )
+)
+SELECT
+  application_name,
+  state,
+  wait_event_type,
+  wait_event,
+  COUNT(*)::double precision AS connection_count,
+  COUNT(*) FILTER (WHERE state = 'active')::double precision AS active_count,
+  COUNT(*) FILTER (WHERE wait_event_type IS NOT NULL)::double precision AS waiting_count,
+  MAX(active_age_ms) FILTER (
+    WHERE state = 'active' AND query_start IS NOT NULL
+  )::double precision AS max_active_age_ms,
+  COALESCE(
+    jsonb_agg(
+      jsonb_build_object(
+        'ageMs', ROUND(active_age_ms::numeric, 0)::double precision,
+        'queryPrefix', query_prefix
+      )
+      ORDER BY query_start ASC
+    ) FILTER (WHERE state = 'active' AND query_start IS NOT NULL),
+    '[]'::jsonb
+  ) AS active_queries
+FROM activity
+GROUP BY application_name, state, wait_event_type, wait_event
+ORDER BY application_name ASC, state ASC, wait_event_type ASC NULLS LAST, wait_event ASC NULLS LAST;
+`,
+    values: [],
+  }
+}
+
+function reportQueryMetricsSnapshot() {
+  const activeQueries = [...activeReportQueries.values()]
+    .map((query) => ({
+      id: query.id,
+      activeAgeMs: Date.now() - query.startedAtMs,
+      startedAt: new Date(query.startedAtMs).toISOString(),
+      label: query.label,
+    }))
+    .sort((a, b) => b.activeAgeMs - a.activeAgeMs)
+
+  const oldestActiveAgeMs = activeQueries.length
+    ? Math.max(...activeQueries.map((query) => query.activeAgeMs))
+    : null
+
+  return {
+    started: reportQueryMetrics.started,
+    completed: reportQueryMetrics.completed,
+    errors: reportQueryMetrics.errors,
+    timeouts: reportQueryMetrics.timeouts,
+    active: activeQueries.length,
+    oldestActiveAgeMs,
+    lastStartedAt: reportQueryMetrics.lastStartedAt,
+    lastCompletedAt: reportQueryMetrics.lastCompletedAt,
+    lastErrorAt: reportQueryMetrics.lastErrorAt,
+    lastErrorMessage: reportQueryMetrics.lastErrorMessage,
+    lastTimeoutAt: reportQueryMetrics.lastTimeoutAt,
+    lastDurationMs: reportQueryMetrics.lastDurationMs,
+    maxDurationMs: reportQueryMetrics.maxDurationMs,
+    activeQueries: activeQueries.slice(0, 5),
+  }
+}
+
+function normalizeReportQueryPressureRow(row) {
+  const activeQueries = Array.isArray(row.active_queries)
+    ? row.active_queries
+    : []
+
+  return {
+    applicationName: row.application_name,
+    state: row.state,
+    waitEventType: row.wait_event_type ?? null,
+    waitEvent: row.wait_event ?? null,
+    connectionCount: normalizeNumber(row.connection_count) ?? 0,
+    activeCount: normalizeNumber(row.active_count) ?? 0,
+    waitingCount: normalizeNumber(row.waiting_count) ?? 0,
+    maxActiveAgeMs: normalizeNumber(row.max_active_age_ms),
+    activeQueries: activeQueries.slice(0, 5).map((query) => ({
+      ageMs: normalizeNumber(query.ageMs),
+      queryPrefix: String(query.queryPrefix ?? '').slice(0, 180),
+    })),
+  }
+}
+
+async function loadReportQueryPressure() {
+  const inProcess = reportQueryMetricsSnapshot()
+  if (!healthPool) {
+    return {
+      status: 'unconfigured',
+      error: 'DATABASE_URL is not configured.',
+      inProcess,
+      pgStatActivity: {
+        connectionCount: 0,
+        activeCount: 0,
+        waitingCount: 0,
+        maxActiveAgeMs: null,
+        rows: [],
+      },
+    }
+  }
+
+  try {
+    const query = buildReportQueryPressureQuery()
+    const result = await queryHealthDatabase(query.sql, query.values)
+    const rows = result.rows.map(normalizeReportQueryPressureRow)
+    return {
+      status: 'ok',
+      inProcess,
+      pgStatActivity: {
+        connectionCount: rows.reduce((sum, row) => sum + row.connectionCount, 0),
+        activeCount: rows.reduce((sum, row) => sum + row.activeCount, 0),
+        waitingCount: rows.reduce((sum, row) => sum + row.waitingCount, 0),
+        maxActiveAgeMs:
+          rows
+            .map((row) => row.maxActiveAgeMs)
+            .filter((value) => value !== null)
+            .sort((a, b) => b - a)[0] ?? null,
+        rows,
+      },
+    }
+  } catch (error) {
+    return {
+      status: 'unknown',
+      error: formatError(error),
+      inProcess,
+      pgStatActivity: {
+        connectionCount: 0,
+        activeCount: 0,
+        waitingCount: 0,
+        maxActiveAgeMs: null,
+        rows: [],
+      },
+    }
+  }
 }
 
 async function loadMaterializedViewHealthFromDatabase() {
@@ -1803,6 +2051,96 @@ const configChangeAggregateNumericKeys = [
     `${column}_false_rows`,
     `${column}_unknown_rows`,
   ]),
+]
+
+const usageFilteredColumns = [
+  'created_at',
+  'start_time',
+  'end_time',
+  'provider',
+  'model',
+  'tenant_id',
+  'litellm_environment',
+  'litellm_version',
+  'client_name',
+  'client_version',
+  'input_tokens',
+  'output_tokens',
+  'cache_read_input_tokens',
+  'cache_creation_input_tokens',
+  'reasoning_tokens_reported',
+  'reasoning_tokens_estimated',
+  'reasoning_tokens_source',
+  'provider_cache_attempted',
+  'provider_cache_miss',
+  'provider_cache_miss_reason',
+  'provider_cache_miss_token_count',
+  'provider_cache_miss_cost_usd',
+  'response_cost_usd',
+  'tool_call_count',
+  'git_commit_count',
+  'git_push_count',
+  'litellm_pre_send_ms',
+  'litellm_post_response_ms',
+  'litellm_processing_ms',
+  'llm_upstream_time_to_first_byte_ms',
+  'llm_upstream_elapsed_ms',
+  'llm_upstream_stream_ms',
+  'ttft_ms',
+  'total_server_elapsed_ms',
+  'latency_unclassified_ms',
+  'previous_response_to_current_request_ms',
+  'trace_quality_score',
+  'response_meaningfulness_score',
+  'answer_completeness_score',
+  'evidence_fidelity_score',
+  'context_retention_score',
+  'instruction_adherence_score',
+  'read_only_policy_compliance_score',
+  'scope_control_score',
+  'destructive_action_policy_score',
+  'tool_use_validity_score',
+  'tool_result_fidelity_score',
+  'tool_error_recovery_score',
+  'error_attribution_quality_score',
+  'output_contract_compliance_score',
+  'task_progress_score',
+  'repetition_loop_risk_score',
+  'stall_risk_score',
+  'discovery_inventory_coverage_score',
+  'discovery_inventory_missing_count',
+  'terminal_completion_score',
+  'empty_completion_failure',
+  'invalid_tool_call_error',
+  'destructive_checkout_after_work',
+  'large_tool_result_payload_risk',
+  'read_only_policy_violation_count',
+  'ignored_path_tracking_policy_score',
+  'ignored_path_tracking_violation_count',
+  'baseline_deflection_attempted_score',
+  'baseline_deflection_incident_score',
+  'baseline_deflection_attempt_count',
+  'baseline_deflection_tool_call_count',
+  'baseline_deflection_input_tokens',
+  'baseline_deflection_elapsed_ms',
+  'quality_gate_trigger_count',
+  'quality_gate_fix_attempt_count',
+  'quality_gate_rerun_count',
+  'sleep_wellness_interruption_attempted_score',
+  'sleep_wellness_interruption_incident_score',
+  'sleep_wellness_interruption_count',
+  'sleep_wellness_interruption_output_tokens',
+  'sleep_wellness_interruption_input_tokens',
+  'sleep_wellness_interruption_elapsed_ms',
+  'sleep_wellness_interruption_after_user_pushback_count',
+  'sleep_wellness_interruption_repeated_count',
+  'is_compact_summary',
+  'session_id',
+  'compact_summary_id',
+  'compact_summary_role',
+  'compact_summary_source',
+  'agent_score_reasons',
+  ...configChangeFlagColumns,
 ]
 
 function sendJson(res, status, body) {
@@ -4581,77 +4919,91 @@ CASE
 END`
 
   const sql = `
-WITH outer_counts AS (
+WITH filtered_sessions AS MATERIALIZED (
     SELECT
+        sh.litellm_call_id,
         ${providerExpr} AS provider,
-        COALESCE(sh.model, 'unknown') AS model,
-        COALESCE(a.tool_kind, 'other') AS tool_kind,
-        a.tool_name,
-        COUNT(*)::bigint AS calls
-    FROM public.session_history_tool_activity a
-    JOIN public.session_history sh ON a.litellm_call_id = sh.litellm_call_id
+        COALESCE(sh.model, 'unknown') AS model
+    FROM public.session_history sh
     WHERE ${startTimeDateRangeWhere.join('\n      AND ')}
       AND ${sessionHistoryReportablePredicate()}
+),
+tool_rows AS MATERIALIZED (
+    SELECT
+        fs.provider,
+        fs.model,
+        COALESCE(a.tool_kind, 'other') AS tool_kind,
+        a.tool_name,
+        a.command_text
+    FROM filtered_sessions fs
+    JOIN public.session_history_tool_activity a
+      ON a.litellm_call_id = fs.litellm_call_id
+),
+outer_counts AS (
+    SELECT
+        provider,
+        model,
+        tool_kind,
+        tool_name,
+        COUNT(*)::bigint AS calls
+    FROM tool_rows
     GROUP BY
-        ${providerExpr},
-        COALESCE(sh.model, 'unknown'),
-        COALESCE(a.tool_kind, 'other'),
-        a.tool_name
+        provider,
+        model,
+        tool_kind,
+        tool_name
 ),
 shell_labels AS (
     SELECT
-        ${providerExpr} AS provider,
-        COALESCE(sh.model, 'unknown') AS model,
+        provider,
+        model,
         trim(
             CASE
-                WHEN lower(split_part(trim(a.command_text), ' ', 1)) IN (
+                WHEN lower(split_part(trim(command_text), ' ', 1)) IN (
                     'git','npm','pnpm','yarn','docker','kubectl','gh','pip',
                     'poetry','uv','brew','apt','apt-get','systemctl','pytest',
                     'make','aws','gcloud','terraform'
                 )
-                THEN lower(split_part(trim(a.command_text), ' ', 1))
+                THEN lower(split_part(trim(command_text), ' ', 1))
                      || ' '
                      || lower(NULLIF(
                             regexp_replace(
-                                split_part(trim(a.command_text), ' ', 2),
+                                split_part(trim(command_text), ' ', 2),
                                 '^-.*$', '', 'g'
                             ),
                             ''
                         ))
-                ELSE lower(split_part(trim(a.command_text), ' ', 1))
+                ELSE lower(split_part(trim(command_text), ' ', 1))
             END
         ) AS cmd_label,
         COUNT(*)::bigint AS calls
-    FROM public.session_history_tool_activity a
-    JOIN public.session_history sh ON a.litellm_call_id = sh.litellm_call_id
-    WHERE ${startTimeDateRangeWhere.join('\n      AND ')}
-      AND ${sessionHistoryReportablePredicate()}
-      AND a.tool_kind = 'command'
-      AND a.command_text IS NOT NULL
-      AND a.command_text <> ''
-      AND lower(split_part(trim(a.command_text), ' ', 1)) NOT IN (
+    FROM tool_rows
+    WHERE tool_kind = 'command'
+      AND command_text IS NOT NULL
+      AND command_text <> ''
+      AND lower(split_part(trim(command_text), ' ', 1)) NOT IN (
           'cd','pwd','echo',':','true','false','exit'
       )
     GROUP BY
-        ${providerExpr},
-        COALESCE(sh.model, 'unknown'),
+        provider,
+        model,
         trim(
             CASE
-                WHEN lower(split_part(trim(a.command_text), ' ', 1)) IN (
+                WHEN lower(split_part(trim(command_text), ' ', 1)) IN (
                     'git','npm','pnpm','yarn','docker','kubectl','gh','pip',
                     'poetry','uv','brew','apt','apt-get','systemctl','pytest',
                     'make','aws','gcloud','terraform'
                 )
-                THEN lower(split_part(trim(a.command_text), ' ', 1))
+                THEN lower(split_part(trim(command_text), ' ', 1))
                      || ' '
                      || lower(NULLIF(
                             regexp_replace(
-                                split_part(trim(a.command_text), ' ', 2),
+                                split_part(trim(command_text), ' ', 2),
                                 '^-.*$', '', 'g'
                             ),
                             ''
                         ))
-                ELSE lower(split_part(trim(a.command_text), ' ', 1))
+                ELSE lower(split_part(trim(command_text), ' ', 1))
             END
         )
 )
@@ -6227,10 +6579,14 @@ export function buildUsageQuery(searchParams) {
     (column) =>
       `base.${column} IS NOT DISTINCT FROM reason_summary.${column}`
   )
+  const filteredColumnSelects = usageFilteredColumns.map(
+    (column) => `        sh.${column}`
+  )
 
   const sql = `
 WITH filtered AS (
-    SELECT sh.*
+    SELECT
+${filteredColumnSelects.join(',\n')}
     FROM public.session_history sh
     WHERE ${whereParts.join('\n      AND ')}
 ),
@@ -7250,6 +7606,7 @@ async function handleRequest(req, res) {
         : null,
       redisConfigured: Boolean(redisClient),
       redisReady: Boolean(redisClient?.isReady),
+      reportQueryPressure: await loadReportQueryPressure(),
       sourceTables: await loadSourceTableHealth(),
       materializedViews: await loadMaterializedViewHealth(),
     })

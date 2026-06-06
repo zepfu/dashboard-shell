@@ -2,6 +2,7 @@ import { describe, expect, test } from 'vitest'
 import {
   buildToolActivityQuery,
   buildQuotaQuery,
+  buildReportQueryPressureQuery,
   buildSourceTableHealthQuery,
   buildUsageQuery,
   buildQuotaEstimatorDatasetQuery,
@@ -131,6 +132,30 @@ describe('report-service query builders', () => {
     expect(query.sql).not.toContain('COALESCE(sh.trace_quality_score, 0)')
   })
 
+  test('test_buildUsageQuery_projects_filtered_columns_without_select_star', () => {
+    const query = buildUsageQuery(
+      new URLSearchParams({
+        from: '2026-05-01',
+        to: '2026-05-08',
+        grain: 'day',
+        group_by: 'provider,model,repository',
+        limit: '50000',
+      })
+    )
+
+    expect(query.sql).toContain('WITH filtered AS')
+    expect(query.sql).not.toContain('SELECT sh.*')
+    expect(query.sql).toContain('sh.created_at')
+    expect(query.sql).toContain('sh.start_time')
+    expect(query.sql).toContain('sh.provider')
+    expect(query.sql).toContain('sh.model')
+    expect(query.sql).toContain('sh.response_cost_usd')
+    expect(query.sql).toContain('sh.agent_score_reasons')
+    expect(query.sql).toContain('sh.sleep_wellness_interruption_elapsed_ms')
+    expect(query.sql).toContain('FROM filtered sh')
+    expect(query.sql).toContain('jsonb_each(')
+  })
+
   test('test_buildUsageQuery_exposes_latency_split_and_throughput_percentiles', () => {
     const query = buildUsageQuery(
       new URLSearchParams({
@@ -220,6 +245,22 @@ describe('report-service query builders', () => {
     expect(query.sql).not.toContain('COUNT(*)')
   })
 
+  test('test_buildReportQueryPressureQuery_scopes_dashboard_report_activity', () => {
+    const query = buildReportQueryPressureQuery()
+
+    expect(query.values).toEqual([])
+    expect(query.sql).toContain('FROM pg_stat_activity')
+    expect(query.sql).toContain(
+      "application_name IN (\n      'dashboard-shell-report-service'"
+    )
+    expect(query.sql).toContain("'dashboard-shell-health'")
+    expect(query.sql).toContain('wait_event_type')
+    expect(query.sql).toContain('clock_timestamp() - query_start')
+    expect(query.sql).toContain('MAX(active_age_ms)')
+    expect(query.sql).toContain('left(regexp_replace')
+    expect(query.sql).not.toContain('public.session_history')
+  })
+
   test('test_buildQuotaQuery_stays_on_rate_limit_tables_and_wtus_lanes', () => {
     const query = buildQuotaQuery()
 
@@ -256,6 +297,22 @@ describe('report-service query builders', () => {
     for (const query of queries) {
       expectReportableSessionHistoryFilter(query.sql)
     }
+  })
+
+  test('test_buildToolActivityQuery_reuses_filtered_session_history_call_set', () => {
+    const query = buildToolActivityQuery(
+      new URLSearchParams({ from: '2026-05-01', to: '2026-05-08' })
+    )
+
+    expect(query.values).toEqual(['2026-05-01', '2026-05-08'])
+    expect(query.sql).toContain('WITH filtered_sessions AS MATERIALIZED')
+    expect(query.sql).toContain('tool_rows AS MATERIALIZED')
+    expect(query.sql).toContain('FROM public.session_history sh')
+    expect(query.sql).toContain('JOIN public.session_history_tool_activity a')
+    expect(query.sql).toContain('FROM tool_rows')
+    expect(query.sql).not.toContain(
+      'FROM public.session_history_tool_activity a\n    JOIN public.session_history sh'
+    )
   })
 
   test('test_token_trend_signal_queries_cover_full_range_and_hourly_scores', () => {
