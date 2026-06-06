@@ -453,6 +453,10 @@ function quotaHistoryRequests(row: UsageReportQuotaHistoryRow): number {
   return row.usage_breakdown.reduce((sum, entry) => sum + entry.traces, 0)
 }
 
+function quotaHistoryHasUsage(row: UsageReportQuotaHistoryRow): boolean {
+  return row.usage_tokens > 0 || quotaHistoryRequests(row) > 0
+}
+
 interface ProviderQuotaHistoryTab {
   tabKey: string
   label: string
@@ -480,6 +484,16 @@ function shouldHideQuotaHistoryLane(
     return false
   }
   return def.laneLabel.toLowerCase().includes('5hr')
+}
+
+function shouldSuppressProviderLanePriorBars(
+  providerLower: string,
+  def: { quotaType: string }
+): boolean {
+  return (
+    providerLower === 'openai' &&
+    quotaTypeToLaneKey(def.quotaType) === 'short_special'
+  )
 }
 
 function quotaHistoryRowMatchesLane(
@@ -574,11 +588,17 @@ function aggregateQuotaUsageBreakdown(
     }
     byModel.set(model, {
       model,
-      tokens: existing.tokens + entry.tokens,
-      cost: existing.cost + entry.cost,
-      traces: existing.traces + entry.traces,
+      tokens: Math.max(existing.tokens, entry.tokens),
+      cost: Math.max(existing.cost, entry.cost),
+      traces: Math.max(existing.traces, entry.traces),
       recent_traces_90m:
-        (existing.recent_traces_90m ?? 0) + (entry.recent_traces_90m ?? 0),
+        existing.recent_traces_90m === undefined &&
+        entry.recent_traces_90m === undefined
+          ? undefined
+          : Math.max(
+              existing.recent_traces_90m ?? 0,
+              entry.recent_traces_90m ?? 0
+            ),
     })
   }
 
@@ -588,19 +608,38 @@ function aggregateQuotaUsageBreakdown(
 function quotaHistoryResetGroupKey(row: UsageReportQuotaHistoryRow): string {
   const reset = row.expected_reset_at ?? row.interval_end
   if (reset === null) return 'unknown'
+  const laneKey = quotaTypeToLaneKey(row.quota_type)
+  const provider = canonicalProvider(row.provider)
+  const parsed = new Date(reset)
+  if (!Number.isNaN(parsed.getTime())) {
+    if (
+      laneKey === 'weekly' ||
+      laneKey === 'special' ||
+      laneKey === 'monthly' ||
+      (laneKey === 'short' &&
+        (provider === 'google' || provider === 'openrouter'))
+    ) {
+      return parsed.toISOString().slice(0, 10)
+    }
+  }
   const rounded = roundToNearest30Min(reset)
   return Number.isNaN(rounded.getTime()) ? reset : rounded.toISOString()
 }
 
-function aggregateGoogleQuotaHistoryRows(
-  def: { googleClass: string | null },
-  rows: UsageReportQuotaHistoryRow[]
+function aggregateQuotaHistoryRowsByReset(
+  rows: UsageReportQuotaHistoryRow[],
+  modelLabel?: string
 ): UsageReportQuotaHistoryRow[] {
   const grouped = new Map<string, UsageReportQuotaHistoryRow[]>()
 
   for (const row of rows) {
     const resetKey = quotaHistoryResetGroupKey(row)
-    const groupKey = [row.provider, row.quota_type, resetKey].join('|')
+    const groupKey = [
+      row.provider,
+      modelLabel ?? row.model ?? 'all',
+      row.quota_type,
+      resetKey,
+    ].join('|')
     const group = grouped.get(groupKey) ?? []
     group.push(row)
     grouped.set(groupKey, group)
@@ -613,9 +652,13 @@ function aggregateGoogleQuotaHistoryRows(
       const usageBreakdown = aggregateQuotaUsageBreakdown(
         group.flatMap((row) => row.usage_breakdown)
       )
+      const usageTokens =
+        usageBreakdown.length > 0
+          ? usageBreakdown.reduce((sum, entry) => sum + entry.tokens, 0)
+          : (maxNullableNumber(group.map((row) => row.usage_tokens)) ?? 0)
       return {
         provider: first.provider,
-        model: googleQuotaHistoryFamilyLabel(def.googleClass),
+        model: modelLabel ?? first.model,
         quota_type: first.quota_type,
         expected_reset_at: resetAt,
         interval_start: minIso(group.map((row) => row.interval_start)),
@@ -629,11 +672,21 @@ function aggregateGoogleQuotaHistoryRows(
         velocity_segments: [],
         velocity_scores: [],
         velocity_sample_count: 0,
-        usage_tokens: group.reduce((sum, row) => sum + row.usage_tokens, 0),
+        usage_tokens: usageTokens,
         usage_breakdown: usageBreakdown,
       }
     })
     .sort(compareQuotaHistoryResetDesc)
+}
+
+function aggregateGoogleQuotaHistoryRows(
+  def: { googleClass: string | null },
+  rows: UsageReportQuotaHistoryRow[]
+): UsageReportQuotaHistoryRow[] {
+  return aggregateQuotaHistoryRowsByReset(
+    rows,
+    googleQuotaHistoryFamilyLabel(def.googleClass)
+  )
 }
 
 function fallbackQuotaHistoryLabel(quotaType: string): string {
@@ -673,13 +726,14 @@ function buildProviderQuotaHistoryTabs(
       const laneRows = rows
         .filter((row) => quotaHistoryRowMatchesLane(providerLower, def, row))
         .sort(compareQuotaHistoryResetDesc)
+      const displayRows =
+        providerLower === 'google'
+          ? aggregateGoogleQuotaHistoryRows(def, laneRows)
+          : aggregateQuotaHistoryRowsByReset(laneRows)
       return {
         tabKey: def.laneKey,
         label: def.laneLabel,
-        rows:
-          providerLower === 'google'
-            ? aggregateGoogleQuotaHistoryRows(def, laneRows)
-            : laneRows,
+        rows: displayRows.filter(quotaHistoryHasUsage),
       }
     })
   }
@@ -3902,20 +3956,22 @@ function buildProviderLanes(
 
     // ── 2. Build prior bars ─────────────────────────────────────────────────
     // Filter history rows to this lane's quota_type (+ Google class).
-    const laneHistory = providerHistory.filter((h) => {
-      const htLower = h.quota_type.toLowerCase()
-      if (htLower !== quotaTypeToLaneKey(def.quotaType)) return false
-      // Google: additionally filter by model class.
-      if (providerLower === 'google' && def.googleClass !== null) {
-        if (h.model === null) return false
-        const cls = classifyGeminiModel(h.model)
-        return cls === def.googleClass
-      }
-      if (providerLower === 'antigravity' && def.quotaKey !== undefined) {
-        return h.model === def.quotaKey
-      }
-      return true
-    })
+    const laneHistory = shouldSuppressProviderLanePriorBars(providerLower, def)
+      ? []
+      : providerHistory.filter((h) => {
+          const htLower = h.quota_type.toLowerCase()
+          if (htLower !== quotaTypeToLaneKey(def.quotaType)) return false
+          // Google: additionally filter by model class.
+          if (providerLower === 'google' && def.googleClass !== null) {
+            if (h.model === null) return false
+            const cls = classifyGeminiModel(h.model)
+            return cls === def.googleClass
+          }
+          if (providerLower === 'antigravity' && def.quotaKey !== undefined) {
+            return h.model === def.quotaKey
+          }
+          return true
+        })
 
     // Deduplicate by (rounded-30min slot) — suppress current reset window.
     // Use a numeric timestamp for ±30 min proximity comparison to handle

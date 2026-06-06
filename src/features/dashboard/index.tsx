@@ -20,13 +20,13 @@ import {
   useState,
   type ReactElement,
 } from 'react'
-import { formatDistance, formatDistanceToNow } from 'date-fns'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { RefreshCw } from 'lucide-react'
 import { ConfigDrawer } from '@/components/config-drawer'
 import { ProfileDropdown } from '@/components/profile-dropdown'
 import { Search } from '@/components/search'
 import {
+  fetchShellHealth,
   fetchUsageReport,
   fetchUsageReportQuotaHistory,
   fetchUsageReportQuotaRangeHistory,
@@ -56,6 +56,12 @@ import type { LowerLaneMode } from './components/token-trend-chart'
 import { useDashboardAlertSummary } from './hooks/use-alerts-from-anomalies'
 import { useAnomalyDetection } from './hooks/use-anomaly-detection'
 import {
+  formatDashboardFreshness,
+  formatRecencyValue,
+  maxIsoTimestamp,
+  selectSessionFreshnessTimestamp,
+} from './lib/freshness'
+import {
   addDaysToDateString,
   computeFleetErrors,
   computeFleetP95,
@@ -83,24 +89,6 @@ interface RecencyBreakoutItem {
   value: string
 }
 
-function parseTimestampMs(value: string | null | undefined): number | null {
-  if (value == null || value === '') return null
-  const time = new Date(value).getTime()
-  return Number.isFinite(time) ? time : null
-}
-
-function maxIsoTimestamp(
-  values: Array<string | null | undefined>
-): string | null {
-  let maxMs: number | null = null
-  for (const value of values) {
-    const time = parseTimestampMs(value)
-    if (time === null) continue
-    if (maxMs === null || time > maxMs) maxMs = time
-  }
-  return maxMs === null ? null : new Date(maxMs).toISOString()
-}
-
 function latestQuotaObservationAt(rows: UsageReportQuotaRow[]): string | null {
   return maxIsoTimestamp(
     rows.flatMap((row) => [
@@ -117,15 +105,6 @@ function latestHealthBucketAt(
   rows: UsageReportProviderLatencyHealthRow[]
 ): string | null {
   return maxIsoTimestamp(rows.map((row) => row.bucket_start))
-}
-
-function formatRecencyValue(iso: string | null, now: Date): string {
-  if (iso === null) return '--'
-  const date = new Date(iso)
-  if (Number.isNaN(date.getTime())) return '--'
-  const timeUTC = date.toUTCString().split(' ')[4] ?? ''
-  const distance = formatDistance(date, now, { addSuffix: false })
-  return `${timeUTC} UTC / ${distance} ago`
 }
 
 function scrollDashboardTargetIntoView(targetId: string): void {
@@ -294,6 +273,19 @@ export function Dashboard(): ReactElement {
     refetchIntervalInBackground: true,
   })
 
+  const { data: shellHealthData } = useQuery({
+    queryKey: ['shell-health-pgbouncer'],
+    queryFn: ({ signal }) => fetchShellHealth(signal),
+    staleTime: 15_000,
+    refetchInterval: LIVE_DASHBOARD_REFETCH_INTERVAL_MS,
+    refetchIntervalInBackground: true,
+  })
+
+  const sessionFreshnessAt = useMemo(
+    () => selectSessionFreshnessTimestamp(shellHealthData, summaryReport),
+    [shellHealthData, summaryReport]
+  )
+
   // Wave 36 Fix 4: showComparison gates the priorReport query in PhosphorDashboard
   // so the prior-window API call is only made when the ComparisonPanel is visible
   // (viewport ≥3840px). Initialised synchronously to avoid a false-trigger flash.
@@ -318,36 +310,23 @@ export function Dashboard(): ReactElement {
   //   "FETCHED HH:MM:SS UTC · Xs ago"
   // Re-evaluate every 10 s so relative time stays current.
   //
-  // Wave 35 (wave35-data-flow-audit ⚠-6): use metadata.latestRecordAt as the
-  // displayed timestamp so the operator sees when the most recent data event
-  // arrived (server max created_at), not when the browser fetch landed.
-  // Fall back to dataUpdatedAt if latestRecordAt is null/undefined.
+  // D1-219: prefer /api/shell/health source-table freshness for Session
+  // recency so a slow or stale usage-report cache cannot make the dashboard
+  // claim session_history is hours behind while the source table is current.
+  // Fall back to usage metadata, then dataUpdatedAt when health is unavailable.
   const [freshnessStr, setFreshnessStr] = useState<string>('Loading…')
   useEffect(() => {
     const compute = (): void => {
-      if (dataUpdatedAt === 0) {
-        setFreshnessStr('Loading…')
-        return
-      }
-      const latestRecordAt = summaryReport?.metadata?.latestRecordAt
-      // Use latestRecordAt (data recency) for the timestamp display; fall back
-      // to the browser-side dataUpdatedAt when the server value is unavailable.
-      const displayDate =
-        latestRecordAt != null
-          ? new Date(latestRecordAt)
-          : new Date(dataUpdatedAt)
-      const timeUTC = displayDate.toUTCString().split(' ')[4] ?? ''
-      // Always use current time for the relative "Xm ago" distance so it stays
-      // accurate on the 10 s interval regardless of which date is displayed.
-      const distance = formatDistanceToNow(displayDate)
-      setFreshnessStr(`FETCHED ${timeUTC} UTC · ${distance} ago`)
+      setFreshnessStr(
+        formatDashboardFreshness(sessionFreshnessAt, dataUpdatedAt, new Date())
+      )
     }
     compute()
     const id = setInterval(compute, 10_000)
     return () => {
       clearInterval(id)
     }
-  }, [dataUpdatedAt, summaryReport?.metadata?.latestRecordAt])
+  }, [dataUpdatedAt, sessionFreshnessAt])
 
   // B3 fix: Compute fleet-wide P95 from all provider latency health rows
   // using a requests-weighted average (replaces the former Math.max that was
@@ -518,10 +497,7 @@ export function Dashboard(): ReactElement {
   )
 
   const recencyBreakout = useMemo<RecencyBreakoutItem[]>(() => {
-    const sessionAt =
-      summaryReport?.metadata?.latestRecordAt ??
-      summaryReport?.summary?.latest_record_at ??
-      null
+    const sessionAt = sessionFreshnessAt
     const quotaAt = latestQuotaObservationAt(quotaRows)
     const healthAt = latestHealthBucketAt(
       summaryReport?.providerLatencyHealth ?? []
@@ -543,9 +519,8 @@ export function Dashboard(): ReactElement {
   }, [
     quotaRows,
     recencyNow,
-    summaryReport?.metadata?.latestRecordAt,
+    sessionFreshnessAt,
     summaryReport?.providerLatencyHealth,
-    summaryReport?.summary?.latest_record_at,
   ])
 
   const handleForceFreshnessRefresh = useCallback((): void => {

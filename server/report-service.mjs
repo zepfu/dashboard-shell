@@ -4788,6 +4788,18 @@ WITH normalized AS (
       AND ri.expected_reset_at IS NOT NULL
       AND ri.fromDate < ($2::date::timestamp AT TIME ZONE 'America/New_York')
       AND ri.expected_reset_at >= ($1::date::timestamp AT TIME ZONE 'America/New_York')
+      -- The Quota tab intentionally hides OpenAI/Anthropic 5-hour history
+      -- lanes. Exclude them before the session_history usage join so the
+      -- range read model does not spend statement-timeout budget building rows
+      -- the UI will never show.
+      AND NOT (
+          ri.quota_type IN ('short', 'short_special')
+          AND (
+              lower(COALESCE(ri.provider, 'unknown')) IN ('openai', 'anthropic', 'claude')
+              OR lower(COALESCE(ri.provider, 'unknown')) LIKE 'claude/%'
+              OR lower(COALESCE(ri.provider, 'unknown')) LIKE 'anthropic/%'
+          )
+      )
 ),
 window_bounds AS (
     SELECT

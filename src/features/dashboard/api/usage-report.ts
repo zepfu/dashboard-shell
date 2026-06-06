@@ -625,6 +625,24 @@ export interface ShellPgBouncerHealth {
 export interface ShellHealthResponse {
   ok: boolean
   pgBouncerSidecars?: ShellPgBouncerHealth
+  sourceTables?: {
+    status: string
+    checkedAt: string
+    cacheTtlMs?: number
+    tables: Array<{
+      tableName: string
+      category?: string
+      status: string
+      latestRowId?: number | null
+      latestDataAt: string | null
+      latestPersistedAt?: string | null
+      latestEventAt: string | null
+      latestDataAgeMinutes?: number | null
+      rowCount?: number | null
+      staleAfterMinutes?: number | null
+      refreshOwner?: string | null
+    }>
+  }
 }
 
 export interface UsageReportProviderStatusUsageRow extends UsageReportLatencyFields {
