@@ -44,7 +44,8 @@ defaults to `3010`. The browser reads the General dashboard report through
 service. The dev shell, dev remote, and dev report service all join the external
 `aawm-tap_default` network used by the aawm-tap model containers. The dev report
 service also joins `aawm_default` so host-style database URLs can be rewritten to
-the internal Postgres service while development stays containerized. If TAP
+the internal `aawm-pgbouncer:6432` runtime pooler while development stays
+containerized. If TAP
 requires a dashboard key, set `AAWM_TAP_API_KEY` in this repo's `.env`; the shell
 service injects it as `X-API-Key` and strips client-sent auth before forwarding.
 Do not keep a real TAP key in `../aawm-tap-dashboard/.env` as a `VITE_*` value,
@@ -91,8 +92,10 @@ The static compose stack also starts `dashboard-shell-reports`, and nginx proxie
 the General dashboard should query live report data. Set remote backend secrets
 here, not in browser bundles. The static shell, remotes, and report service all
 join `aawm-tap_default`; the report service also joins `aawm_default` so a
-host-published database URL such as `127.0.0.1:5434` can be rewritten to the
-internal `aawm-postgres18:5432` endpoint. The local static compose report
+host-published database URL such as `127.0.0.1:6432` can be rewritten to the
+internal `aawm-pgbouncer:6432` endpoint. Runtime report queries should use
+PgBouncer; direct Postgres access is reserved for admin and migration work. The
+local static compose report
 service bind-mounts `./server` into the container, so
 `server/report-service.mjs` edits need a report-service restart, not an image
 rebuild. Dependency changes under `server/package.json` still require rebuilding

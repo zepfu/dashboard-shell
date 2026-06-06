@@ -315,18 +315,6 @@ const CLIENT_AUTH_HEADERS = new Set([
   'x-api-key',
 ])
 
-function buildPostgresSessionOptions(statementTimeoutMs = REPORT_DB_STATEMENT_TIMEOUT_MS) {
-  const settings = []
-  if (REPORT_DB_DISABLE_PARALLELISM) {
-    settings.push('max_parallel_workers_per_gather=0')
-  }
-  if (statementTimeoutMs > 0) {
-    settings.push(`statement_timeout=${Math.round(statementTimeoutMs)}`)
-  }
-  if (settings.length === 0) return undefined
-  return settings.map((setting) => `-c ${setting}`).join(' ')
-}
-
 function buildPostgresPoolOptions(
   applicationName,
   {
@@ -342,9 +330,75 @@ function buildPostgresPoolOptions(
     max,
     idleTimeoutMillis: 30_000,
     connectionTimeoutMillis,
-    statement_timeout: statementTimeoutMs > 0 ? statementTimeoutMs : undefined,
     query_timeout: queryTimeoutMs > 0 ? queryTimeoutMs : undefined,
-    options: buildPostgresSessionOptions(statementTimeoutMs),
+  }
+}
+
+function buildPostgresLocalSettings(
+  statementTimeoutMs = REPORT_DB_STATEMENT_TIMEOUT_MS
+) {
+  const settings = []
+  if (REPORT_DB_DISABLE_PARALLELISM) {
+    settings.push(['max_parallel_workers_per_gather', '0'])
+  }
+  if (statementTimeoutMs > 0) {
+    settings.push([
+      'statement_timeout',
+      `${Math.round(statementTimeoutMs).toString()}ms`,
+    ])
+  }
+  return settings
+}
+
+async function applyPostgresLocalSettings(
+  client,
+  statementTimeoutMs = REPORT_DB_STATEMENT_TIMEOUT_MS
+) {
+  const settings = buildPostgresLocalSettings(statementTimeoutMs)
+  if (settings.length === 0) return
+
+  const expressions = []
+  const values = []
+  for (const [name, value] of settings) {
+    values.push(name, value)
+    expressions.push(
+      `set_config($${(values.length - 1).toString()}, $${values.length.toString()}, true)`
+    )
+  }
+
+  await client.query(`SELECT ${expressions.join(', ')};`, values)
+}
+
+async function queryPostgresWithLocalSettings(
+  targetPool,
+  sql,
+  values,
+  statementTimeoutMs = REPORT_DB_STATEMENT_TIMEOUT_MS
+) {
+  const client = await targetPool.connect()
+  let transactionOpen = false
+
+  try {
+    await client.query('BEGIN')
+    transactionOpen = true
+    await applyPostgresLocalSettings(client, statementTimeoutMs)
+    const result = await client.query(sql, values ?? [])
+    await client.query('COMMIT')
+    transactionOpen = false
+    return result
+  } catch (error) {
+    if (transactionOpen) {
+      try {
+        await client.query('ROLLBACK')
+      } catch (rollbackError) {
+        process.stderr.write(
+          `[report-service] WARN: database rollback failed after query error: ${formatError(rollbackError)}\n`
+        )
+      }
+    }
+    throw error
+  } finally {
+    client.release()
   }
 }
 
@@ -379,6 +433,30 @@ if (healthPool) {
       `[report-service] WARN: idle health database client error: ${formatError(error)}\n`
     )
   })
+}
+
+async function queryReportDatabase(sql, values) {
+  if (!pool) {
+    throw new Error('DATABASE_URL is not configured for the shell report service.')
+  }
+  return queryPostgresWithLocalSettings(
+    pool,
+    sql,
+    values,
+    REPORT_DB_STATEMENT_TIMEOUT_MS
+  )
+}
+
+async function queryHealthDatabase(sql, values) {
+  if (!healthPool) {
+    throw new Error('DATABASE_URL is not configured for the shell report service.')
+  }
+  return queryPostgresWithLocalSettings(
+    healthPool,
+    sql,
+    values,
+    HEALTH_DB_STATEMENT_TIMEOUT_MS
+  )
 }
 const reportCache = new Map()
 const releaseCacheLockScript = `
@@ -925,9 +1003,7 @@ async function loadMaterializedViewHealth() {
 }
 
 async function loadMaterializedViewHealthFromDatabase() {
-  const client = await healthPool.connect()
-  try {
-    const viewResult = await client.query(`
+  const viewResult = await queryHealthDatabase(`
 WITH rel AS (
   SELECT relname, GREATEST(reltuples, 0)::bigint AS estimated_row_count
   FROM pg_class
@@ -949,7 +1025,7 @@ SELECT
   (SELECT estimated_row_count FROM rel WHERE relname = 'provider_latency_health_5m') AS row_count
 ORDER BY view_name ASC;
 `)
-    const jobResult = await client.query(`
+  const jobResult = await queryHealthDatabase(`
 WITH dashboard_jobs AS (
   SELECT jobid, schedule, command, active, jobname
   FROM cron.job
@@ -1013,7 +1089,7 @@ LEFT JOIN last_success ls USING (jobid)
 LEFT JOIN last_failure lf USING (jobid)
 ORDER BY j.jobid ASC;
 `)
-    const activeResult = await client.query(`
+  const activeResult = await queryHealthDatabase(`
 SELECT
   pid,
   now() - query_start AS age,
@@ -1029,39 +1105,36 @@ WHERE datname = current_database()
 ORDER BY query_start ASC NULLS LAST;
 `)
 
-    const activeRows = activeResult.rows.map((row) => ({
-      pid: normalizeNumber(row.pid),
-      age: row.age ? String(row.age) : null,
-      query: String(row.query ?? '').slice(0, 160),
-    }))
-    const cronJobs = jobResult.rows.map((row) =>
-      normalizeMaterializedViewCronJob(row, activeRows)
-    )
-    const jobsByView = cronJobs.reduce((acc, job) => {
-      const viewName = job.viewName
-      if (!viewName) return acc
-      acc[viewName] = [...(acc[viewName] ?? []), job]
-      return acc
-    }, {})
+  const activeRows = activeResult.rows.map((row) => ({
+    pid: normalizeNumber(row.pid),
+    age: row.age ? String(row.age) : null,
+    query: String(row.query ?? '').slice(0, 160),
+  }))
+  const cronJobs = jobResult.rows.map((row) =>
+    normalizeMaterializedViewCronJob(row, activeRows)
+  )
+  const jobsByView = cronJobs.reduce((acc, job) => {
+    const viewName = job.viewName
+    if (!viewName) return acc
+    acc[viewName] = [...(acc[viewName] ?? []), job]
+    return acc
+  }, {})
 
-    const views = viewResult.rows.map((row) =>
-      normalizeMaterializedViewHealthRow(row, jobsByView[row.view_name] ?? [])
-    )
-    const status = views.some((view) => view.status === 'stale')
-      ? 'stale'
-      : views.some((view) => view.status === 'unknown')
-        ? 'unknown'
-        : 'ok'
+  const views = viewResult.rows.map((row) =>
+    normalizeMaterializedViewHealthRow(row, jobsByView[row.view_name] ?? [])
+  )
+  const status = views.some((view) => view.status === 'stale')
+    ? 'stale'
+    : views.some((view) => view.status === 'unknown')
+      ? 'unknown'
+      : 'ok'
 
-    return {
-      status,
-      checkedAt: new Date().toISOString(),
-      cacheTtlMs: MATERIALIZED_VIEW_HEALTH_CACHE_TTL_MS,
-      views,
-      cronJobs,
-    }
-  } finally {
-    client.release()
+  return {
+    status,
+    checkedAt: new Date().toISOString(),
+    cacheTtlMs: MATERIALIZED_VIEW_HEALTH_CACHE_TTL_MS,
+    views,
+    cronJobs,
   }
 }
 
@@ -1205,6 +1278,21 @@ function normalizeDatabaseUrl(value) {
 
   databaseUrl.hostname = hostRewrite
   return databaseUrl.toString()
+}
+
+function describeDatabaseUrl(value) {
+  if (!value) return null
+
+  try {
+    const databaseUrl = new URL(value)
+    return {
+      database: databaseUrl.pathname.replace(/^\//, '') || null,
+      host: databaseUrl.hostname,
+      port: databaseUrl.port || null,
+    }
+  } catch {
+    return null
+  }
 }
 
 function envSecret(...names) {
@@ -4456,9 +4544,10 @@ async function loadQuotaReportFromDatabase() {
   const [quotaResult, quotaVelocityResult, freshnessResult] =
     await runTasksWithConcurrency(
       [
-        () => pool.query(quotaQuery.sql, quotaQuery.values),
-        () => pool.query(quotaVelocityQuery.sql, quotaVelocityQuery.values),
-        () => pool.query(freshnessQuery.sql, freshnessQuery.values),
+        () => queryReportDatabase(quotaQuery.sql, quotaQuery.values),
+        () =>
+          queryReportDatabase(quotaVelocityQuery.sql, quotaVelocityQuery.values),
+        () => queryReportDatabase(freshnessQuery.sql, freshnessQuery.values),
       ],
       REPORT_SQL_FANOUT_CONCURRENCY
     )
@@ -6443,21 +6532,25 @@ async function loadUsageReport(searchParams) {
     localHealth,
   ] = await runTasksWithConcurrency(
     [
-      () => pool.query(sql, values),
-      () => pool.query(summaryQuery.sql, summaryQuery.values),
-      () => pool.query(trendQuery.sql, trendQuery.values),
-      () => pool.query(clientUsageQuery.sql, clientUsageQuery.values),
+      () => queryReportDatabase(sql, values),
+      () => queryReportDatabase(summaryQuery.sql, summaryQuery.values),
+      () => queryReportDatabase(trendQuery.sql, trendQuery.values),
+      () => queryReportDatabase(clientUsageQuery.sql, clientUsageQuery.values),
       () =>
-        pool.query(
+        queryReportDatabase(
           providerLatencyHealthQuery.sql,
           providerLatencyHealthQuery.values
         ),
       () =>
-        pool.query(
+        queryReportDatabase(
           providerErrorObservationQuery.sql,
           providerErrorObservationQuery.values
         ),
-      () => pool.query(providerStatusUsageQuery.sql, providerStatusUsageQuery.values),
+      () =>
+        queryReportDatabase(
+          providerStatusUsageQuery.sql,
+          providerStatusUsageQuery.values
+        ),
       () => loadDockerLogErrors(),
       () => loadLocalHealth(),
     ],
@@ -6508,7 +6601,7 @@ async function loadUsageReport(searchParams) {
 
 async function loadUsageQuotaHistory(searchParams) {
   const query = buildQuotaHistoryQuery(searchParams)
-  const result = await pool.query(query.sql, query.values)
+  const result = await queryReportDatabase(query.sql, query.values)
   return {
     metadata: {
       generatedAt: new Date().toISOString(),
@@ -6519,7 +6612,7 @@ async function loadUsageQuotaHistory(searchParams) {
 
 async function loadUsageQuotaRangeHistory(searchParams) {
   const query = buildQuotaRangeHistoryQuery(searchParams)
-  const result = await pool.query(query.sql, query.values)
+  const result = await queryReportDatabase(query.sql, query.values)
   return {
     metadata: {
       from: parseSearchDateOnly(searchParams.get('from'), defaultFromDate),
@@ -6535,8 +6628,8 @@ async function loadUsageQuotaEstimator(searchParams) {
   const usageBucketQuery = buildQuotaEstimatorUsageBucketQuery(searchParams)
   const [observationResult, usageBucketResult] = await runTasksWithConcurrency(
     [
-      () => pool.query(observationQuery.sql, observationQuery.values),
-      () => pool.query(usageBucketQuery.sql, usageBucketQuery.values),
+      () => queryReportDatabase(observationQuery.sql, observationQuery.values),
+      () => queryReportDatabase(usageBucketQuery.sql, usageBucketQuery.values),
     ],
     REPORT_SQL_FANOUT_CONCURRENCY
   )
@@ -6555,7 +6648,7 @@ async function loadUsageQuotaEstimator(searchParams) {
 
 async function loadUsageToolActivity(searchParams) {
   const query = buildToolActivityQuery(searchParams)
-  const result = await pool.query(query.sql, query.values)
+  const result = await queryReportDatabase(query.sql, query.values)
   return {
     metadata: {
       from: parseDateParam(searchParams.get('from'), defaultFromDate),
@@ -6578,14 +6671,17 @@ async function loadUsageTokenTrendSummary(searchParams) {
     scoreResult,
     versionsResult,
     modelFirstSeenResult,
-  ] =
-    await runTasksWithConcurrency(
+  ] = await runTasksWithConcurrency(
     [
-      () => pool.query(hoursQuery.sql, hoursQuery.values),
-      () => pool.query(healthQuery.sql, healthQuery.values),
-      () => pool.query(scoreQuery.sql, scoreQuery.values),
-      () => pool.query(versionsQuery.sql, versionsQuery.values),
-      () => pool.query(modelFirstSeenQuery.sql, modelFirstSeenQuery.values),
+      () => queryReportDatabase(hoursQuery.sql, hoursQuery.values),
+      () => queryReportDatabase(healthQuery.sql, healthQuery.values),
+      () => queryReportDatabase(scoreQuery.sql, scoreQuery.values),
+      () => queryReportDatabase(versionsQuery.sql, versionsQuery.values),
+      () =>
+        queryReportDatabase(
+          modelFirstSeenQuery.sql,
+          modelFirstSeenQuery.values
+        ),
     ],
     REPORT_SQL_FANOUT_CONCURRENCY
   )
@@ -6609,7 +6705,7 @@ async function loadUsageTokenTrendSummary(searchParams) {
 
 async function loadUsageTokenTrendDay(searchParams) {
   const { sql, values, metadata } = buildTokenTrendDayDetailQuery(searchParams)
-  const result = await pool.query(sql, values)
+  const result = await queryReportDatabase(sql, values)
 
   return {
     metadata,
@@ -6951,6 +7047,7 @@ async function handleRequest(req, res) {
     sendJson(res, 200, {
       ok: true,
       databaseConfigured: Boolean(pool),
+      databaseEndpoint: describeDatabaseUrl(DATABASE_URL),
       databasePool: pool
         ? {
             max: REPORT_DB_POOL_MAX,
