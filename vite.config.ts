@@ -78,7 +78,7 @@ export default defineConfig({
       name: 'dashboard-shell',
       dts: false,
       shareStrategy: 'loaded-first',
-      hostInitInjectLocation: 'entry',
+      hostInitInjectLocation: 'html',
       remotes: {
         'aawm-tap-dashboard': {
           type: aawmTapRemoteEntryType,

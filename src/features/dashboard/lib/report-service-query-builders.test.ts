@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'vitest'
 import {
   buildToolActivityQuery,
+  buildQuotaQuery,
   buildSourceTableHealthQuery,
   buildUsageQuery,
   buildQuotaEstimatorDatasetQuery,
@@ -217,6 +218,23 @@ describe('report-service query builders', () => {
     expect(query.sql).toContain('latest_persisted_at')
     expect(query.sql).toContain('latest_event_at')
     expect(query.sql).not.toContain('COUNT(*)')
+  })
+
+  test('test_buildQuotaQuery_stays_on_rate_limit_tables_and_wtus_lanes', () => {
+    const query = buildQuotaQuery()
+
+    expect(query.values).toEqual([])
+    expect(query.sql).toContain(
+      "ri.quota_type IN ('weekly', 'short', 'weekly_special', " +
+        "'short_special', 'requests', 'monthly', 'wtus')"
+    )
+    expect(query.sql).toContain(
+      "MAX(s.remaining_pct) FILTER (WHERE s.quota_type = 'wtus')"
+    )
+    expect(query.sql).toContain('THEN ri.quota_key')
+    expect(query.sql).toContain("'[]'::jsonb AS usage_breakdown")
+    expect(query.sql).not.toContain('FROM public.session_history')
+    expect(query.sql).not.toContain('COALESCE(sh.start_time, sh.created_at)')
   })
 
   test('test_session_history_reportable_filter_reaches_reporting_query_paths', () => {

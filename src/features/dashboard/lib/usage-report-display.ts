@@ -100,6 +100,7 @@ export function formatDashboardIntervalCompact(start: Date, end: Date): string {
 }
 
 const PROVIDER_ALIASES: Record<string, readonly string[]> = {
+  antigravity: ['antigravity'],
   google: ['google', 'gemini'],
   local: [
     'local',
@@ -146,6 +147,7 @@ export function canonicalProvider(provider: string): string {
 const providerColorsByKey: Record<string, string> = {
   openai: '#2563eb',
   anthropic: '#7c3aed',
+  antigravity: '#0f766e',
   google: '#0891b2',
   gemini: '#0891b2',
   xai: '#334155',
@@ -168,6 +170,7 @@ const providerColorsByKey: Record<string, string> = {
 export const PROVIDER_BRAND_HEX: Record<string, string> = {
   openai: '#10a37f',
   anthropic: '#d97757',
+  antigravity: '#0f766e',
   google: '#4285f4',
   xai: '#475569',
   nvidia_nim: '#76b900',

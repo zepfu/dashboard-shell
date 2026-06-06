@@ -594,6 +594,16 @@ export interface UsageReportQuotaRow {
   monthly_velocity_segments?: boolean[]
   monthly_velocity_scores?: number[]
   monthly_velocity_sample_count?: number
+  wtus_remaining_pct?: number | null
+  wtus_reset_at?: string | null
+  wtus_interval_start?: string | null
+  wtus_interval_end?: string | null
+  wtus_active?: boolean
+  wtus_usage_tokens?: number
+  wtus_usage_breakdown?: UsageReportQuotaUsageBreakdown[]
+  wtus_velocity_segments?: boolean[]
+  wtus_velocity_scores?: number[]
+  wtus_velocity_sample_count?: number
 }
 
 export interface UsageReportQuotaUsageBreakdown {
@@ -617,7 +627,7 @@ export interface UsageReportQuotaHistoryRow {
   model: string | null
   /**
    * Quota type after normalisation: 'weekly' | 'special' | 'short' |
-   * 'short_special' | 'monthly'
+   * 'short_special' | 'monthly' | 'wtus'
    */
   quota_type: string
   /** ISO timestamp of the reset point that ended this window. */

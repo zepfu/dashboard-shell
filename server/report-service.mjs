@@ -3017,12 +3017,13 @@ LIMIT $${values.length};
   return { sql, values }
 }
 
-function buildQuotaQuery() {
+export function buildQuotaQuery() {
   const sql = `
 WITH normalized AS (
     SELECT
         CASE
             WHEN lower(COALESCE(ri.provider, 'unknown')) IN ('google', 'gemini') THEN 'google'
+            WHEN lower(COALESCE(ri.provider, 'unknown')) = 'antigravity' THEN 'antigravity'
             WHEN lower(COALESCE(ri.provider, 'unknown')) IN ('claude', 'anthropic') THEN 'anthropic'
             WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'claude/%' THEN 'anthropic'
             WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'anthropic/%' THEN 'anthropic'
@@ -3037,6 +3038,12 @@ WITH normalized AS (
             ELSE COALESCE(ri.provider, 'unknown')
         END AS provider,
         CASE
+            WHEN lower(COALESCE(ri.provider, 'unknown')) = 'antigravity'
+              AND ri.quota_key IN (
+                  'antigravity_code_assist:gemini_pool',
+                  'antigravity_code_assist:vertex_pool'
+              )
+            THEN ri.quota_key
             WHEN ri.quota_type IN ('monthly', 'requests')
               AND (
                   lower(COALESCE(ri.provider, 'unknown')) LIKE 'xai/%'
@@ -3066,7 +3073,7 @@ WITH normalized AS (
             ELSE false
         END AS active
     FROM public.rate_limit_intervals ri
-    WHERE ri.quota_type IN ('weekly', 'short', 'weekly_special', 'short_special', 'requests', 'monthly')
+    WHERE ri.quota_type IN ('weekly', 'short', 'weekly_special', 'short_special', 'requests', 'monthly', 'wtus')
 ),
 ranked AS (
     SELECT
@@ -3130,172 +3137,14 @@ selected_with_fallbacks AS (
             AND short_special.quota_type = 'short_special'
       )
 ),
-usage_bounds AS (
-    SELECT
-        MIN(s.expected_reset_at - CASE
-            WHEN s.provider IN ('google', 'openrouter')
-              AND s.quota_type = 'short'
-            THEN INTERVAL '24 hours'
-            WHEN s.quota_type = 'monthly' THEN INTERVAL '1 month'
-            WHEN s.quota_type IN ('short', 'short_special') THEN INTERVAL '5 hours'
-            ELSE INTERVAL '7 days'
-        END) AS min_started_at,
-        MAX(CASE
-            WHEN s.expected_reset_at > now() THEN now()
-            ELSE s.expected_reset_at
-        END) AS max_started_at
-    FROM selected_with_fallbacks s
-    WHERE s.expected_reset_at IS NOT NULL
-),
-usage_sessions AS MATERIALIZED (
-    SELECT
-        ${providerDimension} AS provider,
-        COALESCE(sh.model, 'unknown') AS model,
-        COALESCE(sh.start_time, sh.created_at) AS session_started_at,
-        (COALESCE(sh.input_tokens, 0)
-          + COALESCE(sh.output_tokens, 0)
-          + COALESCE(sh.cache_read_input_tokens, 0)
-          + COALESCE(sh.cache_creation_input_tokens, 0)
-          + COALESCE(sh.reasoning_tokens_reported, 0)
-          + COALESCE(sh.reasoning_tokens_estimated, 0))::double precision AS token_total,
-        COALESCE(sh.response_cost_usd, 0)::double precision AS usd_cost
-    FROM public.session_history sh
-    CROSS JOIN usage_bounds bounds
-    WHERE bounds.min_started_at IS NOT NULL
-      AND COALESCE(sh.start_time, sh.created_at) >= bounds.min_started_at
-      AND COALESCE(sh.start_time, sh.created_at) < bounds.max_started_at
-      AND ${sessionHistoryReportablePredicate()}
-      AND ${providerDimension} IN (
-          SELECT DISTINCT provider
-          FROM selected_with_fallbacks
-      )
-),
-recent_sessions AS MATERIALIZED (
-    SELECT
-        ${providerDimension} AS provider,
-        COALESCE(sh.model, 'unknown') AS model
-    FROM public.session_history sh
-    WHERE COALESCE(sh.start_time, sh.created_at) >= now() - INTERVAL '90 minutes'
-      AND COALESCE(sh.start_time, sh.created_at) < now()
-      AND ${sessionHistoryReportablePredicate()}
-      AND ${providerDimension} IN (
-          SELECT DISTINCT provider
-          FROM selected_with_fallbacks
-      )
-),
-usage_model_groups AS (
-    SELECT
-        s.provider,
-        s.model AS quota_model,
-        s.quota_type,
-        us.model AS model,
-        COUNT(*)::double precision AS traces,
-        SUM(us.token_total)::double precision AS token_total,
-        SUM(us.usd_cost)::double precision AS usd_cost
-    FROM selected_with_fallbacks s
-    JOIN usage_sessions us
-      ON s.expected_reset_at IS NOT NULL
-     AND us.session_started_at >= s.expected_reset_at - CASE
-          WHEN s.provider IN ('google', 'openrouter')
-            AND s.quota_type = 'short'
-          THEN INTERVAL '24 hours'
-          WHEN s.quota_type = 'monthly' THEN INTERVAL '1 month'
-          WHEN s.quota_type IN ('short', 'short_special') THEN INTERVAL '5 hours'
-          ELSE INTERVAL '7 days'
-      END
-     AND us.session_started_at < CASE
-          WHEN s.expected_reset_at > now() THEN now()
-          ELSE s.expected_reset_at
-      END
-     AND (
-          (s.provider = 'google'
-            AND us.provider = 'google'
-            AND us.model = COALESCE(s.model, 'unknown'))
-          OR
-          (s.provider <> 'google'
-            AND us.provider = s.provider)
-      )
-     AND (
-          s.provider <> 'openai'
-          OR s.quota_type NOT IN ('weekly', 'short')
-          OR us.model NOT ILIKE '%spark%'
-      )
-     AND (
-          s.provider <> 'openai'
-          OR s.quota_type NOT IN ('special', 'short_special')
-          OR us.model ILIKE '%spark%'
-      )
-     AND (
-          s.provider <> 'anthropic'
-          OR s.quota_type <> 'special'
-          OR us.model ILIKE '%sonnet%'
-      )
-    GROUP BY s.provider, s.model, s.quota_type, us.model
-),
-recent_model_counts AS (
-    SELECT
-        s.provider,
-        s.model AS quota_model,
-        s.quota_type,
-        rs.model AS model,
-        COUNT(*)::double precision AS recent_traces_90m
-    FROM selected_with_fallbacks s
-    JOIN recent_sessions rs
-      ON (
-          (s.provider = 'google'
-            AND rs.provider = 'google'
-            AND rs.model = COALESCE(s.model, 'unknown'))
-          OR
-          (s.provider <> 'google'
-            AND rs.provider = s.provider)
-      )
-     AND (
-          s.provider <> 'openai'
-          OR s.quota_type NOT IN ('weekly', 'short')
-          OR rs.model NOT ILIKE '%spark%'
-      )
-     AND (
-          s.provider <> 'openai'
-          OR s.quota_type NOT IN ('special', 'short_special')
-          OR rs.model ILIKE '%spark%'
-      )
-     AND (
-          s.provider <> 'anthropic'
-          OR s.quota_type <> 'special'
-          OR rs.model ILIKE '%sonnet%'
-      )
-    GROUP BY s.provider, s.model, s.quota_type, rs.model
-),
 usage_by_type AS (
     SELECT
-        s.provider,
-        s.model,
-        s.quota_type,
-        COALESCE(SUM(model_usage.token_total), 0)::double precision AS usage_tokens,
-        COALESCE(
-            jsonb_agg(
-                jsonb_build_object(
-                    'model', model_usage.model,
-                    'tokens', model_usage.token_total,
-                    'cost', model_usage.usd_cost,
-                    'traces', model_usage.traces,
-                    'recent_traces_90m', COALESCE(recent.recent_traces_90m, 0)
-                )
-                ORDER BY model_usage.token_total DESC
-            ) FILTER (WHERE model_usage.model IS NOT NULL),
-            '[]'::jsonb
-        ) AS usage_breakdown
-    FROM selected_with_fallbacks s
-    LEFT JOIN usage_model_groups model_usage
-      ON model_usage.provider = s.provider
-     AND model_usage.quota_model IS NOT DISTINCT FROM s.model
-     AND model_usage.quota_type = s.quota_type
-    LEFT JOIN recent_model_counts recent
-      ON recent.provider = model_usage.provider
-     AND recent.quota_model IS NOT DISTINCT FROM model_usage.quota_model
-     AND recent.quota_type = model_usage.quota_type
-     AND recent.model = model_usage.model
-    GROUP BY s.provider, s.model, s.quota_type
+        provider,
+        model,
+        quota_type,
+        0::double precision AS usage_tokens,
+        '[]'::jsonb AS usage_breakdown
+    FROM selected_with_fallbacks
 )
 SELECT
     s.provider,
@@ -3334,7 +3183,14 @@ SELECT
     MAX(s.interval_end) FILTER (WHERE s.quota_type = 'monthly') AS monthly_interval_end,
     MAX(s.active::int) FILTER (WHERE s.quota_type = 'monthly')::double precision AS monthly_active,
     MAX(usage.usage_tokens) FILTER (WHERE s.quota_type = 'monthly')::double precision AS monthly_usage_tokens,
-    (ARRAY_AGG(usage.usage_breakdown) FILTER (WHERE s.quota_type = 'monthly'))[1] AS monthly_usage_breakdown
+    (ARRAY_AGG(usage.usage_breakdown) FILTER (WHERE s.quota_type = 'monthly'))[1] AS monthly_usage_breakdown,
+    MAX(s.remaining_pct) FILTER (WHERE s.quota_type = 'wtus')::double precision AS wtus_remaining_pct,
+    MAX(s.expected_reset_at) FILTER (WHERE s.quota_type = 'wtus') AS wtus_reset_at,
+    MAX(s.interval_start) FILTER (WHERE s.quota_type = 'wtus') AS wtus_interval_start,
+    MAX(s.interval_end) FILTER (WHERE s.quota_type = 'wtus') AS wtus_interval_end,
+    MAX(s.active::int) FILTER (WHERE s.quota_type = 'wtus')::double precision AS wtus_active,
+    MAX(usage.usage_tokens) FILTER (WHERE s.quota_type = 'wtus')::double precision AS wtus_usage_tokens,
+    (ARRAY_AGG(usage.usage_breakdown) FILTER (WHERE s.quota_type = 'wtus'))[1] AS wtus_usage_breakdown
 FROM selected_with_fallbacks s
 LEFT JOIN usage_by_type usage
   ON usage.provider = s.provider
@@ -3366,7 +3222,7 @@ quota_key_gaps AS (
     FROM (
         SELECT DISTINCT provider, quota_key, quota_type, expected_reset_at
         FROM public.rate_limit_intervals
-        WHERE quota_type IN ('weekly', 'weekly_special', 'short', 'short_special', 'requests', 'monthly')
+        WHERE quota_type IN ('weekly', 'weekly_special', 'short', 'short_special', 'requests', 'monthly', 'wtus')
           AND expected_reset_at IS NOT NULL
           AND quota_key IS NOT NULL
     ) distinct_resets
@@ -3387,6 +3243,7 @@ normalized AS (
         ri.provider AS raw_provider,
         CASE
             WHEN lower(COALESCE(ri.provider, 'unknown')) IN ('google', 'gemini') THEN 'google'
+            WHEN lower(COALESCE(ri.provider, 'unknown')) = 'antigravity' THEN 'antigravity'
             WHEN lower(COALESCE(ri.provider, 'unknown')) IN ('claude', 'anthropic') THEN 'anthropic'
             WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'claude/%' THEN 'anthropic'
             WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'anthropic/%' THEN 'anthropic'
@@ -3401,6 +3258,12 @@ normalized AS (
             ELSE COALESCE(ri.provider, 'unknown')
         END AS provider,
         CASE
+            WHEN lower(COALESCE(ri.provider, 'unknown')) = 'antigravity'
+              AND ri.quota_key IN (
+                  'antigravity_code_assist:gemini_pool',
+                  'antigravity_code_assist:vertex_pool'
+              )
+            THEN ri.quota_key
             WHEN ri.quota_type IN ('monthly', 'requests')
               AND (
                   lower(COALESCE(ri.provider, 'unknown')) LIKE 'xai/%'
@@ -3432,7 +3295,7 @@ normalized AS (
             ELSE false
         END AS active
     FROM public.rate_limit_intervals ri
-    WHERE ri.quota_type IN ('weekly', 'short', 'weekly_special', 'short_special', 'requests', 'monthly')
+    WHERE ri.quota_type IN ('weekly', 'short', 'weekly_special', 'short_special', 'requests', 'monthly', 'wtus')
 ),
 ranked AS (
     SELECT
@@ -3509,6 +3372,7 @@ selected_with_duration AS (
             CASE WHEN kh.gap_count >= 2 THEN kh.interval_hours END,
             CASE
                 WHEN s.provider <> 'xai' AND s.raw_quota_type = 'requests' THEN 24.0
+                WHEN s.provider = 'antigravity' AND s.raw_quota_type = 'wtus' THEN 5.0
                 WHEN s.quota_type = 'monthly' THEN 720.0
                 WHEN s.quota_type IN ('short', 'short_special') THEN 5.0
                 WHEN s.quota_type IN ('weekly', 'special') THEN 168.0
@@ -3658,7 +3522,7 @@ quota_key_gaps AS (
     FROM (
         SELECT DISTINCT provider, quota_key, quota_type, expected_reset_at
         FROM public.rate_limit_intervals
-        WHERE quota_type IN ('weekly', 'weekly_special', 'short', 'short_special', 'requests', 'monthly')
+        WHERE quota_type IN ('weekly', 'weekly_special', 'short', 'short_special', 'requests', 'monthly', 'wtus')
           AND expected_reset_at IS NOT NULL
     ) distinct_resets
 ),
@@ -3685,6 +3549,7 @@ normalized AS (
         ri.quota_key,
         CASE
             WHEN lower(COALESCE(ri.provider, 'unknown')) IN ('google', 'gemini') THEN 'google'
+            WHEN lower(COALESCE(ri.provider, 'unknown')) = 'antigravity' THEN 'antigravity'
             WHEN lower(COALESCE(ri.provider, 'unknown')) IN ('claude', 'anthropic') THEN 'anthropic'
             WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'claude/%' THEN 'anthropic'
             WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'anthropic/%' THEN 'anthropic'
@@ -3699,6 +3564,12 @@ normalized AS (
             ELSE COALESCE(ri.provider, 'unknown')
         END AS provider,
         CASE
+            WHEN lower(COALESCE(ri.provider, 'unknown')) = 'antigravity'
+              AND ri.quota_key IN (
+                  'antigravity_code_assist:gemini_pool',
+                  'antigravity_code_assist:vertex_pool'
+              )
+            THEN ri.quota_key
             WHEN ri.quota_type IN ('monthly', 'requests')
               AND (
                   lower(COALESCE(ri.provider, 'unknown')) LIKE 'xai/%'
@@ -3740,6 +3611,7 @@ normalized AS (
                   AND lower(COALESCE(ri.provider, 'unknown')) NOT LIKE 'xai/%'
                   AND lower(COALESCE(ri.provider, 'unknown')) NOT IN ('xai', 'x.ai')
                 THEN 24.0
+                WHEN ri.quota_type = 'wtus' THEN 5.0
                 WHEN ri.quota_type IN ('short', 'short_special') THEN 5.0
                 WHEN ri.quota_type IN ('weekly', 'weekly_special') THEN 168.0
                 WHEN ri.quota_type = 'requests'
@@ -3774,7 +3646,7 @@ normalized AS (
     --   OpenAI/Anthropic weekly → upper +14 d
     --   Google short (24 h)     → upper +48 h
     --   xAI monthly (30 d)      → upper +60 d
-    WHERE ri.quota_type IN ('weekly', 'weekly_special', 'short', 'short_special', 'requests', 'monthly')
+    WHERE ri.quota_type IN ('weekly', 'weekly_special', 'short', 'short_special', 'requests', 'monthly', 'wtus')
       AND ri.expected_reset_at IS NOT NULL
       AND ri.expected_reset_at >= now() - (
               COALESCE(
@@ -3784,6 +3656,7 @@ normalized AS (
                         AND lower(COALESCE(ri.provider, 'unknown')) NOT LIKE 'xai/%'
                         AND lower(COALESCE(ri.provider, 'unknown')) NOT IN ('xai', 'x.ai')
                       THEN 24.0
+                      WHEN ri.quota_type = 'wtus' THEN 5.0
                       WHEN ri.quota_type IN ('short', 'short_special') THEN 5.0
                       WHEN ri.quota_type IN ('weekly', 'weekly_special') THEN 168.0
                       WHEN ri.quota_type = 'requests'
@@ -3805,6 +3678,7 @@ normalized AS (
                         AND lower(COALESCE(ri.provider, 'unknown')) NOT LIKE 'xai/%'
                         AND lower(COALESCE(ri.provider, 'unknown')) NOT IN ('xai', 'x.ai')
                       THEN 24.0
+                      WHEN ri.quota_type = 'wtus' THEN 5.0
                       WHEN ri.quota_type IN ('short', 'short_special') THEN 5.0
                       WHEN ri.quota_type IN ('weekly', 'weekly_special') THEN 168.0
                       WHEN ri.quota_type = 'requests'
@@ -3956,9 +3830,11 @@ per_model_usage AS (
         ) AS recent_traces_90m
     FROM window_bounds wb
     JOIN public.session_history sh
-      ON (
+      ON wb.provider <> 'antigravity'
+     AND (
               CASE
                   WHEN lower(COALESCE(sh.provider, 'unknown')) IN ('google', 'gemini') THEN 'google'
+                  WHEN lower(COALESCE(sh.provider, 'unknown')) = 'antigravity' THEN 'antigravity'
                   WHEN lower(COALESCE(sh.provider, 'unknown')) IN ('claude', 'anthropic') THEN 'anthropic'
                   WHEN lower(COALESCE(sh.provider, 'unknown')) LIKE 'claude/%' THEN 'anthropic'
                   WHEN lower(COALESCE(sh.provider, 'unknown')) LIKE 'anthropic/%' THEN 'anthropic'
@@ -4061,6 +3937,12 @@ WITH normalized AS (
             ELSE COALESCE(ri.provider, 'unknown')
         END AS provider,
         CASE
+            WHEN lower(COALESCE(ri.provider, 'unknown')) = 'antigravity'
+              AND ri.quota_key IN (
+                  'antigravity_code_assist:gemini_pool',
+                  'antigravity_code_assist:vertex_pool'
+              )
+            THEN ri.quota_key
             WHEN ri.quota_type IN ('monthly', 'requests')
               AND (
                   lower(COALESCE(ri.provider, 'unknown')) LIKE 'xai/%'
@@ -4086,7 +3968,7 @@ WITH normalized AS (
         ri.toDate AS interval_end,
         ri.remaining_pct
     FROM public.rate_limit_intervals ri
-    WHERE ri.quota_type IN ('weekly', 'weekly_special', 'short', 'short_special', 'requests', 'monthly')
+    WHERE ri.quota_type IN ('weekly', 'weekly_special', 'short', 'short_special', 'requests', 'monthly', 'wtus')
       AND ri.expected_reset_at IS NOT NULL
       AND ri.fromDate < ($2::date::timestamp AT TIME ZONE 'America/New_York')
       AND ri.expected_reset_at >= ($1::date::timestamp AT TIME ZONE 'America/New_York')
@@ -4123,7 +4005,8 @@ per_model_usage AS (
         COUNT(*)::double precision AS traces
     FROM window_bounds wb
     JOIN public.session_history sh
-      ON ${providerDimension} = wb.provider
+      ON wb.provider <> 'antigravity'
+     AND ${providerDimension} = wb.provider
      AND COALESCE(sh.start_time, sh.created_at) >= wb.interval_start
      AND COALESCE(sh.start_time, sh.created_at) < wb.expected_reset_at
      AND ${sessionHistoryReportablePredicate()}
@@ -5194,6 +5077,7 @@ function attachQuotaVelocityRows(row, quotaVelocityRowsByLane) {
     'special',
     'short_special',
     'monthly',
+    'wtus',
   ]) {
     const velocityRow = quotaVelocityRowsByLane.get(
       quotaVelocityLaneKey(row.provider, row.model, quotaType)
@@ -5297,6 +5181,21 @@ function normalizeQuotaRow(row) {
     ),
     monthly_velocity_sample_count:
       normalizeNumber(row.monthly_velocity_sample_count) ?? 0,
+    wtus_remaining_pct: normalizeNumber(row.wtus_remaining_pct),
+    wtus_reset_at: row.wtus_reset_at ?? null,
+    wtus_interval_start: row.wtus_interval_start ?? null,
+    wtus_interval_end: row.wtus_interval_end ?? null,
+    wtus_active: Boolean(normalizeNumber(row.wtus_active)),
+    wtus_usage_tokens: normalizeNumber(row.wtus_usage_tokens) ?? 0,
+    wtus_usage_breakdown: normalizeUsageBreakdown(row.wtus_usage_breakdown),
+    wtus_velocity_segments: normalizeQuotaVelocitySegments(
+      row.wtus_velocity_segments
+    ),
+    wtus_velocity_scores: normalizeQuotaVelocityScores(
+      row.wtus_velocity_scores
+    ),
+    wtus_velocity_sample_count:
+      normalizeNumber(row.wtus_velocity_sample_count) ?? 0,
   }
 }
 

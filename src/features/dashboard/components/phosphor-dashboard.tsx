@@ -160,6 +160,12 @@ const PROVIDER_SERIES: ProviderSeries[] = [
     cssClass: 'tt-google',
   },
   {
+    key: 'antigravity',
+    label: 'Antigravity',
+    color: '#0f766e',
+    cssClass: 'tt-antigravity',
+  },
+  {
     key: 'xai',
     label: 'xAI',
     // W28-TrendVisual Track A: was '#f5f5f5' (near-white, visually problematic).
@@ -475,11 +481,15 @@ function shouldHideQuotaHistoryLane(
 
 function quotaHistoryRowMatchesLane(
   providerLower: string,
-  def: { quotaType: string; googleClass: string | null },
+  def: { quotaType: string; googleClass: string | null; quotaKey?: string },
   row: UsageReportQuotaHistoryRow
 ): boolean {
   if (quotaTypeToLaneKey(row.quota_type) !== quotaTypeToLaneKey(def.quotaType))
     return false
+
+  if (providerLower === 'antigravity' && def.quotaKey !== undefined) {
+    return row.model === def.quotaKey
+  }
 
   if (providerLower === 'google' && def.googleClass !== null) {
     if (row.model === null) return false
@@ -635,6 +645,8 @@ function fallbackQuotaHistoryLabel(quotaType: string): string {
       return 'Special · 5hr'
     case 'monthly':
       return 'All Models · 30d'
+    case 'wtus':
+      return 'WTUs'
     default:
       return quotaType
   }
@@ -2032,6 +2044,7 @@ type QuotaIntervalKind =
   | 'special'
   | 'short_special'
   | 'monthly'
+  | 'wtus'
 
 /**
  * Builds 100 one-percent QuotaRowConfig segments for a single quota interval
@@ -2173,10 +2186,23 @@ function buildQuotaIntervals(
         velocitySegments: row.monthly_velocity_segments,
         velocityScores: row.monthly_velocity_scores,
       },
+      {
+        remainingPct: row.wtus_remaining_pct,
+        active: row.wtus_active ?? false,
+        label: 'WTUs',
+        interval: 'wtus' as const,
+        resetAt: row.wtus_reset_at ?? undefined,
+        usedTokens: row.wtus_usage_tokens ?? 0,
+        intervalStart: row.wtus_interval_start ?? null,
+        intervalEnd: row.wtus_interval_end ?? null,
+        durationHours: quotaDurationHours(provider, 'wtus'),
+        velocitySegments: row.wtus_velocity_segments,
+        velocityScores: row.wtus_velocity_scores,
+      },
     ]
 
     for (const candidate of candidates) {
-      if (!candidate.active || candidate.remainingPct === null) continue
+      if (!candidate.active || candidate.remainingPct == null) continue
       const consumedPct = Math.max(
         0,
         Math.min(100, 100 - candidate.remainingPct)
@@ -2293,6 +2319,14 @@ function extractInterval(
         velocitySegments: row.monthly_velocity_segments,
         velocityScores: row.monthly_velocity_scores,
       }
+    case 'wtus':
+      if (!row.wtus_active || row.wtus_remaining_pct == null) return null
+      return {
+        remainingPct: row.wtus_remaining_pct,
+        resetAt: row.wtus_reset_at ?? undefined,
+        velocitySegments: row.wtus_velocity_segments,
+        velocityScores: row.wtus_velocity_scores,
+      }
     default:
       return null
   }
@@ -2309,6 +2343,7 @@ function quotaDurationHours(
   )
     return 24
   if (interval === 'monthly') return 720
+  if (interval === 'wtus') return 5
   if (interval === 'short' || interval === 'short_special') return 5
   return 168
 }
@@ -2648,6 +2683,7 @@ function quotaTypeToPeriodType(quotaType: string): QuotaBarGroup['periodType'] {
   switch (quotaType.toLowerCase()) {
     case 'short':
     case 'short_special':
+    case 'wtus':
       return '5hr'
     case 'weekly':
       return 'weekly'
@@ -2709,6 +2745,11 @@ function makeQuotaBarGroup(
       intervalStart = row.monthly_interval_start
       intervalEnd = row.monthly_interval_end
       breakdown = row.monthly_usage_breakdown
+      break
+    case 'wtus':
+      intervalStart = row.wtus_interval_start ?? null
+      intervalEnd = row.wtus_interval_end ?? null
+      breakdown = row.wtus_usage_breakdown ?? []
       break
   }
 
@@ -2793,6 +2834,11 @@ function makeQuotaBarGroupAlways(
       intervalStart = row.monthly_interval_start
       intervalEnd = row.monthly_interval_end
       breakdown = row.monthly_usage_breakdown
+      break
+    case 'wtus':
+      intervalStart = row.wtus_interval_start ?? null
+      intervalEnd = row.wtus_interval_end ?? null
+      breakdown = row.wtus_usage_breakdown ?? []
       break
   }
 
@@ -3336,6 +3382,7 @@ function quotaTypeToBarPeriodType(
   switch (quotaType.toLowerCase()) {
     case 'short':
     case 'short_special':
+    case 'wtus':
       return '5hr'
     case 'weekly':
       return 'weekly'
@@ -3371,6 +3418,7 @@ interface LaneDef {
   laneLabel: string
   quotaType: string
   googleClass: string | null
+  quotaKey?: string
 }
 
 const ANTHROPIC_LANE_DEFS: LaneDef[] = [
@@ -3443,6 +3491,23 @@ const GOOGLE_LANE_DEFS: LaneDef[] = [
   },
 ]
 
+const ANTIGRAVITY_LANE_DEFS: LaneDef[] = [
+  {
+    laneKey: 'antigravity/gemini-pool',
+    laneLabel: 'Gemini Pool · WTUs',
+    quotaType: 'wtus',
+    googleClass: null,
+    quotaKey: 'antigravity_code_assist:gemini_pool',
+  },
+  {
+    laneKey: 'antigravity/vertex-pool',
+    laneLabel: 'Vertex Pool · WTUs',
+    quotaType: 'wtus',
+    googleClass: null,
+    quotaKey: 'antigravity_code_assist:vertex_pool',
+  },
+]
+
 const XAI_LANE_DEFS: LaneDef[] = [
   {
     laneKey: 'xai/monthly',
@@ -3464,6 +3529,7 @@ const OPENROUTER_LANE_DEFS: LaneDef[] = [
 const PROVIDER_LANE_DEFS: Readonly<Record<string, LaneDef[]>> = {
   anthropic: ANTHROPIC_LANE_DEFS,
   openai: OPENAI_LANE_DEFS,
+  antigravity: ANTIGRAVITY_LANE_DEFS,
   google: GOOGLE_LANE_DEFS,
   xai: XAI_LANE_DEFS,
   openrouter: OPENROUTER_LANE_DEFS,
@@ -3625,6 +3691,11 @@ function buildProviderLanes(
           }
         }
       }
+    } else if (providerLower === 'antigravity' && def.quotaKey !== undefined) {
+      const row = providerQuotas.find((quota) => quota.model === def.quotaKey)
+      if (row !== undefined) {
+        currentBar = makeQuotaBarGroup(def.laneLabel, row, 'wtus')
+      }
     } else if (providerLower === 'xai') {
       // xAI: aggregate all rows under monthly.
       for (const row of providerQuotas) {
@@ -3650,6 +3721,8 @@ function buildProviderLanes(
               return 'short_special'
             case 'monthly':
               return 'monthly'
+            case 'wtus':
+              return 'wtus'
             default:
               return 'weekly'
           }
@@ -3674,6 +3747,9 @@ function buildProviderLanes(
         if (h.model === null) return false
         const cls = classifyGeminiModel(h.model)
         return cls === def.googleClass
+      }
+      if (providerLower === 'antigravity' && def.quotaKey !== undefined) {
+        return h.model === def.quotaKey
       }
       return true
     })
@@ -3755,6 +3831,7 @@ const CANONICAL_PROVIDERS = [
   'anthropic',
   'openai',
   'google',
+  'antigravity',
   'xai',
   'openrouter',
   'nvidia_nim',
