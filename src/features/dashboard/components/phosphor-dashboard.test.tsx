@@ -2144,6 +2144,77 @@ describe('Wave 41 — buildProviderLanes', () => {
     expect(lanes[0].laneKey).toBe('google/flash')
   })
 
+  test('test_antigravity_wtus_lanes_use_quota_key_identity', () => {
+    const makeAntigravityRow = (
+      quotaKey: string,
+      remainingPct: number
+    ): UsageReportQuotaRow => ({
+      ...makeAnthropicQuotaRow(),
+      provider: 'antigravity',
+      model: quotaKey,
+      weekly_active: false,
+      weekly_remaining_pct: null,
+      short_active: false,
+      short_remaining_pct: null,
+      special_active: false,
+      special_remaining_pct: null,
+      short_special_active: false,
+      short_special_remaining_pct: null,
+      monthly_active: false,
+      monthly_remaining_pct: null,
+      wtus_remaining_pct: remainingPct,
+      wtus_reset_at: '2026-06-06T00:04:07Z',
+      wtus_interval_start: '2026-06-05T19:04:12Z',
+      wtus_interval_end: '9999-12-31T00:00:00Z',
+      wtus_active: true,
+      wtus_usage_tokens: 0,
+      wtus_usage_breakdown: [],
+    })
+    const historyRows: UsageReportQuotaHistoryRow[] = [
+      makeHistoryRow({
+        provider: 'antigravity',
+        model: 'antigravity_code_assist:gemini_pool',
+        quota_type: 'wtus',
+        expected_reset_at: '2026-06-05T14:51:55Z',
+        interval_start: '2026-06-05T10:52:21Z',
+        interval_end: '2026-06-05T14:51:55Z',
+        min_remaining_pct: 100,
+      }),
+      makeHistoryRow({
+        provider: 'antigravity',
+        model: 'antigravity_code_assist:vertex_pool',
+        quota_type: 'wtus',
+        expected_reset_at: '2026-06-05T15:52:18Z',
+        interval_start: '2026-06-05T10:52:21Z',
+        interval_end: '2026-06-05T15:52:18Z',
+        min_remaining_pct: 100,
+      }),
+    ]
+
+    const lanes = _buildProviderLanesForTest(
+      'antigravity',
+      [
+        makeAntigravityRow('antigravity_code_assist:gemini_pool', 88),
+        makeAntigravityRow('antigravity_code_assist:vertex_pool', 76),
+      ],
+      historyRows
+    )
+
+    expect(lanes).toHaveLength(2)
+    expect(lanes.map((lane) => lane.laneKey)).toEqual([
+      'antigravity/gemini-pool',
+      'antigravity/vertex-pool',
+    ])
+    expect(lanes.map((lane) => lane.laneLabel)).toEqual([
+      'Gemini Pool · WTUs',
+      'Vertex Pool · WTUs',
+    ])
+    expect(lanes[0].currentBar?.consumedPct).toBe(12)
+    expect(lanes[1].currentBar?.consumedPct).toBe(24)
+    expect(lanes[0].priorBars).toHaveLength(1)
+    expect(lanes[1].priorBars).toHaveLength(1)
+  })
+
   test('test_xai_has_1_monthly_lane', () => {
     const xaiRow: UsageReportQuotaRow = {
       ...makeAnthropicQuotaRow(),

@@ -2420,6 +2420,10 @@ tbody tr {
 .tt-swatch.tt-google {
   background: #4285f4;
 }
+.tt-slice.tt-antigravity,
+.tt-swatch.tt-antigravity {
+  background: #0f766e;
+}
 .tt-slice.tt-xai,
 .tt-swatch.tt-xai {
   background: #475569;
