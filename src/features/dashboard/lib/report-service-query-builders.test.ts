@@ -452,6 +452,10 @@ describe('report-service query builders', () => {
     expect(query.sql).toContain(
       "ri.expected_reset_at >= ($1::date::timestamp AT TIME ZONE 'America/New_York')"
     )
+    expect(query.sql).toContain("ri.quota_type IN ('short', 'short_special')")
+    expect(query.sql).toContain(
+      "lower(COALESCE(ri.provider, 'unknown')) IN ('openai', 'anthropic', 'claude')"
+    )
     expect(query.sql).not.toContain(
       "ri.expected_reset_at < ($2::date::timestamp AT TIME ZONE 'America/New_York')"
     )

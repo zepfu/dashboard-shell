@@ -596,6 +596,22 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
           ],
         }),
         quotaHistoryRow({
+          expected_reset_at: '2026-05-22T00:10:00.000Z',
+          interval_start: '2026-05-15T00:00:00.000Z',
+          interval_end: '2026-05-22T00:10:00.000Z',
+          min_remaining_pct: 48,
+          usage_tokens: 1500,
+          usage_breakdown: [
+            {
+              model: 'gpt-5.5',
+              tokens: 1500,
+              cost: 1.5,
+              traces: 6,
+              recent_traces_90m: 0,
+            },
+          ],
+        }),
+        quotaHistoryRow({
           quota_type: 'special',
           expected_reset_at: '2026-05-23T00:00:00.000Z',
           interval_start: '2026-05-16T00:00:00.000Z',
@@ -674,6 +690,17 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
           ],
         }),
         quotaHistoryRow({
+          provider: 'google',
+          model: 'gemini-2.5-flash-lite',
+          quota_type: 'short',
+          expected_reset_at: '2026-05-25T00:00:00.000Z',
+          interval_start: '2026-05-24T00:00:00.000Z',
+          interval_end: '2026-05-25T00:00:00.000Z',
+          min_remaining_pct: 0,
+          usage_tokens: 0,
+          usage_breakdown: [],
+        }),
+        quotaHistoryRow({
           provider: 'xai',
           quota_type: 'monthly',
           expected_reset_at: '2026-06-15T00:00:00.000Z',
@@ -736,6 +763,7 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
         '.provider-quota-history-row'
       )
     ).map((row) => row.textContent ?? '')
+    expect(weeklyRows).toHaveLength(2)
     expect(weeklyRows[0]).toContain('2K tok · 8 req')
     expect(weeklyRows[1]).toContain('1K tok · 5 req')
 
@@ -767,6 +795,7 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
       )
     ).toHaveTextContent('Flash-Lite')
     expect(google.getByText(/1K tok · 10 req/i)).toBeInTheDocument()
+    expect(google.queryByText(/0 tok · 0 req/i)).toBeNull()
     expect(
       (googleBucket as HTMLElement).querySelectorAll(
         '.provider-quota-history-row'
@@ -2299,6 +2328,44 @@ describe('Wave 41 — buildProviderLanes', () => {
     expect(keys).toContain('openai/short_special')
     expect(keys).toContain('openai/weekly')
     expect(keys).toContain('openai/special')
+  })
+
+  test('test_openai_codex_spark_5hr_lane_keeps_current_bar_only', () => {
+    const openaiRow: UsageReportQuotaRow = {
+      ...makeAnthropicQuotaRow(),
+      provider: 'openai',
+      short_special_remaining_pct: 75,
+      short_special_reset_at: '2026-05-20T14:33:00Z',
+      short_special_interval_start: '2026-05-20T09:33:00Z',
+      short_special_interval_end: '2026-05-20T14:33:00Z',
+      short_special_active: true,
+      short_special_usage_tokens: 50,
+    }
+    const historyRows: UsageReportQuotaHistoryRow[] = [
+      makeHistoryRow({
+        provider: 'openai',
+        quota_type: 'short_special',
+        expected_reset_at: '2026-05-20T09:30:00Z',
+        interval_start: '2026-05-20T04:30:00Z',
+        interval_end: '2026-05-20T09:30:00Z',
+        min_remaining_pct: 20,
+      }),
+      makeHistoryRow({
+        provider: 'openai',
+        quota_type: 'short_special',
+        expected_reset_at: '2026-05-20T04:30:00Z',
+        interval_start: '2026-05-19T23:30:00Z',
+        interval_end: '2026-05-20T04:30:00Z',
+        min_remaining_pct: 10,
+      }),
+    ]
+
+    const lanes = _buildProviderLanesForTest('openai', [openaiRow], historyRows)
+    const spark5hLane = lanes.find((l) => l.laneKey === 'openai/short_special')
+
+    expect(spark5hLane).toBeDefined()
+    expect(spark5hLane!.currentBar).not.toBeNull()
+    expect(spark5hLane!.priorBars).toHaveLength(0)
   })
 
   test('test_google_has_3_lanes_for_known_classes', () => {
