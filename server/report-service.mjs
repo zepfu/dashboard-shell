@@ -377,6 +377,7 @@ async function queryPostgresWithLocalSettings(
 ) {
   const client = await targetPool.connect()
   let transactionOpen = false
+  let discardClient = false
 
   try {
     await client.query('BEGIN')
@@ -391,6 +392,7 @@ async function queryPostgresWithLocalSettings(
       try {
         await client.query('ROLLBACK')
       } catch (rollbackError) {
+        discardClient = true
         process.stderr.write(
           `[report-service] WARN: database rollback failed after query error: ${formatError(rollbackError)}\n`
         )
@@ -398,7 +400,7 @@ async function queryPostgresWithLocalSettings(
     }
     throw error
   } finally {
-    client.release()
+    client.release(discardClient)
   }
 }
 
@@ -1353,6 +1355,17 @@ const filterColumns = {
   provider_model: dimensions.provider_model,
 }
 
+const configChangeFlagColumns = [
+  'changed_pre_commit_config',
+  'changed_env_file',
+  'changed_pyproject_toml',
+  'changed_gitignore',
+]
+
+const configChangeFilterColumns = Object.fromEntries(
+  configChangeFlagColumns.map((column) => [column, `sh.${column}`])
+)
+
 const sortColumns = {
   period_end: 'period_end',
   traces: 'traces',
@@ -1574,6 +1587,38 @@ const agentScoreSelectParts = [
   ) AS agent_compact_summary_source_counts`,
 ]
 
+const configChangeAnyEvaluated = configChangeFlagColumns
+  .map((column) => `sh.${column} IS NOT NULL`)
+  .join(' OR ')
+const configChangeAnyTrue = configChangeFlagColumns
+  .map((column) => `sh.${column} IS TRUE`)
+  .join(' OR ')
+const configChangeAllUnknown = configChangeFlagColumns
+  .map((column) => `sh.${column} IS NULL`)
+  .join(' AND ')
+
+const configChangeAggregateSelectParts = [
+  `COUNT(*) FILTER (WHERE ${configChangeAnyEvaluated})::double precision AS config_change_evaluated_rows`,
+  `COUNT(*) FILTER (WHERE ${configChangeAllUnknown})::double precision AS config_change_unevaluated_rows`,
+  `COUNT(*) FILTER (WHERE ${configChangeAnyTrue})::double precision AS config_change_any_true_rows`,
+  ...configChangeFlagColumns.flatMap((column) => [
+    `COUNT(*) FILTER (WHERE sh.${column} IS TRUE)::double precision AS ${column}_true_rows`,
+    `COUNT(*) FILTER (WHERE sh.${column} IS FALSE)::double precision AS ${column}_false_rows`,
+    `COUNT(*) FILTER (WHERE sh.${column} IS NULL)::double precision AS ${column}_unknown_rows`,
+  ]),
+]
+
+const configChangeAggregateNumericKeys = [
+  'config_change_evaluated_rows',
+  'config_change_unevaluated_rows',
+  'config_change_any_true_rows',
+  ...configChangeFlagColumns.flatMap((column) => [
+    `${column}_true_rows`,
+    `${column}_false_rows`,
+    `${column}_unknown_rows`,
+  ]),
+]
+
 function sendJson(res, status, body) {
   const payload = JSON.stringify(body)
   res.writeHead(status, {
@@ -1729,6 +1774,42 @@ function appendMultiValueFilter(searchParams, key, whereParts, values) {
   const column = filterColumns[key]
   values.push(selected)
   whereParts.push(`${column} = ANY($${values.length}::text[])`)
+}
+
+function configChangeFilterClause(column, value) {
+  switch (value.toLowerCase()) {
+    case 'true':
+    case '1':
+    case 'yes':
+      return `${column} IS TRUE`
+    case 'false':
+    case '0':
+    case 'no':
+      return `${column} IS FALSE`
+    case 'null':
+    case 'unknown':
+    case 'unevaluated':
+      return `${column} IS NULL`
+    case 'evaluated':
+      return `${column} IS NOT NULL`
+    default:
+      throw new Error(
+        `Unsupported config-change filter value: ${value}. ` +
+          'Use true, false, null, evaluated, or unevaluated.'
+      )
+  }
+}
+
+function appendConfigChangeFilters(searchParams, whereParts) {
+  for (const [key, column] of Object.entries(configChangeFilterColumns)) {
+    const selected = parseCsv(searchParams.get(key))
+    if (!selected.length) continue
+
+    const clauses = [
+      ...new Set(selected.map((value) => configChangeFilterClause(column, value))),
+    ]
+    whereParts.push(`(${clauses.join(' OR ')})`)
+  }
 }
 
 function normalizeNumber(value) {
@@ -1945,6 +2026,7 @@ function normalizeRow(row) {
     'agent_compact_summary_id_count',
     'agent_compact_summary_resume_contexts',
     'agent_compact_summary_verify_contexts',
+    ...configChangeAggregateNumericKeys,
   ]
 
   const normalized = { ...row }
@@ -1967,6 +2049,7 @@ function buildFilteredWhere(searchParams, options = {}) {
   for (const key of Object.keys(filterColumns)) {
     appendMultiValueFilter(searchParams, key, whereParts, values)
   }
+  appendConfigChangeFilters(searchParams, whereParts)
 
   return { from, to, values, whereParts }
 }
@@ -1982,6 +2065,7 @@ function buildTokenTrendFilteredWhere(searchParams) {
   for (const key of Object.keys(filterColumns)) {
     appendMultiValueFilter(searchParams, key, whereParts, values)
   }
+  appendConfigChangeFilters(searchParams, whereParts)
 
   return { from, to, values, whereParts }
 }
@@ -2009,6 +2093,7 @@ SELECT
     SUM(COALESCE(sh.tool_call_count, 0))::double precision AS tool_calls,
     SUM(COALESCE(sh.git_commit_count, 0))::double precision AS git_commit,
     SUM(COALESCE(sh.git_push_count, 0))::double precision AS git_push,
+    ${configChangeAggregateSelectParts.join(',\n    ')},
     MIN(sh.start_time) AS period_start,
     MAX(sh.end_time) AS period_end,
     MAX(sh.created_at) AS latest_record_at
@@ -4586,6 +4671,12 @@ function normalizeSummary(row) {
     tool_calls: normalizeNumber(row.tool_calls) ?? 0,
     git_commit: normalizeNumber(row.git_commit) ?? 0,
     git_push: normalizeNumber(row.git_push) ?? 0,
+    ...Object.fromEntries(
+      configChangeAggregateNumericKeys.map((key) => [
+        key,
+        normalizeNumber(row[key]) ?? 0,
+      ])
+    ),
     period_start: row.period_start ?? null,
     period_end: row.period_end ?? null,
     latest_record_at: row.latest_record_at ?? null,
@@ -6030,6 +6121,7 @@ export function buildUsageQuery(searchParams) {
   for (const key of Object.keys(filterColumns)) {
     appendMultiValueFilter(searchParams, key, whereParts, values)
   }
+  appendConfigChangeFilters(searchParams, whereParts)
 
   values.push(limit)
 
@@ -6113,6 +6205,7 @@ SELECT
     SUM(COALESCE(sh.tool_call_count, 0))::double precision AS tool_calls,
     SUM(COALESCE(sh.git_commit_count, 0))::double precision AS git_commit,
     SUM(COALESCE(sh.git_push_count, 0))::double precision AS git_push,
+    ${configChangeAggregateSelectParts.join(',\n    ')},
 
     ROUND(CAST(SUM(COALESCE(sh.litellm_processing_ms, 0)) AS numeric), 2)::double precision AS litellm_processing_total_ms,
     ROUND(CAST(AVG(sh.litellm_processing_ms) AS numeric), 2)::double precision AS litellm_processing_average_ms,
