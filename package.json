@@ -16,6 +16,7 @@
     "docker:dev:logs": "docker compose -f docker-compose.dev.yml logs -f",
     "docker:up": "docker compose up --build -d",
     "docker:down": "docker compose down",
+    "probe:ingestion": "node scripts/probe-ingestion-durability.mjs",
     "scaffold:dashboard": "node scripts/scaffold-tap.mjs",
     "scaffold:tap": "node scripts/scaffold-tap.mjs",
     "format:check": "prettier --check .",
