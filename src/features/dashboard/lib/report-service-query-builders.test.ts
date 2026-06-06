@@ -1,8 +1,10 @@
 import { describe, expect, test } from 'vitest'
 import {
+  buildToolActivityQuery,
   buildUsageQuery,
   buildQuotaEstimatorDatasetQuery,
   buildQuotaEstimatorReport,
+  buildQuotaEstimatorUsageBucketQuery,
   buildQuotaRangeHistoryQuery,
   buildTokenTrendHealthQuery,
   buildTokenTrendHoursQuery,
@@ -11,6 +13,28 @@ import {
   findUpstreamApiProxy,
   proxyTargetUrl,
 } from '../../../../server/report-service.mjs'
+
+function expectReportableSessionHistoryFilter(sql: string, alias = 'sh') {
+  expect(sql).toContain(`${alias}.metadata->>'session_history_usage_record'`)
+  expect(sql).toContain(
+    `${alias}.metadata->>'session_history_reporting_excluded'`
+  )
+  expect(sql).toContain(
+    `${alias}.metadata->>'session_history_model_reporting_excluded'`
+  )
+  expect(sql).toContain(`COALESCE(${alias}.input_tokens, 0)`)
+  expect(sql).toContain(`COALESCE(${alias}.output_tokens, 0)`)
+  expect(sql).toContain(`COALESCE(${alias}.cache_read_input_tokens, 0)`)
+  expect(sql).toContain(`COALESCE(${alias}.cache_creation_input_tokens, 0)`)
+  expect(sql).toContain(`COALESCE(${alias}.reasoning_tokens_reported, 0)`)
+  expect(sql).toContain(`COALESCE(${alias}.reasoning_tokens_estimated, 0)`)
+  expect(sql).toContain(`COALESCE(${alias}.response_cost_usd, 0)`)
+  expect(sql).toContain(`COALESCE(${alias}.provider_cache_miss_cost_usd, 0)`)
+  expect(sql).toContain(`COALESCE(${alias}.tool_call_count, 0) > 0`)
+  expect(sql).toContain(`${alias}.metadata->>'passthrough_route_family'`)
+  expect(sql).toContain(`${alias}.metadata->>'route_family'`)
+  expect(sql).toContain('grok_cli_chat_proxy')
+}
 
 describe('report-service query builders', () => {
   test('test_buildUsageQuery_keeps_legacy_quota_columns_without_rate_limit_joins', () => {
@@ -155,6 +179,47 @@ describe('report-service query builders', () => {
       '(sh.changed_env_file IS TRUE OR sh.changed_env_file IS NULL)'
     )
     expect(query.sql).toContain('(sh.changed_gitignore IS FALSE)')
+  })
+
+  test('test_buildUsageQuery_applies_global_reportable_session_history_filter', () => {
+    const query = buildUsageQuery(
+      new URLSearchParams({
+        from: '2026-05-01',
+        to: '2026-05-08',
+        grain: 'day',
+        group_by: 'provider,model,repository',
+        limit: '50000',
+      })
+    )
+
+    expectReportableSessionHistoryFilter(query.sql)
+    expect(query.sql).toContain(
+      "lower(COALESCE(sh.client_name, '')) = 'grok-build'"
+    )
+    expect(query.sql).toContain(
+      "COALESCE(NULLIF(sh.model, ''), 'unknown') = 'unknown'"
+    )
+  })
+
+  test('test_session_history_reportable_filter_reaches_reporting_query_paths', () => {
+    const params = new URLSearchParams({
+      from: '2026-05-01',
+      to: '2026-05-08',
+      provider: 'openai,anthropic',
+    })
+    const queries = [
+      buildTokenTrendHoursQuery(params),
+      buildTokenTrendScoreQuery(params),
+      buildTokenTrendModelFirstSeenQuery(params),
+      buildQuotaRangeHistoryQuery(params),
+      buildQuotaEstimatorDatasetQuery(params, 5),
+      buildQuotaEstimatorUsageBucketQuery(params),
+      buildToolActivityQuery(params),
+    ]
+
+    for (const query of queries) {
+      expectReportableSessionHistoryFilter(query.sql)
+    }
   })
 
   test('test_token_trend_signal_queries_cover_full_range_and_hourly_scores', () => {
@@ -399,19 +464,19 @@ describe('report-service query builders', () => {
     )
 
     expect(query.values).toEqual([
-      ['openai', 'anthropic'],
       '2026-05-01',
       '2026-05-08',
+      ['openai', 'anthropic'],
     ])
     expect(query.sql).toContain('WITH model_usage AS')
     expect(query.sql).toContain(
       "END IN ('anthropic', 'openai', 'xai', 'google')"
     )
+    expect(query.sql).toContain('sh.created_at >=')
     expect(query.sql).not.toContain('sh.start_time >=')
     expect(query.sql).toContain('MIN(sh.created_at) AS first_seen_at')
     expect(query.sql).toContain('MIN((sh.created_at AT TIME ZONE')
-    expect(query.sql).toContain('WHERE first_seen_local::date >= $2::date')
-    expect(query.sql).toContain('AND first_seen_local::date < $3::date')
+    expect(query.sql).not.toContain('WHERE first_seen_local::date >=')
     expect(query.sql).toContain('AS first_seen_day')
     expect(query.sql).toContain('AS first_seen_hour')
     expect(query.sql).toContain('AS observations')

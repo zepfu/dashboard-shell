@@ -1325,8 +1325,65 @@ CASE
     WHEN lower(COALESCE(sh.provider, 'unknown')) LIKE 'local_%' THEN 'local'
     ELSE COALESCE(sh.provider, 'unknown')
 END`
-const providerDimensionRecent = providerDimension.replaceAll('sh.', 'sh_recent.')
-const healthProviderDimension = providerDimension.replaceAll('sh.', 'h.')
+
+function providerDimensionForAlias(alias = 'sh') {
+  return providerDimension.replaceAll('sh.', `${alias}.`)
+}
+
+const providerDimensionRecent = providerDimensionForAlias('sh_recent')
+const healthProviderDimension = providerDimensionForAlias('h')
+
+function sessionHistoryTokenSignalExpression(alias = 'sh') {
+  return `(COALESCE(${alias}.input_tokens, 0)
+    + COALESCE(${alias}.output_tokens, 0)
+    + COALESCE(${alias}.cache_read_input_tokens, 0)
+    + COALESCE(${alias}.cache_creation_input_tokens, 0)
+    + COALESCE(${alias}.reasoning_tokens_reported, 0)
+    + COALESCE(${alias}.reasoning_tokens_estimated, 0))`
+}
+
+function sessionHistoryCostSignalExpression(alias = 'sh') {
+  return `(COALESCE(${alias}.response_cost_usd, 0)
+    + COALESCE(${alias}.provider_cache_miss_cost_usd, 0))`
+}
+
+function sessionHistoryMetadataText(alias, key, fallback) {
+  return `lower(btrim(COALESCE(${alias}.metadata->>'${key}', '${fallback}')))`
+}
+
+function legacyGrokSideChannelPredicate(alias = 'sh') {
+  return `(
+    ${providerDimensionForAlias(alias)} = 'xai'
+    AND lower(COALESCE(${alias}.client_name, '')) = 'grok-build'
+    AND COALESCE(NULLIF(${alias}.model, ''), 'unknown') = 'unknown'
+    AND ${sessionHistoryTokenSignalExpression(alias)} = 0
+    AND ${sessionHistoryCostSignalExpression(alias)} = 0
+    AND COALESCE(${alias}.tool_call_count, 0) = 0
+    AND lower(COALESCE(
+      NULLIF(${alias}.metadata->>'passthrough_route_family', ''),
+      NULLIF(${alias}.metadata->>'route_family', ''),
+      ''
+    )) = 'grok_cli_chat_proxy'
+)`
+}
+
+function sessionHistoryReportablePredicate(alias = 'sh') {
+  return `(
+    ${sessionHistoryMetadataText(alias, 'session_history_usage_record', 'true')} <> 'false'
+    AND ${sessionHistoryMetadataText(alias, 'session_history_reporting_excluded', 'false')} <> 'true'
+    AND ${sessionHistoryMetadataText(alias, 'session_history_model_reporting_excluded', 'false')} <> 'true'
+    AND (
+      ${sessionHistoryTokenSignalExpression(alias)} > 0
+      OR ${sessionHistoryCostSignalExpression(alias)} > 0
+      OR COALESCE(${alias}.tool_call_count, 0) > 0
+    )
+    AND NOT ${legacyGrokSideChannelPredicate(alias)}
+)`
+}
+
+function appendReportableSessionHistoryWhere(whereParts, alias = 'sh') {
+  whereParts.push(sessionHistoryReportablePredicate(alias))
+}
 
 const grains = {
   day: `${createdAtEastern}::date`,
@@ -2045,6 +2102,7 @@ function buildFilteredWhere(searchParams, options = {}) {
   if (options.includeDateRange !== false) {
     appendStartTimeDateRangeWhere(whereParts, values, from, to)
   }
+  appendReportableSessionHistoryWhere(whereParts)
 
   for (const key of Object.keys(filterColumns)) {
     appendMultiValueFilter(searchParams, key, whereParts, values)
@@ -2061,6 +2119,7 @@ function buildTokenTrendFilteredWhere(searchParams) {
   const whereParts = []
 
   appendCreatedAtDateRangeWhere(whereParts, values, from, to)
+  appendReportableSessionHistoryWhere(whereParts)
 
   for (const key of Object.keys(filterColumns)) {
     appendMultiValueFilter(searchParams, key, whereParts, values)
@@ -2429,14 +2488,8 @@ ORDER BY
 }
 
 export function buildTokenTrendModelFirstSeenQuery(searchParams) {
-  const { from, to, values, whereParts } = buildFilteredWhere(searchParams, {
-    includeDateRange: false,
-  })
+  const { values, whereParts } = buildTokenTrendFilteredWhere(searchParams)
   const modelExpression = "COALESCE(NULLIF(sh.model, ''), 'unknown')"
-  values.push(from)
-  const visibleFromIndex = values.length
-  values.push(to)
-  const visibleToIndex = values.length
   const modelWhereParts = [
     ...whereParts,
     `${providerDimension} IN ('anthropic', 'openai', 'xai', 'google')`,
@@ -2472,8 +2525,6 @@ SELECT
     observations,
     token_total
 FROM model_usage
-WHERE first_seen_local::date >= $${visibleFromIndex.toString()}::date
-  AND first_seen_local::date < $${visibleToIndex.toString()}::date
 ORDER BY
     first_seen_at ASC,
     provider ASC,
@@ -2609,6 +2660,7 @@ WITH local_request_latency AS (
       AND sh.start_time < $3::timestamptz
       AND COALESCE(sh.start_time, sh.created_at) >= $2::timestamptz
       AND COALESCE(sh.start_time, sh.created_at) < $3::timestamptz
+      AND ${sessionHistoryReportablePredicate()}
       AND (
           lower(COALESCE(sh.provider, 'unknown')) = 'local'
           OR lower(COALESCE(sh.provider, 'unknown')) LIKE 'local/%'
@@ -2983,6 +3035,7 @@ usage_sessions AS MATERIALIZED (
     WHERE bounds.min_started_at IS NOT NULL
       AND COALESCE(sh.start_time, sh.created_at) >= bounds.min_started_at
       AND COALESCE(sh.start_time, sh.created_at) < bounds.max_started_at
+      AND ${sessionHistoryReportablePredicate()}
       AND ${providerDimension} IN (
           SELECT DISTINCT provider
           FROM selected_with_fallbacks
@@ -2995,6 +3048,7 @@ recent_sessions AS MATERIALIZED (
     FROM public.session_history sh
     WHERE COALESCE(sh.start_time, sh.created_at) >= now() - INTERVAL '90 minutes'
       AND COALESCE(sh.start_time, sh.created_at) < now()
+      AND ${sessionHistoryReportablePredicate()}
       AND ${providerDimension} IN (
           SELECT DISTINCT provider
           FROM selected_with_fallbacks
@@ -3766,6 +3820,7 @@ per_model_usage AS (
             FROM public.session_history sh_recent
             WHERE COALESCE(sh_recent.start_time, sh_recent.created_at) >= now() - INTERVAL '90 minutes'
               AND COALESCE(sh_recent.start_time, sh_recent.created_at) < now()
+              AND ${sessionHistoryReportablePredicate('sh_recent')}
               AND ${providerDimensionRecent} = wb.provider
               AND COALESCE(sh_recent.model, 'unknown') = COALESCE(sh.model, 'unknown')
               AND (wb.model IS NULL OR sh_recent.model = wb.model)
@@ -3796,6 +3851,7 @@ per_model_usage AS (
       -- created_at (record persistence time) can lag start_time by minutes.
       AND COALESCE(sh.start_time, sh.created_at) >= wb.interval_start
       AND COALESCE(sh.start_time, sh.created_at) < wb.expected_reset_at
+      AND ${sessionHistoryReportablePredicate()}
       AND (wb.model IS NULL OR sh.model = wb.model)
     GROUP BY wb.provider, wb.model, wb.quota_type, wb.expected_reset_at, COALESCE(sh.model, 'unknown'), sh.model
 )
@@ -3941,6 +3997,7 @@ per_model_usage AS (
       ON ${providerDimension} = wb.provider
      AND COALESCE(sh.start_time, sh.created_at) >= wb.interval_start
      AND COALESCE(sh.start_time, sh.created_at) < wb.expected_reset_at
+     AND ${sessionHistoryReportablePredicate()}
      AND (wb.model IS NULL OR sh.model = wb.model)
     GROUP BY wb.provider, wb.model, wb.quota_type, wb.expected_reset_at, COALESCE(sh.model, 'unknown')
 )
@@ -4199,6 +4256,7 @@ llm_usage_event AS (
     FROM public.session_history sh
     WHERE COALESCE(sh.end_time, sh.start_time, sh.created_at) >= ($1::date::timestamp AT TIME ZONE 'America/New_York') - INTERVAL '1 hour'
       AND COALESCE(sh.end_time, sh.start_time, sh.created_at) < ($2::date::timestamp AT TIME ZONE 'America/New_York') + INTERVAL '1 hour'
+      AND ${sessionHistoryReportablePredicate()}
       AND ${providerDimension} IN ('anthropic', 'openai')
 ),
 aggregated AS (
@@ -4448,6 +4506,7 @@ WITH usage_events AS (
     FROM public.session_history sh
     WHERE COALESCE(sh.end_time, sh.start_time, sh.created_at) >= ($1::date::timestamp AT TIME ZONE 'America/New_York') - INTERVAL '1 hour'
       AND COALESCE(sh.end_time, sh.start_time, sh.created_at) < ($2::date::timestamp AT TIME ZONE 'America/New_York') + INTERVAL '2 hours'
+      AND ${sessionHistoryReportablePredicate()}
       AND ${providerDimension} IN ('anthropic', 'openai')
 )
 SELECT
@@ -4485,7 +4544,7 @@ function buildFreshnessQuery() {
 //   kind='outer' — one row per (provider, model, tool_name)
 //   kind='shell' — one row per (provider, model, cmd_label) for command rows
 // Both are filtered to the caller's from/to date window via session_history.created_at.
-function buildToolActivityQuery(searchParams) {
+export function buildToolActivityQuery(searchParams) {
   const from = parseDateParam(searchParams.get('from'), defaultFromDate)
   const to = parseDateParam(searchParams.get('to'), defaultToDate)
   const values = [from, to]
@@ -4520,6 +4579,7 @@ WITH outer_counts AS (
     FROM public.session_history_tool_activity a
     JOIN public.session_history sh ON a.litellm_call_id = sh.litellm_call_id
     WHERE ${startTimeDateRangeWhere.join('\n      AND ')}
+      AND ${sessionHistoryReportablePredicate()}
     GROUP BY
         ${providerExpr},
         COALESCE(sh.model, 'unknown'),
@@ -4553,6 +4613,7 @@ shell_labels AS (
     FROM public.session_history_tool_activity a
     JOIN public.session_history sh ON a.litellm_call_id = sh.litellm_call_id
     WHERE ${startTimeDateRangeWhere.join('\n      AND ')}
+      AND ${sessionHistoryReportablePredicate()}
       AND a.tool_kind = 'command'
       AND a.command_text IS NOT NULL
       AND a.command_text <> ''
@@ -6117,6 +6178,7 @@ export function buildUsageQuery(searchParams) {
 
   const values = [from, to]
   const whereParts = [...startTimeDateRangeWhere]
+  appendReportableSessionHistoryWhere(whereParts)
 
   for (const key of Object.keys(filterColumns)) {
     appendMultiValueFilter(searchParams, key, whereParts, values)
