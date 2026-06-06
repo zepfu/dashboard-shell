@@ -480,6 +480,8 @@ let prewarmTimer = null
 let prewarmPromise = null
 let materializedViewHealthCache = null
 let materializedViewHealthPromise = null
+let sourceTableHealthCache = null
+let sourceTableHealthPromise = null
 
 if (redisClient) {
   redisClient.on('error', (error) => {
@@ -1137,6 +1139,133 @@ ORDER BY query_start ASC NULLS LAST;
     cacheTtlMs: MATERIALIZED_VIEW_HEALTH_CACHE_TTL_MS,
     views,
     cronJobs,
+  }
+}
+
+async function loadSourceTableHealth() {
+  if (!healthPool) {
+    return {
+      status: 'unconfigured',
+      error: 'DATABASE_URL is not configured.',
+      tables: [],
+    }
+  }
+
+  const now = Date.now()
+  if (sourceTableHealthCache?.expiresAt > now) {
+    return sourceTableHealthCache.value
+  }
+  if (sourceTableHealthPromise) return sourceTableHealthPromise
+
+  sourceTableHealthPromise = loadSourceTableHealthFromDatabase()
+    .then((value) => {
+      sourceTableHealthCache = {
+        expiresAt: Date.now() + MATERIALIZED_VIEW_HEALTH_CACHE_TTL_MS,
+        value,
+      }
+      return value
+    })
+    .catch((error) => {
+      const value = {
+        status: 'unknown',
+        error: formatError(error),
+        tables: [],
+      }
+      sourceTableHealthCache = {
+        expiresAt: Date.now() + MATERIALIZED_VIEW_HEALTH_CACHE_TTL_MS,
+        value,
+      }
+      return value
+    })
+    .finally(() => {
+      sourceTableHealthPromise = null
+    })
+
+  return sourceTableHealthPromise
+}
+
+export function buildSourceTableHealthQuery() {
+  const sql = `
+WITH rel AS (
+  SELECT relname, GREATEST(reltuples, 0)::bigint AS estimated_row_count
+  FROM pg_class
+  WHERE oid IN (
+    'public.session_history'::regclass,
+    'public.rate_limit_observations'::regclass
+  )
+)
+SELECT
+  'session_history' AS table_name,
+  'usage_source' AS category,
+  (SELECT id FROM public.session_history ORDER BY id DESC LIMIT 1) AS latest_row_id,
+  (SELECT created_at FROM public.session_history ORDER BY id DESC LIMIT 1) AS latest_data_at,
+  (SELECT created_at FROM public.session_history ORDER BY id DESC LIMIT 1) AS latest_persisted_at,
+  (SELECT start_time FROM public.session_history ORDER BY id DESC LIMIT 1) AS latest_event_at,
+  (SELECT estimated_row_count FROM rel WHERE relname = 'session_history') AS row_count
+UNION ALL
+SELECT
+  'rate_limit_observations' AS table_name,
+  'quota_source' AS category,
+  (SELECT id FROM public.rate_limit_observations ORDER BY id DESC LIMIT 1) AS latest_row_id,
+  (SELECT observed_at FROM public.rate_limit_observations ORDER BY id DESC LIMIT 1) AS latest_data_at,
+  NULL::timestamp with time zone AS latest_persisted_at,
+  (SELECT observed_at FROM public.rate_limit_observations ORDER BY id DESC LIMIT 1) AS latest_event_at,
+  (SELECT estimated_row_count FROM rel WHERE relname = 'rate_limit_observations') AS row_count
+ORDER BY table_name ASC;
+`
+  return { sql, values: [] }
+}
+
+async function loadSourceTableHealthFromDatabase() {
+  const query = buildSourceTableHealthQuery()
+  const result = await queryHealthDatabase(query.sql, query.values)
+  const tables = result.rows.map(normalizeSourceTableHealthRow)
+  const status = tables.some((table) => table.status === 'stale')
+    ? 'stale'
+    : tables.some((table) => table.status === 'unknown')
+      ? 'unknown'
+      : 'ok'
+
+  return {
+    status,
+    checkedAt: new Date().toISOString(),
+    cacheTtlMs: MATERIALIZED_VIEW_HEALTH_CACHE_TTL_MS,
+    tables,
+  }
+}
+
+function normalizeSourceTableHealthRow(row) {
+  const latestDataAt = row.latest_data_at
+    ? new Date(row.latest_data_at).toISOString()
+    : null
+  const latestDataAgeMs = latestDataAt
+    ? Math.max(0, Date.now() - new Date(latestDataAt).getTime())
+    : null
+  const staleAfterMs = STALE_RECORD_THRESHOLD_MINUTES * 60 * 1000
+  const status =
+    latestDataAgeMs === null
+      ? 'unknown'
+      : latestDataAgeMs > staleAfterMs
+        ? 'stale'
+        : 'ok'
+
+  return {
+    tableName: row.table_name,
+    category: row.category,
+    status,
+    latestRowId: normalizeNumber(row.latest_row_id),
+    latestDataAt,
+    latestPersistedAt: row.latest_persisted_at
+      ? new Date(row.latest_persisted_at).toISOString()
+      : null,
+    latestEventAt: row.latest_event_at
+      ? new Date(row.latest_event_at).toISOString()
+      : null,
+    latestDataAgeMinutes:
+      latestDataAgeMs === null ? null : Math.round(latestDataAgeMs / 60_000),
+    rowCount: normalizeNumber(row.row_count) ?? 0,
+    staleAfterMinutes: STALE_RECORD_THRESHOLD_MINUTES,
+    refreshOwner: 'application_writer',
   }
 }
 
@@ -7222,6 +7351,7 @@ async function handleRequest(req, res) {
         : null,
       redisConfigured: Boolean(redisClient),
       redisReady: Boolean(redisClient?.isReady),
+      sourceTables: await loadSourceTableHealth(),
       materializedViews: await loadMaterializedViewHealth(),
     })
     return
