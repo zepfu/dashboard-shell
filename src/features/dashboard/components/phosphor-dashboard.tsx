@@ -36,6 +36,7 @@ import {
 import { useQuery } from '@tanstack/react-query'
 import { RefreshCw } from 'lucide-react'
 import {
+  fetchShellHealth,
   fetchUsageReport,
   fetchUsageReportQuotaEstimator,
   fetchUsageReportQuotaHistory,
@@ -43,6 +44,8 @@ import {
   fetchUsageReportToolActivity,
   fetchUsageReportTokenTrendDay,
   fetchUsageReportTokenTrendSummary,
+  type ShellPgBouncerHealth,
+  type ShellPgBouncerSidecar,
   type UsageReportQuotaEstimatorCoefficient,
   type UsageReportQuotaEstimatorEstimate,
   type UsageReportQuotaEstimatorResponse,
@@ -1244,6 +1247,166 @@ function ProviderStatusLegend(): ReactElement {
         </span>
       ))}
     </div>
+  )
+}
+
+function pgBouncerStatusLabel(status: ShellPgBouncerSidecar['status']): string {
+  switch (status) {
+    case 'green':
+      return 'ok'
+    case 'yellow':
+      return 'degraded'
+    case 'red':
+      return 'down'
+  }
+}
+
+function pgBouncerStatusClass(status: ShellPgBouncerSidecar['status']): string {
+  switch (status) {
+    case 'green':
+      return 'is-green'
+    case 'yellow':
+      return 'is-yellow'
+    case 'red':
+      return 'is-red'
+  }
+}
+
+function formatPgBouncerWait(seconds: number, microseconds: number): string {
+  if (seconds > 0) return `${seconds.toFixed(seconds >= 10 ? 0 : 1)}s`
+  if (microseconds > 0) return `${Math.round(microseconds).toLocaleString()}us`
+  return '0s'
+}
+
+function formatPgBouncerBytes(value: number): string {
+  if (value >= 1_000_000_000) return `${(value / 1_000_000_000).toFixed(1)}GB`
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}MB`
+  if (value >= 1_000) return `${(value / 1_000).toFixed(1)}KB`
+  return `${Math.round(value).toString()}B`
+}
+
+function PgBouncerSidecarCard({
+  sidecar,
+}: {
+  sidecar: ShellPgBouncerSidecar
+}): ReactElement {
+  const logConfig = sidecar.container.logConfig
+  const pool = sidecar.admin.poolSummary
+  const stats = sidecar.admin.statsSummary
+  const servers = sidecar.admin.serverSummary
+  const poolRows = sidecar.admin.pools.slice(0, 3)
+
+  return (
+    <article
+      className={`pgbouncer-card ${pgBouncerStatusClass(sidecar.status)}`}
+    >
+      <div className='pgbouncer-card-head'>
+        <div>
+          <span className='pgbouncer-card-name'>{sidecar.label}</span>
+          <span className='pgbouncer-card-sub'>{sidecar.containerName}</span>
+        </div>
+        <span className='pgbouncer-status-pill'>
+          {pgBouncerStatusLabel(sidecar.status)}
+        </span>
+      </div>
+      <div className='pgbouncer-metrics'>
+        <span>
+          clients <strong>{pool.clActive}</strong>/
+          <strong>{pool.clWaiting}</strong>
+        </span>
+        <span>
+          servers <strong>{pool.svActive}</strong>/
+          <strong>{pool.svIdle}</strong>
+        </span>
+        <span>
+          max wait{' '}
+          <strong>
+            {formatPgBouncerWait(pool.maxWaitSeconds, pool.maxWaitMicroseconds)}
+          </strong>
+        </span>
+        <span>
+          upstream <strong>{servers.total}</strong>
+        </span>
+      </div>
+      <div className='pgbouncer-detail-grid'>
+        <span>container</span>
+        <strong>
+          {sidecar.container.status ??
+            (sidecar.container.present ? 'unknown' : 'missing')}
+        </strong>
+        <span>health</span>
+        <strong>{sidecar.container.health ?? 'unknown'}</strong>
+        <span>admin</span>
+        <strong>{sidecar.admin.status}</strong>
+        <span>traffic</span>
+        <strong>
+          {formatCompactQuantity(stats.totalXactCount)} tx /{' '}
+          {formatCompactQuantity(stats.totalQueryCount)} q
+        </strong>
+        <span>bytes</span>
+        <strong>
+          {formatPgBouncerBytes(stats.totalReceived)} in /{' '}
+          {formatPgBouncerBytes(stats.totalSent)} out
+        </strong>
+        <span>logs</span>
+        <strong>
+          {logConfig
+            ? `${logConfig.type ?? 'unknown'} ${logConfig.maxSize ?? '?'} x${
+                logConfig.maxFile ?? '?'
+              }`
+            : 'unknown'}
+        </strong>
+      </div>
+      {poolRows.length > 0 ? (
+        <div className='pgbouncer-pools' aria-label={`${sidecar.label} pools`}>
+          {poolRows.map((row) => (
+            <div
+              className='pgbouncer-pool-row'
+              key={`${sidecar.key}-${row.database}-${row.user}`}
+            >
+              <span>{row.database ?? 'unknown'}</span>
+              <span>
+                c {row.clActive}/{row.clWaiting} | s {row.svActive}/{row.svIdle}
+              </span>
+              <span>{row.poolMode ?? 'unknown'}</span>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className='pgbouncer-empty'>
+          {sidecar.admin.error ?? sidecar.container.error ?? 'no pool rows'}
+        </div>
+      )}
+    </article>
+  )
+}
+
+function PgBouncerHealthPanel({
+  health,
+  loading,
+}: {
+  health?: ShellPgBouncerHealth
+  loading: boolean
+}): ReactElement {
+  const sidecars = health?.sidecars ?? []
+  return (
+    <section className='pgbouncer-health-panel' aria-label='PgBouncer health'>
+      <div className='pgbouncer-panel-head'>
+        <span>PgBouncer</span>
+        <span className='pgbouncer-panel-status'>
+          {loading ? 'updating' : (health?.status ?? 'unknown')}
+        </span>
+      </div>
+      <div className='pgbouncer-grid'>
+        {sidecars.length > 0 ? (
+          sidecars.map((sidecar) => (
+            <PgBouncerSidecarCard key={sidecar.key} sidecar={sidecar} />
+          ))
+        ) : (
+          <div className='pgbouncer-empty'>no sidecars reported</div>
+        )}
+      </div>
+    </section>
   )
 }
 
@@ -4786,6 +4949,19 @@ export default function PhosphorDashboard({
     : quotaHistoryFetchingProp
 
   const {
+    data: shellHealthData,
+    isFetching: shellHealthFetching,
+    refetch: refetchShellHealth,
+  } = useQuery({
+    queryKey: ['shell-health-pgbouncer'],
+    queryFn: ({ signal }) => fetchShellHealth(signal),
+    enabled: providerSectionView === 'health',
+    staleTime: 15_000,
+    refetchInterval: LIVE_DASHBOARD_REFETCH_INTERVAL_MS,
+    refetchIntervalInBackground: true,
+  })
+
+  const {
     data: quotaEstimatorData,
     isFetching: quotaEstimatorFetching,
     isLoading: quotaEstimatorLoading,
@@ -5379,9 +5555,15 @@ export default function PhosphorDashboard({
       await refreshQuotaEstimator()
       return
     }
-    await Promise.all([refreshReport(), refreshQuotas(), refreshQuotaHistory()])
+    await Promise.all([
+      refreshReport(),
+      refreshQuotas(),
+      refreshQuotaHistory(),
+      refetchShellHealth(),
+    ])
   }, [
     providerSectionView,
+    refetchShellHealth,
     refreshQuotaEstimator,
     refreshQuotaHistory,
     refreshQuotaRangeHistory,
@@ -5418,7 +5600,10 @@ export default function PhosphorDashboard({
       ? quotasFetching || quotaRangeHistoryFetching
       : providerSectionView === 'weights'
         ? quotaEstimatorFetching
-        : reportFetching || quotasFetching || quotaHistoryFetching
+        : reportFetching ||
+          quotasFetching ||
+          quotaHistoryFetching ||
+          shellHealthFetching
   const reportUpdating = reportFetching || toolActivityFetching
   const tokenTrendUpdating =
     reportFetching || tokenTrendSummaryFetching || tokenTrendDayDetailFetching
@@ -5474,92 +5659,98 @@ export default function PhosphorDashboard({
         {reportLoading ? (
           <SectionSkeleton height={120} />
         ) : providerSectionView === 'health' ? (
-          <div
-            className={`provider-summary ${styles['provider-summary-grid']}`}
-          >
-            {providers.map((provider) => {
-              const config: ProviderCardConfig = {
-                provider,
-                // Wave 12 Fix 1: use reference brand hex for card header name color
-                color: providerBrandHex(provider),
-              }
-              const metrics = buildProviderMetrics(
-                provider,
-                healthRows,
-                report?.rows ?? []
-              )
-              const cells = padHealthCells(
-                healthRows,
-                provider,
-                providerErrorObservations
-              )
-              // Wave 41: build structured QuotaLane[] for providers with lane
-              // definitions. Each lane groups
-              // the current bar + prior bars for a single quota type side-by-side.
-              // Providers without lane defs (nvidia_nim, local) fall
-              // back to the flat quotaIntervals path via quotas prop.
-              const lanes = buildProviderLanes(
-                provider,
-                quotaRows,
-                quotaHistoryRows
-              )
-              // Flat quota list is still needed for providers without lane defs.
-              const currentBars =
-                lanes.length === 0 ? buildQuotaRows(provider, quotaRows) : []
-              const historyBars =
-                lanes.length === 0
-                  ? buildHistoryBarsForProvider(
-                      provider,
-                      quotaHistoryRows,
-                      currentBars
-                    )
-                  : []
-              const quotaIntervals =
-                lanes.length === 0 ? [...currentBars, ...historyBars] : []
-              const topModels = buildTopModels(
-                providerStatusUsage,
-                provider,
-                healthRows
-              )
-
-              return (
-                <ProviderCard
-                  key={provider}
-                  config={config}
-                  data={metrics}
-                  healthCells={cells}
-                  quotas={quotaIntervals}
-                  lanes={lanes.length > 0 ? lanes : undefined}
-                  anomalies={anomalies}
-                  topModels={topModels}
-                  localHealthItems={
-                    provider === 'local' ? (report?.localHealth ?? []) : []
-                  }
-                />
-              )
-            })}
-            {/* D3: AggregateCard as 8th peer — Σ Aggregate Totals in the provider row */}
-            <AggregateCard
-              config={aggregateConfig}
-              data={aggregateMetrics}
-              healthCells={aggregateHealthCells}
-              fleetActivity={{
-                toolCalls: summary?.tool_calls ?? 0,
-                gitCommits: summary?.git_commit ?? 0,
-                gitPushes: summary?.git_push ?? 0,
-                invalidToolCalls: 0,
-                recentErrors: healthRows.reduce(
-                  (s, r) =>
-                    s +
-                    r.provider_error_events +
-                    r.provider_5xx_events +
-                    r.provider_timeout_events,
-                  0
-                ),
-              }}
-              anomalies={anomalies}
+          <>
+            <PgBouncerHealthPanel
+              health={shellHealthData?.pgBouncerSidecars}
+              loading={shellHealthFetching}
             />
-          </div>
+            <div
+              className={`provider-summary ${styles['provider-summary-grid']}`}
+            >
+              {providers.map((provider) => {
+                const config: ProviderCardConfig = {
+                  provider,
+                  // Wave 12 Fix 1: use reference brand hex for card header name color
+                  color: providerBrandHex(provider),
+                }
+                const metrics = buildProviderMetrics(
+                  provider,
+                  healthRows,
+                  report?.rows ?? []
+                )
+                const cells = padHealthCells(
+                  healthRows,
+                  provider,
+                  providerErrorObservations
+                )
+                // Wave 41: build structured QuotaLane[] for providers with lane
+                // definitions. Each lane groups
+                // the current bar + prior bars for a single quota type side-by-side.
+                // Providers without lane defs (nvidia_nim, local) fall
+                // back to the flat quotaIntervals path via quotas prop.
+                const lanes = buildProviderLanes(
+                  provider,
+                  quotaRows,
+                  quotaHistoryRows
+                )
+                // Flat quota list is still needed for providers without lane defs.
+                const currentBars =
+                  lanes.length === 0 ? buildQuotaRows(provider, quotaRows) : []
+                const historyBars =
+                  lanes.length === 0
+                    ? buildHistoryBarsForProvider(
+                        provider,
+                        quotaHistoryRows,
+                        currentBars
+                      )
+                    : []
+                const quotaIntervals =
+                  lanes.length === 0 ? [...currentBars, ...historyBars] : []
+                const topModels = buildTopModels(
+                  providerStatusUsage,
+                  provider,
+                  healthRows
+                )
+
+                return (
+                  <ProviderCard
+                    key={provider}
+                    config={config}
+                    data={metrics}
+                    healthCells={cells}
+                    quotas={quotaIntervals}
+                    lanes={lanes.length > 0 ? lanes : undefined}
+                    anomalies={anomalies}
+                    topModels={topModels}
+                    localHealthItems={
+                      provider === 'local' ? (report?.localHealth ?? []) : []
+                    }
+                  />
+                )
+              })}
+              {/* D3: AggregateCard as 8th peer — Σ Aggregate Totals in the provider row */}
+              <AggregateCard
+                config={aggregateConfig}
+                data={aggregateMetrics}
+                healthCells={aggregateHealthCells}
+                fleetActivity={{
+                  toolCalls: summary?.tool_calls ?? 0,
+                  gitCommits: summary?.git_commit ?? 0,
+                  gitPushes: summary?.git_push ?? 0,
+                  invalidToolCalls: 0,
+                  recentErrors: healthRows.reduce(
+                    (s, r) =>
+                      s +
+                      r.provider_error_events +
+                      r.provider_5xx_events +
+                      r.provider_timeout_events,
+                    0
+                  ),
+                }}
+                anomalies={anomalies}
+              />
+            </div>
+          </>
         ) : providerSectionView === 'quota' ? (
           <div
             className={`provider-summary provider-quota-summary ${styles['provider-summary-grid']}`}

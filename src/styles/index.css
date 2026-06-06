@@ -376,6 +376,202 @@
   gap: 4px;
 }
 
+.pgbouncer-health-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 6px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--card) 82%, transparent);
+}
+
+.pgbouncer-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.pgbouncer-panel-status {
+  color: var(--fg-muted);
+  font-size: 9px;
+  font-weight: 600;
+}
+
+.pgbouncer-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.pgbouncer-card {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 7px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  background: var(--card-2);
+}
+
+.pgbouncer-card.is-green {
+  border-left: 3px solid var(--accent-teal);
+}
+
+.pgbouncer-card.is-yellow {
+  border-left: 3px solid var(--accent-warm);
+}
+
+.pgbouncer-card.is-red {
+  border-left: 3px solid var(--accent-hot);
+}
+
+.pgbouncer-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.pgbouncer-card-head > div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.pgbouncer-card-name,
+.pgbouncer-card-sub {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pgbouncer-card-name {
+  color: var(--fg);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.1;
+}
+
+.pgbouncer-card-sub {
+  color: var(--fg-muted);
+  font-size: 9px;
+  line-height: 1.1;
+}
+
+.pgbouncer-status-pill {
+  flex: 0 0 auto;
+  padding: 2px 5px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--card) 72%, transparent);
+  color: var(--fg-muted);
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.pgbouncer-card.is-green .pgbouncer-status-pill {
+  border-color: color-mix(in srgb, var(--accent-teal) 58%, var(--border));
+  color: var(--accent-teal);
+}
+
+.pgbouncer-card.is-yellow .pgbouncer-status-pill {
+  border-color: color-mix(in srgb, var(--accent-warm) 58%, var(--border));
+  color: var(--accent-warm);
+}
+
+.pgbouncer-card.is-red .pgbouncer-status-pill {
+  border-color: color-mix(in srgb, var(--accent-hot) 58%, var(--border));
+  color: var(--accent-hot);
+}
+
+.pgbouncer-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 4px;
+}
+
+.pgbouncer-metrics span {
+  min-width: 0;
+  padding: 4px;
+  border: 1px solid color-mix(in srgb, var(--border) 78%, transparent);
+  color: var(--fg-muted);
+  font-size: 9px;
+  line-height: 1.15;
+  text-transform: uppercase;
+}
+
+.pgbouncer-metrics strong {
+  color: var(--fg);
+  font-weight: 700;
+}
+
+.pgbouncer-detail-grid {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 3px 8px;
+  color: var(--fg-muted);
+  font-size: 9px;
+  line-height: 1.2;
+}
+
+.pgbouncer-detail-grid span {
+  color: var(--fg-muted);
+  text-transform: uppercase;
+}
+
+.pgbouncer-detail-grid strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--fg);
+  font-weight: 600;
+}
+
+.pgbouncer-pools {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.pgbouncer-pool-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(96px, auto) minmax(58px, auto);
+  gap: 6px;
+  min-width: 0;
+  padding: 3px 4px;
+  border: 1px solid color-mix(in srgb, var(--border) 68%, transparent);
+  color: var(--fg-muted);
+  font-size: 9px;
+  line-height: 1.1;
+}
+
+.pgbouncer-pool-row span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pgbouncer-empty {
+  min-width: 0;
+  padding: 6px;
+  border: 1px dashed var(--border);
+  color: var(--fg-muted);
+  font-size: 9px;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
 @media (min-width: 1600px) {
   .provider-summary {
     grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -386,6 +582,16 @@
 @media (min-width: 2100px) {
   .provider-summary {
     grid-template-columns: repeat(8, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 900px) {
+  .pgbouncer-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .pgbouncer-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 

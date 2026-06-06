@@ -531,6 +531,102 @@ export interface UsageReportLocalHealthRow {
   latency_ms: number | null
 }
 
+export interface ShellPgBouncerPoolSummary {
+  clActive: number
+  clWaiting: number
+  svActive: number
+  svIdle: number
+  svUsed: number
+  svTested: number
+  svLogin: number
+  maxWaitSeconds: number
+  maxWaitMicroseconds: number
+}
+
+export interface ShellPgBouncerStatsSummary {
+  totalXactCount: number
+  totalQueryCount: number
+  totalReceived: number
+  totalSent: number
+  avgXactCount: number
+  avgQueryCount: number
+  avgWaitTime: number
+}
+
+export interface ShellPgBouncerServerSummary {
+  total: number
+  active: number
+  idle: number
+  used: number
+  tested: number
+  login: number
+  byState: { state: string; count: number }[]
+}
+
+export interface ShellPgBouncerPoolRow extends ShellPgBouncerPoolSummary {
+  database: string | null
+  user: string | null
+  poolMode: string | null
+}
+
+export interface ShellPgBouncerStatsRow extends ShellPgBouncerStatsSummary {
+  database: string | null
+}
+
+export interface ShellPgBouncerContainerStatus {
+  present: boolean
+  status: string
+  health: string | null
+  running: boolean
+  startedAt?: string | null
+  finishedAt?: string | null
+  logConfig: {
+    type: string | null
+    maxSize: string | null
+    maxFile: string | null
+  } | null
+  error: string | null
+}
+
+export interface ShellPgBouncerAdminStatus {
+  configured: boolean
+  status: 'ok' | 'unconfigured' | 'unreachable' | 'unknown'
+  endpoint: {
+    database: string | null
+    host: string
+    port: string | null
+  } | null
+  error: string | null
+  poolSummary: ShellPgBouncerPoolSummary
+  statsSummary: ShellPgBouncerStatsSummary
+  serverSummary: ShellPgBouncerServerSummary
+  pools: ShellPgBouncerPoolRow[]
+  stats: ShellPgBouncerStatsRow[]
+}
+
+export interface ShellPgBouncerSidecar {
+  key: string
+  label: string
+  containerName: string
+  hostEndpoint: string
+  runtimeAliases: string[]
+  upstreamPostgres: string
+  status: 'green' | 'yellow' | 'red'
+  container: ShellPgBouncerContainerStatus
+  admin: ShellPgBouncerAdminStatus
+}
+
+export interface ShellPgBouncerHealth {
+  status: 'green' | 'yellow' | 'red' | 'unknown'
+  error?: string
+  sidecars: ShellPgBouncerSidecar[]
+}
+
+export interface ShellHealthResponse {
+  ok: boolean
+  pgBouncerSidecars?: ShellPgBouncerHealth
+}
+
 export interface UsageReportProviderStatusUsageRow extends UsageReportLatencyFields {
   provider: string
   model: string
@@ -991,6 +1087,22 @@ export async function fetchUsageReport(
       typeof payload?.error === 'string'
         ? payload.error
         : `Usage report request failed with ${response.status}`
+    throw new Error(message)
+  }
+
+  return response.json()
+}
+
+export async function fetchShellHealth(
+  signal?: AbortSignal
+): Promise<ShellHealthResponse> {
+  const response = await fetch('/api/shell/health', { signal })
+  if (!response.ok) {
+    const payload = await response.json().catch(() => null)
+    const message =
+      typeof payload?.error === 'string'
+        ? payload.error
+        : `Shell health request failed with ${response.status}`
     throw new Error(message)
   }
 
