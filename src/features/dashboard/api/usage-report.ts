@@ -31,6 +31,13 @@ export const usageReportGrains = ['day', 'week', 'month'] as const
 export type UsageReportGrain = (typeof usageReportGrains)[number]
 export type UsageReportGroupPreset = (typeof usageReportGroupPresets)[number]
 export type UsageReportDimension = UsageReportGroupPreset['groupBy'][number]
+export type UsageReportConfigChangeFilterValue =
+  | 'true'
+  | 'false'
+  | 'null'
+  | 'unknown'
+  | 'evaluated'
+  | 'unevaluated'
 
 /**
  * Multi-value dimension filters supported by the usage report API.
@@ -38,7 +45,8 @@ export type UsageReportDimension = UsageReportGroupPreset['groupBy'][number]
  * 15-D.1: The server uses parseCsv() on each param, so values are joined as
  * comma-separated strings in the query string (e.g. `provider=openai,anthropic`).
  * The server's filterColumns map accepts: provider, repository, client,
- * environment, model, provider_model. Empty arrays → no filter applied (all
+ * environment, model, provider_model. Config-change filters accept true, false,
+ * null/unknown/unevaluated, or evaluated. Empty arrays → no filter applied (all
  * values returned).
  *
  * Param names (singular) match the server's filterColumns keys exactly.
@@ -54,6 +62,14 @@ export interface UsageReportFilterParams {
   environment?: readonly string[]
   /** Filter to specific models (empty = all). */
   model?: readonly string[]
+  /** Filter by sessions that changed .pre-commit config. */
+  changed_pre_commit_config?: readonly UsageReportConfigChangeFilterValue[]
+  /** Filter by sessions that changed .env* files. */
+  changed_env_file?: readonly UsageReportConfigChangeFilterValue[]
+  /** Filter by sessions that changed pyproject.toml. */
+  changed_pyproject_toml?: readonly UsageReportConfigChangeFilterValue[]
+  /** Filter by sessions that changed .gitignore. */
+  changed_gitignore?: readonly UsageReportConfigChangeFilterValue[]
 }
 
 export interface UsageReportParams extends UsageReportFilterParams {
@@ -120,6 +136,24 @@ export interface UsageReportLatencyFields {
   llm_stream_output_tokens_per_second_count?: number | null
 }
 
+export interface UsageReportConfigChangeFields {
+  config_change_evaluated_rows?: number | null
+  config_change_unevaluated_rows?: number | null
+  config_change_any_true_rows?: number | null
+  changed_pre_commit_config_true_rows?: number | null
+  changed_pre_commit_config_false_rows?: number | null
+  changed_pre_commit_config_unknown_rows?: number | null
+  changed_env_file_true_rows?: number | null
+  changed_env_file_false_rows?: number | null
+  changed_env_file_unknown_rows?: number | null
+  changed_pyproject_toml_true_rows?: number | null
+  changed_pyproject_toml_false_rows?: number | null
+  changed_pyproject_toml_unknown_rows?: number | null
+  changed_gitignore_true_rows?: number | null
+  changed_gitignore_false_rows?: number | null
+  changed_gitignore_unknown_rows?: number | null
+}
+
 export interface UsageReportQuotaRangeHistoryParams {
   from: string
   to: string
@@ -146,7 +180,8 @@ export interface UsageReportToolActivityParams extends UsageReportFilterParams {
   cacheBust?: string
 }
 
-export interface UsageReportRow extends UsageReportLatencyFields {
+export interface UsageReportRow
+  extends UsageReportLatencyFields, UsageReportConfigChangeFields {
   bucket: string
   environment?: string
   client?: string
@@ -326,7 +361,7 @@ export interface UsageReportTokenTrendScoreRow {
   agent_sleep_wellness_interruption_incidents?: number | null
 }
 
-export interface UsageReportSummary {
+export interface UsageReportSummary extends UsageReportConfigChangeFields {
   traces: number
   token_in: number
   token_out: number
@@ -894,6 +929,19 @@ function appendUsageReportFilters(
     'model',
   ] as const
   for (const key of filterKeys) {
+    const values = params[key]
+    if (values !== undefined && values.length > 0) {
+      searchParams.set(key, values.join(','))
+    }
+  }
+
+  const configChangeFilterKeys = [
+    'changed_pre_commit_config',
+    'changed_env_file',
+    'changed_pyproject_toml',
+    'changed_gitignore',
+  ] as const
+  for (const key of configChangeFilterKeys) {
     const values = params[key]
     if (values !== undefined && values.length > 0) {
       searchParams.set(key, values.join(','))

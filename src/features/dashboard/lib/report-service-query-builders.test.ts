@@ -128,6 +128,35 @@ describe('report-service query builders', () => {
     expect(query.sql).toContain('AS llm_stream_output_tokens_per_second_p95')
   })
 
+  test('test_buildUsageQuery_exposes_config_change_aggregates_and_filters', () => {
+    const query = buildUsageQuery(
+      new URLSearchParams({
+        from: '2026-05-01',
+        to: '2026-05-08',
+        grain: 'day',
+        group_by: 'provider,model,repository',
+        limit: '50000',
+        changed_env_file: 'true,null',
+        changed_gitignore: 'false',
+      })
+    )
+
+    expect(query.values).toEqual(['2026-05-01', '2026-05-08', 50000])
+    expect(query.sql).toContain('AS config_change_evaluated_rows')
+    expect(query.sql).toContain('AS config_change_unevaluated_rows')
+    expect(query.sql).toContain('AS config_change_any_true_rows')
+    expect(query.sql).toContain('AS changed_pre_commit_config_true_rows')
+    expect(query.sql).toContain('AS changed_pre_commit_config_false_rows')
+    expect(query.sql).toContain('AS changed_pre_commit_config_unknown_rows')
+    expect(query.sql).toContain('AS changed_env_file_true_rows')
+    expect(query.sql).toContain('AS changed_pyproject_toml_true_rows')
+    expect(query.sql).toContain('AS changed_gitignore_true_rows')
+    expect(query.sql).toContain(
+      '(sh.changed_env_file IS TRUE OR sh.changed_env_file IS NULL)'
+    )
+    expect(query.sql).toContain('(sh.changed_gitignore IS FALSE)')
+  })
+
   test('test_token_trend_signal_queries_cover_full_range_and_hourly_scores', () => {
     const params = new URLSearchParams({
       from: '2026-05-01',

@@ -108,7 +108,16 @@ declare module '@tanstack/react-router' {
 
 // Render the app
 const rootElement = document.getElementById('root')!
-if (!rootElement.innerHTML) {
+document.getElementById('dashboard-bootstrap-diagnostic')?.remove()
+rootElement.querySelector('[data-dashboard-bootstrap-diagnostic]')?.remove()
+if (
+  rootElement.childElementCount === 1 &&
+  rootElement.textContent?.includes('Dashboard bootstrap did not mount')
+) {
+  rootElement.replaceChildren()
+}
+
+if (!rootElement.hasChildNodes()) {
   const root = ReactDOM.createRoot(rootElement)
   root.render(
     <StrictMode>

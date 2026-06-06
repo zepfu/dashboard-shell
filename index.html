@@ -126,8 +126,9 @@
             .filter(Boolean)
 
           const panel = document.createElement('main')
+          panel.id = 'dashboard-bootstrap-diagnostic'
           panel.style.cssText =
-            'box-sizing:border-box;min-height:100vh;padding:32px;font:14px/1.5 Inter,system-ui,sans-serif;background:#09090b;color:#fafafa;'
+            'box-sizing:border-box;position:fixed;inset:0;z-index:2147483647;overflow:auto;padding:32px;font:14px/1.5 Inter,system-ui,sans-serif;background:#09090b;color:#fafafa;'
           panel.innerHTML = `
             <section style="max-width:900px;margin:0 auto;border:1px solid #3f3f46;border-radius:8px;padding:20px;background:#18181b">
               <h1 style="margin:0 0 8px;font-size:20px">Dashboard bootstrap did not mount</h1>
@@ -142,7 +143,8 @@
               )}</pre>
             </section>
           `
-          root.replaceChildren(panel)
+          document.getElementById(panel.id)?.remove()
+          document.body.append(panel)
         }, 5000)
 
         function escapeHtml(value) {
