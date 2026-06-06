@@ -32,6 +32,7 @@ import type {
   UsageReportQuotaRow,
   UsageReportQuotaUsageBreakdown,
   UsageReportResponse,
+  ShellHealthResponse,
   UsageReportTrendRow,
 } from '../api/usage-report'
 import PhosphorDashboard, {
@@ -73,6 +74,17 @@ function Wrapper({ children }: { readonly children: ReactNode }): ReactNode {
 
 beforeEach(() => {
   server.use(
+    http.get('/api/shell/health', () =>
+      HttpResponse.json({
+        ok: true,
+        pgBouncerSidecars: {
+          status: 'unknown',
+          sidecars: [],
+        },
+      } satisfies ShellHealthResponse)
+    )
+  )
+  server.use(
     http.get('/api/shell/reports/usage/tool-activity', () =>
       HttpResponse.json({
         metadata: {
@@ -81,6 +93,21 @@ beforeEach(() => {
           generatedAt: '2026-05-19T00:00:00.000Z',
         },
         toolActivity: [],
+      })
+    )
+  )
+  server.use(
+    http.get('/api/shell/reports/usage/token-trend-summary', () =>
+      HttpResponse.json({
+        metadata: {
+          from: '2026-05-20',
+          to: '2026-05-21',
+        },
+        tokenTrendHours: [],
+        tokenTrendVersions: [],
+        tokenTrendRequestHours: [],
+        tokenTrendToolHours: [],
+        tokenTrendModelFirstSeen: [],
       })
     )
   )
@@ -335,6 +362,190 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
     expect(onRefreshQuotas).toHaveBeenCalledTimes(2)
     expect(onRefreshQuotaHistory).toHaveBeenCalledTimes(1)
     expect(onRefreshQuotaRangeHistory).toHaveBeenCalledTimes(1)
+  })
+
+  test('test_health_tab_renders_pgbouncer_sidecar_health', async () => {
+    server.use(
+      http.get('/api/shell/health', () =>
+        HttpResponse.json({
+          ok: true,
+          pgBouncerSidecars: {
+            status: 'yellow',
+            sidecars: [
+              {
+                key: 'aawm-pgbouncer',
+                label: 'AAWM PgBouncer',
+                containerName: 'aawm-pgbouncer',
+                hostEndpoint: '127.0.0.1:6432',
+                runtimeAliases: ['aawm_tristore', 'aawm_tap_dev'],
+                upstreamPostgres: 'aawm-postgres18:5432',
+                status: 'green',
+                container: {
+                  present: true,
+                  status: 'healthy',
+                  health: 'healthy',
+                  running: true,
+                  startedAt: '2026-06-06T12:00:00.000Z',
+                  finishedAt: null,
+                  logConfig: {
+                    type: 'json-file',
+                    maxSize: '10m',
+                    maxFile: '3',
+                  },
+                  error: null,
+                },
+                admin: {
+                  configured: true,
+                  status: 'ok',
+                  endpoint: {
+                    database: 'pgbouncer',
+                    host: 'aawm-pgbouncer',
+                    port: '6432',
+                  },
+                  error: null,
+                  poolSummary: {
+                    clActive: 2,
+                    clWaiting: 0,
+                    svActive: 1,
+                    svIdle: 3,
+                    svUsed: 0,
+                    svTested: 0,
+                    svLogin: 0,
+                    maxWaitSeconds: 0,
+                    maxWaitMicroseconds: 0,
+                  },
+                  statsSummary: {
+                    totalXactCount: 42,
+                    totalQueryCount: 84,
+                    totalReceived: 2048,
+                    totalSent: 4096,
+                    avgXactCount: 4,
+                    avgQueryCount: 8,
+                    avgWaitTime: 0,
+                  },
+                  serverSummary: {
+                    total: 4,
+                    active: 1,
+                    idle: 3,
+                    used: 0,
+                    tested: 0,
+                    login: 0,
+                    byState: [
+                      { state: 'active', count: 1 },
+                      { state: 'idle', count: 3 },
+                    ],
+                  },
+                  pools: [
+                    {
+                      database: 'aawm_tristore',
+                      user: 'aawm',
+                      clActive: 2,
+                      clWaiting: 0,
+                      svActive: 1,
+                      svIdle: 3,
+                      svUsed: 0,
+                      svTested: 0,
+                      svLogin: 0,
+                      maxWaitSeconds: 0,
+                      maxWaitMicroseconds: 0,
+                      poolMode: 'transaction',
+                    },
+                  ],
+                  stats: [],
+                },
+              },
+              {
+                key: 'aegis-pgbouncer',
+                label: 'Aegis PgBouncer',
+                containerName: 'aegis-pgbouncer',
+                hostEndpoint: '127.0.0.1:6433',
+                runtimeAliases: ['aegis'],
+                upstreamPostgres: 'aegis-db:5432',
+                status: 'red',
+                container: {
+                  present: false,
+                  status: 'missing',
+                  health: null,
+                  running: false,
+                  logConfig: null,
+                  error: null,
+                },
+                admin: {
+                  configured: false,
+                  status: 'unconfigured',
+                  endpoint: null,
+                  error: 'PgBouncer admin database URL is not configured.',
+                  poolSummary: {
+                    clActive: 0,
+                    clWaiting: 0,
+                    svActive: 0,
+                    svIdle: 0,
+                    svUsed: 0,
+                    svTested: 0,
+                    svLogin: 0,
+                    maxWaitSeconds: 0,
+                    maxWaitMicroseconds: 0,
+                  },
+                  statsSummary: {
+                    totalXactCount: 0,
+                    totalQueryCount: 0,
+                    totalReceived: 0,
+                    totalSent: 0,
+                    avgXactCount: 0,
+                    avgQueryCount: 0,
+                    avgWaitTime: 0,
+                  },
+                  serverSummary: {
+                    total: 0,
+                    active: 0,
+                    idle: 0,
+                    used: 0,
+                    tested: 0,
+                    login: 0,
+                    byState: [],
+                  },
+                  pools: [],
+                  stats: [],
+                },
+              },
+            ],
+          },
+        } satisfies ShellHealthResponse)
+      )
+    )
+
+    await act(async () => {
+      render(
+        <Wrapper>
+          <PhosphorDashboard
+            from='2026-05-20'
+            to='2026-05-21'
+            report={MOCK_REPORT}
+            reportLoading={false}
+            showComparison={false}
+            quotas={[]}
+          />
+        </Wrapper>
+      )
+    })
+
+    const aawmCard = (await screen.findByText('AAWM PgBouncer')).closest(
+      'article'
+    )
+    expect(aawmCard).not.toBeNull()
+    const aawm = within(aawmCard as HTMLElement)
+    expect(aawm.getAllByText('ok')).toHaveLength(2)
+    expect(aawm.getByText(/clients/i)).toBeInTheDocument()
+    expect(aawm.getByText(/max wait/i)).toBeInTheDocument()
+    expect(aawm.getByText('aawm_tristore')).toBeInTheDocument()
+    expect(aawm.getByText(/json-file 10m x3/i)).toBeInTheDocument()
+
+    const aegisCard = screen.getByText('Aegis PgBouncer').closest('article')
+    expect(aegisCard).not.toBeNull()
+    const aegis = within(aegisCard as HTMLElement)
+    expect(aegis.getByText('down')).toBeInTheDocument()
+    expect(aegis.getByText('missing')).toBeInTheDocument()
+    expect(aegis.getByText('unconfigured')).toBeInTheDocument()
   })
 
   test('test_providers_section_has_health_and_quota_tabs', async () => {

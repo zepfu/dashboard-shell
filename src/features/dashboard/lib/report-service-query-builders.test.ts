@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'vitest'
 import {
+  buildPgBouncerAdminDatabaseUrl,
   buildToolActivityQuery,
   buildQuotaQuery,
   buildReportQueryPressureQuery,
@@ -14,6 +15,8 @@ import {
   buildTokenTrendModelFirstSeenQuery,
   buildTokenTrendScoreQuery,
   findUpstreamApiProxy,
+  normalizePgBouncerPoolRow,
+  normalizePgBouncerStatsRow,
   proxyTargetUrl,
 } from '../../../../server/report-service.mjs'
 
@@ -259,6 +262,71 @@ describe('report-service query builders', () => {
     expect(query.sql).toContain('MAX(active_age_ms)')
     expect(query.sql).toContain('left(regexp_replace')
     expect(query.sql).not.toContain('public.session_history')
+  })
+
+  test('test_pgbouncer_admin_url_and_row_normalizers_sanitize_admin_payload', () => {
+    const adminUrl = buildPgBouncerAdminDatabaseUrl(
+      'postgresql://aawm:secret@aawm-pgbouncer:6432/aawm_tristore?sslmode=disable'
+    )
+    const parsedUrl = new URL(adminUrl!)
+
+    expect(parsedUrl.pathname).toBe('/pgbouncer')
+    expect(parsedUrl.hostname).toBe('aawm-pgbouncer')
+    expect(parsedUrl.port).toBe('6432')
+    expect(parsedUrl.searchParams.get('sslmode')).toBe('disable')
+    expect(buildPgBouncerAdminDatabaseUrl('not a url')).toBeUndefined()
+
+    expect(
+      normalizePgBouncerPoolRow({
+        database: 'aawm_tristore',
+        user: 'aawm',
+        cl_active: '2',
+        cl_waiting: '1',
+        sv_active: '3',
+        sv_idle: '4',
+        sv_used: '5',
+        sv_tested: '6',
+        sv_login: '7',
+        maxwait: '8',
+        maxwait_us: '900',
+        pool_mode: 'transaction',
+      })
+    ).toEqual({
+      database: 'aawm_tristore',
+      user: 'aawm',
+      clActive: 2,
+      clWaiting: 1,
+      svActive: 3,
+      svIdle: 4,
+      svUsed: 5,
+      svTested: 6,
+      svLogin: 7,
+      maxWaitSeconds: 8,
+      maxWaitMicroseconds: 900,
+      poolMode: 'transaction',
+    })
+
+    expect(
+      normalizePgBouncerStatsRow({
+        database: 'aawm_tristore',
+        total_xact_count: '42',
+        total_query_count: '84',
+        total_received: '2048',
+        total_sent: '4096',
+        avg_xact_count: '4',
+        avg_query_count: '8',
+        avg_wait_time: '12',
+      })
+    ).toEqual({
+      database: 'aawm_tristore',
+      totalXactCount: 42,
+      totalQueryCount: 84,
+      totalReceived: 2048,
+      totalSent: 4096,
+      avgXactCount: 4,
+      avgQueryCount: 8,
+      avgWaitTime: 12,
+    })
   })
 
   test('test_buildQuotaQuery_stays_on_rate_limit_tables_and_wtus_lanes', () => {

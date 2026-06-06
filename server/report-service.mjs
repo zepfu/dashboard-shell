@@ -218,6 +218,14 @@ const HEALTH_DB_CONNECTION_TIMEOUT_MS = Math.max(
   500,
   Number(process.env.SHELL_REPORT_HEALTH_DB_CONNECTION_TIMEOUT_MS ?? 1_000)
 )
+const PGBOUNCER_HEALTH_CACHE_TTL_MS = Math.max(
+  1_000,
+  Number(process.env.SHELL_REPORT_PGBOUNCER_HEALTH_CACHE_TTL_MS ?? 15_000)
+)
+const PGBOUNCER_ADMIN_QUERY_TIMEOUT_MS = Math.max(
+  500,
+  Number(process.env.SHELL_REPORT_PGBOUNCER_ADMIN_QUERY_TIMEOUT_MS ?? 2_000)
+)
 const MATERIALIZED_VIEW_HEALTH_CACHE_TTL_MS = Math.max(
   1_000,
   Number(process.env.SHELL_REPORT_MV_HEALTH_CACHE_TTL_MS ?? 30_000)
@@ -314,6 +322,36 @@ const CLIENT_AUTH_HEADERS = new Set([
   'x-admin-capability',
   'x-api-key',
 ])
+const PGBOUNCER_SIDECARS = [
+  {
+    key: 'aawm-pgbouncer',
+    label: 'AAWM PgBouncer',
+    containerName: 'aawm-pgbouncer',
+    hostEndpoint: '127.0.0.1:6432',
+    runtimeAliases: ['aawm_tristore', 'aawm_tap_dev'],
+    upstreamPostgres: 'aawm-postgres18:5432',
+    adminDatabaseUrl:
+      optionalEnvValue(process.env.SHELL_REPORT_AAWM_PGBOUNCER_DATABASE_URL) ??
+      buildPgBouncerAdminDatabaseUrl(DATABASE_URL),
+  },
+  {
+    key: 'aegis-pgbouncer',
+    label: 'Aegis PgBouncer',
+    containerName: 'aegis-pgbouncer',
+    hostEndpoint: '127.0.0.1:6433',
+    runtimeAliases: ['aegis'],
+    upstreamPostgres: 'aegis-db:5432',
+    adminDatabaseUrl: optionalEnvValue(
+      process.env.SHELL_REPORT_AEGIS_PGBOUNCER_DATABASE_URL
+    ),
+  },
+]
+
+function optionalEnvValue(value) {
+  if (typeof value !== 'string') return undefined
+  const trimmed = value.trim()
+  return trimmed.length > 0 ? trimmed : undefined
+}
 
 function buildPostgresPoolOptions(
   applicationName,
@@ -574,6 +612,8 @@ let materializedViewHealthCache = null
 let materializedViewHealthPromise = null
 let sourceTableHealthCache = null
 let sourceTableHealthPromise = null
+let pgBouncerHealthCache = null
+let pgBouncerHealthPromise = null
 
 if (redisClient) {
   redisClient.on('error', (error) => {
@@ -1254,6 +1294,405 @@ async function loadReportQueryPressure() {
   }
 }
 
+async function loadPgBouncerHealth() {
+  const now = Date.now()
+  if (pgBouncerHealthCache?.expiresAt > now) {
+    return pgBouncerHealthCache.value
+  }
+  if (pgBouncerHealthPromise) return pgBouncerHealthPromise
+
+  pgBouncerHealthPromise = loadPgBouncerHealthUncached()
+    .then((value) => {
+      pgBouncerHealthCache = {
+        expiresAt: Date.now() + PGBOUNCER_HEALTH_CACHE_TTL_MS,
+        value,
+      }
+      return value
+    })
+    .catch((error) => {
+      const value = {
+        status: 'unknown',
+        error: formatError(error),
+        sidecars: PGBOUNCER_SIDECARS.map((sidecar) =>
+          buildPgBouncerSidecarUnavailable(sidecar, formatError(error))
+        ),
+      }
+      pgBouncerHealthCache = {
+        expiresAt: Date.now() + PGBOUNCER_HEALTH_CACHE_TTL_MS,
+        value,
+      }
+      return value
+    })
+    .finally(() => {
+      pgBouncerHealthPromise = null
+    })
+
+  return pgBouncerHealthPromise
+}
+
+async function loadPgBouncerHealthUncached() {
+  const sidecars = await Promise.all(
+    PGBOUNCER_SIDECARS.map((sidecar) => loadPgBouncerSidecarHealth(sidecar))
+  )
+  const status = sidecars.some((sidecar) => sidecar.status === 'red')
+    ? 'red'
+    : sidecars.some((sidecar) => sidecar.status === 'yellow')
+      ? 'yellow'
+      : 'green'
+
+  return { status, sidecars }
+}
+
+async function loadPgBouncerSidecarHealth(sidecar) {
+  const [container, admin] = await Promise.all([
+    loadDockerContainerStatus(sidecar.containerName),
+    loadPgBouncerAdminSummary(sidecar),
+  ])
+  const status = classifyPgBouncerSidecarStatus(container, admin)
+
+  return {
+    key: sidecar.key,
+    label: sidecar.label,
+    containerName: sidecar.containerName,
+    hostEndpoint: sidecar.hostEndpoint,
+    runtimeAliases: sidecar.runtimeAliases,
+    upstreamPostgres: sidecar.upstreamPostgres,
+    status,
+    container,
+    admin,
+  }
+}
+
+function buildPgBouncerSidecarUnavailable(sidecar, error) {
+  return {
+    key: sidecar.key,
+    label: sidecar.label,
+    containerName: sidecar.containerName,
+    hostEndpoint: sidecar.hostEndpoint,
+    runtimeAliases: sidecar.runtimeAliases,
+    upstreamPostgres: sidecar.upstreamPostgres,
+    status: 'red',
+    container: {
+      present: false,
+      status: 'unknown',
+      health: null,
+      running: false,
+      logConfig: null,
+      error,
+    },
+    admin: {
+      configured: Boolean(sidecar.adminDatabaseUrl),
+      status: 'unknown',
+      endpoint: describeDatabaseUrl(sidecar.adminDatabaseUrl),
+      error,
+      poolSummary: emptyPgBouncerPoolSummary(),
+      statsSummary: emptyPgBouncerStatsSummary(),
+      serverSummary: emptyPgBouncerServerSummary(),
+      pools: [],
+      stats: [],
+    },
+  }
+}
+
+function classifyPgBouncerSidecarStatus(container, admin) {
+  if (container.status === 'missing' || container.status === 'unhealthy') {
+    return 'red'
+  }
+  if (admin.status === 'unreachable') return 'red'
+  if (admin.poolSummary.clWaiting > 0 || admin.poolSummary.maxWaitSeconds > 0) {
+    return 'yellow'
+  }
+  if (
+    container.status === 'unknown' ||
+    container.status === 'stopped' ||
+    admin.status === 'unconfigured' ||
+    admin.status === 'unknown'
+  ) {
+    return 'yellow'
+  }
+  return 'green'
+}
+
+async function loadDockerContainerStatus(containerName) {
+  let entries
+  try {
+    entries = await readdir(DOCKER_LOG_ROOT, { withFileTypes: true })
+  } catch (error) {
+    return {
+      present: false,
+      status: 'unknown',
+      health: null,
+      running: false,
+      logConfig: null,
+      error: formatError(error),
+    }
+  }
+
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue
+    const containerDir = path.join(DOCKER_LOG_ROOT, entry.name)
+    let config
+    try {
+      config = JSON.parse(
+        await readFile(path.join(containerDir, 'config.v2.json'), 'utf8')
+      )
+    } catch {
+      continue
+    }
+
+    const name = String(config?.Name ?? '').replace(/^\//, '')
+    if (name !== containerName) continue
+
+    let hostConfig = null
+    try {
+      hostConfig = JSON.parse(
+        await readFile(path.join(containerDir, 'hostconfig.json'), 'utf8')
+      )
+    } catch {
+      hostConfig = null
+    }
+
+    const state = config?.State ?? {}
+    const health = state?.Health?.Status ?? null
+    const running = Boolean(state?.Running)
+    const logConfig = normalizeDockerLogConfig(hostConfig?.LogConfig)
+    const status = health === 'unhealthy'
+      ? 'unhealthy'
+      : health === 'healthy'
+        ? 'healthy'
+        : running
+          ? 'running'
+          : state?.Status
+            ? String(state.Status)
+            : 'unknown'
+
+    return {
+      present: true,
+      status,
+      health,
+      running,
+      startedAt: state?.StartedAt ?? null,
+      finishedAt: state?.FinishedAt ?? null,
+      logConfig,
+      error: null,
+    }
+  }
+
+  return {
+    present: false,
+    status: 'missing',
+    health: null,
+    running: false,
+    logConfig: null,
+    error: null,
+  }
+}
+
+function normalizeDockerLogConfig(logConfig) {
+  if (!logConfig || typeof logConfig !== 'object') return null
+  const config = logConfig.Config ?? {}
+  return {
+    type: logConfig.Type ?? null,
+    maxSize: config['max-size'] ?? null,
+    maxFile: config['max-file'] ?? null,
+  }
+}
+
+async function loadPgBouncerAdminSummary(sidecar) {
+  if (!sidecar.adminDatabaseUrl) {
+    return {
+      configured: false,
+      status: 'unconfigured',
+      endpoint: null,
+      error: 'PgBouncer admin database URL is not configured.',
+      poolSummary: emptyPgBouncerPoolSummary(),
+      statsSummary: emptyPgBouncerStatsSummary(),
+      serverSummary: emptyPgBouncerServerSummary(),
+      pools: [],
+      stats: [],
+    }
+  }
+
+  const adminPool = new Pool({
+    connectionString: sidecar.adminDatabaseUrl,
+    application_name: 'dashboard-shell-pgbouncer-health',
+    max: 1,
+    idleTimeoutMillis: 1_000,
+    connectionTimeoutMillis: PGBOUNCER_ADMIN_QUERY_TIMEOUT_MS,
+    query_timeout: PGBOUNCER_ADMIN_QUERY_TIMEOUT_MS,
+  })
+
+  try {
+    const client = await adminPool.connect()
+    try {
+      const poolsResult = await client.query('SHOW POOLS;')
+      const statsResult = await client.query('SHOW STATS;')
+      const serversResult = await client.query('SHOW SERVERS;')
+      const pools = poolsResult.rows.map(normalizePgBouncerPoolRow)
+      const stats = statsResult.rows.map(normalizePgBouncerStatsRow)
+      const serverSummary = summarizePgBouncerServers(serversResult.rows)
+
+      return {
+        configured: true,
+        status: 'ok',
+        endpoint: describeDatabaseUrl(sidecar.adminDatabaseUrl),
+        error: null,
+        poolSummary: summarizePgBouncerPools(pools),
+        statsSummary: summarizePgBouncerStats(stats),
+        serverSummary,
+        pools,
+        stats,
+      }
+    } finally {
+      client.release()
+    }
+  } catch (error) {
+    return {
+      configured: true,
+      status: 'unreachable',
+      endpoint: describeDatabaseUrl(sidecar.adminDatabaseUrl),
+      error: formatError(error),
+      poolSummary: emptyPgBouncerPoolSummary(),
+      statsSummary: emptyPgBouncerStatsSummary(),
+      serverSummary: emptyPgBouncerServerSummary(),
+      pools: [],
+      stats: [],
+    }
+  } finally {
+    await adminPool.end().catch(() => {})
+  }
+}
+
+export function normalizePgBouncerPoolRow(row) {
+  return {
+    database: row.database ?? null,
+    user: row.user ?? null,
+    clActive: normalizeNumber(row.cl_active) ?? 0,
+    clWaiting: normalizeNumber(row.cl_waiting) ?? 0,
+    svActive: normalizeNumber(row.sv_active) ?? 0,
+    svIdle: normalizeNumber(row.sv_idle) ?? 0,
+    svUsed: normalizeNumber(row.sv_used) ?? 0,
+    svTested: normalizeNumber(row.sv_tested) ?? 0,
+    svLogin: normalizeNumber(row.sv_login) ?? 0,
+    maxWaitSeconds: normalizeNumber(row.maxwait) ?? 0,
+    maxWaitMicroseconds: normalizeNumber(row.maxwait_us) ?? 0,
+    poolMode: row.pool_mode ?? null,
+  }
+}
+
+export function normalizePgBouncerStatsRow(row) {
+  return {
+    database: row.database ?? null,
+    totalXactCount: normalizeNumber(row.total_xact_count) ?? 0,
+    totalQueryCount: normalizeNumber(row.total_query_count) ?? 0,
+    totalReceived: normalizeNumber(row.total_received) ?? 0,
+    totalSent: normalizeNumber(row.total_sent) ?? 0,
+    avgXactCount: normalizeNumber(row.avg_xact_count) ?? 0,
+    avgQueryCount: normalizeNumber(row.avg_query_count) ?? 0,
+    avgWaitTime: normalizeNumber(row.avg_wait_time) ?? 0,
+  }
+}
+
+function emptyPgBouncerPoolSummary() {
+  return {
+    clActive: 0,
+    clWaiting: 0,
+    svActive: 0,
+    svIdle: 0,
+    svUsed: 0,
+    svTested: 0,
+    svLogin: 0,
+    maxWaitSeconds: 0,
+    maxWaitMicroseconds: 0,
+  }
+}
+
+function summarizePgBouncerPools(pools) {
+  return pools.reduce(
+    (summary, row) => ({
+      clActive: summary.clActive + row.clActive,
+      clWaiting: summary.clWaiting + row.clWaiting,
+      svActive: summary.svActive + row.svActive,
+      svIdle: summary.svIdle + row.svIdle,
+      svUsed: summary.svUsed + row.svUsed,
+      svTested: summary.svTested + row.svTested,
+      svLogin: summary.svLogin + row.svLogin,
+      maxWaitSeconds: Math.max(summary.maxWaitSeconds, row.maxWaitSeconds),
+      maxWaitMicroseconds: Math.max(
+        summary.maxWaitMicroseconds,
+        row.maxWaitMicroseconds
+      ),
+    }),
+    emptyPgBouncerPoolSummary()
+  )
+}
+
+function emptyPgBouncerStatsSummary() {
+  return {
+    totalXactCount: 0,
+    totalQueryCount: 0,
+    totalReceived: 0,
+    totalSent: 0,
+    avgXactCount: 0,
+    avgQueryCount: 0,
+    avgWaitTime: 0,
+  }
+}
+
+function summarizePgBouncerStats(stats) {
+  if (!stats.length) return emptyPgBouncerStatsSummary()
+  const totals = stats.reduce(
+    (summary, row) => ({
+      totalXactCount: summary.totalXactCount + row.totalXactCount,
+      totalQueryCount: summary.totalQueryCount + row.totalQueryCount,
+      totalReceived: summary.totalReceived + row.totalReceived,
+      totalSent: summary.totalSent + row.totalSent,
+      avgXactCount: summary.avgXactCount + row.avgXactCount,
+      avgQueryCount: summary.avgQueryCount + row.avgQueryCount,
+      avgWaitTime: summary.avgWaitTime + row.avgWaitTime,
+    }),
+    emptyPgBouncerStatsSummary()
+  )
+  return {
+    ...totals,
+    avgXactCount: Math.round(totals.avgXactCount / stats.length),
+    avgQueryCount: Math.round(totals.avgQueryCount / stats.length),
+    avgWaitTime: Math.round(totals.avgWaitTime / stats.length),
+  }
+}
+
+function emptyPgBouncerServerSummary() {
+  return {
+    total: 0,
+    active: 0,
+    idle: 0,
+    used: 0,
+    tested: 0,
+    login: 0,
+    byState: [],
+  }
+}
+
+function summarizePgBouncerServers(rows) {
+  const counts = new Map()
+  for (const row of rows) {
+    const state = String(row.state ?? 'unknown')
+    counts.set(state, (counts.get(state) ?? 0) + 1)
+  }
+  const countFor = (state) => counts.get(state) ?? 0
+  return {
+    total: rows.length,
+    active: countFor('active'),
+    idle: countFor('idle'),
+    used: countFor('used'),
+    tested: countFor('tested'),
+    login: countFor('login'),
+    byState: [...counts.entries()]
+      .map(([state, count]) => ({ state, count }))
+      .sort((a, b) => a.state.localeCompare(b.state)),
+  }
+}
+
 async function loadMaterializedViewHealthFromDatabase() {
   const viewResult = await queryHealthDatabase(`
 WITH rel AS (
@@ -1657,6 +2096,18 @@ function normalizeDatabaseUrl(value) {
 
   databaseUrl.hostname = hostRewrite
   return databaseUrl.toString()
+}
+
+export function buildPgBouncerAdminDatabaseUrl(value) {
+  if (!value) return undefined
+
+  try {
+    const databaseUrl = new URL(value)
+    databaseUrl.pathname = '/pgbouncer'
+    return databaseUrl.toString()
+  } catch {
+    return undefined
+  }
 }
 
 function describeDatabaseUrl(value) {
@@ -7607,6 +8058,7 @@ async function handleRequest(req, res) {
       redisConfigured: Boolean(redisClient),
       redisReady: Boolean(redisClient?.isReady),
       reportQueryPressure: await loadReportQueryPressure(),
+      pgBouncerSidecars: await loadPgBouncerHealth(),
       sourceTables: await loadSourceTableHealth(),
       materializedViews: await loadMaterializedViewHealth(),
     })
