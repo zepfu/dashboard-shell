@@ -47,6 +47,7 @@ services:
       AAWM_TAP_API_TARGET: "${AAWM_TAP_API_TARGET:-http://host.docker.internal:8010}"
       AEGIS_ACCESS_TOKEN: "${AEGIS_ACCESS_TOKEN:-}"
       AEGIS_API_TARGET: "${AEGIS_API_TARGET:-http://aegis-api:8001/api/v1}"
+      AEGIS_DB_PASSWORD: "${AEGIS_DB_PASSWORD:-aegis_dev_password}"
       SLUICE_ACCESS_TOKEN: "${SLUICE_ACCESS_TOKEN:-}"
       SLUICE_API_TARGET: "${SLUICE_API_TARGET:-http://host.docker.internal:8002/api/v1}"
       VITE_API_KEY: "${VITE_API_KEY:-}"
@@ -102,6 +103,7 @@ services:
     networks:
       - aawm_tap
       - aawm_core
+      - aegis_core
 
   dashboard-shell-redis:
     restart: unless-stopped
@@ -220,4 +222,7 @@ networks:
     external: true
   aawm_core:
     name: aawm_default
+    external: true
+  aegis_core:
+    name: aegis_default
     external: true

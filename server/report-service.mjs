@@ -350,9 +350,7 @@ const PGBOUNCER_SIDECARS = [
     hostEndpoint: '127.0.0.1:6433',
     runtimeAliases: ['aegis'],
     upstreamPostgres: 'aegis-db:5432',
-    adminDatabaseUrl: optionalEnvValue(
-      process.env.SHELL_REPORT_AEGIS_PGBOUNCER_DATABASE_URL
-    ),
+    adminDatabaseUrl: buildAegisPgBouncerAdminDatabaseUrl(),
   },
 ]
 
@@ -2135,6 +2133,34 @@ export function buildPgBouncerAdminDatabaseUrl(value) {
   } catch {
     return undefined
   }
+}
+
+export function buildAegisPgBouncerAdminDatabaseUrl(env = process.env) {
+  const explicitUrl = optionalEnvValue(
+    env.SHELL_REPORT_AEGIS_PGBOUNCER_DATABASE_URL
+  )
+  if (explicitUrl) return explicitUrl
+
+  const databaseUrl = new URL('postgresql://aegis-pgbouncer')
+  databaseUrl.username =
+    optionalEnvValue(env.SHELL_REPORT_AEGIS_PGBOUNCER_USER) ??
+    optionalEnvValue(env.AEGIS_PGBOUNCER_AUTH_USER) ??
+    'aegis_app'
+  const password =
+    optionalEnvValue(env.SHELL_REPORT_AEGIS_PGBOUNCER_PASSWORD) ??
+    optionalEnvValue(env.AEGIS_PGBOUNCER_AUTH_PASSWORD) ??
+    optionalEnvValue(env.AEGIS_DB_PASSWORD)
+  if (!password) return undefined
+  databaseUrl.password = password
+  databaseUrl.hostname =
+    optionalEnvValue(env.SHELL_REPORT_AEGIS_PGBOUNCER_HOST) ??
+    'aegis-pgbouncer'
+  databaseUrl.port =
+    optionalEnvValue(env.SHELL_REPORT_AEGIS_PGBOUNCER_PORT) ?? '6432'
+  databaseUrl.pathname = `/${
+    optionalEnvValue(env.SHELL_REPORT_AEGIS_PGBOUNCER_DATABASE) ?? 'pgbouncer'
+  }`
+  return databaseUrl.toString()
 }
 
 function describeDatabaseUrl(value) {

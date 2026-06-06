@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'vitest'
 import {
+  buildAegisPgBouncerAdminDatabaseUrl,
   buildPgBouncerAdminDatabaseUrl,
   buildToolActivityQuery,
   buildQuotaQuery,
@@ -275,6 +276,25 @@ describe('report-service query builders', () => {
     expect(parsedUrl.port).toBe('6432')
     expect(parsedUrl.searchParams.get('sslmode')).toBe('disable')
     expect(buildPgBouncerAdminDatabaseUrl('not a url')).toBeUndefined()
+
+    const aegisAdminUrl = buildAegisPgBouncerAdminDatabaseUrl({
+      AEGIS_DB_PASSWORD: 'aegis secret',
+    })
+    const parsedAegisUrl = new URL(aegisAdminUrl)
+
+    expect(parsedAegisUrl.username).toBe('aegis_app')
+    expect(parsedAegisUrl.password).toBe('aegis%20secret')
+    expect(parsedAegisUrl.hostname).toBe('aegis-pgbouncer')
+    expect(parsedAegisUrl.port).toBe('6432')
+    expect(parsedAegisUrl.pathname).toBe('/pgbouncer')
+
+    expect(
+      buildAegisPgBouncerAdminDatabaseUrl({
+        SHELL_REPORT_AEGIS_PGBOUNCER_DATABASE_URL:
+          'postgresql://custom:secret@example.invalid:6543/pgbouncer',
+        AEGIS_DB_PASSWORD: 'ignored',
+      })
+    ).toBe('postgresql://custom:secret@example.invalid:6543/pgbouncer')
 
     expect(
       normalizePgBouncerPoolRow({
