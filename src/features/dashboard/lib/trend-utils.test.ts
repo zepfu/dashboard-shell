@@ -5,6 +5,9 @@ import {
   deriveTokenTrendModelFirstSeenGroups,
   deriveTokenTrendVersionTracks,
   normalizeTokenTrendClientVersionForLane,
+  // parseTrendDayHour is currently module-private; engineer must export it.
+  // The import is commented out until the export is added; the test body uses
+  // a dynamic import so it fails at runtime rather than at parse time.
 } from './trend-utils'
 
 test('test_buildTokenTrendDayEnvelopes_groups_hours_by_day_and_provider', () => {
@@ -504,4 +507,177 @@ test('test_deriveTokenTrendModelFirstSeenGroups_maps_supported_provider_models_t
   ])
   expect(groups[1]?.globalHour).toBe(33)
   expect(groups[1]?.markers[0]?.provider).toBe('xai')
+})
+
+// ---------------------------------------------------------------------------
+// Wave 3 (adversarial-review-20260612) — FAILING tests, W3 engineer to fix
+// ---------------------------------------------------------------------------
+
+/**
+ * S4-9 — `parseTrendDayHour` invalid-hour guard: value `99` must be rejected.
+ *
+ * The fast-path regex `[T\s](\d{2})` captures any two-digit sequence, including
+ * hour `99`. This silently creates data that `buildTrendSignalRows` discards
+ * (hours 24–99 are out of range) with no trace. The fix: validate hour ∈ [0,23].
+ *
+ * This test also pins the UTC/offset consistency fix (S3-3):
+ * A timestamp `2026-06-12T23:30:00-04:00` must yield day AND hour from the
+ * SAME clock — not day from the local prefix and hour from UTC.
+ *
+ * EXPORTS NEEDED from token-trend-chart.tsx:
+ *   - `parseTrendDayHour(value: string | null | undefined): { day: string; hour: number | null } | null`
+ *
+ * These tests FAIL until the function is exported.
+ */
+test('test_parseTrendDayHour_offset_timestamp_day_hour_consistent', async () => {
+  // parseTrendDayHour is module-private. The engineer must export it.
+  // Dynamic import catches the missing export at runtime → test FAILS.
+  const mod = await import('../components/token-trend-chart')
+  const { parseTrendDayHour } = mod as unknown as {
+    parseTrendDayHour: (
+      v: string | null | undefined
+    ) => { day: string; hour: number | null } | null
+  }
+
+  expect(parseTrendDayHour).toBeDefined()
+
+  // Offset timestamp: 2026-06-12T23:30:00-04:00 is UTC 2026-06-13T03:30:00Z.
+  // After fix: day AND hour must derive from the same clock.
+  // Option A (UTC clock): day='2026-06-13', hour=3
+  // Option B (offset-local clock): day='2026-06-12', hour=23
+  // Either is correct as long as they're consistent. Today's fast-path takes
+  // the local day (06-12) but can fall through to UTC hour (03) → mismatch.
+  const result = parseTrendDayHour('2026-06-12T23:30:00-04:00')
+  expect(result).not.toBeNull()
+  if (result !== null) {
+    // Both clock choices are acceptable — we just verify consistency:
+    // local-date + local-hour OR utc-date + utc-hour; never mixed.
+    const utcDay = '2026-06-13'
+    const utcHour = 3
+    const localDay = '2026-06-12'
+    const localHour = 23
+    const isUtcPair = result.day === utcDay && result.hour === utcHour
+    const isLocalPair = result.day === localDay && result.hour === localHour
+    expect(isUtcPair || isLocalPair).toBe(true)
+  }
+})
+
+test('test_parseTrendDayHour_invalid_hour_rejected', async () => {
+  const mod = await import('../components/token-trend-chart')
+  const { parseTrendDayHour } = mod as unknown as {
+    parseTrendDayHour: (
+      v: string | null | undefined
+    ) => { day: string; hour: number | null } | null
+  }
+
+  expect(parseTrendDayHour).toBeDefined()
+
+  // Hour 99 must be rejected — currently the regex captures it and silent data drop occurs.
+  // After fix: hour ∉ [0,23] → null or hour: null (no phantom envelope created).
+  const badHourResult = parseTrendDayHour('2026-05-20 99:00:00')
+  // Must not return hour: 99. Either null result or hour: null.
+  if (badHourResult !== null) {
+    expect(badHourResult.hour).not.toBe(99)
+    expect(
+      badHourResult.hour === null ||
+        (badHourResult.hour >= 0 && badHourResult.hour <= 23)
+    ).toBe(true)
+  }
+  // null result (full rejection) is also valid and preferred.
+})
+
+/**
+ * S4-9 — `parseTrendDayHour` with hour 99: a health row with bucket_start
+ * `"2026-05-20 99:00:00"` silently produces `hour: 99`, which then creates a
+ * cell key `latency|2026-05-20|99` in `addSignalValue`. That key is never read
+ * back by `buildTrendSignalRows` (only hours 0–23 are iterated) — data dropped
+ * without trace. The fix must prevent `parseTrendDayHour` from producing hour=99.
+ *
+ * This test pins that `parseTrendDayHour` returns null or `hour: null` for
+ * out-of-range hours, so no phantom signal cell is created.
+ *
+ * EXPORTS NEEDED from token-trend-chart.tsx:
+ *   - `parseTrendDayHour(v: string | null | undefined): { day: string; hour: number | null } | null`
+ *
+ * Until the export is added, the dynamic import returns undefined → FAILS.
+ *
+ * Also verifies: NaN hour row in `buildTokenTrendDayEnvelopes` does not inflate
+ * the total (the array[NaN]=undefined guard already works; this documents it).
+ */
+test('test_trend_utils_nan_hour_no_phantom_envelope', async () => {
+  // Sub-test A: parseTrendDayHour must not return hour=99.
+  // (If the export is absent, this test FAILS on the toBeDefined assertion.)
+  const mod = await import('../components/token-trend-chart')
+  const { parseTrendDayHour } = mod as unknown as {
+    parseTrendDayHour: (
+      v: string | null | undefined
+    ) => { day: string; hour: number | null } | null
+  }
+  expect(parseTrendDayHour).toBeDefined()
+
+  const result99 = parseTrendDayHour('2026-05-20 99:00:00')
+  // After fix: null result (full rejection) or hour: null — never hour: 99.
+  if (result99 !== null) {
+    expect(result99.hour).not.toBe(99) // FAILS before fix
+    expect(
+      result99.hour === null ||
+        (typeof result99.hour === 'number' &&
+          result99.hour >= 0 &&
+          result99.hour <= 23)
+    ).toBe(true)
+  }
+
+  // Sub-test B: NaN hour row does not inflate the buildTokenTrendDayEnvelopes total.
+  // (This guard already works via hours[NaN]=undefined — documented here for regression.)
+  const rows = [
+    {
+      day: '2026-05-20',
+      hour: NaN,
+      provider: 'anthropic',
+      traces: 5,
+      token_total: 500,
+      usd_cost: 0,
+    },
+    {
+      day: '2026-05-20',
+      hour: 8,
+      provider: 'openai',
+      traces: 2,
+      token_total: 200,
+      usd_cost: 0,
+    },
+  ]
+  const envelopes = buildTokenTrendDayEnvelopes(rows)
+  expect(envelopes).toHaveLength(1)
+  expect(envelopes[0]!.total).toBe(200) // only the valid row
+})
+
+/**
+ * S4-11 — `normalizeTokenTrendClientVersionForLane` collapses distinct numeric
+ * build suffixes.
+ *
+ * The regex `/^(\d+\.\d+\.\d+)\.[0-9a-f]{3,}$/i` was intended to strip
+ * git-hash suffixes (e.g. `2.1.0.abc123`). But it also matches all-numeric
+ * fourth segments (`2.1.118.900`), collapsing distinct patch builds to the
+ * same lane key and hiding version-churn data.
+ *
+ * After fix: the regex requires a non-digit character in the suffix so
+ * `2.1.118.900` and `2.1.118.901` normalise to different keys.
+ */
+test('test_normalize_client_version_numeric_build_not_collapsed', () => {
+  // These two builds must NOT collapse to the same key.
+  const v1 = normalizeTokenTrendClientVersionForLane('2.1.118.900')
+  const v2 = normalizeTokenTrendClientVersionForLane('2.1.118.901')
+
+  // After fix: v1 ≠ v2 (distinct numeric build segments preserved).
+  // Before fix: both collapse to '2.1.118' → v1 === v2.
+  expect(v1).not.toBe(v2)
+
+  // Hash suffixes must still be stripped.
+  const withHash = normalizeTokenTrendClientVersionForLane('2.1.0.abc123f')
+  expect(withHash).toBe('2.1.0')
+
+  // A version without a hash suffix returns as-is.
+  const plain = normalizeTokenTrendClientVersionForLane('2.1.118')
+  expect(plain).toBe('2.1.118')
 })
