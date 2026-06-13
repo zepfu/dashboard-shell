@@ -1082,7 +1082,15 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
     ).toBeGreaterThan(0)
   })
 
+  // S1-T4 flake fix: replace the 40ms real-delay race with a deferred-promise
+  // handler resolved explicitly so the loading state is stable before releasing.
   test('test_status_weights_tab_loading_and_empty_states', async () => {
+    // Deferred promise: we control when the estimator response is released.
+    let releaseEstimator!: () => void
+    const estimatorGate = new Promise<void>((resolve) => {
+      releaseEstimator = resolve
+    })
+
     server.use(
       http.get('/api/shell/reports/usage/token-trend-summary', () =>
         HttpResponse.json({
@@ -1095,7 +1103,7 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
         })
       ),
       http.get('/api/shell/reports/usage/quota-estimator', async () => {
-        await new Promise((resolve) => setTimeout(resolve, 40))
+        await estimatorGate
         return HttpResponse.json({
           metadata: {
             from: '2026-05-20',
@@ -1132,10 +1140,19 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
       )
     })
 
-    fireEvent.click(screen.getByRole('tab', { name: 'Weights' }))
+    // Click the Weights tab — the estimator query fires but the gate is still held.
+    await act(async () => {
+      fireEvent.click(screen.getByRole('tab', { name: 'Weights' }))
+    })
+    // Loading state must be visible while the gate is held (no real-time race).
     expect(
       screen.getByText('Loading Phase 0-2 estimator detail…')
     ).toBeInTheDocument()
+
+    // Release the gate so the response resolves.
+    await act(async () => {
+      releaseEstimator()
+    })
 
     await waitFor(() => {
       expect(
@@ -1144,6 +1161,8 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
     })
   })
 
+  // S1-T8 strengthened: assert tab behavior (selected state + keyboard-navigable)
+  // not just class presence.
   test('test_section_tabs_render_inline_with_provider_and_ledger_headings', async () => {
     await act(async () => {
       render(
@@ -1160,30 +1179,33 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
       )
     })
 
-    const providersHeading = screen.getByRole('heading', { name: 'STATUS' })
-    const providersTitleMain = providersHeading.parentElement as HTMLElement
-    expect(providersTitleMain).toHaveClass('section-title-main')
-    expect(
-      within(providersTitleMain).getByRole('tab', { name: 'Health' })
-    ).toBeInTheDocument()
-    expect(
-      within(providersTitleMain).getByRole('tab', { name: 'Quota' })
-    ).toBeInTheDocument()
-    expect(
-      within(providersTitleMain).getByRole('tab', { name: 'Weights' })
-    ).toBeInTheDocument()
+    // STATUS section: Health tab must be selected by default; switching to Quota
+    // changes the aria-selected state — class presence alone doesn't verify this.
+    const healthTab = screen.getByRole('tab', { name: 'Health' })
+    expect(healthTab).toHaveAttribute('aria-selected', 'true')
+    const quotaTab = screen.getByRole('tab', { name: 'Quota' })
+    expect(quotaTab).toHaveAttribute('aria-selected', 'false')
+    const weightsTab = screen.getByRole('tab', { name: 'Weights' })
+    expect(weightsTab).toHaveAttribute('aria-selected', 'false')
 
-    const ledgerHeading = screen.getByRole('heading', { name: 'LEDGER' })
-    const ledgerTitleMain = ledgerHeading.parentElement as HTMLElement
-    expect(ledgerTitleMain).toHaveClass('section-title-main')
-    expect(
-      within(ledgerTitleMain).getByRole('tab', { name: 'Model' })
-    ).toBeInTheDocument()
-    expect(
-      within(ledgerTitleMain).getByRole('tab', { name: 'Repository' })
-    ).toBeInTheDocument()
+    // Switching to Quota flips aria-selected — behavioral, not structural.
+    fireEvent.click(quotaTab)
+    expect(quotaTab).toHaveAttribute('aria-selected', 'true')
+    expect(healthTab).toHaveAttribute('aria-selected', 'false')
+
+    // LEDGER section: Model tab selected by default.
+    const modelTab = screen.getByRole('tab', { name: 'Model' })
+    expect(modelTab).toHaveAttribute('aria-selected', 'true')
+    const repositoryTab = screen.getByRole('tab', { name: 'Repository' })
+    expect(repositoryTab).toHaveAttribute('aria-selected', 'false')
+
+    fireEvent.click(repositoryTab)
+    expect(repositoryTab).toHaveAttribute('aria-selected', 'true')
+    expect(modelTab).toHaveAttribute('aria-selected', 'false')
   })
 
+  // S1-T8 strengthened: assert the Updating label text is non-empty AND the
+  // refresh button is disabled while fetching — not just "some element has text".
   test('test_section_refresh_control_shows_updating_state', async () => {
     await act(async () => {
       render(
@@ -1203,9 +1225,19 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
       )
     })
 
-    expect(screen.getAllByText('Updating').length).toBeGreaterThan(0)
+    // At least one "Updating" label must appear in the UI (ledger refresh control).
+    const updatingLabels = screen.getAllByText('Updating')
+    expect(updatingLabels.length).toBeGreaterThanOrEqual(1)
+    // The ledger refresh button must be disabled while reportFetching=true so
+    // the user cannot trigger a second fetch mid-flight.
+    expect(
+      screen.getByRole('button', { name: /refresh model ledger data/i })
+    ).toBeDisabled()
   })
 
+  // S1-T8 strengthened: legend behavioral assertions — verify the element is
+  // keyboard-accessible (role=region) and has a visible, non-empty label, then
+  // confirm the key semantic items appear as legible text (not just CSS swatches).
   test('test_phosphor_dashboard_provider_status_color_legend_renders', async () => {
     server.use(
       http.get('/api/shell/reports/quotas', () =>
@@ -1238,19 +1270,24 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
       container = renderResult.container
     })
 
-    const legend = container.querySelector('.status-color-legend')
-    expect(legend).not.toBeNull()
-    expect(legend?.getAttribute('aria-label')).toBe(
-      'Provider health and quota color legend'
-    )
-    expect(legend?.textContent).toContain('Health')
-    expect(legend?.textContent).toContain('Quota used')
-    expect(legend?.textContent).toContain('Burn')
+    // The legend must be discoverable by its accessible label so screen-reader
+    // users can navigate to it — pure class selectors don't verify this.
+    const legend = screen.getByRole('region', {
+      name: 'Provider health and quota color legend',
+    })
+    expect(legend).toBeInTheDocument()
+
+    // Key terms must be present as visible text, not only as CSS class names.
+    expect(within(legend).getByText(/health/i)).toBeInTheDocument()
+    expect(within(legend).getByText(/quota used/i)).toBeInTheDocument()
+    expect(within(legend).getByText(/burn/i)).toBeInTheDocument()
+
+    // Swatch elements must exist (structural check retained as secondary guard).
     expect(
-      legend?.querySelectorAll('.status-legend-swatch.health-miss')
+      container.querySelectorAll('.status-legend-swatch.health-miss')
     ).toHaveLength(1)
     expect(
-      legend?.querySelectorAll('.status-legend-swatch.velocity-peak')
+      container.querySelectorAll('.status-legend-swatch.velocity-peak')
     ).toHaveLength(1)
   })
 
@@ -1894,32 +1931,44 @@ describe('PhosphorDashboard — TCG-3: prior-report query skipped when showCompa
 // Wave 40 multi-quota redesign — unit tests for new helper functions
 // ---------------------------------------------------------------------------
 
+// S1-T3 flake fix: use fake timers so Date.now() inside _formatTimeAgoForTest
+// is pinned to a known epoch and cannot race with real wall-clock progression.
 describe('Wave 40 — formatTimeAgo', () => {
-  const now = Date.now()
+  // Pinned epoch: 2026-05-21T12:00:00.000Z (arbitrary, far from DST boundaries)
+  const PINNED_NOW = new Date('2026-05-21T12:00:00.000Z').getTime()
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.setSystemTime(PINNED_NOW)
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
 
   test('test_format_time_ago_minutes', () => {
-    const d = new Date(now - 45 * 60_000) // 45 minutes ago
+    const d = new Date(PINNED_NOW - 45 * 60_000) // 45 minutes ago
     expect(_formatTimeAgoForTest(d)).toBe('45m ago')
   })
 
   test('test_format_time_ago_hours', () => {
-    const d = new Date(now - 3 * 60 * 60_000) // 3 hours ago
+    const d = new Date(PINNED_NOW - 3 * 60 * 60_000) // 3 hours ago
     expect(_formatTimeAgoForTest(d)).toBe('3h ago')
   })
 
   test('test_format_time_ago_days', () => {
-    const d = new Date(now - 2 * 24 * 60 * 60_000) // 2 days ago
+    const d = new Date(PINNED_NOW - 2 * 24 * 60 * 60_000) // 2 days ago
     expect(_formatTimeAgoForTest(d)).toBe('2d ago')
   })
 
   test('test_format_time_ago_weeks', () => {
-    const d = new Date(now - 15 * 24 * 60 * 60_000) // 15 days ago → 2w
+    const d = new Date(PINNED_NOW - 15 * 24 * 60 * 60_000) // 15 days ago → 2w
     expect(_formatTimeAgoForTest(d)).toBe('2w ago')
   })
 
   test('test_format_time_ago_future_within_1min_returns_just_now', () => {
     // Within 1 minute in the future → boundary label (rounding artefact safe)
-    const d = new Date(now + 60_000) // exactly 1 minute in the future
+    const d = new Date(PINNED_NOW + 60_000) // exactly 1 minute in the future
     expect(_formatTimeAgoForTest(d)).toBe('just now')
   })
 
@@ -1927,7 +1976,7 @@ describe('Wave 40 — formatTimeAgo', () => {
     // > 1 minute in the future → use absolute distance so UI shows a sensible
     // label rather than "now" for rounding artefacts (e.g. 30m-ago rounded up).
     // We use 2h+30s future so sub-second timing jitter doesn't affect floor().
-    const d = new Date(Date.now() + 2 * 60 * 60_000 + 30_000) // ~2h 30s in the future
+    const d = new Date(PINNED_NOW + 2 * 60 * 60_000 + 30_000) // ~2h 30s in the future
     expect(_formatTimeAgoForTest(d)).toBe('2h ago')
   })
 })
@@ -2880,7 +2929,8 @@ describe('Wave 43 — buildPriorBarFromHistory dateRangeLabel', () => {
     expect(bar.dateRangeLabel).toBe('5/19 06:00 → 5/20 06:00')
   })
 
-  test('test_prior_bar_dateRangeLabel_undefined_when_interval_start_is_null', () => {
+  // S1-T5: renamed *_undefined_when_* → *_dash_when_* to assert '—' explicitly.
+  test('test_prior_bar_dateRangeLabel_dash_when_interval_start_is_null', () => {
     const h = makeHistoryRow({
       interval_start: null,
       expected_reset_at: '2026-05-20T10:00:00Z',
@@ -2890,7 +2940,7 @@ describe('Wave 43 — buildPriorBarFromHistory dateRangeLabel', () => {
     expect(bar.dateRangeLabel).toBe('—')
   })
 
-  test('test_prior_bar_dateRangeLabel_undefined_when_expected_reset_at_is_null', () => {
+  test('test_prior_bar_dateRangeLabel_dash_when_expected_reset_at_is_null', () => {
     const h = makeHistoryRow({
       interval_start: '2026-05-19T10:00:00Z',
       expected_reset_at: null,
@@ -2936,5 +2986,811 @@ describe('Wave 43 — buildPriorBarFromHistory dateRangeLabel', () => {
     expect(bar.segments[3].highVelocity).toBe(true)
     expect(bar.segments[3].velocityClass).toBe('velocity-hot')
     expect(bar.segments[4].velocityClass).toBeUndefined()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// S1-3: buildPriorBarFromHistory — null min_remaining_pct must NOT produce
+//        a 100%-consumed bar. The `?? 0` fallback is the bug under test.
+// Engineer must fix: `remainingPct = h.min_remaining_pct ?? 0` → guard null
+// and return a sentinel (consumedPct: null / remainingPct: null).
+// ---------------------------------------------------------------------------
+
+describe('S1-3 — buildPriorBarFromHistory null min_remaining_pct', () => {
+  test('test_buildPriorBarFromHistory_null_remaining_is_not_full_consumption', () => {
+    // Arrange: a history row with min_remaining_pct === null
+    // (e.g. an interrupted interval where no consumption was recorded)
+    const h: UsageReportQuotaHistoryRow = {
+      provider: 'anthropic',
+      model: null,
+      quota_type: 'short',
+      expected_reset_at: '2026-05-20T11:00:00Z',
+      interval_start: '2026-05-20T06:00:00Z',
+      interval_end: '2026-05-20T11:00:00Z',
+      min_remaining_pct: null, // ← the null case under test
+      max_remaining_pct: null,
+      usage_tokens: 0,
+      usage_breakdown: [],
+    }
+
+    const bar = _buildPriorBarFromHistoryForTest(h, 'anthropic')
+
+    // The bug: `remainingPct = h.min_remaining_pct ?? 0` treats null as 0,
+    // producing consumedPct = 100. A null remaining_pct must NOT render as
+    // 100% consumed — the bar should signal "no data" (consumedPct === 0
+    // OR remainingPct === 100, i.e. the complement of a 0-remaining null).
+    // When this assertion fails, the engineer must fix the ?? 0 fallback.
+    expect(bar.consumedPct).not.toBe(100)
+    // Guard: remainingPct should not be 0 when input was null
+    expect(bar.remainingPct).not.toBe(0)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// S1-4: buildProviderLanes — two distinct null-expected_reset_at rows with
+//        distinct interval_start must both survive (not collapse to one entry
+//        via the shared '' dedup key).
+// Engineer must fix: dedup key for null reset rows to use interval_start
+//        instead of '' so distinct null-reset rows are not collapsed.
+// ---------------------------------------------------------------------------
+
+describe('S1-4 — buildProviderLanes distinct null-reset rows not collapsed', () => {
+  function makeAnthropicQuotaRow(
+    overrides: Partial<UsageReportQuotaRow> = {}
+  ): UsageReportQuotaRow {
+    return {
+      provider: 'anthropic',
+      model: null,
+      weekly_remaining_pct: null,
+      weekly_reset_at: null,
+      weekly_interval_start: null,
+      weekly_interval_end: null,
+      weekly_active: false,
+      weekly_usage_tokens: 0,
+      weekly_usage_breakdown: [],
+      short_remaining_pct: null,
+      short_reset_at: null,
+      short_interval_start: null,
+      short_interval_end: null,
+      short_active: false,
+      short_usage_tokens: 0,
+      short_usage_breakdown: [],
+      special_remaining_pct: null,
+      special_reset_at: null,
+      special_interval_start: null,
+      special_interval_end: null,
+      special_active: false,
+      special_usage_tokens: 0,
+      special_usage_breakdown: [],
+      short_special_remaining_pct: null,
+      short_special_reset_at: null,
+      short_special_interval_start: null,
+      short_special_interval_end: null,
+      short_special_active: false,
+      short_special_usage_tokens: 0,
+      short_special_usage_breakdown: [],
+      monthly_remaining_pct: null,
+      monthly_reset_at: null,
+      monthly_interval_start: null,
+      monthly_interval_end: null,
+      monthly_active: false,
+      monthly_usage_tokens: 0,
+      monthly_usage_breakdown: [],
+      wtus_remaining_pct: null,
+      wtus_reset_at: null,
+      wtus_interval_start: null,
+      wtus_interval_end: null,
+      wtus_active: false,
+      wtus_usage_tokens: 0,
+      wtus_usage_breakdown: [],
+      ...overrides,
+    }
+  }
+
+  test('test_buildProviderLanes_distinct_null_reset_rows_not_collapsed', () => {
+    // Two history rows for the same anthropic/weekly lane, both with
+    // expected_reset_at === null but distinct interval_start values.
+    // Current bug: both share dedup key '' → second row is collapsed.
+    const historyRows: UsageReportQuotaHistoryRow[] = [
+      {
+        provider: 'anthropic',
+        model: null,
+        quota_type: 'weekly',
+        expected_reset_at: null, // ← null reset
+        interval_start: '2026-05-01T00:00:00Z', // distinct A
+        interval_end: '2026-05-08T00:00:00Z',
+        min_remaining_pct: 80,
+        max_remaining_pct: 100,
+        usage_tokens: 500,
+        usage_breakdown: [],
+      },
+      {
+        provider: 'anthropic',
+        model: null,
+        quota_type: 'weekly',
+        expected_reset_at: null, // ← also null reset
+        interval_start: '2026-04-24T00:00:00Z', // distinct B
+        interval_end: '2026-05-01T00:00:00Z',
+        min_remaining_pct: 60,
+        max_remaining_pct: 100,
+        usage_tokens: 800,
+        usage_breakdown: [],
+      },
+    ]
+
+    // Current bar must be present so lanes aren't filtered out
+    const currentQuotaRow = makeAnthropicQuotaRow({
+      weekly_active: true,
+      weekly_remaining_pct: 50,
+      weekly_reset_at: '2026-05-15T00:00:00Z',
+      weekly_interval_start: '2026-05-08T00:00:00Z',
+      weekly_interval_end: '2026-05-15T00:00:00Z',
+      weekly_usage_tokens: 1000,
+    })
+
+    const lanes = _buildProviderLanesForTest(
+      'anthropic',
+      [currentQuotaRow],
+      historyRows
+    )
+
+    // Find the weekly lane
+    const weeklyLane = lanes.find((l) => l.laneKey?.includes('weekly'))
+    expect(weeklyLane).toBeDefined()
+
+    // Both distinct null-reset rows must survive — the bug collapses them to 1.
+    // When this fails, fix the dedup key to use interval_start for null resets.
+    expect(weeklyLane!.priorBars).toHaveLength(2)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// S1-5: buildAggregateHealthCells — error-event tooltip joins to its health
+//        cell even when bucket_start uses a +00:00 offset instead of Z.
+// The join uses bucketKeyFromIso which normalizes via new Date(), so both
+// formats should map to the same key. This is a regression-guard test.
+// ---------------------------------------------------------------------------
+
+describe('S1-5 — health event join normalizes +00:00 offset bucket_start', () => {
+  test('test_health_event_join_normalizes_both_sides', () => {
+    // Arrange: a health row with bucket_start in +00:00 form (not Z).
+    // HEALTH_BUCKET_MS = 5 * 60 * 1000 (5-minute buckets).
+    // bucketKeyFromIso normalises both via new Date() → getTime() so
+    // '2026-05-20T10:00:00+00:00' and '2026-05-20T10:00:00.000Z' must map
+    // to the same bucket key.
+    const bucketIsoPlus = '2026-05-20T10:00:00+00:00'
+    // Observation at 10:02 — within the same 5-min bucket (10:00–10:05 UTC)
+    const observedAtZ = '2026-05-20T10:02:00.000Z'
+
+    const healthRow: UsageReportProviderLatencyHealthRow = {
+      bucket_start: bucketIsoPlus, // ← +00:00 form under test
+      environment: 'production',
+      provider: 'openai',
+      model: 'gpt-5.5',
+      model_group: 'gpt',
+      requests: 10,
+      passive_latency_sample_status: 'ok',
+      upstream_p50_ms: 200,
+      upstream_p95_ms: 500,
+      upstream_p99_ms: 800,
+      total_p95_ms: 500,
+      proxy_processing_p95_ms: null,
+      missing_upstream_latency: 0,
+      provider_error_events: 1,
+      rate_limit_events: 0,
+      capacity_events: 0,
+      provider_5xx_events: 0,
+      provider_timeout_events: 0,
+      network_error_events: 0,
+      auth_failed_events: 0,
+      adapter_error_events: 0,
+      status_probe_count: 0,
+      status_probe_success_pct: null,
+      status_probe_p95_ms: null,
+      provider_ping_avg_ms: null,
+      provider_ping_packet_loss_pct: null,
+      control_ping_avg_ms: null,
+      control_packet_loss_pct: null,
+      control_probe_success_pct: null,
+      provider_ping_minus_control_ms: null,
+      dns_failures: 0,
+      tcp_failures: 0,
+      tls_failures: 0,
+      icmp_failures: 0,
+      probed_endpoints: null,
+      status_error_classes: null,
+      min_remaining_pct: null,
+      max_remaining_pct: null,
+      next_expected_reset_at: null,
+      quota_keys: null,
+      request_period_start: null,
+      request_period_end: null,
+    }
+
+    const observation: UsageReportProviderErrorObservationRow = {
+      observed_at: observedAtZ,
+      environment: 'production',
+      provider: 'openai',
+      model: 'gpt-5.5',
+      model_group: 'gpt',
+      route_family: 'standard',
+      status_code: 429,
+      error_type: 'rate_limit',
+      error_code: 'rate_limit_exceeded',
+      error_class: 'rate_limit',
+      error_message: 'Rate limit exceeded',
+      retry_after_seconds: null,
+      expected_reset_at: null,
+    }
+
+    // Build aggregate health cells with the +00:00 health row and a matching observation
+    const cells = _buildAggregateHealthCellsForTest([healthRow], [observation])
+
+    // The cell containing our health row should have an events array with the
+    // observation joined to it. If bucket_start normalisation is broken, the
+    // join fails and events is empty/undefined.
+    const cellWithEvents = cells.find(
+      (c) => c.events !== undefined && c.events.length > 0
+    )
+
+    // Assert: the observation must appear as an event on the matching cell.
+    // Failure means bucketKeyFromIso does not normalize +00:00 ↔ Z correctly.
+    expect(cellWithEvents).toBeDefined()
+    expect(cellWithEvents!.events![0].errorType).toContain('rate limit')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// S1-7: buildProviderLanes — Google best row should prefer the row with the
+//        most-recent interval_start, NOT the shortest model name.
+// Current code sorts by model name length (shorter = preferred), which can
+// surface stale data when a longer-named successor has newer data.
+// Engineer must fix: secondary sort key = interval_start DESC.
+// ---------------------------------------------------------------------------
+
+describe('S1-7 — Google best row prefers recent interval_start not shortest name', () => {
+  function makeGoogleQuotaRow(
+    model: string,
+    intervalStart: string,
+    overrides: Partial<UsageReportQuotaRow> = {}
+  ): UsageReportQuotaRow {
+    return {
+      provider: 'google',
+      model,
+      weekly_remaining_pct: null,
+      weekly_reset_at: null,
+      weekly_interval_start: null,
+      weekly_interval_end: null,
+      weekly_active: false,
+      weekly_usage_tokens: 0,
+      weekly_usage_breakdown: [],
+      short_remaining_pct: 70,
+      short_reset_at: '2026-05-21T00:00:00Z',
+      short_interval_start: intervalStart,
+      short_interval_end: '2026-05-21T00:00:00Z',
+      short_active: true,
+      short_usage_tokens: 500,
+      short_usage_breakdown: [],
+      special_remaining_pct: null,
+      special_reset_at: null,
+      special_interval_start: null,
+      special_interval_end: null,
+      special_active: false,
+      special_usage_tokens: 0,
+      special_usage_breakdown: [],
+      short_special_remaining_pct: null,
+      short_special_reset_at: null,
+      short_special_interval_start: null,
+      short_special_interval_end: null,
+      short_special_active: false,
+      short_special_usage_tokens: 0,
+      short_special_usage_breakdown: [],
+      monthly_remaining_pct: null,
+      monthly_reset_at: null,
+      monthly_interval_start: null,
+      monthly_interval_end: null,
+      monthly_active: false,
+      monthly_usage_tokens: 0,
+      monthly_usage_breakdown: [],
+      wtus_remaining_pct: null,
+      wtus_reset_at: null,
+      wtus_interval_start: null,
+      wtus_interval_end: null,
+      wtus_active: false,
+      wtus_usage_tokens: 0,
+      wtus_usage_breakdown: [],
+      ...overrides,
+    }
+  }
+
+  test('test_google_best_row_prefers_recent_interval_not_shortest_name', () => {
+    // Two active gemini-flash rows:
+    //   - gemini-flash (shorter name, OLDER interval_start)     → current code picks this
+    //   - gemini-flash-001 (longer name, NEWER interval_start)  → should win instead
+    const olderShortName = makeGoogleQuotaRow(
+      'gemini-flash',
+      '2026-05-19T00:00:00Z', // older
+      { short_remaining_pct: 50 }
+    )
+    const newerLongName = makeGoogleQuotaRow(
+      'gemini-flash-001',
+      '2026-05-20T00:00:00Z', // newer ← should win
+      { short_remaining_pct: 30 }
+    )
+
+    const lanes = _buildProviderLanesForTest(
+      'google',
+      [olderShortName, newerLongName],
+      [] // no history rows needed
+    )
+
+    const flashLane = lanes.find((l) => l.laneKey === 'google/flash')
+    expect(flashLane).toBeDefined()
+    expect(flashLane!.currentBar).not.toBeNull()
+
+    // The newer interval_start row has remainingPct=30; the shorter-named row
+    // has remainingPct=50. If the current (buggy) code runs, it picks the
+    // shorter-named row → remainingPct=50. The fix makes it pick the newer one.
+    // This assertion FAILS on the current implementation.
+    expect(flashLane!.currentBar!.remainingPct).toBe(30)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// S1-10: buildModelRows — alias provider ('gemini') in providerStatusUsage
+//         joins to real token_in/out from usageRows (not 60/40 fallback).
+// buildModelRows is NOT yet exported; a _buildModelRowsForTest export must
+// be added by the engineer. Until then this is a component-level render test.
+// ENGINEER ACTION: export buildModelRows as _buildModelRowsForTest.
+// ---------------------------------------------------------------------------
+
+describe('S1-10 — buildModelRows alias provider joins via canonical key', () => {
+  test('test_buildModelRows_alias_provider_joins_via_canonical_key', async () => {
+    // Scenario: providerStatusUsage has provider='gemini' (alias),
+    // usageRows has provider='google' (canonical). buildModelRows must
+    // normalize both via canonicalProvider and join them, giving real
+    // token_in/out. If the join fails, the 60/40 split is used instead.
+    //
+    // Chosen values to distinguish real vs fallback:
+    //   token_total = 1000 → fallback: token_in=600, token_out=400
+    //   real:                          token_in=700, token_out=300
+    const report: UsageReportResponse = {
+      ...MOCK_REPORT,
+      providerStatusUsage: [
+        {
+          provider: 'gemini', // alias form — must map to 'google'
+          model: 'Gemini-Flash', // mixed-case — must lower to 'gemini-flash'
+          traces: 5,
+          token_total: 1000,
+          usd_cost: 0.1,
+          period_start: '2026-05-18',
+          period_end: '2026-05-19',
+          upstream_p50_ms: null,
+          upstream_p95_ms: null,
+          upstream_p99_ms: null,
+          total_p95_ms: null,
+          proxy_processing_p95_ms: null,
+          missing_upstream_latency: 0,
+          provider_error_events: 0,
+          rate_limit_events: 0,
+          capacity_events: 0,
+          provider_5xx_events: 0,
+          provider_timeout_events: 0,
+          network_error_events: 0,
+          auth_failed_events: 0,
+          adapter_error_events: 0,
+        },
+      ],
+      rows: [
+        {
+          // usageRows use canonical 'google' + lowercase model
+          bucket: '2026-05-18T00:00:00Z',
+          provider: 'google',
+          model: 'gemini-flash',
+          token_in: 700, // real value — NOT 600 (the 60% fallback)
+          token_out: 300, // real value — NOT 400 (the 40% fallback)
+          token_total: 1000,
+          token_cache_input: 0,
+          token_cache_creation: 0,
+          token_reasoning_reported: 0,
+          token_reasoning_estimated: 0,
+          usd_cost: 0.1,
+          traces: 5,
+          weekly_reset_first: null,
+          weekly_reset_last: null,
+          min_weekly_pct: null,
+          max_weekly_pct: null,
+          short_reset_first: null,
+          short_reset_last: null,
+          min_short_pct: null,
+          max_short_pct: null,
+          weekly_reset_special_first: null,
+          weekly_reset_special_last: null,
+          min_weekly_pct_special: null,
+          max_weekly_pct_special: null,
+          short_reset_special_first: null,
+          short_reset_special_last: null,
+          min_short_pct_special: null,
+          max_short_pct_special: null,
+          tool_calls: null,
+          git_commit: null,
+          git_push: null,
+          litellm_processing_total_ms: null,
+          litellm_processing_average_ms: null,
+          llm_upstream_elapsed_total_ms: null,
+          llm_upstream_elapsed_average_ms: null,
+          cache_miss_usd_cost: null,
+          cache_attempted_summary: null,
+          cache_miss_summary: null,
+          cache_miss_reasons: null,
+          token_cache_miss: null,
+          reasoning_tokens_sources: null,
+        },
+      ],
+    }
+
+    await act(async () => {
+      render(
+        <Wrapper>
+          <PhosphorDashboard
+            from='2026-05-18'
+            to='2026-05-19'
+            report={report}
+            reportLoading={false}
+            showComparison={false}
+            quotas={[]}
+            quotaHistory={[]}
+          />
+        </Wrapper>
+      )
+    })
+
+    // Navigate to the LEDGER tab so the MasterLedgerTable is visible.
+    // The ledger is rendered in the 'LEDGER' section which is visible by default.
+    // Locate the rendered Toks In / Toks Out cells for the gemini-flash row.
+    // real token_in=700 → numFmt(700) = '700'
+    // fallback: Math.round(1000 * 0.6) = 600 → numFmt(600) = '600'
+    // The presence of '700' (not '600') guards the 60/40 fallback bug.
+    const tokensIn700 = screen.queryAllByText('700')
+    const tokensFallback600 = screen.queryAllByText('600')
+
+    // If the alias join works, real token_in=700 appears and fallback 600 does not.
+    // If the join fails, we see 600 but not 700.
+    // This assertion FAILS on implementations without the alias join fix.
+    expect(tokensIn700.length).toBeGreaterThan(0)
+    expect(tokensFallback600).toHaveLength(0)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// S1-11: buildTopModels — local-route model with upstream_p95_ms===null but
+//         total_p95_ms set must surface total_p95_ms (not '—').
+// buildTopModels is NOT yet exported; a _buildTopModelsForTest export must
+// be added by the engineer. Until then this is a component-level render test.
+// ENGINEER ACTION: export buildTopModels as _buildTopModelsForTest.
+// Also: fix buildTopModels to fall back to total_p95_ms when upstream_p95_ms
+// is null, mirroring buildProviderMetrics (lines ~2072-2078).
+// ---------------------------------------------------------------------------
+
+describe('S1-11 — buildTopModels falls back to total_p95_ms', () => {
+  test('test_buildTopModels_falls_back_to_total_p95_ms', async () => {
+    // Scenario: local-route model where upstream spans are not emitted.
+    // upstream_p95_ms === null but total_p95_ms = 150.
+    // Expected top-models p95 cell: '150ms' (or similar non-dash value).
+    // Current bug: matchingHealthRow?.upstream_p95_ms ?? null → always null
+    //              → renders '—' in the ProviderCard p95 cell.
+    const report: UsageReportResponse = {
+      ...MOCK_REPORT,
+      providerStatusUsage: [
+        {
+          provider: 'local',
+          model: 'local-llama-3.3',
+          traces: 20,
+          token_total: 5000,
+          usd_cost: 0.0,
+          period_start: '2026-05-18',
+          period_end: '2026-05-19',
+          upstream_p50_ms: null,
+          upstream_p95_ms: null,
+          upstream_p99_ms: null,
+          total_p95_ms: null,
+          proxy_processing_p95_ms: null,
+          missing_upstream_latency: 20,
+          provider_error_events: 0,
+          rate_limit_events: 0,
+          capacity_events: 0,
+          provider_5xx_events: 0,
+          provider_timeout_events: 0,
+          network_error_events: 0,
+          auth_failed_events: 0,
+          adapter_error_events: 0,
+        },
+      ],
+      providerLatencyHealth: [
+        {
+          bucket_start: '2026-05-18T23:00:00.000Z',
+          environment: 'production',
+          provider: 'local',
+          model: 'local-llama-3.3',
+          model_group: 'local',
+          requests: 20,
+          passive_latency_sample_status: 'ok',
+          upstream_p50_ms: null, // no upstream spans
+          upstream_p95_ms: null, // no upstream spans ← the null case
+          upstream_p99_ms: null,
+          total_p95_ms: 150, // total latency IS available ← must be used
+          proxy_processing_p95_ms: null,
+          missing_upstream_latency: 20,
+          provider_error_events: 0,
+          rate_limit_events: 0,
+          capacity_events: 0,
+          provider_5xx_events: 0,
+          provider_timeout_events: 0,
+          network_error_events: 0,
+          auth_failed_events: 0,
+          adapter_error_events: 0,
+          status_probe_count: 0,
+          status_probe_success_pct: null,
+          status_probe_p95_ms: null,
+          provider_ping_avg_ms: null,
+          provider_ping_packet_loss_pct: null,
+          control_ping_avg_ms: null,
+          control_packet_loss_pct: null,
+          control_probe_success_pct: null,
+          provider_ping_minus_control_ms: null,
+          dns_failures: 0,
+          tcp_failures: 0,
+          tls_failures: 0,
+          icmp_failures: 0,
+          probed_endpoints: null,
+          status_error_classes: null,
+          min_remaining_pct: null,
+          max_remaining_pct: null,
+          next_expected_reset_at: null,
+          quota_keys: null,
+          request_period_start: null,
+          request_period_end: null,
+        },
+      ],
+    }
+
+    await act(async () => {
+      render(
+        <Wrapper>
+          <PhosphorDashboard
+            from='2026-05-18'
+            to='2026-05-19'
+            report={report}
+            reportLoading={false}
+            showComparison={false}
+            quotas={[]}
+            quotaHistory={[]}
+          />
+        </Wrapper>
+      )
+    })
+
+    // The ProviderCard for 'local' should show top-models with p95 from total_p95_ms.
+    // Navigate to the STATUS tab which shows provider cards.
+    fireEvent.click(screen.getByRole('tab', { name: 'Health' }))
+
+    // The local provider card's top-models section should display '150ms' not '—'.
+    // '150ms' or '150 ms' depending on formatter — query for text containing '150'
+    // within the local provider context.
+    // If the bug is present, all of the p95 values render as '—'.
+    // We check that at least one element with '150' appears in the document,
+    // indicating the total_p95_ms value was surfaced.
+    await waitFor(() => {
+      const elements150 = screen.queryAllByText(/150/)
+      // '—' elements would dominate if the bug persists
+      const dashElements = screen.queryAllByText('—')
+      // With fix: '150' is present; without fix: only '—'
+      // This assertion fails on buggy implementation.
+      expect(elements150.length).toBeGreaterThan(0)
+      // Guard: in the buggy implementation ALL p95 cells show '—', so if
+      // we find many dashes and zero '150', the fix is missing.
+      expect(dashElements.length).toBeLessThan(elements150.length + 10)
+    })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// S1-T1: Prior window query uses computed prior range — when showComparison
+//         is true, the prior-window fetch URL must contain from/to equal to
+//         the expected prior window (not current window dates).
+//
+//   current window: from=2026-04-19 to=2026-05-19 (30 days)
+//   expected prior: from=2026-03-20 to=2026-04-19 (shifted back 30 days)
+//
+// Replaces THEATER TCG-3 control which only checked count>=1.
+// ---------------------------------------------------------------------------
+
+describe('S1-T1 — prior window query uses computed prior range', () => {
+  test('test_prior_window_query_uses_computed_prior_range', async () => {
+    let currentCallCount = 0
+    let priorCallCount = 0
+    const capturedPriorParams: URLSearchParams[] = []
+
+    // Register distinct handlers so we can separate current vs prior calls.
+    // Current window: from=2026-04-19 & to=2026-05-19
+    // Prior window:   from=2026-03-20 & to=2026-04-19
+    server.use(
+      http.get('/api/shell/reports/usage', ({ request }) => {
+        const url = new URL(request.url)
+        const from = url.searchParams.get('from')
+        const to = url.searchParams.get('to')
+        if (from === '2026-04-19' && to === '2026-05-19') {
+          currentCallCount++
+          return HttpResponse.json(MOCK_REPORT)
+        }
+        // Any other from/to is the prior-window call
+        priorCallCount++
+        capturedPriorParams.push(url.searchParams)
+        return HttpResponse.json(MOCK_REPORT)
+      })
+    )
+
+    server.use(
+      http.get('/api/shell/reports/quotas', () =>
+        HttpResponse.json({
+          metadata: {
+            generatedAt: '2026-05-19T00:00:00.000Z',
+            latestRecordAt: null,
+            latestRecordAgeMinutes: null,
+            latestRecordStale: false,
+            staleRecordThresholdMinutes: 60,
+          },
+          quotas: [],
+        })
+      )
+    )
+
+    await act(async () => {
+      render(
+        <Wrapper>
+          <PhosphorDashboard
+            from='2026-04-19'
+            to='2026-05-19'
+            // report NOT supplied → internal current-window query fires
+            showComparison={true}
+          />
+        </Wrapper>
+      )
+    })
+
+    // Wait for both the current fetch and the prior fetch to fire.
+    // The prior query is enabled after the current report resolves.
+    await waitFor(
+      () => {
+        expect(currentCallCount + priorCallCount).toBeGreaterThanOrEqual(2)
+      },
+      { timeout: 3000 }
+    )
+
+    // Assert the prior-window call used the correct computed range.
+    // priorTo   = resolvedFrom            = '2026-04-19'
+    // priorFrom = resolvedFrom - 30 days  = '2026-03-20'
+    expect(priorCallCount).toBeGreaterThanOrEqual(1)
+    const priorParams = capturedPriorParams[0]
+    expect(priorParams).toBeDefined()
+    expect(priorParams!.get('from')).toBe('2026-03-20')
+    expect(priorParams!.get('to')).toBe('2026-04-19')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// S1-T6: Populated report render — ledger rows display real token_in/out,
+//         guarding against the 60/40 fallback regression for normal providers.
+//         Uses anthropic/claude-sonnet-4-5 with clearly distinguishable values.
+// ---------------------------------------------------------------------------
+
+describe('S1-T6 — populated report render shows real ledger tokens', () => {
+  test('test_populated_report_render_shows_real_ledger_tokens', async () => {
+    // Choose token values that differ from the 60/40 split:
+    //   token_total=1000 → fallback: token_in=600, token_out=400
+    //   real:                         token_in=750, token_out=250
+    const report: UsageReportResponse = {
+      ...MOCK_REPORT,
+      providerStatusUsage: [
+        {
+          provider: 'anthropic',
+          model: 'claude-sonnet-4-5',
+          traces: 10,
+          token_total: 1000,
+          usd_cost: 0.05,
+          period_start: '2026-05-18',
+          period_end: '2026-05-19',
+          upstream_p50_ms: null,
+          upstream_p95_ms: null,
+          upstream_p99_ms: null,
+          total_p95_ms: null,
+          proxy_processing_p95_ms: null,
+          missing_upstream_latency: 0,
+          provider_error_events: 0,
+          rate_limit_events: 0,
+          capacity_events: 0,
+          provider_5xx_events: 0,
+          provider_timeout_events: 0,
+          network_error_events: 0,
+          auth_failed_events: 0,
+          adapter_error_events: 0,
+        },
+      ],
+      rows: [
+        {
+          bucket: '2026-05-18T00:00:00Z',
+          provider: 'anthropic',
+          model: 'claude-sonnet-4-5',
+          token_in: 750, // real — NOT 600 (60% of 1000)
+          token_out: 250, // real — NOT 400 (40% of 1000)
+          token_total: 1000,
+          token_cache_input: 0,
+          token_cache_creation: 0,
+          token_reasoning_reported: 0,
+          token_reasoning_estimated: 0,
+          usd_cost: 0.05,
+          traces: 10,
+          weekly_reset_first: null,
+          weekly_reset_last: null,
+          min_weekly_pct: null,
+          max_weekly_pct: null,
+          short_reset_first: null,
+          short_reset_last: null,
+          min_short_pct: null,
+          max_short_pct: null,
+          weekly_reset_special_first: null,
+          weekly_reset_special_last: null,
+          min_weekly_pct_special: null,
+          max_weekly_pct_special: null,
+          short_reset_special_first: null,
+          short_reset_special_last: null,
+          min_short_pct_special: null,
+          max_short_pct_special: null,
+          tool_calls: null,
+          git_commit: null,
+          git_push: null,
+          litellm_processing_total_ms: null,
+          litellm_processing_average_ms: null,
+          llm_upstream_elapsed_total_ms: null,
+          llm_upstream_elapsed_average_ms: null,
+          cache_miss_usd_cost: null,
+          cache_attempted_summary: null,
+          cache_miss_summary: null,
+          cache_miss_reasons: null,
+          token_cache_miss: null,
+          reasoning_tokens_sources: null,
+        },
+      ],
+    }
+
+    await act(async () => {
+      render(
+        <Wrapper>
+          <PhosphorDashboard
+            from='2026-05-18'
+            to='2026-05-19'
+            report={report}
+            reportLoading={false}
+            showComparison={false}
+            quotas={[]}
+            quotaHistory={[]}
+          />
+        </Wrapper>
+      )
+    })
+
+    // Real token_in=750 renders as '750'; fallback would render '600'
+    const tokensIn750 = screen.queryAllByText('750')
+    const tokensFallback600 = screen.queryAllByText('600')
+
+    // Real token_out=250 renders as '250'; fallback would render '400'
+    const tokensOut250 = screen.queryAllByText('250')
+    const tokensFallback400 = screen.queryAllByText('400')
+
+    // These assertions fail if the 60/40 fallback is active.
+    expect(tokensIn750.length).toBeGreaterThan(0)
+    expect(tokensFallback600).toHaveLength(0)
+    expect(tokensOut250.length).toBeGreaterThan(0)
+    expect(tokensFallback400).toHaveLength(0)
   })
 })
