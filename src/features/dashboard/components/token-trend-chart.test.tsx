@@ -18,6 +18,7 @@ import type {
 } from '../api/usage-report'
 import {
   buildTokenTrendDayEnvelopes,
+  deriveTokenTrendActiveVersionLanes,
   formatBucketLabel,
 } from '../lib/trend-utils'
 import { TokenTrendChart } from './token-trend-chart'
@@ -1325,4 +1326,537 @@ test('test_formatBucketLabel_relative', () => {
   expect(formatBucketLabel('23h')).toBe('23h')
   expect(formatBucketLabel('0h')).toBe('0h')
   expect(formatBucketLabel('5h')).toBe('5h')
+})
+
+// ---------------------------------------------------------------------------
+// Wave 3 (adversarial-review-20260612) — FAILING tests, W3 engineer to fix
+// ---------------------------------------------------------------------------
+
+/**
+ * S3-2 — Missing days collapse the time axis and drop version intervals.
+ *
+ * `buildTokenTrendDayEnvelopes` currently only creates envelopes for days that
+ * have ≥1 row with `metricValue > 0`. An idle middle day is simply absent from
+ * the output, so the version lane's `versionHourIndex` drops any interval
+ * whose first_seen_day / last_seen_day falls on that idle day.
+ *
+ * Fix requires: `buildTokenTrendDayEnvelopes` to accept options `{ from, to }`
+ * and pad empty envelopes for every calendar day in that range. When the
+ * engineer adds that overload, this test asserts:
+ *   1. Output includes an envelope for the idle middle day (total === 0).
+ *   2. A version interval spanning the idle day survives `deriveTokenTrendActiveVersionLanes`.
+ *
+ * EXPORTS NEEDED from trend-utils.ts:
+ *   - `buildTokenTrendDayEnvelopes(rows, metric, opts?: { from?: string; to?: string })`
+ *   - `deriveTokenTrendActiveVersionLanes` (already exported)
+ */
+test('test_day_envelopes_padded_over_full_range', () => {
+  // Data for day 1 (2026-05-20) and day 3 (2026-05-22) only — day 2 (05-21) is idle.
+  const rows = [
+    {
+      day: '2026-05-20',
+      hour: 8,
+      provider: 'anthropic',
+      traces: 5,
+      token_total: 500,
+      usd_cost: 0,
+    },
+    {
+      day: '2026-05-22',
+      hour: 10,
+      provider: 'openai',
+      traces: 3,
+      token_total: 300,
+      usd_cost: 0,
+    },
+  ]
+
+  // Engineer must add the third `options` param for range-padding.
+  // Until then, this call will throw or return only 2 envelopes → test FAILS.
+  const envelopes = buildTokenTrendDayEnvelopes(rows, 'tokens', {
+    from: '2026-05-20',
+    to: '2026-05-22',
+  } as Parameters<typeof buildTokenTrendDayEnvelopes>[2])
+
+  // Assertion 1: idle middle day must exist.
+  expect(envelopes).toHaveLength(3)
+  const idleDay = envelopes.find((e) => e.day === '2026-05-21')
+  expect(idleDay).not.toBeUndefined()
+  expect(idleDay?.total).toBe(0)
+
+  // Assertion 2: interval spanning the idle day is NOT dropped.
+  const interval = {
+    provider: 'anthropic',
+    client_name: 'claude-code',
+    client_version: '2.0.0',
+    first_seen_at: '2026-05-20T08:00:00.000Z',
+    last_seen_at: '2026-05-22T10:00:00.000Z',
+    first_seen_day: '2026-05-20',
+    last_seen_day: '2026-05-22',
+    first_seen_hour: 8,
+    last_seen_hour: 10,
+    traces: 10,
+    token_total: 800,
+    usd_cost: 0,
+  }
+  const lanes = deriveTokenTrendActiveVersionLanes(envelopes, [interval])
+  const claudeLane = lanes.find((l) => l.key === 'claude')
+  // The interval must appear as a segment — not dropped because day 2 is now present.
+  expect(claudeLane?.segments.length).toBeGreaterThan(0)
+})
+
+/**
+ * S3-4 — Token-scale tick gridlines are linear but bar heights are floored.
+ *
+ * `buildTokenScaleTicks` places gridlines at 25/50/75/100% of `maxDayTotal`
+ * with labeled token values. But `tokenTrendDayHeightPct` floors non-zero days
+ * at 8% (and hour bars at 4%). A day at 0.5% of max renders at the 8% floor
+ * position — which reads ~16× too tall against the labeled axis.
+ *
+ * After the fix the floor and tick labels must be reconciled:
+ *   - Either tick labels reflect the floor-distorted scale, or
+ *   - Gridlines are not drawn in the floor-distorted region.
+ *
+ * EXPORTS NEEDED from token-trend-chart.tsx:
+ *   - `buildTokenScaleTicks(maxValue: number): TokenScaleTick[]`
+ *
+ * This test FAILS until `buildTokenScaleTicks` is exported AND the floor/tick
+ * mismatch is corrected (ratio < 4× at the nearest labeled tick).
+ */
+test('test_token_scale_ticks_match_bar_heights', async () => {
+  const { buildTokenScaleTicks } = await import('./token-trend-chart')
+  const { tokenTrendDayHeightPct } = await import('../lib/trend-utils')
+
+  const maxDayTotal = 100_000
+  // Small day: 0.5% of max = 500 tokens
+  const smallDayTotal = 500
+
+  const ticks = buildTokenScaleTicks(maxDayTotal)
+  expect(ticks.length).toBeGreaterThan(0)
+
+  // Rendered height % for the small day (after any floor applied by the fix).
+  const renderedPct = tokenTrendDayHeightPct(smallDayTotal, maxDayTotal)
+
+  // Find the nearest labeled tick at or above the rendered height.
+  const nearestTick = ticks.find((t) => t.pct >= renderedPct)
+
+  if (nearestTick !== undefined) {
+    // The labeled value at the nearest tick must not overstate the actual day value
+    // by more than 4×. Before the fix: implied ~25 000 vs actual 500 → 50× overstatement.
+    const impliedTokens = nearestTick.value
+    const ratio = impliedTokens / smallDayTotal
+    expect(ratio).toBeLessThan(4)
+  }
+  // If no tick sits at/above the bar, the floor is correctly below all gridlines — also valid.
+})
+
+/**
+ * S3-5 — `onHourHover` always reports the day's argmax hour, not the hovered one.
+ *
+ * The `dayShell` `onPointerEnter` fires with the day's peak-volume hour regardless
+ * of which hour the pointer entered. A two-hour fixture proves the callback
+ * cannot distinguish hovered position from argmax.
+ *
+ * After the fix:
+ *   (a) The handler fires at hour-bar granularity, reporting the actual hovered
+ *       hour (not the argmax), OR
+ *   (b) The prop is renamed `onDayHover({ day, peakHour })` so the argmax
+ *       contract is explicit rather than surprising.
+ *
+ * This test FAILS because the current code always emits argmax (hour 16) even
+ * when the pointer is notionally over hour 6 (day-shell granularity cannot
+ * distinguish them — the fact that only one call is fired for the whole day
+ * prevents the consumer from inferring the actual hovered hour).
+ */
+test('test_onHourHover_reports_or_renamed', () => {
+  // Two hours: hour 6 (smaller) and hour 16 (argmax at 900 tokens).
+  const rows = [
+    {
+      day: '2026-05-20',
+      hour: 6,
+      provider: 'anthropic',
+      traces: 1,
+      token_total: 100, // not the argmax
+      usd_cost: 0,
+    },
+    {
+      day: '2026-05-20',
+      hour: 16,
+      provider: 'anthropic',
+      traces: 1,
+      token_total: 900, // argmax
+      usd_cost: 0,
+    },
+  ]
+  const envelopes = buildTokenTrendDayEnvelopes(rows)
+
+  const calls: Array<{ day: string; hour: number }> = []
+  const onHoverSpy = vi.fn((arg: { day: string; hour: number }) => {
+    calls.push(arg)
+  })
+
+  const { container } = render(
+    <TokenTrendChart
+      series={series}
+      dayEnvelopes={envelopes}
+      onHourHover={onHoverSpy}
+    />
+  )
+
+  // Hover the hour-6 bar specifically (not just the day shell).
+  const hourBars = container.querySelectorAll('[data-hour]')
+  const hour6Bar = Array.from(hourBars).find(
+    (el) =>
+      el.getAttribute('data-hour') === '6' &&
+      el.getAttribute('data-day') === '2026-05-20'
+  ) as HTMLElement | undefined
+
+  if (hour6Bar !== undefined) {
+    // If hour bars have individual pointer events, enter the hour-6 bar.
+    fireEvent.pointerEnter(hour6Bar)
+  } else {
+    // Fallback: enter the day shell (which exposes the current coarse behavior).
+    const dayShells = container.querySelectorAll('.tt-day-hover-shell')
+    const shell = Array.from(dayShells).find(
+      (el) => el.getAttribute('data-day') === '2026-05-20'
+    ) as HTMLElement | undefined
+    expect(shell).not.toBeUndefined()
+    fireEvent.pointerEnter(shell!)
+  }
+
+  expect(calls.length).toBeGreaterThan(0)
+  expect(calls[0]?.day).toBe('2026-05-20')
+
+  // After the fix: hovering hour 6 must NOT report hour 16 (the argmax).
+  // Before the fix: hour-6 hover reports hour 16 → this assertion FAILS.
+  // If the prop is renamed to onDayHover, the test fails at the prop level → also correct.
+  if (hour6Bar !== undefined) {
+    // Hour-bar-level hover: must report hour 6.
+    expect(calls[0]?.hour).toBe(6)
+  } else {
+    // Day-shell-level hover: currently reports argmax (16).
+    // This branch documents the bug: reported hour == argmax, not user's position.
+    // The test FAILS here because the consumer cannot distinguish 6 from 16.
+    expect(calls[0]?.hour).toBe(6) // FAILS: currently emits 16 (argmax)
+  }
+})
+
+/**
+ * S3-6 — Version-lane first-lane chrome hard-codes `lane.key === 'claude'`.
+ *
+ * `separatorHeight`, `marginTop`, and `borderTop` all special-case the string
+ * `'claude'` to mean "first lane" (token-trend-chart.tsx:1400,1417,1421).
+ * Reordering `TOKEN_TREND_ACTIVE_VERSION_FAMILIES` would give the new first
+ * family a stray separator while claude loses its zero-separator.
+ *
+ * After fix: `laneIndex === 0` must determine the first-lane treatment, not the key.
+ *
+ * This test pins the bug by verifying the SOURCE of the `borderTop` CSS value:
+ * when claude is the SECOND rendered family (codex is first because codex appears
+ * before claude in the DOM via the `data-family` attribute order), claude must NOT
+ * still receive the zero-separator treatment.
+ *
+ * IMPLEMENTATION NOTE: Since `TOKEN_TREND_ACTIVE_VERSION_FAMILIES` is not
+ * exported, we verify the fix via the DOM: the rendered family element whose
+ * aria-label / data attribute indicates it is the non-first family must have a
+ * non-zero `borderTop`. With the current `lane.key === 'claude'` bug, the claude
+ * family ALWAYS has `borderTop: '0'` even when it's the second lane — that's the
+ * assertion that fails.
+ */
+test('test_version_lane_first_lane_by_index', () => {
+  const rows = [
+    {
+      day: '2026-05-20',
+      hour: 8,
+      provider: 'anthropic',
+      traces: 5,
+      token_total: 500,
+      usd_cost: 0,
+    },
+  ]
+  const envelopes = buildTokenTrendDayEnvelopes(rows)
+
+  // Provide only a codex interval (no claude). Only the codex lane renders.
+  // codex is the SECOND family in TOKEN_TREND_ACTIVE_VERSION_FAMILIES (after claude).
+  // When claude has no data, codex is the only rendered lane AND it is index 0 (first).
+  // Before fix: codex gets `borderTop: '1px solid ...'` (separator) because
+  //   `lane.key === 'claude'` is false → it thinks codex is NOT first.
+  // After fix: `laneIndex === 0` → codex gets no separator as the first (only) lane.
+  const codexOnlyIntervals = [
+    {
+      provider: 'openai',
+      client_name: 'Codex CLI',
+      client_version: '1.0.0',
+      first_seen_at: '2026-05-20T06:00:00.000Z',
+      last_seen_at: '2026-05-20T10:00:00.000Z',
+      first_seen_day: '2026-05-20',
+      last_seen_day: '2026-05-20',
+      first_seen_hour: 6,
+      last_seen_hour: 10,
+      traces: 3,
+      token_total: 300,
+      usd_cost: 0,
+    },
+  ]
+
+  const { container } = render(
+    <TokenTrendChart
+      series={series}
+      dayEnvelopes={envelopes}
+      versionIntervals={codexOnlyIntervals}
+    />
+  )
+
+  const familyRows = container.querySelectorAll('.tt-active-version-family')
+  // When only codex has data, only the codex lane should be visible (or at minimum one lane).
+  const renderedFamilyRows = Array.from(familyRows).filter((el) => {
+    const el_ = el as HTMLElement
+    // Only count rows with visible content (height > 0 or not display:none).
+    return el_.offsetHeight > 0 || el_.style.display !== 'none'
+  })
+
+  // At least one family row must render (codex).
+  expect(renderedFamilyRows.length).toBeGreaterThan(0)
+
+  // The first rendered family row (index 0) must have no top border separator.
+  const firstRow = renderedFamilyRows[0] as HTMLElement
+  const borderTop = firstRow.style.borderTop
+
+  // After fix: laneIndex === 0 → borderTop is '0' or empty for the first lane.
+  // Before fix: lane.key !== 'claude' → codex incorrectly gets a separator border
+  //   even when it is the first (only) rendered lane.
+  expect(
+    borderTop === '0' ||
+      borderTop === '' ||
+      borderTop === '0px' ||
+      borderTop === 'none'
+  ).toBe(true) // FAILS before fix when codex is first lane (not claude)
+})
+
+/**
+ * S3-8 — Latency P95 band must be request-weighted and must never mix
+ * status-probe latency into the upstream-latency average.
+ *
+ * Current: `addSignalValue` passes weight=1 for every health row. A probe-only
+ * row with `status_probe_p95_ms = 10ms` (no real traffic) contributes equally
+ * to the average as a 100-request row with `upstream_p95_ms = 1000ms`, producing
+ * a misleading ~505ms band value.
+ *
+ * After fix:
+ *   - Latency is weighted by `requests`.
+ *   - Probe-only rows (upstream_p95_ms === null && total_p95_ms === null) do NOT
+ *     contribute to the latency metric.
+ *
+ * EXPORTS NEEDED from token-trend-chart.tsx:
+ *   - `buildTrendSignalRows` (currently module-private)
+ */
+test('test_latency_band_weights_by_requests_and_excludes_probe', async () => {
+  const { buildTrendSignalRows } = await import('./token-trend-chart')
+
+  const makeHealthRow = (
+    overrides: Partial<UsageReportProviderLatencyHealthRow>
+  ): UsageReportProviderLatencyHealthRow => ({
+    bucket_start: '2026-05-20T08:00:00.000Z',
+    environment: 'local',
+    provider: 'anthropic',
+    model: 'claude-sonnet-4',
+    model_group: 'claude',
+    requests: 100,
+    passive_latency_sample_status: 'ok',
+    upstream_p50_ms: 500,
+    upstream_p95_ms: 1000,
+    upstream_p99_ms: 1200,
+    total_p95_ms: 1050,
+    proxy_processing_p95_ms: 50,
+    missing_upstream_latency: 0,
+    provider_error_events: 0,
+    rate_limit_events: 0,
+    capacity_events: 0,
+    provider_5xx_events: 0,
+    provider_timeout_events: 0,
+    network_error_events: 0,
+    auth_failed_events: 0,
+    adapter_error_events: 0,
+    status_probe_count: 0,
+    status_probe_success_pct: 100,
+    status_probe_p95_ms: null,
+    provider_ping_avg_ms: null,
+    provider_ping_packet_loss_pct: null,
+    control_ping_avg_ms: null,
+    control_packet_loss_pct: null,
+    control_probe_success_pct: null,
+    provider_ping_minus_control_ms: null,
+    dns_failures: 0,
+    tcp_failures: 0,
+    tls_failures: 0,
+    icmp_failures: 0,
+    probed_endpoints: null,
+    status_error_classes: null,
+    min_remaining_pct: null,
+    max_remaining_pct: null,
+    next_expected_reset_at: null,
+    quota_keys: null,
+    request_period_start: null,
+    request_period_end: null,
+    ...overrides,
+  })
+
+  // Row A: 100 real requests, upstream latency 1000ms.
+  const rowA = makeHealthRow({ requests: 100, upstream_p95_ms: 1000 })
+  // Row B: 1 probe-only "request", NO upstream latency — only status_probe_p95_ms = 10ms.
+  const rowB = makeHealthRow({
+    requests: 1,
+    upstream_p95_ms: null,
+    total_p95_ms: null,
+    status_probe_p95_ms: 10,
+    model: 'probe-model',
+  })
+
+  const envelopes = buildTokenTrendDayEnvelopes([
+    {
+      day: '2026-05-20',
+      hour: 8,
+      provider: 'anthropic',
+      traces: 100,
+      token_total: 10_000,
+      usd_cost: 0,
+    },
+  ])
+
+  const { rows } = buildTrendSignalRows({
+    mode: 'health',
+    dayEnvelopes: envelopes,
+    healthRows: [rowA, rowB],
+    scoreRows: [],
+    selectedScopeKeys: ['all'],
+    selectedMetrics: [
+      {
+        key: 'latency',
+        mode: 'health' as const,
+        label: 'P95 latency',
+        shortLabel: 'P95',
+        color: '#a78bfa',
+        kind: 'latency' as const,
+      },
+    ],
+  })
+
+  const latencyRow = rows.find((r) => r.metric.key === 'latency')
+  expect(latencyRow).not.toBeUndefined()
+
+  const dayGrid = latencyRow!.grid.get('2026-05-20')
+  expect(dayGrid).not.toBeUndefined()
+
+  const hourVal = dayGrid!.get(8)
+  expect(hourVal).not.toBeUndefined()
+
+  // After fix: probe latency (10ms) must NOT dilute the 1000ms high-load value.
+  // Expected (request-weighted, probe excluded): ~1000ms (row A dominates at 100 req).
+  // Before fix (weight=1 simple avg with probe fallback): ~(1000+10)/2 = 505ms.
+  expect(hourVal!.value).toBeGreaterThan(800)
+  expect(hourVal!.value).toBeLessThan(1100)
+})
+
+/**
+ * S3-11 — Multiselect dropdowns don't close on outside click.
+ *
+ * `openSignalMenu` is cleared only by re-clicking the trigger or pressing Escape
+ * in the trigger's keyDown handler. Clicking anywhere else on the dashboard
+ * leaves the dropdown open over the chart.
+ *
+ * After fix: a pointerdown event outside `.tt-multiselect` must close the menu.
+ */
+test('test_multiselect_closes_on_outside_click', () => {
+  const envelopes = buildTokenTrendDayEnvelopes([
+    {
+      day: '2026-05-20',
+      hour: 8,
+      provider: 'anthropic',
+      traces: 5,
+      token_total: 500,
+      usd_cost: 0,
+    },
+  ])
+
+  const { container } = render(
+    <TokenTrendChart
+      series={series}
+      dayEnvelopes={envelopes}
+      healthRows={[...trendHealthRows]}
+    />
+  )
+
+  // Open the scope multiselect.
+  const triggers = container.querySelectorAll('.tt-multiselect-trigger')
+  expect(triggers.length).toBeGreaterThan(0)
+  fireEvent.click(triggers[0] as HTMLElement)
+
+  // Confirm it is open.
+  const groups = container.querySelectorAll('[role="group"]')
+  const openGroup = Array.from(groups).find((el) => !(el as HTMLElement).hidden)
+  expect(openGroup).not.toBeUndefined()
+
+  // Simulate a click outside by firing pointerdown on document.body.
+  fireEvent.pointerDown(document.body)
+
+  // After fix: group must be closed (hidden).
+  const groupsAfter = container.querySelectorAll('[role="group"]')
+  const stillOpen = Array.from(groupsAfter).find(
+    (el) => !(el as HTMLElement).hidden
+  )
+  // This assertion FAILS before the outside-click handler is implemented.
+  expect(stillOpen).toBeUndefined()
+})
+
+/**
+ * S3-T1/S3-T2 — Wave-31 bar-height fix: zero coverage for the most
+ * historically regressed behavior in this component.
+ *
+ * Before Wave-31 fix: all `.tt-day-envelope` had height:'100%', collapsing every
+ * bar to the same height. After fix: height is `(day.total/maxDayTotal)*100%`
+ * with a 6% floor for non-zero days and 0% for empty days.
+ *
+ * The existing `test_day_envelope_mode_renders_days_and_24_hour_bars_per_day`
+ * asserts `toMatch(/%$/)` which also matches '0%' and 'NaN%'. This test asserts
+ * a real numeric value.
+ */
+test('test_wave31_bar_height_proportional_to_day_total', () => {
+  // Two days: 1000 tokens (max) and 10 tokens (1% of max → floored to ≥6%).
+  const rows = [
+    {
+      day: '2026-05-20',
+      hour: 12,
+      provider: 'anthropic',
+      traces: 100,
+      token_total: 1000,
+      usd_cost: 0,
+    },
+    {
+      day: '2026-05-21',
+      hour: 12,
+      provider: 'openai',
+      traces: 1,
+      token_total: 10,
+      usd_cost: 0,
+    },
+  ]
+  const envelopes = buildTokenTrendDayEnvelopes(rows)
+
+  const { container } = render(
+    <TokenTrendChart series={series} dayEnvelopes={envelopes} />
+  )
+
+  const dayEnvEls = container.querySelectorAll('.tt-day-envelope')
+  expect(dayEnvEls.length).toBe(2)
+
+  const largePct = parseFloat((dayEnvEls[0] as HTMLElement).style.height)
+  const smallPct = parseFloat((dayEnvEls[1] as HTMLElement).style.height)
+
+  // Large day ≈ 100%.
+  expect(largePct).toBeGreaterThan(90)
+  // Small day: 1% of max → must NOT render at 100% (pre-Wave-31 bug).
+  expect(smallPct).toBeLessThan(50)
+  // And the values must not be NaN (toMatch(/%$/) wouldn't catch 'NaN%').
+  expect(Number.isNaN(largePct)).toBe(false)
+  expect(Number.isNaN(smallPct)).toBe(false)
 })

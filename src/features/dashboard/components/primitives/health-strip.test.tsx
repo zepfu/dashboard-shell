@@ -858,3 +858,282 @@ test('test_health_strip_vertical_hover_zone_restores_pointer_events', () => {
   expect(hoverZone).not.toBeNull()
   expect(hoverZone?.style.pointerEvents).toBe('auto')
 })
+
+// ---------------------------------------------------------------------------
+// Wave 3 (adversarial-review-20260612) — FAILING tests, W3 engineer to fix
+// ---------------------------------------------------------------------------
+
+/**
+ * S3-15 — Health-strip pad/clip direction: sparse input must be FRONT-padded
+ * and oversized input must be sliced from the END (keeps newest).
+ *
+ * Current behavior: `clipped = cells.slice(0, TOTAL_CELLS)` keeps oldest 288
+ * and then appends neutral padding at the TAIL. This is backwards for a
+ * "−24h → NOW" axis where the newest cells (tail) should always be present.
+ *
+ * After fix:
+ *   - Sparse input: neutral cells prepended at the front (oldest end).
+ *   - Oversized input: `slice(-TOTAL_CELLS)` keeps the newest 288.
+ */
+test('test_health_strip_pad_clip_direction', () => {
+  const TOTAL = 288
+  // Sparse input: 2 real cells (represent the most-recent buckets).
+  // After fix: these 2 cells are at the TAIL (NOW end); front is padded neutral.
+  const sparseColor = '#ef4444' // red — unmistakable sentinel
+  const sparseCells: CellDef[] = [
+    { color: sparseColor },
+    { color: sparseColor },
+  ]
+
+  const { container: sparseContainer } = render(
+    <HealthStrip cells={sparseCells} />
+  )
+  const sparseEls = Array.from(
+    sparseContainer.querySelectorAll('.health-strip-cell').length > 0
+      ? sparseContainer.querySelectorAll('.health-strip-cell')
+      : sparseContainer.querySelectorAll('[data-testid="health-strip-cell"]')
+  ) as HTMLElement[]
+
+  expect(sparseEls.length).toBe(TOTAL)
+
+  // After fix: the LAST 2 cells should be red (the real data, at NOW end).
+  const lastCell = sparseEls[TOTAL - 1]!
+  const secondLastCell = sparseEls[TOTAL - 2]!
+  const lastBg = lastCell.style.background || lastCell.style.backgroundColor
+  const secondLastBg =
+    secondLastCell.style.background || secondLastCell.style.backgroundColor
+  expect(lastBg === sparseColor || lastBg === 'rgb(239, 68, 68)').toBe(true) // FAILS before fix (currently data is at FRONT)
+  expect(
+    secondLastBg === sparseColor || secondLastBg === 'rgb(239, 68, 68)'
+  ).toBe(true)
+
+  // Oversized input: 290 cells (2 extra); newest 288 should be kept (last 288).
+  const sentinel = '#10b981' // green sentinel for the last 288
+  const oversizedCells: CellDef[] = [
+    { color: '#000000' }, // oldest — should be DROPPED after fix
+    { color: '#000000' }, // oldest — should be DROPPED after fix
+    ...Array.from({ length: TOTAL }, () => ({ color: sentinel })),
+  ]
+
+  const { container: oversizedContainer } = render(
+    <HealthStrip cells={oversizedCells} />
+  )
+  const oversizedEls = Array.from(
+    oversizedContainer.querySelectorAll('.health-strip-cell').length > 0
+      ? oversizedContainer.querySelectorAll('.health-strip-cell')
+      : oversizedContainer.querySelectorAll('[data-testid="health-strip-cell"]')
+  ) as HTMLElement[]
+
+  expect(oversizedEls.length).toBe(TOTAL)
+
+  // After fix (slice(-288)): all 288 rendered cells should be green (sentinel), not black.
+  const firstRenderedBg =
+    oversizedEls[0]!.style.background || oversizedEls[0]!.style.backgroundColor
+  expect(
+    firstRenderedBg === sentinel || firstRenderedBg === 'rgb(16, 185, 129)'
+  ).toBe(true) // FAILS before fix (currently slice(0,288) keeps the 2 black cells)
+})
+
+/**
+ * S3-16 — Health-strip time axis: a 2-hour data gap must render as blue no-data
+ * cells at the correct wall-clock position, not right-shifted.
+ *
+ * Currently `padHealthCellsFromRows` (caller side) groups cells by bucket_start
+ * without filling wall-clock gaps. A 2-hour outage causes those bucket positions
+ * to be absent, shifting all cells that follow toward the NOW end.
+ *
+ * The fix (in health-strip.tsx): index cells by
+ * `Math.floor((bucket_ms - (now_ms - 24h_ms)) / 5_min_ms)` so a gap at a
+ * specific wall-clock position renders as blue no-data at that position, not
+ * shifted. `now` must be passed as a prop (S3-20).
+ *
+ * PROPS NEEDED on HealthStrip:
+ *   - `now?: Date`  (engineer adds per S3-20; used to compute wall-clock index)
+ *   - `rows?: HealthStripRow[]` (OR caller pre-computes indexed cells; see plan)
+ *
+ * This test drives the PRIMITIVE's indexing contract via the `cells` prop
+ * enriched with `bucketStart` fields and verifies that a gap position is blue.
+ *
+ * EXPORTS NEEDED: `CellDef` (already exported).
+ */
+test('test_health_strip_time_axis_indexed_by_wallclock', () => {
+  // S3-16 bug scenario: the CALLER provides 264 cells (no gap-filler cells).
+  // Without wall-clock indexing, the 264 cells pack into array positions 0–263
+  // and 24 padding cells appear at the tail. Slot 120 in the DOM is NOT the gap
+  // — it is the post-gap cell, right-shifted. The 2h gap is invisible.
+  //
+  // After fix: HealthStrip accepts a  prop and indexes each cell by
+  //  so the gap
+  // at wall-clock positions 120–143 is rendered as blue no-data at those slots.
+  //
+  // The test proves the bug by: passing sparse cells (no gap cells), then
+  // asserting that DOM slot 120 is NOT green (it should be a gap/blue slot).
+  // Before fix: DOM slot 120 IS green (the next data cell fills it) → FAILS.
+  const TOTAL = 288
+  const BUCKET_MS = 5 * 60 * 1000
+  const now = new Date('2026-05-20T12:00:00.000Z')
+  const startMs = now.getTime() - TOTAL * BUCKET_MS
+  const gapStart = 120
+  const gapEnd = 143 // 24 slots = 2 hours
+
+  // Build sparse cells: all non-gap slots have green data; gap slots are ABSENT.
+  // This simulates the caller (padHealthCellsFromRows) not filling wall-clock gaps.
+  const sparseCells: CellDef[] = []
+  for (let i = 0; i < TOTAL; i++) {
+    if (i >= gapStart && i <= gapEnd) continue // omit the gap
+    const bucketMs = startMs + i * BUCKET_MS
+    sparseCells.push({
+      color: '#10b981',
+      category: 'green' as const,
+      bucketStart: new Date(bucketMs).toISOString(),
+      rawP95Ms: 100,
+    })
+  }
+  // sparseCells.length === 264
+
+  // Render with  prop (engineer adds this for wall-clock indexing, S3-20).
+  // @ts-expect-error --  prop added by engineer; absent until fix lands.
+  const { container } = render(
+    <HealthStrip cells={sparseCells} orientation='horizontal' now={now} />
+  )
+
+  const cellEls = Array.from(
+    container.querySelectorAll('.health-strip-cell').length > 0
+      ? container.querySelectorAll('.health-strip-cell')
+      : container.querySelectorAll('[data-testid="health-strip-cell"]')
+  ) as HTMLElement[]
+
+  expect(cellEls.length).toBe(TOTAL)
+
+  const isGreenColor = (bg: string) =>
+    bg === '#10b981' || bg === 'rgb(16, 185, 129)'
+
+  // Slot just before the gap must be green (real data present).
+  const preGapBg =
+    (cellEls[gapStart - 1] as HTMLElement).style.background ||
+    (cellEls[gapStart - 1] as HTMLElement).style.backgroundColor
+  expect(isGreenColor(preGapBg)).toBe(true)
+
+  // Slot at the gap start must NOT be green after fix.
+  // Before fix: the next real-data cell fills this slot (array-shift) → green → FAILS.
+  const gapSlotBg =
+    (cellEls[gapStart] as HTMLElement).style.background ||
+    (cellEls[gapStart] as HTMLElement).style.backgroundColor
+  expect(isGreenColor(gapSlotBg)).toBe(false)
+})
+
+/**
+ * S3-17 — `rawErrorCount` without `rawP95Ms` must engage the raw-metric path.
+ *
+ * The raw-metric path currently checks `if (cell.rawP95Ms !== undefined)`.
+ * A cell with `rawErrorCount: 5` but no `rawP95Ms` key at all silently falls
+ * through to the legacy color path — errors invisible.
+ *
+ * After fix: the path engages when EITHER `rawP95Ms` or `rawErrorCount` is present.
+ */
+test('test_health_strip_rawErrorCount_only_engages', () => {
+  // Cell with only rawErrorCount set (no rawP95Ms key at all).
+  const errorOnlyCell: CellDef = {
+    color: 'var(--card-2)', // neutral fallback
+    rawErrorCount: 5, // non-zero errors, NO rawP95Ms
+    // rawP95Ms is intentionally absent (not even undefined)
+  }
+
+  const cells: CellDef[] = [
+    errorOnlyCell,
+    ...Array.from({ length: 287 }, () => ({ color: 'var(--card-2)' })),
+  ]
+
+  const { container } = render(<HealthStrip cells={cells} />)
+
+  const cellEls = Array.from(
+    container.querySelectorAll('.health-strip-cell').length > 0
+      ? container.querySelectorAll('.health-strip-cell')
+      : container.querySelectorAll('[data-testid="health-strip-cell"]')
+  ) as HTMLElement[]
+
+  const firstCellBg =
+    cellEls[0]!.style.background || cellEls[0]!.style.backgroundColor
+
+  // After fix: rawErrorCount > 0 with no latency data → red (service down) or
+  // orange (intermittent errors); must NOT be the neutral color.
+  // Before fix: falls through to `color: 'var(--card-2)'` → looks like no-data.
+  const isNeutral =
+    firstCellBg === 'var(--card-2)' ||
+    firstCellBg === '' ||
+    firstCellBg === 'transparent'
+
+  // This assertion FAILS before the fix.
+  expect(isNeutral).toBe(false)
+})
+
+/**
+ * S3-18 — Auto-tooltip head must sum event `count` fields (not count log lines)
+ * and the overflow label must say "+N more events".
+ *
+ * Current: `eventCount: eventLog.filter(ev => ev.count !== 0).length` counts
+ * displayed log LINES (capped at 14), so an event with count:5 contributes 1
+ * to the head — severely undercounting. Also, events beyond the 14-row cap are
+ * labelled "+N earlier events" even when their time is simply unknown (no observedAt).
+ *
+ * After fix:
+ *   - Head shows sum of `count` across all events (not line count).
+ *   - Overflow row: "+N more events" (not "earlier").
+ *
+ * NOTE: This test relies on the auto-generated tip-health path (cells with
+ * bucketStart + rawErrorCount + events). The HoverTooltip must be fired via
+ * `fireEvent.pointerEnter` on the vertical strip.
+ */
+test('test_health_strip_event_count_sums_occurrences', () => {
+  // 16 events (> 14-row cap), each with count:3 → total occurrences = 48.
+  const events = Array.from({ length: 16 }, (_, i) => ({
+    time: `${(i % 12).toString().padStart(2, '0')}:00`,
+    model: `model-${i.toString()}`,
+    errorType: 'timeout',
+    count: 3,
+    observedAt: `2026-05-20T${(i % 24).toString().padStart(2, '0')}:00:00.000Z`,
+  }))
+
+  const singleErrorCell: CellDef = {
+    color: '#ef4444',
+    category: 'red' as const,
+    rawErrorCount: 16, // total error rows
+    rawP95Ms: null,
+    bucketStart: '2026-05-20T10:00:00.000Z',
+    eventCount: 16,
+    events,
+  }
+
+  const cells: CellDef[] = [
+    singleErrorCell,
+    ...Array.from({ length: 287 }, () => ({ color: 'var(--card-2)' })),
+  ]
+
+  const { container } = render(
+    <HealthStrip cells={cells} orientation='vertical' />
+  )
+
+  // Trigger the tooltip by hovering the strip.
+  const strip = container.firstChild as HTMLElement
+  fireEvent.pointerEnter(strip)
+
+  const tip = document.body.querySelector(
+    '.v9-tip[data-state="open"]'
+  ) as HTMLElement | null
+  if (tip === null) {
+    // The tooltip may not be auto-generated until the fix is applied.
+    // Mark the test as having no open tip → FAIL.
+    expect(tip).not.toBeNull()
+    return
+  }
+
+  const tipText = tip.textContent ?? ''
+
+  // After fix: head must show sum of counts = 48, not 14 (the cap for log lines).
+  // "48 events" (or similar) must appear.
+  expect(tipText).toMatch(/48\s*events?/i)
+
+  // After fix: overflow row must say "+2 more events" (not "earlier").
+  // (16 events − 14 cap = 2 overflow)
+  expect(tipText).toMatch(/\+2\s*more\s*events?/i)
+})
