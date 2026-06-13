@@ -1,4 +1,4 @@
-import { expect, test } from 'vitest'
+import { describe, expect, test } from 'vitest'
 import {
   agentQualityFromFlatRow,
   combineAgentQualitySummaries,
@@ -251,5 +251,87 @@ test('combine_agent_quality_summaries_sums_compact_source_counts', () => {
       codex: 2,
       'gemini-cli': 1,
     },
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Wave 5 / S4-13: scoredEvaluated honest denominator (net-new field)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * S4-13: The existing `evaluated` field counts ALL observations (scored +
+ * unscored), which inflates the denominator when computing coverage ratios.
+ * The engineer must add a `scoredEvaluated` field to `AgentQualityFamilySummary`
+ * that counts only observations that actually produced a score (score !== null).
+ *
+ * This is RED until the engineer adds the `scoredEvaluated` field to the
+ * interface + `familyFromFlat` / `combineFamily`.
+ */
+
+describe('agent-quality scoredEvaluated honest denominator (S4-13)', () => {
+  test('test_agent_quality_scoredEvaluated_only_counts_scored_rows', () => {
+    // Mix: 3 rows evaluated, but only 2 have a real score
+    const summary = agentQualityFromFlatRow({
+      traces: 3,
+      agent_score_rows: 3,
+      // quality: 2 rows scored (score=0.9), 1 row with null score
+      // The flat row represents the aggregate from the server.
+      // We simulate: evaluated=3, score covers 2 rows (score=0.9*(2/3) ≈ 0.6)
+      agent_quality_score: 0.6,
+      agent_quality_evaluated: 3,
+      agent_quality_possible: 3,
+      agent_quality_failures: 1,
+    })
+
+    expect(summary).toBeDefined()
+    // `evaluated` must still be 3 (total rows processed)
+    expect(summary?.quality.evaluated).toBe(3)
+
+    // `scoredEvaluated` must be ≤ evaluated and reflect only scored rows.
+    // This field does not exist yet — the test will fail with a type error
+    // and/or `undefined` until the engineer adds it.
+    const scoredEvaluated = (
+      summary?.quality as unknown as { scoredEvaluated?: number }
+    )?.scoredEvaluated
+
+    expect(typeof scoredEvaluated).toBe('number')
+    expect(scoredEvaluated).toBeLessThanOrEqual(summary?.quality.evaluated ?? 0)
+  })
+
+  test('test_agent_quality_scoredEvaluated_equals_evaluated_when_all_scored', () => {
+    // All rows have a real score → scoredEvaluated == evaluated
+    const summary = agentQualityFromFlatRow({
+      traces: 5,
+      agent_score_rows: 5,
+      agent_quality_score: 1.0,
+      agent_quality_evaluated: 5,
+      agent_quality_possible: 5,
+      agent_quality_failures: 0,
+    })
+
+    const scoredEvaluated = (
+      summary?.quality as unknown as { scoredEvaluated?: number }
+    )?.scoredEvaluated
+
+    // When score is non-null for all rows, scoredEvaluated should equal evaluated
+    expect(scoredEvaluated).toBe(summary?.quality.evaluated)
+  })
+
+  test('test_agent_quality_scoredEvaluated_zero_when_no_rows_scored', () => {
+    // No rows were scored (score=null, evaluated=0)
+    const summary = agentQualityFromFlatRow({
+      traces: 2,
+      agent_score_rows: 2,
+      agent_quality_score: null,
+      agent_quality_evaluated: 0,
+      agent_quality_possible: 0,
+      agent_quality_failures: 0,
+    })
+
+    const scoredEvaluated = (
+      summary?.quality as unknown as { scoredEvaluated?: number }
+    )?.scoredEvaluated
+
+    expect(scoredEvaluated).toBe(0)
   })
 })

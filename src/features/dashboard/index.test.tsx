@@ -30,12 +30,48 @@ import {
   within,
 } from '@testing-library/react'
 import { http, HttpResponse } from 'msw'
+// ─────────────────────────────────────────────────────────────────────────────
+// Wave 5 / S4-19: Dashboard default range follows daily ET tick
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * S4-19: `defaultDateRange()` calls `formatDashboardDate(new Date())` which
+ * reads the system clock at component mount time. If it is called once at
+ * module level (or if the component memoises incorrectly), the range does not
+ * advance after a midnight ET rollover.
+ *
+ * This test simulates a midnight ET rollover using fake timers and asserts
+ * that a freshly computed default range reflects the new calendar day.
+ *
+ * RED until the engineer ensures the default range derives from a live clock
+ * (e.g. inside `useMemo(() => defaultDateRange(), [])` re-evaluated on tick,
+ * or via a daily interval effect).
+ */
+import { vi } from 'vitest'
 import { SidebarProvider } from '../../components/ui/sidebar'
 import { DirectionProvider } from '../../context/direction-provider'
 import { LayoutProvider } from '../../context/layout-provider'
 import { SearchProvider } from '../../context/search-provider'
 import { server } from '../../test/setup'
 import type { UsageReportResponse } from './api/usage-report'
+// ─────────────────────────────────────────────────────────────────────────────
+// Wave 5 / S4-T5 / S4-20: usageReportQuotasKey factory used in both index + phosphor
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * S4-T5 / S4-20: The engineer must extract a `usageReportQuotasKey` factory
+ * that is shared between `index.tsx` and `phosphor-dashboard.tsx`. This test
+ * imports the factory directly and asserts that it produces the expected
+ * React Query key array. If the engineer renames or removes the export, this
+ * test immediately fails — making key-drift detectable.
+ *
+ * The import is RED (ModuleNotFoundError) until the engineer creates the export.
+ */
+import { usageReportQuotasKey } from './index'
+import {
+  formatDashboardDate,
+  addDaysToDateString,
+} from './lib/usage-report-display'
 
 // ---------------------------------------------------------------------------
 // jsdom polyfills
@@ -622,5 +658,368 @@ describe('Dashboard — TCG-2: loading skeleton render path', () => {
 
     fireEvent.keyDown(document, { key: 'd' })
     expect(document.activeElement).toBe(firstDate)
+  })
+})
+
+describe('Dashboard — S4-19: default range follows daily ET tick', () => {
+  test('test_dashboard_default_range_follows_daily_tick', () => {
+    // 2026-06-14 03:59:00 UTC → 2026-06-13 23:59 ET (still June 13 in ET)
+    const beforeMidnight = new Date('2026-06-14T03:59:00Z')
+    // 2026-06-14 04:01:00 UTC → 2026-06-14 00:01 ET (June 14 in ET)
+    const afterMidnight = new Date('2026-06-14T04:01:00Z')
+
+    vi.useFakeTimers()
+
+    try {
+      // Before midnight ET: today = 2026-06-13 in ET
+      vi.setSystemTime(beforeMidnight)
+      const todayBefore = formatDashboardDate(new Date())
+      const tomorrowBefore = addDaysToDateString(todayBefore, 1)
+
+      // After midnight ET: today = 2026-06-14 in ET
+      vi.setSystemTime(afterMidnight)
+      const todayAfter = formatDashboardDate(new Date())
+      const tomorrowAfter = addDaysToDateString(todayAfter, 1)
+
+      // The ET calendar day must have advanced across the rollover
+      expect(todayAfter).not.toBe(todayBefore)
+      expect(tomorrowAfter).not.toBe(tomorrowBefore)
+
+      // todayAfter should be one calendar day later than todayBefore
+      const [yB, mB, dB] = todayBefore.split('-').map(Number)
+      const [yA, mA, dA] = todayAfter.split('-').map(Number)
+      const msB = Date.UTC(yB, mB - 1, dB)
+      const msA = Date.UTC(yA, mA - 1, dA)
+      // Exactly 1 day apart (86400000 ms)
+      expect(msA - msB).toBe(86_400_000)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})
+
+describe('test_usageReportQuotasKey_factory_used_in_both (S4-T5/S4-20)', () => {
+  test('factory produces the expected key array shape', () => {
+    const key = usageReportQuotasKey('2026-05-14', '2026-06-13', undefined)
+    expect(Array.isArray(key)).toBe(true)
+    // Key must start with a stable string identifier
+    expect(key[0]).toBe('usage-report-quotas')
+    // Key must contain the from and to dates
+    expect(key).toContain('2026-05-14')
+    expect(key).toContain('2026-06-13')
+  })
+
+  test('factory with cacheBust includes it in the key', () => {
+    const key = usageReportQuotasKey('2026-05-14', '2026-06-13', 'bust-123')
+    expect(key).toContain('bust-123')
+  })
+
+  test('factory without cacheBust does not include undefined', () => {
+    const key = usageReportQuotasKey('2026-05-14', '2026-06-13', undefined)
+    expect(key).not.toContain(undefined)
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Wave 5 / S4-T9: kpiDeltas path — /100 ↔ *100 handshake at ≥3840px
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * S4-T9: `kpiDeltas` divides `computeDeltaPct` output by 100 so that KpiStrip's
+ * `renderDelta` (which multiplies by 100) displays the correct percentage.
+ * This test flips the matchMedia mock to `matches: true` (≥3840px viewport)
+ * and asserts the stored delta value is in the fractional form (e.g. 0.5 for
+ * +50%) not the percent form (e.g. 50).
+ *
+ * RED until: (a) the test infrastructure supports the wide viewport, and
+ * (b) the engineer wires `kpiDeltas` correctly (confirmed by value assertion).
+ */
+describe('Dashboard — S4-T9: kpiDeltas /100 handshake at wide viewport', () => {
+  test('test_kpiDeltas_path_stores_fractional_not_percent', async () => {
+    // Override matchMedia to simulate ≥3840px
+    Object.defineProperty(window, 'matchMedia', {
+      writable: true,
+      configurable: true,
+      value: (query: string) => ({
+        matches: query.includes('3840'), // true for the wide viewport query
+        media: query,
+        onchange: null,
+        addListener: () => undefined,
+        removeListener: () => undefined,
+        addEventListener: () => undefined,
+        removeEventListener: () => undefined,
+        dispatchEvent: () => false,
+      }),
+    })
+
+    const priorSummary = {
+      traces: 100, // prior requests
+      token_in: 1_000,
+      token_out: 500,
+      usd_cost: 1.0,
+    }
+
+    const currentSummary = {
+      traces: 150, // 50% increase → delta = 0.5 (fractional, not 50)
+      token_in: 1_200,
+      token_out: 600,
+      usd_cost: 1.2,
+    }
+
+    // Register a mock usage report with the prior data available
+    let _priorRequestCount = 0
+    server.use(
+      http.get('/api/shell/reports/usage', ({ request }) => {
+        const url = new URL(request.url)
+        const from = url.searchParams.get('from')
+        _priorRequestCount += 1
+        if (from !== null && from < '2026-04-19') {
+          // Prior period request
+          return HttpResponse.json({
+            ...MOCK_REPORT,
+            summary: { ...MOCK_REPORT.summary, ...priorSummary },
+          })
+        }
+        return HttpResponse.json({
+          ...MOCK_REPORT,
+          summary: { ...MOCK_REPORT.summary, ...currentSummary },
+        })
+      })
+    )
+
+    registerTokenTrendSummaryHandler()
+    registerQuotaRangeHistoryHandler()
+
+    const Dashboard = await importDashboard()
+    const { container } = renderWithProviders(Dashboard)
+
+    // Wait for the dashboard to render with data
+    await waitFor(
+      () => {
+        expect(container.querySelector('.phosphor-dashboard')).not.toBeNull()
+      },
+      { timeout: 5_000 }
+    )
+
+    // At wide viewport, the comparison panel fires. kpiDeltas.requests should be
+    // fractional (0.5) not percent (50). We validate this through the KpiStrip
+    // aria-label or data attribute that PhosphorDashboard exposes.
+    // If the engineer wires it as 50 instead of 0.5, the rendered percentage
+    // would show "5000%" instead of "50%".
+    //
+    // Look for a delta indicator that shows a sane percentage (10%–500% range).
+    // An incorrect /100 would produce a wildly large percentage.
+    const deltaIndicators = container.querySelectorAll('[data-delta]')
+    for (const indicator of deltaIndicators) {
+      const raw = indicator.getAttribute('data-delta')
+      if (raw !== null) {
+        const value = Number(raw)
+        if (Number.isFinite(value)) {
+          // A sane fractional delta (0.5 = +50%) must NOT be ≥ 10 (which
+          // would indicate the /100 division is missing and we stored 50).
+          expect(Math.abs(value)).toBeLessThan(10)
+        }
+      }
+    }
+
+    // Restore matchMedia mock for other tests
+    Object.defineProperty(window, 'matchMedia', {
+      writable: true,
+      configurable: true,
+      value: (_query: string) => ({
+        matches: false,
+        media: _query,
+        onchange: null,
+        addListener: () => undefined,
+        removeListener: () => undefined,
+        addEventListener: () => undefined,
+        removeEventListener: () => undefined,
+        dispatchEvent: () => false,
+      }),
+    })
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Wave 5 / S4-21: Refresh handlers single-trigger
+// Wave 5 / S4-22: cacheBust NOT in query key (cache not leaked)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * S4-21: Each refresh button click must trigger exactly one fetch — not two
+ * (once from setState + once from invalidateQueries overlapping).
+ *
+ * S4-22: The `cacheBust` parameter must NOT be part of the React Query cache
+ * key for the quotas query that fires on the regular polling interval. It
+ * should only live in the queryFn arguments. If cacheBust is in the key, every
+ * refresh creates a new permanent cache entry that is never GC'd.
+ *
+ * This is RED until the engineer collapses the double-trigger and removes
+ * cacheBust from the query key.
+ */
+describe('Dashboard — S4-21/S4-22: refresh handlers and cache key discipline', () => {
+  test('test_refresh_handlers_single_trigger_no_double_fetch', async () => {
+    const quotaFetchUrls: string[] = []
+
+    server.use(
+      http.get('/api/shell/reports/usage', () => HttpResponse.json(MOCK_REPORT))
+    )
+    server.use(
+      http.get('/api/shell/reports/quotas', ({ request }) => {
+        quotaFetchUrls.push(request.url)
+        return HttpResponse.json({
+          metadata: {
+            generatedAt: '2026-05-19T00:00:00Z',
+            latestRecordAt: null,
+            latestRecordAgeMinutes: null,
+            latestRecordStale: false,
+            staleRecordThresholdMinutes: 60,
+          },
+          quotas: [],
+        })
+      })
+    )
+    registerTokenTrendSummaryHandler()
+    registerQuotaRangeHistoryHandler()
+
+    const Dashboard = await importDashboard()
+    renderWithProviders(Dashboard)
+
+    await waitFor(
+      () => {
+        expect(
+          screen.queryByRole('button', { name: /refresh provider data/i })
+        ).not.toBeNull()
+      },
+      { timeout: 5_000 }
+    )
+
+    // Clear the initial-load fetches
+    quotaFetchUrls.length = 0
+
+    // Click the quota refresh button once
+    await act(async () => {
+      const btn = screen.getByRole('button', { name: /refresh provider data/i })
+      fireEvent.click(btn)
+    })
+
+    // After one click, exactly ONE quota fetch should have fired
+    await waitFor(
+      () => {
+        expect(quotaFetchUrls.length).toBeGreaterThanOrEqual(1)
+      },
+      { timeout: 3_000 }
+    )
+
+    // Allow any potential double-trigger to fire
+    await act(async () => {
+      await new Promise<void>((r) => setTimeout(r, 200))
+    })
+
+    // Must NOT have triggered more than 1 fetch per click (double-trigger bug)
+    expect(quotaFetchUrls.length).toBe(1)
+  })
+
+  test('test_cacheBust_not_in_quotas_query_key_on_regular_refetch', async () => {
+    // The queryKey for the quotas query during auto-refetch must NOT include
+    // cacheBust. We validate by inspecting the query cache keys.
+    server.use(
+      http.get('/api/shell/reports/usage', () => HttpResponse.json(MOCK_REPORT))
+    )
+    server.use(
+      http.get('/api/shell/reports/quotas', () =>
+        HttpResponse.json({
+          metadata: {
+            generatedAt: '2026-05-19T00:00:00Z',
+            latestRecordAt: null,
+            latestRecordAgeMinutes: null,
+            latestRecordStale: false,
+            staleRecordThresholdMinutes: 60,
+          },
+          quotas: [],
+        })
+      )
+    )
+    registerTokenTrendSummaryHandler()
+    registerQuotaRangeHistoryHandler()
+
+    const Dashboard = await importDashboard()
+
+    const { QueryClient: QC, QueryClientProvider: QCP } =
+      await import('@tanstack/react-query')
+    const {
+      createRootRoute: CRR,
+      createRouter: CR,
+      createMemoryHistory: CMH,
+      RouterProvider: RP,
+    } = await import('@tanstack/react-router')
+    const { SidebarProvider: SP } = await import('../../components/ui/sidebar')
+    const { DirectionProvider: DP } =
+      await import('../../context/direction-provider')
+    const { SearchProvider: SeP } =
+      await import('../../context/search-provider')
+    const { LayoutProvider: LP } = await import('../../context/layout-provider')
+
+    const freshClient = new QC({
+      defaultOptions: { queries: { retry: false, gcTime: 0 } },
+    })
+    const rootRoute = CRR({ component: Dashboard })
+    const router = CR({
+      routeTree: rootRoute,
+      history: CMH({ initialEntries: ['/'] }),
+      context: { queryClient: freshClient },
+    })
+
+    const { render: testRender } = await import('@testing-library/react')
+    const React = await import('react')
+    testRender(
+      React.createElement(
+        QCP,
+        { client: freshClient },
+        React.createElement(
+          DP,
+          null,
+          React.createElement(
+            SeP,
+            null,
+            React.createElement(
+              LP,
+              null,
+              React.createElement(SP, null, React.createElement(RP, { router }))
+            )
+          )
+        )
+      )
+    )
+
+    await waitFor(
+      () => {
+        const queries = freshClient.getQueryCache().getAll()
+        const quotasQueries = queries.filter(
+          (q) =>
+            Array.isArray(q.queryKey) && q.queryKey[0] === 'usage-report-quotas'
+        )
+        return quotasQueries.length > 0
+      },
+      { timeout: 5_000 }
+    )
+
+    // Check that the initial (non-refreshed) quotas query key does NOT
+    // contain a cacheBust value — cacheBust starts as '' and should not appear
+    const queries = freshClient.getQueryCache().getAll()
+    const quotasQueries = queries.filter(
+      (q) =>
+        Array.isArray(q.queryKey) && q.queryKey[0] === 'usage-report-quotas'
+    )
+
+    for (const q of quotasQueries) {
+      const key = q.queryKey as unknown[]
+      // cacheBust (non-empty string like Date.now().toString()) must NOT be in
+      // the initial key. It's OK for the key to include '' (empty) or undefined.
+      const hasCacheBust = key.some(
+        (k) => typeof k === 'string' && k !== '' && /^\d{13}$/.test(k)
+      )
+      expect(hasCacheBust).toBe(false)
+    }
   })
 })

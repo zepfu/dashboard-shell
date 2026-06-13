@@ -8,6 +8,11 @@
  * All tests expected to FAIL (red) — source file does not exist yet.
  */
 import { renderHook } from '@testing-library/react'
+// ─────────────────────────────────────────────────────────────────────────────
+// Wave 5 / S4-T2: multi-lane no-false-positive
+// ─────────────────────────────────────────────────────────────────────────────
+
+import { describe } from 'vitest'
 import { useAnomalyDetection } from './use-anomaly-detection'
 
 // ---------------------------------------------------------------------------
@@ -161,4 +166,112 @@ test('test_sorts_rows_by_bucket_start_before_scanning', () => {
   // After sorting by bucket_start: 08:00→reset12:00, 10:00→reset14:00
   // That is monotonic → no early reset
   expect(result.current.earlyReset.size).toBe(0)
+})
+
+/**
+ * S4-T2 / Bug #45: When a provider has two quota lanes (e.g. 5h and 7d) with
+ * different reset schedules, `useAnomalyDetection` currently groups ALL rows by
+ * provider name. This means a 5h-lane row with reset at 12:00 followed by a
+ * 7d-lane row with reset at next Tuesday will look like a non-monotonic
+ * (decreasing) sequence — a false positive.
+ *
+ * The fix is to group by `(provider, quota lane)` so that 5h rows only compare
+ * with other 5h rows.
+ *
+ * This is RED until the engineer implements lane-aware grouping (S4-T2/#45).
+ */
+describe('test_useAnomalyDetection_multi_lane_no_false_positive (S4-T2/#45)', () => {
+  test('5h and 7d lanes individually monotonic produce no early-reset flag', () => {
+    // Provider: anthropic
+    // Lane 1 (5h): two consecutive buckets with monotonically increasing resets
+    // Lane 2 (7d): two consecutive buckets with monotonically increasing resets
+    //
+    // Without lane grouping: mixing 5h reset (e.g. +5h) with 7d reset (e.g. +7d)
+    // in temporal order causes a false positive when a 7d row comes before a 5h row.
+    const healthRows = [
+      // 5h-lane buckets: resets at +5h, +10h (monotonic ↑)
+      {
+        provider: 'anthropic',
+        model: 'claude-sonnet-4',
+        bucket_start: '2026-06-13T00:00:00Z',
+        next_expected_reset_at: '2026-06-13T05:00:00Z', // 5h lane reset
+        quota_lane: 'short',
+      },
+      {
+        provider: 'anthropic',
+        model: 'claude-sonnet-4',
+        bucket_start: '2026-06-13T01:00:00Z',
+        next_expected_reset_at: '2026-06-13T10:00:00Z', // 5h lane reset +1h
+        quota_lane: 'short',
+      },
+      // 7d-lane buckets: resets at +7d, +14d (monotonic ↑, but numerically
+      // lower than the 5h resets when sorted together by bucket_start)
+      {
+        provider: 'anthropic',
+        model: 'claude-sonnet-4-5',
+        bucket_start: '2026-06-13T00:30:00Z',
+        next_expected_reset_at: '2026-06-20T00:00:00Z', // 7d lane reset
+        quota_lane: 'weekly',
+      },
+      {
+        provider: 'anthropic',
+        model: 'claude-sonnet-4-5',
+        bucket_start: '2026-06-13T01:30:00Z',
+        next_expected_reset_at: '2026-06-27T00:00:00Z', // 7d lane reset +7d
+        quota_lane: 'weekly',
+      },
+    ]
+
+    const { result } = renderHook(() =>
+      useAnomalyDetection(healthRows, { latestRecordStale: false })
+    )
+
+    // Both lanes are individually monotonic — no early reset should be flagged.
+    // This will FAIL with the current implementation (no lane-aware grouping)
+    // because mixing 5h rows (resets ~5h) with 7d rows (resets ~7d) in bucket_start
+    // order can produce apparent decreases.
+    expect(result.current.earlyReset.size).toBe(0)
+  })
+
+  test('genuine early reset in one lane still fires while monotonic lane is quiet', () => {
+    const healthRows = [
+      // 5h lane: genuine early reset (second reset < first reset)
+      {
+        provider: 'anthropic',
+        model: 'claude-sonnet-4',
+        bucket_start: '2026-06-13T00:00:00Z',
+        next_expected_reset_at: '2026-06-13T10:00:00Z', // expected 10:00
+        quota_lane: 'short',
+      },
+      {
+        provider: 'anthropic',
+        model: 'claude-sonnet-4',
+        bucket_start: '2026-06-13T01:00:00Z',
+        next_expected_reset_at: '2026-06-13T06:00:00Z', // early reset to 06:00!
+        quota_lane: 'short',
+      },
+      // 7d lane: monotonic, should NOT suppress the 5h flag
+      {
+        provider: 'anthropic',
+        model: 'claude-sonnet-4-5',
+        bucket_start: '2026-06-13T00:30:00Z',
+        next_expected_reset_at: '2026-06-20T00:00:00Z',
+        quota_lane: 'weekly',
+      },
+      {
+        provider: 'anthropic',
+        model: 'claude-sonnet-4-5',
+        bucket_start: '2026-06-13T01:30:00Z',
+        next_expected_reset_at: '2026-06-27T00:00:00Z',
+        quota_lane: 'weekly',
+      },
+    ]
+
+    const { result } = renderHook(() =>
+      useAnomalyDetection(healthRows, { latestRecordStale: false })
+    )
+
+    // The 5h lane has a genuine early reset → should be flagged
+    expect(result.current.earlyReset.size).toBeGreaterThan(0)
+  })
 })
