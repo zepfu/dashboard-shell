@@ -17,7 +17,8 @@ interface SparklineProps {
 /**
  * Sparkline renders a single polyline SVG from a numeric data series.
  *
- * @returns null when `data` is empty; an `<svg>` with a `<polyline>` otherwise.
+ * @returns null when `data` is empty; an `<svg>` with a `<circle>` for a
+ *   single-point series; an `<svg>` with a `<polyline>` otherwise.
  */
 export function Sparkline({
   data,
@@ -25,18 +26,39 @@ export function Sparkline({
   width = 60,
   height = 20,
 }: SparklineProps): ReactElement | null {
-  if (data.length === 0) {
+  // S3-27: filter non-finite values (NaN, Infinity, -Infinity)
+  const finite = data.filter(Number.isFinite)
+
+  if (finite.length === 0) {
     return null
   }
 
-  const min = Math.min(...data)
-  const max = Math.max(...data)
-  const range = max - min || 1
+  // S3-28: single point renders a visible circle dot
+  if (finite.length === 1) {
+    return (
+      <svg
+        width={width}
+        height={height}
+        viewBox={`0 0 ${width} ${height}`}
+        className='sparkline'
+      >
+        <circle cx={width / 2} cy={height / 2} r={1.5} fill={color} />
+      </svg>
+    )
+  }
 
-  const points = data
+  const min = Math.min(...finite)
+  const max = Math.max(...finite)
+  const range = max - min
+
+  const points = finite
     .map((value, i) => {
-      const x = data.length === 1 ? width / 2 : (i / (data.length - 1)) * width
-      const y = height - 2 - ((value - min) / range) * (height - 4)
+      const x = (i / (finite.length - 1)) * width
+      // S3-28: flat series (range === 0) renders centered, not at the floor
+      const y =
+        range === 0
+          ? height / 2
+          : height - 2 - ((value - min) / range) * (height - 4)
       return `${x.toFixed(2)},${y.toFixed(2)}`
     })
     .join(' ')
