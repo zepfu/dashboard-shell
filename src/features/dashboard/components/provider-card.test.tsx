@@ -878,3 +878,370 @@ describe('Wave 41 — QuotaLane structured lane rendering', () => {
     expect(rangeLabels[1].textContent).toBe('5/20 06:00 → 5/20 11:00')
   })
 })
+
+// ---------------------------------------------------------------------------
+// Wave 2 (Adversarial Review 2026-06-12) — S2 provider-card correctness tests
+// ---------------------------------------------------------------------------
+
+/**
+ * S2-16: `p95_ms === null` in TopModelRow must render `—`, not `0ms`.
+ *
+ * Current bug: `formatLatency(m.p95_ms ?? 0)` coerces null to 0 → renders "0ms".
+ * Fix: delete the `?? 0` fallback; `formatLatency(null)` should return `—`.
+ */
+test('test_top_models_unmeasured_p95_renders_dash_not_zero', () => {
+  render(
+    <ProviderCard
+      config={anthropicConfig}
+      data={mockData}
+      healthCells={mockHealthCells}
+      quotas={mockQuotas}
+      topModels={[
+        {
+          model: 'claude-opus-4-7',
+          tokens: 50000,
+          cost_usd: 2.5,
+          requests: 100,
+          p95_ms: null, // explicitly unmeasured
+        },
+        {
+          model: 'claude-sonnet-4-5',
+          tokens: 30000,
+          cost_usd: 1.2,
+          requests: 60,
+          p95_ms: 1500, // has a valid latency for contrast
+        },
+      ]}
+    />
+  )
+
+  // The null p95 row must show '—' and NOT '0ms'
+  // Pre-fix: formatLatency(null ?? 0) = formatLatency(0) = '0ms'
+  // Post-fix: formatLatency(null) = '—'
+  const allText = document.body.textContent ?? ''
+  expect(allText).not.toContain('0ms')
+
+  // '—' must appear in the top-models section for the null-p95 row
+  // (the non-null row renders '1500ms' or similar — we look for '—' as latency placeholder)
+  const topModelDashes = document.body.querySelectorAll('.p95')
+  const dashCell = Array.from(topModelDashes).find(
+    (el) => el.textContent === '—'
+  )
+  // After the fix: dashCell must exist (null p95 renders dash)
+  // Pre-fix: dashCell is undefined (renders '0ms' instead)
+  expect(dashCell).toBeDefined()
+  expect(dashCell?.textContent).toBe('—')
+})
+
+/**
+ * S2-17: Prior bar without `timeAgoLabel` must render `—`, not 'now' or a date.
+ *
+ * Current bug: when `timeAgoLabel` is undefined and `isPrior === true`,
+ * `resetDisplay = formatResetDistance(quotaBar.resetAt)` which computes
+ * something like "resets in Xh Ym" or a relative time — not '—'.
+ *
+ * Fix: when `isPrior && quotaBar.timeAgoLabel === undefined`, render `—`
+ * as the reset label.
+ */
+test('test_prior_bar_without_timeAgoLabel_renders_dash_not_now', () => {
+  // Prior bar with NO timeAgoLabel
+  const priorBarNoLabel: QuotaBarGroup = {
+    label: 'Prior bar',
+    consumedPct: 60,
+    remainingPct: 40,
+    resetAt: '2026-06-12T00:00:00Z', // past reset, but no timeAgoLabel
+    segments: Array.from({ length: QUOTA_SEGMENTS }, (_, i) => ({
+      widthPct: 100 / QUOTA_SEGMENTS,
+      severityClass: 'iv-0-5',
+      highVelocity: i === 50,
+    })),
+    // timeAgoLabel intentionally absent
+  }
+
+  const currentBar: QuotaBarGroup = {
+    label: 'Current bar',
+    consumedPct: 30,
+    remainingPct: 70,
+    resetAt: '2026-06-13T00:00:00Z',
+    segments: Array.from({ length: QUOTA_SEGMENTS }, () => ({
+      widthPct: 100 / QUOTA_SEGMENTS,
+      severityClass: 'iv-0-5',
+      highVelocity: false,
+    })),
+    timeAgoLabel: undefined, // current bar: no timeAgoLabel (uses formatResetDistance)
+  }
+
+  const lane: QuotaLane = {
+    laneKey: 'anthropic/short',
+    laneLabel: 'All Models · 5hr',
+    currentBar,
+    priorBars: [priorBarNoLabel],
+  }
+
+  const { container } = render(
+    <ProviderCard
+      config={anthropicConfig}
+      data={mockData}
+      healthCells={mockHealthCells}
+      quotas={[]}
+      lanes={[lane]}
+    />
+  )
+
+  // The prior bar's reset display must be '—' when timeAgoLabel is absent.
+  // Pre-fix: resetDisplay = formatResetDistance('2026-06-12T00:00:00Z') → something like 'now'
+  //          or a negative relative time like '-1d ago'
+  // Post-fix: resetDisplay = '—'
+  const resetLabels = container.querySelectorAll('.quota-row-reset')
+  expect(resetLabels.length).toBeGreaterThanOrEqual(2) // current + prior
+
+  // The prior bar's reset label (second .quota-row-reset) must be '—'
+  // (or whichever element corresponds to the prior bar)
+  const priorResetLabel = resetLabels[1] as HTMLElement | undefined
+  expect(priorResetLabel).toBeDefined()
+
+  // Pre-fix: priorResetLabel.textContent will be something like 'now' or '-24h ago'
+  // Post-fix: must be exactly '—'
+  expect(priorResetLabel!.textContent?.trim()).toBe('—')
+})
+
+/**
+ * S2-18: Status metric — 0 errors + 100% packet loss must NOT show a clean ✓.
+ *
+ * Current bug: `isHealthy = data.errors === 0` — ignores packet_loss_pct.
+ * When packet_loss_pct=100 and errors=0, the status shows ✓ (healthy).
+ *
+ * Fix: `isHealthy = data.errors === 0 && (data.packet_loss_pct === null || data.packet_loss_pct < WARN_THRESHOLD)`
+ * The status glyph must be ✗ (or a warn indicator) when packet loss is 100%.
+ */
+test('test_provider_status_thresholded', () => {
+  render(
+    <ProviderCard
+      config={anthropicConfig}
+      data={{
+        ...mockData,
+        errors: 0, // zero errors
+        packet_loss_pct: 100, // but 100% packet loss → NOT healthy
+      }}
+      healthCells={mockHealthCells}
+      quotas={mockQuotas}
+    />
+  )
+
+  // Pre-fix: status shows ✓ (isHealthy = true because errors===0)
+  // Post-fix: status shows ✗ or warn (because packet_loss_pct=100 is bad)
+  //
+  // The Status metric row renders either '✓' or '✗' as the glyph.
+  // We assert '✓' is NOT present in the status metric row.
+  const statusRows = document.querySelectorAll('.provider-metric')
+  const statusMetric = Array.from(statusRows).find((el) =>
+    el.textContent?.includes('Status')
+  )
+  expect(statusMetric).toBeDefined()
+
+  // Post-fix: the status metric value must not be ✓
+  // Pre-fix: it IS ✓ (this assertion fails)
+  expect(statusMetric!.textContent).not.toContain('✓')
+  // It must contain ✗ (degraded)
+  expect(statusMetric!.textContent).toContain('✗')
+})
+
+/**
+ * S2-19: `wrapperClassName='aggregate compact'` must suppress accent-chrome.
+ *
+ * Current bug: `wrapperClassName !== 'aggregate'` — exact string check.
+ * When wrapperClassName='aggregate compact' (multiple classes), the check fails
+ * (because 'aggregate compact' !== 'aggregate') and accent-chrome is applied.
+ *
+ * Fix: `wrapperClassName?.split(' ').includes('aggregate')` or a class-list check.
+ */
+test('test_wrapperClassName_aggregate_multitoken_suppresses_accent_chrome', () => {
+  const { container } = render(
+    <ProviderCard
+      config={anthropicConfig}
+      data={mockData}
+      healthCells={mockHealthCells}
+      quotas={mockQuotas}
+      wrapperClassName='aggregate compact' // multi-token className
+    />
+  )
+
+  // The provider-name element must NOT have inline color set to accent-chrome
+  // when the className includes 'aggregate'.
+  //
+  // Pre-fix: 'aggregate compact' !== 'aggregate' → accent-chrome IS applied inline
+  // Post-fix: 'aggregate compact'.split(' ').includes('aggregate') = true → no inline color
+  const providerName = container.querySelector(
+    '.provider-name'
+  ) as HTMLElement | null
+  expect(providerName).not.toBeNull()
+
+  // Pre-fix: style.color = 'var(--accent-chrome)' because the guard fails
+  // Post-fix: style.color = '' (empty, deferred to CSS class rule)
+  expect(providerName!.style.color).not.toBe('var(--accent-chrome)')
+
+  // The root element must have both 'aggregate' and 'compact' classes
+  const root = container.querySelector('.provider-card') as HTMLElement | null
+  expect(root?.classList.contains('aggregate')).toBe(true)
+  expect(root?.classList.contains('compact')).toBe(true)
+})
+
+/**
+ * S2-20: Anomaly icon must be scoped to the correct lane, and cacheStale
+ * must render exactly once in the header (not duplicated per lane).
+ *
+ * Current behavior: `showEarlyReset = hasEarlyReset(anomalies.earlyReset, config.provider)`
+ * — this checks the CARD-level provider, not the lane. So if earlyReset has 'anthropic',
+ * ALL lanes show the icon.
+ *
+ * Fix: the icon should appear only on the lane that matches the early-reset key,
+ * OR the fix might restructure anomalies to be per-lane. Additionally, cacheStale
+ * must only render once (in the card header or as a single badge), not once per lane.
+ *
+ * This test uses 6 lanes with one early-reset event on lane 3 only.
+ */
+test('test_anomaly_icon_scoped_to_lane_and_cachestale_once', () => {
+  const makeFullSegments = () =>
+    Array.from({ length: QUOTA_SEGMENTS }, (_, i) => ({
+      widthPct: 100 / QUOTA_SEGMENTS,
+      severityClass: 'iv-0-5' as const,
+      highVelocity: i === 50,
+    }))
+
+  // 6 lanes: only lane 3 (key 'anthropic/lane3') has an early-reset
+  const lanes: QuotaLane[] = Array.from({ length: 6 }, (_, i) => ({
+    laneKey: `anthropic/lane${i.toString()}`,
+    laneLabel: `Lane ${i.toString()}`,
+    currentBar: {
+      label: `Lane ${i.toString()} current`,
+      consumedPct: 20 + i * 5,
+      remainingPct: 80 - i * 5,
+      resetAt: `2026-06-13T${String(i + 10).padStart(2, '0')}:00:00Z`,
+      segments: makeFullSegments(),
+    },
+    priorBars: [],
+  }))
+
+  // earlyReset is a Set containing ONLY 'anthropic' (the card-level provider)
+  // but the intent is that only lane 3 had an early reset.
+  // After the fix: the icon must appear only on lane 3 (or only once total).
+  // Pre-fix: the icon appears on ALL current bars (because showEarlyReset is card-level).
+
+  const { container } = render(
+    <ProviderCard
+      config={anthropicConfig}
+      data={mockData}
+      healthCells={mockHealthCells}
+      quotas={[]}
+      lanes={lanes}
+      anomalies={{
+        earlyReset: new Set(['anthropic']), // card-level, affects all lanes (bug)
+        cacheStale: true,
+      }}
+    />
+  )
+
+  // Assert: cacheStale icon (⚠) must appear exactly ONCE in the quota section.
+  // Pre-fix: it appears on every current bar (6 times = 6 lanes).
+  // Post-fix: it appears exactly once (either in header or one lane).
+  const cacheIcons = container.querySelectorAll('.icon-cache')
+  expect(cacheIcons).toHaveLength(1)
+
+  // Assert: earlyReset icon (⟲) must appear exactly ONCE per conceptual event.
+  // Pre-fix: it appears on every current bar (6 times = wrong).
+  // Post-fix: appears once (or on the specific lane that had the reset).
+  const resetIcons = container.querySelectorAll('.icon-reset')
+  expect(resetIcons).toHaveLength(1)
+})
+
+/**
+ * S2-T5: earlyReset set containing 'openai' must NOT badge the anthropic card.
+ *
+ * Current behavior: `hasEarlyReset(anomalies.earlyReset, config.provider)` uses
+ * `earlyReset.has(config.provider)` — for anthropic card, checks `has('anthropic')`.
+ * If earlyReset = Set(['openai']), then `has('anthropic')` = false → no badge.
+ * This should PASS already, but we pin it as a regression guard.
+ *
+ * The test is RED if the current implementation incorrectly shows the badge
+ * (e.g., because of a Set iteration bug or wrong key comparison).
+ *
+ * After review finding S2-T5: the engineer may also migrate earlyReset from Set<string>
+ * to Map<string, {prior, current}> form. The Map's .has() check must also work correctly.
+ */
+test('test_provider_card_topmodels_negative_anomaly_case', () => {
+  const { container } = render(
+    <ProviderCard
+      config={anthropicConfig} // provider='anthropic'
+      data={mockData}
+      healthCells={mockHealthCells}
+      quotas={mockQuotas}
+      anomalies={{
+        earlyReset: new Set(['openai']), // only openai has early reset
+        cacheStale: false,
+      }}
+    />
+  )
+
+  // The anthropic card must NOT show an early-reset badge
+  const resetBadge =
+    container.querySelector('.icon-reset') ??
+    container.querySelector('[aria-label*="early reset"]')
+
+  expect(resetBadge).toBeNull()
+
+  // Also test with Map form (post-engineer migration)
+  // When earlyReset is a Map: Map({'openai': {prior: '...', current: '...'}})
+  // `has('anthropic')` must return false for the anthropic card.
+  const { container: container2 } = render(
+    <ProviderCard
+      config={anthropicConfig}
+      data={mockData}
+      healthCells={mockHealthCells}
+      quotas={mockQuotas}
+      anomalies={{
+        earlyReset: new Map([
+          [
+            'openai',
+            { prior: '2026-06-12T00:00:00Z', current: '2026-06-13T00:00:00Z' },
+          ],
+        ]),
+        cacheStale: false,
+      }}
+    />
+  )
+
+  const resetBadge2 =
+    container2.querySelector('.icon-reset') ??
+    container2.querySelector('[aria-label*="early reset"]')
+
+  // Pre-fix: If the implementation iterates the Map incorrectly (e.g., comparing values
+  // instead of keys), this could erroneously show the badge for anthropic.
+  // Post-fix: must be null (anthropic is not in the Map).
+  expect(resetBadge2).toBeNull()
+
+  // Verify that when 'anthropic' IS in the Map, the badge DOES show
+  const { container: container3 } = render(
+    <ProviderCard
+      config={anthropicConfig}
+      data={mockData}
+      healthCells={mockHealthCells}
+      quotas={mockQuotas}
+      anomalies={{
+        earlyReset: new Map([
+          [
+            'anthropic',
+            { prior: '2026-06-12T00:00:00Z', current: '2026-06-13T00:00:00Z' },
+          ],
+        ]),
+        cacheStale: false,
+      }}
+    />
+  )
+
+  const resetBadge3 =
+    container3.querySelector('.icon-reset') ??
+    container3.querySelector('[aria-label*="early reset"]')
+
+  // Badge SHOULD appear when anthropic IS in the Map
+  expect(resetBadge3).not.toBeNull()
+})
