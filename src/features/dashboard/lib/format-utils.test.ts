@@ -106,3 +106,92 @@ describe('numFmt', () => {
     expect(numFmt(1.005, 2)).toBe('1.01')
   })
 })
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Wave 5 / S4-16: numFmt must produce locale-independent output (en-US)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * S4-16: `numFmt` currently calls `n.toLocaleString(undefined, …)` which
+ * uses the Node/V8 runtime locale, producing different separators in different
+ * CI environments (e.g. "1.234.567" in de-DE vs "1,234,567" in en-US).
+ * The fix is to pin `'en-US'`.
+ *
+ * These tests are RED in any environment that resolves `undefined` to a
+ * non-en-US locale, and will be GREEN once the engineer pins `'en-US'`.
+ *
+ * In the vitest worktree environment the locale is likely en-US already, so
+ * the primary red signal comes from verifying the *separator character* is
+ * exactly a comma (not a period or other) — plus explicit documentation that
+ * this must hold across environments.
+ */
+describe('numFmt locale-independence (S4-16)', () => {
+  it('test_numFmt_pins_en_US_thousand_separator_is_comma', () => {
+    // In en-US: 1,234,567
+    // In de-DE: 1.234.567
+    // The separator MUST be a comma.
+    const result = numFmt(1_234_567)
+    expect(result).toBe('1,234,567')
+    expect(result).toContain(',')
+    expect(result).not.toMatch(/^\d{1,3}\.\d{3}/) // not German-style period grouping
+  })
+
+  it('test_numFmt_pins_en_US_decimal_separator_is_dot', () => {
+    // In en-US: 3.14
+    // In de-DE: 3,14
+    const result = numFmt(3.14159, 2)
+    expect(result).toBe('3.14')
+    expect(result).toContain('.')
+    expect(result).not.toContain(',')
+  })
+
+  it('test_numFmt_pins_en_US_large_decimal', () => {
+    // 1,234.56 in en-US
+    const result = numFmt(1_234.5678, 2)
+    expect(result).toBe('1,234.57')
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Wave 5 / S4-T7: format-utils negative and NaN inputs
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * S4-T7: `fmtCompact` and `numFmt` have no guard for NaN or negative values.
+ * The engineer must decide: either guard or document. These tests pin the
+ * expected post-fix behavior (guarded / returning a sentinel) and will be RED
+ * until the engineer adds the guard or explicit handling.
+ */
+describe('fmtCompact negative and NaN inputs (S4-T7)', () => {
+  it('test_fmtCompact_negative_does_not_produce_NaN_string', () => {
+    // Negative values currently hit the `else` branch → String(-500) = "-500"
+    // If the engineer adds a guard this will change — pin the guarded form.
+    const result = fmtCompact(-500)
+    expect(result).not.toBe('NaN')
+    expect(result).not.toContain('NaN')
+    // Must be a recognisable numeric-ish string
+    expect(result).toMatch(/^-?\d/)
+  })
+
+  it('test_fmtCompact_NaN_returns_sentinel_not_NaN_string', () => {
+    // NaN should not propagate as the string "NaN" to the UI.
+    // The engineer must add a guard returning '--' or '0' or similar.
+    const result = fmtCompact(Number.NaN)
+    expect(result).not.toBe('NaN')
+    // After fix: expect either '0' or '--'
+    expect(['0', '--', '—']).toContain(result)
+  })
+
+  it('test_numFmt_NaN_returns_sentinel_not_NaN_string', () => {
+    // numFmt(NaN) currently returns 'NaN' via toLocaleString — must be guarded.
+    const result = numFmt(Number.NaN)
+    expect(result).not.toBe('NaN')
+    expect(['0', '--', '—']).toContain(result)
+  })
+
+  it('test_numFmt_negative_one_thousand_formatted', () => {
+    // -1000 → '-1,000' in en-US
+    const result = numFmt(-1_000)
+    expect(result).toBe('-1,000')
+  })
+})

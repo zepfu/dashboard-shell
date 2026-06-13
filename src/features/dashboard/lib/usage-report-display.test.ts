@@ -12,16 +12,19 @@
  *   modelBrandHex — model name → brand hex via modelToProviderKey
  */
 import {
+  addDaysToDateString,
+  canonicalProvider,
+  colorWithAlpha,
   computeFleetErrors,
   computeFleetP95,
-  canonicalProvider,
   formatDashboardDate,
   formatLatency,
-  formatUsd,
   formatModelDisplayName,
   formatResetDistance,
+  formatUsd,
   modelBrandHex,
   providerAliases,
+  signedDelta,
 } from './usage-report-display'
 
 // ---------------------------------------------------------------------------
@@ -647,5 +650,104 @@ describe('wave37 — computeFleetP95 + computeFleetErrors prior-window delta', (
     // 0 prior errors → division by zero → no delta
     const delta = signedDelta(5, 0)
     expect(delta).toBeNull()
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Wave 5 / S4-14: addDaysToDateString — malformed input
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * S4-14: When `addDaysToDateString` receives a value that is not a valid
+ * ISO-8601 date string (e.g. "not-a-date"), the current implementation calls
+ * `value.split('-').map(Number)` which produces [NaN, NaN, NaN] and then
+ * `Date.UTC(NaN, …)` → `NaN` → `.toISOString()` throws. The engineer must
+ * add a `Number.isFinite` guard and return the original string unchanged.
+ *
+ * This is RED until the guard is added.
+ */
+describe('addDaysToDateString — malformed input (S4-14)', () => {
+  test('test_addDaysToDateString_malformed_returns_input_not_throw', () => {
+    // Must return the original string, not throw
+    expect(addDaysToDateString('not-a-date', 1)).toBe('not-a-date')
+  })
+
+  test('test_addDaysToDateString_empty_string_returns_input', () => {
+    expect(addDaysToDateString('', 0)).toBe('')
+  })
+
+  test('test_addDaysToDateString_partial_date_returns_input', () => {
+    // Only two segments — cannot parse as YYYY-MM-DD
+    expect(addDaysToDateString('2026-06', 5)).toBe('2026-06')
+  })
+
+  test('test_addDaysToDateString_valid_date_still_works', () => {
+    // Control: valid inputs must keep working
+    expect(addDaysToDateString('2026-06-13', 1)).toBe('2026-06-14')
+    expect(addDaysToDateString('2026-12-31', 1)).toBe('2027-01-01')
+    expect(addDaysToDateString('2026-06-13', -30)).toBe('2026-05-14')
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Wave 5 / S4-15: colorWithAlpha — 3-digit hex support
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * S4-15: `colorWithAlpha` currently matches only `#RRGGBB` (6-digit hex).
+ * Passing a 3-digit shorthand like `#f80` fails the regex and returns the
+ * original string unchanged instead of parsing it as `#ff8800`. The engineer
+ * must expand the regex to handle `#RGB` → expand to `#RRGGBB`.
+ *
+ * This is RED until the 3-digit path is added.
+ */
+describe('colorWithAlpha — 3-digit hex support (S4-15)', () => {
+  test('test_colorWithAlpha_supports_3digit_hex', () => {
+    // #f80 == #ff8800 → rgb(255 136 0 / 0.5)
+    const result = colorWithAlpha('#f80', 0.5)
+    expect(result).toBe('rgb(255 136 0 / 0.5)')
+  })
+
+  test('test_colorWithAlpha_supports_3digit_hex_black', () => {
+    // #000 == #000000
+    expect(colorWithAlpha('#000', 1)).toBe('rgb(0 0 0 / 1)')
+  })
+
+  test('test_colorWithAlpha_supports_3digit_hex_white', () => {
+    // #fff == #ffffff
+    expect(colorWithAlpha('#fff', 0.8)).toBe('rgb(255 255 255 / 0.8)')
+  })
+
+  test('test_colorWithAlpha_6digit_still_works', () => {
+    // Regression guard — 6-digit must keep working
+    expect(colorWithAlpha('#ff8800', 0.5)).toBe('rgb(255 136 0 / 0.5)')
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Wave 5 / S4-T6: signedDelta exported from usage-report-display (net-new)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * S4-T6: The engineer must extract `signedDelta` from the inline copy in
+ * `index.tsx` and export it from `usage-report-display.ts`. This import will
+ * be RED (ModuleNotFoundError on the named export) until the engineer creates
+ * the export.
+ */
+describe('test_signedDelta_real_helper (S4-T6)', () => {
+  test('positive delta when current exceeds prior', () => {
+    expect(signedDelta(1500, 1000)).toBeCloseTo(0.5, 6)
+  })
+
+  test('negative delta when current is below prior', () => {
+    expect(signedDelta(800, 1000)).toBeCloseTo(-0.2, 6)
+  })
+
+  test('null when prior is zero to avoid division by zero', () => {
+    expect(signedDelta(500, 0)).toBeNull()
+  })
+
+  test('zero delta when current equals prior', () => {
+    expect(signedDelta(1000, 1000)).toBeCloseTo(0, 6)
   })
 })
