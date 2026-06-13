@@ -306,3 +306,85 @@ test('test_hover_tooltip_does_not_inject_style_tag', () => {
   const injectedStyle = document.head.querySelector('[data-v9-tooltip]')
   expect(injectedStyle).toBeNull()
 })
+
+// ---------------------------------------------------------------------------
+// Wave 3 (adversarial-review-20260612) — FAILING tests, W3 engineer to fix
+// ---------------------------------------------------------------------------
+
+/**
+ * S3-22 — Re-hovering a pinned tooltip silently unpins it.
+ *
+ * `onPointerEnter` does `setIsPinned(false)` unconditionally. Flow:
+ * hover → Ctrl (pinned) → move away (stays open) → move back across trigger → unpinned.
+ *
+ * After fix: `onPointerEnter` must NOT reset `isPinned` when the pin is already set.
+ */
+test('test_hover_tooltip_reenter_keeps_pin', () => {
+  const { container } = render(
+    <HoverTooltip content={<span>Pinnable content</span>}>
+      <button type='button'>Hover me</button>
+    </HoverTooltip>
+  )
+
+  const trigger = container.firstChild as HTMLElement
+
+  // 1. Open the tooltip.
+  fireEvent.pointerEnter(trigger)
+  let tip = document.body.querySelector('.v9-tip') as HTMLElement | null
+  expect(tip).not.toBeNull()
+  expect(tip!.getAttribute('data-state')).toBe('open')
+
+  // 2. Pin it with Ctrl.
+  fireEvent.keyDown(window, { key: 'Control' })
+  expect(tip!.getAttribute('data-pinned')).toBe('true')
+
+  // 3. Leave the trigger (pinned tooltip stays open).
+  fireEvent.pointerLeave(trigger)
+  expect(tip!.getAttribute('data-state')).toBe('open')
+  expect(tip!.getAttribute('data-pinned')).toBe('true')
+
+  // 4. Re-enter the trigger.
+  fireEvent.pointerEnter(trigger)
+
+  // After fix: pin must be preserved (data-pinned remains 'true').
+  // Before fix: setIsPinned(false) → data-pinned flips to 'false'.
+  tip = document.body.querySelector('.v9-tip') as HTMLElement | null
+  expect(tip!.getAttribute('data-pinned')).toBe('true') // FAILS before fix
+})
+
+/**
+ * S3-25 — `panelStyle` positional override is silently clobbered by computed coords.
+ *
+ * `panelStyleOverride` is merged at line 355, BEFORE coords are applied.
+ * A caller passing `top: '999px'` in `panelStyle` will have it overwritten
+ * by the coord-computed top value (coords apply last). After the fix, either:
+ *   (a) positional keys in panelStyle are applied after coords (they win), or
+ *   (b) the API is documented: only non-positional keys are honored.
+ *
+ * This test FAILS before fix because the coord-computed top overwrites the
+ * caller's explicit `top: '999px'` intent.
+ */
+test('test_panelStyle_nonpositional_preserved', () => {
+  const { container } = render(
+    <HoverTooltip
+      content={<span>Override content</span>}
+      panelStyle={{ maxWidth: '720px', top: '999px' }}
+    >
+      <button type='button'>Hover me</button>
+    </HoverTooltip>
+  )
+
+  const trigger = container.firstChild as HTMLElement
+  fireEvent.pointerEnter(trigger)
+
+  const tip = document.body.querySelector('.v9-tip') as HTMLElement | null
+  expect(tip).not.toBeNull()
+
+  // Non-positional key: maxWidth must survive (already works, regression guard).
+  expect(tip!.style.maxWidth).toBe('720px')
+
+  // Positional key bug: `top: '999px'` in panelStyle is overwritten by coords.
+  // After fix: the caller's `top` intent is preserved (applied after coords).
+  // This assertion FAILS before fix — coords overwrite top to a computed value.
+  expect(tip!.style.top).toBe('999px')
+})
