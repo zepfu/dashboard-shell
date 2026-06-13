@@ -345,3 +345,164 @@ test('test_build_current_stats_exported_aggregates_correctly', () => {
   expect(anthropic?.burn).toBeCloseTo(70)
   expect(openai?.burn).toBeCloseTo(14)
 })
+
+// ---------------------------------------------------------------------------
+// S5-1: buildCurrentStats weighted error excludes only undefined cache%
+// ---------------------------------------------------------------------------
+
+/**
+ * S5-1 — request-weighted error rate must not be inflated by 0% models.
+ *
+ * Scenario: 9 models at 0% error + 1 model at 10% error. The simple average
+ * would be 10/10 = 1%. A weighted-by-request average over equal request counts
+ * is also ~1%. The cache% calculation must include genuine 0% hits (not filter
+ * them out), so avgCachePct over models with cache_pct=0 must be 0 (not NaN).
+ *
+ * The current implementation filters `filter((v) => v > 0)` for both errPct
+ * AND cachePct, which causes:
+ *  - avgErrPct = 10/1 = 10% (only the one non-zero value counted) — WRONG
+ *  - avgCachePct drops genuine 0% entries too
+ *
+ * This test verifies the expected behaviour where:
+ *  - avgErrPct ≈ 1% (request-weighted over all 10 models)
+ *  - avgCachePct = 0 (all models have cache_pct 0, average is 0 not NaN)
+ *
+ * EXPECTED FAIL: current implementation produces avgErrPct=10 (only 1 non-zero
+ * model counted), not ≈1.
+ */
+test('test_buildCurrentStats_weighted_excludes_only_undefined', () => {
+  // 9 models at 0% error + 1 model at 10% error, equal request counts → ~1%
+  const rows: ModelRow[] = [
+    ...Array.from({ length: 9 }, (_, i) => ({
+      model: `model-zero-${i}`,
+      provider: 'openai',
+      tokens_in: 1000,
+      tokens_out: 500,
+      requests: 100,
+      p50_ms: 100,
+      p95_ms: 200,
+      error_pct: 0,
+      cost_usd: 1,
+      quota_pct: 0,
+      cache_pct: 0, // genuine 0% cache — must be included in average
+    })),
+    {
+      model: 'model-error',
+      provider: 'openai',
+      tokens_in: 1000,
+      tokens_out: 500,
+      requests: 100,
+      p50_ms: 100,
+      p95_ms: 200,
+      error_pct: 10,
+      cost_usd: 1,
+      quota_pct: 0,
+      cache_pct: 0,
+    },
+  ]
+
+  const stats = buildCurrentStats(['openai'], rows, 1)
+  const openai = stats.find((s) => s.provider === 'openai')
+
+  // Request-weighted average: (9×0 + 1×10) / 10 = 1%
+  // Current impl filters > 0 → only 1 value counted → returns 10%
+  // This assertion will FAIL against current implementation.
+  expect(openai?.avgErrPct).toBeCloseTo(1, 0)
+
+  // avgCachePct over all-zero values = 0 (not NaN, not dropped)
+  expect(openai?.avgCachePct).toBeDefined()
+  expect(Number.isNaN(openai?.avgCachePct)).toBe(false)
+  expect(openai?.avgCachePct).toBeCloseTo(0)
+})
+
+// ---------------------------------------------------------------------------
+// S5-2: 0%→5% delta shows "new" / "↑ from 0" instead of "—"
+// ---------------------------------------------------------------------------
+
+/**
+ * S5-2 — when prior value is zero, delta should render "new" or "↑ from 0",
+ * NOT the generic "—" fallback.
+ *
+ * computeDeltaPct(5, 0) returns null (division-by-zero guard) which causes
+ * formatDeltaPct(null) → "—". But semantically, going from 0 to any positive
+ * value should surface a "new"/"↑ from 0" label rather than silence.
+ *
+ * EXPECTED FAIL: current formatDeltaPct(null) returns "—", not "new".
+ */
+test('test_delta_zero_prior_renders_new_not_dash', () => {
+  // Prior cost = 0, current cost = 5 → 0%→5% transition
+  const priorStats: ProviderCurrentStats[] = [
+    {
+      provider: 'anthropic',
+      totalCost: 0,
+      totalTokens: 0,
+      avgP95: 0,
+      avgErrPct: 0,
+      avgCachePct: 0,
+      burn: 0,
+    },
+  ]
+  const currentRows: ModelRow[] = [makeRow('anthropic', 5)]
+
+  render(
+    <ComparisonPanel
+      providers={['anthropic']}
+      modelRows={currentRows}
+      priorStats={priorStats}
+    />
+  )
+
+  // Should render "new" or "↑ from 0" — not "—"
+  // The cost delta cell (Δ Cost column) should NOT show just "—"
+  const allCells = Array.from(document.querySelectorAll('tbody td'))
+  const deltaCostCell = allCells[1] // second column = Δ Cost
+  expect(deltaCostCell?.textContent).not.toBe('—')
+  // Must explicitly signal a "new" value or "from 0" context
+  const text = deltaCostCell?.textContent ?? ''
+  const signalsNew =
+    text.toLowerCase().includes('new') ||
+    text.toLowerCase().includes('from 0') ||
+    text.includes('↑')
+  expect(signalsNew).toBe(true)
+})
+
+// ---------------------------------------------------------------------------
+// S5-3: sparkline color must be per-provider, not a constant
+// ---------------------------------------------------------------------------
+
+/**
+ * S5-3 — each provider's sparkline must use a distinct per-provider color.
+ *
+ * Current implementation hardcodes `const providerColor = 'var(--accent-cool)'`
+ * for every row. A table with 2+ providers should have different stroke colors
+ * on their sparkline polylines.
+ *
+ * EXPECTED FAIL: current code sets providerColor = 'var(--accent-cool)' for
+ * all providers, so both polylines will have the same stroke.
+ */
+test('test_comparison_sparkline_color_per_provider', () => {
+  // 24 buckets with different totals per provider
+  const trendBuckets = Array.from({ length: 24 }, (_, i) => ({
+    hour: i,
+    totals: { anthropic: i * 100, openai: i * 50 },
+  }))
+
+  const rows: ModelRow[] = [makeRow('anthropic', 10), makeRow('openai', 5)]
+
+  const { container } = render(
+    <ComparisonPanel
+      providers={['anthropic', 'openai']}
+      modelRows={rows}
+      trendBuckets={trendBuckets}
+    />
+  )
+
+  // Each row's sparkline polyline should carry a stroke attribute
+  const polylines = container.querySelectorAll('polyline')
+  expect(polylines.length).toBeGreaterThanOrEqual(2)
+
+  // The two polylines must have DIFFERENT stroke colors (per-provider)
+  const strokes = Array.from(polylines).map((p) => p.getAttribute('stroke'))
+  const uniqueStrokes = new Set(strokes)
+  expect(uniqueStrokes.size).toBeGreaterThan(1)
+})
