@@ -158,3 +158,57 @@ test('test_aggregate_card_no_quotas_section_rendered', () => {
   expect(container.querySelector('.quota-section-title')).toBeNull()
   expect(container.querySelector('.quota-list')).toBeNull()
 })
+
+// ---------------------------------------------------------------------------
+// S5-28: pulse-dot aria consistency — hidden or role=img, not interactive
+// ---------------------------------------------------------------------------
+
+/**
+ * S5-28 — the pulse-dot inside "invalid tool calls" label must have
+ * consistent ARIA treatment: either aria-hidden="true" (purely decorative)
+ * OR role="img" with an accessible label. It must never be both absent
+ * and interactive (i.e., it should not receive focus or be clickable).
+ *
+ * Current implementation uses:
+ *   aria-label="invalid tool calls detected"
+ * …which is neither aria-hidden nor role="img". A span without role=img
+ * should not carry aria-label per ARIA spec (aria-label is only valid on
+ * interactive or landmark roles, or with an explicit role attribute).
+ *
+ * EXPECTED FAIL: current implementation has aria-label on a bare <span>
+ * without role="img" — this is invalid. The test expects either:
+ *   - aria-hidden="true" (decorative), OR
+ *   - role="img" + aria-label (meaningful icon)
+ * But NOT a bare span with aria-label and no role.
+ */
+test('test_aggregate_card_pulse_dot_aria', () => {
+  render(
+    <AggregateCard
+      config={aggregateConfig}
+      data={mockData}
+      healthCells={mockHealthCells}
+      fleetActivity={{ ...baseFleetActivity, invalidToolCalls: 3 }}
+    />
+  )
+
+  const pulseDot = document.querySelector('.pulse-dot')
+  expect(pulseDot).not.toBeNull()
+
+  const isAriaHidden = pulseDot?.getAttribute('aria-hidden') === 'true'
+  const hasRoleImg = pulseDot?.getAttribute('role') === 'img'
+
+  // Must be EITHER aria-hidden (decorative) OR role=img (meaningful icon)
+  expect(isAriaHidden || hasRoleImg).toBe(true)
+
+  // If it has aria-label, it MUST have role=img (bare span + aria-label is invalid)
+  const hasAriaLabel = pulseDot?.hasAttribute('aria-label') === true
+  if (hasAriaLabel) {
+    expect(hasRoleImg).toBe(true)
+  }
+
+  // Must never be focusable (tabIndex ≥ 0 would make it keyboard-reachable)
+  const tabIndex = pulseDot?.getAttribute('tabindex')
+  if (tabIndex !== null) {
+    expect(parseInt(tabIndex, 10)).toBeLessThan(0)
+  }
+})
