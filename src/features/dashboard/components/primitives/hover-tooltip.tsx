@@ -352,10 +352,6 @@ export function HoverTooltip({
       } satisfies CSSProperties)
     }
 
-    if (panelStyleOverride !== undefined) {
-      Object.assign(base, panelStyleOverride)
-    }
-
     // Apply computed fixed-position coords.
     if (coords) {
       if (coords.useRight && coords.right !== undefined) {
@@ -372,6 +368,11 @@ export function HoverTooltip({
       // Before first measurement — keep off-screen so it doesn't flash.
       base.top = -9999
       base.left = -9999
+    }
+
+    // Apply caller overrides LAST so they win over computed positional coords.
+    if (panelStyleOverride !== undefined) {
+      Object.assign(base, panelStyleOverride)
     }
 
     return base
