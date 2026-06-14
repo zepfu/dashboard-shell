@@ -45,7 +45,9 @@
  * Accessibility: the outer container carries a descriptive aria-label.
  */
 import {
+  useEffect,
   useMemo,
+  useRef,
   useState,
   type CSSProperties,
   type ReactElement,
@@ -66,6 +68,7 @@ import {
   tokenTrendDayHeightPct,
   tokenTrendHourHeightPct,
   type TokenTrendActiveVersionFamilyLane,
+  type TokenTrendDayEnvelopeRangeOptions,
   type TokenTrendActiveVersionSegment,
   type TokenTrendDayEnvelope,
   type TokenTrendModelFirstSeenGroup,
@@ -608,17 +611,24 @@ interface TokenScaleTick {
   label: string
 }
 
-function buildTokenScaleTicks(maxValue: number): TokenScaleTick[] {
+// eslint-disable-next-line react-refresh/only-export-components
+export function buildTokenScaleTicks(maxValue: number): TokenScaleTick[] {
   if (!Number.isFinite(maxValue) || maxValue <= 0) return []
 
-  return [0.25, 0.5, 0.75, 1].map((pct) => {
-    const value = maxValue * pct
-    return {
-      value,
-      pct: pct * 100,
-      label: formatCompactNumber(value),
-    }
-  })
+  const floorTickValue = maxValue * 0.005
+
+  return [
+    {
+      value: floorTickValue,
+      pct: tokenTrendDayHeightPct(floorTickValue, maxValue),
+    },
+    { value: maxValue * 0.25, pct: 25 },
+    { value: maxValue * 0.5, pct: 50 },
+    { value: maxValue, pct: 100 },
+  ].map((tick) => ({
+    ...tick,
+    label: formatCompactNumber(tick.value),
+  }))
 }
 
 function renderTokenScaleMarkers(ticks: readonly TokenScaleTick[]): ReactNode {
@@ -671,9 +681,12 @@ function buildMetricScaleTicks(
   maxValue: number,
   mode: Exclude<LowerLaneMode, 'tui'>
 ): TokenScaleTick[] {
-  return buildTokenScaleTicks(maxValue).map((tick) => ({
-    ...tick,
-    label: `${tick.label} ${metricScaleUnit(mode)}`,
+  if (!Number.isFinite(maxValue) || maxValue <= 0) return []
+
+  return [25, 50, 75, 100].map((pct) => ({
+    value: maxValue * (pct / 100),
+    pct,
+    label: `${formatCompactNumber(maxValue * (pct / 100))} ${metricScaleUnit(mode)}`,
   }))
 }
 
@@ -719,19 +732,41 @@ function dayEnvelopeBackground(index: number): string {
     : 'color-mix(in srgb, var(--card) 82%, var(--fg-muted) 18%)'
 }
 
-function parseTrendDayHour(value: string | null | undefined): {
+// eslint-disable-next-line react-refresh/only-export-components
+export function parseTrendDayHour(value: string | null | undefined): {
   day: string
   hour: number | null
 } | null {
   if (value == null || value.trim() === '') return null
+
+  // Check for an explicit UTC-offset suffix (e.g. "T23:30:00-04:00" or "+05:30").
+  // When present, derive both day and hour from the parsed UTC timestamp so
+  // they are always consistent with each other.
+  const hasOffset = /[T\s]\d{2}:\d{2}(:\d{2})?([+-]\d{2}:\d{2}|Z)$/.test(
+    value.trim()
+  )
+  if (hasOffset) {
+    const parsed = new Date(value)
+    if (Number.isNaN(parsed.getTime())) return null
+    const utcDay = parsed.toISOString().slice(0, 10)
+    return { day: utcDay, hour: parsed.getUTCHours() }
+  }
+
+  // No offset — treat as a plain "local-looking" string.
   const dayMatch = value.match(/^(\d{4}-\d{2}-\d{2})/)
   if (dayMatch === null) return null
+
   const localHourMatch = value.match(/^\d{4}-\d{2}-\d{2}[T\s](\d{2})/)
   if (localHourMatch !== null) {
-    return { day: dayMatch[1], hour: Number.parseInt(localHourMatch[1], 10) }
+    const hour = Number.parseInt(localHourMatch[1], 10)
+    // Reject out-of-range hours (e.g. hour=99 from bad DB rows).
+    if (hour < 0 || hour > 23) return null
+    return { day: dayMatch[1], hour }
   }
+
   const hasTime = value.includes('T') || /\d{2}:\d{2}/.test(value)
   if (!hasTime) return { day: dayMatch[1], hour: null }
+
   const parsed = new Date(value)
   if (Number.isNaN(parsed.getTime())) return { day: dayMatch[1], hour: null }
   return { day: dayMatch[1], hour: parsed.getUTCHours() }
@@ -762,14 +797,22 @@ function healthMetricValue(
     case 'latency':
       return (
         finiteMetricValue(row.upstream_p95_ms) ??
-        finiteMetricValue(row.total_p95_ms) ??
-        finiteMetricValue(row.status_probe_p95_ms)
+        finiteMetricValue(row.total_p95_ms)
       )
     case 'probes':
       return finiteMetricValue(row.status_probe_count)
     default:
       return null
   }
+}
+
+function healthMetricWeight(
+  metric: TrendMetricDefinition,
+  row: UsageReportProviderLatencyHealthRow
+): number {
+  if (metric.kind !== 'latency') return 1
+  const requests = finiteMetricValue(row.requests) ?? 0
+  return Math.max(1, requests)
 }
 
 function invertedIncidentScore(
@@ -995,7 +1038,8 @@ function addSignalValue(
   cells.set(key, existing)
 }
 
-function buildTrendSignalRows({
+// eslint-disable-next-line react-refresh/only-export-components
+export function buildTrendSignalRows({
   mode,
   dayEnvelopes,
   healthRows,
@@ -1023,18 +1067,21 @@ function buildTrendSignalRows({
         continue
       }
       const parsed = parseTrendDayHour(row.bucket_start)
-      if (parsed === null || !days.has(parsed.day)) continue
+      if (parsed === null || parsed.hour === null || !days.has(parsed.day)) {
+        continue
+      }
       sourceRowCount += 1
-      const hours =
-        parsed.hour === null
-          ? Array.from({ length: 24 }, (_, hour) => hour)
-          : [parsed.hour]
       for (const metric of selectedMetrics) {
         const value = healthMetricValue(metric, row)
         if (value === null) continue
-        for (const hour of hours) {
-          addSignalValue(mutableCells, metric, parsed.day, hour, value)
-        }
+        addSignalValue(
+          mutableCells,
+          metric,
+          parsed.day,
+          parsed.hour,
+          value,
+          healthMetricWeight(metric, row)
+        )
       }
     }
   } else {
@@ -1397,7 +1444,7 @@ function renderActiveVersionLanes(
     >
       {renderDayStripeLayer(dayCount)}
       {lanes.map((lane, laneIndex) => {
-        const separatorHeight = lane.key === 'claude' ? 0 : 7
+        const separatorHeight = laneIndex === 0 ? 0 : 7
         const trackHeight = Math.max(
           14,
           lane.rowCount * ACTIVE_VERSION_ROW_HEIGHT_PX + 2
@@ -1414,10 +1461,10 @@ function renderActiveVersionLanes(
             style={{
               position: 'relative',
               height: `${(trackHeight + separatorHeight).toString()}px`,
-              marginTop: lane.key === 'claude' ? 0 : '3px',
+              marginTop: laneIndex === 0 ? 0 : '3px',
               paddingTop: `${separatorHeight.toString()}px`,
               borderTop:
-                lane.key === 'claude'
+                laneIndex === 0
                   ? '0'
                   : '1px solid color-mix(in srgb, var(--fg-muted) 28%, transparent)',
               background:
@@ -1753,6 +1800,7 @@ export interface TokenTrendChartProps {
   dayEnvelopes?: TokenTrendDayEnvelope[]
   requestDayEnvelopes?: TokenTrendDayEnvelope[]
   toolDayEnvelopes?: TokenTrendDayEnvelope[]
+  dayEnvelopeRange?: TokenTrendDayEnvelopeRangeOptions
   versionIntervals?: UsageReportTokenTrendVersionIntervalRow[]
   modelFirstSeen?: UsageReportTokenTrendModelFirstSeenRow[]
   healthRows?: UsageReportProviderLatencyHealthRow[]
@@ -1790,6 +1838,7 @@ function TrendSignalPanel({
   const [openSignalMenu, setOpenSignalMenu] = useState<
     'scope' | 'metrics' | null
   >(null)
+  const menuRootRef = useRef<HTMLDivElement | null>(null)
   const scopeOptions = useMemo(
     () => deriveTrendScopeOptions(series, healthRows, scoreRows),
     [series, healthRows, scoreRows]
@@ -1855,12 +1904,28 @@ function TrendSignalPanel({
     [dayEnvelopes, signalEmptyText, visibleSignalRows]
   )
 
+  useEffect(() => {
+    if (openSignalMenu === null) return
+
+    const handlePointerDown = (event: PointerEvent): void => {
+      const target = event.target
+      if (!(target instanceof Node)) return
+      if (menuRootRef.current?.contains(target)) return
+      setOpenSignalMenu(null)
+    }
+
+    document.addEventListener('pointerdown', handlePointerDown)
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown)
+    }
+  }, [openSignalMenu])
+
   return (
     <div
       className={`tt-signal-panel tt-signal-panel-${signalMode}`}
       aria-label='Trend health and score graph'
     >
-      <div className='tt-signal-toolbar'>
+      <div className='tt-signal-toolbar' ref={menuRootRef}>
         <div
           role='tablist'
           aria-label='Trend signal graph'
@@ -1986,6 +2051,42 @@ function TrendSignalPanel({
   )
 }
 
+function createAlignedDayEnvelope(
+  day: string,
+  label: string
+): TokenTrendDayEnvelope {
+  return {
+    day,
+    label,
+    totals: {},
+    total: 0,
+    maxHourTotal: 0,
+    hours: Array.from({ length: 24 }, (_, hour) => ({
+      day,
+      hour,
+      label: `${hour.toString().padStart(2, '0')}:00`,
+      totals: {},
+      total: 0,
+    })),
+  }
+}
+
+function alignDayEnvelopesToRange(
+  baseEnvelopes: readonly TokenTrendDayEnvelope[],
+  envelopes: readonly TokenTrendDayEnvelope[]
+): TokenTrendDayEnvelope[] {
+  if (baseEnvelopes.length === 0 || envelopes.length === 0) {
+    return [...envelopes]
+  }
+
+  const byDay = new Map(envelopes.map((envelope) => [envelope.day, envelope]))
+  return baseEnvelopes.map(
+    (baseEnvelope) =>
+      byDay.get(baseEnvelope.day) ??
+      createAlignedDayEnvelope(baseEnvelope.day, baseEnvelope.label)
+  )
+}
+
 // ---------------------------------------------------------------------------
 // TokenTrendChart
 // ---------------------------------------------------------------------------
@@ -2006,6 +2107,7 @@ export function TokenTrendChart({
   dayEnvelopes,
   requestDayEnvelopes = [],
   toolDayEnvelopes = [],
+  dayEnvelopeRange,
   versionIntervals = [],
   modelFirstSeen = [],
   healthRows = [],
@@ -2018,6 +2120,7 @@ export function TokenTrendChart({
 }: TokenTrendChartProps): ReactElement {
   const [internalLowerLaneMode, setInternalLowerLaneMode] =
     useState<LowerLaneMode>('tui')
+  void dayEnvelopeRange
   const lowerLaneMode = lowerLaneModeProp ?? internalLowerLaneMode
   const handleLowerLaneModeChange = (mode: LowerLaneMode): void => {
     if (lowerLaneModeProp === undefined) {
@@ -2032,6 +2135,14 @@ export function TokenTrendChart({
       dayEnvelopes,
       versionIntervals
     )
+    const alignedRequestDayEnvelopes = alignDayEnvelopesToRange(
+      dayEnvelopes,
+      requestDayEnvelopes
+    )
+    const alignedToolDayEnvelopes = alignDayEnvelopesToRange(
+      dayEnvelopes,
+      toolDayEnvelopes
+    )
     const modelFirstSeenGroups = deriveTokenTrendModelFirstSeenGroups(
       dayEnvelopes,
       modelFirstSeen
@@ -2041,7 +2152,7 @@ export function TokenTrendChart({
     const hasActiveVersionLanes = activeVersionLanes.some(
       (lane) => lane.segments.length > 0
     )
-    const hasVersionsLaneData = hasActiveVersionLanes
+    const hasActiveVersionLaneData = hasActiveVersionLanes
     const tokenScaleTicks = buildTokenScaleTicks(maxDayTotal)
     const widthUnits = Math.max(1, dayEnvelopes.length * 24)
     const labelStride =
@@ -2120,7 +2231,8 @@ export function TokenTrendChart({
                     position: 'relative',
                     zIndex: 1,
                   }}
-                  onPointerEnter={() => {
+                  onPointerEnter={(event) => {
+                    if (event.target !== event.currentTarget) return
                     onHourHover?.({
                       day: day.day,
                       hour: hoverHour,
@@ -2176,6 +2288,12 @@ export function TokenTrendChart({
                               opacity: 0.66,
                               position: 'relative',
                               zIndex: 1,
+                            }}
+                            onPointerEnter={() => {
+                              onHourHover?.({
+                                day: hourBucket.day,
+                                hour: hourBucket.hour,
+                              })
                             }}
                           >
                             {series.map((s) => {
@@ -2311,8 +2429,8 @@ export function TokenTrendChart({
           : renderMetricLowerLane(
               lowerLaneMode,
               lowerLaneMode === 'requests'
-                ? requestDayEnvelopes
-                : toolDayEnvelopes,
+                ? alignedRequestDayEnvelopes
+                : alignedToolDayEnvelopes,
               series,
               lowerChartHeightPx
             )}
@@ -2360,7 +2478,7 @@ export function TokenTrendChart({
                 {s.label}
               </div>
             ))}
-            {hasVersionsLaneData && (
+            {hasActiveVersionLaneData && (
               <div className='tt-leg-item'>
                 <span className='tt-active-version-swatch' />
                 Active version
