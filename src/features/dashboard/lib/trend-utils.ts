@@ -382,7 +382,9 @@ export function normalizeTokenTrendClientVersionForLane(
   clientVersion: string
 ): string {
   const trimmed = clientVersion.trim()
-  const hashedBuildMatch = /^(\d+\.\d+\.\d+)\.[0-9a-f]{3,}$/i.exec(trimmed)
+  const hashedBuildMatch = /^(\d+\.\d+\.\d+)\.[0-9a-f]*[a-f][0-9a-f]*$/i.exec(
+    trimmed
+  )
   if (hashedBuildMatch?.[1] !== undefined) return hashedBuildMatch[1]
   return trimmed
 }
