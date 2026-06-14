@@ -116,7 +116,7 @@ function clampPanelTop(top: number, panelHeight: number): number {
   return clamp(top, VIEWPORT_MARGIN_PX, maxPanelTop(panelHeight))
 }
 
-function clampPanelRight(right: number, panelWidth: number): number {
+function maxPanelOffset(right: number, panelWidth: number): number {
   return clamp(right, VIEWPORT_MARGIN_PX, maxPanelLeft(panelWidth))
 }
 
@@ -154,7 +154,7 @@ function computeCoords(
       // right edge of panel sits 8px left of trigger left edge
       top: clampedVisualTop + panelHeight / 2,
       left: 0, // unused when useRight=true
-      right: clampPanelRight(
+      right: maxPanelOffset(
         viewportWidth() - rect.left + HEALTH_TOOLTIP_GAP_PX,
         panelWidth
       ),
@@ -170,7 +170,7 @@ function computeCoords(
       // bottom edge of panel sits 6px above trigger top
       top: clampedVisualTop + panelHeight,
       left: 0, // unused when useRight=true
-      right: clampPanelRight(viewportWidth() - rect.right, panelWidth),
+      right: maxPanelOffset(viewportWidth() - rect.right, panelWidth),
       translateY: '-100%',
       useRight: true,
     }
@@ -442,7 +442,6 @@ export function HoverTooltip({
           : {}),
       }}
       onPointerEnter={() => {
-        setIsPinned(false)
         setIsOpen(true)
       }}
       onPointerLeave={() => {
