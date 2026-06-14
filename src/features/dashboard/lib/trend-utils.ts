@@ -151,6 +151,11 @@ export interface TokenTrendDayEnvelope {
 
 export type TokenTrendEnvelopeMetric = 'tokens' | 'requests' | 'tools'
 
+export interface TokenTrendDayEnvelopeRangeOptions {
+  from?: string
+  to?: string
+}
+
 export interface TokenTrendVersionTrackPoint {
   day: string
   hour: number
@@ -268,9 +273,31 @@ function createEmptyHours(day: string): TokenTrendHourBucket[] {
   }))
 }
 
+function isIsoDay(value: string | undefined): value is string {
+  return value !== undefined && ISO_DATE_RE.test(value)
+}
+
+function createEmptyEnvelope(day: string): TokenTrendDayEnvelope {
+  return {
+    day,
+    label: formatBucketLabel(day),
+    totals: {},
+    total: 0,
+    maxHourTotal: 0,
+    hours: createEmptyHours(day),
+  }
+}
+
+function nextIsoDay(day: string): string {
+  const parsed = new Date(`${day}T00:00:00.000Z`)
+  parsed.setUTCDate(parsed.getUTCDate() + 1)
+  return parsed.toISOString().slice(0, 10)
+}
+
 export function buildTokenTrendDayEnvelopes(
   rows: readonly UsageReportTokenTrendHourRow[],
-  metric: TokenTrendEnvelopeMetric = 'tokens'
+  metric: TokenTrendEnvelopeMetric = 'tokens',
+  options: TokenTrendDayEnvelopeRangeOptions = {}
 ): TokenTrendDayEnvelope[] {
   const dayMap = new Map<string, TokenTrendDayEnvelope>()
 
@@ -296,14 +323,7 @@ export function buildTokenTrendDayEnvelopes(
 
     let envelope = dayMap.get(day)
     if (envelope === undefined) {
-      envelope = {
-        day,
-        label: formatBucketLabel(day),
-        totals: {},
-        total: 0,
-        maxHourTotal: 0,
-        hours: createEmptyHours(day),
-      }
+      envelope = createEmptyEnvelope(day)
       dayMap.set(day, envelope)
     }
 
@@ -316,6 +336,18 @@ export function buildTokenTrendDayEnvelopes(
     hourBucket.total += metricValue
     envelope.totals[provider] = (envelope.totals[provider] ?? 0) + metricValue
     envelope.total += metricValue
+  }
+
+  const rangeFrom = options.from?.slice(0, 10)
+  const rangeTo = options.to?.slice(0, 10)
+  if (isIsoDay(rangeFrom) && isIsoDay(rangeTo)) {
+    const startDay = rangeFrom <= rangeTo ? rangeFrom : rangeTo
+    const endDay = rangeFrom <= rangeTo ? rangeTo : rangeFrom
+    for (let day = startDay; day <= endDay; day = nextIsoDay(day)) {
+      if (!dayMap.has(day)) {
+        dayMap.set(day, createEmptyEnvelope(day))
+      }
+    }
   }
 
   const envelopes = [...dayMap.values()].sort((a, b) =>
@@ -361,7 +393,12 @@ export function isTokenTrendActiveVersionClient(row: {
   ) {
     return true
   }
-  if (hasTokenSequence(clientName, 'codex tui')) return true
+  if (
+    hasTokenSequence(clientName, 'codex tui') ||
+    hasTokenSequence(clientName, 'codex cli')
+  ) {
+    return true
+  }
   if (hasTokenSequence(clientName, 'gemini cli')) return true
   if (
     hasTokenSequence(clientName, 'grok build') ||
