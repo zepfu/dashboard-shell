@@ -1,5 +1,6 @@
 import {
   memo,
+  useMemo,
   type CSSProperties,
   type ReactElement,
   type ReactNode,
@@ -74,18 +75,6 @@ function computeP90Threshold(cells: readonly CellDef[]): number | null {
   return sorted[Math.min(idx, sorted.length - 1)]
 }
 
-function computeP50Threshold(cells: readonly CellDef[]): number | null {
-  const values = cells
-    .map((c) => c.rawP95Ms)
-    .filter((v): v is number => v != null && v > 0)
-
-  if (values.length === 0) return null
-
-  const sorted = [...values].sort((a, b) => a - b)
-  const idx = Math.floor(sorted.length * 0.5)
-  return sorted[Math.min(idx, sorted.length - 1)]
-}
-
 function lerp(lo: number, hi: number, t: number): number {
   const clamped = Math.max(0, Math.min(1, t))
   return lo + (hi - lo) * clamped
@@ -133,8 +122,7 @@ function categoryToColor(
 
 function deriveCellStyle(
   cell: CellDef,
-  p90Threshold: number | null,
-  p50Threshold: number | null
+  p90Threshold: number | null
 ): { background: string | undefined; extraClass: string } {
   const intensity = cell.intensity ?? 0.5
 
@@ -161,7 +149,6 @@ function deriveCellStyle(
     return categoryToColor('green', intensity)
   }
 
-  void p50Threshold
   return { background: cell.color, extraClass: '' }
 }
 
@@ -490,17 +477,12 @@ function healthRunKey(
 
 function buildHealthVisualRuns(
   cells: readonly CellDef[],
-  p90Threshold: number | null,
-  p50Threshold: number | null
+  p90Threshold: number | null
 ): HealthVisualRun[] {
   const runs: HealthVisualRun[] = []
 
   for (const cell of cells) {
-    const { background, extraClass } = deriveCellStyle(
-      cell,
-      p90Threshold,
-      p50Threshold
-    )
+    const { background, extraClass } = deriveCellStyle(cell, p90Threshold)
     const next = { background, extraClass, span: 1 }
     const prev = runs[runs.length - 1]
 
@@ -522,18 +504,16 @@ export function HealthStrip({
 }: HealthStripProps): ReactElement {
   const isVertical = orientation === 'vertical'
   const { normalized, wallClockIndexed } = normalizeCells(cells, now)
-  const p90Threshold = computeP90Threshold(normalized)
-  const p50Threshold = computeP50Threshold(normalized)
+  const p90Threshold = useMemo(
+    () => computeP90Threshold(normalized),
+    [normalized]
+  )
 
   if (isVertical) {
     const renderCells = wallClockIndexed
       ? normalized
       : [...normalized].reverse()
-    const visualRuns = buildHealthVisualRuns(
-      renderCells,
-      p90Threshold,
-      p50Threshold
-    )
+    const visualRuns = buildHealthVisualRuns(renderCells, p90Threshold)
     const resolvedTooltip = resolveTooltipContent(
       tooltipContent,
       cells.length > 0 ? cells : normalized,
@@ -669,8 +649,7 @@ export function HealthStrip({
           {normalized.map((cell, i) => {
             const { background, extraClass } = deriveCellStyle(
               cell,
-              p90Threshold,
-              p50Threshold
+              p90Threshold
             )
             return (
               <HealthCell
