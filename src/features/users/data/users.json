@@ -1,0 +1,122 @@
+[
+  {
+    "id": "550e8400-e29b-41d4-a716-446655440001",
+    "firstName": "Alice",
+    "lastName": "Johnson",
+    "username": "alice.johnson",
+    "email": "alice.johnson@company.com",
+    "phoneNumber": "+1 (555) 123-4567",
+    "status": "active",
+    "role": "superadmin",
+    "createdAt": "2023-06-15T10:30:00.000Z",
+    "updatedAt": "2024-01-20T14:45:00.000Z"
+  },
+  {
+    "id": "550e8400-e29b-41d4-a716-446655440002",
+    "firstName": "Bob",
+    "lastName": "Smith",
+    "username": "bob.smith",
+    "email": "bob.smith@company.com",
+    "phoneNumber": "+1 (555) 234-5678",
+    "status": "active",
+    "role": "admin",
+    "createdAt": "2023-07-20T09:15:00.000Z",
+    "updatedAt": "2024-01-18T11:20:00.000Z"
+  },
+  {
+    "id": "550e8400-e29b-41d4-a716-446655440003",
+    "firstName": "Carol",
+    "lastName": "Davis",
+    "username": "carol.davis",
+    "email": "carol.davis@company.com",
+    "phoneNumber": "+1 (555) 345-6789",
+    "status": "active",
+    "role": "manager",
+    "createdAt": "2023-08-10T14:00:00.000Z",
+    "updatedAt": "2024-01-15T16:30:00.000Z"
+  },
+  {
+    "id": "550e8400-e29b-41d4-a716-446655440004",
+    "firstName": "David",
+    "lastName": "Wilson",
+    "username": "david.wilson",
+    "email": "david.wilson@company.com",
+    "phoneNumber": "+1 (555) 456-7890",
+    "status": "inactive",
+    "role": "cashier",
+    "createdAt": "2023-09-05T11:45:00.000Z",
+    "updatedAt": "2023-12-20T10:00:00.000Z"
+  },
+  {
+    "id": "550e8400-e29b-41d4-a716-446655440005",
+    "firstName": "Eve",
+    "lastName": "Martinez",
+    "username": "eve.martinez",
+    "email": "eve.martinez@company.com",
+    "phoneNumber": "+1 (555) 567-8901",
+    "status": "active",
+    "role": "admin",
+    "createdAt": "2023-10-12T08:30:00.000Z",
+    "updatedAt": "2024-01-22T09:15:00.000Z"
+  },
+  {
+    "id": "550e8400-e29b-41d4-a716-446655440006",
+    "firstName": "Frank",
+    "lastName": "Brown",
+    "username": "frank.brown",
+    "email": "frank.brown@company.com",
+    "phoneNumber": "+1 (555) 678-9012",
+    "status": "invited",
+    "role": "cashier",
+    "createdAt": "2024-01-05T13:20:00.000Z",
+    "updatedAt": "2024-01-05T13:20:00.000Z"
+  },
+  {
+    "id": "550e8400-e29b-41d4-a716-446655440007",
+    "firstName": "Grace",
+    "lastName": "Lee",
+    "username": "grace.lee",
+    "email": "grace.lee@company.com",
+    "phoneNumber": "+1 (555) 789-0123",
+    "status": "active",
+    "role": "manager",
+    "createdAt": "2023-11-18T16:00:00.000Z",
+    "updatedAt": "2024-01-10T12:45:00.000Z"
+  },
+  {
+    "id": "550e8400-e29b-41d4-a716-446655440008",
+    "firstName": "Henry",
+    "lastName": "Chen",
+    "username": "henry.chen",
+    "email": "henry.chen@company.com",
+    "phoneNumber": "+1 (555) 890-1234",
+    "status": "suspended",
+    "role": "cashier",
+    "createdAt": "2023-05-22T10:15:00.000Z",
+    "updatedAt": "2024-01-08T15:30:00.000Z"
+  },
+  {
+    "id": "550e8400-e29b-41d4-a716-446655440009",
+    "firstName": "Ivy",
+    "lastName": "Thompson",
+    "username": "ivy.thompson",
+    "email": "ivy.thompson@company.com",
+    "phoneNumber": "+1 (555) 901-2345",
+    "status": "active",
+    "role": "admin",
+    "createdAt": "2023-12-01T09:45:00.000Z",
+    "updatedAt": "2024-01-19T14:00:00.000Z"
+  },
+  {
+    "id": "550e8400-e29b-41d4-a716-446655440010",
+    "firstName": "Jack",
+    "lastName": "Robinson",
+    "username": "jack.robinson",
+    "email": "jack.robinson@company.com",
+    "phoneNumber": "+1 (555) 012-3456",
+    "status": "active",
+    "role": "manager",
+    "createdAt": "2023-08-28T15:30:00.000Z",
+    "updatedAt": "2024-01-12T11:20:00.000Z"
+  }
+]
