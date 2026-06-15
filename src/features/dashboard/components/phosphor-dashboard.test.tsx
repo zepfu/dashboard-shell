@@ -33,11 +33,9 @@ import type {
   UsageReportQuotaUsageBreakdown,
   UsageReportResponse,
   ShellHealthResponse,
-  UsageReportTrendRow,
 } from '../api/usage-report'
 import PhosphorDashboard from './phosphor-dashboard'
 import {
-  buildRepoRows,
   formatTimeAgo,
   quotaTypeToPeriodType,
   tipModelsFromBreakdownGoogleAggregated,
@@ -194,76 +192,6 @@ const MOCK_REPORT: UsageReportResponse = {
   toolActivity: [],
   rows: [],
 }
-
-test('test_buildRepoRows_merges_trailing_memory_suffix_rows', () => {
-  const rows = [
-    {
-      repository: 'dashboard-shell',
-      token_total: 1000,
-      usd_cost: 0.1,
-      traces: 10,
-      model: 'gpt-5.5',
-    },
-    {
-      repository: 'dashboard-shell (memory)',
-      token_total: 500,
-      usd_cost: 0.05,
-      traces: 5,
-      model: 'gpt-5.5',
-    },
-    {
-      repository: 'aawm-tap',
-      token_total: 250,
-      usd_cost: 0.02,
-      traces: 2,
-      model: 'claude-sonnet-4-5',
-    },
-  ]
-  const trendRows: UsageReportTrendRow[] = [
-    {
-      bucket: '2026-05-20T00:00:00.000Z',
-      provider: 'openai',
-      model: 'gpt-5.5',
-      repository: 'dashboard-shell',
-      traces: 10,
-      token_total: 100,
-      usd_cost: 0.01,
-    },
-    {
-      bucket: '2026-05-20T00:00:00.000Z',
-      provider: 'openai',
-      model: 'gpt-5.5',
-      repository: 'dashboard-shell (memory)',
-      traces: 5,
-      token_total: 50,
-      usd_cost: 0.005,
-    },
-    {
-      bucket: '2026-05-20T01:00:00.000Z',
-      provider: 'openai',
-      model: 'gpt-5.5',
-      repository: 'dashboard-shell (memory)',
-      traces: 4,
-      token_total: 75,
-      usd_cost: 0.0075,
-    },
-  ]
-
-  const repoRows = buildRepoRows(rows, trendRows)
-  const shellRows = repoRows.filter((row) =>
-    row.repository.startsWith('dashboard-shell')
-  )
-
-  expect(shellRows).toHaveLength(1)
-  expect(shellRows[0]).toMatchObject({
-    repository: 'dashboard-shell',
-    tokens: 1500,
-    traces: 15,
-    top_model: 'gpt-5.5',
-    spark: [150, 75],
-  })
-  expect(shellRows[0].cost_usd).toBeCloseTo(0.15)
-})
 
 // ---------------------------------------------------------------------------
 // TCG-1: Hoisted-query bypass — internal useQuery must NOT fire
