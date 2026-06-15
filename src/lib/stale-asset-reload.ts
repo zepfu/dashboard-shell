@@ -7,7 +7,6 @@ const staleAssetErrorPatterns = [
   /error loading dynamically imported module/i,
   /chunkloaderror/i,
   /loading chunk .+ failed/i,
-  /node_modules\/\.vite\/deps/i,
 ]
 
 export function errorText(value: unknown): string {
@@ -57,9 +56,4 @@ export function reloadForStaleAsset() {
 
   window.location.reload()
   return true
-}
-
-export function reloadForStaleAssetError(value: unknown) {
-  if (!isStaleAssetError(value)) return false
-  return reloadForStaleAsset()
 }
