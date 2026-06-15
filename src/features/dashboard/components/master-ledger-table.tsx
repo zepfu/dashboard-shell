@@ -52,7 +52,7 @@
  *   Zero/null/undefined tool counts now render '—' (no hover) matching the
  *   fmtOrDash contract used by all other optional numeric columns.
  */
-import { useState, useMemo, useEffect, type ReactElement } from 'react'
+import { memo, useState, useMemo, useEffect, type ReactElement } from 'react'
 import {
   createColumnHelper,
   flexRender,
@@ -1917,7 +1917,7 @@ export interface MasterLedgerTableProps {
  * Wave 20-Tables (F5): caption rendered from inside the component.
  * Wave 29 Fix #9: caption removed per operator direction.
  */
-export function MasterLedgerTable({
+function MasterLedgerTableInner({
   rows,
   ledgerView: ledgerViewProp,
   onLedgerViewChange,
@@ -1963,25 +1963,41 @@ export function MasterLedgerTable({
     () => new Set()
   )
 
+  const repositoryEntryMap = useMemo(() => {
+    const repositoryMap = new Map<string, RepositoryModelEntry[]>()
+    for (const sourceRow of rows) {
+      const providerKey = canonicalProvider(sourceRow.provider)
+      for (const repoRow of sourceRow.repositoryChildren ?? []) {
+        const repository = repoRow.model
+        const family = modelFamilyForRow(providerKey, sourceRow.model)
+        const entries = repositoryMap.get(repository) ?? []
+        entries.push({
+          repository,
+          providerKey,
+          sourceRow,
+          repoRow,
+          family,
+        })
+        repositoryMap.set(repository, entries)
+      }
+    }
+    return repositoryMap
+  }, [rows])
+
+  const modelProviderMap = useMemo(() => {
+    const providerMap = new Map<string, ModelRow[]>()
+    for (const row of rows) {
+      const providerKey = canonicalProvider(row.provider)
+      const providerRows = providerMap.get(providerKey) ?? []
+      providerRows.push(row)
+      providerMap.set(providerKey, providerRows)
+    }
+    return providerMap
+  }, [rows])
+
   const displayRows = useMemo(() => {
     if (ledgerView === 'repository') {
-      const repositoryMap = new Map<string, RepositoryModelEntry[]>()
-      for (const sourceRow of rows) {
-        const providerKey = canonicalProvider(sourceRow.provider)
-        for (const repoRow of sourceRow.repositoryChildren ?? []) {
-          const repository = repoRow.model
-          const family = modelFamilyForRow(providerKey, sourceRow.model)
-          const entries = repositoryMap.get(repository) ?? []
-          entries.push({
-            repository,
-            providerKey,
-            sourceRow,
-            repoRow,
-            family,
-          })
-          repositoryMap.set(repository, entries)
-        }
-      }
+      const repositoryMap = repositoryEntryMap
 
       const result: LedgerDisplayRow[] = []
       const repositoryRows = sortLedgerRows(
@@ -2136,13 +2152,7 @@ export function MasterLedgerTable({
       return result
     }
 
-    const providerMap = new Map<string, ModelRow[]>()
-    for (const row of rows) {
-      const providerKey = canonicalProvider(row.provider)
-      const providerRows = providerMap.get(providerKey) ?? []
-      providerRows.push(row)
-      providerMap.set(providerKey, providerRows)
-    }
+    const providerMap = modelProviderMap
 
     const result: LedgerDisplayRow[] = []
     const sortedProviderEntries = sortLedgerRows(
@@ -2286,7 +2296,8 @@ export function MasterLedgerTable({
 
     return result
   }, [
-    rows,
+    repositoryEntryMap,
+    modelProviderMap,
     sorting,
     ledgerView,
     expandedProvidersModel,
@@ -3090,3 +3101,5 @@ export function MasterLedgerTable({
     </>
   )
 }
+
+export const MasterLedgerTable = memo(MasterLedgerTableInner)

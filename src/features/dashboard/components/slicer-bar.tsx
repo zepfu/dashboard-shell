@@ -17,8 +17,10 @@
  * click via a document-level listener.
  */
 import {
+  memo,
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type KeyboardEvent,
@@ -108,7 +110,7 @@ interface DimensionDropdownProps {
  * State: `open` — whether the dropdown panel is visible.
  * Closes on Escape, Tab-out, or click-outside via document mousedown listener.
  */
-function DimensionDropdown({
+const DimensionDropdown = memo(function DimensionDropdown({
   label,
   selected,
   options,
@@ -274,7 +276,7 @@ function DimensionDropdown({
       )}
     </div>
   )
-}
+})
 
 // ---------------------------------------------------------------------------
 // SlicerBar
@@ -317,6 +319,27 @@ export function SlicerBar({
 
   const hasAnyFilter = DIMENSIONS.some((d) => filters[d.key].length > 0)
 
+  const dimensionHandlers = useMemo(
+    () =>
+      Object.fromEntries(
+        DIMENSIONS.map((dim) => [
+          dim.key,
+          {
+            onToggle: (value: string) => {
+              handleToggle(dim.key, value)
+            },
+            onClear: () => {
+              handleClear(dim.key)
+            },
+          },
+        ])
+      ) as Record<
+        keyof SlicerFilters,
+        { onToggle: (value: string) => void; onClear: () => void }
+      >,
+    [handleToggle, handleClear]
+  )
+
   return (
     <div
       className={['slicer-bar', className].filter(Boolean).join(' ')}
@@ -332,12 +355,8 @@ export function SlicerBar({
           selected={filters[dim.key]}
           options={options[dim.optionsKey]}
           shortcutTarget={index === 0 ? 'first-filter' : undefined}
-          onToggle={(value) => {
-            handleToggle(dim.key, value)
-          }}
-          onClear={() => {
-            handleClear(dim.key)
-          }}
+          onToggle={dimensionHandlers[dim.key].onToggle}
+          onClear={dimensionHandlers[dim.key].onClear}
         />
       ))}
 
