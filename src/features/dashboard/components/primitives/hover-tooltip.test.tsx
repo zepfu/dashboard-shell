@@ -86,32 +86,21 @@ function installTooltipRectMocks({
 
 test('test_hover_tooltip_hidden_by_default', () => {
   const { container } = render(
-    <HoverTooltip content={<span>Tooltip content</span>}>
+    <HoverTooltip content={() => <span>Tooltip content</span>}>
       <button type='button'>Hover me</button>
     </HoverTooltip>
   )
 
-  // Tooltip panel is portalled to document.body; query there instead of container.
   const tooltip =
     document.body.querySelector('.v9-tip') ??
     container.querySelector('[data-testid="hover-tooltip"]')
 
-  expect(tooltip).not.toBeNull()
-
-  // Hidden via class or attribute
-  const isHidden =
-    (tooltip as HTMLElement).classList.contains('hidden') ||
-    (tooltip as HTMLElement).classList.contains('opacity-0') ||
-    (tooltip as HTMLElement).getAttribute('data-state') === 'closed' ||
-    (tooltip as HTMLElement).style.display === 'none' ||
-    (tooltip as HTMLElement).style.opacity === '0'
-
-  expect(isHidden).toBe(true)
+  expect(tooltip).toBeNull()
 })
 
 test('test_hover_tooltip_visible_on_parent_hover', () => {
   const { container } = render(
-    <HoverTooltip content={<span>Tooltip content</span>}>
+    <HoverTooltip content={() => <span>Tooltip content</span>}>
       <button type='button'>Hover me</button>
     </HoverTooltip>
   )
@@ -138,7 +127,7 @@ test('test_hover_tooltip_visible_on_parent_hover', () => {
 
 test('test_hover_tooltip_control_key_pins_open_after_pointer_leave', () => {
   const { container } = render(
-    <HoverTooltip content={<span>Tooltip content</span>}>
+    <HoverTooltip content={() => <span>Tooltip content</span>}>
       <button type='button'>Hover me</button>
     </HoverTooltip>
   )
@@ -157,7 +146,7 @@ test('test_hover_tooltip_control_key_pins_open_after_pointer_leave', () => {
 
 test('test_hover_tooltip_escape_closes_pinned_tooltip', () => {
   const { container } = render(
-    <HoverTooltip content={<span>Tooltip content</span>}>
+    <HoverTooltip content={() => <span>Tooltip content</span>}>
       <button type='button'>Hover me</button>
     </HoverTooltip>
   )
@@ -170,19 +159,19 @@ test('test_hover_tooltip_escape_closes_pinned_tooltip', () => {
 
   const tooltip = document.body.querySelector('.v9-tip') as HTMLElement | null
 
-  expect(tooltip).not.toBeNull()
-  expect(tooltip?.getAttribute('data-state')).toBe('closed')
-  expect(tooltip?.getAttribute('data-pinned')).toBe('false')
+  expect(tooltip).toBeNull()
 })
 
 test('test_hover_tooltip_quota_variant_positions_above', () => {
   const { container } = render(
-    <HoverTooltip content={<span>Quota tip</span>} variant='quota'>
+    <HoverTooltip content={() => <span>Quota tip</span>} variant='quota'>
       <button type='button'>Trigger</button>
     </HoverTooltip>
   )
 
-  // Tooltip panel is portalled to document.body; query there instead of container.
+  const trigger = container.firstChild as HTMLElement
+  fireEvent.pointerEnter(trigger)
+
   const tooltip =
     document.body.querySelector('.v9-tip') ??
     container.querySelector('[data-testid="hover-tooltip"]')
@@ -200,13 +189,13 @@ test('test_hover_tooltip_quota_variant_positions_above', () => {
 test('test_hover_tooltip_portalled_panel_clears_legacy_offsets', () => {
   const { container } = render(
     <HoverTooltip
-      content={
+      content={() => (
         <>
           <div className='v9-tip-head'>Quota tip</div>
           <div className='v9-tip-row'>First row</div>
           <div className='v9-tip-row'>Second row</div>
         </>
-      }
+      )}
       variant='quota'
     >
       <button type='button'>Trigger</button>
@@ -226,14 +215,16 @@ test('test_hover_tooltip_portalled_panel_clears_legacy_offsets', () => {
 })
 
 test('test_hover_tooltip_accepts_panel_style_override', () => {
-  render(
+  const { container } = render(
     <HoverTooltip
-      content={<span>Tooltip content</span>}
+      content={() => <span>Tooltip content</span>}
       panelStyle={{ maxWidth: 'calc(100vw - 16px)', width: '720px' }}
     >
       <button type='button'>Hover me</button>
     </HoverTooltip>
   )
+
+  fireEvent.pointerEnter(container.firstChild as HTMLElement)
 
   const tooltip = document.body.querySelector('.v9-tip') as HTMLElement | null
 
@@ -252,7 +243,7 @@ test('test_hover_tooltip_default_variant_clamps_bottom_overflow', () => {
 
   try {
     const { container } = render(
-      <HoverTooltip content={<span>Large score tooltip</span>}>
+      <HoverTooltip content={() => <span>Large score tooltip</span>}>
         <button type='button'>Hover me</button>
       </HoverTooltip>
     )
@@ -281,7 +272,7 @@ test('test_hover_tooltip_default_variant_flips_left_at_right_edge', () => {
 
   try {
     const { container } = render(
-      <HoverTooltip content={<span>Wide score tooltip</span>}>
+      <HoverTooltip content={() => <span>Wide score tooltip</span>}>
         <button type='button'>Hover me</button>
       </HoverTooltip>
     )
@@ -303,7 +294,7 @@ test('test_hover_tooltip_does_not_inject_style_tag', () => {
   // a <style data-v9-tooltip> tag at runtime. CSS in index.css is the sole source
   // of truth for .v9-tip* rules, eliminating the cascade override risk.
   render(
-    <HoverTooltip content={<span>Tooltip content</span>}>
+    <HoverTooltip content={() => <span>Tooltip content</span>}>
       <button type='button'>Hover me</button>
     </HoverTooltip>
   )
@@ -332,11 +323,13 @@ test('test_hover_tooltip_does_not_inject_style_tag', () => {
  * no `role` attribute. The panel is invisible to AT even when open.
  */
 test('test_hover_tooltip_panel_has_role_tooltip', () => {
-  render(
-    <HoverTooltip content={<span>Tooltip content</span>}>
+  const { container } = render(
+    <HoverTooltip content={() => <span>Tooltip content</span>}>
       <button type='button'>Hover me</button>
     </HoverTooltip>
   )
+
+  fireEvent.pointerEnter(container.firstChild as HTMLElement)
 
   const panel = document.body.querySelector('.v9-tip') as HTMLElement | null
   expect(panel).not.toBeNull()
@@ -358,12 +351,14 @@ test('test_hover_tooltip_panel_has_role_tooltip', () => {
  */
 test('test_hover_tooltip_aria_describedby_wired_to_panel', () => {
   const { container } = render(
-    <HoverTooltip content={<span>Described content</span>}>
+    <HoverTooltip content={() => <span>Described content</span>}>
       <button type='button' id='my-trigger'>
         Trigger
       </button>
     </HoverTooltip>
   )
+
+  fireEvent.focus(container.querySelector('button') as HTMLButtonElement)
 
   const panel = document.body.querySelector('.v9-tip') as HTMLElement | null
   expect(panel).not.toBeNull()
@@ -403,7 +398,7 @@ test('test_hover_tooltip_aria_describedby_wired_to_panel', () => {
  */
 test('test_hover_tooltip_opens_on_focus', () => {
   const { container } = render(
-    <HoverTooltip content={<span>Focus-visible content</span>}>
+    <HoverTooltip content={() => <span>Focus-visible content</span>}>
       <button type='button'>Focus target</button>
     </HoverTooltip>
   )
@@ -439,7 +434,7 @@ test('test_hover_tooltip_opens_on_focus', () => {
  */
 test('test_hover_tooltip_closes_on_blur_when_not_pinned', () => {
   const { container } = render(
-    <HoverTooltip content={<span>Focus-visible content</span>}>
+    <HoverTooltip content={() => <span>Focus-visible content</span>}>
       <button type='button'>Focus target</button>
     </HoverTooltip>
   )
@@ -456,13 +451,10 @@ test('test_hover_tooltip_closes_on_blur_when_not_pinned', () => {
   // Blur the trigger (keyboard user Tabs away)
   fireEvent.blur(trigger)
 
-  // Panel must be closed / hidden after blur
-  const isStillOpen =
-    panel!.getAttribute('data-state') === 'open' &&
-    !panel!.classList.contains('hidden')
-
-  // EXPECTED FAIL: blur handler absent — tooltip stays open after keyboard navigation
-  expect(isStillOpen).toBe(false)
+  const panelAfterBlur = document.body.querySelector(
+    '.v9-tip'
+  ) as HTMLElement | null
+  expect(panelAfterBlur).toBeNull()
 })
 
 // ---------------------------------------------------------------------------
@@ -479,7 +471,7 @@ test('test_hover_tooltip_closes_on_blur_when_not_pinned', () => {
  */
 test('test_hover_tooltip_reenter_keeps_pin', () => {
   const { container } = render(
-    <HoverTooltip content={<span>Pinnable content</span>}>
+    <HoverTooltip content={() => <span>Pinnable content</span>}>
       <button type='button'>Hover me</button>
     </HoverTooltip>
   )
@@ -525,7 +517,7 @@ test('test_hover_tooltip_reenter_keeps_pin', () => {
 test('test_panelStyle_nonpositional_preserved', () => {
   const { container } = render(
     <HoverTooltip
-      content={<span>Override content</span>}
+      content={() => <span>Override content</span>}
       panelStyle={{ maxWidth: '720px', top: '999px' }}
     >
       <button type='button'>Hover me</button>

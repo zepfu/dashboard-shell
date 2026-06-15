@@ -409,7 +409,7 @@ test('test_provider_card_quota_tip_model_has_brand_color', () => {
     },
   ]
 
-  render(
+  const { container } = render(
     <ProviderCard
       config={anthropicConfig}
       data={mockData}
@@ -418,7 +418,12 @@ test('test_provider_card_quota_tip_model_has_brand_color', () => {
     />
   )
 
-  // .t-model spans should have an inline color style applied
+  const quotaTrigger =
+    container.querySelector('.quota-row-bar') ??
+    container.querySelector('.qbar-fill')
+  expect(quotaTrigger).not.toBeNull()
+  fireEvent.pointerEnter(quotaTrigger as HTMLElement)
+
   const tModelSpans = document.body.querySelectorAll('.t-model')
   // Only populated rows have the style; placeholder '—' rows do not
   const coloredSpans = Array.from(tModelSpans).filter(
