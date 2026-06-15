@@ -20,15 +20,7 @@ type ThemeProviderState = {
   resetTheme: () => void
 }
 
-const initialState: ThemeProviderState = {
-  defaultTheme: DEFAULT_THEME,
-  resolvedTheme: 'dark',
-  theme: DEFAULT_THEME,
-  setTheme: () => null,
-  resetTheme: () => null,
-}
-
-const ThemeContext = createContext<ThemeProviderState>(initialState)
+const ThemeContext = createContext<ThemeProviderState | null>(null)
 
 export function ThemeProvider({ children, ...props }: ThemeProviderProps) {
   useEffect(() => {
