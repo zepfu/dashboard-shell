@@ -10,6 +10,11 @@
  * state-driven visibility.
  *
  * All tests expected to FAIL (red) — source file does not exist yet.
+ *
+ * Wave 8 (S3-24) — a11y red-phase additions:
+ *  - role='tooltip' on the floating panel
+ *  - aria-describedby wired from trigger child to tooltip panel
+ *  - Opens on focus (not just pointer hover)
  */
 import { render, fireEvent } from '@testing-library/react'
 import { HoverTooltip } from '../primitives/hover-tooltip'
@@ -309,6 +314,159 @@ test('test_hover_tooltip_does_not_inject_style_tag', () => {
 
 // ---------------------------------------------------------------------------
 // Wave 3 (adversarial-review-20260612) — FAILING tests, W3 engineer to fix
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Wave 8 (S3-24) — a11y: role=tooltip, aria-describedby, opens on focus
+// ---------------------------------------------------------------------------
+
+/**
+ * S3-24 — The floating panel must carry role='tooltip'.
+ *
+ * `role='tooltip'` tells assistive technology that the element is a tooltip —
+ * it will be announced when the trigger element is focused, provided the trigger
+ * links to it via `aria-describedby`. Without this role the panel is an
+ * anonymous div that AT may or may not announce.
+ *
+ * EXPECTED FAIL: current implementation uses `<div className='v9-tip ...'>` with
+ * no `role` attribute. The panel is invisible to AT even when open.
+ */
+test('test_hover_tooltip_panel_has_role_tooltip', () => {
+  render(
+    <HoverTooltip content={<span>Tooltip content</span>}>
+      <button type='button'>Hover me</button>
+    </HoverTooltip>
+  )
+
+  const panel = document.body.querySelector('.v9-tip') as HTMLElement | null
+  expect(panel).not.toBeNull()
+
+  // EXPECTED FAIL: role='tooltip' absent in current implementation
+  expect(panel!.getAttribute('role')).toBe('tooltip')
+})
+
+/**
+ * S3-24 — The tooltip panel must have an `id` and the trigger's first focusable
+ * child (or the wrapper) must carry `aria-describedby` pointing to that id.
+ *
+ * Without this wiring:
+ *  - Screen readers don't announce tooltip content when the trigger is focused.
+ *  - The role='tooltip' alone is insufficient; the connection must be explicit.
+ *
+ * EXPECTED FAIL: current implementation has no `id` on `.v9-tip` and no
+ * `aria-describedby` on the wrapper or children.
+ */
+test('test_hover_tooltip_aria_describedby_wired_to_panel', () => {
+  const { container } = render(
+    <HoverTooltip content={<span>Described content</span>}>
+      <button type='button' id='my-trigger'>
+        Trigger
+      </button>
+    </HoverTooltip>
+  )
+
+  const panel = document.body.querySelector('.v9-tip') as HTMLElement | null
+  expect(panel).not.toBeNull()
+
+  // Panel must have a non-empty id
+  const panelId = panel!.getAttribute('id')
+  // EXPECTED FAIL: no id on the panel in current implementation
+  expect(panelId).not.toBeNull()
+  expect(panelId).not.toBe('')
+
+  // The wrapper or the trigger child must carry aria-describedby=panelId
+  const wrapper = container.firstChild as HTMLElement
+  const triggerChild = wrapper.querySelector(
+    '[id="my-trigger"]'
+  ) as HTMLElement | null
+
+  const wrapperDescribedBy = wrapper.getAttribute('aria-describedby')
+  const triggerDescribedBy =
+    triggerChild?.getAttribute('aria-describedby') ?? null
+
+  const hasDescribedBy =
+    wrapperDescribedBy === panelId || triggerDescribedBy === panelId
+
+  // EXPECTED FAIL: no aria-describedby set in current implementation
+  expect(hasDescribedBy).toBe(true)
+})
+
+/**
+ * S3-24 — The tooltip must open on `focus` events, not only on pointer hover.
+ *
+ * Keyboard users navigate with Tab; they never trigger `pointerEnter` events.
+ * The tooltip must open when the trigger element (or the wrapper) receives focus.
+ *
+ * EXPECTED FAIL: current implementation attaches `onPointerEnter` to the wrapper
+ * div to open the tooltip, but there is no `onFocus` handler. A keyboard user
+ * tabbing to the trigger child never opens the tooltip.
+ */
+test('test_hover_tooltip_opens_on_focus', () => {
+  const { container } = render(
+    <HoverTooltip content={<span>Focus-visible content</span>}>
+      <button type='button'>Focus target</button>
+    </HoverTooltip>
+  )
+
+  const trigger = container.querySelector('button') as HTMLButtonElement
+  expect(trigger).not.toBeNull()
+
+  // Simulate keyboard focus (Tab lands on the button)
+  fireEvent.focus(trigger)
+
+  const panel = document.body.querySelector('.v9-tip') as HTMLElement | null
+  expect(panel).not.toBeNull()
+
+  // Panel must be open/visible after focus
+  const isOpen =
+    panel!.getAttribute('data-state') === 'open' ||
+    (!panel!.classList.contains('hidden') &&
+      panel!.style.opacity !== '0' &&
+      panel!.style.display !== 'none')
+
+  // EXPECTED FAIL: onFocus is absent; tooltip does not open on focus
+  expect(isOpen).toBe(true)
+})
+
+/**
+ * S3-24 — The tooltip must close on `blur` when not pinned.
+ *
+ * Complementing the focus-open behavior: when the trigger loses focus via Tab
+ * or Shift+Tab, the tooltip must close. Without this the tooltip stays visible
+ * indefinitely for keyboard users.
+ *
+ * EXPECTED FAIL: if focus-open is not implemented, blur-close is also absent.
+ */
+test('test_hover_tooltip_closes_on_blur_when_not_pinned', () => {
+  const { container } = render(
+    <HoverTooltip content={<span>Focus-visible content</span>}>
+      <button type='button'>Focus target</button>
+    </HoverTooltip>
+  )
+
+  const trigger = container.querySelector('button') as HTMLButtonElement
+  expect(trigger).not.toBeNull()
+
+  // Open via focus
+  fireEvent.focus(trigger)
+
+  const panel = document.body.querySelector('.v9-tip') as HTMLElement | null
+  expect(panel).not.toBeNull()
+
+  // Blur the trigger (keyboard user Tabs away)
+  fireEvent.blur(trigger)
+
+  // Panel must be closed / hidden after blur
+  const isStillOpen =
+    panel!.getAttribute('data-state') === 'open' &&
+    !panel!.classList.contains('hidden')
+
+  // EXPECTED FAIL: blur handler absent — tooltip stays open after keyboard navigation
+  expect(isStillOpen).toBe(false)
+})
+
+// ---------------------------------------------------------------------------
+// Wave 3 adversarial-review tests (pre-existing — do not modify)
 // ---------------------------------------------------------------------------
 
 /**

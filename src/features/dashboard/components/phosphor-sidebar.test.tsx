@@ -90,3 +90,63 @@ test('renders dashboard alert status dot with hover details', async () => {
   expect(status).toHaveClass('sidebar-alert-dot', 'error')
   expect(screen.getByText('10 529 errors from Anthropic')).toBeInTheDocument()
 })
+
+// ---------------------------------------------------------------------------
+// Wave 8 (S5-36) — a11y: keyboard user can read issues
+// ---------------------------------------------------------------------------
+
+/**
+ * S5-36 — A keyboard user must be able to discover and read dashboard alert issues.
+ *
+ * The current implementation shows issues only via a HoverTooltip (pointer-hover).
+ * A keyboard user cannot hover — they need either:
+ *  (a) A disclosure (details/summary or button+region) that expands on focus/Enter, OR
+ *  (b) The issue count embedded in the accessible label of the status dot so
+ *      AT announces it without requiring expansion.
+ *
+ * After fix, one of the following must be true:
+ *  - The alert dot's accessible name includes the issue count
+ *    (e.g. "Dashboard alert status: error — 1 issue"), OR
+ *  - There is a focusable disclosure control inside/adjacent to the sidebar
+ *    alert section that reveals issue details when activated.
+ *
+ * EXPECTED FAIL: current implementation embeds the count nowhere in the
+ * accessible name and the tooltip is pointer-only, leaving keyboard users with
+ * just "Dashboard alert status: error" and no way to read the issue details.
+ */
+test('sidebar_keyboard_user_can_read_alert_issue_count', async () => {
+  const issueCount = 3
+  await renderSidebar('/', {
+    severity: 'warn',
+    issues: Array.from({ length: issueCount }, (_, i) => ({
+      severity: 'warn' as const,
+      head: `Issue ${String(i + 1)}`,
+      sub: `Detail for issue ${String(i + 1)}`,
+    })),
+  })
+
+  // Option A: the accessible name of the status element includes the issue count
+  const statusEl = screen.getByRole('status')
+  const accessibleName =
+    statusEl.getAttribute('aria-label') ??
+    statusEl.getAttribute('aria-labelledby') ??
+    ''
+
+  const nameIncludesCount =
+    accessibleName.includes(String(issueCount)) ||
+    accessibleName.toLowerCase().includes('issue')
+
+  // Option B: a disclosure button or details/summary exists near the sidebar
+  const disclosureBtn = screen.queryByRole('button', {
+    name: /issue|alert detail|expand/i,
+  })
+  const detailsEl = document.querySelector('details')
+
+  // At least one accessibility mechanism must be present:
+  // - Label includes count, OR
+  // - A disclosure control is present
+  // EXPECTED FAIL: neither condition is satisfied in current implementation
+  expect(
+    nameIncludesCount || disclosureBtn !== null || detailsEl !== null
+  ).toBe(true)
+})
