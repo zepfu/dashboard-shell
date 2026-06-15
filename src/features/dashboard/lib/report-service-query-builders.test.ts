@@ -7,7 +7,6 @@ import {
   buildReportQueryPressureQuery,
   buildSourceTableHealthQuery,
   buildUsageQuery,
-  buildQuotaEstimatorDatasetQuery,
   buildQuotaEstimatorReport,
   buildQuotaEstimatorUsageBucketQuery,
   buildQuotaRangeHistoryQuery,
@@ -377,7 +376,6 @@ describe('report-service query builders', () => {
       buildTokenTrendScoreQuery(params),
       buildTokenTrendModelFirstSeenQuery(params),
       buildQuotaRangeHistoryQuery(params),
-      buildQuotaEstimatorDatasetQuery(params, 5),
       buildQuotaEstimatorUsageBucketQuery(params),
       buildToolActivityQuery(params),
     ]
@@ -483,46 +481,6 @@ describe('report-service query builders', () => {
     expect(query.sql).toContain('0::double precision AS velocity_sample_count')
     expect(query.sql).toContain("'[]'::jsonb AS velocity_segments")
     expect(query.sql).toContain("'[]'::jsonb AS velocity_scores")
-  })
-
-  test('test_buildQuotaEstimatorDatasetQuery_preserves_training_shapes_and_cache_categories', () => {
-    const query = buildQuotaEstimatorDatasetQuery(
-      new URLSearchParams({ from: '2026-05-01', to: '2026-05-08' }),
-      5
-    )
-
-    expect(query.values).toEqual(['2026-05-01', '2026-05-08'])
-    expect(query.metadata).toEqual({
-      from: '2026-05-01',
-      to: '2026-05-08',
-      lagMinutes: 5,
-    })
-    expect(query.sql).toContain('WITH reset_windows AS')
-    expect(query.sql).toContain('public.rate_limit_observations')
-    expect(query.sql).toContain('public.rate_limit_intervals')
-    expect(query.sql).toContain('quota_pct_interval AS')
-    expect(query.sql).toContain('llm_usage_event AS')
-    expect(query.sql).toContain(
-      'COALESCE(sh.end_time, sh.start_time, sh.created_at)'
-    )
-    expect(query.sql).toContain("INTERVAL '5 minutes'")
-    expect(query.sql).toContain(
-      'COALESCE(sh.input_tokens, 0)::double precision AS uncached_input_tokens'
-    )
-    expect(query.sql).toContain(
-      'COALESCE(sh.cache_read_input_tokens, 0)::double precision AS cache_read_tokens'
-    )
-    expect(query.sql).toContain(
-      'COALESCE(sh.cache_creation_input_tokens, 0)::double precision AS cache_create_tokens'
-    )
-    expect(query.sql).toContain(
-      "WHEN o.provider = 'anthropic' AND o.quota_key = 'anthropic_unified_7d_sonnet:7d_sonnet' THEN 'special'"
-    )
-    expect(query.sql).toContain(
-      "WHEN o.provider = 'openai' AND o.quota_key = 'codex_bengalfox:secondary' THEN 'special'"
-    )
-    expect(query.sql).toContain('capped_at_100')
-    expect(query.sql).not.toContain('unknown_window')
   })
 
   test('test_buildQuotaEstimatorReport_keeps_cache_read_as_lower_separate_feature', () => {

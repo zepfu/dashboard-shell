@@ -212,7 +212,7 @@ export function providerBrandHex(provider: string): string {
  * Infers a canonical provider key from a model name.
  *
  * Wave 27 (W26 follow-up): consumers like ProviderCard's quota-hover .t-model
- * row and RepoBreakdownTable's "Top Model" cell pass *model* names (e.g.
+ * row pass *model* names (e.g.
  * `claude-opus-4-7`, `gpt-5.5`) into {@link providerBrandHex}. That helper's
  * lookup table (PROVIDER_BRAND_HEX) is keyed by provider names only
  * (`anthropic`, `openai`, ...), so model-name inputs fell through to the

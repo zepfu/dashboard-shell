@@ -1,8 +1,7 @@
 /**
  * client-brand-colors — Brand colour map for known AI coding clients.
  *
- * Used by DonutChart and ClientBreakdownTable to render consistent
- * client-specific colours. Falls back to the `other` colour for
+ * Client-specific brand colours. Falls back to the `other` colour for
  * unrecognised clients.
  */
 

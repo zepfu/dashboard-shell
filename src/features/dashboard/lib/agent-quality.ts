@@ -463,11 +463,6 @@ export function agentQualityFromFlatRow(
   const hasEvaluatedScores = FAMILY_KEYS.some(
     (family) => summary[family].evaluated > 0
   )
-  const hasAdditionalEvaluatedScores =
-    summary.discoveryInventoryCoverage.evaluated > 0 ||
-    summary.discoveryInventoryCoverage.issueCount > 0 ||
-    summary.discoveryInventoryMissingCount > 0 ||
-    summary.terminalCompletion.evaluated > 0
   const hasFlags =
     summary.discoveryInventoryCoverage.issueCount > 0 ||
     summary.discoveryInventoryMissingCount > 0 ||
@@ -495,7 +490,6 @@ export function agentQualityFromFlatRow(
 
   if (
     !hasEvaluatedScores &&
-    !hasAdditionalEvaluatedScores &&
     !hasFlags &&
     !hasHandoffSignals &&
     summary.reasons.length === 0
