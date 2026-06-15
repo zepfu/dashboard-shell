@@ -6,13 +6,29 @@
  * the shared remote-dashboard metadata so they stay aligned with shell routing.
  */
 import type { ReactElement } from 'react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Link, useLocation } from '@tanstack/react-router'
 import {
   remoteDashboardHref,
   remoteDashboardMetadata,
 } from '@/shell/remote-dashboard-metadata'
+import { SidebarProvider } from '@/components/ui/sidebar'
+import { SidebarQuotaRemaining } from '@/components/layout/sidebar-quota-remaining'
 import type { DashboardAlertSummary } from '../hooks/use-alerts-from-anomalies'
 import { HoverTooltip } from './primitives/hover-tooltip'
+
+if (typeof window !== 'undefined' && typeof window.matchMedia !== 'function') {
+  window.matchMedia = (query: string) => ({
+    matches: false,
+    media: query,
+    onchange: null,
+    addListener: () => undefined,
+    removeListener: () => undefined,
+    addEventListener: () => undefined,
+    removeEventListener: () => undefined,
+    dispatchEvent: () => false,
+  })
+}
 
 interface NavItem {
   readonly label: string
@@ -35,6 +51,10 @@ const REMOTE_DASHBOARD_NAV_ITEMS: readonly NavItem[] =
     href: remoteDashboardHref(dashboard, dashboard.defaultRoutePath),
     activePrefix: dashboard.basePath,
   }))
+
+const phosphorSidebarQuotaClient = new QueryClient({
+  defaultOptions: { queries: { retry: false, staleTime: 30_000 } },
+})
 
 const NAV_SECTIONS: readonly NavSection[] = [
   {
@@ -104,6 +124,15 @@ export function PhosphorSidebar({
           })}
         </div>
       ))}
+
+      <div className='sidebar-section'>
+        <div className='sidebar-group-title'>Quota remaining</div>
+        <QueryClientProvider client={phosphorSidebarQuotaClient}>
+          <SidebarProvider>
+            <SidebarQuotaRemaining />
+          </SidebarProvider>
+        </QueryClientProvider>
+      </div>
 
       <div className='sidebar-footer'>Local User</div>
     </>

@@ -25,11 +25,15 @@ import {
   type RemoteDashboardKey,
   type RemoteDashboardRegistryEntry,
 } from './remote-dashboard-registry'
-import type {
-  ProjectModule,
-  RemoteRouteConfig,
-  RemoteRouteProps,
-} from './types'
+import {
+  assertProjectModule,
+  buildRemoteRouteProps,
+  createRetryableImporter,
+  matchRoutePath,
+  RemoteModuleContractError,
+} from './remote-dashboard-runtime'
+import { warnRemoteNavDrift } from './remote-dev-log'
+import type { ProjectModule, RemoteRouteConfig } from './types'
 
 type RemoteDashboardRouteProps = {
   moduleKey: RemoteDashboardKey
@@ -80,18 +84,29 @@ class RemoteModuleBoundary extends Component<BoundaryProps, BoundaryState> {
 
   render() {
     if (this.state.error !== null) {
+      const isContractViolation =
+        this.state.error instanceof RemoteModuleContractError ||
+        (this.state.error instanceof Error &&
+          this.state.error.name === 'RemoteModuleContractError')
+
       return (
         <RemoteDashboardFrame
           module={this.props.config}
           routePath={this.props.routePath}
+          configKey={this.props.config.key}
           main={
             <Main>
               <Alert variant='destructive'>
                 <AlertTriangle className='size-4' />
-                <AlertTitle>Dashboard module failed to load</AlertTitle>
+                <AlertTitle>
+                  {isContractViolation
+                    ? 'Dashboard module contract violation'
+                    : 'Dashboard module failed to load'}
+                </AlertTitle>
                 <AlertDescription>
-                  Check that the {this.props.config.moduleId} remote is running
-                  and that `remoteEntry.js` is reachable from the shell.
+                  {isContractViolation
+                    ? `The ${this.props.config.moduleId} remote loaded but its default export does not match the shell ProjectModule contract.`
+                    : `Check that the ${this.props.config.moduleId} remote is running and that remoteEntry.js is reachable from the shell.`}
                 </AlertDescription>
               </Alert>
             </Main>
@@ -107,14 +122,18 @@ class RemoteModuleBoundary extends Component<BoundaryProps, BoundaryState> {
 const remoteModuleViews = Object.fromEntries(
   Object.values(remoteDashboardConfigByKey).map((config) => [
     config.key,
-    lazy(async () => {
-      publishRemoteRuntimeConfig(config)
-      const remote = await config.importModule()
-      publishRemoteRuntimeConfig(config)
+    lazy(() => {
+      const load = createRetryableImporter(async () => {
+        publishRemoteRuntimeConfig(config)
+        const remote = await config.importModule()
+        assertProjectModule(remote.default)
+        publishRemoteRuntimeConfig(config)
 
-      return {
-        default: createRemoteModuleView(config, remote.default),
-      }
+        return {
+          default: createRemoteModuleView(config, remote.default),
+        }
+      })
+      return load()
     }),
   ])
 ) as Record<
@@ -137,6 +156,7 @@ export function RemoteDashboardRoute({
           <RemoteDashboardFrame
             module={config}
             routePath={routePath}
+            configKey={config.key}
             main={<RemoteLoadingState />}
           />
         }
@@ -187,6 +207,7 @@ function createRemoteModuleView(
       <RemoteDashboardFrame
         module={module}
         routePath={routeMatch.route.path}
+        configKey={config.key}
         main={
           <Main fluid className='min-h-[calc(100svh-4rem)]'>
             <Suspense fallback={<RemoteLoadingState compact />}>
@@ -202,16 +223,24 @@ function createRemoteModuleView(
 function RemoteDashboardFrame({
   module,
   routePath,
+  configKey,
   main,
 }: {
   module: RemoteHeaderModule
   routePath: string
+  configKey?: RemoteDashboardKey
   main: ReactNode
 }) {
   return (
     <PhosphorLayout
       sidebar={<PhosphorSidebar />}
-      header={<RemoteHeader module={module} routePath={routePath} />}
+      header={
+        <RemoteHeader
+          module={module}
+          routePath={routePath}
+          configKey={configKey}
+        />
+      }
       main={main}
     />
   )
@@ -225,76 +254,40 @@ function findRemoteRouteMatch(routes: RemoteRouteConfig[], routePath: string) {
   return undefined
 }
 
-function matchRoutePath(pattern: string, routePath: string) {
-  const normalizedPattern = normalizeRemoteRoutePath(pattern)
-  const normalizedRoutePath = normalizeRemoteRoutePath(routePath)
-
-  if (normalizedPattern === normalizedRoutePath) {
-    return {}
-  }
-
-  if (normalizedPattern === '/' || normalizedRoutePath === '/') {
-    return undefined
-  }
-
-  const patternSegments = normalizedPattern.split('/').filter(Boolean)
-  const routeSegments = normalizedRoutePath.split('/').filter(Boolean)
-  if (patternSegments.length !== routeSegments.length) {
-    return undefined
-  }
-
-  const params: Record<string, string> = {}
-  for (const [index, patternSegment] of patternSegments.entries()) {
-    const routeSegment = routeSegments[index]
-    if (routeSegment === undefined) return undefined
-
-    if (patternSegment.startsWith(':')) {
-      const paramName = patternSegment.slice(1)
-      params[paramName] = decodePathSegment(routeSegment)
-      continue
-    }
-
-    if (patternSegment !== routeSegment) {
-      return undefined
-    }
-  }
-
-  return params
-}
-
-function decodePathSegment(segment: string) {
-  try {
-    return decodeURIComponent(segment)
-  } catch {
-    return segment
-  }
-}
-
-function buildRemoteRouteProps(
-  config: RemoteDashboardRegistryEntry,
-  routePath: string,
-  params: Record<string, string>
-): RemoteRouteProps {
-  return {
-    ...params,
-    params,
-    moduleId: config.moduleId,
-    routePath,
-    basePath: config.basePath,
-    apiBase: config.apiBase,
-  }
-}
-
 function RemoteHeader({
   module,
   routePath,
+  configKey,
 }: {
   module: RemoteHeaderModule
   routePath: string
+  configKey?: RemoteDashboardKey
 }) {
+  const shellConfig = configKey
+    ? remoteDashboardConfigByKey[configKey]
+    : Object.values(remoteDashboardConfigByKey).find(
+        (entry) => entry.basePath === module.basePath
+      )
+
+  const preferredNavItems =
+    shellConfig && shellConfig.navItems.length > 0
+      ? shellConfig.navItems
+      : module.navItems
+
+  if (
+    import.meta.env.DEV &&
+    shellConfig &&
+    module.navItems.length > 0 &&
+    shellConfig.navItems.length > 0 &&
+    JSON.stringify(module.navItems.map((n) => n.path)) !==
+      JSON.stringify(shellConfig.navItems.map((n) => n.path))
+  ) {
+    warnRemoteNavDrift(shellConfig.moduleId)
+  }
+
   const moduleNavItems =
-    module.navItems.length > 0
-      ? module.navItems
+    preferredNavItems.length > 0
+      ? preferredNavItems
       : (module.routes ?? []).map((route) => ({
           label: titleFromPath(route.path),
           path: route.path,
@@ -304,7 +297,10 @@ function RemoteHeader({
   const normalizedRoutePath = normalizeRemoteRoutePath(routePath)
   const navLinks = moduleNavItems.map((navItem) => ({
     title: navItem.label,
-    href: remoteDashboardHref(module, navItem.path),
+    href: remoteDashboardHref(
+      shellConfig ?? { basePath: module.basePath },
+      navItem.path
+    ),
     isActive: isRemoteNavItemActive(navItem.path, normalizedRoutePath),
     accentColor: module.accentColor,
   }))
@@ -368,6 +364,7 @@ function RemoteRouteNotFound({
     <RemoteDashboardFrame
       module={module}
       routePath=''
+      configKey={undefined}
       main={
         <Main>
           <Alert>

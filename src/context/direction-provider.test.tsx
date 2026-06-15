@@ -12,7 +12,8 @@
  */
 import { render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
-import { DirectionProvider, useDirection } from './direction-provider'
+import { useDirection } from './direction-context'
+import { DirectionProvider } from './direction-provider'
 
 // ---------------------------------------------------------------------------
 // Helpers

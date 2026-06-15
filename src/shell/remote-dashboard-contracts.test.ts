@@ -12,18 +12,18 @@
  */
 import { readFileSync } from 'node:fs'
 import { describe, expect, test } from 'vitest'
-// These imports will fail (red) until the engineer exports them:
-import {
-  assertProjectModule,
-  buildRemoteRouteProps,
-  matchRoutePath,
-} from './remote-dashboard'
 import {
   normalizeRemoteRoutePath,
   remoteDashboardHref,
   remoteDashboardMetadata,
   type RemoteDashboardMetadataEntry,
 } from './remote-dashboard-metadata'
+// These imports will fail (red) until the engineer exports them:
+import {
+  assertProjectModule,
+  buildRemoteRouteProps,
+  matchRoutePath,
+} from './remote-dashboard-runtime'
 
 // ---------------------------------------------------------------------------
 // Helpers kept from the file's original theater tests (doc contracts)

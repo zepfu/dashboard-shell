@@ -10,8 +10,8 @@ import { IconSidebarInset } from '@/assets/custom/icon-sidebar-inset'
 import { IconSidebarSidebar } from '@/assets/custom/icon-sidebar-sidebar'
 import { IconThemeDark } from '@/assets/custom/icon-theme-dark'
 import { cn } from '@/lib/utils'
-import { useDirection } from '@/context/direction-provider'
-import { type Collapsible, useLayout } from '@/context/layout-provider'
+import { useDirection } from '@/context/direction-context'
+import { type Collapsible, useLayout } from '@/context/layout-context'
 import { Button } from '@/components/ui/button'
 import {
   Sheet,
