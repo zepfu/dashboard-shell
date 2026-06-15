@@ -12,7 +12,8 @@
  */
 import { render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
-import { LayoutProvider, useLayout, type Collapsible } from './layout-provider'
+import { useLayout, type Collapsible } from './layout-context'
+import { LayoutProvider } from './layout-provider'
 
 // ---------------------------------------------------------------------------
 // Helpers

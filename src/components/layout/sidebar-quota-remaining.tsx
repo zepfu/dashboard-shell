@@ -11,25 +11,15 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from '@/components/ui/tooltip'
-import {
-  type UsageReportQuotaRow,
-  fetchUsageReportQuotas,
-} from '@/features/dashboard/api/usage-report'
+import { fetchUsageReportQuotas } from '@/features/dashboard/api/usage-report'
 import {
   colorWithAlpha,
   formatPercent,
-  googleQuotaClass,
-  googleQuotaClasses,
-  type GoogleQuotaClass,
-  providerColorFor,
 } from '@/features/dashboard/lib/usage-report-display'
-
-type SidebarQuotaItem = {
-  key: string
-  label: string
-  percent: number | null
-  color: string
-}
+import {
+  buildSidebarQuotaItems,
+  type SidebarQuotaItem,
+} from './sidebar-quota-items'
 
 export function SidebarQuotaRemaining() {
   const { state } = useSidebar()
@@ -50,9 +40,19 @@ export function SidebarQuotaRemaining() {
       <SidebarGroup className='py-1 group-data-[collapsible=icon]:px-2'>
         <SidebarGroupContent>
           {collapsed ? (
-            <Skeleton className='mx-auto h-8 w-8 rounded-md' />
+            <div
+              className='mx-auto flex w-8 items-center justify-center'
+              aria-label='Provider quota remaining'
+            >
+              <span className='sr-only'>Quota remaining</span>
+              <Skeleton className='h-8 w-8 rounded-md' />
+            </div>
           ) : (
             <div className='space-y-2 rounded-md border border-sidebar-border p-2'>
+              <div className='flex items-center justify-between text-xs'>
+                <span className='font-medium'>Quota</span>
+                <span className='text-muted-foreground'>remaining</span>
+              </div>
               <Skeleton className='h-3 w-20' />
               <Skeleton className='h-2 w-full' />
               <Skeleton className='h-2 w-full' />
@@ -64,7 +64,20 @@ export function SidebarQuotaRemaining() {
     )
   }
 
-  if (!items.length) return null
+  if (!items.length) {
+    return (
+      <SidebarGroup className='py-1'>
+        <SidebarGroupContent>
+          <div className='space-y-2 rounded-md border border-sidebar-border bg-sidebar-accent/30 p-2'>
+            <div className='flex items-center justify-between text-xs'>
+              <span className='font-medium'>Quota</span>
+              <span className='text-muted-foreground'>remaining</span>
+            </div>
+          </div>
+        </SidebarGroupContent>
+      </SidebarGroup>
+    )
+  }
 
   if (collapsed) {
     return (
@@ -172,102 +185,6 @@ function SidebarQuotaRow({ item }: { item: SidebarQuotaItem }) {
       </div>
     </div>
   )
-}
-
-function buildSidebarQuotaItems(rows: UsageReportQuotaRow[]) {
-  const items: SidebarQuotaItem[] = []
-  const openai = providerRow(rows, 'openai')
-  const anthropic = providerRow(rows, 'anthropic')
-  const openaiColor = providerColorFor('openai')
-  const anthropicColor = providerColorFor('anthropic')
-  const googleColor = providerColorFor('google')
-
-  if (openai?.weekly_remaining_pct != null) {
-    items.push({
-      key: 'openai-weekly',
-      label: 'OpenAI Weekly',
-      percent: openai?.weekly_remaining_pct ?? null,
-      color: openaiColor,
-    })
-  }
-  if (openai?.special_remaining_pct != null) {
-    items.push({
-      key: 'openai-spark',
-      label: 'OpenAI Spark',
-      percent: openai?.special_remaining_pct ?? null,
-      color: openaiColor,
-    })
-  }
-  if (anthropic?.weekly_remaining_pct != null) {
-    items.push({
-      key: 'anthropic-weekly',
-      label: 'Anthropic Weekly',
-      percent: anthropic?.weekly_remaining_pct ?? null,
-      color: anthropicColor,
-    })
-  }
-  if (anthropic?.special_remaining_pct != null) {
-    items.push({
-      key: 'anthropic-sonnet',
-      label: 'Anthropic Sonnet',
-      percent: anthropic?.special_remaining_pct ?? null,
-      color: anthropicColor,
-    })
-  }
-
-  const googleRows = googleQuotaRows(rows)
-  for (const quotaClass of googleQuotaClasses) {
-    const row = googleRows.get(quotaClass.key)
-    if (!row) continue
-    items.push({
-      key: `google-${quotaClass.key}`,
-      label: quotaClass.sidebarLabel,
-      percent: row.short_remaining_pct,
-      color: googleColor,
-    })
-  }
-
-  return items
-}
-
-function providerRow(rows: UsageReportQuotaRow[], provider: string) {
-  return rows.find((row) => row.provider.toLowerCase() === provider)
-}
-
-function googleQuotaRows(rows: UsageReportQuotaRow[]) {
-  const classRows = new Map<GoogleQuotaClass, UsageReportQuotaRow>()
-  for (const row of rows) {
-    if (!isGoogleQuotaRow(row)) continue
-    const quotaClass = googleQuotaClass(row.model)
-    if (!quotaClass) continue
-    const current = classRows.get(quotaClass)
-    if (!current || compareQuotaClassRows(row, current) < 0) {
-      classRows.set(quotaClass, row)
-    }
-  }
-  return classRows
-}
-
-function isGoogleQuotaRow(row: UsageReportQuotaRow) {
-  const provider = row.provider.toLowerCase()
-  return provider === 'google' || provider === 'gemini'
-}
-
-function compareQuotaClassRows(
-  left: UsageReportQuotaRow,
-  right: UsageReportQuotaRow
-) {
-  if (left.short_active !== right.short_active) {
-    return left.short_active ? -1 : 1
-  }
-  return (
-    quotaSortValue(left.short_remaining_pct) -
-    quotaSortValue(right.short_remaining_pct)
-  )
-}
-
-function quotaSortValue(value: number | null) {
-  return value ?? Number.POSITIVE_INFINITY
 }
 
 function quotaWidth(value: number | null) {
