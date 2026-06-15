@@ -80,6 +80,7 @@ import {
   PROVIDER_BRAND_HEX,
 } from '../lib/usage-report-display'
 import { HoverTooltip } from './primitives/hover-tooltip'
+import { StackedBar } from './primitives/stacked-bar'
 
 const FORMAT_COMPACT_NUMBER = new Intl.NumberFormat('en-US', {
   notation: 'compact',
@@ -1760,7 +1761,7 @@ function renderMetricLowerLane(
         return (
           <HoverTooltip
             key={`${mode}-${day.day}`}
-            content={buildMetricDayTooltip(day, series, mode)}
+            content={() => buildMetricDayTooltip(day, series, mode)}
             variant='quota'
             className='tt-day-tip-wrap'
           >
@@ -2380,14 +2381,16 @@ export function TokenTrendChart({
               return (
                 <HoverTooltip
                   key={day.day}
-                  content={buildDayTooltip(
-                    day,
-                    series,
-                    versionIntervals,
-                    modelFirstSeenGroups,
-                    dayDetail,
-                    detailLoading && dayDetail?.date !== day.day
-                  )}
+                  content={() =>
+                    buildDayTooltip(
+                      day,
+                      series,
+                      versionIntervals,
+                      modelFirstSeenGroups,
+                      dayDetail,
+                      detailLoading && dayDetail?.date !== day.day
+                    )
+                  }
                   variant='quota'
                   className='tt-day-tip-wrap'
                 >
@@ -2582,58 +2585,27 @@ export function TokenTrendChart({
             ? null
             : buildBarTooltip(bucket, series)
 
+          const stackedSeries = series.map((s) => ({
+            key: s.key,
+            label: s.label,
+            color: s.color,
+            cssClass: s.cssClass,
+            tokens: bucket.totals[s.key] ?? 0,
+          }))
+
           const bar = (
-            <div
+            <StackedBar
               key={bucket.label}
-              className='trend-bar'
-              style={{
-                // flex: '0 0 auto' — no grow, no shrink, height-driven sizing.
-                // Inside the column-flex wrapper, flex: 1 (= flex: 1 1 0%) was
-                // forcing this child to consume all main-axis (height) space,
-                // making the inline height: N% inert. Width distribution across
-                // the 24 bars is handled by the wrapper's own flex: 1 1 0%
-                // (set in hover-tooltip.tsx), so we don't need flex growth here.
-                flex: '0 0 auto',
-                width: '100%',
-                height: `${pctHeight.toFixed(1)}%`,
-                display: 'flex',
-                flexDirection: 'column-reverse',
-                overflow: 'hidden',
+              series={stackedSeries}
+              total={total}
+              heightPct={pctHeight}
+              opacity={0.85}
+              resolveColor={resolveSliceColor}
+              extraBarStyle={{
                 minWidth: 0,
                 border: '1px solid var(--border)',
-                // 14-F.5: opacity set via inline style; CSS .trend-bar:hover
-                // overrides to 1 with transition: opacity 50ms from index.css
-                opacity: 0.85,
               }}
-            >
-              {series.map((s) => {
-                const tokens = bucket.totals[s.key] ?? 0
-                if (tokens <= 0) return null
-
-                const pct = total > 0 ? (tokens / total) * 100 : 0
-
-                // F8a: resolve bar color — prefer the explicit prop value then
-                // fall back to PROVIDER_COLOR_MAP so bars are never white.
-                const sliceStyle: CSSProperties = {
-                  flexBasis: `${pct.toFixed(4)}%`,
-                  flexShrink: 0,
-                  minHeight: '1px',
-                  width: '100%',
-                  // Inline background is the second source of truth after the
-                  // CSS class. It catches providers whose .tt-* rule is absent
-                  // or carries an incorrect near-white value (e.g. old tt-xai).
-                  background: resolveSliceColor(s.key, s.color),
-                }
-
-                return (
-                  <div
-                    key={s.key}
-                    className={`tt-slice ${s.cssClass}`}
-                    style={sliceStyle}
-                  />
-                )
-              })}
-            </div>
+            />
           )
 
           // W28-TrendVisual Track B: wrap non-empty bars in HoverTooltip.
@@ -2653,7 +2625,7 @@ export function TokenTrendChart({
           return (
             <HoverTooltip
               key={`${bucket.label}-${idx.toString()}`}
-              content={tooltipContent}
+              content={() => tooltipContent}
               variant='quota'
               className='tt-bar-tip-wrap'
             >

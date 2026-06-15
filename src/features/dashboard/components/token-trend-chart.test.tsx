@@ -323,9 +323,8 @@ test('test_tooltip_hides_on_mouse_leave', () => {
   fireEvent.pointerEnter(tipWrap)
   fireEvent.pointerLeave(tipWrap)
 
-  // Panel is portalled to document.body; it persists with data-state="closed"
-  const tip = document.body.querySelector('.v9-tip') as HTMLElement
-  expect(tip.dataset['state']).toBe('closed')
+  const tip = document.body.querySelector('.v9-tip') as HTMLElement | null
+  expect(tip).toBeNull()
 })
 
 test('test_tooltip_shows_bucket_label_in_head', () => {

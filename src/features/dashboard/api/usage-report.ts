@@ -77,6 +77,60 @@ export const usageReportGrains = ['day', 'week', 'month'] as const
 
 export type UsageReportGrain = (typeof usageReportGrains)[number]
 export type UsageReportGroupPreset = (typeof usageReportGroupPresets)[number]
+
+/** Wire fields attached to usage-report API metadata when cache decoration is present. */
+export interface ReportCacheMetadata {
+  cacheBackend?: string
+  cacheFreshUntil?: string | null
+  cacheGeneratedAt?: string | null
+  cacheKeyHash?: string
+  cacheScope?: string
+  cacheStaleUntil?: string | null
+  cacheStatus?: string
+  cacheRefreshing?: boolean
+}
+
+/** Canonical field names for {@link ReportCacheMetadata} (runtime companion). */
+export const REPORT_CACHE_METADATA_FIELDS = [
+  'cacheBackend',
+  'cacheFreshUntil',
+  'cacheGeneratedAt',
+  'cacheKeyHash',
+  'cacheScope',
+  'cacheStaleUntil',
+  'cacheStatus',
+  'cacheRefreshing',
+] as const
+
+export type ReportCacheMetadataField =
+  (typeof REPORT_CACHE_METADATA_FIELDS)[number]
+
+export function isReportCacheMetadata(
+  value: unknown
+): value is ReportCacheMetadata {
+  if (value === null || typeof value !== 'object') return false
+  const record = value as Record<string, unknown>
+  for (const key of REPORT_CACHE_METADATA_FIELDS) {
+    if (!(key in record)) continue
+    const field = record[key]
+    if (key === 'cacheRefreshing') {
+      if (field !== undefined && typeof field !== 'boolean') return false
+      continue
+    }
+    if (
+      key === 'cacheFreshUntil' ||
+      key === 'cacheGeneratedAt' ||
+      key === 'cacheStaleUntil'
+    ) {
+      if (field !== undefined && field !== null && typeof field !== 'string') {
+        return false
+      }
+      continue
+    }
+    if (field !== undefined && typeof field !== 'string') return false
+  }
+  return true
+}
 export type UsageReportDimension = UsageReportGroupPreset['groupBy'][number]
 export type UsageReportConfigChangeFilterValue =
   | 'true'

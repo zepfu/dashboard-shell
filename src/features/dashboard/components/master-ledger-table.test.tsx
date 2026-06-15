@@ -29,6 +29,15 @@ import {
   type ProviderErrorObservation,
 } from './master-ledger-table'
 
+/** Opens lazy HoverTooltip panels for table cells (tooltip content mounts on hover). */
+function openLazyHoverTooltipsIn(container: HTMLElement): void {
+  container.querySelectorAll('tbody td').forEach((td) => {
+    const target =
+      (td.firstElementChild as HTMLElement | null) ?? (td as HTMLElement)
+    fireEvent.pointerEnter(target)
+  })
+}
+
 // ---------------------------------------------------------------------------
 // Fixtures
 // ---------------------------------------------------------------------------
@@ -284,6 +293,7 @@ test('test_score_column_renders_indicator_only_and_reason_hover', () => {
   expect(scoreIndicator).toHaveAttribute('data-agent-score-state', 'review')
   expect(scoreIndicator).toHaveAttribute('aria-label', 'Score: review')
 
+  openLazyHoverTooltipsIn(container)
   expect(screen.getByText('Agent health')).toBeInTheDocument()
   expect(screen.getByText('Quality 95%')).toBeInTheDocument()
   expect(screen.getByText('Risk 5%')).toBeInTheDocument()
@@ -310,7 +320,7 @@ test('test_score_column_renders_indicator_only_and_reason_hover', () => {
 })
 
 test('test_score_tooltip_surfaces_handoff_quality_signals', () => {
-  render(
+  const { container } = render(
     <MasterLedgerTable
       rows={[
         {
@@ -404,6 +414,7 @@ test('test_score_tooltip_surfaces_handoff_quality_signals', () => {
     />
   )
 
+  openLazyHoverTooltipsIn(container)
   expect(screen.getByText('Handoff signals')).toBeInTheDocument()
   expect(screen.getByText('Ignored paths')).toBeInTheDocument()
   expect(screen.getByText('Baseline incident')).toBeInTheDocument()
@@ -415,7 +426,7 @@ test('test_score_tooltip_surfaces_handoff_quality_signals', () => {
 })
 
 test('test_latency_cells_expose_split_coverage_tooltip', () => {
-  render(
+  const { container } = render(
     <MasterLedgerTable
       rows={[
         {
@@ -452,6 +463,7 @@ test('test_latency_cells_expose_split_coverage_tooltip', () => {
     />
   )
 
+  openLazyHoverTooltipsIn(container)
   expect(screen.getAllByText('Latency split').length).toBeGreaterThan(0)
   expect(screen.getAllByText('Server total p50/p95').length).toBeGreaterThan(0)
   expect(screen.getAllByText('Upstream output tok/s').length).toBeGreaterThan(0)
@@ -471,6 +483,7 @@ test('test_score_column_uses_blue_indicator_for_missing_score_data', () => {
     background: 'var(--accent-cool, #38bdf8)',
   })
   expect(screen.queryByText('Unscored')).toBeNull()
+  openLazyHoverTooltipsIn(container)
   expect(screen.getByText('No score data')).toBeInTheDocument()
 })
 
@@ -795,14 +808,13 @@ test('test_err_pct_hover_tooltip_renders_when_observations_present', () => {
   // Err% > 0 and matching observations → HoverTooltip wrapper is rendered in
   // the cell.  The tooltip content (hidden by default) should include both
   // the "most recent errors:" heading and the individual error lines.
-  render(
+  const { container } = render(
     <MasterLedgerTable rows={[errorRow]} errorObservations={matchingObs} />
   )
   expandLedger('Anthropic', 'provider')
   expandLedger('Other', 'family')
 
-  // The static (hidden) tooltip content is always in the DOM; confirm the
-  // heading text is present.
+  openLazyHoverTooltipsIn(container)
   expect(screen.getByText(/most recent error/i)).toBeInTheDocument()
   // Both error class entries should appear.
   expect(screen.getByText(/capacity_exhausted/)).toBeInTheDocument()
@@ -844,11 +856,13 @@ test('test_err_pct_tooltip_caps_at_ten_rows', () => {
       'unknown'
     )
   )
-  render(<MasterLedgerTable rows={[errorRow]} errorObservations={manyObs} />)
+  const { container } = render(
+    <MasterLedgerTable rows={[errorRow]} errorObservations={manyObs} />
+  )
   expandLedger('Anthropic', 'provider')
   expandLedger('Other', 'family')
 
-  // The heading says "10 most recent errors:" — not "12".
+  openLazyHoverTooltipsIn(container)
   expect(screen.getByText(/10 most recent errors/i)).toBeInTheDocument()
   // "12 most recent" must NOT appear.
   expect(screen.queryByText(/12 most recent/i)).toBeNull()
@@ -919,10 +933,11 @@ test('test_tool_hover_packs_small_mcp_groups_into_shared_columns', () => {
     ]),
   }
 
-  render(<MasterLedgerTable rows={[toolRow]} />)
+  const { container } = render(<MasterLedgerTable rows={[toolRow]} />)
   expandLedger('Anthropic', 'provider')
   expandLedger('Opus', 'family')
 
+  openLazyHoverTooltipsIn(container)
   expect(
     document.querySelectorAll('[data-tool-left-column="true"]')
   ).toHaveLength(1)
@@ -1140,10 +1155,11 @@ test('test_tool_cell_hover_tooltip_rendered_when_tool_activity_present', () => {
     ]),
   }
 
-  render(<MasterLedgerTable rows={[toolRow]} />)
+  const { container } = render(<MasterLedgerTable rows={[toolRow]} />)
   expandLedger('Anthropic', 'provider')
   expandLedger('Opus', 'family')
 
+  openLazyHoverTooltipsIn(container)
   // The shell header text should be present in the (hidden) tooltip DOM.
   // Pattern matches "SHELL (80 calls)" — Bash contributes 80 to shellTotalCalls.
   expect(screen.getByText(/shell.*80.*calls/i)).toBeInTheDocument()
@@ -1185,10 +1201,11 @@ test('test_tool_cell_hover_expands_shell_height_for_mcp_heavy_tools', () => {
     ]),
   }
 
-  render(<MasterLedgerTable rows={[toolRow]} />)
+  const { container } = render(<MasterLedgerTable rows={[toolRow]} />)
   expandLedger('Anthropic', 'provider')
   expandLedger('Opus', 'family')
 
+  openLazyHoverTooltipsIn(container)
   expect(screen.getByText('MCP: aawm')).toBeInTheDocument()
   expect(screen.getByText(/tool25/)).toBeInTheDocument()
   expect(screen.getByText(/\+14 more/i)).toBeInTheDocument()
@@ -1233,10 +1250,11 @@ test('test_tool_cell_hover_keeps_second_column_detail_on_both_sides', () => {
     ]),
   }
 
-  render(<MasterLedgerTable rows={[toolRow]} />)
+  const { container } = render(<MasterLedgerTable rows={[toolRow]} />)
   expandLedger('Anthropic', 'provider')
   expandLedger('Opus', 'family')
 
+  openLazyHoverTooltipsIn(container)
   expect(screen.getByText('Tool 15')).toBeInTheDocument()
   expect(screen.getByText('cmd15')).toBeInTheDocument()
   expect(screen.queryByText(/\+2 more/i)).toBeNull()
@@ -1268,10 +1286,11 @@ test('test_tool_hover_renders_highest_priority_tool_column_next_to_shell', () =>
     ]),
   }
 
-  render(<MasterLedgerTable rows={[toolRow]} />)
+  const { container } = render(<MasterLedgerTable rows={[toolRow]} />)
   expandLedger('Anthropic', 'provider')
   expandLedger('Opus', 'family')
 
+  openLazyHoverTooltipsIn(container)
   const renderedSourceIndexes = Array.from(
     document.querySelectorAll('[data-tool-left-column="true"]')
   ).map((el) => (el as HTMLElement).dataset.sourceIndex)
@@ -1322,10 +1341,11 @@ test('test_tool_hover_heading_uses_normalized_model_display_name', () => {
     ]),
   }
 
-  render(<MasterLedgerTable rows={[toolRow]} />)
+  const { container } = render(<MasterLedgerTable rows={[toolRow]} />)
   expandLedger('OpenAI', 'provider')
   expandLedger('GPT', 'family')
 
+  openLazyHoverTooltipsIn(container)
   expect(
     screen.getByText(/GPT 5\.5 · stealth.*tool breakdown/i)
   ).toBeInTheDocument()
@@ -1804,12 +1824,15 @@ test('test_errpct_hover_alias_provider_shows_tooltip', () => {
     ),
   ]
 
-  render(<MasterLedgerTable rows={[googleRow]} errorObservations={aliasObs} />)
+  const { container } = render(
+    <MasterLedgerTable rows={[googleRow]} errorObservations={aliasObs} />
+  )
 
   // Expand to model level so the model row tooltip is in DOM
   expandLedger('Google', 'provider')
   expandLedger('Gemini', 'family')
 
+  openLazyHoverTooltipsIn(container)
   // After canonicalization fix, the alias obs must match the row.
   // Pre-fix: 'gemini' !== 'google' → no tooltip → test fails here.
   expect(screen.getByText(/most recent error/i)).toBeInTheDocument()
@@ -1877,7 +1900,7 @@ test('test_errpct_hover_repo_view_scoping', () => {
     ),
   ]
 
-  render(
+  const { container } = render(
     <MasterLedgerTable
       rows={[repoRow]}
       errorObservations={globalObs}
@@ -1885,10 +1908,11 @@ test('test_errpct_hover_repo_view_scoping', () => {
     />
   )
 
-  // In repository view, drill down to the repo leaf row
   expandLedger('dashboard-shell', 'repository')
   expandLedger('Anthropic', 'provider')
   expandLedger('Opus', 'family')
+
+  openLazyHoverTooltipsIn(container)
 
   // After the fix, the tooltip on a repo-scoped row MUST either:
   //  a) include a scoping annotation indicating the repo context, OR

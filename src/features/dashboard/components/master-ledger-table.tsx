@@ -1109,7 +1109,7 @@ function renderAgentQualityCell(
 ): ReactElement {
   if (summary === undefined) {
     return (
-      <HoverTooltip content={renderNoAgentQualityTooltip()}>
+      <HoverTooltip content={() => renderNoAgentQualityTooltip()}>
         {renderAgentScoreIndicator('no data', AGENT_NO_DATA_COLOR, 'none')}
       </HoverTooltip>
     )
@@ -1118,7 +1118,7 @@ function renderAgentQualityCell(
   const displaySummary = summarizeAgentQuality(summary)
 
   return (
-    <HoverTooltip content={renderAgentQualityTooltip(summary)}>
+    <HoverTooltip content={() => renderAgentQualityTooltip(summary)}>
       {renderAgentScoreIndicator(
         displaySummary.label,
         displaySummary.color,
@@ -1224,7 +1224,9 @@ function renderLatencyCell(
   const label = formatLatency(value)
   if (summary === undefined) return <>{label}</>
   return (
-    <HoverTooltip content={renderLatencyTooltip(summary)}>{label}</HoverTooltip>
+    <HoverTooltip content={() => renderLatencyTooltip(summary)}>
+      {label}
+    </HoverTooltip>
   )
 }
 
@@ -2129,7 +2131,7 @@ function MasterLedgerTableInner({
                           </div>
                         )
                         cellContent = (
-                          <HoverTooltip content={tooltipContent}>
+                          <HoverTooltip content={() => tooltipContent}>
                             {baseLabel}
                           </HoverTooltip>
                         )
@@ -2435,7 +2437,7 @@ function MasterLedgerTableInner({
                         cellContent = (
                           <HoverTooltip
                             variant='quota-bar'
-                            content={tooltipContent}
+                            content={() => tooltipContent}
                             panelStyle={{
                               maxWidth: 'calc(100vw - 16px)',
                               width: `min(${tooltipWidthPx.toString()}px, calc(100vw - 16px))`,

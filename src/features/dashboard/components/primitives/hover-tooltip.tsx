@@ -54,10 +54,13 @@ import { createPortal } from 'react-dom'
 /** Supported tooltip positioning variants. */
 type TooltipVariant = 'health' | 'quota' | 'quota-bar' | 'default'
 
+/** Lazy tooltip body — evaluated only while the tooltip is open. */
+export type HoverTooltipContent = () => ReactNode
+
 /** Props for {@link HoverTooltip}. */
 interface HoverTooltipProps {
-  /** Content rendered inside the floating panel. Accepts any ReactNode. */
-  content: ReactNode
+  /** Lazy render prop for the floating panel body (mounted on hover/focus only). */
+  content: HoverTooltipContent
   /** Controls positioning anchor. Defaults to `'default'`. */
   variant?: TooltipVariant
   /** Trigger element(s) whose hover opens the tooltip. */
@@ -328,9 +331,8 @@ export function HoverTooltip({
       // Use 1000 to escape any stacking context created by transformed ancestors.
       zIndex: 1000,
       transform: 'none',
-      ...(isOpen
-        ? { opacity: 1, pointerEvents: 'auto' }
-        : { opacity: 0, pointerEvents: 'none' }),
+      opacity: 1,
+      pointerEvents: 'auto',
     }
 
     // Variant-specific sizing / alignment (matches previous absolute layout).
@@ -400,21 +402,20 @@ export function HoverTooltip({
       } as { 'aria-describedby': string })
     : children
 
-  const panel = (
+  const panel = isOpen ? (
     <div
       ref={panelRef}
       id={tooltipId}
       role='tooltip'
-      className={['v9-tip', extraClass, isOpen ? '' : 'hidden']
-        .filter(Boolean)
-        .join(' ')}
+      className={['v9-tip', extraClass].filter(Boolean).join(' ')}
       data-pinned={isPinned ? 'true' : 'false'}
-      data-state={isOpen ? 'open' : 'closed'}
+      data-state='open'
+      data-testid='hover-tooltip-content'
       style={panelStyle()}
     >
-      {content}
+      {content()}
     </div>
-  )
+  ) : null
 
   return (
     <div
@@ -484,7 +485,11 @@ export function HoverTooltip({
       }}
     >
       {describedByChild}
-      {canPortal ? createPortal(panel, document.body) : panel}
+      {panel !== null
+        ? canPortal
+          ? createPortal(panel, document.body)
+          : panel
+        : null}
     </div>
   )
 }
