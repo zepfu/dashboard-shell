@@ -11,14 +11,11 @@
  * - Breakpoints handled via the co-located CSS module.
  * - sidebar slot wired back: `{ sidebar, header, main, alerts }`.
  * - sidebar placed at grid-column:1, grid-row:1/-1 per mockup line 128-129.
- * - The inline `display` style keeps the layout detectable in jsdom tests
- *   without evaluating computed CSS-class styles.
- *
  * Wave 18-Cards: Removed inline `gridTemplateColumns`, `padding`, and `gap`
  * from the root element so that the CSS module `@media` breakpoint rules at
  * 1600/2560/3840/5120px are no longer silently overridden by inline styles.
  * Those CSS module rules now carry `!important` (see phosphor-layout.module.css).
- * `display: 'grid'` is retained inline so jsdom tests remain detectable.
+ * `display: grid` is owned by the phosphor-layout CSS module / `.grid` class.
  */
 import type { ReactElement, ReactNode } from 'react'
 import styles from './phosphor-layout.module.css'
@@ -59,26 +56,28 @@ export function PhosphorLayout({
         .filter(Boolean)
         .join(' ')}
       style={{
-        // display:'grid' kept inline so jsdom tests can detect the grid container
-        // without evaluating CSS module class rules.
-        display: 'grid',
-        gridTemplateRows: 'auto auto',
-        // gridTemplateColumns, padding, and gap are intentionally omitted here —
-        // they are owned by phosphor-layout.module.css (with !important) so that
-        // the 1600/2560/3840/5120px breakpoint overrides take effect in real browsers.
-        /* 14-H: drop minHeight:100vh per mockup §1 #2 — alignContent:start handles packing */
+        // gridTemplateColumns, padding, gap, and display:grid are owned by CSS.
         background: 'var(--bg)',
         color: 'var(--fg)',
         alignContent: 'start',
       }}
     >
-      <aside className='sidebar' style={{ gridColumn: '1', gridRow: '1 / -1' }}>
+      <aside
+        aria-label='Dashboard navigation'
+        className='sidebar'
+        style={{ gridColumn: '1', gridRow: '1 / -1' }}
+      >
         {sidebar}
       </aside>
       <header style={{ gridRow: '1', gridColumn: '2' }}>{header}</header>
       <main style={{ gridRow: '2', gridColumn: '2' }}>{main}</main>
       {hasAlerts && (
-        <aside style={{ gridRow: '1 / -1', gridColumn: '3' }}>{alerts}</aside>
+        <aside
+          aria-label='Dashboard alerts'
+          style={{ gridRow: '1 / -1', gridColumn: '3' }}
+        >
+          {alerts}
+        </aside>
       )}
     </div>
   )

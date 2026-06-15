@@ -119,6 +119,10 @@ function alertClassNames(type: AlertItem['type']): string {
  * N1 (Wave 16-V): glyphs are wrapped in span.alert-glyph so the fixed-width
  * CSS rule from Wave 15-A applies correctly.
  */
+function alertStableKey(alert: AlertItem): string {
+  return `${alert.type}::${alert.head}`
+}
+
 function alertGlyph(type: AlertItem['type']): string {
   switch (type) {
     case 'rate-limit':
@@ -141,8 +145,9 @@ function alertGlyph(type: AlertItem['type']): string {
 export function AlertsRail({ alerts }: AlertsRailProps): ReactElement {
   return (
     <div
+      role='log'
       aria-live='polite'
-      className='alerts-panel'
+      className='alerts-panel alerts-rail'
       style={{
         background: 'var(--card)',
         border: '1px solid var(--border)',
@@ -175,6 +180,8 @@ export function AlertsRail({ alerts }: AlertsRailProps): ReactElement {
       <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
         {alerts.length === 0 ? (
           <div
+            className='alerts-empty'
+            role='status'
             style={{
               fontSize: '9px',
               color: 'var(--fg-muted)',
@@ -185,9 +192,9 @@ export function AlertsRail({ alerts }: AlertsRailProps): ReactElement {
             No active alerts
           </div>
         ) : (
-          alerts.map((alert, index) => (
+          alerts.map((alert) => (
             <div
-              key={index}
+              key={alertStableKey(alert)}
               className={alertClassNames(alert.type)}
               style={alertItemStyle(alert.type)}
             >

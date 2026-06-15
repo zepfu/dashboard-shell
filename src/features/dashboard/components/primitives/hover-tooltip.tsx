@@ -42,6 +42,9 @@ import {
   useEffect,
   useLayoutEffect,
   useCallback,
+  useId,
+  cloneElement,
+  isValidElement,
   type ReactElement,
   type ReactNode,
   type CSSProperties,
@@ -212,6 +215,12 @@ export function HoverTooltip({
   const [coords, setCoords] = useState<PanelCoords | null>(null)
   const wrapperRef = useRef<HTMLDivElement>(null)
   const panelRef = useRef<HTMLDivElement>(null)
+  const tooltipId = useId()
+  const isPinnedRef = useRef(false)
+
+  useEffect(() => {
+    isPinnedRef.current = isPinned
+  }, [isPinned])
 
   const extraClass = variantClass(variant)
 
@@ -385,9 +394,17 @@ export function HoverTooltip({
    */
   const canPortal = typeof document !== 'undefined' && document.body != null
 
+  const describedByChild = isValidElement(children)
+    ? cloneElement(children, {
+        'aria-describedby': tooltipId,
+      } as { 'aria-describedby': string })
+    : children
+
   const panel = (
     <div
       ref={panelRef}
+      id={tooltipId}
+      role='tooltip'
       className={['v9-tip', extraClass, isOpen ? '' : 'hidden']
         .filter(Boolean)
         .join(' ')}
@@ -403,6 +420,7 @@ export function HoverTooltip({
     <div
       ref={wrapperRef}
       className={className}
+      aria-describedby={isValidElement(children) ? undefined : tooltipId}
       style={{
         position: 'relative',
         // quota variant wraps a full-width trend bar inside a flex container
@@ -443,6 +461,9 @@ export function HoverTooltip({
           : {}),
       }}
       onPointerEnter={() => {
+        if (!isPinnedRef.current) {
+          setIsPinned(false)
+        }
         setIsOpen(true)
       }}
       onPointerLeave={() => {
@@ -450,8 +471,19 @@ export function HoverTooltip({
           setIsOpen(false)
         }
       }}
+      onFocusCapture={() => {
+        setIsOpen(true)
+      }}
+      onBlurCapture={(e) => {
+        if (isPinned) return
+        const next = e.relatedTarget
+        if (next instanceof Node && wrapperRef.current?.contains(next)) {
+          return
+        }
+        setIsOpen(false)
+      }}
     >
-      {children}
+      {describedByChild}
       {canPortal ? createPortal(panel, document.body) : panel}
     </div>
   )
