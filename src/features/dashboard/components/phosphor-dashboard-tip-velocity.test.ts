@@ -5,7 +5,7 @@
  * consumedPct, resetAt, and quota duration. It is exported for testing via the
  * `_formatTipVelocityForTest` alias.
  */
-import { _formatTipVelocityForTest } from './phosphor-dashboard'
+import { _formatTipVelocityForTest } from './phosphor-dashboard.testkit'
 
 const { describe, it, expect, beforeEach, afterEach, vi } =
   await import('vitest')
