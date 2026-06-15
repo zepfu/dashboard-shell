@@ -193,7 +193,7 @@ export function AggregateCard({
             invalidHot ? (
               <span
                 className='pulse-dot'
-                aria-label='invalid tool calls detected'
+                aria-hidden='true'
                 style={{
                   display: 'inline-block',
                   width: '6px',

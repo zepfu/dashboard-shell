@@ -236,35 +236,28 @@ test('test_renderDelta_deadband', () => {
   // -0.0004 fractional delta (absolute magnitude < 0.05%) should show "→ 0.0%"
   const tinyDelta = { cost_usd: -0.0004 }
 
-  render(<KpiStrip summary={summary} deltas={tinyDelta} />)
+  const { container: costContainer, unmount: unmountCost } = render(
+    <KpiStrip summary={summary} deltas={tinyDelta} />
+  )
 
-  // The Cost tile delta should display as "→ 0.0%" (deadband) not "↓ 0.0%"
-  // Look for the neutral arrow → indicating deadband treatment
-  const neutralArrow = document.querySelector('.kpi-tile .kpi-delta')
-  // Find Cost tile specifically
-  const tiles = Array.from(document.querySelectorAll('.kpi-tile'))
-  const costTile = tiles.find((t) =>
-    t.querySelector('.kpi-label')?.textContent?.includes('Cost')
+  const costTile = Array.from(costContainer.querySelectorAll('.kpi-tile')).find(
+    (t) => t.querySelector('.kpi-label')?.textContent?.includes('Cost')
   )
   const deltaSpan = costTile?.querySelector('.kpi-delta span')
   const deltaText = deltaSpan?.textContent ?? ''
 
-  // Must render "→ 0.0%" deadband marker, not "↓ 0.0%"
   expect(deltaText).toMatch(/→\s*0\.0%/)
-  // Must NOT render the downward arrow for a deadband value
   expect(deltaText).not.toContain('↓')
 
-  // Verify: exact 0 also renders muted → arrow
+  unmountCost()
+
   const exactZeroDelta = { requests: 0 }
-  const { unmount } = render(
+  const { container: zeroContainer } = render(
     <KpiStrip summary={summary} deltas={exactZeroDelta} />
   )
-  const reqTiles = Array.from(document.querySelectorAll('.kpi-tile'))
-  const reqTile = reqTiles.find((t) =>
-    t.querySelector('.kpi-label')?.textContent?.includes('Requests')
+  const reqTile = Array.from(zeroContainer.querySelectorAll('.kpi-tile')).find(
+    (t) => t.querySelector('.kpi-label')?.textContent?.includes('Requests')
   )
   const reqDeltaSpan = reqTile?.querySelector('.kpi-delta span')
   expect(reqDeltaSpan?.textContent).toMatch(/→\s*0\.0%/)
-  unmount()
-  expect(neutralArrow).toBeDefined() // assert-value guard
 })
