@@ -1,3 +1,7 @@
+/* Load-bearing `.dark` on `document.documentElement`: ThemeProvider applies it on
+   mount so Tailwind’s `dark:` variant (`@custom-variant dark` in index.css) and
+   dark-mode tokens resolve. Do not remove as “unused” during cleanup. */
+
 /* SVG topographic pattern overlay — v9.7 reference design language.
    Subtle 45° amber lines at 2% opacity give the background depth without
    competing with content. z-index: -1 keeps it below all content layers. */
