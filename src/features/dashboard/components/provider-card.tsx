@@ -39,7 +39,7 @@
  *       Rows 1-3 (Requests, Tokens, Cost) removed from provider-metric grid.
  * - F8: Quota hover .t-model spans colored with providerBrandHex() for brand color.
  */
-import type { ReactElement, ReactNode } from 'react'
+import { memo, type ReactElement, type ReactNode } from 'react'
 import type { UsageReportLocalHealthRow } from '../api/usage-report'
 import { fmtCompact } from '../lib/format-utils'
 import {
@@ -592,7 +592,7 @@ export interface ProviderCardProps {
  * Wave 41: when `lanes` prop is supplied, renders structured lane rows with
  *   current + prior bars side-by-side per quota type instead of a flat list.
  */
-export function ProviderCard({
+function ProviderCardInner({
   config,
   data,
   healthCells,
@@ -1340,3 +1340,5 @@ export function ProviderCard({
     </div>
   )
 }
+
+export const ProviderCard = memo(ProviderCardInner)

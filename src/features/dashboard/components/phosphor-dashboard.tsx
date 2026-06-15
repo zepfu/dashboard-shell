@@ -68,6 +68,7 @@ import {
   computeFleetP95,
   providerBrandHex,
 } from '../lib/usage-report-display'
+import { useControllableState } from '../lib/use-controllable-state'
 import { AggregateCard } from './aggregate-card'
 import {
   buildCurrentStats,
@@ -1199,30 +1200,16 @@ export default function PhosphorDashboard({
   const resolvedFrom = from ?? defaults.from
   const resolvedTo = to ?? defaults.to
   const resolvedGrain: UsageReportGrain = grain ?? 'day'
-  const [internalProviderSectionView, setInternalProviderSectionView] =
-    useState<ProviderSectionView>('health')
-  const [internalLedgerView, setInternalLedgerView] =
-    useState<LedgerView>('model')
-  const providerSectionView =
-    providerSectionViewProp ?? internalProviderSectionView
-  const ledgerView = ledgerViewProp ?? internalLedgerView
-  const setProviderSectionView = useCallback(
-    (view: ProviderSectionView): void => {
-      if (providerSectionViewProp === undefined) {
-        setInternalProviderSectionView(view)
-      }
-      onProviderSectionViewChange?.(view)
-    },
-    [onProviderSectionViewChange, providerSectionViewProp]
-  )
-  const setLedgerView = useCallback(
-    (view: LedgerView): void => {
-      if (ledgerViewProp === undefined) {
-        setInternalLedgerView(view)
-      }
-      onLedgerViewChange?.(view)
-    },
-    [ledgerViewProp, onLedgerViewChange]
+  const [providerSectionView, setProviderSectionView] =
+    useControllableState<ProviderSectionView>(
+      providerSectionViewProp,
+      'health',
+      onProviderSectionViewChange
+    )
+  const [ledgerView, setLedgerView] = useControllableState<LedgerView>(
+    ledgerViewProp,
+    'model',
+    onLedgerViewChange
   )
 
   // Wave 36 Fix 1: the /usage query is hoisted to index.tsx so a single HTTP
@@ -1519,7 +1506,12 @@ export default function PhosphorDashboard({
   } | null>(null)
 
   const handleTokenTrendHourHover = useCallback(
-    (target: { day: string; hour: number }): void => {
+    (target: { day: string; hour: number } | null): void => {
+      if (target === null) {
+        setTokenTrendHoverTarget(null)
+        setTokenTrendDetailRequest(null)
+        return
+      }
       setTokenTrendHoverTarget((current) =>
         current?.day === target.day &&
         current.hour === target.hour &&
@@ -1534,9 +1526,15 @@ export default function PhosphorDashboard({
   useEffect(() => {
     if (tokenTrendHoverTarget === null) return
     const timeout = window.setTimeout(() => {
-      setTokenTrendDetailRequest({
-        day: tokenTrendHoverTarget.day,
-        scopeKey: tokenTrendHoverTarget.scopeKey,
+      setTokenTrendDetailRequest((current) => {
+        const next = {
+          day: tokenTrendHoverTarget.day,
+          scopeKey: tokenTrendHoverTarget.scopeKey,
+        }
+        if (current?.day === next.day && current.scopeKey === next.scopeKey) {
+          return current
+        }
+        return next
       })
     }, 125)
     return () => {
@@ -1774,10 +1772,13 @@ export default function PhosphorDashboard({
 
   // Wave 11 PR2 (11-e): renamed from 'Fleet' to 'Σ Aggregate Totals'.
   // The Σ character is intentional per the principal audit spec (S4).
-  const aggregateConfig: ProviderCardConfig = {
-    provider: 'Σ Aggregate Totals',
-    color: 'var(--accent-chrome)',
-  }
+  const aggregateConfig = useMemo(
+    (): ProviderCardConfig => ({
+      provider: 'Σ Aggregate Totals',
+      color: 'var(--accent-chrome)',
+    }),
+    []
+  )
 
   const aggregateHealthCells = useMemo(
     () => buildAggregateHealthCells(healthRows, providerErrorObservations),
