@@ -84,13 +84,23 @@ test('test_kpi_strip_formats_cost_with_comma_separators', () => {
 test('test_kpi_strip_loading_shows_skeletons', () => {
   const { container } = render(<KpiStrip summary={undefined} loading={true} />)
 
-  // At least one skeleton/loading element must be present
-  const skeletons =
-    container.querySelectorAll('.skeleton').length +
-    container.querySelectorAll('.animate-pulse').length +
-    container.querySelectorAll('[data-loading]').length
+  // Wave 10 (S5 test gap): assert exactly 6 skeleton placeholders — one per KPI tile.
+  // Previously only asserted `> 0`; now locks in the 6-tile contract so a future
+  // refactor that accidentally drops or adds tiles is immediately caught.
+  const skeletonElements = container.querySelectorAll(
+    '.skeleton.animate-pulse[data-loading="true"]'
+  )
+  expect(skeletonElements.length).toBe(6)
 
-  expect(skeletons).toBeGreaterThan(0)
+  // Each tile must show its label even while loading, so the skeleton is
+  // identifiable by tile name. This guards the UX contract: labels remain
+  // visible as placeholders during data fetch.
+  for (const label of KPI_LABELS) {
+    const elements = screen.getAllByText((_content, element) => {
+      return element?.textContent?.toLowerCase() === label.toLowerCase()
+    })
+    expect(elements.length).toBeGreaterThan(0)
+  }
 })
 
 // Wave 35 (⚠-5 R-B): KPI delta rendering tests

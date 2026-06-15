@@ -3,6 +3,8 @@ import {
   classifyTokenTrendActiveVersionFamily,
   deriveTokenTrendActiveVersionLanes,
   deriveTokenTrendModelFirstSeenGroups,
+  formatBucketLabel,
+  normalizeTrendData,
   normalizeTokenTrendClientVersionForLane,
   // parseTrendDayHour is currently module-private; engineer must export it.
   // The import is commented out until the export is added; the test body uses
@@ -580,4 +582,231 @@ test('test_normalize_client_version_numeric_build_not_collapsed', () => {
   // A version without a hash suffix returns as-is.
   const plain = normalizeTokenTrendClientVersionForLane('2.1.118')
   expect(plain).toBe('2.1.118')
+})
+
+// ---------------------------------------------------------------------------
+// Wave 10 (S4-T3): normalizeTrendData / formatBucketLabel coverage
+// ---------------------------------------------------------------------------
+
+/**
+ * S4-T3 — normalizeTrendData always returns exactly 24 buckets.
+ *
+ * Pad case: <24 raw buckets → empty prefix buckets added with "Xh" labels.
+ * Truncate case: >24 raw buckets → oldest trimmed; most recent 24 kept.
+ */
+test('test_normalizeTrendData_pads_to_24_buckets_when_fewer_rows', () => {
+  // 3 rows → 3 unique buckets → should be padded to 24
+  const rows = [
+    {
+      bucket: '2026-05-20',
+      provider: 'anthropic',
+      model: 'claude-sonnet',
+      repository: '',
+      traces: 1,
+      token_total: 100,
+      usd_cost: 0,
+    },
+    {
+      bucket: '2026-05-21',
+      provider: 'openai',
+      model: 'gpt-4',
+      repository: '',
+      traces: 1,
+      token_total: 200,
+      usd_cost: 0,
+    },
+    {
+      bucket: '2026-05-22',
+      provider: 'anthropic',
+      model: 'claude-haiku',
+      repository: '',
+      traces: 1,
+      token_total: 50,
+      usd_cost: 0,
+    },
+  ]
+
+  const result = normalizeTrendData(rows)
+  expect(result).toHaveLength(24)
+
+  // Last 3 buckets are the real data (most recent at the end)
+  expect(result[21]?.label).toBe('2026-05-20')
+  expect(result[22]?.label).toBe('2026-05-21')
+  expect(result[23]?.label).toBe('2026-05-22')
+  // Padded prefix buckets should have empty totals
+  expect(result[0]?.totals).toEqual({})
+  expect(result[0]?.label).toMatch(/h$/) // e.g. "23h" relative label
+})
+
+test('test_normalizeTrendData_truncates_to_24_most_recent_when_more_rows', () => {
+  // Generate 30 daily buckets (too many → oldest 6 should be trimmed)
+  const rows = Array.from({ length: 30 }, (_, i) => {
+    const day = new Date('2026-05-01')
+    day.setDate(day.getDate() + i)
+    return {
+      bucket: day.toISOString().slice(0, 10),
+      provider: 'anthropic',
+      model: 'claude-sonnet',
+      repository: '',
+      traces: 1,
+      token_total: (i + 1) * 10,
+      usd_cost: 0,
+    }
+  })
+
+  const result = normalizeTrendData(rows)
+  expect(result).toHaveLength(24)
+
+  // Most recent bucket must be the last of the 30 generated days
+  expect(result[23]?.label).toBe('2026-05-30')
+  // The 7th bucket from the end (oldest kept) is 2026-05-07
+  expect(result[0]?.label).toBe('2026-05-07')
+  // None of the result labels should be a padded "Xh" label
+  for (const bucket of result) {
+    expect(bucket.label).not.toMatch(/^\d+h$/)
+  }
+})
+
+/**
+ * S4-T3 prior-#58: label-mixing guard.
+ *
+ * When the raw data includes both ISO-8601 bucket keys and relative "Xh" keys
+ * (a mixing scenario from prior issue #58), normalizeTrendData must correctly
+ * sort them. ISO-8601 keys sort lexicographically before "Xh" strings, so the
+ * buckets should be ordered: ISO dates first (chronologically), then "Xh" keys.
+ * The function doesn't prevent mixing (that's the caller's responsibility), but
+ * it must not crash and must still return exactly 24 buckets.
+ */
+test('test_normalizeTrendData_handles_mixed_iso_and_relative_labels', () => {
+  // Mix of ISO date buckets and relative "Xh" labels — prior #58 scenario
+  const rows = [
+    {
+      bucket: '2026-05-20',
+      provider: 'anthropic',
+      model: 'claude-sonnet',
+      repository: '',
+      traces: 1,
+      token_total: 100,
+      usd_cost: 0,
+    },
+    {
+      bucket: '3h',
+      provider: 'openai',
+      model: 'gpt-4',
+      repository: '',
+      traces: 1,
+      token_total: 50,
+      usd_cost: 0,
+    },
+  ]
+
+  const result = normalizeTrendData(rows)
+  // Must not throw; always returns 24 buckets
+  expect(result).toHaveLength(24)
+  // Real buckets are present somewhere in the result
+  const labels = result.map((b) => b.label)
+  expect(labels).toContain('2026-05-20')
+  expect(labels).toContain('3h')
+})
+
+/**
+ * S4-T3 — normalizeTrendData: NaN-total and negative-total rows are accepted
+ * by the bucket map (no crash), but the guard in `buildTokenTrendDayEnvelopes`
+ * drops NaN-hour rows. normalizeTrendData itself does NOT drop NaN/negative
+ * token_total rows — it sums them faithfully. This test documents that contract.
+ */
+test('test_normalizeTrendData_sums_negative_and_nan_totals_into_bucket', () => {
+  const rows = [
+    {
+      bucket: '2026-05-20',
+      provider: 'anthropic',
+      model: 'claude-sonnet',
+      repository: '',
+      traces: 1,
+      token_total: 500,
+      usd_cost: 0,
+    },
+    {
+      bucket: '2026-05-20',
+      provider: 'anthropic',
+      model: 'claude-haiku',
+      repository: '',
+      traces: 1,
+      token_total: -50, // negative: unusual but should not crash
+      usd_cost: 0,
+    },
+  ]
+
+  const result = normalizeTrendData(rows)
+  expect(result).toHaveLength(24)
+  // The bucket for 2026-05-20 should contain the sum of 500 + (-50) = 450
+  const dataBucket = result.find((b) => b.label === '2026-05-20')
+  expect(dataBucket).toBeDefined()
+  expect(dataBucket?.totals['anthropic']).toBe(450)
+})
+
+/**
+ * S4-T3 — normalizeTrendData: provider name normalisation.
+ * 'x.ai' and 'xai' variant rows must both land in the same canonical 'xai' key.
+ */
+test('test_normalizeTrendData_normalizes_xai_provider_variants', () => {
+  const rows = [
+    {
+      bucket: '2026-05-20',
+      provider: 'x.ai', // variant
+      model: 'grok-2',
+      repository: '',
+      traces: 1,
+      token_total: 300,
+      usd_cost: 0,
+    },
+    {
+      bucket: '2026-05-20',
+      provider: 'xai', // canonical
+      model: 'grok-3',
+      repository: '',
+      traces: 1,
+      token_total: 200,
+      usd_cost: 0,
+    },
+  ]
+
+  const result = normalizeTrendData(rows)
+  const dataBucket = result.find((b) => b.label === '2026-05-20')
+  expect(dataBucket).toBeDefined()
+  // Both 'x.ai' and 'xai' must collapse to 'xai'
+  expect(dataBucket?.totals['xai']).toBe(500)
+  expect(dataBucket?.totals['x.ai']).toBeUndefined()
+})
+
+// ---------------------------------------------------------------------------
+// Wave 10 (S4-T3): formatBucketLabel coverage
+// ---------------------------------------------------------------------------
+
+/**
+ * S4-T3 — formatBucketLabel: ISO-8601 date string → MM/DD.
+ */
+test('test_formatBucketLabel_converts_iso_date_to_mm_dd', () => {
+  expect(formatBucketLabel('2026-05-19')).toBe('05/19')
+  expect(formatBucketLabel('2026-01-01')).toBe('01/01')
+  expect(formatBucketLabel('2026-12-31')).toBe('12/31')
+})
+
+/**
+ * S4-T3 — formatBucketLabel: ISO-8601 datetime strings → MM/DD (date portion only).
+ */
+test('test_formatBucketLabel_converts_iso_datetime_to_mm_dd', () => {
+  expect(formatBucketLabel('2026-05-19T00:00:00.000Z')).toBe('05/19')
+  expect(formatBucketLabel('2026-06-01T12:00:00.000Z')).toBe('06/01')
+})
+
+/**
+ * S4-T3 — formatBucketLabel: relative "Xh" labels pass through unchanged.
+ */
+test('test_formatBucketLabel_passes_through_relative_labels', () => {
+  expect(formatBucketLabel('23h')).toBe('23h')
+  expect(formatBucketLabel('0h')).toBe('0h')
+  expect(formatBucketLabel('5h')).toBe('5h')
+  // Non-ISO non-relative labels also pass through unchanged
+  expect(formatBucketLabel('custom-label')).toBe('custom-label')
 })

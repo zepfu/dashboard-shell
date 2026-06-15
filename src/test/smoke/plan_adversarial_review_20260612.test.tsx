@@ -1,7 +1,7 @@
 /**
- * Smoke tests for plan-adversarial-review-20260612.md (Wave 5).
+ * Smoke tests for plan-adversarial-review-20260612.md (Wave 5 + Wave 10).
  *
- * These tests validate that Wave 5 features work end-to-end after
+ * These tests validate that Wave 5/10 features work end-to-end after
  * implementation. They become permanent regression guards.
  *
  * See: .analysis/plan-adversarial-review-20260612.md § Smoke Test Procedure
@@ -10,8 +10,25 @@
  *   - Data-layer boundary functions import without error.
  *   - Alert hook produces deterministic output with synthetic data.
  *   - Net-new exports (signedDelta, usageReportQuotasKey) exist.
+ *
+ * Wave 10 / S6-T8 additions:
+ *   - test_dashboard_mounts_with_populated_report: real render with MSW + QueryClient.
+ *   - test_no_axios_import_after_w9: axios-free guard (pre-existing, strengthened).
  */
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import {
+  createMemoryHistory,
+  createRootRoute,
+  createRouter,
+  RouterProvider,
+} from '@tanstack/react-router'
+import { act, render, waitFor } from '@testing-library/react'
+import { http, HttpResponse } from 'msw'
 import { describe, expect, test } from 'vitest'
+import { SidebarProvider } from '../../components/ui/sidebar'
+import { DirectionProvider } from '../../context/direction-provider'
+import { LayoutProvider } from '../../context/layout-provider'
+import { SearchProvider } from '../../context/search-provider'
 import {
   buildDashboardAlertSummary,
   useAlertsFromAnomalies,
@@ -32,6 +49,7 @@ import {
   computeFleetP95,
   formatDashboardDate,
 } from '../../features/dashboard/lib/usage-report-display'
+import { server } from '../setup'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Import checks: all Wave 5 symbols must be importable
@@ -165,9 +183,113 @@ describe('agentQualityFromFlatRow smoke (synthetic data)', () => {
 // Plan-level smoke assertions (Smoke Test Procedure)
 // ─────────────────────────────────────────────────────────────────────────────
 
-test('test_dashboard_mounts_with_populated_report_symbol_check', () => {
-  // Dashboard component is exported and is a function (component)
-  expect(typeof Dashboard).toBe('function')
+/**
+ * S6-T8: test_dashboard_mounts_with_populated_report
+ *
+ * Real mounting test for the top-level Dashboard component.
+ * Uses MSW + TanStack Router + QueryClient to exercise the full render path.
+ *
+ * The Dashboard component uses TanStack Router hooks (via PhosphorSidebar →
+ * useLocation), so it must be wrapped in a RouterProvider.
+ *
+ * Guards:
+ *   - Dashboard component exports correctly and renders without crashing
+ *   - With populated usage report data, at least one KPI tile renders
+ *   - The KPI label "Tokens In" appears in the rendered output
+ */
+test('test_dashboard_mounts_with_populated_report', async () => {
+  // Arrange: MSW usage report with non-empty summary (guards the 60/40 fallback)
+  server.use(
+    http.get('/api/shell/reports/usage', () =>
+      HttpResponse.json({
+        summary: {
+          token_in: 1_500_000,
+          token_out: 750_000,
+          cost_usd: 12.5,
+          requests: 300,
+          errors: 2,
+          p95_ms: 420,
+        },
+        rows: [
+          {
+            model: 'claude-sonnet-4',
+            provider: 'anthropic',
+            tokens_in: 1_500_000,
+            tokens_out: 750_000,
+            requests: 300,
+            p50_ms: 200,
+            p95_ms: 420,
+            error_pct: 0.007,
+            cost_usd: 12.5,
+            quota_pct: 0,
+          },
+        ],
+        trend: [],
+        version_intervals: [],
+        model_first_seen: [],
+      })
+    ),
+    http.get('/api/shell/health', () =>
+      HttpResponse.json({
+        ok: true,
+        pgBouncerSidecars: { status: 'unknown', sidecars: [] },
+      })
+    ),
+    http.get('/api/shell/reports/quota', () => HttpResponse.json({ rows: [] })),
+    http.get('/api/shell/reports/quota-range-history', () =>
+      HttpResponse.json({ rows: [] })
+    ),
+    http.get('/api/shell/reports/quota-history', () =>
+      HttpResponse.json({ rows: [] })
+    )
+  )
+
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Infinity } },
+  })
+
+  // Dashboard requires the full provider stack (matching production + index.test.tsx):
+  //   QueryClientProvider → DirectionProvider → SearchProvider → LayoutProvider
+  //   → SidebarProvider (ConfigDrawer→useSidebar) → RouterProvider
+  const rootRoute = createRootRoute({ component: Dashboard })
+  const router = createRouter({
+    routeTree: rootRoute,
+    history: createMemoryHistory({ initialEntries: ['/'] }),
+  })
+
+  let container!: HTMLElement
+  await act(async () => {
+    const result = render(
+      <QueryClientProvider client={queryClient}>
+        <DirectionProvider>
+          <SearchProvider>
+            <LayoutProvider>
+              <SidebarProvider>
+                <RouterProvider router={router} />
+              </SidebarProvider>
+            </LayoutProvider>
+          </SearchProvider>
+        </DirectionProvider>
+      </QueryClientProvider>
+    )
+    container = result.container
+  })
+
+  // The component must mount without throwing
+  expect(container).toBeTruthy()
+
+  // Wait for the KpiStrip to render (at least one KPI tile must be present)
+  await waitFor(
+    () => {
+      const tiles = container.querySelectorAll('.kpi-tile')
+      expect(tiles.length).toBeGreaterThan(0)
+    },
+    { timeout: 5000 }
+  )
+
+  // The Dashboard must include the KPI labels visible in the rendered output
+  const text = container.textContent ?? ''
+  expect(text).toMatch(/Tokens\s*In/i)
 })
 
 test('test_no_axios_import_after_w9', async () => {
