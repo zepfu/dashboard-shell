@@ -75,7 +75,8 @@ import {
   ComparisonPanel,
   type ProviderCurrentStats,
 } from './comparison-panel'
-import { MasterLedgerTable, type LedgerView } from './master-ledger-table'
+import type { LedgerView } from './master-ledger-aggregation'
+import { MasterLedgerTable } from './master-ledger-table'
 import styles from './phosphor-dashboard.module.css'
 import {
   buildAggregateHealthCells,

@@ -1,4 +1,4 @@
-import type { ModelRow } from './master-ledger-table'
+import type { ModelRow } from './master-ledger-aggregation'
 
 /**
  * Aggregated stats per provider for one time window.
