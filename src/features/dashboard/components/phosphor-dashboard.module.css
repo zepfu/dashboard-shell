@@ -1,0 +1,73 @@
+/**
+ * PhosphorDashboard responsive CSS module.
+ *
+ * Wave 10: provider-summary grid responsive breakpoints (D2).
+ * D19: comparison section responsive show at 3840px+.
+ * D7: section gap density helpers.
+ */
+
+/* ── Provider summary grid ─────────────────────────────────────────────── */
+
+/** Default baseline: 1280–1599px → 2 columns */
+.provider-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px;
+}
+
+/** 1600–2099px → 4 columns */
+@media (min-width: 1600px) {
+  .provider-summary-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
+/** 2100px+ → 8 columns (the 8-card row) */
+@media (min-width: 2100px) {
+  .provider-summary-grid {
+    grid-template-columns: repeat(8, minmax(0, 1fr));
+  }
+}
+
+/* ── Ledger + Repo side-by-side row (Wave 11 PR1 — 11-c) ───────────────── */
+
+/** Below 1600px: stack Model Ledger above Repository Breakdown. */
+.ledger-repo-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/** ≥1600px: side-by-side 8fr (Model Ledger) / 4fr (Repository Breakdown).
+    minmax(0, Xfr) prevents grid items from overflowing their tracks when
+    content has a wide intrinsic width — mirrors
+    the minmax(0, 1fr) pattern used in .provider-summary-grid (W35-M1). */
+@media (min-width: 1600px) {
+  .ledger-repo-row {
+    display: grid;
+    grid-template-columns: minmax(0, 8fr) minmax(0, 4fr);
+    gap: 4px;
+  }
+}
+
+/* Wave 22-CSS — 5120 C2-residual: collapse .ledger-repo-row wrapper at ≥3840px
+   so its children (section[data-tab='models'] and section[data-tab='repos'])
+   become direct grid children of .main-content and the per-section
+   grid-column / grid-row placements authored in Wave 20-CSS take effect. */
+@media (min-width: 3840px) {
+  .ledger-repo-row {
+    display: contents;
+  }
+}
+
+/* ── Comparison section ─────────────────────────────────────────────────── */
+
+.comparison-section {
+  display: none;
+}
+
+@media (min-width: 3840px) {
+  .comparison-section {
+    display: block;
+  }
+}

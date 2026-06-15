@@ -8,9 +8,17 @@ services:
     ports:
       - "${DASHBOARD_SHELL_PORT:-3005}:80"
     depends_on:
+      aawm-dashboard:
+        condition: service_healthy
+      aawm-observe-dashboard:
+        condition: service_healthy
       aawm-tap-dashboard:
         condition: service_healthy
+      aegis-dashboard:
+        condition: service_healthy
       dashboard-shell-reports:
+        condition: service_healthy
+      sluice-dashboard:
         condition: service_healthy
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -24,21 +32,60 @@ services:
       dockerfile: Dockerfile.report-service
     image: dashboard-shell-reports:local
     environment:
+      AAWM_API_KEY: "${AAWM_API_KEY:-}"
+      AAWM_ACCESS_TOKEN: "${AAWM_ACCESS_TOKEN:-}"
+      AAWM_API_TARGET: "${AAWM_API_TARGET:-http://aawm-api:8000}"
+      AAWM_HOOK_API_KEY: "${AAWM_HOOK_API_KEY:-}"
+      AAWM_HOOK_ACCESS_TOKEN: "${AAWM_HOOK_ACCESS_TOKEN:-}"
+      AAWM_HOOK_API_TARGET: "${AAWM_HOOK_API_TARGET:-http://aawm-hook-server:8318}"
+      AAWM_OBSERVE_API_KEY: "${AAWM_OBSERVE_API_KEY:-}"
+      AAWM_OBSERVE_ACCESS_TOKEN: "${AAWM_OBSERVE_ACCESS_TOKEN:-}"
+      AAWM_OBSERVE_API_TARGET: "${AAWM_OBSERVE_API_TARGET:-http://host.docker.internal:34042}"
       AAWM_TAP_API_KEY: "${AAWM_TAP_API_KEY:-}"
       AAWM_TAP_ACCESS_TOKEN: "${AAWM_TAP_ACCESS_TOKEN:-}"
       AAWM_TAP_ADMIN_CAPABILITY: "${AAWM_TAP_ADMIN_CAPABILITY:-}"
       AAWM_TAP_API_TARGET: "${AAWM_TAP_API_TARGET:-http://host.docker.internal:8010}"
+      AEGIS_ACCESS_TOKEN: "${AEGIS_ACCESS_TOKEN:-}"
+      AEGIS_API_TARGET: "${AEGIS_API_TARGET:-http://aegis-api:8001/api/v1}"
+      AEGIS_DB_PASSWORD: "${AEGIS_DB_PASSWORD:-aegis_dev_password}"
+      SLUICE_ACCESS_TOKEN: "${SLUICE_ACCESS_TOKEN:-}"
+      SLUICE_API_TARGET: "${SLUICE_API_TARGET:-http://host.docker.internal:8002/api/v1}"
       VITE_API_KEY: "${VITE_API_KEY:-}"
       VITE_ACCESS_TOKEN: "${VITE_ACCESS_TOKEN:-}"
       VITE_TAP_ACCESS_TOKEN: "${VITE_TAP_ACCESS_TOKEN:-}"
       VITE_TAP_API_KEY: "${VITE_TAP_API_KEY:-}"
       DATABASE_URL: "${DATABASE_URL:-}"
-      SHELL_REPORT_DATABASE_HOST_REWRITE: "${SHELL_REPORT_DATABASE_HOST_REWRITE:-aawm-postgres18}"
-      SHELL_REPORT_DATABASE_PORT_REWRITE: "${SHELL_REPORT_DATABASE_PORT_REWRITE:-5432}"
-      SHELL_REPORT_DB_POOL_MAX: "${SHELL_REPORT_DB_POOL_MAX:-5}"
+      SHELL_REPORT_DATABASE_HOST_REWRITE: "${SHELL_REPORT_DATABASE_HOST_REWRITE:-aawm-pgbouncer}"
+      SHELL_REPORT_DATABASE_PORT_REWRITE: "${SHELL_REPORT_DATABASE_PORT_REWRITE:-6432}"
+      SHELL_REPORT_AAWM_PGBOUNCER_DATABASE_URL: "${SHELL_REPORT_AAWM_PGBOUNCER_DATABASE_URL:-}"
+      SHELL_REPORT_AEGIS_PGBOUNCER_DATABASE_URL: "${SHELL_REPORT_AEGIS_PGBOUNCER_DATABASE_URL:-}"
+      SHELL_REPORT_DB_POOL_MAX: "${SHELL_REPORT_DB_POOL_MAX:-4}"
+      SHELL_REPORT_DB_CONNECTION_TIMEOUT_MS: "${SHELL_REPORT_DB_CONNECTION_TIMEOUT_MS:-5000}"
+      SHELL_REPORT_DB_DISABLE_PARALLELISM: "${SHELL_REPORT_DB_DISABLE_PARALLELISM:-true}"
+      SHELL_REPORT_SQL_FANOUT_CONCURRENCY: "${SHELL_REPORT_SQL_FANOUT_CONCURRENCY:-1}"
+      SHELL_REPORT_HEALTH_DB_CONNECTION_TIMEOUT_MS: "${SHELL_REPORT_HEALTH_DB_CONNECTION_TIMEOUT_MS:-1000}"
+      SHELL_REPORT_HEALTH_DB_STATEMENT_TIMEOUT_MS: "${SHELL_REPORT_HEALTH_DB_STATEMENT_TIMEOUT_MS:-2000}"
+      SHELL_REPORT_MV_HEALTH_CACHE_TTL_MS: "${SHELL_REPORT_MV_HEALTH_CACHE_TTL_MS:-30000}"
       SHELL_REPORT_PORT: "3010"
+      SHELL_REPORT_REDIS_URL: "${SHELL_REPORT_REDIS_URL:-redis://dashboard-shell-redis:6379}"
+      SHELL_REPORT_CACHE_PREFIX: "${SHELL_REPORT_CACHE_PREFIX:-dashboard-shell:reports}"
+      SHELL_REPORT_CACHE_VERSION: "${SHELL_REPORT_CACHE_VERSION:-v14}"
+      SHELL_REPORT_CACHE_STALE_TTL_MS: "${SHELL_REPORT_CACHE_STALE_TTL_MS:-86400000}"
+      SHELL_REPORT_CACHE_LOCK_TTL_MS: "${SHELL_REPORT_CACHE_LOCK_TTL_MS:-1800000}"
+      SHELL_REPORT_CACHE_LOCK_WAIT_MS: "${SHELL_REPORT_CACHE_LOCK_WAIT_MS:-60000}"
+      SHELL_REPORT_CACHE_PREWARM: "${SHELL_REPORT_CACHE_PREWARM:-false}"
+      SHELL_REPORT_CACHE_PREWARM_INTERVAL_MS: "${SHELL_REPORT_CACHE_PREWARM_INTERVAL_MS:-900000}"
+      SHELL_REPORT_CACHE_PREWARM_LOCK_TTL_MS: "${SHELL_REPORT_CACHE_PREWARM_LOCK_TTL_MS:-7200000}"
+      SHELL_REPORT_DOCKER_LOG_ROOT: "${SHELL_REPORT_DOCKER_LOG_ROOT:-/host/docker/containers}"
+      SHELL_REPORT_DOCKER_LOG_CONTAINERS: "${SHELL_REPORT_DOCKER_LOG_CONTAINERS:-aawm-litellm,litellm-dev}"
     expose:
       - "3010"
+    depends_on:
+      dashboard-shell-redis:
+        condition: service_healthy
+    volumes:
+      - ./server:/app/server:ro
+      - /var/lib/docker/containers:/host/docker/containers:ro
     healthcheck:
       test:
         [
@@ -56,6 +103,67 @@ services:
     networks:
       - aawm_tap
       - aawm_core
+      - aegis_core
+
+  dashboard-shell-redis:
+    restart: unless-stopped
+    image: redis:7-alpine
+    command:
+      [
+        "redis-server",
+        "--save",
+        "",
+        "--appendonly",
+        "no",
+        "--maxmemory",
+        "${SHELL_REPORT_REDIS_MAXMEMORY:-512mb}",
+        "--maxmemory-policy",
+        "allkeys-lru",
+      ]
+    expose:
+      - "6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 5s
+      start_period: 5s
+      retries: 3
+    networks:
+      - aawm_tap
+
+  aawm-dashboard:
+    restart: unless-stopped
+    build:
+      context: ../aawm-dashboard
+      dockerfile: Dockerfile
+    image: aawm-dashboard-remote:local
+    expose:
+      - "80"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/remoteEntry.js >/dev/null"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    networks:
+      - aawm_tap
+
+  aawm-observe-dashboard:
+    restart: unless-stopped
+    build:
+      context: ../aawm-observe-dashboard
+      dockerfile: Dockerfile
+    image: aawm-observe-dashboard-remote:local
+    expose:
+      - "80"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/remoteEntry.js >/dev/null"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    networks:
+      - aawm_tap
 
   aawm-tap-dashboard:
     restart: unless-stopped
@@ -74,10 +182,47 @@ services:
     networks:
       - aawm_tap
 
+  aegis-dashboard:
+    restart: unless-stopped
+    build:
+      context: ../aegis-dashboard
+      dockerfile: Dockerfile
+    image: aegis-dashboard-remote:local
+    expose:
+      - "80"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/remoteEntry.js >/dev/null"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    networks:
+      - aawm_tap
+
+  sluice-dashboard:
+    restart: unless-stopped
+    build:
+      context: ../sluice-dashboard
+      dockerfile: Dockerfile
+    image: sluice-dashboard-remote:local
+    expose:
+      - "80"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/remoteEntry.js >/dev/null"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    networks:
+      - aawm_tap
+
 networks:
   aawm_tap:
     name: aawm-tap_default
     external: true
   aawm_core:
     name: aawm_default
+    external: true
+  aegis_core:
+    name: aegis_default
     external: true

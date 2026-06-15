@@ -13,6 +13,7 @@ dist
 dist-ssr
 test-results/
 @mf-types
+.tanstack/
 *.local
 
 .env
@@ -35,3 +36,11 @@ test-results/
 .claude/
 .codex/
 .gemini/
+
+# Local dashboard smoke artifacts
+d1-*-browser-smoke.json
+d1-*-summary-response.json
+signal-*-smoke.png
+trend-*.png
+trend-*.html
+update_format.py

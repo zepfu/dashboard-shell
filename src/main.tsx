@@ -1,19 +1,13 @@
 import { StrictMode } from 'react'
 import ReactDOM from 'react-dom/client'
-import { AxiosError } from 'axios'
 import {
   QueryCache,
   QueryClient,
   QueryClientProvider,
 } from '@tanstack/react-query'
 import { RouterProvider, createRouter } from '@tanstack/react-router'
-import { toast } from 'sonner'
-import { useAuthStore } from '@/stores/auth-store'
 import { handleServerError } from '@/lib/handle-server-error'
-import {
-  reloadForStaleAsset,
-  reloadForStaleAssetError,
-} from '@/lib/stale-asset-reload'
+import { errorText, reloadForStaleAsset } from '@/lib/stale-asset-reload'
 import { DirectionProvider } from './context/direction-provider'
 import { FontProvider } from './context/font-provider'
 import { ThemeProvider } from './context/theme-provider'
@@ -22,17 +16,42 @@ import { routeTree } from './routeTree.gen'
 // Styles
 import './styles/index.css'
 
+const chunkLoadFailurePatterns = [
+  /failed to fetch dynamically imported module/i,
+  /importing a module script failed/i,
+  /error loading dynamically imported module/i,
+  /chunkloaderror/i,
+  /loading chunk .+ failed/i,
+]
+
+function isChunkLoadFailure(value: unknown): boolean {
+  if (value instanceof Error && value.name === 'ChunkLoadError') {
+    return true
+  }
+
+  const text = errorText(value)
+  return chunkLoadFailurePatterns.some((pattern) => pattern.test(text))
+}
+
+function reloadOnChunkLoadFailure(value: unknown): boolean {
+  if (!isChunkLoadFailure(value)) {
+    return false
+  }
+
+  return reloadForStaleAsset()
+}
+
 window.addEventListener('vite:preloadError', (event) => {
   event.preventDefault()
   reloadForStaleAsset()
 })
 
 window.addEventListener('error', (event) => {
-  reloadForStaleAssetError(event.error ?? event.message)
+  reloadOnChunkLoadFailure(event.error ?? event.message)
 })
 
 window.addEventListener('unhandledrejection', (event) => {
-  if (reloadForStaleAssetError(event.reason)) {
+  if (reloadOnChunkLoadFailure(event.reason)) {
     event.preventDefault()
   }
 })
@@ -40,17 +59,10 @@ window.addEventListener('unhandledrejection', (event) => {
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
-      retry: (failureCount, error) => {
-        // eslint-disable-next-line no-console
-        if (import.meta.env.DEV) console.log({ failureCount, error })
-
+      retry: (failureCount) => {
         if (failureCount >= 0 && import.meta.env.DEV) return false
         if (failureCount > 3 && import.meta.env.PROD) return false
-
-        return !(
-          error instanceof AxiosError &&
-          [401, 403].includes(error.response?.status ?? 0)
-        )
+        return true
       },
       refetchOnWindowFocus: import.meta.env.PROD,
       staleTime: 10 * 1000, // 10s
@@ -58,35 +70,12 @@ const queryClient = new QueryClient({
     mutations: {
       onError: (error) => {
         handleServerError(error)
-
-        if (error instanceof AxiosError) {
-          if (error.response?.status === 304) {
-            toast.error('Content not modified!')
-          }
-        }
       },
     },
   },
   queryCache: new QueryCache({
     onError: (error) => {
-      if (error instanceof AxiosError) {
-        if (error.response?.status === 401) {
-          toast.error('Session expired!')
-          useAuthStore.getState().auth.reset()
-          const redirect = `${router.history.location.href}`
-          router.navigate({ to: '/sign-in', search: { redirect } })
-        }
-        if (error.response?.status === 500) {
-          toast.error('Internal Server Error!')
-          // Only navigate to error page in production to avoid disrupting HMR in development
-          if (import.meta.env.PROD) {
-            router.navigate({ to: '/500' })
-          }
-        }
-        if (error.response?.status === 403) {
-          // router.navigate("/forbidden", { replace: true });
-        }
-      }
+      handleServerError(error)
     },
   }),
 })
@@ -108,19 +97,17 @@ declare module '@tanstack/react-router' {
 
 // Render the app
 const rootElement = document.getElementById('root')!
-if (!rootElement.innerHTML) {
-  const root = ReactDOM.createRoot(rootElement)
-  root.render(
-    <StrictMode>
-      <QueryClientProvider client={queryClient}>
-        <ThemeProvider>
-          <FontProvider>
-            <DirectionProvider>
-              <RouterProvider router={router} />
-            </DirectionProvider>
-          </FontProvider>
-        </ThemeProvider>
-      </QueryClientProvider>
-    </StrictMode>
-  )
-}
+const root = ReactDOM.createRoot(rootElement)
+root.render(
+  <StrictMode>
+    <QueryClientProvider client={queryClient}>
+      <ThemeProvider>
+        <FontProvider>
+          <DirectionProvider>
+            <RouterProvider router={router} />
+          </DirectionProvider>
+        </FontProvider>
+      </ThemeProvider>
+    </QueryClientProvider>
+  </StrictMode>
+)

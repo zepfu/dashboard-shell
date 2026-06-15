@@ -53,7 +53,7 @@ writeFile('src/pages/Overview.tsx', buildOverviewTsx())
 writeFile('src/styles/index.css', buildIndexCss())
 writeFile('README.md', buildReadme())
 
-process.stdout.write(`Created tap starter at ${targetDir}\n`)
+process.stdout.write(`Created remote dashboard starter at ${targetDir}\n`)
 
 function parseArgs(argv) {
   const parsed = { _: [] }
@@ -88,7 +88,7 @@ function parseArgs(argv) {
 
 function printUsage() {
   process.stdout.write(`Usage:
-  pnpm scaffold:tap ../example-dashboard --module-id example-dashboard --name "Example" --base-path /example
+  pnpm scaffold:dashboard ../example-dashboard --module-id example-dashboard --name "Example" --base-path /example
 
 Options:
   --module-id     Module Federation remote name and manifest id.
@@ -201,6 +201,7 @@ export default defineConfig({
     federation({
       name: ${JSON.stringify(moduleId)},
       filename: 'remoteEntry.js',
+      dts: false,
       exposes: {
         './module': './src/module.ts',
       },
@@ -358,7 +359,7 @@ export default function Overview() {
         </CardHeader>
         <CardContent className='text-sm text-muted-foreground'>
           The shell owns routing chrome, auth forwarding, and global theme
-          variables. The tap owns page-level data views and interactions.
+          variables. The remote owns page-level data views and interactions.
         </CardContent>
       </Card>
     </div>

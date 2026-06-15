@@ -5,16 +5,32 @@ services:
     restart: unless-stopped
     working_dir: /workspace/dashboard-shell
     depends_on:
+      aawm-dashboard-dev:
+        condition: service_healthy
+      aawm-observe-dashboard-dev:
+        condition: service_healthy
       aawm-tap-dashboard-dev:
+        condition: service_healthy
+      aegis-dashboard-dev:
         condition: service_healthy
       dashboard-shell-reports-dev:
         condition: service_healthy
+      sluice-dashboard-dev:
+        condition: service_healthy
     environment:
+      AAWM_DASHBOARD_REMOTE_ENTRY: "http://localhost:${AAWM_DASHBOARD_REMOTE_DEV_PORT:-5176}/remoteEntry.js"
+      AAWM_DASHBOARD_REMOTE_ENTRY_TYPE: "module"
+      AAWM_OBSERVE_REMOTE_ENTRY: "http://localhost:${AAWM_OBSERVE_REMOTE_DEV_PORT:-5177}/remoteEntry.js"
+      AAWM_OBSERVE_REMOTE_ENTRY_TYPE: "module"
       AAWM_TAP_REMOTE_ENTRY: "http://localhost:${AAWM_TAP_REMOTE_DEV_PORT:-5173}/remoteEntry.js"
       AAWM_TAP_REMOTE_ENTRY_TYPE: "module"
+      AEGIS_REMOTE_ENTRY: "http://localhost:${AEGIS_REMOTE_DEV_PORT:-5174}/remoteEntry.js"
+      AEGIS_REMOTE_ENTRY_TYPE: "module"
       CHOKIDAR_USEPOLLING: "${CHOKIDAR_USEPOLLING:-true}"
       DASHBOARD_SHELL_DEV_PORT: "${DASHBOARD_SHELL_DEV_PORT:-3006}"
       SHELL_REPORT_API_TARGET: "http://dashboard-shell-reports-dev:${SHELL_REPORT_PORT:-3010}"
+      SLUICE_REMOTE_ENTRY: "http://localhost:${SLUICE_REMOTE_DEV_PORT:-5175}/remoteEntry.js"
+      SLUICE_REMOTE_ENTRY_TYPE: "module"
       WATCHPACK_POLLING: "${WATCHPACK_POLLING:-true}"
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -53,30 +69,68 @@ services:
     restart: unless-stopped
     working_dir: /workspace/dashboard-shell
     environment:
+      AAWM_API_KEY: "${AAWM_API_KEY:-}"
+      AAWM_ACCESS_TOKEN: "${AAWM_ACCESS_TOKEN:-}"
+      AAWM_API_TARGET: "${AAWM_API_TARGET:-http://aawm-api:8000}"
+      AAWM_HOOK_API_KEY: "${AAWM_HOOK_API_KEY:-}"
+      AAWM_HOOK_ACCESS_TOKEN: "${AAWM_HOOK_ACCESS_TOKEN:-}"
+      AAWM_HOOK_API_TARGET: "${AAWM_HOOK_API_TARGET:-http://aawm-hook-server:8318}"
+      AAWM_OBSERVE_API_KEY: "${AAWM_OBSERVE_API_KEY:-}"
+      AAWM_OBSERVE_ACCESS_TOKEN: "${AAWM_OBSERVE_ACCESS_TOKEN:-}"
+      AAWM_OBSERVE_API_TARGET: "${AAWM_OBSERVE_API_TARGET:-http://host.docker.internal:34042}"
       AAWM_TAP_API_KEY: "${AAWM_TAP_API_KEY:-}"
       AAWM_TAP_ACCESS_TOKEN: "${AAWM_TAP_ACCESS_TOKEN:-}"
       AAWM_TAP_ADMIN_CAPABILITY: "${AAWM_TAP_ADMIN_CAPABILITY:-}"
       AAWM_TAP_API_TARGET: "${AAWM_TAP_API_TARGET:-http://host.docker.internal:8010}"
+      AEGIS_ACCESS_TOKEN: "${AEGIS_ACCESS_TOKEN:-}"
+      AEGIS_API_TARGET: "${AEGIS_API_TARGET:-http://aegis-api:8001/api/v1}"
+      AEGIS_DB_PASSWORD: "${AEGIS_DB_PASSWORD:-aegis_dev_password}"
+      SLUICE_ACCESS_TOKEN: "${SLUICE_ACCESS_TOKEN:-}"
+      SLUICE_API_TARGET: "${SLUICE_API_TARGET:-http://host.docker.internal:8002/api/v1}"
       VITE_API_KEY: "${VITE_API_KEY:-}"
       VITE_ACCESS_TOKEN: "${VITE_ACCESS_TOKEN:-}"
       VITE_TAP_ACCESS_TOKEN: "${VITE_TAP_ACCESS_TOKEN:-}"
       VITE_TAP_API_KEY: "${VITE_TAP_API_KEY:-}"
       DATABASE_URL: "${DATABASE_URL:-}"
-      SHELL_REPORT_DATABASE_HOST_REWRITE: "${SHELL_REPORT_DATABASE_HOST_REWRITE:-aawm-postgres18}"
-      SHELL_REPORT_DATABASE_PORT_REWRITE: "${SHELL_REPORT_DATABASE_PORT_REWRITE:-5432}"
-      SHELL_REPORT_DB_POOL_MAX: "${SHELL_REPORT_DB_POOL_MAX:-5}"
+      SHELL_REPORT_DATABASE_HOST_REWRITE: "${SHELL_REPORT_DATABASE_HOST_REWRITE:-aawm-pgbouncer}"
+      SHELL_REPORT_DATABASE_PORT_REWRITE: "${SHELL_REPORT_DATABASE_PORT_REWRITE:-6432}"
+      SHELL_REPORT_AAWM_PGBOUNCER_DATABASE_URL: "${SHELL_REPORT_AAWM_PGBOUNCER_DATABASE_URL:-}"
+      SHELL_REPORT_AEGIS_PGBOUNCER_DATABASE_URL: "${SHELL_REPORT_AEGIS_PGBOUNCER_DATABASE_URL:-}"
+      SHELL_REPORT_DB_POOL_MAX: "${SHELL_REPORT_DB_POOL_MAX:-4}"
+      SHELL_REPORT_DB_CONNECTION_TIMEOUT_MS: "${SHELL_REPORT_DB_CONNECTION_TIMEOUT_MS:-5000}"
+      SHELL_REPORT_DB_DISABLE_PARALLELISM: "${SHELL_REPORT_DB_DISABLE_PARALLELISM:-true}"
+      SHELL_REPORT_SQL_FANOUT_CONCURRENCY: "${SHELL_REPORT_SQL_FANOUT_CONCURRENCY:-1}"
+      SHELL_REPORT_HEALTH_DB_CONNECTION_TIMEOUT_MS: "${SHELL_REPORT_HEALTH_DB_CONNECTION_TIMEOUT_MS:-1000}"
+      SHELL_REPORT_HEALTH_DB_STATEMENT_TIMEOUT_MS: "${SHELL_REPORT_HEALTH_DB_STATEMENT_TIMEOUT_MS:-2000}"
+      SHELL_REPORT_MV_HEALTH_CACHE_TTL_MS: "${SHELL_REPORT_MV_HEALTH_CACHE_TTL_MS:-30000}"
       SHELL_REPORT_PORT: "${SHELL_REPORT_PORT:-3010}"
+      SHELL_REPORT_REDIS_URL: "${SHELL_REPORT_REDIS_URL:-redis://dashboard-shell-redis:6379}"
+      SHELL_REPORT_CACHE_PREFIX: "${SHELL_REPORT_CACHE_PREFIX:-dashboard-shell:reports}"
+      SHELL_REPORT_CACHE_VERSION: "${SHELL_REPORT_CACHE_VERSION:-v14}"
+      SHELL_REPORT_CACHE_STALE_TTL_MS: "${SHELL_REPORT_CACHE_STALE_TTL_MS:-86400000}"
+      SHELL_REPORT_CACHE_LOCK_TTL_MS: "${SHELL_REPORT_CACHE_LOCK_TTL_MS:-1800000}"
+      SHELL_REPORT_CACHE_LOCK_WAIT_MS: "${SHELL_REPORT_CACHE_LOCK_WAIT_MS:-60000}"
+      SHELL_REPORT_CACHE_PREWARM: "${SHELL_REPORT_CACHE_PREWARM:-false}"
+      SHELL_REPORT_CACHE_PREWARM_INTERVAL_MS: "${SHELL_REPORT_CACHE_PREWARM_INTERVAL_MS:-900000}"
+      SHELL_REPORT_CACHE_PREWARM_LOCK_TTL_MS: "${SHELL_REPORT_CACHE_PREWARM_LOCK_TTL_MS:-7200000}"
+      SHELL_REPORT_DOCKER_LOG_ROOT: "${SHELL_REPORT_DOCKER_LOG_ROOT:-/host/docker/containers}"
+      SHELL_REPORT_DOCKER_LOG_CONTAINERS: "${SHELL_REPORT_DOCKER_LOG_CONTAINERS:-aawm-litellm,litellm-dev}"
     expose:
       - "${SHELL_REPORT_PORT:-3010}"
+    depends_on:
+      dashboard-shell-redis:
+        condition: service_healthy
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:
       - aawm_tap
       - aawm_core
+      - aegis_core
     volumes:
       - .:/workspace/dashboard-shell
       - dashboard_shell_reports_dev_node_modules:/workspace/dashboard-shell/node_modules
       - dashboard_shell_reports_dev_pnpm_store:/pnpm/store
+      - /var/lib/docker/containers:/host/docker/containers:ro
     command:
       - sh
       - -lc
@@ -95,6 +149,100 @@ services:
       interval: 30s
       timeout: 5s
       start_period: 20s
+      retries: 5
+
+  dashboard-shell-redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command:
+      [
+        "redis-server",
+        "--save",
+        "",
+        "--appendonly",
+        "no",
+        "--maxmemory",
+        "${SHELL_REPORT_REDIS_MAXMEMORY:-512mb}",
+        "--maxmemory-policy",
+        "allkeys-lru",
+      ]
+    expose:
+      - "6379"
+    networks:
+      - aawm_tap
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 5s
+      start_period: 5s
+      retries: 3
+
+  aawm-dashboard-dev:
+    image: node:22-alpine
+    container_name: dashboard-shell-aawm-dashboard-dev
+    restart: unless-stopped
+    working_dir: /workspace/aawm-dashboard
+    environment:
+      AAWM_DASHBOARD_REMOTE_DEV_PORT: "${AAWM_DASHBOARD_REMOTE_DEV_PORT:-5176}"
+      CHOKIDAR_USEPOLLING: "${CHOKIDAR_USEPOLLING:-true}"
+      WATCHPACK_POLLING: "${WATCHPACK_POLLING:-true}"
+    ports:
+      - "${AAWM_DASHBOARD_REMOTE_DEV_PORT:-5176}:${AAWM_DASHBOARD_REMOTE_DEV_PORT:-5176}"
+    networks:
+      - aawm_tap
+    volumes:
+      - ../aawm-dashboard:/workspace/aawm-dashboard
+      - aawm_dashboard_dev_node_modules:/workspace/aawm-dashboard/node_modules
+      - aawm_dashboard_dev_npm_cache:/root/.npm
+    command:
+      - sh
+      - -lc
+      - |
+        npm ci
+        npm run dev -- --host 0.0.0.0 --port "$${AAWM_DASHBOARD_REMOTE_DEV_PORT:-5176}" --strictPort --cors
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "wget -qO- http://127.0.0.1:$${AAWM_DASHBOARD_REMOTE_DEV_PORT:-5176}/remoteEntry.js >/dev/null",
+        ]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 5
+
+  aawm-observe-dashboard-dev:
+    image: node:22-alpine
+    container_name: dashboard-shell-aawm-observe-dashboard-dev
+    restart: unless-stopped
+    working_dir: /workspace/aawm-observe-dashboard
+    environment:
+      AAWM_OBSERVE_REMOTE_DEV_PORT: "${AAWM_OBSERVE_REMOTE_DEV_PORT:-5177}"
+      CHOKIDAR_USEPOLLING: "${CHOKIDAR_USEPOLLING:-true}"
+      WATCHPACK_POLLING: "${WATCHPACK_POLLING:-true}"
+    ports:
+      - "${AAWM_OBSERVE_REMOTE_DEV_PORT:-5177}:${AAWM_OBSERVE_REMOTE_DEV_PORT:-5177}"
+    networks:
+      - aawm_tap
+    volumes:
+      - ../aawm-observe-dashboard:/workspace/aawm-observe-dashboard
+      - aawm_observe_dashboard_dev_node_modules:/workspace/aawm-observe-dashboard/node_modules
+      - aawm_observe_dashboard_dev_npm_cache:/root/.npm
+    command:
+      - sh
+      - -lc
+      - |
+        npm ci
+        npm run dev -- --host 0.0.0.0 --port "$${AAWM_OBSERVE_REMOTE_DEV_PORT:-5177}" --strictPort --cors
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "wget -qO- http://127.0.0.1:$${AAWM_OBSERVE_REMOTE_DEV_PORT:-5177}/remoteEntry.js >/dev/null",
+        ]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
       retries: 5
 
   aawm-tap-dashboard-dev:
@@ -135,13 +283,89 @@ services:
       start_period: 30s
       retries: 5
 
+  aegis-dashboard-dev:
+    image: node:22-alpine
+    container_name: dashboard-shell-aegis-dashboard-dev
+    restart: unless-stopped
+    working_dir: /workspace/aegis-dashboard
+    environment:
+      AEGIS_REMOTE_DEV_PORT: "${AEGIS_REMOTE_DEV_PORT:-5174}"
+      CHOKIDAR_USEPOLLING: "${CHOKIDAR_USEPOLLING:-true}"
+      WATCHPACK_POLLING: "${WATCHPACK_POLLING:-true}"
+    ports:
+      - "${AEGIS_REMOTE_DEV_PORT:-5174}:${AEGIS_REMOTE_DEV_PORT:-5174}"
+    networks:
+      - aawm_tap
+    volumes:
+      - ../aegis-dashboard:/workspace/aegis-dashboard
+      - aegis_dashboard_dev_node_modules:/workspace/aegis-dashboard/node_modules
+      - aegis_dashboard_dev_npm_cache:/root/.npm
+    command:
+      - sh
+      - -lc
+      - |
+        npm ci
+        npm run dev -- --host 0.0.0.0 --port "$${AEGIS_REMOTE_DEV_PORT:-5174}" --strictPort --cors
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "wget -qO- http://127.0.0.1:$${AEGIS_REMOTE_DEV_PORT:-5174}/remoteEntry.js >/dev/null",
+        ]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 5
+
+  sluice-dashboard-dev:
+    image: node:22-alpine
+    container_name: dashboard-shell-sluice-dashboard-dev
+    restart: unless-stopped
+    working_dir: /workspace/sluice-dashboard
+    environment:
+      CHOKIDAR_USEPOLLING: "${CHOKIDAR_USEPOLLING:-true}"
+      SLUICE_REMOTE_DEV_PORT: "${SLUICE_REMOTE_DEV_PORT:-5175}"
+      WATCHPACK_POLLING: "${WATCHPACK_POLLING:-true}"
+    ports:
+      - "${SLUICE_REMOTE_DEV_PORT:-5175}:${SLUICE_REMOTE_DEV_PORT:-5175}"
+    networks:
+      - aawm_tap
+    volumes:
+      - ../sluice-dashboard:/workspace/sluice-dashboard
+      - sluice_dashboard_dev_node_modules:/workspace/sluice-dashboard/node_modules
+      - sluice_dashboard_dev_npm_cache:/root/.npm
+    command:
+      - sh
+      - -lc
+      - |
+        npm ci
+        npm run dev -- --host 0.0.0.0 --port "$${SLUICE_REMOTE_DEV_PORT:-5175}" --strictPort --cors
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "wget -qO- http://127.0.0.1:$${SLUICE_REMOTE_DEV_PORT:-5175}/remoteEntry.js >/dev/null",
+        ]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 5
+
 volumes:
+  aawm_dashboard_dev_node_modules:
+  aawm_dashboard_dev_npm_cache:
+  aawm_observe_dashboard_dev_node_modules:
+  aawm_observe_dashboard_dev_npm_cache:
   aawm_tap_dashboard_dev_node_modules:
   aawm_tap_dashboard_dev_npm_cache:
+  aegis_dashboard_dev_node_modules:
+  aegis_dashboard_dev_npm_cache:
   dashboard_shell_dev_node_modules:
   dashboard_shell_dev_pnpm_store:
   dashboard_shell_reports_dev_node_modules:
   dashboard_shell_reports_dev_pnpm_store:
+  sluice_dashboard_dev_node_modules:
+  sluice_dashboard_dev_npm_cache:
 
 networks:
   aawm_tap:
@@ -149,4 +373,7 @@ networks:
     external: true
   aawm_core:
     name: aawm_default
+    external: true
+  aegis_core:
+    name: aegis_default
     external: true

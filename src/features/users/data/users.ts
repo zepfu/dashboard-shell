@@ -1,33 +1,43 @@
-import { faker } from '@faker-js/faker'
+import type { User, UserStatus, UserRole } from './schema'
+import usersData from './users.json'
 
-// Set a fixed seed for consistent data generation
-faker.seed(67890)
+const STATUS_VALUES: readonly UserStatus[] = [
+  'active',
+  'inactive',
+  'invited',
+  'suspended',
+]
+const ROLE_VALUES: readonly UserRole[] = [
+  'superadmin',
+  'admin',
+  'manager',
+  'cashier',
+]
 
-export const users = Array.from({ length: 500 }, () => {
-  const firstName = faker.person.firstName()
-  const lastName = faker.person.lastName()
+function isUserStatus(v: string): v is UserStatus {
+  return (STATUS_VALUES as readonly string[]).includes(v)
+}
+function isUserRole(v: string): v is UserRole {
+  return (ROLE_VALUES as readonly string[]).includes(v)
+}
+
+function parseUser(u: (typeof usersData)[number]): User {
+  const status = u.status
+  const role = u.role
+  if (!isUserStatus(status)) throw new Error(`Invalid user status: ${status}`)
+  if (!isUserRole(role)) throw new Error(`Invalid user role: ${role}`)
   return {
-    id: faker.string.uuid(),
-    firstName,
-    lastName,
-    username: faker.internet
-      .username({ firstName, lastName })
-      .toLocaleLowerCase(),
-    email: faker.internet.email({ firstName }).toLocaleLowerCase(),
-    phoneNumber: faker.phone.number({ style: 'international' }),
-    status: faker.helpers.arrayElement([
-      'active',
-      'inactive',
-      'invited',
-      'suspended',
-    ]),
-    role: faker.helpers.arrayElement([
-      'superadmin',
-      'admin',
-      'cashier',
-      'manager',
-    ]),
-    createdAt: faker.date.past(),
-    updatedAt: faker.date.recent(),
+    id: u.id,
+    firstName: u.firstName,
+    lastName: u.lastName,
+    username: u.username,
+    email: u.email,
+    phoneNumber: u.phoneNumber,
+    status,
+    role,
+    createdAt: new Date(u.createdAt),
+    updatedAt: new Date(u.updatedAt),
   }
-})
+}
+
+export const users: User[] = usersData.map(parseUser)

@@ -15,6 +15,10 @@
   }
   body {
     @apply min-h-svh w-full bg-background text-foreground has-[div[data-variant='inset']]:bg-sidebar;
+    /* Wave 14-A: body typography per mockup lines 27-44 */
+    font-family: var(--font-mono);
+    font-size: 12px;
+    line-height: 1.4;
   }
 
   /* Override Radix scroll locking for sticky headers */
@@ -57,7 +61,6 @@
   @apply after:pointer-events-none after:absolute after:start-0 after:bottom-0 after:hidden after:h-32 after:w-full after:rounded-b-2xl after:bg-[linear-gradient(180deg,transparent_10%,var(--background)_70%)] md:after:block;
 }
 
-/* styles.css */
 .CollapsibleContent {
   overflow: hidden;
 }
@@ -68,81 +71,636 @@
   animation: slideUp 300ms ease-out;
 }
 
-@media (min-width: 1280px) {
-  .usage-report-layout {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
+/* ─────────────────────────────────────────────────────────────────
+   Phosphor Atlas v9.7 — quota interval bar threshold colors.
+   These classes are applied by QuotaIntervalBar via buildQuotaIntervals().
+   Class names must match the iv-* convention from the v9.7 reference mockup.
+   ───────────────────────────────────────────────────────────────── */
+.quota-interval {
+  flex: 1 1 0;
+  border-right: none;
+}
+.quota-interval:last-child {
+  border-right: none;
+}
+.quota-interval.iv-0-5 {
+  background: #1e3a5f;
+  opacity: 1;
+}
+.quota-interval.iv-5-10 {
+  background: #3b82f6;
+  opacity: 0.8;
+}
+.quota-interval.iv-10-25 {
+  background: #14b8a6;
+  opacity: 1;
+}
+.quota-interval.iv-25-50 {
+  background: #cc7e0a;
+  opacity: 1;
+}
+.quota-interval.iv-50-p {
+  background: #cc3838;
+  opacity: 1;
+}
 
-  .usage-report-provider-card {
-    grid-column: 1 / -1;
-  }
+/* Velocity shimmer is now a masked bar-level overlay with one stepped sweep. */
 
-  .usage-report-token-card {
-    grid-column: 1 / -1;
+:root {
+  --quota-burn-slow: #64748b;
+  --quota-burn-steady: #22c55e;
+  --quota-burn-fast: #8b5cf6;
+  --quota-burn-hot: #d946ef;
+  --quota-burn-peak: #f43f5e;
+}
+
+.section-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 6px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+}
+
+.section-title-main {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.section-title-accessory {
+  min-width: 0;
+  margin-left: auto;
+}
+
+.section-title-tools {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  min-width: 0;
+}
+
+.section-refresh-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 20px;
+  padding: 2px 6px;
+  border: 1px solid var(--border);
+  background: var(--card-2);
+  color: var(--fg-muted);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  line-height: 1;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.section-refresh-button:not(:disabled):hover {
+  border-color: var(--accent-chrome);
+  color: var(--fg);
+}
+
+.section-refresh-button:disabled {
+  cursor: default;
+  opacity: 0.85;
+}
+
+.section-refresh-icon {
+  flex: 0 0 auto;
+}
+
+.section-refresh-icon.is-updating {
+  animation: section-refresh-spin 0.8s linear infinite;
+}
+
+.freshness-refresh-button {
+  min-height: 18px;
+  margin-left: 6px;
+  padding: 1px 5px;
+  vertical-align: middle;
+}
+
+.freshness-breakout {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-left: 6px;
+  vertical-align: middle;
+}
+
+.freshness-breakout-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 5px;
+  border: 1px solid var(--border);
+  background: var(--card-2);
+  color: var(--fg-muted);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  line-height: 1.45;
+  white-space: nowrap;
+}
+
+.freshness-breakout-label {
+  color: var(--fg);
+  text-transform: uppercase;
+}
+
+.freshness-breakout-value {
+  color: var(--fg-muted);
+}
+
+@keyframes section-refresh-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
   }
 }
 
-@media (min-width: 2200px) {
-  .usage-report-layout {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+.status-color-legend {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 4px 7px;
+  color: var(--fg-muted);
+  font-family: var(--font-mono);
+  font-size: clamp(8px, 0.42vw, 10px);
+  line-height: 1.1;
+  text-transform: uppercase;
+  letter-spacing: 0;
+}
+
+.legend-group-label {
+  color: var(--accent-chrome);
+  font-weight: 600;
+}
+
+.status-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  white-space: nowrap;
+}
+
+.status-legend-swatch {
+  display: inline-block;
+  position: relative;
+  overflow: hidden;
+  width: 11px;
+  height: 6px;
+  border-radius: 1px;
+  border: 1px solid rgba(226, 232, 240, 0.22);
+  background: rgba(58, 130, 243, 0.84);
+}
+
+.status-legend-swatch.health-ok {
+  background: rgba(16, 185, 129, 0.72);
+}
+
+.status-legend-swatch.health-degraded {
+  background: rgba(245, 158, 11, 0.64);
+}
+
+.status-legend-swatch.health-down {
+  background: rgba(239, 68, 68, 0.82);
+}
+
+.status-legend-swatch.health-no-data {
+  background: rgba(58, 130, 243, 0.84);
+}
+
+.status-legend-swatch.health-miss {
+  background:
+    repeating-linear-gradient(
+      135deg,
+      rgba(255, 255, 255, 0.5) 0 1px,
+      transparent 1px 3px
+    ),
+    rgba(58, 130, 243, 0.84);
+}
+
+.status-legend-swatch.quota-0-5 {
+  background: #1e3a5f;
+}
+
+.status-legend-swatch.quota-5-10 {
+  background: #3b82f6;
+}
+
+.status-legend-swatch.quota-10-25 {
+  background: #14b8a6;
+}
+
+.status-legend-swatch.quota-25-50 {
+  background: #cc7e0a;
+}
+
+.status-legend-swatch.quota-50-p {
+  background: #cc3838;
+}
+
+.status-legend-swatch[class*='velocity-'] {
+  border-color: rgba(216, 180, 254, 0.5);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.16);
+}
+
+.status-legend-swatch[class*='velocity-']::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    110deg,
+    transparent 0 36%,
+    rgba(255, 255, 255, 0.72) 37% 47%,
+    transparent 48% 100%
+  );
+  opacity: 0.58;
+}
+
+.status-legend-swatch.velocity-slow {
+  background: var(--quota-burn-slow);
+}
+
+.status-legend-swatch.velocity-steady {
+  background: var(--quota-burn-steady);
+}
+
+.status-legend-swatch.velocity-fast {
+  background: var(--quota-burn-fast);
+}
+
+.status-legend-swatch.velocity-hot {
+  background: var(--quota-burn-hot);
+}
+
+.status-legend-swatch.velocity-peak {
+  background: var(--quota-burn-peak);
+}
+
+@media (max-width: 900px) {
+  .section-title-row {
+    align-items: flex-start;
+    flex-direction: column;
   }
 
-  .usage-report-token-card {
-    grid-column: 1 / -1;
+  .section-title-accessory {
+    margin-left: 0;
+  }
+
+  .status-color-legend {
+    justify-content: flex-start;
+  }
+
+  .section-title-tools {
+    align-items: flex-start;
+    justify-content: flex-start;
+    flex-wrap: wrap;
   }
 }
 
-.provider-status-grid {
+/* Provider summary grid responsive breakpoints */
+.provider-summary {
   display: grid;
-  gap: 0.75rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px;
 }
 
-.provider-status-span {
-  grid-column: 1 / -1;
+.pgbouncer-health-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 6px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--card) 82%, transparent);
 }
 
-@media (min-width: 640px) {
-  .provider-status-grid {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+.pgbouncer-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.pgbouncer-panel-status {
+  color: var(--fg-muted);
+  font-size: 9px;
+  font-weight: 600;
+}
+
+.pgbouncer-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.pgbouncer-card {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 7px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  background: var(--card-2);
+}
+
+.pgbouncer-card.is-green {
+  border-left: 3px solid var(--accent-teal);
+}
+
+.pgbouncer-card.is-yellow {
+  border-left: 3px solid var(--accent-warm);
+}
+
+.pgbouncer-card.is-red {
+  border-left: 3px solid var(--accent-hot);
+}
+
+.pgbouncer-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.pgbouncer-card-head > div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.pgbouncer-card-name,
+.pgbouncer-card-sub {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pgbouncer-card-name {
+  color: var(--fg);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.1;
+}
+
+.pgbouncer-card-sub {
+  color: var(--fg-muted);
+  font-size: 9px;
+  line-height: 1.1;
+}
+
+.pgbouncer-status-pill {
+  flex: 0 0 auto;
+  padding: 2px 5px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--card) 72%, transparent);
+  color: var(--fg-muted);
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.pgbouncer-card.is-green .pgbouncer-status-pill {
+  border-color: color-mix(in srgb, var(--accent-teal) 58%, var(--border));
+  color: var(--accent-teal);
+}
+
+.pgbouncer-card.is-yellow .pgbouncer-status-pill {
+  border-color: color-mix(in srgb, var(--accent-warm) 58%, var(--border));
+  color: var(--accent-warm);
+}
+
+.pgbouncer-card.is-red .pgbouncer-status-pill {
+  border-color: color-mix(in srgb, var(--accent-hot) 58%, var(--border));
+  color: var(--accent-hot);
+}
+
+.pgbouncer-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 4px;
+}
+
+.pgbouncer-metrics span {
+  min-width: 0;
+  padding: 4px;
+  border: 1px solid color-mix(in srgb, var(--border) 78%, transparent);
+  color: var(--fg-muted);
+  font-size: 9px;
+  line-height: 1.15;
+  text-transform: uppercase;
+}
+
+.pgbouncer-metrics strong {
+  color: var(--fg);
+  font-weight: 700;
+}
+
+.pgbouncer-detail-grid {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 3px 8px;
+  color: var(--fg-muted);
+  font-size: 9px;
+  line-height: 1.2;
+}
+
+.pgbouncer-detail-grid span {
+  color: var(--fg-muted);
+  text-transform: uppercase;
+}
+
+.pgbouncer-detail-grid strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--fg);
+  font-weight: 600;
+}
+
+.pgbouncer-pools {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.pgbouncer-pool-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(96px, auto) minmax(58px, auto);
+  gap: 6px;
+  min-width: 0;
+  padding: 3px 4px;
+  border: 1px solid color-mix(in srgb, var(--border) 68%, transparent);
+  color: var(--fg-muted);
+  font-size: 9px;
+  line-height: 1.1;
+}
+
+.pgbouncer-pool-row span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pgbouncer-empty {
+  min-width: 0;
+  padding: 6px;
+  border: 1px dashed var(--border);
+  color: var(--fg-muted);
+  font-size: 9px;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+@media (min-width: 1600px) {
+  .provider-summary {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-auto-rows: 1fr;
   }
 }
 
-@media (min-width: 1280px) {
-  .provider-status-grid {
+@media (min-width: 2100px) {
+  .provider-summary {
     grid-template-columns: repeat(8, minmax(0, 1fr));
-    grid-template-rows: repeat(2, minmax(0, 1fr));
-    align-items: stretch;
+  }
+}
+
+@media (max-width: 900px) {
+  .pgbouncer-grid {
+    grid-template-columns: minmax(0, 1fr);
   }
 
-  .provider-status-grid [data-provider-status='openai'] {
-    grid-column: 1 / span 3;
-    grid-row: span 2;
+  .pgbouncer-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+}
 
-  .provider-status-grid [data-provider-status='anthropic'] {
-    grid-column: 4 / span 3;
-    grid-row: 1;
-  }
+/* Aggregate card: dashed amber border. It stays visible at desktop widths so
+   the Σ Aggregate Totals health overlay does not disappear on 1920px screens. */
+.provider-card.aggregate {
+  border: 1px dashed var(--accent-chrome) !important;
+}
 
-  .provider-status-grid [data-provider-status='google'] {
-    grid-column: 4 / span 3;
-    grid-row: 2;
-  }
+.local-health-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 2px 0 4px;
+}
 
-  .provider-status-grid [data-provider-status='xai'] {
-    grid-column: 7;
-    grid-row: 1;
-  }
+.local-health-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  max-width: 100%;
+  padding: 2px 5px;
+  border: 1px solid var(--border);
+  background: var(--card-2);
+  color: var(--fg-muted);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  line-height: 1.2;
+}
 
-  .provider-status-grid [data-provider-status='nvidia_nim'] {
-    grid-column: 7;
-    grid-row: 2;
-  }
+.local-health-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  flex: 0 0 auto;
+  background: var(--accent-hot);
+}
 
-  .provider-status-grid [data-provider-status='local'] {
-    grid-column: 8;
-    grid-row: 1;
+.local-health-chip.is-green .local-health-dot {
+  background: var(--accent-teal);
+}
+
+.local-health-chip.is-yellow .local-health-dot {
+  background: var(--accent-warm);
+}
+
+.local-health-chip.is-red .local-health-dot {
+  background: var(--accent-hot);
+}
+
+.local-health-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (min-width: 3840px) {
+  .provider-summary {
+    grid-template-columns: repeat(8, minmax(0, 1fr));
   }
+  .provider-card {
+    max-width: none !important;
+    display: grid !important;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) !important;
+    gap: 10px !important;
+    align-items: start !important;
+  }
+  .provider-card .provider-name {
+    grid-column: 1 / -1 !important;
+  }
+  .card-pane-left {
+    grid-column: 1;
+    min-width: 0;
+  }
+  .card-pane-right {
+    grid-column: 2 !important;
+    display: flex !important;
+    flex-direction: column !important;
+    min-width: 0 !important;
+  }
+  section[data-tab='comparison'] {
+    display: block !important;
+    grid-column: 14 / 21;
+    grid-row: 7;
+  }
+  .col-4k-only {
+    display: table-cell !important;
+  }
+}
+
+/* Pulse dot animation for freshness indicator */
+@keyframes pulse-dot {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.3;
+  }
+}
+.pulse-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent-cool);
+  animation: pulse-dot 1s infinite;
 }
 
 @keyframes slideDown {
@@ -162,3 +720,2367 @@
     height: 0;
   }
 }
+
+/* Wave 11 PR7-lite */
+
+/* 11-v — KPI microbar fill animation */
+@keyframes microbarFill {
+  from {
+    width: 0%;
+  }
+  to {
+    width: var(--fill, 0%);
+  }
+}
+.kpi-microbar {
+  animation: microbarFill 0.6s ease-out forwards;
+}
+
+/* 11-w — Alert pulse animation */
+/* 14-E.5: rewritten from scale(1.02) to translateX(-4px)→0 per mockup       */
+/*   lines 349-352 (Section 16 #1). Eliminates layout shift from scale.       */
+@keyframes alertPulse {
+  from {
+    opacity: 0.6;
+    transform: translateX(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+.alert-item {
+  animation: alertPulse 0.4s ease-out;
+}
+
+/* Wave 11 PR3 → Wave 14-E.4 → Wave 40 → D1-061:
+   The moving velocity indicator is applied once per quota bar via
+   `.quota-row-velocity-overlay`, with a CSS mask generated from the merged
+   fast/hot/peak spans. D1-061 moves the animation to a stepped transform on a
+   single child sweep so idle CPU does not scale with per-cell paint work. */
+
+@keyframes quota-velocity-overlay-sweep {
+  0% {
+    transform: translateX(-120%);
+  }
+  100% {
+    transform: translateX(240%);
+  }
+}
+
+/* Wave 41 spectral animation scoping fix:
+   Prior (history) bars carry class .is-prior on their .quota-row-bar wrapper.
+   Current and prior bars may both animate, but the glow MUST NOT bleed
+   across provider card boundaries.
+
+   Root causes of the original bleed:
+   1. Layer A used overflow:visible on .quota-interval.high-velocity, allowing
+      ::after glow to paint beyond the segment boundary and above sibling elements
+      via z-index stacking.
+   2. .quota-row-bar lacked overflow:hidden, so animated overlays could paint
+      off-canvas in a shared stacking context and overlap adjacent provider card
+      quota rows.
+
+   Fixes applied:
+   • .quota-row-bar now carries overflow:hidden (set via inline style in JSX)
+     AND isolation:isolate (set via CSS below) to create a local stacking context.
+   • The moving glow is now a single masked `.quota-row-velocity-overlay` per
+     bar, clipped by that local stacking context.
+   • Fast/hot/peak segments keep static velocity colors so tier intensity
+     remains visible without per-cell animation.
+*/
+
+/* Stacking context isolation — prevents ::after glow escaping across cards. */
+.quota-row-bar {
+  isolation: isolate;
+}
+
+/* Quota velocity segment: static color/intensity only. Motion is handled by a
+   single masked `.quota-row-velocity-overlay` per bar so idle CPU does not scale
+   with the number of fast/hot/peak cells. */
+.quota-row-bar .quota-interval.high-velocity {
+  position: relative;
+  overflow: hidden;
+}
+
+/* Quota velocity score tiers. These classes are driven by the backend
+   ratio of observed burn rate to the quota's expected 1%-per-window cadence. */
+.quota-row-bar .quota-interval.velocity-slow {
+  background: var(--quota-burn-slow);
+  opacity: 0.68;
+}
+.quota-row-bar .quota-interval.velocity-steady {
+  background: var(--quota-burn-steady);
+  opacity: 0.82;
+}
+.quota-row-bar .quota-interval.velocity-fast {
+  background: var(--quota-burn-fast);
+}
+.quota-row-bar .quota-interval.velocity-hot {
+  background: var(--quota-burn-hot);
+  box-shadow: inset 0 0 0 1px rgba(240, 171, 252, 0.24);
+}
+.quota-row-bar .quota-interval.velocity-peak {
+  background: var(--quota-burn-peak);
+  box-shadow: inset 0 0 0 1px rgba(255, 228, 230, 0.3);
+}
+
+/* Bar-level velocity overlay: the React component applies a CSS mask matching
+   the merged fast/hot/peak runs. One animation now covers the whole bar while
+   static segment colors preserve the tier intensity. */
+.quota-row-velocity-overlay {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  contain: paint;
+  opacity: 1;
+  z-index: 3;
+  pointer-events: none;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-size: 100% 100%;
+  mask-size: 100% 100%;
+}
+
+.quota-row-velocity-sweep {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 46%;
+  background: linear-gradient(
+    105deg,
+    rgba(255, 255, 255, 0) 0%,
+    rgba(255, 255, 255, 0.14) 22%,
+    rgba(167, 139, 250, 0.42) 38%,
+    rgba(240, 171, 252, 0.62) 50%,
+    rgba(244, 114, 182, 0.42) 64%,
+    rgba(244, 63, 94, 0.24) 76%,
+    rgba(255, 255, 255, 0) 100%
+  );
+  mix-blend-mode: screen;
+  opacity: 0.78;
+  pointer-events: none;
+  transform: translateX(-120%);
+  will-change: transform;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .quota-row-velocity-sweep {
+    animation: quota-velocity-overlay-sweep 4.8s steps(24, end) infinite;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .quota-row-velocity-sweep {
+    animation: none;
+    opacity: 0.42;
+    transform: translateX(75%);
+  }
+}
+
+/* Wave 14-A: Phosphor sidebar */
+.sidebar {
+  grid-row: 1 / -1;
+  grid-column: 1;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-right: none;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: calc(100vh - 40px);
+  overflow-y: auto;
+  font-size: 11px;
+}
+
+.sidebar-section {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.sidebar-group-title {
+  font-size: 9px;
+  color: var(--fg-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-weight: 600;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 2px;
+}
+
+.sidebar-item {
+  color: var(--fg-muted);
+  padding: 3px 6px;
+  cursor: pointer;
+  transition: all 50ms;
+}
+
+.sidebar-item-dashboard {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.sidebar-item-label {
+  min-width: 0;
+}
+
+.sidebar-item:hover {
+  color: var(--fg);
+  background: var(--card-2);
+}
+
+.sidebar-item.active {
+  color: var(--accent-chrome);
+  background: var(--card-2);
+  font-weight: 500;
+}
+
+.sidebar-alert-dot {
+  display: block;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  flex: 0 0 auto;
+  box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.8);
+}
+
+.sidebar-alert-dot.ok {
+  background: #22c55e;
+  box-shadow:
+    0 0 0 1px rgba(15, 23, 42, 0.8),
+    0 0 6px rgba(34, 197, 94, 0.55);
+}
+
+.sidebar-alert-dot.warning {
+  background: #f59e0b;
+  box-shadow:
+    0 0 0 1px rgba(15, 23, 42, 0.8),
+    0 0 7px rgba(245, 158, 11, 0.65);
+}
+
+.sidebar-alert-dot.error {
+  background: #ef4444;
+  box-shadow:
+    0 0 0 1px rgba(15, 23, 42, 0.8),
+    0 0 8px rgba(239, 68, 68, 0.7);
+}
+
+@keyframes sidebar-alert-blink {
+  0%,
+  68%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  78% {
+    opacity: 0.34;
+    transform: scale(0.82);
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .sidebar-alert-dot.warning {
+    animation: sidebar-alert-blink 4.8s ease-in-out infinite;
+  }
+
+  .sidebar-alert-dot.error {
+    animation: sidebar-alert-blink 2.4s ease-in-out infinite;
+  }
+}
+
+.sidebar-alert-tip {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.sidebar-alert-tip .v9-tip-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-weight: 700;
+}
+
+.sidebar-alert-tip-status {
+  font-size: 9px;
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+}
+
+.sidebar-alert-tip-status.ok {
+  color: #86efac;
+}
+
+.sidebar-alert-tip-status.warning {
+  color: #fbbf24;
+}
+
+.sidebar-alert-tip-status.error {
+  color: #fca5a5;
+}
+
+.sidebar-alert-tip-list {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.sidebar-alert-tip-row {
+  border-left: 2px solid;
+  padding-left: 6px;
+}
+
+.sidebar-alert-tip-row.warning {
+  border-left-color: #f59e0b;
+}
+
+.sidebar-alert-tip-row.error {
+  border-left-color: #ef4444;
+}
+
+.sidebar-alert-tip-row-head {
+  color: var(--fg);
+  font-weight: 600;
+}
+
+.sidebar-alert-tip-row-sub {
+  color: var(--fg-muted);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  margin-top: 1px;
+}
+
+.sidebar-team-switcher {
+  padding: 6px 6px;
+  background: var(--card-2);
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  color: var(--fg);
+  font-size: 9px;
+  margin-bottom: 6px;
+}
+
+.sidebar-footer {
+  margin-top: auto;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+  font-size: 9px;
+  color: var(--fg-muted);
+}
+
+/* ============================================================
+   Wave 14-F — tables: .number / .gutter-* / client-section
+   ============================================================ */
+
+/* 14-F.1: Numeric cell class — cool blue, tabular-nums, right-aligned, 500 weight */
+.number {
+  text-align: right;
+  font-weight: 500;
+  color: var(--accent-cool);
+  font-variant-numeric: tabular-nums;
+}
+
+.number.error {
+  color: var(--accent-hot);
+}
+
+.number.warn {
+  color: var(--accent-warm);
+}
+
+/* 14-F.1: First-cell severity gutter classes — applied to td:first-child */
+/* td:first-child base rule (border-left 4px solid; padding-left 6px) is handled inline */
+.gutter-hot {
+  border-left-color: var(--accent-hot) !important;
+}
+
+.gutter-warm {
+  border-left-color: var(--accent-warm) !important;
+}
+
+.gutter-teal {
+  border-left-color: var(--accent-teal) !important;
+}
+
+.gutter-cool {
+  border-left-color: var(--accent-cool) !important;
+}
+
+/* 14-F.4: Client section grid — 120px 1fr at ≥1600px (default 140px 1fr set inline) */
+@media (min-width: 1600px) {
+  .client-section {
+    grid-template-columns: 120px 1fr;
+    margin-bottom: 0;
+  }
+}
+
+/* 14-F.5: Token Trend Chart — CSS hover for .trend-bar (audit §12 deviation 2) */
+/* replaces JS onMouseEnter/onMouseLeave so the transition 50ms property applies */
+.trend-bar {
+  transition: opacity 50ms;
+}
+
+.trend-bar:hover {
+  opacity: 1 !important;
+}
+
+/* ─────────────────────────────────────────────────────────────────
+   Wave 14-G — primitives class system (health-strip, alerts, quota, tooltip)
+   ───────────────────────────────────────────────────────────────── */
+
+/* 14-G.1 — .health-strip-wrapper right border per mockup line 1617–1620 */
+.health-strip-wrapper {
+  border-right: 1px solid var(--border);
+}
+
+/* 14-G.2 — Alerts panel class system per mockup lines 324–446 */
+.alerts-panel {
+  background: var(--card);
+  border: 1px solid var(--border);
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 10px;
+  max-height: calc(100vh - 60px);
+  overflow-y: auto;
+  grid-row: 1 / -1;
+  grid-column: 3;
+}
+
+.alerts-title {
+  font-size: 9px;
+  color: var(--fg-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 4px;
+}
+
+.alert-item.alert-early-reset {
+  white-space: normal;
+  overflow: visible;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 8px;
+  border-left-color: #a3e635;
+  color: #d9f99d;
+  background: linear-gradient(
+    90deg,
+    rgba(20, 184, 166, 0.22) 0%,
+    rgba(245, 158, 11, 0.18) 100%
+  );
+}
+
+.alert-item.alert-cache-stale {
+  white-space: normal;
+  overflow: visible;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border-left-color: var(--accent-warm);
+  color: var(--accent-warm);
+  background:
+    repeating-linear-gradient(
+      135deg,
+      rgba(245, 158, 11, 0.12) 0 4px,
+      rgba(245, 158, 11, 0.04) 4px 8px
+    ),
+    var(--card-2);
+}
+
+.alert-item.alert-warn {
+  border-left-color: var(--accent-warm);
+  color: var(--accent-warm);
+  background: var(--card-2);
+}
+
+.alert-item.alert-critical {
+  border-left-color: var(--accent-hot);
+  color: var(--accent-hot);
+  background: var(--card-2);
+}
+
+/* 14-G.3 — Quota bar structural classes per mockup lines 1690–1742 */
+.qbar-fill {
+  height: 100%;
+  position: relative;
+  z-index: 1;
+}
+
+.qbar-fill.over-velocity {
+  background-image: repeating-linear-gradient(
+    135deg,
+    rgba(239, 68, 68, 0.22) 0 4px,
+    rgba(239, 68, 68, 0.06) 4px 8px
+  );
+}
+
+.qbar-projection {
+  position: absolute;
+  top: -1px;
+  bottom: -1px;
+  width: 2px;
+  z-index: 2;
+  pointer-events: none;
+}
+
+.qbar-projection.sustainable {
+  background: rgba(245, 158, 11, 0.5);
+}
+
+.qbar-projection.approaching {
+  background: var(--accent-warm);
+}
+
+.qbar-projection.over {
+  background: var(--accent-hot);
+  box-shadow: 0 0 3px rgba(239, 68, 68, 0.7);
+}
+
+/* .quota-row-velocity per mockup lines 1690–1742 */
+.quota-row-velocity {
+  font-size: 9px;
+  letter-spacing: 0.03em;
+  color: var(--fg-muted);
+  grid-column: 1 / 4;
+  margin: -1px 0;
+  line-height: 1.2;
+}
+
+.quota-row-velocity.amber {
+  color: var(--accent-warm);
+}
+
+.quota-row-velocity.red {
+  color: var(--accent-hot);
+  font-weight: 600;
+}
+
+.quota-row-velocity.steady {
+  color: var(--fg-muted);
+}
+
+/* 14-G.3 — .quota-anomaly-icon wrapper class per mockup lines 412–436 */
+.quota-anomaly-icon {
+  font-size: 9px;
+  line-height: 1;
+  margin-left: 4px;
+  vertical-align: 1px;
+  display: inline-block;
+}
+
+.quota-anomaly-icon[data-type='reset'] {
+  color: #a3e635;
+}
+
+.quota-anomaly-icon[data-type='cache'] {
+  color: var(--accent-warm);
+}
+
+/* 14-G.4 — v9-tip refinements per mockup lines 2011–2089 */
+.v9-tip {
+  background-color: rgba(11, 16, 24, 0.96);
+  border: 1px solid #f59e0b;
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.55);
+  position: absolute;
+  z-index: 200;
+  padding: 6px 8px;
+  line-height: 1.3;
+  pointer-events: none;
+  min-width: 120px;
+  font-size: 10px;
+  color: var(--fg, #e2e8f0);
+}
+
+.v9-tip.hidden {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.v9-tip.tip-health {
+  width: 280px;
+  right: calc(100% + 8px);
+  left: auto;
+  top: 50%;
+  transform: translateY(-50%);
+  max-width: none;
+}
+
+.v9-tip.tip-quota {
+  width: 300px;
+  bottom: calc(100% + 6px);
+  top: auto;
+  right: 0;
+  left: auto;
+  max-width: calc(100% + 40px);
+}
+
+.v9-tip .v9-tip-head {
+  display: block;
+  color: var(--accent-warm, #f59e0b);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  margin-bottom: 4px;
+  padding-bottom: 3px;
+  border-bottom: 1px dashed rgba(245, 158, 11, 0.4);
+}
+
+.v9-tip .v9-tip-row {
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr) 70px auto;
+  column-gap: 5px;
+  font-size: 9px;
+  color: var(--fg, #e2e8f0);
+  padding: 1px 0;
+  line-height: 1.6;
+}
+
+.v9-tip .v9-tip-foot {
+  display: block;
+  font-size: 9px;
+  color: var(--fg-muted, #94a3b8);
+  font-style: italic;
+  margin-top: 3px;
+  padding-top: 3px;
+  border-top: 1px dashed rgba(42, 53, 71, 0.6);
+}
+
+.v9-tip.tip-quota .v9-tip-sub {
+  font-size: 9px;
+  color: var(--fg-muted, #94a3b8);
+  margin-bottom: 3px;
+}
+
+.v9-tip.tip-quota .v9-tip-row {
+  grid-template-columns: minmax(0, 1fr) auto auto;
+}
+
+.v9-tip.tip-quota .quota-tip-total {
+  margin-top: 1px;
+  padding-top: 2px;
+}
+
+.v9-tip.tip-health .v9-tip-row {
+  grid-template-columns: 58px minmax(72px, 0.8fr) minmax(0, 2fr) auto;
+}
+
+/* v9-tip subclass helpers */
+.v9-tip .t-time {
+  color: var(--fg-muted, #94a3b8);
+}
+
+.v9-tip .t-model {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.v9-tip .t-err {
+  color: var(--accent-hot, #ef4444);
+}
+
+.v9-tip .t-count {
+  text-align: right;
+  color: var(--fg-muted, #94a3b8);
+}
+/* End Wave 14-G */
+
+.tt-lower-tabs {
+  display: inline-flex;
+  gap: 4px;
+  margin: 0;
+  padding: 3px;
+  border: 1px solid var(--border);
+  background: var(--card);
+}
+
+.tt-lower-tabs button {
+  min-width: 72px;
+  padding: 4px 9px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--fg-muted);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0;
+  cursor: pointer;
+}
+
+.tt-lower-tabs button.is-active {
+  border-color: var(--accent-chrome);
+  background: var(--card-2);
+  color: var(--accent-chrome);
+}
+
+.tt-signal-panel {
+  margin-bottom: 6px;
+  border: 1px solid var(--border);
+  background: var(--card);
+  padding: 6px 8px;
+  box-sizing: border-box;
+}
+
+.tt-signal-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 5px;
+  position: relative;
+  z-index: 5;
+}
+
+.tt-signal-tabs {
+  display: inline-flex;
+  gap: 4px;
+  padding: 3px;
+  border: 1px solid var(--border);
+  background: var(--card);
+}
+
+.tt-signal-tabs button {
+  min-width: 62px;
+  padding: 4px 8px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--fg-muted);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0;
+  cursor: pointer;
+}
+
+.tt-signal-tabs button.is-active {
+  border-color: var(--accent-chrome);
+  background: var(--card-2);
+  color: var(--accent-chrome);
+}
+
+.tt-multiselect {
+  position: relative;
+  min-width: 144px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--fg-muted);
+}
+
+.tt-multiselect-trigger {
+  display: block;
+  width: 100%;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  background: var(--card-2);
+  padding: 5px 7px;
+  line-height: 1.1;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  user-select: none;
+}
+
+.tt-multiselect-trigger[aria-expanded='true'] {
+  border-color: var(--accent-chrome);
+  color: var(--fg);
+}
+
+.tt-multiselect [role='group'] {
+  position: absolute;
+  z-index: 70;
+  top: calc(100% + 4px);
+  left: 0;
+  display: grid;
+  gap: 2px;
+  min-width: 220px;
+  max-height: 260px;
+  overflow: auto;
+  padding: 6px;
+  border: 1px solid var(--border);
+  background: var(--card);
+  box-shadow: 0 10px 28px color-mix(in srgb, black 45%, transparent);
+}
+
+.tt-multiselect [role='group'][hidden] {
+  display: none;
+}
+
+.tt-multiselect-option {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 3px 4px;
+  color: var(--fg-muted);
+}
+
+.tt-multiselect-option.depth-2 {
+  padding-left: 18px;
+}
+
+.tt-multiselect-option input {
+  width: 12px;
+  height: 12px;
+  margin: 0;
+  flex: 0 0 auto;
+}
+
+.tt-multiselect-option span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tt-signal-chart {
+  min-height: 128px;
+  position: relative;
+  z-index: 1;
+}
+
+.tt-signal-legend {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-height: 16px;
+  margin-bottom: 4px;
+  color: var(--fg-muted);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0;
+}
+
+.tt-signal-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.tt-signal-legend-swatch {
+  width: 8px;
+  height: 8px;
+  border: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+  flex: 0 0 auto;
+}
+
+.tt-signal-graph {
+  position: relative;
+  gap: 2px;
+  display: flex;
+  align-items: flex-end;
+  height: 108px;
+  width: 100%;
+  overflow: hidden;
+  isolation: isolate;
+}
+
+.tt-signal-day-shell {
+  flex: 1 1 0%;
+  min-width: 0;
+  height: 100%;
+  display: flex;
+  align-items: flex-end;
+  position: relative;
+  z-index: 1;
+}
+
+.tt-signal-day-shell.is-even {
+  background: color-mix(in srgb, var(--card) 96%, var(--fg-muted) 4%);
+}
+
+.tt-signal-day-shell.is-odd {
+  background: color-mix(in srgb, var(--card) 88%, var(--fg-muted) 12%);
+}
+
+.tt-signal-day-envelope {
+  width: 100%;
+  min-width: 0;
+  display: flex;
+  align-items: flex-end;
+  gap: 1px;
+  border: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+  background: color-mix(in srgb, var(--card) 88%, var(--fg-muted) 12%);
+  overflow: hidden;
+  box-sizing: border-box;
+}
+
+.tt-signal-day-shell.is-even .tt-signal-day-envelope {
+  background: color-mix(in srgb, var(--card) 90%, var(--fg-muted) 10%);
+}
+
+.tt-signal-day-shell.is-odd .tt-signal-day-envelope {
+  background: color-mix(in srgb, var(--card) 82%, var(--fg-muted) 18%);
+}
+
+.tt-signal-hour-cell {
+  flex: 1 1 0%;
+  min-width: 0;
+  height: 100%;
+  display: flex;
+  align-items: flex-end;
+}
+
+.tt-signal-hour-bar {
+  width: 100%;
+  min-width: 0;
+  display: flex;
+  flex-direction: column-reverse;
+  overflow: hidden;
+  opacity: 0.76;
+}
+
+.tt-signal-slice {
+  flex-shrink: 0;
+  min-height: 1px;
+  width: 100%;
+}
+
+.tt-signal-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 96px;
+  border: 1px dashed var(--border);
+  color: var(--fg-muted);
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+
+.section-tabs {
+  display: inline-flex;
+  gap: 4px;
+  padding: 3px;
+  border: 1px solid var(--border);
+  background: var(--card);
+}
+
+.section-tabs button {
+  min-width: 68px;
+  padding: 4px 9px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--fg-muted);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0;
+  cursor: pointer;
+}
+
+.section-title-main .section-tabs button {
+  min-width: 78px;
+  min-height: 24px;
+  padding: 3px 9px;
+  font-size: clamp(10px, 0.6vw, 18px);
+  line-height: 1;
+}
+
+.section-tabs button.is-active {
+  border-color: var(--accent-chrome);
+  background: var(--card-2);
+  color: var(--accent-chrome);
+}
+
+.section-tabs + .table-wrapper {
+  margin-top: 8px;
+}
+
+.tt-metric-lane {
+  display: flex;
+  align-items: flex-start;
+  gap: 2px;
+  margin-top: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--card) 94%, var(--fg-muted) 6%);
+  box-sizing: border-box;
+  overflow: hidden;
+  position: relative;
+  isolation: isolate;
+}
+
+.tt-day-stripe-layer {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.tt-day-stripe {
+  flex: 1 1 0%;
+  min-width: 0;
+  border-right: 1px solid color-mix(in srgb, var(--border) 42%, transparent);
+}
+
+.tt-day-stripe.is-even {
+  background: color-mix(in srgb, var(--card) 94%, var(--fg-muted) 6%);
+}
+
+.tt-day-stripe.is-odd {
+  background: color-mix(in srgb, var(--card) 84%, var(--fg-muted) 16%);
+}
+
+.tt-day-hover-shell.is-even,
+.tt-metric-day-shell.is-even {
+  background: color-mix(in srgb, var(--card) 96%, var(--fg-muted) 4%);
+}
+
+.tt-day-hover-shell.is-odd,
+.tt-metric-day-shell.is-odd {
+  background: color-mix(in srgb, var(--card) 88%, var(--fg-muted) 12%);
+}
+
+.tt-active-version-lane {
+  position: relative;
+  isolation: isolate;
+}
+
+.tt-active-version-lane.is-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--card) 94%, var(--fg-muted) 6%);
+  color: var(--fg-muted);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  box-sizing: border-box;
+}
+
+.tt-active-version-lane.is-empty > span {
+  position: relative;
+  z-index: 1;
+}
+
+.tt-metric-lane.is-empty {
+  align-items: center;
+  justify-content: center;
+  color: var(--fg-muted);
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+
+.tt-chart-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 6px 8px 0;
+}
+
+.tt-legend {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  flex-wrap: wrap;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--fg-muted);
+  letter-spacing: 0;
+  margin-left: auto;
+}
+
+.tt-leg-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.tt-swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.tt-active-version-swatch {
+  display: inline-block;
+  width: 14px;
+  height: 4px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--fg);
+  flex-shrink: 0;
+}
+
+.tt-model-first-seen-swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border: 1px solid color-mix(in srgb, #c084fc 70%, var(--border));
+  background: transparent;
+  flex-shrink: 0;
+}
+
+.tt-model-first-seen-column {
+  cursor: help;
+}
+
+.tt-metric-day-shell {
+  flex: 1 1 0%;
+  min-width: 0;
+  height: 100%;
+  display: flex;
+  align-items: flex-start;
+  position: relative;
+  z-index: 1;
+}
+
+.tt-metric-scale-marker {
+  position: absolute;
+  left: 0;
+  right: 0;
+  border-top: 1px solid color-mix(in srgb, var(--fg-muted) 20%, transparent);
+  pointer-events: none;
+  z-index: 2;
+}
+
+.tt-metric-scale-label {
+  position: absolute;
+  left: 4px;
+  top: -1px;
+  transform: translateY(-50%);
+  padding: 0 3px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--card) 88%, transparent);
+  color: var(--fg-muted);
+  font-family: var(--font-mono);
+  font-size: 8px;
+  line-height: 1.1;
+  letter-spacing: 0;
+}
+
+.tt-metric-day-envelope {
+  width: 100%;
+  min-width: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: 1px;
+  border: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+  background: color-mix(in srgb, var(--card) 88%, var(--fg-muted) 12%);
+  overflow: hidden;
+  box-sizing: border-box;
+}
+
+.tt-metric-day-shell.is-even .tt-metric-day-envelope {
+  background: color-mix(in srgb, var(--card) 90%, var(--fg-muted) 10%);
+}
+
+.tt-metric-day-shell.is-odd .tt-metric-day-envelope {
+  background: color-mix(in srgb, var(--card) 82%, var(--fg-muted) 18%);
+}
+
+.tt-metric-hour-cell {
+  flex: 1 1 0%;
+  min-width: 0;
+  height: 100%;
+  display: flex;
+  align-items: flex-start;
+}
+
+.tt-metric-hour-bar {
+  width: 100%;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  opacity: 0.72;
+}
+
+.provider-quota-summary {
+  align-items: stretch;
+}
+
+.provider-quota-bucket {
+  min-width: 0;
+  min-height: 0;
+  border: 1px solid var(--border);
+  border-top: 2px solid var(--accent-chrome);
+  background: var(--card);
+  padding: 6px;
+  box-sizing: border-box;
+}
+
+.provider-quota-bucket-head,
+.provider-quota-history-meta,
+.provider-quota-history-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  min-width: 0;
+  font-family: var(--font-mono);
+  letter-spacing: 0;
+}
+
+.provider-quota-bucket-head {
+  margin-bottom: 5px;
+  color: var(--fg-muted);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.provider-quota-type-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  margin: 0 0 5px;
+}
+
+.provider-quota-type-tabs button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  min-width: 0;
+  max-width: 100%;
+  min-height: 18px;
+  gap: 5px;
+  border: 1px solid var(--border);
+  background: var(--card-2);
+  color: var(--fg-muted);
+  font-family: var(--font-mono);
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0;
+  line-height: 1;
+  padding: 3px 5px;
+  text-transform: uppercase;
+}
+
+.provider-quota-type-tabs button span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.provider-quota-type-tabs button.is-active {
+  border-color: color-mix(in srgb, var(--accent-chrome) 70%, var(--border));
+  background: color-mix(in srgb, var(--accent-chrome) 12%, var(--card-2));
+  color: var(--fg);
+}
+
+.provider-quota-type-count {
+  color: var(--accent-chrome);
+  flex-shrink: 0;
+}
+
+.provider-quota-bucket-scroll {
+  max-height: 220px;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.provider-quota-empty {
+  color: var(--fg-muted);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  padding: 12px 0;
+  text-align: center;
+}
+
+.provider-quota-history-row {
+  padding: 5px 0;
+  border-top: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+}
+
+.provider-quota-history-row:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.provider-quota-history-meta {
+  font-size: 9px;
+  color: var(--fg);
+}
+
+.provider-quota-history-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.provider-quota-history-pct {
+  color: var(--accent-chrome);
+  flex-shrink: 0;
+}
+
+.provider-quota-static-bar {
+  height: 7px;
+  margin-top: 3px;
+  border: 1px solid var(--border);
+  background: var(--card-2);
+  overflow: hidden;
+}
+
+.provider-quota-static-fill {
+  height: 100%;
+}
+
+.provider-quota-history-foot {
+  margin-top: 3px;
+  color: var(--fg-muted);
+  font-size: 8px;
+}
+
+.status-estimator-panel {
+  border: 1px solid var(--border);
+  background: var(--card);
+  padding: 8px;
+}
+
+.status-estimator-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--fg-muted);
+}
+
+.status-estimator-grid {
+  display: grid;
+  gap: 6px;
+  grid-template-columns: repeat(1, minmax(0, 1fr));
+}
+
+@media (min-width: 1600px) {
+  .status-estimator-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.status-estimator-lane {
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-top: 2px solid
+    color-mix(in srgb, var(--accent-chrome) 65%, var(--border));
+  background: var(--card-2);
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--fg-muted);
+}
+
+.status-estimator-lane-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  color: var(--fg);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.status-estimator-lane-key {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.status-estimator-lane-state {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  border: 1px solid var(--border);
+  background: var(--card);
+  padding: 1px 4px;
+  font-size: 8px;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+}
+
+.status-estimator-lane-state.is-high-confidence {
+  border-color: color-mix(in srgb, #22c55e 55%, var(--border));
+  color: #22c55e;
+}
+
+.status-estimator-lane-state.is-directional-only {
+  border-color: color-mix(in srgb, #f59e0b 60%, var(--border));
+  color: #f59e0b;
+}
+
+.status-estimator-lane-state.is-not-identifiable {
+  border-color: color-mix(in srgb, #ef4444 65%, var(--border));
+  color: #ef4444;
+}
+
+.status-estimator-meta-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 4px;
+}
+
+.status-estimator-block {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-top: 4px;
+  border-top: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+}
+
+.status-estimator-block > strong {
+  color: var(--fg);
+  font-size: 9px;
+  text-transform: uppercase;
+}
+
+.status-estimator-row {
+  display: block;
+}
+
+.status-estimator-muted {
+  color: var(--fg-muted);
+}
+
+.status-estimator-token-category {
+  margin-top: 4px;
+  color: var(--accent-chrome);
+  text-transform: uppercase;
+  font-size: 8px;
+}
+
+.status-estimator-family {
+  margin-top: 2px;
+}
+
+.status-estimator-family-name {
+  color: var(--fg);
+  font-size: 9px;
+}
+
+.status-estimator-empty {
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--fg-muted);
+  padding: 12px;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────── */
+/* Wave 14-B: page-header chrome removal, search input, attribution legend    */
+/* ─────────────────────────────────────────────────────────────────────────── */
+
+/* 14-B.3: search input in .page-header-top per mockup lines 226-234 */
+.search-input {
+  background: var(--card-2);
+  border: 1px solid var(--border);
+  color: var(--fg);
+  padding: 4px 8px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  width: 180px;
+  outline: none;
+}
+
+.search-input::placeholder {
+  color: var(--fg-muted);
+}
+
+.search-input:focus {
+  border-color: var(--accent-chrome);
+}
+
+/* 14-B.5: attribution legend swatch colors per mockup lines 1982-1986 */
+.attribution-legend .legend-swatch {
+  display: inline-block;
+  width: 10px;
+  height: 5px;
+  border-radius: 1px;
+  background: rgba(58, 130, 243, 0.82);
+}
+
+.attribution-legend .legend-cat.cat-norm .legend-swatch {
+  background: rgba(58, 130, 243, 0.82);
+}
+.attribution-legend .legend-cat.cat-papi .legend-swatch {
+  background: rgba(245, 158, 11, 0.62);
+}
+.attribution-legend .legend-cat.cat-wkld .legend-swatch {
+  background: rgba(239, 68, 68, 0.74);
+}
+.attribution-legend .legend-cat.cat-ctrl .legend-swatch {
+  background: rgba(126, 87, 194, 0.7);
+}
+.attribution-legend .legend-cat.cat-miss .legend-swatch {
+  background:
+    repeating-linear-gradient(
+      135deg,
+      rgba(255, 255, 255, 0.5) 0 1px,
+      transparent 1px 3px
+    ),
+    rgba(58, 130, 243, 0.84);
+}
+
+/* ─────────────────────────────────────────────────────────────────────────── */
+/* Wave 14-C: provider card content rewrite                                    */
+/* ─────────────────────────────────────────────────────────────────────────── */
+
+/* 14-C.10: .pc-mini-row .label text-transform lowercase (mockup line 1181) */
+.pc-mini-row .label {
+  text-transform: lowercase;
+}
+
+/* 14-C.8: est-mark asterisk on reasoning estimated value (mockup line 1191) */
+.est-mark {
+  color: rgba(245, 158, 11, 0.55);
+  margin-left: 2px;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────── */
+/* Wave 14-D: aggregate card variant — fleet activity 3-col grid + health tint */
+/* ─────────────────────────────────────────────────────────────────────────── */
+
+/* 14-D.1: Fleet activity 3-column grid (mockup lines 1101-1135)
+   Columns: label (fill) | value (64px fixed) | sublabel (auto)
+   Each row uses display:contents so dt/dd flow directly into the grid. */
+.fleet-activity-list {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 64px auto;
+  column-gap: 8px;
+  row-gap: 1px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* display:contents pulls children (dt, dd) into the parent grid columns */
+.fleet-activity-row {
+  display: contents;
+}
+
+/* Label column — muted, mono, 10px, slight letter-spacing */
+.fleet-activity-list .label {
+  color: var(--fg-muted);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.02em;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 1px 0;
+  margin: 0;
+}
+
+/* Value column — right-aligned, foreground color */
+.fleet-activity-list .value {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-align: right;
+  color: var(--fg);
+  padding: 1px 0;
+  margin: 0;
+}
+
+/* Invalid row overrides value color to accent-hot.
+   .accent-hot class also satisfies test_aggregate_card_invalid_tool_calls_red. */
+.fleet-activity-row.invalid .value,
+.fleet-activity-list .value.accent-hot {
+  color: var(--accent-hot);
+}
+
+/* Sublabel column — muted, 9px, lowercase, right-aligned (mockup line 1132) */
+.fleet-activity-list .sublabel {
+  color: var(--fg-muted);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  opacity: 0.65;
+  letter-spacing: 0.03em;
+  text-transform: lowercase;
+  text-align: right;
+  padding: 1px 0;
+  margin: 0;
+}
+
+/* 14-D.2: Aggregate health-strip cells tint per mockup line 2226-2228.
+   Slightly desaturated + brightened to visually distinguish aggregate
+   health strip from individual provider health strips. */
+.provider-card.aggregate .health-strip-cell {
+  filter: saturate(0.95) brightness(1.02);
+}
+
+/* ─────────────────────────────────────────────────────────────────────────── */
+/* Wave 14-E: quota consumed% severity classes + animation rewrites           */
+/* ─────────────────────────────────────────────────────────────────────────── */
+
+/* 14-E.2: .quota-row-pct severity color per mockup lines 1261-1264           */
+/*   Tiers: <10% → cool (blue), 10–25% → teal, 25–75% → warm, ≥75% → hot    */
+.quota-row-pct.cool {
+  color: var(--accent-cool);
+}
+.quota-row-pct.teal {
+  color: var(--accent-teal);
+}
+.quota-row-pct.warm {
+  color: var(--accent-warm);
+}
+.quota-row-pct.hot {
+  color: var(--accent-hot);
+}
+
+/* 14-E.3: quota anomaly icon colors via class — removes inline style overrides */
+.quota-anomaly-icon.icon-reset {
+  color: #a3e635;
+}
+.quota-anomaly-icon.icon-cache {
+  color: var(--accent-warm);
+}
+
+/* 14-E.3: quota anomaly subtitle per mockup lines 425-436                    */
+/*   Spans all 3 grid columns below the label/pct/reset row.                  */
+.quota-anomaly-sub {
+  grid-column: 1 / 4;
+  font-family: var(--font-mono);
+  font-size: 8px;
+  color: var(--fg-muted);
+  letter-spacing: 0.02em;
+  margin: -1px 0 2px 0;
+  line-height: 1.2;
+  opacity: 0.85;
+}
+.anomaly-glyph-reset {
+  color: #a3e635;
+  margin-right: 3px;
+}
+.anomaly-glyph-cache {
+  color: var(--accent-warm);
+  margin-right: 3px;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────── */
+/*  Wave 14-H — LOW-severity catch-up (final pixel-polish pass)               */
+/*  Closes all remaining LOW/MEDIUM deviations from wave14-principal-          */
+/*  exhaustive-audit.md that were not addressed in Waves 14-A through 14-G.   */
+/* ─────────────────────────────────────────────────────────────────────────── */
+
+/* ── 14-H.3: WebKit scrollbar 6px per mockup lines 1885-1897 ─────────────── */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: var(--bg);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 0;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--fg-muted);
+}
+
+/* ── 14-H.4: Sort indicators per mockup lines 2234-2255 ─────────────────── */
+/* Unsorted sortable columns get a faint ⇅ via pseudo-element */
+[data-sortable]::after {
+  content: ' ⇅';
+  opacity: 0.35;
+}
+[data-sortable][data-sort-dir='asc']::after {
+  content: ' ↑';
+  opacity: 1;
+  color: var(--accent-chrome);
+}
+[data-sortable][data-sort-dir='desc']::after {
+  content: ' ↓';
+  opacity: 1;
+  color: var(--accent-chrome);
+}
+
+/* C-3: @keyframes pulse removed — SectionSkeleton now uses skeleton-shimmer
+   (same sweep used by the page-level skeleton). No remaining consumers. */
+
+/* Fleet-activity pulse-dot variant: 6×6 hot red, larger animation per §9 #7-9 */
+/* Scoped to .fleet-activity-list so it overrides the freshness-indicator dot  */
+.fleet-activity-list .pulse-dot {
+  width: 6px;
+  height: 6px;
+  background: var(--accent-hot);
+  border-radius: 50%;
+  box-shadow: 0 0 4px rgba(239, 68, 68, 0.7);
+  animation: pulse-dot-anim 1.6s ease-in-out infinite;
+}
+
+@keyframes pulse-dot-anim {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.55;
+    transform: scale(0.8);
+  }
+}
+
+/* ── §4 #2,3,4: Anchor-link gap / display fix ──────────────────────────────  */
+/* Mockup: display default (not flex); kbd-hint uses margin-right: 1px only.   */
+.anchor-link {
+  display: inline;
+}
+/* Remove the flex gap; margin-right on kbd-hint governs spacing */
+.anchor-link .kbd-hint {
+  margin-right: 1px;
+}
+
+/* ── §6 #5: .controls border-right: none below 1600 ─────────────────────── */
+.controls {
+  border-right: none !important;
+}
+@media (min-width: 1600px) {
+  .controls {
+    border-right: 1px solid var(--border) !important;
+  }
+}
+
+/* ── §7 #1: grid-auto-rows: 1fr at 1280+ per mockup lines 987,994 ─────────  */
+/* max-width: 1599px cap prevents this 2-col rule from overriding the 4-col   */
+/* rule defined at (min-width: 1600px) in L194 — cascade regression fix.      */
+@media (min-width: 1280px) and (max-width: 1599px) {
+  .provider-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-auto-rows: 1fr;
+  }
+}
+
+/* ── §7 #2: justify-items: stretch at 2100+ per mockup lines 1012,1023 ───── */
+@media (min-width: 2100px) {
+  .provider-summary {
+    justify-items: stretch;
+  }
+}
+
+/* ── §7 #3: margin-top: 12px on .provider-summary per mockup line 955 ──────  */
+.provider-summary {
+  margin-top: 12px;
+}
+
+/* ── §7 #5: 1920px explicit breakpoint per mockup lines 998-1003 ────────── */
+@media (min-width: 1920px) {
+  .provider-summary {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-auto-rows: 1fr;
+  }
+}
+
+/* ── §10 #6: quota-row-bar gap: 2px instead of border-right ─────────────── */
+/* Removes the 1px border-right separator and uses a transparent gap instead  */
+/* per mockup line 2124. Selector corrected from .quota-intervals (dead) to   */
+/* .quota-row-bar — the actual className emitted by quota-interval-bar.tsx:61 */
+.quota-row-bar {
+  gap: 2px;
+}
+
+/* ── §10 #8: quota anomaly icon colors via class only (remove inline dup) ── */
+/* Class rules already in Wave 14-E; inline styles removed in component.       */
+/* No CSS needed here — handled by provider-card.tsx edit removing inline.     */
+
+/* ── §11 #3,4,5: vbar-label spec-correct styling per mockup lines 1989-2007  */
+.vbar-label {
+  font-family: var(--font-mono);
+  font-size: 8px;
+  letter-spacing: 0.06em;
+  line-height: 1;
+  text-align: center;
+  width: 12px;
+  padding-left: 4px;
+  pointer-events: none;
+}
+.vbar-label.top {
+  color: var(--accent-warm);
+  opacity: 0.7;
+  margin-bottom: 2px;
+}
+.vbar-label.bottom {
+  color: var(--fg-muted);
+  opacity: 0.7;
+  margin-top: 2px;
+}
+
+/* ── §11 #6: .health-strip-axis for horizontal fleet-pulse ends ──────────── */
+/* Mockup lines 1644-1653: shows -24h / now at either end of horizontal strip */
+.health-strip-axis {
+  display: flex;
+  justify-content: space-between;
+  font-family: var(--font-mono);
+  font-size: 8px;
+  color: var(--fg-muted);
+  letter-spacing: 0.04em;
+  opacity: 0.6;
+  margin-top: 2px;
+}
+
+/* ── §11 #7: health-strip-cell clamp height to 0.8-1.8px in vertical mode ── */
+/* Per mockup line 1944 `.health-strip-cell { height: clamp(0.8px, 100%, 1.8px); }` */
+.health-strip-cell {
+  height: clamp(0.8px, 100%, 1.8px);
+}
+
+/* Missing upstream latency: keep the miss semantic class, but render it as
+   no-data blue with a hatch overlay so attribution gaps are visible. */
+.health-strip-cell.cat-miss {
+  background:
+    repeating-linear-gradient(
+      135deg,
+      rgba(255, 255, 255, 0.5) 0 1px,
+      transparent 1px 3px
+    ),
+    rgba(58, 130, 243, 0.84);
+  opacity: 1;
+}
+
+/* ── §13 #7: table caption clamp font-size per mockup lines 1281-1287 ──────  */
+.table-caption {
+  font-size: clamp(8px, 0.45vw, 11px);
+  color: var(--fg-muted);
+  letter-spacing: 0.05em;
+  margin: -4px 0 6px 0;
+}
+
+/* ── §13 #8: sparkline clamp dimensions per mockup line 932-933 ────────────  */
+.sparkline {
+  width: clamp(80px, 5vw, 160px);
+  height: clamp(16px, 1.1vw, 28px);
+}
+
+/* ── §13 #9: table-wrapper max-height — base 400px; 320px at 1600+ per mockup line 1288 ── */
+/* Base rule replaces the former inline maxHeight:'400px' (wave34-code-css-audit ✘-3). */
+.table-wrapper {
+  max-height: 400px;
+}
+@media (min-width: 1600px) {
+  .table-wrapper {
+    max-height: 320px;
+  }
+}
+
+/* ── §18 #3: body line-height: 1.4 per mockup line 32 ──────────────────────  */
+/* §18 #4: html/body height: 100% per mockup lines 33-35.                     */
+/* §14-A set font-family and font-size; this wave closes line-height + height. */
+html,
+body {
+  line-height: 1.4;
+  height: 100%;
+}
+
+/* ── §20 #10: tbody tr transition: background-color 50ms per mockup line 1328 */
+tbody tr {
+  transition: background-color 50ms;
+}
+
+/* ── §20 #4: main-content gap 4px at 1600+ (inline sets 8px default) ─────── */
+@media (min-width: 1600px) {
+  .main-content {
+    gap: 4px;
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Wave 15-A: Visual regression fixes
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* ── S12 HIGH: Token trend stacked slice + swatch colors per provider ───────
+   Wave 14-F.5 removed inline `background: s.color` from .tt-slice/.tt-swatch
+   expecting these CSS class rules to exist — they were never added.
+   Values from mockup lines 1339-1345 + 1368-1374 (authoritative spec).     */
+.tt-slice.tt-anthropic,
+.tt-swatch.tt-anthropic {
+  background: #cc7855;
+}
+.tt-slice.tt-openai,
+.tt-swatch.tt-openai {
+  background: #10a37f;
+}
+.tt-slice.tt-google,
+.tt-swatch.tt-google {
+  background: #4285f4;
+}
+.tt-slice.tt-antigravity,
+.tt-swatch.tt-antigravity {
+  background: #0f766e;
+}
+.tt-slice.tt-xai,
+.tt-swatch.tt-xai {
+  background: #475569;
+}
+.tt-slice.tt-nvidia,
+.tt-swatch.tt-nvidia {
+  background: #76b900;
+}
+.tt-slice.tt-openrouter,
+.tt-swatch.tt-openrouter {
+  background: #7e57c2;
+}
+.tt-slice.tt-local,
+.tt-swatch.tt-local {
+  background: #94a3b8;
+}
+/* Wave 25 additions: chatgpt + unknown were missing from the Wave 15-A block. */
+/* Colors from PROVIDER_SERIES in phosphor-dashboard.tsx lines 118,157.        */
+.tt-slice.tt-chatgpt,
+.tt-swatch.tt-chatgpt {
+  background: #10a37f;
+}
+.tt-slice.tt-unknown,
+.tt-swatch.tt-unknown {
+  background: #64748b;
+}
+
+/* ── S16 MEDIUM: .alert-glyph 12px centered span ────────────────────────────
+   Mockup lines 403-408: display:inline-block, 12px width, text-align:center,
+   margin-right:2px. Enforces fixed-width glyph column for alert alignment.  */
+.alert-item .alert-glyph {
+  display: inline-block;
+  width: 12px;
+  text-align: center;
+  margin-right: 2px;
+}
+.alert-item.alert-early-reset .alert-glyph {
+  color: #a3e635;
+}
+.alert-item.alert-cache-stale .alert-glyph {
+  color: var(--accent-warm);
+}
+
+/* ── S2-1 LOW: Sidebar max-height + overflow-y per mockup line 137-138 ──────
+   NOTE: .sidebar already has max-height: calc(100vh - 40px) and overflow-y: auto
+   defined at line 391-392 (present since Wave 14). S2-1 is already satisfied.   */
+
+/* End Wave 15-A */
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Wave 15-D: SlicerBar — multi-dimension filter controls
+   ═══════════════════════════════════════════════════════════════════════════
+   Phosphor mono/amber aesthetic: compact 10px controls, card-2 backgrounds,
+   accent-chrome for active states, chip pills with × removal.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* ── Slicer bar wrapper ─────────────────────────────────────────────────── */
+.slicer-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 6px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  padding: 6px 10px;
+  position: relative;
+}
+
+.slicer-bar-label {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--fg-muted);
+  align-self: center;
+  opacity: 0.7;
+  margin-right: 2px;
+}
+
+/* ── Individual dimension container ─────────────────────────────────────── */
+.slicer-dimension {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+/* ── Trigger button ──────────────────────────────────────────────────────── */
+.slicer-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--card-2);
+  border: 1px solid var(--border);
+  color: var(--fg-muted);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: 3px 6px;
+  cursor: pointer;
+  transition:
+    border-color 80ms,
+    color 80ms;
+  white-space: nowrap;
+}
+
+.slicer-trigger:hover {
+  border-color: var(--accent-chrome);
+  color: var(--fg);
+}
+
+.slicer-trigger--active {
+  border-color: var(--accent-chrome);
+  color: var(--accent-chrome);
+  border-bottom: 2px solid var(--accent-chrome);
+}
+
+.slicer-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 14px;
+  height: 14px;
+  background: var(--accent-chrome);
+  color: var(--bg);
+  border-radius: 7px;
+  font-size: 8px;
+  font-family: var(--font-mono);
+  padding: 0 3px;
+  font-weight: 700;
+}
+
+.slicer-caret {
+  font-size: 8px;
+  opacity: 0.7;
+}
+
+/* ── Chip row ────────────────────────────────────────────────────────────── */
+.slicer-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  max-width: 200px;
+}
+
+.slicer-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  background: var(--card-2);
+  border: 1px solid var(--border);
+  padding: 1px 5px;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--accent-chrome);
+  text-transform: lowercase;
+  white-space: nowrap;
+  max-width: 120px;
+}
+
+.slicer-chip-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 90px;
+}
+
+.slicer-chip-remove {
+  background: none;
+  border: none;
+  color: var(--fg-muted);
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 1;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  transition: color 80ms;
+}
+
+.slicer-chip-remove:hover {
+  color: var(--accent-hot);
+}
+
+/* ── Dropdown panel ──────────────────────────────────────────────────────── */
+.slicer-dropdown {
+  position: absolute;
+  top: calc(100% + 2px);
+  left: 0;
+  z-index: 200;
+  background: var(--card);
+  border: 1px solid var(--border);
+  min-width: 160px;
+  max-width: 260px;
+  max-height: 220px;
+  overflow-y: auto;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+}
+
+.slicer-dropdown-header {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.slicer-clear-btn {
+  background: none;
+  border: none;
+  color: var(--fg-muted);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  cursor: pointer;
+  padding: 1px 4px;
+  transition: color 80ms;
+}
+
+.slicer-clear-btn:hover:not(:disabled) {
+  color: var(--accent-hot);
+}
+
+.slicer-clear-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.slicer-empty {
+  padding: 8px;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--fg-muted);
+  text-align: center;
+}
+
+/* ── Option list ─────────────────────────────────────────────────────────── */
+.slicer-option-list {
+  list-style: none;
+  margin: 0;
+  padding: 2px 0;
+}
+
+.slicer-option {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--fg-muted);
+  transition:
+    background 60ms,
+    color 60ms;
+}
+
+.slicer-option:hover,
+.slicer-option:focus {
+  background: var(--card-2);
+  color: var(--fg);
+  outline: none;
+}
+
+.slicer-option--selected {
+  color: var(--fg);
+  background: color-mix(in srgb, var(--accent-chrome) 12%, transparent);
+}
+
+.slicer-option-check {
+  font-size: 9px;
+  width: 12px;
+  text-align: center;
+  color: var(--accent-chrome);
+  flex-shrink: 0;
+}
+
+.slicer-option-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── Global clear-all button ─────────────────────────────────────────────── */
+.slicer-clear-all-btn {
+  align-self: center;
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--fg-muted);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 3px 6px;
+  cursor: pointer;
+  transition:
+    border-color 80ms,
+    color 80ms;
+  margin-left: auto;
+}
+
+.slicer-clear-all-btn:hover {
+  border-color: var(--accent-hot);
+  color: var(--accent-hot);
+}
+
+/* End Wave 15-D */
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Wave 18-CSS — pixel-perfect additions (5120 C2/C4/M3 + 2275 #1/#8/#11/⚠12)
+   Sources: wave17-pixel-5120-audit.md (C2, C4, M3)
+            wave17-pixel-2275-audit.md (#1, #8, #11, ⚠12)
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* Wave 18-CSS — 5120 C2: .main-content 20-col grid at ≥3840px
+   .main-content has inline display:'flex' on phosphor-dashboard.tsx L1236.
+   !important is required to beat inline styles (verified: inline is not !important).
+   The 20-column grid enables grid-column / grid-row placements for comparison
+   panel, models, repos, clients, etc. at 4K and 5K viewports. */
+@media (min-width: 3840px) {
+  .main-content {
+    display: grid !important;
+    grid-template-columns: repeat(20, minmax(0, 1fr)) !important;
+    grid-template-rows: auto auto auto auto auto auto auto !important;
+    gap: 12px !important;
+  }
+}
+
+/* Wave 20-CSS — 5120 C2 residual: per-section grid placements at ≥3840px.
+   W18-CSS established the 20-col grid but left sections to auto-place,
+   collapsing them into row 1 as ~220px columns.
+   Mockup 06-phosphor-atlas.html @media (min-width: 3840px) defines rows 4-7
+   for the five content sections + comparison panel (rows 1-3 are reserved for
+   .page-header/.anchor-bar/.controls in the mockup; these don't exist in the
+   current TSX so those rows collapse to zero height — a no-op).
+   Values taken verbatim from mockup lines 561-584. */
+@media (min-width: 3840px) {
+  section[data-tab='status'] {
+    grid-column: 1 / -1;
+    grid-row: 4;
+  }
+  section[data-tab='tokens'] {
+    grid-column: 1 / -1;
+    grid-row: 5;
+  }
+  section[data-tab='models'] {
+    grid-column: 1 / 14;
+    grid-row: 6;
+  }
+  section[data-tab='repos'] {
+    grid-column: 14 / 21;
+    grid-row: 6;
+  }
+}
+
+/* Wave 18-CSS — 5120 C4: .errors-row-only-5k errors-summary row
+   Default hidden; revealed at ≥5120 as a single-column grid row at the
+   bottom of each .card-pane-right. JSX added by W18-Cards engineer in
+   provider-card.tsx. Color uses --accent-warm per mockup lines 2467 etc. */
+.errors-row-only-5k {
+  display: none;
+}
+@media (min-width: 5120px) {
+  .errors-row-only-5k {
+    display: grid;
+    grid-template-columns: 1fr;
+    padding: 4px 8px;
+    border-top: 1px solid var(--border);
+    font-size: 12px;
+    color: var(--accent-warm);
+  }
+  .errors-row-only-5k .name {
+    font-family: 'IBM Plex Mono', monospace;
+  }
+}
+
+/* Wave 18-CSS — 5120 M3: .col-4k-only and .col-5k-only baseline display:none
+   Mockup lines 627-635 define a baseline display:none so these columns are
+   hidden at sub-4K viewports. Without this, browser default display:table-cell
+   causes both column families to leak into narrow viewports.
+   NOTE: .col-4k-only reveal at ≥3840 already exists at index.css line 255-257
+   (inside the @media (min-width: 3840px) block — no duplication needed).
+   .col-5k-only reveal at ≥5120 is new. */
+.col-4k-only,
+.col-5k-only {
+  display: none;
+}
+@media (min-width: 5120px) {
+  .col-5k-only {
+    display: table-cell !important;
+  }
+}
+
+/* Wave 18-CSS — 2275 #8: .repo-table tbody tr hover background
+   Mockup L1427: .repo-table tbody tr:hover { background: var(--card-2); }
+   Not previously implemented in live. */
+.repo-table tbody tr:hover {
+  background: var(--card-2);
+}
+
+/* Wave 18-CSS — 2275 #11: hide fleet-pulse 24h/now axis labels (not in mockup)
+   Audit §1.34a: mockup fleet-pulse-wrapper has no axis labels. Live
+   HealthStrip orientation='horizontal' always appends a .health-strip-axis
+   div (health-strip.tsx L239-242) with "-24h" and "now" text spans.
+   The element is a sibling of .health-strip-wrapper inside .fleet-pulse-wrapper.
+   Exact selector: .fleet-pulse-wrapper .health-strip-axis
+   Defensive additional selectors retained as fallback for any future refactor. */
+.fleet-pulse-wrapper .health-strip-axis,
+.fleet-pulse-axis,
+.fleet-pulse + .axis-labels,
+.fleet-pulse-strip ~ .axis-labels {
+  display: none !important;
+}
+
+/* Wave 18-CSS — 2275 #1: .provider-card.aggregate .provider-name color
+   Mockup L980-982: aggregate card provider-name should render in var(--fg)
+   (muted foreground), not the amber --accent-chrome used by peer cards.
+   W32-W removed the conditional inline color for aggregate cards in
+   provider-card.tsx, so !important is no longer needed here. */
+.provider-card.aggregate .provider-name {
+  color: var(--fg);
+}
+
+/* End Wave 18-CSS */
+
+/* Wave 36 Fix 3 — Dashboard loading skeleton
+   Renders a shimmer placeholder during the initial /usage fetch so users see
+   structured feedback instead of a blank main area (10–35 s cold-load path). */
+.dashboard-loading-skeleton {
+  padding: 20px;
+}
+
+.skeleton-block {
+  background: linear-gradient(
+    90deg,
+    var(--card-2) 0%,
+    var(--card-3) 50%,
+    var(--card-2) 100%
+  );
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 2s infinite;
+  border-radius: 4px;
+}
+
+@keyframes skeleton-shimmer {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}
+/* End Wave 36 Fix 3 */

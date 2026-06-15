@@ -1,3 +1,50 @@
+import { z } from 'zod'
+import { queryOptions } from '@tanstack/react-query'
+
+const LIVE_DASHBOARD_QUOTAS_REFETCH_INTERVAL_MS = 60_000
+
+/** Shared React Query key for quota fetches (index + phosphor-dashboard). */
+export function usageReportQuotasKey(
+  from: string,
+  to: string,
+  cacheBust?: string
+): readonly [string, string, string, ...string[]] {
+  const key: [string, string, string, ...string[]] = [
+    'usage-report-quotas',
+    from,
+    to,
+  ]
+  if (cacheBust !== undefined) {
+    key.push(cacheBust)
+  }
+  return key
+}
+
+export interface UsageReportQuotasQueryOptionsParams {
+  from: string
+  to: string
+  /** Optional bust token; included in queryKey when set (manual refresh / report refresh). */
+  cacheBust?: string
+}
+
+/** Shared quotas query options (index + phosphor-dashboard). */
+export function usageReportQuotasQueryOptions({
+  from,
+  to,
+  cacheBust,
+}: UsageReportQuotasQueryOptionsParams) {
+  const resolvedCacheBust =
+    cacheBust !== undefined && cacheBust !== '' ? cacheBust : undefined
+  return queryOptions({
+    queryKey: usageReportQuotasKey(from, to, resolvedCacheBust),
+    queryFn: ({ signal }) =>
+      fetchUsageReportQuotas({ cacheBust: resolvedCacheBust }, signal),
+    staleTime: LIVE_DASHBOARD_QUOTAS_REFETCH_INTERVAL_MS,
+    refetchInterval: LIVE_DASHBOARD_QUOTAS_REFETCH_INTERVAL_MS,
+    refetchIntervalInBackground: true,
+  })
+}
+
 export const usageReportGroupPresets = [
   {
     value: 'daily-model',
@@ -30,16 +77,212 @@ export const usageReportGrains = ['day', 'week', 'month'] as const
 
 export type UsageReportGrain = (typeof usageReportGrains)[number]
 export type UsageReportGroupPreset = (typeof usageReportGroupPresets)[number]
-export type UsageReportDimension = UsageReportGroupPreset['groupBy'][number]
 
-export interface UsageReportParams {
+/** Wire fields attached to usage-report API metadata when cache decoration is present. */
+export interface ReportCacheMetadata {
+  cacheBackend?: string
+  cacheFreshUntil?: string | null
+  cacheGeneratedAt?: string | null
+  cacheKeyHash?: string
+  cacheScope?: string
+  cacheStaleUntil?: string | null
+  cacheStatus?: string
+  cacheRefreshing?: boolean
+}
+
+/** Canonical field names for {@link ReportCacheMetadata} (runtime companion). */
+export const REPORT_CACHE_METADATA_FIELDS = [
+  'cacheBackend',
+  'cacheFreshUntil',
+  'cacheGeneratedAt',
+  'cacheKeyHash',
+  'cacheScope',
+  'cacheStaleUntil',
+  'cacheStatus',
+  'cacheRefreshing',
+] as const
+
+export type ReportCacheMetadataField =
+  (typeof REPORT_CACHE_METADATA_FIELDS)[number]
+
+export function isReportCacheMetadata(
+  value: unknown
+): value is ReportCacheMetadata {
+  if (value === null || typeof value !== 'object') return false
+  const record = value as Record<string, unknown>
+  for (const key of REPORT_CACHE_METADATA_FIELDS) {
+    if (!(key in record)) continue
+    const field = record[key]
+    if (key === 'cacheRefreshing') {
+      if (field !== undefined && typeof field !== 'boolean') return false
+      continue
+    }
+    if (
+      key === 'cacheFreshUntil' ||
+      key === 'cacheGeneratedAt' ||
+      key === 'cacheStaleUntil'
+    ) {
+      if (field !== undefined && field !== null && typeof field !== 'string') {
+        return false
+      }
+      continue
+    }
+    if (field !== undefined && typeof field !== 'string') return false
+  }
+  return true
+}
+export type UsageReportDimension = UsageReportGroupPreset['groupBy'][number]
+export type UsageReportConfigChangeFilterValue =
+  | 'true'
+  | 'false'
+  | 'null'
+  | 'unknown'
+  | 'evaluated'
+  | 'unevaluated'
+
+/**
+ * Multi-value dimension filters supported by the usage report API.
+ *
+ * 15-D.1: The server uses parseCsv() on each param, so values are joined as
+ * comma-separated strings in the query string (e.g. `provider=openai,anthropic`).
+ * The server's filterColumns map accepts: provider, repository, client,
+ * environment, model, provider_model. Config-change filters accept true, false,
+ * null/unknown/unevaluated, or evaluated. Empty arrays → no filter applied (all
+ * values returned).
+ *
+ * Param names (singular) match the server's filterColumns keys exactly.
+ */
+export interface UsageReportFilterParams {
+  /** Filter to specific providers (empty = all). */
+  provider?: readonly string[]
+  /** Filter to specific repositories/tenant_ids (empty = all). */
+  repository?: readonly string[]
+  /** Filter to specific client names (empty = all). */
+  client?: readonly string[]
+  /** Filter to specific environments (empty = all). */
+  environment?: readonly string[]
+  /** Filter to specific models (empty = all). */
+  model?: readonly string[]
+  /** Filter by sessions that changed .pre-commit config. */
+  changed_pre_commit_config?: readonly UsageReportConfigChangeFilterValue[]
+  /** Filter by sessions that changed .env* files. */
+  changed_env_file?: readonly UsageReportConfigChangeFilterValue[]
+  /** Filter by sessions that changed pyproject.toml. */
+  changed_pyproject_toml?: readonly UsageReportConfigChangeFilterValue[]
+  /** Filter by sessions that changed .gitignore. */
+  changed_gitignore?: readonly UsageReportConfigChangeFilterValue[]
+}
+
+export interface UsageReportParams extends UsageReportFilterParams {
   from: string
   to: string
   grain: UsageReportGrain
   groupBy?: readonly UsageReportDimension[]
+  cacheBust?: string
 }
 
-export interface UsageReportRow {
+export interface UsageReportAgentScoreReason {
+  family: string
+  reason: string
+  count: number
+}
+
+export interface UsageReportLatencyFields {
+  latency_sample_rows?: number | null
+  litellm_pre_send_p50_ms?: number | null
+  litellm_pre_send_p95_ms?: number | null
+  litellm_pre_send_p99_ms?: number | null
+  litellm_pre_send_count?: number | null
+  litellm_post_response_p50_ms?: number | null
+  litellm_post_response_p95_ms?: number | null
+  litellm_post_response_p99_ms?: number | null
+  litellm_post_response_count?: number | null
+  litellm_processing_p50_ms?: number | null
+  litellm_processing_p95_ms?: number | null
+  litellm_processing_p99_ms?: number | null
+  litellm_processing_count?: number | null
+  llm_upstream_time_to_first_byte_p50_ms?: number | null
+  llm_upstream_time_to_first_byte_p95_ms?: number | null
+  llm_upstream_time_to_first_byte_p99_ms?: number | null
+  llm_upstream_time_to_first_byte_count?: number | null
+  llm_upstream_elapsed_p50_ms?: number | null
+  llm_upstream_elapsed_p95_ms?: number | null
+  llm_upstream_elapsed_p99_ms?: number | null
+  llm_upstream_elapsed_count?: number | null
+  llm_upstream_stream_p50_ms?: number | null
+  llm_upstream_stream_p95_ms?: number | null
+  llm_upstream_stream_p99_ms?: number | null
+  llm_upstream_stream_count?: number | null
+  ttft_p50_ms?: number | null
+  ttft_p95_ms?: number | null
+  ttft_p99_ms?: number | null
+  ttft_count?: number | null
+  total_server_elapsed_p50_ms?: number | null
+  total_server_elapsed_p95_ms?: number | null
+  total_server_elapsed_p99_ms?: number | null
+  total_server_elapsed_count?: number | null
+  latency_unclassified_p50_ms?: number | null
+  latency_unclassified_p95_ms?: number | null
+  latency_unclassified_p99_ms?: number | null
+  latency_unclassified_count?: number | null
+  previous_response_to_current_request_p50_ms?: number | null
+  previous_response_to_current_request_p95_ms?: number | null
+  previous_response_to_current_request_p99_ms?: number | null
+  previous_response_to_current_request_count?: number | null
+  llm_upstream_output_tokens_per_second_p50?: number | null
+  llm_upstream_output_tokens_per_second_p95?: number | null
+  llm_upstream_output_tokens_per_second_count?: number | null
+  llm_stream_output_tokens_per_second_p50?: number | null
+  llm_stream_output_tokens_per_second_p95?: number | null
+  llm_stream_output_tokens_per_second_count?: number | null
+}
+
+export interface UsageReportConfigChangeFields {
+  config_change_evaluated_rows?: number | null
+  config_change_unevaluated_rows?: number | null
+  config_change_any_true_rows?: number | null
+  changed_pre_commit_config_true_rows?: number | null
+  changed_pre_commit_config_false_rows?: number | null
+  changed_pre_commit_config_unknown_rows?: number | null
+  changed_env_file_true_rows?: number | null
+  changed_env_file_false_rows?: number | null
+  changed_env_file_unknown_rows?: number | null
+  changed_pyproject_toml_true_rows?: number | null
+  changed_pyproject_toml_false_rows?: number | null
+  changed_pyproject_toml_unknown_rows?: number | null
+  changed_gitignore_true_rows?: number | null
+  changed_gitignore_false_rows?: number | null
+  changed_gitignore_unknown_rows?: number | null
+}
+
+export interface UsageReportQuotaRangeHistoryParams {
+  from: string
+  to: string
+  cacheBust?: string
+}
+
+export interface UsageReportQuotaHistoryParams {
+  cacheBust?: string
+}
+
+export interface UsageReportQuotaEstimatorParams {
+  from: string
+  to: string
+  cacheBust?: string
+}
+
+export interface UsageReportQuotasParams {
+  cacheBust?: string
+}
+
+export interface UsageReportToolActivityParams extends UsageReportFilterParams {
+  from: string
+  to: string
+  cacheBust?: string
+}
+
+export interface UsageReportRow
+  extends UsageReportLatencyFields, UsageReportConfigChangeFields {
   bucket: string
   environment?: string
   client?: string
@@ -85,11 +328,141 @@ export interface UsageReportRow {
   litellm_processing_average_ms: number | null
   llm_upstream_elapsed_total_ms: number | null
   llm_upstream_elapsed_average_ms: number | null
+  agent_score_rows?: number | null
+  agent_quality_score?: number | null
+  agent_quality_evaluated?: number | null
+  agent_quality_possible?: number | null
+  agent_quality_failures?: number | null
+  agent_instruction_score?: number | null
+  agent_instruction_evaluated?: number | null
+  agent_instruction_possible?: number | null
+  agent_instruction_failures?: number | null
+  agent_tool_score?: number | null
+  agent_tool_evaluated?: number | null
+  agent_tool_possible?: number | null
+  agent_tool_failures?: number | null
+  agent_contract_score?: number | null
+  agent_contract_evaluated?: number | null
+  agent_contract_possible?: number | null
+  agent_contract_failures?: number | null
+  agent_progress_score?: number | null
+  agent_progress_evaluated?: number | null
+  agent_progress_possible?: number | null
+  agent_progress_failures?: number | null
+  agent_risk_score?: number | null
+  agent_risk_evaluated?: number | null
+  agent_risk_possible?: number | null
+  agent_risk_events?: number | null
+  agent_discovery_inventory_coverage_score?: number | null
+  agent_discovery_inventory_coverage_evaluated?: number | null
+  agent_discovery_inventory_coverage_possible?: number | null
+  agent_discovery_inventory_coverage_failures?: number | null
+  agent_discovery_inventory_missing_count?: number | null
+  agent_terminal_completion_score?: number | null
+  agent_terminal_completion_evaluated?: number | null
+  agent_terminal_completion_possible?: number | null
+  agent_terminal_completion_failures?: number | null
+  agent_empty_completion_failures?: number | null
+  agent_invalid_tool_call_errors?: number | null
+  agent_destructive_checkout_failures?: number | null
+  agent_large_payload_risks?: number | null
+  agent_read_only_policy_violations?: number | null
+  agent_ignored_path_tracking_policy_score?: number | null
+  agent_ignored_path_tracking_policy_evaluated?: number | null
+  agent_ignored_path_tracking_policy_possible?: number | null
+  agent_ignored_path_tracking_violation_count?: number | null
+  agent_baseline_deflection_attempted_score?: number | null
+  agent_baseline_deflection_attempted_evaluated?: number | null
+  agent_baseline_deflection_attempted_incidents?: number | null
+  agent_baseline_deflection_incident_score?: number | null
+  agent_baseline_deflection_incident_evaluated?: number | null
+  agent_baseline_deflection_incidents?: number | null
+  agent_baseline_deflection_attempt_count?: number | null
+  agent_baseline_deflection_tool_call_count?: number | null
+  agent_baseline_deflection_input_tokens?: number | null
+  agent_baseline_deflection_elapsed_ms?: number | null
+  agent_quality_gate_trigger_count?: number | null
+  agent_quality_gate_fix_attempt_count?: number | null
+  agent_quality_gate_rerun_count?: number | null
+  agent_sleep_wellness_interruption_attempted_score?: number | null
+  agent_sleep_wellness_interruption_attempted_evaluated?: number | null
+  agent_sleep_wellness_interruption_attempted_incidents?: number | null
+  agent_sleep_wellness_interruption_incident_score?: number | null
+  agent_sleep_wellness_interruption_incident_evaluated?: number | null
+  agent_sleep_wellness_interruption_incidents?: number | null
+  agent_sleep_wellness_interruption_count?: number | null
+  agent_sleep_wellness_interruption_output_tokens?: number | null
+  agent_sleep_wellness_interruption_input_tokens?: number | null
+  agent_sleep_wellness_interruption_elapsed_ms?: number | null
+  agent_sleep_wellness_interruption_after_user_pushback_count?: number | null
+  agent_sleep_wellness_interruption_repeated_count?: number | null
+  agent_compact_summary_events?: number | null
+  agent_compact_summary_thread_count?: number | null
+  agent_compact_summary_id_count?: number | null
+  agent_compact_summary_resume_contexts?: number | null
+  agent_compact_summary_verify_contexts?: number | null
+  agent_compact_summary_source_counts?: Record<string, number> | string | null
+  agent_score_reasons_top?: UsageReportAgentScoreReason[] | string | null
   period_start: string | null
   period_end: string | null
 }
 
-export interface UsageReportSummary {
+export interface UsageReportTokenTrendScoreRow {
+  bucket: string
+  provider: string
+  model: string
+  agent_score_rows?: number | null
+  agent_quality_score?: number | null
+  agent_quality_evaluated?: number | null
+  agent_quality_possible?: number | null
+  agent_quality_failures?: number | null
+  agent_instruction_score?: number | null
+  agent_instruction_evaluated?: number | null
+  agent_instruction_possible?: number | null
+  agent_instruction_failures?: number | null
+  agent_tool_score?: number | null
+  agent_tool_evaluated?: number | null
+  agent_tool_possible?: number | null
+  agent_tool_failures?: number | null
+  agent_contract_score?: number | null
+  agent_contract_evaluated?: number | null
+  agent_contract_possible?: number | null
+  agent_contract_failures?: number | null
+  agent_progress_score?: number | null
+  agent_progress_evaluated?: number | null
+  agent_progress_possible?: number | null
+  agent_progress_failures?: number | null
+  agent_risk_score?: number | null
+  agent_risk_evaluated?: number | null
+  agent_risk_possible?: number | null
+  agent_risk_events?: number | null
+  agent_discovery_inventory_coverage_score?: number | null
+  agent_discovery_inventory_coverage_evaluated?: number | null
+  agent_discovery_inventory_coverage_possible?: number | null
+  agent_discovery_inventory_coverage_failures?: number | null
+  agent_terminal_completion_score?: number | null
+  agent_terminal_completion_evaluated?: number | null
+  agent_terminal_completion_possible?: number | null
+  agent_terminal_completion_failures?: number | null
+  agent_ignored_path_tracking_policy_score?: number | null
+  agent_ignored_path_tracking_policy_evaluated?: number | null
+  agent_ignored_path_tracking_policy_possible?: number | null
+  agent_ignored_path_tracking_violation_count?: number | null
+  agent_baseline_deflection_attempted_score?: number | null
+  agent_baseline_deflection_attempted_evaluated?: number | null
+  agent_baseline_deflection_attempted_incidents?: number | null
+  agent_baseline_deflection_incident_score?: number | null
+  agent_baseline_deflection_incident_evaluated?: number | null
+  agent_baseline_deflection_incidents?: number | null
+  agent_sleep_wellness_interruption_attempted_score?: number | null
+  agent_sleep_wellness_interruption_attempted_evaluated?: number | null
+  agent_sleep_wellness_interruption_attempted_incidents?: number | null
+  agent_sleep_wellness_interruption_incident_score?: number | null
+  agent_sleep_wellness_interruption_incident_evaluated?: number | null
+  agent_sleep_wellness_interruption_incidents?: number | null
+}
+
+export interface UsageReportSummary extends UsageReportConfigChangeFields {
   traces: number
   token_in: number
   token_out: number
@@ -118,10 +491,60 @@ export interface UsageReportTrendRow {
   usd_cost: number
 }
 
+export interface UsageReportTokenTrendHourRow {
+  day: string
+  hour: number
+  provider: string
+  traces: number
+  token_total: number
+  usd_cost: number
+  tool_calls?: number
+}
+
+export interface UsageReportTokenTrendVersionIntervalRow {
+  provider: string
+  client_name: string
+  client_version: string
+  first_seen_at: string | null
+  last_seen_at: string | null
+  first_seen_day: string | null
+  first_seen_hour: number | null
+  last_seen_day: string | null
+  last_seen_hour: number | null
+  traces: number
+  token_total: number
+  usd_cost: number
+}
+
+export interface UsageReportTokenTrendModelFirstSeenRow {
+  provider: string
+  model: string
+  first_seen_at: string | null
+  first_seen_day: string | null
+  first_seen_hour: number | null
+  observations: number
+  token_total: number
+}
+
+export interface UsageReportTokenTrendDayDetailRow {
+  day: string
+  hour: number
+  provider: string
+  client_name: string
+  client_version: string
+  first_seen_at: string | null
+  last_seen_at: string | null
+  traces: number
+  token_total: number
+  usd_cost: number
+}
+
 export interface UsageReportClientRow {
   client_name: string
   client_version: string
   first_seen_at: string | null
+  /** W32: timestamp of the most recent request from this client/version tuple. */
+  last_seen_at: string | null
   traces: number
   token_total: number
   usd_cost: number
@@ -183,11 +606,147 @@ export interface UsageReportProviderErrorObservationRow {
   error_type: string
   error_code: string
   error_class: string
+  error_message: string | null
   retry_after_seconds: number | null
   expected_reset_at: string | null
 }
 
-export interface UsageReportProviderStatusUsageRow {
+export interface UsageReportDockerLogErrorRow {
+  observed_at: string | null
+  container: string
+  stream: string
+  provider: string
+  status_code: number | null
+  level: string
+  message: string
+}
+
+export interface UsageReportLocalHealthRow {
+  checked_at: string | null
+  category: 'container' | 'model'
+  key: string
+  label: string
+  status: 'green' | 'yellow' | 'red'
+  detail: string
+  target: string | null
+  latency_ms: number | null
+}
+
+export interface ShellPgBouncerPoolSummary {
+  clActive: number
+  clWaiting: number
+  svActive: number
+  svIdle: number
+  svUsed: number
+  svTested: number
+  svLogin: number
+  maxWaitSeconds: number
+  maxWaitMicroseconds: number
+}
+
+export interface ShellPgBouncerStatsSummary {
+  totalXactCount: number
+  totalQueryCount: number
+  totalReceived: number
+  totalSent: number
+  avgXactCount: number
+  avgQueryCount: number
+  avgWaitTime: number
+}
+
+export interface ShellPgBouncerServerSummary {
+  total: number
+  active: number
+  idle: number
+  used: number
+  tested: number
+  login: number
+  byState: { state: string; count: number }[]
+}
+
+export interface ShellPgBouncerPoolRow extends ShellPgBouncerPoolSummary {
+  database: string | null
+  user: string | null
+  poolMode: string | null
+}
+
+export interface ShellPgBouncerStatsRow extends ShellPgBouncerStatsSummary {
+  database: string | null
+}
+
+export interface ShellPgBouncerContainerStatus {
+  present: boolean
+  status: string
+  health: string | null
+  running: boolean
+  startedAt?: string | null
+  finishedAt?: string | null
+  logConfig: {
+    type: string | null
+    maxSize: string | null
+    maxFile: string | null
+  } | null
+  error: string | null
+}
+
+export interface ShellPgBouncerAdminStatus {
+  configured: boolean
+  status: 'ok' | 'unconfigured' | 'unreachable' | 'unknown'
+  endpoint: {
+    database: string | null
+    host: string
+    port: string | null
+  } | null
+  error: string | null
+  poolSummary: ShellPgBouncerPoolSummary
+  statsSummary: ShellPgBouncerStatsSummary
+  serverSummary: ShellPgBouncerServerSummary
+  pools: ShellPgBouncerPoolRow[]
+  stats: ShellPgBouncerStatsRow[]
+}
+
+export interface ShellPgBouncerSidecar {
+  key: string
+  label: string
+  containerName: string
+  hostEndpoint: string
+  runtimeAliases: string[]
+  upstreamPostgres: string
+  status: 'green' | 'yellow' | 'red'
+  container: ShellPgBouncerContainerStatus
+  admin: ShellPgBouncerAdminStatus
+}
+
+export interface ShellPgBouncerHealth {
+  status: 'green' | 'yellow' | 'red' | 'unknown'
+  error?: string
+  sidecars: ShellPgBouncerSidecar[]
+}
+
+export interface ShellHealthResponse {
+  ok: boolean
+  pgBouncerSidecars?: ShellPgBouncerHealth
+  sourceTables?: {
+    status: string
+    checkedAt: string
+    cacheTtlMs?: number
+    tables: Array<{
+      tableName: string
+      category?: string
+      status: string
+      latestRowId?: number | null
+      latestDataAt: string | null
+      latestPersistedAt?: string | null
+      latestEventAt: string | null
+      latestDataAgeMinutes?: number | null
+      rowCount?: number | null
+      staleAfterMinutes?: number | null
+      refreshOwner?: string | null
+    }>
+  }
+}
+
+export interface UsageReportProviderStatusUsageRow extends UsageReportLatencyFields {
   provider: string
   model: string
   traces: number
@@ -207,6 +766,9 @@ export interface UsageReportQuotaRow {
   weekly_active: boolean
   weekly_usage_tokens: number
   weekly_usage_breakdown: UsageReportQuotaUsageBreakdown[]
+  weekly_velocity_segments?: boolean[]
+  weekly_velocity_scores?: number[]
+  weekly_velocity_sample_count?: number
   short_remaining_pct: number | null
   short_reset_at: string | null
   short_interval_start: string | null
@@ -214,6 +776,9 @@ export interface UsageReportQuotaRow {
   short_active: boolean
   short_usage_tokens: number
   short_usage_breakdown: UsageReportQuotaUsageBreakdown[]
+  short_velocity_segments?: boolean[]
+  short_velocity_scores?: number[]
+  short_velocity_sample_count?: number
   special_remaining_pct: number | null
   special_reset_at: string | null
   special_interval_start: string | null
@@ -221,6 +786,9 @@ export interface UsageReportQuotaRow {
   special_active: boolean
   special_usage_tokens: number
   special_usage_breakdown: UsageReportQuotaUsageBreakdown[]
+  special_velocity_segments?: boolean[]
+  special_velocity_scores?: number[]
+  special_velocity_sample_count?: number
   short_special_remaining_pct: number | null
   short_special_reset_at: string | null
   short_special_interval_start: string | null
@@ -228,6 +796,9 @@ export interface UsageReportQuotaRow {
   short_special_active: boolean
   short_special_usage_tokens: number
   short_special_usage_breakdown: UsageReportQuotaUsageBreakdown[]
+  short_special_velocity_segments?: boolean[]
+  short_special_velocity_scores?: number[]
+  short_special_velocity_sample_count?: number
   monthly_remaining_pct: number | null
   monthly_reset_at: string | null
   monthly_interval_start: string | null
@@ -235,6 +806,19 @@ export interface UsageReportQuotaRow {
   monthly_active: boolean
   monthly_usage_tokens: number
   monthly_usage_breakdown: UsageReportQuotaUsageBreakdown[]
+  monthly_velocity_segments?: boolean[]
+  monthly_velocity_scores?: number[]
+  monthly_velocity_sample_count?: number
+  wtus_remaining_pct?: number | null
+  wtus_reset_at?: string | null
+  wtus_interval_start?: string | null
+  wtus_interval_end?: string | null
+  wtus_active?: boolean
+  wtus_usage_tokens?: number
+  wtus_usage_breakdown?: UsageReportQuotaUsageBreakdown[]
+  wtus_velocity_segments?: boolean[]
+  wtus_velocity_scores?: number[]
+  wtus_velocity_sample_count?: number
 }
 
 export interface UsageReportQuotaUsageBreakdown {
@@ -242,6 +826,64 @@ export interface UsageReportQuotaUsageBreakdown {
   tokens: number
   cost: number
   traces: number
+  recent_traces_90m?: number
+}
+
+/**
+ * W32: A single past reset window entry from quotaHistory[].
+ *
+ * Each row represents one completed reset window for a (provider, quota_type)
+ * pair. Full parity with current quota bars: per-model breakdown, interval
+ * bounds, and token totals are all included so historical bars can render
+ * identically to current bars.
+ */
+export interface UsageReportQuotaHistoryRow {
+  provider: string
+  model: string | null
+  /**
+   * Quota type after normalisation: 'weekly' | 'special' | 'short' |
+   * 'short_special' | 'monthly' | 'wtus'
+   */
+  quota_type: string
+  /** ISO timestamp of the reset point that ended this window. */
+  expected_reset_at: string | null
+  /** ISO timestamp of the earliest rate-limit record in this window. */
+  interval_start: string | null
+  /** ISO timestamp equal to expected_reset_at (the window close boundary). */
+  interval_end: string | null
+  /** Lowest remaining_pct observed within this window (peak consumption). */
+  min_remaining_pct: number | null
+  /** Highest remaining_pct observed (typically near-100 just after reset). */
+  max_remaining_pct: number | null
+  /** Per-percent velocity flags for this completed reset window. */
+  velocity_segments?: boolean[]
+  /** Per-percent burn-rate scores for this completed reset window. */
+  velocity_scores?: number[]
+  /** Number of observation samples behind the historical velocity arrays. */
+  velocity_sample_count?: number
+  /** Total tokens consumed within the window across all models. */
+  usage_tokens: number
+  /** Per-model breakdown: token/cost/traces for each model in the window. */
+  usage_breakdown: UsageReportQuotaUsageBreakdown[]
+}
+
+/**
+ * W33: One row from the toolActivity[] field in the usage report.
+ *
+ * Rows are ordered `provider ASC, model ASC, kind ASC, calls DESC`.
+ * - `kind === 'outer'`: per-tool_name call counts (includes MCP tool names like
+ *   `mcp__aawm__search` and shell-class names like `Bash`).
+ * - `kind === 'shell'`: command-label sub-rollup rows (e.g. `git commit`,
+ *   `npm test`) recorded when shell-class tools are invoked.
+ */
+export interface UsageReportToolActivityRow {
+  provider: string
+  model: string
+  /** 'outer' = per tool_name count; 'shell' = command-label sub-rollup. */
+  kind: 'outer' | 'shell'
+  /** Tool name (outer rows) or command label (shell rows). */
+  label: string
+  calls: number
 }
 
 export interface UsageReportResponse {
@@ -259,11 +901,24 @@ export interface UsageReportResponse {
   }
   summary: UsageReportSummary
   trend: UsageReportTrendRow[]
+  tokenTrendHours?: UsageReportTokenTrendHourRow[]
+  tokenTrendHealth?: UsageReportProviderLatencyHealthRow[]
+  tokenTrendScores?: UsageReportTokenTrendScoreRow[]
+  tokenTrendVersions?: UsageReportTokenTrendVersionIntervalRow[]
+  tokenTrendModelFirstSeen?: UsageReportTokenTrendModelFirstSeenRow[]
   clients: UsageReportClientRow[]
   providerLatencyHealth: UsageReportProviderLatencyHealthRow[]
   providerErrorObservations: UsageReportProviderErrorObservationRow[]
+  dockerLogErrors?: UsageReportDockerLogErrorRow[]
+  localHealth?: UsageReportLocalHealthRow[]
   providerStatusUsage: UsageReportProviderStatusUsageRow[]
   quotas: UsageReportQuotaRow[]
+  /** W32: flat list of past reset windows per (provider, quota_type). */
+  quotaHistory: UsageReportQuotaHistoryRow[]
+  /** Range-aware quota history for the PROVIDERS / Quota tab. */
+  quotaRangeHistory?: UsageReportQuotaHistoryRow[]
+  /** W33: per-tool and per-command-label call counts for the TOOL cell hover. */
+  toolActivity: UsageReportToolActivityRow[]
   rows: UsageReportRow[]
 }
 
@@ -278,9 +933,296 @@ export interface UsageReportQuotasResponse {
   quotas: UsageReportQuotaRow[]
 }
 
+export interface UsageReportQuotaRangeHistoryResponse {
+  metadata: {
+    from: string
+    to: string
+    generatedAt?: string
+    cacheBackend?: string
+    cacheFreshUntil?: string | null
+    cacheGeneratedAt?: string | null
+    cacheKeyHash?: string
+    cacheScope?: string
+    cacheStaleUntil?: string | null
+    cacheStatus?: string
+    cacheRefreshing?: boolean
+  }
+  quotaRangeHistory: UsageReportQuotaHistoryRow[]
+}
+
+export interface UsageReportQuotaHistoryResponse {
+  metadata: {
+    generatedAt?: string
+    cacheBackend?: string
+    cacheFreshUntil?: string | null
+    cacheGeneratedAt?: string | null
+    cacheKeyHash?: string
+    cacheScope?: string
+    cacheStaleUntil?: string | null
+    cacheStatus?: string
+    cacheRefreshing?: boolean
+  }
+  quotaHistory: UsageReportQuotaHistoryRow[]
+}
+
+export interface UsageReportQuotaEstimatorCoefficient {
+  estimate_kind: 'static_baseline' | 'rolling_exponential'
+  feature: string
+  model_family: string
+  token_category: 'workload_excluding_cache_read' | 'cache_read'
+  coefficient_pct_per_mtok: number
+  relative_weight_vs_sonnet: number | null
+  confidence_low_pct_per_mtok: number
+  confidence_high_pct_per_mtok: number
+  half_life_hours: number | null
+  effective_sample_size: number
+  estimate_status: 'high_confidence' | 'directional_only' | 'not_identifiable'
+}
+
+export interface UsageReportQuotaEstimatorLagSensitivity {
+  lag_minutes: number
+  trainable_interval_count: number
+  rmse_pct: number | null
+  status: 'evaluated' | 'not_identifiable'
+}
+
+export interface UsageReportQuotaEstimatorCacheReadRatio {
+  model_family: string
+  cache_read_vs_uncached_workload_ratio: number | null
+  expected_lower_than_uncached: boolean
+  status: 'consistent' | 'anomalous' | 'not_identifiable'
+}
+
+export interface UsageReportQuotaEstimatorDiagnostic {
+  code: string
+  severity: 'info' | 'warning'
+  detail: string
+}
+
+export interface UsageReportQuotaEstimatorEstimate {
+  provider: string
+  quota_key: string
+  quota_type: string
+  quota_lane: string
+  selected_lag_minutes: number
+  lag_sensitivity: UsageReportQuotaEstimatorLagSensitivity[]
+  interval_count: number
+  trainable_interval_count: number
+  excluded_interval_count: number
+  excluded_reasons: Record<string, number>
+  residuals: {
+    static_baseline: {
+      rmse_pct: number | null
+      mae_pct: number | null
+      max_abs_error_pct: number | null
+    }
+    rolling_exponential: {
+      rmse_pct: number | null
+      mae_pct: number | null
+      max_abs_error_pct: number | null
+    }
+  }
+  identifiability: {
+    status: 'high_confidence' | 'directional_only' | 'not_identifiable'
+    trainable_interval_count: number
+    effective_sample_size: number
+    active_feature_count: number
+    model_family_mix_count: number
+    max_feature_correlation: number
+    risks: string[]
+  }
+  backtest: {
+    status: 'evaluated' | 'not_enough_holdout_data'
+    holdout_interval_count?: number
+    static_rmse_pct: number | null
+    rolling_rmse_pct: number | null
+    rolling_improved: boolean
+  }
+  cache_read_ratios: UsageReportQuotaEstimatorCacheReadRatio[]
+  coefficients: UsageReportQuotaEstimatorCoefficient[]
+  diagnostics: UsageReportQuotaEstimatorDiagnostic[]
+}
+
+export interface UsageReportQuotaEstimatorResponse {
+  metadata: {
+    from: string | null
+    to: string | null
+    generatedAt?: string
+    phase: '0-2'
+    lagCandidatesMinutes: number[]
+    estimatorVersion: string
+    cacheBackend?: string
+    cacheFreshUntil?: string | null
+    cacheGeneratedAt?: string | null
+    cacheKeyHash?: string
+    cacheScope?: string
+    cacheStaleUntil?: string | null
+    cacheStatus?: string
+    cacheRefreshing?: boolean
+  }
+  phase0Audit: {
+    source_database: string
+    usage_event_shape: Record<string, unknown>
+    quota_pct_interval_shape: Record<string, unknown>
+    provider_lane_policy: Record<string, string[]>
+    known_missing_fields: string[]
+  }
+  estimates: UsageReportQuotaEstimatorEstimate[]
+}
+
+export interface UsageReportToolActivityResponse {
+  metadata: {
+    from: string
+    to: string
+    generatedAt?: string
+    cacheBackend?: string
+    cacheFreshUntil?: string | null
+    cacheGeneratedAt?: string | null
+    cacheKeyHash?: string
+    cacheScope?: string
+    cacheStaleUntil?: string | null
+    cacheStatus?: string
+    cacheRefreshing?: boolean
+  }
+  toolActivity: UsageReportToolActivityRow[]
+}
+
+export interface UsageReportTokenTrendDayParams extends UsageReportFilterParams {
+  from: string
+  to: string
+  date: string
+  cacheBust?: string
+}
+
+export interface UsageReportTokenTrendSummaryParams extends UsageReportFilterParams {
+  from: string
+  to: string
+  cacheBust?: string
+}
+
+export interface UsageReportTokenTrendSummaryResponse {
+  metadata: {
+    from: string
+    to: string
+    generatedAt?: string
+    cacheBackend?: string
+    cacheFreshUntil?: string | null
+    cacheGeneratedAt?: string | null
+    cacheKeyHash?: string
+    cacheScope?: string
+    cacheStaleUntil?: string | null
+    cacheStatus?: string
+    cacheRefreshing?: boolean
+  }
+  tokenTrendHours: UsageReportTokenTrendHourRow[]
+  tokenTrendHealth?: UsageReportProviderLatencyHealthRow[]
+  tokenTrendScores?: UsageReportTokenTrendScoreRow[]
+  tokenTrendVersions: UsageReportTokenTrendVersionIntervalRow[]
+  tokenTrendModelFirstSeen?: UsageReportTokenTrendModelFirstSeenRow[]
+}
+
+export interface UsageReportTokenTrendDayResponse {
+  metadata: {
+    date: string
+    from: string
+    to: string
+    generatedAt?: string
+    cacheBackend?: string
+    cacheFreshUntil?: string | null
+    cacheGeneratedAt?: string | null
+    cacheKeyHash?: string
+    cacheScope?: string
+    cacheStaleUntil?: string | null
+    cacheStatus?: string
+    cacheRefreshing?: boolean
+  }
+  date: string
+  rows: UsageReportTokenTrendDayDetailRow[]
+}
+
+const zUsageJsonObject = z.record(z.string(), z.unknown())
+
+function assertUsageReportSpotCheck(
+  json: unknown,
+  options: { requireSummary?: boolean; firstRowKey?: string }
+): void {
+  if (json === null || typeof json !== 'object' || Array.isArray(json)) {
+    throw new Error('Invalid usage report response')
+  }
+  const record = json as Record<string, unknown>
+  if (!zUsageJsonObject.safeParse(record.metadata).success) {
+    throw new Error('Invalid usage report metadata')
+  }
+  if (options.requireSummary !== false) {
+    if (!zUsageJsonObject.safeParse(record.summary).success) {
+      throw new Error('Invalid usage report summary')
+    }
+    const rows = record.rows
+    if (Array.isArray(rows) && rows.length > 0) {
+      if (!zUsageJsonObject.safeParse(rows[0]).success) {
+        throw new Error('Invalid usage report row')
+      }
+    }
+  }
+  const rowKey = options.firstRowKey
+  if (rowKey !== undefined) {
+    const rows = record[rowKey]
+    if (Array.isArray(rows) && rows.length > 0) {
+      if (!zUsageJsonObject.safeParse(rows[0]).success) {
+        throw new Error(`Invalid usage report ${rowKey} row`)
+      }
+    }
+  }
+}
+
+function appendUsageReportFilters(
+  searchParams: URLSearchParams,
+  params: UsageReportFilterParams
+): void {
+  // 15-D.1: Multi-value filters — encode each element so commas in values are safe.
+  const filterKeys = [
+    'provider',
+    'repository',
+    'client',
+    'environment',
+    'model',
+  ] as const
+  for (const key of filterKeys) {
+    const values = params[key]
+    if (values !== undefined && values.length > 0) {
+      searchParams.set(
+        key,
+        values.map((value) => encodeURIComponent(value)).join(',')
+      )
+    }
+  }
+
+  const configChangeFilterKeys = [
+    'changed_pre_commit_config',
+    'changed_env_file',
+    'changed_pyproject_toml',
+    'changed_gitignore',
+  ] as const
+  for (const key of configChangeFilterKeys) {
+    const values = params[key]
+    if (values !== undefined && values.length > 0) {
+      searchParams.set(
+        key,
+        values.map((value) => encodeURIComponent(value)).join(',')
+      )
+    }
+  }
+}
+
 export async function fetchUsageReport(
   params: UsageReportParams
 ): Promise<UsageReportResponse> {
+  // Wave 24-D30: raised limit from 500 to 50000 to fix 30-day undercounting.
+  // At 30-day daily grain with provider+model+repository groupBy, row count
+  // exceeds 500 causing ~70% undercount in per-row surfaces (Master Ledger,
+  // Repo Breakdown, Slicer Repo Options). The server MAX_LIMIT is now 50000.
+  // Aggregate/KPI surfaces use report.summary and were always correct.
+  // Future work: server-side pagination would be more scalable.
   const searchParams = new URLSearchParams({
     from: params.from,
     to: params.to,
@@ -288,9 +1230,14 @@ export async function fetchUsageReport(
     group_by:
       params.groupBy?.join(',') ??
       'environment,client,repository,provider_model',
-    limit: '500',
+    limit: '50000',
     sort: 'period_end',
   })
+
+  appendUsageReportFilters(searchParams, params)
+  if (params.cacheBust !== undefined && params.cacheBust !== '') {
+    searchParams.set('cache_bust', params.cacheBust)
+  }
 
   const response = await fetch(`/api/shell/reports/usage?${searchParams}`)
   if (!response.ok) {
@@ -302,11 +1249,243 @@ export async function fetchUsageReport(
     throw new Error(message)
   }
 
+  const json: unknown = await response.json()
+  assertUsageReportSpotCheck(json, { requireSummary: true })
+  return json as UsageReportResponse
+}
+
+export async function fetchShellHealth(
+  signal?: AbortSignal
+): Promise<ShellHealthResponse> {
+  const response = await fetch('/api/shell/health', { signal })
+  if (!response.ok) {
+    const payload = await response.json().catch(() => null)
+    const message =
+      typeof payload?.error === 'string'
+        ? payload.error
+        : `Shell health request failed with ${response.status}`
+    throw new Error(message)
+  }
+
   return response.json()
 }
 
-export async function fetchUsageReportQuotas(): Promise<UsageReportQuotasResponse> {
-  const response = await fetch('/api/shell/reports/quotas')
+export async function fetchUsageReportQuotaRangeHistory(
+  params: UsageReportQuotaRangeHistoryParams,
+  signal?: AbortSignal
+): Promise<UsageReportQuotaRangeHistoryResponse> {
+  const searchParams = new URLSearchParams({
+    from: params.from,
+    to: params.to,
+  })
+  if (params.cacheBust !== undefined && params.cacheBust !== '') {
+    searchParams.set('cache_bust', params.cacheBust)
+  }
+
+  const response = await fetch(
+    `/api/shell/reports/usage/quota-range-history?${searchParams}`,
+    { signal }
+  )
+  if (!response.ok) {
+    const payload = await response.json().catch(() => null)
+    const message =
+      typeof payload?.error === 'string'
+        ? payload.error
+        : `Quota range history request failed with ${response.status}`
+    throw new Error(message)
+  }
+
+  const json: unknown = await response.json()
+  assertUsageReportSpotCheck(json, {
+    requireSummary: false,
+    firstRowKey: 'quotaRangeHistory',
+  })
+  return json as UsageReportQuotaRangeHistoryResponse
+}
+
+export async function fetchUsageReportQuotaHistory(
+  params: UsageReportQuotaHistoryParams = {},
+  signal?: AbortSignal
+): Promise<UsageReportQuotaHistoryResponse> {
+  const searchParams = new URLSearchParams()
+  if (params.cacheBust !== undefined && params.cacheBust !== '') {
+    searchParams.set('cache_bust', params.cacheBust)
+  }
+
+  const queryString = searchParams.toString()
+  const response = await fetch(
+    `/api/shell/reports/usage/quota-history${
+      queryString === '' ? '' : `?${queryString}`
+    }`,
+    { signal }
+  )
+  if (!response.ok) {
+    const payload = await response.json().catch(() => null)
+    const message =
+      typeof payload?.error === 'string'
+        ? payload.error
+        : `Quota history request failed with ${response.status}`
+    throw new Error(message)
+  }
+
+  const json: unknown = await response.json()
+  assertUsageReportSpotCheck(json, {
+    requireSummary: false,
+    firstRowKey: 'quotaHistory',
+  })
+  return json as UsageReportQuotaHistoryResponse
+}
+
+export async function fetchUsageReportQuotaEstimator(
+  params: UsageReportQuotaEstimatorParams,
+  signal?: AbortSignal
+): Promise<UsageReportQuotaEstimatorResponse> {
+  const searchParams = new URLSearchParams({
+    from: params.from,
+    to: params.to,
+  })
+  if (params.cacheBust !== undefined && params.cacheBust !== '') {
+    searchParams.set('cache_bust', params.cacheBust)
+  }
+
+  const response = await fetch(
+    `/api/shell/reports/usage/quota-estimator?${searchParams}`,
+    { signal }
+  )
+  if (!response.ok) {
+    const payload = await response.json().catch(() => null)
+    const message =
+      typeof payload?.error === 'string'
+        ? payload.error
+        : `Quota estimator request failed with ${response.status}`
+    throw new Error(message)
+  }
+
+  const json: unknown = await response.json()
+  assertUsageReportSpotCheck(json, {
+    requireSummary: false,
+    firstRowKey: 'estimates',
+  })
+  return json as UsageReportQuotaEstimatorResponse
+}
+
+export async function fetchUsageReportToolActivity(
+  params: UsageReportToolActivityParams,
+  signal?: AbortSignal
+): Promise<UsageReportToolActivityResponse> {
+  const searchParams = new URLSearchParams({
+    from: params.from,
+    to: params.to,
+  })
+  appendUsageReportFilters(searchParams, params)
+  if (params.cacheBust !== undefined && params.cacheBust !== '') {
+    searchParams.set('cache_bust', params.cacheBust)
+  }
+
+  const response = await fetch(
+    `/api/shell/reports/usage/tool-activity?${searchParams}`,
+    { signal }
+  )
+  if (!response.ok) {
+    const payload = await response.json().catch(() => null)
+    const message =
+      typeof payload?.error === 'string'
+        ? payload.error
+        : `Tool activity request failed with ${response.status}`
+    throw new Error(message)
+  }
+
+  const json: unknown = await response.json()
+  assertUsageReportSpotCheck(json, {
+    requireSummary: false,
+    firstRowKey: 'toolActivity',
+  })
+  return json as UsageReportToolActivityResponse
+}
+
+export async function fetchUsageReportTokenTrendSummary(
+  params: UsageReportTokenTrendSummaryParams,
+  signal?: AbortSignal
+): Promise<UsageReportTokenTrendSummaryResponse> {
+  const searchParams = new URLSearchParams({
+    from: params.from,
+    to: params.to,
+  })
+  appendUsageReportFilters(searchParams, params)
+  if (params.cacheBust !== undefined && params.cacheBust !== '') {
+    searchParams.set('cache_bust', params.cacheBust)
+  }
+
+  const response = await fetch(
+    `/api/shell/reports/usage/token-trend-summary?${searchParams}`,
+    { signal }
+  )
+  if (!response.ok) {
+    const payload = await response.json().catch(() => null)
+    const message =
+      typeof payload?.error === 'string'
+        ? payload.error
+        : `Token trend summary request failed with ${response.status}`
+    throw new Error(message)
+  }
+
+  const json: unknown = await response.json()
+  assertUsageReportSpotCheck(json, {
+    requireSummary: false,
+    firstRowKey: 'tokenTrendHours',
+  })
+  return json as UsageReportTokenTrendSummaryResponse
+}
+
+export async function fetchUsageReportTokenTrendDay(
+  params: UsageReportTokenTrendDayParams,
+  signal?: AbortSignal
+): Promise<UsageReportTokenTrendDayResponse> {
+  const searchParams = new URLSearchParams({
+    from: params.from,
+    to: params.to,
+    date: params.date,
+  })
+  appendUsageReportFilters(searchParams, params)
+  if (params.cacheBust !== undefined && params.cacheBust !== '') {
+    searchParams.set('cache_bust', params.cacheBust)
+  }
+
+  const response = await fetch(
+    `/api/shell/reports/usage/token-trend-day?${searchParams}`,
+    { signal }
+  )
+  if (!response.ok) {
+    const payload = await response.json().catch(() => null)
+    const message =
+      typeof payload?.error === 'string'
+        ? payload.error
+        : `Token trend day request failed with ${response.status}`
+    throw new Error(message)
+  }
+
+  const json: unknown = await response.json()
+  assertUsageReportSpotCheck(json, {
+    requireSummary: false,
+    firstRowKey: 'rows',
+  })
+  return json as UsageReportTokenTrendDayResponse
+}
+
+export async function fetchUsageReportQuotas(
+  params: UsageReportQuotasParams = {},
+  signal?: AbortSignal
+): Promise<UsageReportQuotasResponse> {
+  const searchParams = new URLSearchParams()
+  if (params.cacheBust !== undefined && params.cacheBust !== '') {
+    searchParams.set('cache_bust', params.cacheBust)
+  }
+
+  const queryString = searchParams.toString()
+  const response = await fetch(
+    `/api/shell/reports/quotas${queryString === '' ? '' : `?${queryString}`}`,
+    { signal }
+  )
   if (!response.ok) {
     const payload = await response.json().catch(() => null)
     const message =
@@ -316,5 +1495,10 @@ export async function fetchUsageReportQuotas(): Promise<UsageReportQuotasRespons
     throw new Error(message)
   }
 
-  return response.json()
+  const json: unknown = await response.json()
+  assertUsageReportSpotCheck(json, {
+    requireSummary: false,
+    firstRowKey: 'quotas',
+  })
+  return json as UsageReportQuotasResponse
 }

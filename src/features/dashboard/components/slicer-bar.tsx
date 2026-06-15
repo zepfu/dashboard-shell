@@ -1,0 +1,458 @@
+/**
+ * SlicerBar — Wave 15-D multi-dimension filter bar.
+ *
+ * Renders five inline pill multi-select dropdowns, one per API dimension:
+ *   Provider · Repository · Client · Environment · Model
+ *
+ * Design: Phosphor 12px mono aesthetic. Each dimension renders as a label
+ * with a caret that opens a checkbox dropdown. Selected values appear as
+ * removable chips (amber pills with ×). "Clear" link resets a dimension.
+ *
+ * API alignment (15-D.1): param names match filterColumns in report-service.mjs
+ * (singular: provider, repository, client, environment, model). Values are
+ * passed to fetchUsageReport() as comma-separated strings.
+ *
+ * Accessibility: each dropdown is a <ul role="listbox">, each item is a
+ * <li role="option"> with a checkbox, keyboard navigable. Closes on outside
+ * click via a document-level listener.
+ */
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type ReactElement,
+} from 'react'
+import { handleListboxArrowKey } from './slicer-bar-keyboard'
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+/** Active filter selection — empty array means "all" (no filter). */
+export interface SlicerFilters {
+  /** Filter by provider (empty = all). */
+  providers: string[]
+  /** Filter by repository/tenant_id (empty = all). */
+  repositories: string[]
+  /** Filter by client name (empty = all). */
+  clients: string[]
+  /** Filter by environment (empty = all). */
+  environments: string[]
+  /** Filter by model (empty = all). */
+  models: string[]
+}
+
+/** Available values for each dimension, derived from the current API response. */
+export interface SlicerOptions {
+  providers: string[]
+  repositories: string[]
+  clients: string[]
+  environments: string[]
+  models: string[]
+}
+
+export interface SlicerBarProps {
+  /** Currently active filter values. */
+  filters: SlicerFilters
+  /** Universe of available values per dimension (from API response). */
+  options: SlicerOptions
+  /** Called whenever any filter changes. */
+  onChange: (next: SlicerFilters) => void
+  /** Optional CSS class added to the bar wrapper. */
+  className?: string
+}
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+const EMPTY_FILTERS: SlicerFilters = {
+  providers: [],
+  repositories: [],
+  clients: [],
+  environments: [],
+  models: [],
+}
+
+interface DimensionConfig {
+  key: keyof SlicerFilters
+  optionsKey: keyof SlicerOptions
+  label: string
+}
+
+const DIMENSIONS: DimensionConfig[] = [
+  { key: 'providers', optionsKey: 'providers', label: 'Provider' },
+  { key: 'repositories', optionsKey: 'repositories', label: 'Repository' },
+  { key: 'clients', optionsKey: 'clients', label: 'Client' },
+  { key: 'environments', optionsKey: 'environments', label: 'Environment' },
+  { key: 'models', optionsKey: 'models', label: 'Model' },
+]
+
+// ---------------------------------------------------------------------------
+// DimensionDropdown — one pill multi-select control
+// ---------------------------------------------------------------------------
+
+interface DimensionDropdownProps {
+  label: string
+  selected: string[]
+  options: string[]
+  onToggle: (value: string) => void
+  onClear: () => void
+  shortcutTarget?: string
+}
+
+/**
+ * Single-dimension dropdown with checkbox list and chip display.
+ *
+ * State: `open` — whether the dropdown panel is visible.
+ * Closes on Escape, Tab-out, or click-outside via document mousedown listener.
+ */
+const DimensionDropdown = memo(function DimensionDropdown({
+  label,
+  selected,
+  options,
+  onToggle,
+  onClear,
+  shortcutTarget,
+}: DimensionDropdownProps): ReactElement {
+  const [open, setOpen] = useState(false)
+  const [activeOptionIndex, setActiveOptionIndex] = useState(0)
+  const [staleChips, setStaleChips] = useState<ReadonlySet<string>>(new Set())
+  const wrapperRef = useRef<HTMLDivElement>(null)
+  const triggerRef = useRef<HTMLButtonElement>(null)
+  const optionRefs = useRef<Array<HTMLLIElement | null>>([])
+  const skipNextOptionClickRef = useRef(false)
+
+  // Close on outside click
+  useEffect(() => {
+    if (!open) return
+    const handleOutside = (e: MouseEvent): void => {
+      if (
+        wrapperRef.current &&
+        !wrapperRef.current.contains(e.target as Node)
+      ) {
+        setOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handleOutside)
+    return () => {
+      document.removeEventListener('mousedown', handleOutside)
+    }
+  }, [open])
+
+  const closeDropdown = useCallback((): void => {
+    setOpen(false)
+    triggerRef.current?.focus()
+  }, [])
+
+  const handleTriggerKeyDown = useCallback(
+    (e: KeyboardEvent<HTMLButtonElement>): void => {
+      if (e.key === 'Escape') {
+        closeDropdown()
+        return
+      }
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault()
+        setOpen((prev) => !prev)
+      }
+    },
+    [closeDropdown]
+  )
+
+  const focusOption = useCallback((index: number): void => {
+    optionRefs.current[index]?.focus()
+  }, [])
+
+  const handleListboxKeyDown = useCallback(
+    (e: KeyboardEvent<HTMLUListElement>): void => {
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        closeDropdown()
+        return
+      }
+      handleListboxArrowKey(
+        e,
+        options.length,
+        activeOptionIndex,
+        setActiveOptionIndex,
+        focusOption
+      )
+    },
+    [activeOptionIndex, closeDropdown, focusOption, options.length]
+  )
+
+  const handleOptionKeyDown = useCallback(
+    (e: KeyboardEvent<HTMLLIElement>, opt: string): void => {
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        closeDropdown()
+        return
+      }
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault()
+        skipNextOptionClickRef.current = true
+        onToggle(opt)
+        return
+      }
+      handleListboxArrowKey(
+        e,
+        options.length,
+        activeOptionIndex,
+        setActiveOptionIndex,
+        focusOption
+      )
+    },
+    [activeOptionIndex, closeDropdown, focusOption, onToggle, options.length]
+  )
+
+  const hasSelections = selected.length > 0
+  const dropdownId = `slicer-${label.toLowerCase().replace(/\s+/g, '-')}-dropdown`
+
+  return (
+    <div className='slicer-dimension' ref={wrapperRef}>
+      {/* Trigger button */}
+      <button
+        ref={triggerRef}
+        type='button'
+        className={[
+          'slicer-trigger',
+          hasSelections ? 'slicer-trigger--active' : '',
+        ]
+          .filter(Boolean)
+          .join(' ')}
+        aria-haspopup='listbox'
+        aria-expanded={open}
+        aria-controls={dropdownId}
+        data-shortcut-target={shortcutTarget}
+        onClick={() => {
+          setOpen((prev) => !prev)
+        }}
+        onKeyDown={handleTriggerKeyDown}
+      >
+        <span className='slicer-label'>{label}</span>
+        {hasSelections && (
+          <span
+            className='slicer-count'
+            aria-label={`${selected.length} selected`}
+          >
+            {selected.length}
+          </span>
+        )}
+        <span className='slicer-caret' aria-hidden='true'>
+          {open ? '▴' : '▾'}
+        </span>
+      </button>
+
+      {/* Chip row — selected values */}
+      {hasSelections && (
+        <div className='slicer-chips' aria-label={`${label} filter chips`}>
+          {selected.map((v) => (
+            <span
+              key={v}
+              className={[
+                'slicer-chip',
+                staleChips.has(v) ? 'slicer-chip--stale' : '',
+                staleChips.has(v) ? 'slicer-chip--muted' : '',
+              ]
+                .filter(Boolean)
+                .join(' ')}
+            >
+              <span className='slicer-chip-text'>{v}</span>
+              <button
+                type='button'
+                className='slicer-chip-remove'
+                aria-label={`Remove ${v} from ${label} filter`}
+                onClick={() => {
+                  setStaleChips((prev) => new Set(prev).add(v))
+                  onToggle(v)
+                }}
+              >
+                ×
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+
+      {/* Dropdown panel */}
+      {open && (
+        <div className='slicer-dropdown' role='presentation'>
+          {/* Clear all for this dimension */}
+          <div className='slicer-dropdown-header'>
+            <button
+              type='button'
+              className='slicer-clear-btn'
+              onClick={() => {
+                onClear()
+                setOpen(false)
+              }}
+              disabled={!hasSelections}
+            >
+              Clear
+            </button>
+          </div>
+          {options.length === 0 ? (
+            <div className='slicer-empty'>No options</div>
+          ) : (
+            <ul
+              id={dropdownId}
+              className='slicer-option-list'
+              role='listbox'
+              aria-multiselectable='true'
+              aria-label={`${label} options`}
+              onKeyDown={handleListboxKeyDown}
+            >
+              {options.map((opt, index) => {
+                const isSelected = selected.includes(opt)
+                const isActive = index === activeOptionIndex
+                return (
+                  <li
+                    key={opt}
+                    ref={(el) => {
+                      optionRefs.current[index] = el
+                    }}
+                    role='option'
+                    aria-selected={isSelected}
+                    className={[
+                      'slicer-option',
+                      isSelected ? 'slicer-option--selected' : '',
+                    ]
+                      .filter(Boolean)
+                      .join(' ')}
+                    tabIndex={isActive ? 0 : -1}
+                    onClick={() => {
+                      if (skipNextOptionClickRef.current) {
+                        skipNextOptionClickRef.current = false
+                        return
+                      }
+                      onToggle(opt)
+                    }}
+                    onKeyDown={(e) => {
+                      handleOptionKeyDown(e, opt)
+                    }}
+                  >
+                    <input
+                      type='checkbox'
+                      className='slicer-option-checkbox'
+                      checked={isSelected}
+                      tabIndex={-1}
+                      aria-hidden='true'
+                      readOnly
+                    />
+                    <span className='slicer-option-check' aria-hidden='true'>
+                      {isSelected ? '✓' : ' '}
+                    </span>
+                    <span className='slicer-option-label'>{opt}</span>
+                  </li>
+                )
+              })}
+            </ul>
+          )}
+        </div>
+      )}
+    </div>
+  )
+})
+
+// ---------------------------------------------------------------------------
+// SlicerBar
+// ---------------------------------------------------------------------------
+
+/**
+ * SlicerBar renders five DimensionDropdown controls for Provider, Repository,
+ * Client, Environment, and Model. Calls `onChange` with the updated filter
+ * state whenever any dimension is modified.
+ *
+ * When all arrays are empty, no filters are sent to the API (all data shown).
+ */
+export function SlicerBar({
+  filters,
+  options,
+  onChange,
+  className,
+}: SlicerBarProps): ReactElement {
+  const handleToggle = useCallback(
+    (key: keyof SlicerFilters, value: string): void => {
+      const current = filters[key]
+      const next = current.includes(value)
+        ? current.filter((v) => v !== value)
+        : [...current, value]
+      onChange({ ...filters, [key]: next })
+    },
+    [filters, onChange]
+  )
+
+  const handleClear = useCallback(
+    (key: keyof SlicerFilters): void => {
+      onChange({ ...filters, [key]: [] })
+    },
+    [filters, onChange]
+  )
+
+  const handleClearAll = useCallback((): void => {
+    onChange({ ...EMPTY_FILTERS })
+  }, [onChange])
+
+  const hasAnyFilter = DIMENSIONS.some((d) => filters[d.key].length > 0)
+
+  const dimensionHandlers = useMemo(
+    () =>
+      Object.fromEntries(
+        DIMENSIONS.map((dim) => [
+          dim.key,
+          {
+            onToggle: (value: string) => {
+              handleToggle(dim.key, value)
+            },
+            onClear: () => {
+              handleClear(dim.key)
+            },
+          },
+        ])
+      ) as Record<
+        keyof SlicerFilters,
+        { onToggle: (value: string) => void; onClear: () => void }
+      >,
+    [handleToggle, handleClear]
+  )
+
+  return (
+    <div
+      className={['slicer-bar', className].filter(Boolean).join(' ')}
+      role='group'
+      aria-label='Dashboard dimension filters'
+    >
+      <span className='slicer-bar-label'>Filters</span>
+
+      {DIMENSIONS.map((dim, index) => (
+        <DimensionDropdown
+          key={dim.key}
+          label={dim.label}
+          selected={filters[dim.key]}
+          options={options[dim.optionsKey]}
+          shortcutTarget={index === 0 ? 'first-filter' : undefined}
+          onToggle={dimensionHandlers[dim.key].onToggle}
+          onClear={dimensionHandlers[dim.key].onClear}
+        />
+      ))}
+
+      {/* Global clear — only visible when any filter is active */}
+      {hasAnyFilter && (
+        <button
+          type='button'
+          className='slicer-clear-all-btn'
+          onClick={handleClearAll}
+          aria-label='Clear all dimension filters'
+        >
+          Clear all
+        </button>
+      )}
+    </div>
+  )
+}
+
+export { EMPTY_FILTERS as SLICER_EMPTY_FILTERS }

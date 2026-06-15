@@ -9,6 +9,21 @@ const aawmTapRemoteEntry =
   process.env.AAWM_TAP_REMOTE_ENTRY ?? '/modules/aawm-tap/remoteEntry.js'
 const aawmTapRemoteEntryType =
   process.env.AAWM_TAP_REMOTE_ENTRY_TYPE ?? 'module'
+const aawmDashboardRemoteEntry =
+  process.env.AAWM_DASHBOARD_REMOTE_ENTRY ?? '/modules/aawm/remoteEntry.js'
+const aawmDashboardRemoteEntryType =
+  process.env.AAWM_DASHBOARD_REMOTE_ENTRY_TYPE ?? 'module'
+const aawmObserveRemoteEntry =
+  process.env.AAWM_OBSERVE_REMOTE_ENTRY ??
+  '/modules/aawm-observe/remoteEntry.js'
+const aawmObserveRemoteEntryType =
+  process.env.AAWM_OBSERVE_REMOTE_ENTRY_TYPE ?? 'module'
+const aegisRemoteEntry =
+  process.env.AEGIS_REMOTE_ENTRY ?? '/modules/aegis/remoteEntry.js'
+const aegisRemoteEntryType = process.env.AEGIS_REMOTE_ENTRY_TYPE ?? 'module'
+const sluiceRemoteEntry =
+  process.env.SLUICE_REMOTE_ENTRY ?? '/modules/sluice/remoteEntry.js'
+const sluiceRemoteEntryType = process.env.SLUICE_REMOTE_ENTRY_TYPE ?? 'module'
 const shellReportApiTarget =
   process.env.SHELL_REPORT_API_TARGET ?? 'http://127.0.0.1:3010'
 const dashboardShellDevPort = Number(
@@ -63,13 +78,41 @@ export default defineConfig({
       name: 'dashboard-shell',
       dts: false,
       shareStrategy: 'loaded-first',
-      hostInitInjectLocation: 'entry',
+      hostInitInjectLocation: 'html',
       remotes: {
         'aawm-tap-dashboard': {
           type: aawmTapRemoteEntryType,
           name: 'aawm-tap-dashboard',
           entry: aawmTapRemoteEntry,
           entryGlobalName: 'aawm-tap-dashboard',
+          shareScope: 'default',
+        },
+        'aawm-dashboard': {
+          type: aawmDashboardRemoteEntryType,
+          name: 'aawm-dashboard',
+          entry: aawmDashboardRemoteEntry,
+          entryGlobalName: 'aawm-dashboard',
+          shareScope: 'default',
+        },
+        'aawm-observe-dashboard': {
+          type: aawmObserveRemoteEntryType,
+          name: 'aawm-observe-dashboard',
+          entry: aawmObserveRemoteEntry,
+          entryGlobalName: 'aawm-observe-dashboard',
+          shareScope: 'default',
+        },
+        'aegis-dashboard': {
+          type: aegisRemoteEntryType,
+          name: 'aegis-dashboard',
+          entry: aegisRemoteEntry,
+          entryGlobalName: 'aegis-dashboard',
+          shareScope: 'default',
+        },
+        sluice: {
+          type: sluiceRemoteEntryType,
+          name: 'sluice',
+          entry: sluiceRemoteEntry,
+          entryGlobalName: 'sluice',
           shareScope: 'default',
         },
       },
@@ -103,7 +146,27 @@ export default defineConfig({
         target: shellReportApiTarget,
         changeOrigin: true,
       },
+      '/api/aawm-observe': {
+        target: shellReportApiTarget,
+        changeOrigin: true,
+      },
+      '/api/aawm': {
+        target: shellReportApiTarget,
+        changeOrigin: true,
+      },
+      '/api/aegis': {
+        target: shellReportApiTarget,
+        changeOrigin: true,
+      },
       '/api/shell': {
+        target: shellReportApiTarget,
+        changeOrigin: true,
+      },
+      '/api/sluice': {
+        target: shellReportApiTarget,
+        changeOrigin: true,
+      },
+      '/hook-api': {
         target: shellReportApiTarget,
         changeOrigin: true,
       },

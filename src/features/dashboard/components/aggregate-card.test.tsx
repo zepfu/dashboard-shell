@@ -1,0 +1,214 @@
+/**
+ * AggregateCard tests.
+ *
+ * Component path: src/features/dashboard/components/aggregate-card.tsx
+ * Expected export: AggregateCard (named)
+ * Extends ProviderCard with fleetActivity prop.
+ *
+ * Wave 32 (⚠12): AggregateCard no longer accepts a `quotas` prop — the
+ * aggregate card is intentionally quota-less. Tests updated to match.
+ */
+import { render, screen } from '@testing-library/react'
+import { AggregateCard } from './aggregate-card'
+
+// ---------------------------------------------------------------------------
+// Fixtures
+// ---------------------------------------------------------------------------
+
+const mockData = {
+  tokens_in: 1000,
+  tokens_out: 2000,
+  cost_usd: 0.5,
+  requests: 50,
+  errors: 1,
+  p95_ms: 1200,
+  cache_input: 0,
+  cache_creation: 0,
+  cache_miss_usd: 0,
+  reasoning_reported: 100,
+  reasoning_estimated: 90,
+  recent_requests_90m: 12,
+  traces: 5,
+  rate_limits: 0,
+  capacity: 0,
+  packet_loss_pct: null,
+}
+
+const aggregateConfig = { provider: 'aggregate', color: '#3b82f6' }
+
+const mockHealthCells = Array.from({ length: 288 }, () => ({
+  color: 'var(--card-2)',
+}))
+
+const baseFleetActivity = {
+  toolCalls: 42,
+  gitCommits: 7,
+  gitPushes: 3,
+  invalidToolCalls: 0,
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+test('test_aggregate_card_renders_fleet_activity_section', () => {
+  render(
+    <AggregateCard
+      config={aggregateConfig}
+      data={mockData}
+      healthCells={mockHealthCells}
+      fleetActivity={baseFleetActivity}
+    />
+  )
+
+  expect(screen.getByText('FLEET ACTIVITY')).toBeInTheDocument()
+
+  // Use exact-match strings because "Tool Calls" is a substring of
+  // "invalid tool calls" — with semantic <dt> elements both would match a
+  // /Tool Calls/i regex, causing getByText to throw "found multiple elements".
+  // Note: "invalid tool calls" is lowercase per mockup L2766.
+  const rowLabels = [
+    'Tool Calls',
+    'Git Commits',
+    'Git Pushes',
+    'invalid tool calls',
+  ]
+  for (const label of rowLabels) {
+    expect(screen.getByText(label, { exact: true })).toBeInTheDocument()
+  }
+})
+
+test('test_aggregate_card_invalid_tool_calls_red', () => {
+  const { container } = render(
+    <AggregateCard
+      config={aggregateConfig}
+      data={mockData}
+      healthCells={mockHealthCells}
+      fleetActivity={{ ...baseFleetActivity, invalidToolCalls: 5 }}
+    />
+  )
+
+  // Find the cell rendering "5" in the invalid tool calls context
+  // It should have a class or style indicating accent-hot color (#ef4444)
+  const redEl =
+    container.querySelector('.accent-hot') ??
+    container.querySelector('.text-red') ??
+    (() => {
+      // Look for an element with inline color matching #ef4444
+      const all = container.querySelectorAll('*')
+      for (const el of Array.from(all)) {
+        const style = (el as HTMLElement).style
+        if (style.color === '#ef4444' || style.color === 'rgb(239, 68, 68)') {
+          return el
+        }
+      }
+      return null
+    })()
+
+  expect(redEl).not.toBeNull()
+})
+
+test('test_aggregate_card_pulse_dot_present_when_invalid_tool_calls', () => {
+  // Wave 25: pulse-dot trigger changed from recentErrors > 0 to invalidToolCalls > 0
+  // per mockup L2766. Dot is inline inside the "invalid tool calls" label span.
+  const { container } = render(
+    <AggregateCard
+      config={aggregateConfig}
+      data={mockData}
+      healthCells={mockHealthCells}
+      fleetActivity={{ ...baseFleetActivity, invalidToolCalls: 142 }}
+    />
+  )
+
+  const pulseDot = container.querySelector('.pulse-dot')
+  expect(pulseDot).not.toBeNull()
+  // Verify dot is inside the label dt (inline positioning per mockup L2766)
+  expect(pulseDot?.closest('dt.label')).not.toBeNull()
+})
+
+test('test_aggregate_card_no_pulse_when_zero_invalid_tool_calls', () => {
+  // Wave 25: no pulse-dot when invalidToolCalls === 0 (baseFleetActivity default)
+  const { container } = render(
+    <AggregateCard
+      config={aggregateConfig}
+      data={mockData}
+      healthCells={mockHealthCells}
+      fleetActivity={{ ...baseFleetActivity, invalidToolCalls: 0 }}
+    />
+  )
+
+  const pulseDot = container.querySelector('.pulse-dot')
+  expect(pulseDot).toBeNull()
+})
+
+test('test_aggregate_card_no_quotas_section_rendered', () => {
+  // Wave 32 ⚠12: AggregateCard is intentionally quota-less. The Quotas section
+  // title and quota-list container must never appear regardless of what the
+  // parent passes — the component hardcodes quotas={[]} internally.
+  const { container } = render(
+    <AggregateCard
+      config={aggregateConfig}
+      data={mockData}
+      healthCells={mockHealthCells}
+      fleetActivity={baseFleetActivity}
+    />
+  )
+
+  // Neither the section title div nor the quota-list container should render.
+  expect(container.querySelector('.quota-section-title')).toBeNull()
+  expect(container.querySelector('.quota-list')).toBeNull()
+})
+
+// ---------------------------------------------------------------------------
+// S5-28: pulse-dot aria consistency — hidden or role=img, not interactive
+// ---------------------------------------------------------------------------
+
+/**
+ * S5-28 — the pulse-dot inside "invalid tool calls" label must have
+ * consistent ARIA treatment: either aria-hidden="true" (purely decorative)
+ * OR role="img" with an accessible label. It must never be both absent
+ * and interactive (i.e., it should not receive focus or be clickable).
+ *
+ * Current implementation uses:
+ *   aria-label="invalid tool calls detected"
+ * …which is neither aria-hidden nor role="img". A span without role=img
+ * should not carry aria-label per ARIA spec (aria-label is only valid on
+ * interactive or landmark roles, or with an explicit role attribute).
+ *
+ * EXPECTED FAIL: current implementation has aria-label on a bare <span>
+ * without role="img" — this is invalid. The test expects either:
+ *   - aria-hidden="true" (decorative), OR
+ *   - role="img" + aria-label (meaningful icon)
+ * But NOT a bare span with aria-label and no role.
+ */
+test('test_aggregate_card_pulse_dot_aria', () => {
+  render(
+    <AggregateCard
+      config={aggregateConfig}
+      data={mockData}
+      healthCells={mockHealthCells}
+      fleetActivity={{ ...baseFleetActivity, invalidToolCalls: 3 }}
+    />
+  )
+
+  const pulseDot = document.querySelector('.pulse-dot')
+  expect(pulseDot).not.toBeNull()
+
+  const isAriaHidden = pulseDot?.getAttribute('aria-hidden') === 'true'
+  const hasRoleImg = pulseDot?.getAttribute('role') === 'img'
+
+  // Must be EITHER aria-hidden (decorative) OR role=img (meaningful icon)
+  expect(isAriaHidden || hasRoleImg).toBe(true)
+
+  // If it has aria-label, it MUST have role=img (bare span + aria-label is invalid)
+  const hasAriaLabel = pulseDot?.hasAttribute('aria-label') === true
+  if (hasAriaLabel) {
+    expect(hasRoleImg).toBe(true)
+  }
+
+  // Must never be focusable (tabIndex ≥ 0 would make it keyboard-reachable)
+  const tabIndex = pulseDot?.getAttribute('tabindex')
+  if (tabIndex !== null) {
+    expect(parseInt(tabIndex, 10)).toBeLessThan(0)
+  }
+})

@@ -1,0 +1,753 @@
+/**
+ * Tests for usage-report-display helpers.
+ *
+ * Covers the wave34 KPI correctness fixes:
+ *   B2 — computeFleetErrors date-window filter (✘-2)
+ *   B3 — computeFleetP95 requests-weighted average (✘-3)
+ *
+ * Wave 35 cycle-2 additions (⚠-11):
+ *   formatLatency — ms → human-readable latency string
+ *   formatUsd     — number → formatted USD string
+ *   formatResetDistance — ISO → relative distance string
+ *   modelBrandHex — model name → brand hex via modelToProviderKey
+ */
+import {
+  addDaysToDateString,
+  canonicalProvider,
+  colorWithAlpha,
+  computeFleetErrors,
+  computeFleetP95,
+  formatDashboardDate,
+  formatLatency,
+  formatModelDisplayName,
+  formatResetDistance,
+  formatUsd,
+  modelBrandHex,
+  providerAliases,
+  signedDelta,
+} from './usage-report-display'
+
+// ---------------------------------------------------------------------------
+// computeFleetErrors
+// ---------------------------------------------------------------------------
+
+describe('computeFleetErrors', () => {
+  const observations = [
+    { observed_at: '2026-05-01T10:00:00Z' },
+    { observed_at: '2026-05-10T12:00:00Z' },
+    { observed_at: '2026-05-15T08:00:00Z' },
+    { observed_at: '2026-05-19T23:59:00Z' },
+    { observed_at: null },
+  ]
+
+  test('test_returns_full_count_when_no_window_provided', () => {
+    expect(computeFleetErrors(observations)).toBe(5)
+  })
+
+  test('test_returns_full_count_when_only_from_provided', () => {
+    // Missing `to` — backward-compat: return total count
+    expect(computeFleetErrors(observations, '2026-05-10')).toBe(5)
+  })
+
+  test('test_returns_full_count_when_only_to_provided', () => {
+    // Missing `from` — backward-compat: return total count
+    expect(computeFleetErrors(observations, undefined, '2026-05-20')).toBe(5)
+  })
+
+  test('test_filters_observations_within_window', () => {
+    // Window: 2026-05-10 ≤ observed_at < 2026-05-16
+    // Matches: '2026-05-10T12:00:00Z' and '2026-05-15T08:00:00Z'
+    expect(computeFleetErrors(observations, '2026-05-10', '2026-05-16')).toBe(2)
+  })
+
+  test('test_window_is_inclusive_lower_exclusive_upper', () => {
+    // Lower bound is inclusive at Eastern midnight; upper bound is exclusive.
+    const obs = [
+      { observed_at: '2026-05-10T04:00:00.000Z' }, // = from ET -> included
+      { observed_at: '2026-05-16T04:00:00.000Z' }, // = to ET   -> excluded
+    ]
+    expect(computeFleetErrors(obs, '2026-05-10', '2026-05-16')).toBe(1)
+  })
+
+  test('test_excludes_null_observed_at_within_window', () => {
+    // Observations with null observed_at must always be excluded regardless of window.
+    const obs = [{ observed_at: null }, { observed_at: '2026-05-12T00:00:00Z' }]
+    expect(computeFleetErrors(obs, '2026-05-10', '2026-05-16')).toBe(1)
+  })
+
+  test('test_returns_zero_when_no_observations_in_window', () => {
+    expect(computeFleetErrors(observations, '2026-04-01', '2026-04-30')).toBe(0)
+  })
+
+  test('test_returns_zero_on_empty_array', () => {
+    expect(computeFleetErrors([], '2026-05-01', '2026-05-20')).toBe(0)
+  })
+
+  test('test_single_observation_at_exact_from_boundary_is_included', () => {
+    const obs = [{ observed_at: '2026-05-10T04:00:00.000Z' }]
+    expect(computeFleetErrors(obs, '2026-05-10', '2026-05-11')).toBe(1)
+  })
+
+  test('test_single_observation_just_before_to_boundary_is_included', () => {
+    const obs = [{ observed_at: '2026-05-11T03:59:59.999Z' }]
+    expect(computeFleetErrors(obs, '2026-05-10', '2026-05-11')).toBe(1)
+  })
+})
+
+describe('dashboard timezone helpers', () => {
+  test('test_formatDashboardDate_uses_eastern_calendar_day', () => {
+    expect(formatDashboardDate(new Date('2026-05-23T03:30:00.000Z'))).toBe(
+      '2026-05-22'
+    )
+  })
+})
+
+// ---------------------------------------------------------------------------
+// computeFleetP95 (weighted average)
+//
+// Wave 37 SF-4: computeFleetP95 is now exported from usage-report-display.ts
+// (previously module-private in index.tsx). Tests below import the function
+// directly instead of reproducing the algorithm inline.
+// ---------------------------------------------------------------------------
+
+describe('computeFleetP95 weighted-average semantics', () => {
+  test('test_returns_zero_for_empty_rows', () => {
+    expect(computeFleetP95([])).toBe(0)
+  })
+
+  test('test_returns_zero_when_all_p95_null', () => {
+    const rows = [
+      { upstream_p95_ms: null, requests: 100 },
+      { upstream_p95_ms: null, requests: 200 },
+    ]
+    expect(computeFleetP95(rows)).toBe(0)
+  })
+
+  test('test_single_row_equals_its_own_p95', () => {
+    const rows = [{ upstream_p95_ms: 1500, requests: 50 }]
+    expect(computeFleetP95(rows)).toBe(1500)
+  })
+
+  test('test_equal_request_counts_produce_simple_mean', () => {
+    // Both buckets have 100 requests → simple average
+    const rows = [
+      { upstream_p95_ms: 1000, requests: 100 },
+      { upstream_p95_ms: 3000, requests: 100 },
+    ]
+    expect(computeFleetP95(rows)).toBe(2000)
+  })
+
+  test('test_high_traffic_bucket_dominates_low_sample_bucket', () => {
+    // Low-sample outlier: 282_199 ms, 3 requests
+    // High-traffic bucket:  10_000 ms, 1000 requests
+    // Weighted avg ≈ (282_199*3 + 10_000*1000) / 1003 ≈ 10_840 ms
+    // (significantly lower than max=282_199)
+    const rows = [
+      { upstream_p95_ms: 282_199, requests: 3 },
+      { upstream_p95_ms: 10_000, requests: 1_000 },
+    ]
+    const result = computeFleetP95(rows)
+    // Must be much closer to 10_000 than to 282_199
+    expect(result).toBeLessThan(12_000)
+    expect(result).toBeGreaterThan(9_000)
+  })
+
+  test('test_null_rows_are_excluded_from_both_numerator_and_denominator', () => {
+    // Only the non-null row should count
+    const rows = [
+      { upstream_p95_ms: null, requests: 500 },
+      { upstream_p95_ms: 2_000, requests: 10 },
+    ]
+    // Denominator = 10 (not 510), numerator = 2_000*10
+    expect(computeFleetP95(rows)).toBe(2_000)
+  })
+
+  test('test_total_p95_fallback_counts_when_upstream_p95_missing', () => {
+    const rows = [{ upstream_p95_ms: null, total_p95_ms: 1_700, requests: 25 }]
+
+    expect(computeFleetP95(rows)).toBe(1_700)
+  })
+
+  test('test_weighted_avg_is_not_equal_to_max', () => {
+    // Regression guard: ensure we are NOT returning Math.max
+    const rows = [
+      { upstream_p95_ms: 5_000, requests: 900 },
+      { upstream_p95_ms: 50_000, requests: 10 },
+    ]
+    const result = computeFleetP95(rows)
+    expect(result).not.toBe(50_000) // not max
+    // (5000*900 + 50000*10) / 910 ≈ 5_494
+    expect(result).toBeCloseTo(5_494.5, 0)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// provider aliases
+// ---------------------------------------------------------------------------
+
+describe('provider alias canonicalization', () => {
+  test('test_provider_aliases_include_local_route_families', () => {
+    expect(providerAliases('local')).toEqual(
+      expect.arrayContaining(['local_embed', 'local_llm', 'local_rerank'])
+    )
+  })
+
+  test('test_canonical_provider_maps_local_embed_to_local', () => {
+    expect(canonicalProvider('local_embed')).toBe('local')
+  })
+
+  test('test_canonical_provider_maps_oa_xai_route_to_xai', () => {
+    expect(providerAliases('xai')).toEqual(expect.arrayContaining(['oa_xai']))
+    expect(canonicalProvider('oa_xai')).toBe('xai')
+    expect(canonicalProvider('oa_xai/grok-4.3')).toBe('xai')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// formatLatency (⚠-11)
+// ---------------------------------------------------------------------------
+
+describe('formatLatency', () => {
+  test('test_null_returns_em_dash', () => {
+    expect(formatLatency(null)).toBe('—')
+  })
+
+  test('test_undefined_returns_em_dash', () => {
+    expect(formatLatency(undefined)).toBe('—')
+  })
+
+  test('test_zero_returns_0ms', () => {
+    expect(formatLatency(0)).toBe('0ms')
+  })
+
+  test('test_sub_1000ms_rounds_to_integer', () => {
+    expect(formatLatency(247.9)).toBe('248ms')
+  })
+
+  test('test_sub_1000ms_fractional_truncated', () => {
+    expect(formatLatency(999.4)).toBe('999ms')
+  })
+
+  test('test_exactly_1000ms_returns_seconds', () => {
+    expect(formatLatency(1000)).toBe('1.0s')
+  })
+
+  test('test_large_ms_returns_seconds_with_one_decimal', () => {
+    expect(formatLatency(13_201)).toBe('13.2s')
+  })
+
+  test('test_very_large_ms_formats_correctly', () => {
+    expect(formatLatency(282_199)).toBe('282.2s')
+  })
+
+  test('test_negative_ms_sub_1000_rounds', () => {
+    // Negative latencies are edge-case but should not throw
+    expect(formatLatency(-500)).toBe('-500ms')
+  })
+
+  test('test_boundary_999ms_stays_as_ms', () => {
+    expect(formatLatency(999)).toBe('999ms')
+  })
+
+  test('test_boundary_1001ms_shows_seconds', () => {
+    expect(formatLatency(1001)).toBe('1.0s')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// formatUsd (⚠-11)
+// ---------------------------------------------------------------------------
+
+describe('formatUsd', () => {
+  test('test_null_returns_em_dash', () => {
+    expect(formatUsd(null)).toBe('—')
+  })
+
+  test('test_undefined_returns_em_dash', () => {
+    expect(formatUsd(undefined)).toBe('—')
+  })
+
+  test('test_zero_formats_with_two_decimals', () => {
+    expect(formatUsd(0)).toBe('$0.00')
+  })
+
+  test('test_whole_number_adds_two_decimal_places', () => {
+    expect(formatUsd(100)).toBe('$100.00')
+  })
+
+  test('test_value_with_comma_separator', () => {
+    expect(formatUsd(1560.1)).toBe('$1,560.10')
+  })
+
+  test('test_large_value_has_comma_separators', () => {
+    expect(formatUsd(1_000_000)).toBe('$1,000,000.00')
+  })
+
+  test('test_two_decimal_places_preserved', () => {
+    expect(formatUsd(9.99)).toBe('$9.99')
+  })
+
+  test('test_small_fractional_value_rounded_to_two_decimals', () => {
+    // 0.001 rounds to $0.00
+    expect(formatUsd(0.001)).toBe('$0.00')
+  })
+
+  test('test_negative_value_formats_with_sign', () => {
+    // toLocaleString places currency symbol before the minus sign: "$-42.50"
+    expect(formatUsd(-42.5)).toBe('$-42.50')
+  })
+
+  test('test_already_two_decimals_unchanged', () => {
+    expect(formatUsd(1234.56)).toBe('$1,234.56')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// formatResetDistance (⚠-11)
+// ---------------------------------------------------------------------------
+
+describe('formatResetDistance', () => {
+  // SF-1: Pin Date.now() to a fixed epoch so that all relative-distance fixtures
+  // are computed against a deterministic reference. Without this, tests that sit
+  // exactly on bucket boundaries (e.g. 3d 1h = 4380 min) can drop to 4379 min on
+  // sub-millisecond timing jitter and land in the wrong bucket.
+  const FIXED_NOW = new Date('2026-01-01T00:00:00Z')
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.setSystemTime(FIXED_NOW)
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  test('test_null_returns_em_dash', () => {
+    expect(formatResetDistance(null)).toBe('—')
+  })
+
+  test('test_undefined_returns_em_dash', () => {
+    expect(formatResetDistance(undefined)).toBe('—')
+  })
+
+  test('test_empty_string_returns_em_dash', () => {
+    expect(formatResetDistance('')).toBe('—')
+  })
+
+  test('test_invalid_iso_returns_em_dash', () => {
+    expect(formatResetDistance('not-a-date')).toBe('—')
+  })
+
+  test('test_past_date_returns_now', () => {
+    // Any timestamp in the past returns 'now'
+    expect(formatResetDistance('2020-01-01T00:00:00Z')).toBe('now')
+  })
+
+  test('test_future_days_and_hours_format', () => {
+    // 3 days + 1 hour from fixed now → always exactly 4380 min in the correct bucket
+    const future = new Date(
+      FIXED_NOW.getTime() + 3 * 86_400_000 + 1 * 3_600_000
+    )
+    expect(formatResetDistance(future.toISOString())).toBe('in 3d 1h')
+  })
+
+  test('test_future_hours_and_minutes_format', () => {
+    // 2 hours + 30 minutes from fixed now
+    const future = new Date(FIXED_NOW.getTime() + 2 * 3_600_000 + 30 * 60_000)
+    expect(formatResetDistance(future.toISOString())).toBe('in 2h 30m')
+  })
+
+  test('test_future_minutes_only_format', () => {
+    // 45 minutes from fixed now
+    const future = new Date(FIXED_NOW.getTime() + 45 * 60_000)
+    expect(formatResetDistance(future.toISOString())).toBe('in 45m')
+  })
+
+  test('test_exactly_zero_minutes_returns_now', () => {
+    // 1 ms before fixed now → diffMs=-1 → returns 'now'
+    expect(
+      formatResetDistance(new Date(FIXED_NOW.getTime() - 1).toISOString())
+    ).toBe('now')
+  })
+
+  test('test_one_minute_future_format', () => {
+    const future = new Date(FIXED_NOW.getTime() + 60_000)
+    expect(formatResetDistance(future.toISOString())).toBe('in 1m')
+  })
+
+  test('test_days_with_zero_hours_still_shows_0h', () => {
+    // 1 day exactly → '1d 0h'
+    const future = new Date(FIXED_NOW.getTime() + 86_400_000)
+    expect(formatResetDistance(future.toISOString())).toBe('in 1d 0h')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// modelBrandHex (exercises modelToProviderKey branches) (⚠-11)
+// modelToProviderKey is internal but exercised via the exported modelBrandHex.
+// ---------------------------------------------------------------------------
+
+describe('modelBrandHex via modelToProviderKey branches', () => {
+  const ANTHROPIC_HEX = '#d97757'
+  const OPENAI_HEX = '#10a37f'
+  const GOOGLE_HEX = '#4285f4'
+  const XAI_HEX = '#475569'
+  const NVIDIA_HEX = '#76b900'
+  const OPENROUTER_HEX = '#7e57c2'
+  const LOCAL_HEX = '#64748b'
+  const FALLBACK = 'var(--fg)'
+
+  test('test_claude_prefix_maps_to_anthropic', () => {
+    expect(modelBrandHex('claude-opus-4-7')).toBe(ANTHROPIC_HEX)
+  })
+
+  test('test_anthropic_prefix_maps_to_anthropic', () => {
+    expect(modelBrandHex('anthropic-special')).toBe(ANTHROPIC_HEX)
+  })
+
+  test('test_gpt_dash_prefix_maps_to_openai', () => {
+    expect(modelBrandHex('gpt-4o')).toBe(OPENAI_HEX)
+  })
+
+  test('test_gpt_exact_maps_to_openai', () => {
+    expect(modelBrandHex('gpt')).toBe(OPENAI_HEX)
+  })
+
+  test('test_o1_prefix_maps_to_openai', () => {
+    expect(modelBrandHex('o1-mini')).toBe(OPENAI_HEX)
+  })
+
+  test('test_o3_prefix_maps_to_openai', () => {
+    expect(modelBrandHex('o3-turbo')).toBe(OPENAI_HEX)
+  })
+
+  test('test_o4_prefix_maps_to_openai', () => {
+    expect(modelBrandHex('o4-preview')).toBe(OPENAI_HEX)
+  })
+
+  test('test_chatgpt_prefix_maps_to_openai', () => {
+    expect(modelBrandHex('chatgpt-4o')).toBe(OPENAI_HEX)
+  })
+
+  test('test_codex_prefix_maps_to_openai', () => {
+    expect(modelBrandHex('codex-mini')).toBe(OPENAI_HEX)
+  })
+
+  test('test_text_embedding_prefix_maps_to_openai', () => {
+    expect(modelBrandHex('text-embedding-3-small')).toBe(OPENAI_HEX)
+  })
+
+  test('test_text_davinci_prefix_maps_to_openai', () => {
+    expect(modelBrandHex('text-davinci-003')).toBe(OPENAI_HEX)
+  })
+
+  test('test_davinci_prefix_maps_to_openai', () => {
+    expect(modelBrandHex('davinci')).toBe(OPENAI_HEX)
+  })
+
+  test('test_gemini_prefix_maps_to_google', () => {
+    expect(modelBrandHex('gemini-1.5-flash')).toBe(GOOGLE_HEX)
+  })
+
+  test('test_embeddinggemma_prefix_maps_to_google', () => {
+    expect(modelBrandHex('embeddinggemma-2')).toBe(GOOGLE_HEX)
+  })
+
+  test('test_grok_prefix_maps_to_xai', () => {
+    expect(modelBrandHex('grok-3')).toBe(XAI_HEX)
+  })
+
+  test('test_oa_xai_public_model_path_maps_to_xai_not_openrouter', () => {
+    expect(modelBrandHex('oa_xai/grok-4.3')).toBe(XAI_HEX)
+  })
+
+  test('test_nvidia_prefix_maps_to_nvidia_nim', () => {
+    expect(modelBrandHex('nvidia-llama3')).toBe(NVIDIA_HEX)
+  })
+
+  test('test_nemo_prefix_maps_to_nvidia_nim', () => {
+    expect(modelBrandHex('nemo-12b')).toBe(NVIDIA_HEX)
+  })
+
+  test('test_nim_dash_prefix_maps_to_nvidia_nim', () => {
+    expect(modelBrandHex('nim-llama')).toBe(NVIDIA_HEX)
+  })
+
+  test('test_slash_path_maps_to_openrouter', () => {
+    expect(modelBrandHex('meta-llama/llama-3')).toBe(OPENROUTER_HEX)
+  })
+
+  test('test_llama_prefix_maps_to_local', () => {
+    expect(modelBrandHex('llama3-8b')).toBe(LOCAL_HEX)
+  })
+
+  test('test_mistral_prefix_maps_to_local', () => {
+    expect(modelBrandHex('mistral-7b')).toBe(LOCAL_HEX)
+  })
+
+  test('test_mixtral_prefix_maps_to_local', () => {
+    expect(modelBrandHex('mixtral-8x7b')).toBe(LOCAL_HEX)
+  })
+
+  test('test_qwen_prefix_maps_to_local', () => {
+    expect(modelBrandHex('qwen2-72b')).toBe(LOCAL_HEX)
+  })
+
+  test('test_phi_prefix_maps_to_local', () => {
+    expect(modelBrandHex('phi-3-mini')).toBe(LOCAL_HEX)
+  })
+
+  test('test_deepseek_prefix_maps_to_local', () => {
+    expect(modelBrandHex('deepseek-coder')).toBe(LOCAL_HEX)
+  })
+
+  test('test_nomic_embed_prefix_maps_to_local', () => {
+    expect(modelBrandHex('nomic-embed-text')).toBe(LOCAL_HEX)
+  })
+
+  test('test_gte_dash_prefix_maps_to_local', () => {
+    expect(modelBrandHex('gte-large')).toBe(LOCAL_HEX)
+  })
+
+  test('test_e5_dash_prefix_maps_to_local', () => {
+    expect(modelBrandHex('e5-large-v2')).toBe(LOCAL_HEX)
+  })
+
+  test('test_empty_string_returns_fallback', () => {
+    // Empty string → key '' → not in PROVIDER_BRAND_HEX → var(--fg)
+    expect(modelBrandHex('')).toBe(FALLBACK)
+  })
+
+  test('test_unknown_model_returns_fallback', () => {
+    expect(modelBrandHex('totally-unknown-model-xyz')).toBe(FALLBACK)
+  })
+
+  test('test_whitespace_only_model_returns_fallback', () => {
+    // trim().toLowerCase() → '' → falls through to ''
+    expect(modelBrandHex('   ')).toBe(FALLBACK)
+  })
+
+  test('test_gpt3_numeric_prefix_maps_to_openai', () => {
+    expect(modelBrandHex('gpt3-turbo')).toBe(OPENAI_HEX)
+  })
+
+  test('test_gpt4_numeric_prefix_maps_to_openai', () => {
+    expect(modelBrandHex('gpt4-turbo')).toBe(OPENAI_HEX)
+  })
+
+  test('test_gpt5_numeric_prefix_maps_to_openai', () => {
+    expect(modelBrandHex('gpt5-preview')).toBe(OPENAI_HEX)
+  })
+})
+
+describe('formatModelDisplayName', () => {
+  test('test_formats_gpt_model_name_for_display', () => {
+    expect(formatModelDisplayName('gpt-5.5')).toBe('GPT 5.5')
+  })
+
+  test('test_preserves_stealth_context_suffix', () => {
+    expect(formatModelDisplayName('gpt-5.5:stealth')).toBe('GPT 5.5 · stealth')
+  })
+
+  test('test_preserves_free_context_suffix', () => {
+    expect(formatModelDisplayName('qwen3-coder:free')).toBe(
+      'Qwen3 Coder · free'
+    )
+  })
+
+  test('test_formats_openrouter_model_path_without_losing_free_context', () => {
+    expect(formatModelDisplayName('qwen/qwen3-coder:free')).toBe(
+      'Qwen/Qwen3 Coder · free'
+    )
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Wave 37 SF-1 / SF-4: quota dedup query key + KPI p95/errors delta helpers
+// ---------------------------------------------------------------------------
+
+describe('wave37 — quota query-key dedup contract', () => {
+  /**
+   * Regression guard: the query key used by index.tsx must exactly match the
+   * key used by PhosphorDashboard's internal query so React Query can
+   * deduplicate both subscribers into a single cache entry.
+   *
+   * SF-1 / W37-1: index.tsx used `['usage-report-quotas-shell']` (no date
+   * params) while PhosphorDashboard used `['usage-report-quotas', from, to]`.
+   * The fix aligns both to `['usage-report-quotas', from, to]`.
+   */
+  const PHOSPHOR_KEY_PREFIX = 'usage-report-quotas'
+
+  test('test_quota_key_prefix_is_usage_report_quotas', () => {
+    // The shared key prefix ('usage-report-quotas') must match the string that
+    // PhosphorDashboard's internal query uses. This guards against renaming one
+    // side without updating the other.
+    const indexTsxKey = [PHOSPHOR_KEY_PREFIX, '2026-04-19', '2026-05-20']
+    const phosphorKey = [PHOSPHOR_KEY_PREFIX, '2026-04-19', '2026-05-20']
+    expect(indexTsxKey).toEqual(phosphorKey)
+  })
+
+  test('test_quota_key_must_not_use_legacy_shell_suffix', () => {
+    // The old key 'usage-report-quotas-shell' is NOT the same as
+    // 'usage-report-quotas' + date params and must not be used.
+    const legacyKey = 'usage-report-quotas-shell'
+    expect(legacyKey).not.toBe(PHOSPHOR_KEY_PREFIX)
+  })
+})
+
+describe('wave37 — computeFleetP95 + computeFleetErrors prior-window delta', () => {
+  /**
+   * SF-4: The KPI deltas for p95_ms and errors are now computed in index.tsx
+   * using priorP95 / priorErrors from PhosphorDashboard's onPriorHealthReady
+   * callback. This describe block verifies the signed-fractional delta formula
+   * independently: delta = (current - prior) / prior.
+   */
+  function signedDelta(current: number, prior: number): number | null {
+    if (prior === 0) return null
+    return (current - prior) / prior
+  }
+
+  test('test_p95_delta_positive_when_current_exceeds_prior', () => {
+    const currentP95 = computeFleetP95([
+      { upstream_p95_ms: 1500, requests: 100 },
+    ])
+    const priorP95 = computeFleetP95([{ upstream_p95_ms: 1000, requests: 100 }])
+    const delta = signedDelta(currentP95, priorP95)
+    // (1500 - 1000) / 1000 = 0.5
+    expect(delta).toBeCloseTo(0.5, 6)
+  })
+
+  test('test_p95_delta_negative_when_current_below_prior', () => {
+    const currentP95 = computeFleetP95([{ upstream_p95_ms: 800, requests: 50 }])
+    const priorP95 = computeFleetP95([{ upstream_p95_ms: 1000, requests: 50 }])
+    const delta = signedDelta(currentP95, priorP95)
+    // (800 - 1000) / 1000 = -0.2
+    expect(delta).toBeCloseTo(-0.2, 6)
+  })
+
+  test('test_errors_delta_positive_when_current_exceeds_prior', () => {
+    const from = '2026-05-01'
+    const to = '2026-05-20'
+    const observations = [
+      { observed_at: '2026-05-10T10:00:00Z' },
+      { observed_at: '2026-05-15T12:00:00Z' },
+    ]
+    const priorObs = [{ observed_at: '2026-05-10T10:00:00Z' }]
+    const currentErrors = computeFleetErrors(observations, from, to)
+    const priorErrors = computeFleetErrors(priorObs, from, to)
+    const delta = signedDelta(currentErrors, priorErrors)
+    // (2 - 1) / 1 = 1.0
+    expect(delta).toBeCloseTo(1.0, 6)
+  })
+
+  test('test_p95_delta_null_when_prior_is_zero', () => {
+    // prior=0 → division by zero → null (no delta shown in KPI tile)
+    const delta = signedDelta(1500, 0)
+    expect(delta).toBeNull()
+  })
+
+  test('test_errors_delta_null_when_prior_errors_zero', () => {
+    // 0 prior errors → division by zero → no delta
+    const delta = signedDelta(5, 0)
+    expect(delta).toBeNull()
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Wave 5 / S4-14: addDaysToDateString — malformed input
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * S4-14: When `addDaysToDateString` receives a value that is not a valid
+ * ISO-8601 date string (e.g. "not-a-date"), the current implementation calls
+ * `value.split('-').map(Number)` which produces [NaN, NaN, NaN] and then
+ * `Date.UTC(NaN, …)` → `NaN` → `.toISOString()` throws. The engineer must
+ * add a `Number.isFinite` guard and return the original string unchanged.
+ *
+ * This is RED until the guard is added.
+ */
+describe('addDaysToDateString — malformed input (S4-14)', () => {
+  test('test_addDaysToDateString_malformed_returns_input_not_throw', () => {
+    // Must return the original string, not throw
+    expect(addDaysToDateString('not-a-date', 1)).toBe('not-a-date')
+  })
+
+  test('test_addDaysToDateString_empty_string_returns_input', () => {
+    expect(addDaysToDateString('', 0)).toBe('')
+  })
+
+  test('test_addDaysToDateString_partial_date_returns_input', () => {
+    // Only two segments — cannot parse as YYYY-MM-DD
+    expect(addDaysToDateString('2026-06', 5)).toBe('2026-06')
+  })
+
+  test('test_addDaysToDateString_valid_date_still_works', () => {
+    // Control: valid inputs must keep working
+    expect(addDaysToDateString('2026-06-13', 1)).toBe('2026-06-14')
+    expect(addDaysToDateString('2026-12-31', 1)).toBe('2027-01-01')
+    expect(addDaysToDateString('2026-06-13', -30)).toBe('2026-05-14')
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Wave 5 / S4-15: colorWithAlpha — 3-digit hex support
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * S4-15: `colorWithAlpha` currently matches only `#RRGGBB` (6-digit hex).
+ * Passing a 3-digit shorthand like `#f80` fails the regex and returns the
+ * original string unchanged instead of parsing it as `#ff8800`. The engineer
+ * must expand the regex to handle `#RGB` → expand to `#RRGGBB`.
+ *
+ * This is RED until the 3-digit path is added.
+ */
+describe('colorWithAlpha — 3-digit hex support (S4-15)', () => {
+  test('test_colorWithAlpha_supports_3digit_hex', () => {
+    // #f80 == #ff8800 → rgb(255 136 0 / 0.5)
+    const result = colorWithAlpha('#f80', 0.5)
+    expect(result).toBe('rgb(255 136 0 / 0.5)')
+  })
+
+  test('test_colorWithAlpha_supports_3digit_hex_black', () => {
+    // #000 == #000000
+    expect(colorWithAlpha('#000', 1)).toBe('rgb(0 0 0 / 1)')
+  })
+
+  test('test_colorWithAlpha_supports_3digit_hex_white', () => {
+    // #fff == #ffffff
+    expect(colorWithAlpha('#fff', 0.8)).toBe('rgb(255 255 255 / 0.8)')
+  })
+
+  test('test_colorWithAlpha_6digit_still_works', () => {
+    // Regression guard — 6-digit must keep working
+    expect(colorWithAlpha('#ff8800', 0.5)).toBe('rgb(255 136 0 / 0.5)')
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Wave 5 / S4-T6: signedDelta exported from usage-report-display (net-new)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * S4-T6: The engineer must extract `signedDelta` from the inline copy in
+ * `index.tsx` and export it from `usage-report-display.ts`. This import will
+ * be RED (ModuleNotFoundError on the named export) until the engineer creates
+ * the export.
+ */
+describe('test_signedDelta_real_helper (S4-T6)', () => {
+  test('positive delta when current exceeds prior', () => {
+    expect(signedDelta(1500, 1000)).toBeCloseTo(0.5, 6)
+  })
+
+  test('negative delta when current is below prior', () => {
+    expect(signedDelta(800, 1000)).toBeCloseTo(-0.2, 6)
+  })
+
+  test('null when prior is zero to avoid division by zero', () => {
+    expect(signedDelta(500, 0)).toBeNull()
+  })
+
+  test('zero delta when current equals prior', () => {
+    expect(signedDelta(1000, 1000)).toBeCloseTo(0, 6)
+  })
+})

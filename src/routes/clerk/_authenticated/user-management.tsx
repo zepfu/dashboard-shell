@@ -14,7 +14,6 @@ import { Header } from '@/components/layout/header'
 import { Main } from '@/components/layout/main'
 import { LearnMore } from '@/components/learn-more'
 import { Search } from '@/components/search'
-import { ThemeSwitch } from '@/components/theme-switch'
 import { UsersDialogs } from '@/features/users/components/users-dialogs'
 import { UsersPrimaryButtons } from '@/features/users/components/users-primary-buttons'
 import { UsersProvider } from '@/features/users/components/users-provider'
@@ -51,7 +50,6 @@ function UserManagement() {
           <Header fixed>
             <Search />
             <div className='ms-auto flex items-center space-x-4'>
-              <ThemeSwitch />
               <UserButton />
             </div>
           </Header>

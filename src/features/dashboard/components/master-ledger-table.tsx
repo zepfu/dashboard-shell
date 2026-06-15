@@ -1,0 +1,1238 @@
+/**
+ * MasterLedgerTable — sortable TanStack Table for per-model usage metrics.
+ * W11: orchestration; see master-ledger-columns, tooltips, tool-activity, aggregation.
+ */
+import { memo, useState, useMemo, useEffect, type ReactElement } from 'react'
+import {
+  flexRender,
+  getCoreRowModel,
+  useReactTable,
+  type SortingState,
+} from '@tanstack/react-table'
+import { ChevronDown, ChevronRight } from 'lucide-react'
+import { type UsageReportProviderErrorObservationRow } from '../api/usage-report'
+import { fmtCompact, numFmt } from '../lib/format-utils'
+import {
+  providerBrandHex,
+  canonicalProvider,
+} from '../lib/usage-report-display'
+import {
+  aggregateRows,
+  sortLedgerRows,
+  toModelDisplayRow,
+  toRepositoryDisplayRow,
+  toRepositoryPerspectiveModelRow,
+  type LedgerDisplayRow,
+  type LedgerView,
+  type ModelRow,
+  type RepositoryModelEntry,
+} from './master-ledger-aggregation'
+import { masterLedgerAllColumns } from './master-ledger-columns'
+import {
+  costColor,
+  errorPctColor,
+  formatObservedAgo,
+  providerDisplayName,
+  rowSeverityColor,
+  MAX_ERROR_HOVER_ROWS,
+} from './master-ledger-format'
+import {
+  familyDefinitionsForProvider,
+  modelFamilyForRow,
+  OTHER_FAMILY_DEFINITION,
+  type ModelFamilyDefinition,
+} from './master-ledger-model-meta'
+import { MasterLedgerSortHeader } from './master-ledger-table-sort-header'
+import {
+  buildToolHoverLeftColumns,
+  chunkToolHoverRows,
+  LEFT_COL_CAP,
+  TOOL_HOVER_COLUMN_WIDTH_PX,
+  TOOL_HOVER_GROUP_GAP_PX,
+  TOOL_HOVER_MAX_SIDE_COLUMNS,
+} from './master-ledger-tool-activity'
+import { HoverTooltip } from './primitives/hover-tooltip'
+import { Sparkline } from './primitives/sparkline'
+
+export type ProviderErrorObservation = UsageReportProviderErrorObservationRow
+
+export interface MasterLedgerTableProps {
+  rows: ModelRow[]
+  ledgerView?: LedgerView
+  onLedgerViewChange?: (view: LedgerView) => void
+  errorObservations?: ProviderErrorObservation[]
+}
+
+function MasterLedgerTableInner({
+  rows,
+  ledgerView: ledgerViewProp,
+  onLedgerViewChange,
+  errorObservations = [],
+}: MasterLedgerTableProps): ReactElement {
+  const [internalLedgerView, setInternalLedgerView] = useState<LedgerView>(
+    () => ledgerViewProp ?? 'model'
+  )
+  const isControlled =
+    ledgerViewProp !== undefined && onLedgerViewChange !== undefined
+  const ledgerView = isControlled ? ledgerViewProp! : internalLedgerView
+  const setLedgerView = isControlled
+    ? onLedgerViewChange!
+    : setInternalLedgerView
+  const showInternalTabs = !isControlled
+
+  useEffect(() => {
+    if (
+      ledgerViewProp !== undefined &&
+      onLedgerViewChange === undefined &&
+      import.meta.env.DEV
+    ) {
+      // eslint-disable-next-line no-console -- S2-4: intentional half-controlled dev warning
+      console.warn(
+        'MasterLedgerTable: ledgerView was provided without onLedgerViewChange; using internal state only (half-controlled).'
+      )
+    }
+  }, [ledgerViewProp, onLedgerViewChange])
+
+  const [sorting, setSorting] = useState<SortingState>([])
+  const [expandedProvidersModel, setExpandedProvidersModel] = useState<
+    Set<string>
+  >(() => new Set())
+  const [expandedProvidersRepository, setExpandedProvidersRepository] =
+    useState<Set<string>>(() => new Set())
+  const [expandedFamilies, setExpandedFamilies] = useState<Set<string>>(
+    () => new Set()
+  )
+  const [expandedModels, setExpandedModels] = useState<Set<string>>(
+    () => new Set()
+  )
+  const [expandedRepositories, setExpandedRepositories] = useState<Set<string>>(
+    () => new Set()
+  )
+
+  const repositoryEntryMap = useMemo(() => {
+    const repositoryMap = new Map<string, RepositoryModelEntry[]>()
+    for (const sourceRow of rows) {
+      const providerKey = canonicalProvider(sourceRow.provider)
+      for (const repoRow of sourceRow.repositoryChildren ?? []) {
+        const repository = repoRow.model
+        const family = modelFamilyForRow(providerKey, sourceRow.model)
+        const entries = repositoryMap.get(repository) ?? []
+        entries.push({
+          repository,
+          providerKey,
+          sourceRow,
+          repoRow,
+          family,
+        })
+        repositoryMap.set(repository, entries)
+      }
+    }
+    return repositoryMap
+  }, [rows])
+
+  const modelProviderMap = useMemo(() => {
+    const providerMap = new Map<string, ModelRow[]>()
+    for (const row of rows) {
+      const providerKey = canonicalProvider(row.provider)
+      const providerRows = providerMap.get(providerKey) ?? []
+      providerRows.push(row)
+      providerMap.set(providerKey, providerRows)
+    }
+    return providerMap
+  }, [rows])
+
+  const displayRows = useMemo(() => {
+    if (ledgerView === 'repository') {
+      const repositoryMap = repositoryEntryMap
+
+      const result: LedgerDisplayRow[] = []
+      const repositoryRows = sortLedgerRows(
+        [...repositoryMap.entries()].map(([repository, entries]) =>
+          aggregateRows(
+            entries.map((entry) => entry.repoRow),
+            {
+              ledgerLevel: 'repository',
+              ledgerId: `repository-root:${repository}`,
+              ledgerLabel: repository,
+              providerKey: 'repository',
+              repositoryKey: repository,
+              childCount: entries.length,
+              exactModelCount: entries.length,
+              isExpandable: entries.length > 0,
+            }
+          )
+        ),
+        sorting
+      )
+
+      for (const repositoryRow of repositoryRows) {
+        result.push(repositoryRow)
+        if (!expandedRepositories.has(repositoryRow.ledgerId)) continue
+
+        const entries =
+          repositoryMap.get(repositoryRow.repositoryKey ?? '') ?? []
+        const providerMap = new Map<string, RepositoryModelEntry[]>()
+        for (const entry of entries) {
+          const providerEntries = providerMap.get(entry.providerKey) ?? []
+          providerEntries.push(entry)
+          providerMap.set(entry.providerKey, providerEntries)
+        }
+
+        const providerRows = sortLedgerRows(
+          [...providerMap.entries()].map(([providerKey, providerEntries]) =>
+            aggregateRows(
+              providerEntries.map((entry) => entry.repoRow),
+              {
+                ledgerLevel: 'provider',
+                ledgerId: `repository-provider:${repositoryRow.repositoryKey}:${providerKey}`,
+                ledgerLabel: providerDisplayName(providerKey),
+                providerKey,
+                repositoryKey: repositoryRow.repositoryKey,
+                childCount: providerEntries.length,
+                exactModelCount: providerEntries.length,
+                isExpandable: providerEntries.length > 0,
+              }
+            )
+          ),
+          sorting
+        )
+
+        for (const providerRow of providerRows) {
+          result.push(providerRow)
+          if (!expandedProvidersRepository.has(providerRow.ledgerId)) continue
+
+          const providerEntries = providerMap.get(providerRow.providerKey) ?? []
+          const definitions = familyDefinitionsForProvider(
+            providerRow.providerKey,
+            providerEntries.map((entry) => entry.sourceRow)
+          )
+
+          if (definitions === undefined) {
+            result.push(
+              ...sortLedgerRows(
+                providerEntries.map((entry) =>
+                  toRepositoryPerspectiveModelRow(entry)
+                ),
+                sorting
+              )
+            )
+            continue
+          }
+
+          const familyMap = new Map<
+            string,
+            {
+              definition: ModelFamilyDefinition
+              entries: RepositoryModelEntry[]
+            }
+          >()
+          for (const entry of providerEntries) {
+            const definition = entry.family ?? OTHER_FAMILY_DEFINITION
+            const existing = familyMap.get(definition.key) ?? {
+              definition,
+              entries: [],
+            }
+            existing.entries.push(entry)
+            familyMap.set(definition.key, existing)
+          }
+
+          const orderedFamilyGroups =
+            sorting.length === 0
+              ? [
+                  ...definitions,
+                  ...(definitions.some(
+                    (definition) =>
+                      definition.key === OTHER_FAMILY_DEFINITION.key
+                  )
+                    ? []
+                    : [OTHER_FAMILY_DEFINITION]),
+                ]
+                  .map((definition) => familyMap.get(definition.key))
+                  .filter(
+                    (
+                      value
+                    ): value is {
+                      definition: ModelFamilyDefinition
+                      entries: RepositoryModelEntry[]
+                    } => value !== undefined
+                  )
+              : [...familyMap.values()]
+
+          const familyRows = sortLedgerRows(
+            orderedFamilyGroups.map(({ definition, entries: familyEntries }) =>
+              aggregateRows(
+                familyEntries.map((entry) => entry.repoRow),
+                {
+                  ledgerLevel: 'family',
+                  ledgerId: `repository-family:${repositoryRow.repositoryKey}:${providerRow.providerKey}:${definition.key}`,
+                  ledgerLabel: definition.label,
+                  providerKey: providerRow.providerKey,
+                  familyKey: definition.key,
+                  repositoryKey: repositoryRow.repositoryKey,
+                  childCount: familyEntries.length,
+                  exactModelCount: familyEntries.length,
+                  isExpandable: familyEntries.length > 0,
+                }
+              )
+            ),
+            sorting
+          )
+
+          for (const familyRow of familyRows) {
+            result.push(familyRow)
+            if (!expandedFamilies.has(familyRow.ledgerId)) continue
+            const exactEntries =
+              familyMap.get(familyRow.familyKey ?? '')?.entries ?? []
+            result.push(
+              ...sortLedgerRows(
+                exactEntries.map((entry) =>
+                  toRepositoryPerspectiveModelRow(entry, familyRow.familyKey)
+                ),
+                sorting
+              )
+            )
+          }
+        }
+      }
+
+      return result
+    }
+
+    const providerMap = modelProviderMap
+
+    const result: LedgerDisplayRow[] = []
+    const sortedProviderEntries = sortLedgerRows(
+      [...providerMap.entries()].map(([providerKey, providerRows]) =>
+        aggregateRows(providerRows, {
+          ledgerLevel: 'provider',
+          ledgerId: `provider:${providerKey}`,
+          ledgerLabel: providerDisplayName(providerKey),
+          providerKey,
+          childCount: providerRows.length,
+          exactModelCount: providerRows.length,
+          isExpandable: providerRows.length > 0,
+        })
+      ),
+      sorting
+    )
+
+    for (const providerRow of sortedProviderEntries) {
+      result.push(providerRow)
+      if (!expandedProvidersModel.has(providerRow.providerKey)) continue
+
+      const providerRows = providerMap.get(providerRow.providerKey) ?? []
+      const definitions = familyDefinitionsForProvider(
+        providerRow.providerKey,
+        providerRows
+      )
+
+      if (definitions === undefined) {
+        const exactRows = sortLedgerRows(
+          providerRows.map((row) =>
+            toModelDisplayRow(row, providerRow.providerKey)
+          ),
+          sorting
+        )
+        for (const exactRow of exactRows) {
+          result.push(exactRow)
+          if (!expandedModels.has(exactRow.ledgerId)) continue
+          result.push(
+            ...sortLedgerRows(
+              (exactRow.repositoryChildren ?? []).map((repoRow) =>
+                toRepositoryDisplayRow(
+                  repoRow,
+                  providerRow.providerKey,
+                  exactRow.familyKey,
+                  exactRow.model
+                )
+              ),
+              sorting
+            )
+          )
+        }
+        continue
+      }
+
+      const familyRows = new Map<
+        string,
+        { definition: ModelFamilyDefinition; rows: ModelRow[] }
+      >()
+      for (const row of providerRows) {
+        const definition =
+          modelFamilyForRow(providerRow.providerKey, row.model) ??
+          OTHER_FAMILY_DEFINITION
+        const existing = familyRows.get(definition.key) ?? {
+          definition,
+          rows: [],
+        }
+        existing.rows.push(row)
+        familyRows.set(definition.key, existing)
+      }
+
+      const orderedFamilyGroups =
+        sorting.length === 0
+          ? [
+              ...definitions,
+              ...(definitions.some(
+                (definition) => definition.key === OTHER_FAMILY_DEFINITION.key
+              )
+                ? []
+                : [OTHER_FAMILY_DEFINITION]),
+            ]
+              .map((definition) => familyRows.get(definition.key))
+              .filter(
+                (
+                  value
+                ): value is {
+                  definition: ModelFamilyDefinition
+                  rows: ModelRow[]
+                } => value !== undefined
+              )
+          : [...familyRows.values()]
+
+      const sortedFamilies = sortLedgerRows(
+        orderedFamilyGroups.map(({ definition, rows: familyModelRows }) =>
+          aggregateRows(familyModelRows, {
+            ledgerLevel: 'family',
+            ledgerId: `family:${providerRow.providerKey}:${definition.key}`,
+            ledgerLabel: definition.label,
+            providerKey: providerRow.providerKey,
+            familyKey: definition.key,
+            childCount: familyModelRows.length,
+            exactModelCount: familyModelRows.length,
+            isExpandable: familyModelRows.length > 0,
+          })
+        ),
+        sorting
+      )
+
+      for (const familyRow of sortedFamilies) {
+        result.push(familyRow)
+        if (!expandedFamilies.has(familyRow.ledgerId)) continue
+
+        const exactRows =
+          familyRows.get(familyRow.familyKey ?? '')?.rows ??
+          familyRows.get(OTHER_FAMILY_DEFINITION.key)?.rows ??
+          []
+        const modelRows = sortLedgerRows(
+          exactRows.map((row) =>
+            toModelDisplayRow(row, providerRow.providerKey, familyRow.familyKey)
+          ),
+          sorting
+        )
+        for (const modelRow of modelRows) {
+          result.push(modelRow)
+          if (!expandedModels.has(modelRow.ledgerId)) continue
+          result.push(
+            ...sortLedgerRows(
+              (modelRow.repositoryChildren ?? []).map((repoRow) =>
+                toRepositoryDisplayRow(
+                  repoRow,
+                  providerRow.providerKey,
+                  familyRow.familyKey,
+                  modelRow.model
+                )
+              ),
+              sorting
+            )
+          )
+        }
+      }
+    }
+
+    return result
+  }, [
+    repositoryEntryMap,
+    modelProviderMap,
+    sorting,
+    ledgerView,
+    expandedProvidersModel,
+    expandedProvidersRepository,
+    expandedFamilies,
+    expandedModels,
+    expandedRepositories,
+  ])
+
+  // eslint-disable-next-line react-hooks/incompatible-library -- TanStack Table API
+  const table = useReactTable({
+    data: displayRows,
+    columns: masterLedgerAllColumns,
+    state: { sorting },
+    onSortingChange: setSorting,
+    getRowId: (row) => row.ledgerId,
+    getCoreRowModel: getCoreRowModel(),
+    // Sort descending first so highest values appear at top on first click
+    sortDescFirst: true,
+  })
+
+  return (
+    <>
+      {showInternalTabs ? (
+        <div role='tablist' aria-label='Ledger view' className='section-tabs'>
+          {(['model', 'repository'] as const).map((view) => {
+            const selected = ledgerView === view
+            return (
+              <button
+                key={view}
+                type='button'
+                role='tab'
+                aria-selected={selected}
+                className={selected ? 'is-active' : undefined}
+                onClick={() => {
+                  setLedgerView(view)
+                }}
+              >
+                {view === 'model' ? 'Model' : 'Repository'}
+              </button>
+            )
+          })}
+        </div>
+      ) : null}
+      <div
+        className='table-wrapper'
+        style={{
+          width: '100%',
+          overflowX: 'auto',
+          overflowY: 'auto',
+          background: 'var(--card)',
+          border: '1px solid var(--border)',
+        }}
+      >
+        <table
+          aria-label='Model usage ledger'
+          style={{
+            width: '100%',
+            borderCollapse: 'collapse',
+            fontSize: 'clamp(11px, 0.6vw, 16px)',
+            fontFamily: 'var(--font-mono)',
+          }}
+        >
+          <thead
+            style={{
+              position: 'sticky',
+              top: 0,
+              zIndex: 10,
+              background: 'var(--card-2)',
+              borderBottom: '1px solid rgba(245,158,11,0.25)',
+            }}
+          >
+            {table.getHeaderGroups().map((headerGroup) => (
+              <tr key={headerGroup.id}>
+                {headerGroup.headers.map((header) => {
+                  const sortDir = header.column.getIsSorted()
+                  const isSortable = header.column.getCanSort()
+
+                  // Determine aria-sort value
+                  let ariaSort: 'ascending' | 'descending' | 'none' | undefined
+                  if (isSortable) {
+                    ariaSort =
+                      sortDir === 'asc'
+                        ? 'ascending'
+                        : sortDir === 'desc'
+                          ? 'descending'
+                          : 'none'
+                  }
+
+                  const meta = header.column.columnDef.meta as
+                    | { className?: string }
+                    | undefined
+
+                  /* 14-H.4: data-sort-dir drives CSS ::after pseudo (⇅/↑/↓ + amber)
+                   per mockup lines 2234-2255. Inline glyph removed. */
+                  const sortDirAttr =
+                    sortDir === 'asc'
+                      ? 'asc'
+                      : sortDir === 'desc'
+                        ? 'desc'
+                        : undefined
+
+                  return (
+                    <MasterLedgerSortHeader
+                      key={header.id}
+                      headerId={header.id}
+                      className={meta?.className}
+                      ariaSort={ariaSort}
+                      isSortable={isSortable}
+                      sortDirAttr={sortDirAttr}
+                      onToggleSort={
+                        isSortable
+                          ? header.column.getToggleSortingHandler()
+                          : undefined
+                      }
+                    >
+                      {flexRender(
+                        header.column.columnDef.header,
+                        header.getContext()
+                      )}
+                    </MasterLedgerSortHeader>
+                  )
+                })}
+              </tr>
+            ))}
+          </thead>
+
+          <tbody>
+            {table.getRowModel().rows.map((row) => {
+              const orig = row.original
+              const severityColor = rowSeverityColor(orig)
+              // Wave 12 Fix 1: use reference brand hex for Provider column cell.
+              // providerColorFor() returns legacy palette (blue/purple) which was
+              // the false-fix in Wave 11 — swap to providerBrandHex() here.
+              const providerColor = providerBrandHex(orig.provider)
+
+              return (
+                <tr
+                  key={row.id}
+                  style={{ borderBottom: '1px solid var(--border)' }}
+                >
+                  {row.getVisibleCells().map((cell, cellIdx) => {
+                    const meta = cell.column.columnDef.meta as
+                      | { className?: string }
+                      | undefined
+                    const colId = cell.column.id
+                    const isFirst = cellIdx === 0
+
+                    // Determine per-column styles
+                    let cellColor: string
+                    let cellContent: ReactElement | string
+
+                    if (colId === 'provider') {
+                      // C4: brand color for provider name
+                      cellColor = providerColor
+                      cellContent = flexRender(
+                        cell.column.columnDef.cell,
+                        cell.getContext()
+                      ) as ReactElement | string
+                    } else if (colId === 'cost_usd') {
+                      // C6: cost severity color. D1-065 removes non-sparkline
+                      // cell microbars from the Model Ledger.
+                      cellColor = costColor(orig.cost_usd)
+                      cellContent = flexRender(
+                        cell.column.columnDef.cell,
+                        cell.getContext()
+                      ) as ReactElement | string
+                    } else if (colId === 'error_pct') {
+                      // C7: err% severity color
+                      cellColor = errorPctColor(orig.error_pct)
+                      const pct = orig.error_pct
+                      const rowProviderKey = orig.providerKey
+                      const rowModelKey = orig.model.toLowerCase()
+                      const repoScopeKey = orig.repositoryKey
+                      // Q8 (Wave 31): filter observations by canonical providerKey + model;
+                      // repository-view model rows annotate tooltip with repo scope (S2-3).
+                      const rowObs =
+                        pct > 0 && orig.ledgerLevel === 'model'
+                          ? errorObservations
+                              .filter(
+                                (o) =>
+                                  canonicalProvider(o.provider) ===
+                                    rowProviderKey &&
+                                  o.model.toLowerCase() === rowModelKey
+                              )
+                              .sort((a, b) => {
+                                const aMs = a.observed_at
+                                  ? new Date(a.observed_at).getTime()
+                                  : 0
+                                const bMs = b.observed_at
+                                  ? new Date(b.observed_at).getTime()
+                                  : 0
+                                return bMs - aMs
+                              })
+                              .slice(0, MAX_ERROR_HOVER_ROWS)
+                          : []
+                      const baseLabel = flexRender(
+                        cell.column.columnDef.cell,
+                        cell.getContext()
+                      ) as ReactElement | string
+                      if (pct > 0 && rowObs.length > 0) {
+                        const tooltipContent = (
+                          <div>
+                            <div
+                              className='v9-tip-head'
+                              style={{ marginBottom: '4px' }}
+                            >
+                              {rowObs.length} most recent error
+                              {rowObs.length === 1 ? '' : 's'}
+                              {repoScopeKey !== undefined
+                                ? ` (scoped to: ${repoScopeKey})`
+                                : ''}
+                              :
+                            </div>
+                            {rowObs.map((e, idx) => (
+                              <div
+                                key={`${e.observed_at ?? 'null'}-${(e.status_code ?? 0).toString()}-${e.error_class}-${idx.toString()}`}
+                                style={{
+                                  fontSize: '9px',
+                                  padding: '1px 0',
+                                  lineHeight: 1.5,
+                                  color: 'var(--fg, #e2e8f0)',
+                                }}
+                              >
+                                {formatObservedAgo(e.observed_at)}
+                                {' · '}
+                                {e.status_code !== null
+                                  ? e.status_code.toString()
+                                  : '???'}{' '}
+                                {e.error_class} ({e.error_code})
+                              </div>
+                            ))}
+                          </div>
+                        )
+                        cellContent = (
+                          <HoverTooltip content={() => tooltipContent}>
+                            {baseLabel}
+                          </HoverTooltip>
+                        )
+                      } else {
+                        cellContent = baseLabel
+                      }
+                    } else if (colId === 'sparkline') {
+                      // C9: sparkline tinted by row severity.
+                      // ⚠10 fix: an empty spark array causes Sparkline to return
+                      // null, which renders as "" in text content.  Guard: treat
+                      // undefined and [] the same — fall back to tokens_in when
+                      // the array is non-empty, else render the em-dash placeholder.
+                      cellColor = 'var(--fg)'
+                      const sparkRaw = orig.spark
+                      const sparkData =
+                        sparkRaw != null && sparkRaw.length > 0
+                          ? sparkRaw
+                          : orig.tokens_in > 0
+                            ? [orig.tokens_in]
+                            : null
+                      cellContent =
+                        sparkData != null ? (
+                          <Sparkline data={sparkData} color={severityColor} />
+                        ) : (
+                          '—'
+                        )
+                    } else if (colId === 'tool') {
+                      // W33: TOOL cell — plain count + optional 2-column hover breakdown.
+                      // W36-fix: use fmtCompact per spec; fmtOrDash handles null/undefined
+                      // and zero-call rows (renders em-dash, no hover trigger).
+                      cellColor = 'var(--accent-cool)'
+                      const toolCount = orig.tool
+                      // Render '—' for undefined/null; for 0 also render '—' (no calls).
+                      const toolLabel =
+                        toolCount != null && toolCount > 0
+                          ? fmtCompact(toolCount)
+                          : '—'
+                      const ta = orig.toolActivity
+                      if (ta !== undefined && ta.totalCalls > 0) {
+                        const leftLayout = buildToolHoverLeftColumns(
+                          ta.leftRows
+                        )
+                        const leftColumns = leftLayout.columns
+                        const displayLeftColumns = [...leftColumns].reverse()
+                        const leftHiddenCount =
+                          leftLayout.hiddenRowCount +
+                          (ta.leftTruncated
+                            ? Math.max(0, ta.leftTotalCount - LEFT_COL_CAP)
+                            : 0)
+                        const shellDisplayCap =
+                          leftLayout.rowsPerColumn * TOOL_HOVER_MAX_SIDE_COLUMNS
+                        const displayedShellRows = ta.shellRows.slice(
+                          0,
+                          shellDisplayCap
+                        )
+                        const shellHiddenCount = Math.max(
+                          0,
+                          ta.shellTotalCount - displayedShellRows.length
+                        )
+                        const shellColumns = chunkToolHoverRows(
+                          displayedShellRows,
+                          leftLayout.rowsPerColumn
+                        )
+                        const leftColumnCount = Math.max(1, leftColumns.length)
+                        const shellColumnCount = Math.max(
+                          1,
+                          shellColumns.length
+                        )
+                        const tooltipWidthPx = Math.max(
+                          340,
+                          (leftColumnCount + shellColumnCount) *
+                            TOOL_HOVER_COLUMN_WIDTH_PX +
+                            TOOL_HOVER_GROUP_GAP_PX
+                        )
+
+                        const tooltipContent = (
+                          <div
+                            style={{
+                              display: 'grid',
+                              gridTemplateColumns: `minmax(0, ${leftColumnCount.toString()}fr) minmax(0, ${shellColumnCount.toString()}fr)`,
+                              columnGap: `${TOOL_HOVER_GROUP_GAP_PX.toString()}px`,
+                              minWidth: 0,
+                              width: '100%',
+                            }}
+                          >
+                            <div style={{ minWidth: 0 }}>
+                              <div
+                                className='v9-tip-head'
+                                style={{ marginBottom: '4px' }}
+                              >
+                                {orig.ledgerLabel} — tool breakdown
+                              </div>
+                              <div
+                                style={{
+                                  fontSize: '9px',
+                                  color: 'var(--accent-chrome, #94a3b8)',
+                                  fontWeight: 700,
+                                  letterSpacing: '0.04em',
+                                  marginBottom: '2px',
+                                  textTransform: 'uppercase',
+                                }}
+                              >
+                                Tools
+                              </div>
+                              <div
+                                style={{
+                                  display: 'grid',
+                                  gridTemplateColumns: `repeat(${leftColumnCount.toString()}, minmax(0, 1fr))`,
+                                  columnGap: '8px',
+                                  alignItems: 'start',
+                                }}
+                              >
+                                {displayLeftColumns.map((column, columnIdx) => (
+                                  <div
+                                    key={`tools-${column.label}-${column.sourceIndex.toString()}`}
+                                    data-tool-left-column='true'
+                                    data-source-index={column.sourceIndex}
+                                    style={{ minWidth: 0 }}
+                                  >
+                                    {column.entries.map((entry, entryIdx) => (
+                                      <div
+                                        key={`${entry.row.label}-${entryIdx.toString()}`}
+                                      >
+                                        <div
+                                          style={{
+                                            display: 'flex',
+                                            justifyContent: 'space-between',
+                                            gap: '4px',
+                                            fontSize: '9px',
+                                            color: 'var(--fg, #e2e8f0)',
+                                            padding: '1px 0',
+                                            lineHeight: 1.5,
+                                            minWidth: 0,
+                                          }}
+                                        >
+                                          <span
+                                            style={{
+                                              flex: '1 1 auto',
+                                              minWidth: 0,
+                                              overflow: 'hidden',
+                                              textOverflow: 'ellipsis',
+                                              whiteSpace: 'nowrap',
+                                            }}
+                                          >
+                                            {entry.row.label}
+                                          </span>
+                                          <span
+                                            style={{
+                                              flex: '0 0 auto',
+                                              whiteSpace: 'nowrap',
+                                            }}
+                                          >
+                                            {numFmt(entry.row.calls)}
+                                            {'  '}
+                                            {entry.row.pct.toFixed(0)}%
+                                          </span>
+                                        </div>
+                                        {entry.subRows.length > 0 && (
+                                          <div
+                                            style={{
+                                              paddingLeft: '8px',
+                                              fontSize: '8px',
+                                              color: 'var(--fg-muted, #94a3b8)',
+                                            }}
+                                          >
+                                            {entry.subRows.map(
+                                              (sr, srIdx, arr) => {
+                                                const isLastVisible =
+                                                  entry.hiddenSubRowCount ===
+                                                    0 &&
+                                                  srIdx === arr.length - 1
+                                                const prefix = isLastVisible
+                                                  ? '└─'
+                                                  : '├─'
+                                                return (
+                                                  <div
+                                                    key={`${sr.label}-${srIdx.toString()}`}
+                                                    style={{
+                                                      padding: '0.5px 0',
+                                                      overflow: 'hidden',
+                                                      textOverflow: 'ellipsis',
+                                                      whiteSpace: 'nowrap',
+                                                    }}
+                                                  >
+                                                    {prefix} {sr.label}{' '}
+                                                    {numFmt(sr.calls)}
+                                                  </div>
+                                                )
+                                              }
+                                            )}
+                                            {entry.hiddenSubRowCount > 0 && (
+                                              <div>
+                                                {`+${entry.hiddenSubRowCount.toString()} more`}
+                                              </div>
+                                            )}
+                                          </div>
+                                        )}
+                                      </div>
+                                    ))}
+                                    {columnIdx === 0 && leftHiddenCount > 0 && (
+                                      <div
+                                        style={{
+                                          fontSize: '9px',
+                                          color: 'var(--fg-muted, #94a3b8)',
+                                          fontStyle: 'italic',
+                                          padding: '1px 0',
+                                        }}
+                                      >
+                                        {`+${leftHiddenCount.toString()} more`}
+                                      </div>
+                                    )}
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+
+                            <div style={{ minWidth: 0 }}>
+                              <div
+                                className='v9-tip-head'
+                                style={{ marginBottom: '4px' }}
+                              >
+                                &nbsp;
+                              </div>
+                              <div
+                                style={{
+                                  fontSize: '9px',
+                                  color: 'var(--accent-chrome, #94a3b8)',
+                                  fontWeight: 700,
+                                  letterSpacing: '0.04em',
+                                  marginBottom: '2px',
+                                  textTransform: 'uppercase',
+                                }}
+                              >
+                                {`Shell (${numFmt(ta.shellTotalCalls)} calls)`}
+                              </div>
+                              <div
+                                style={{
+                                  display: 'grid',
+                                  gridTemplateColumns: `repeat(${shellColumnCount.toString()}, minmax(0, 1fr))`,
+                                  columnGap: '8px',
+                                  alignItems: 'start',
+                                }}
+                              >
+                                {shellColumns.map((columnRows, columnIdx) => (
+                                  <div
+                                    key={`shell-${columnIdx.toString()}`}
+                                    style={{ minWidth: 0 }}
+                                  >
+                                    {columnRows.map((sr) => (
+                                      <div
+                                        key={sr.label}
+                                        style={{
+                                          display: 'flex',
+                                          justifyContent: 'space-between',
+                                          gap: '4px',
+                                          fontSize: '9px',
+                                          color: 'var(--fg, #e2e8f0)',
+                                          padding: '1px 0',
+                                          lineHeight: 1.5,
+                                          minWidth: 0,
+                                        }}
+                                      >
+                                        <span
+                                          style={{
+                                            flex: '1 1 auto',
+                                            minWidth: 0,
+                                            overflow: 'hidden',
+                                            textOverflow: 'ellipsis',
+                                            whiteSpace: 'nowrap',
+                                          }}
+                                        >
+                                          {sr.label}
+                                        </span>
+                                        <span
+                                          style={{
+                                            flex: '0 0 auto',
+                                            whiteSpace: 'nowrap',
+                                          }}
+                                        >
+                                          {numFmt(sr.calls)}
+                                        </span>
+                                      </div>
+                                    ))}
+                                    {columnIdx === shellColumns.length - 1 &&
+                                      shellHiddenCount > 0 && (
+                                        <div
+                                          style={{
+                                            fontSize: '9px',
+                                            color: 'var(--fg-muted, #94a3b8)',
+                                            fontStyle: 'italic',
+                                            padding: '1px 0',
+                                          }}
+                                        >
+                                          {`+${shellHiddenCount.toString()} more`}
+                                        </div>
+                                      )}
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          </div>
+                        )
+                        cellContent = (
+                          <HoverTooltip
+                            variant='quota-bar'
+                            content={() => tooltipContent}
+                            panelStyle={{
+                              maxWidth: 'calc(100vw - 16px)',
+                              width: `min(${tooltipWidthPx.toString()}px, calc(100vw - 16px))`,
+                            }}
+                          >
+                            {toolLabel}
+                          </HoverTooltip>
+                        )
+                      } else {
+                        // Zero tool calls or no toolActivity data: no hover
+                        cellContent = toolLabel
+                      }
+                    } else if (colId === 'model') {
+                      // Model hierarchy: provider rows expand to family/model/
+                      // repository rows without changing the raw data shape.
+                      cellColor = 'var(--fg)'
+                      const isProviderRow = orig.ledgerLevel === 'provider'
+                      const isFamilyRow = orig.ledgerLevel === 'family'
+                      const isModelRow = orig.ledgerLevel === 'model'
+                      const isRepositoryRow = orig.ledgerLevel === 'repository'
+                      const isExpanded = isProviderRow
+                        ? ledgerView === 'repository'
+                          ? expandedProvidersRepository.has(orig.ledgerId)
+                          : expandedProvidersModel.has(orig.providerKey)
+                        : isFamilyRow
+                          ? expandedFamilies.has(orig.ledgerId)
+                          : isModelRow
+                            ? expandedModels.has(orig.ledgerId)
+                            : isRepositoryRow
+                              ? expandedRepositories.has(orig.ledgerId)
+                              : false
+                      const indentPx =
+                        orig.ledgerLevel === 'repository'
+                          ? orig.isExpandable
+                            ? 0
+                            : 44
+                          : orig.ledgerLevel === 'model'
+                            ? 30
+                            : orig.ledgerLevel === 'family'
+                              ? 16
+                              : 0
+                      const toggleExpansion = (): void => {
+                        if (isProviderRow) {
+                          if (ledgerView === 'repository') {
+                            setExpandedProvidersRepository((current) => {
+                              const next = new Set(current)
+                              if (next.has(orig.ledgerId)) {
+                                next.delete(orig.ledgerId)
+                              } else {
+                                next.add(orig.ledgerId)
+                              }
+                              return next
+                            })
+                          } else {
+                            setExpandedProvidersModel((current) => {
+                              const next = new Set(current)
+                              if (next.has(orig.providerKey)) {
+                                next.delete(orig.providerKey)
+                              } else {
+                                next.add(orig.providerKey)
+                              }
+                              return next
+                            })
+                          }
+                          return
+                        }
+                        if (isRepositoryRow && orig.isExpandable) {
+                          setExpandedRepositories((current) => {
+                            const next = new Set(current)
+                            if (next.has(orig.ledgerId)) {
+                              next.delete(orig.ledgerId)
+                            } else {
+                              next.add(orig.ledgerId)
+                            }
+                            return next
+                          })
+                          return
+                        }
+                        if (isFamilyRow) {
+                          setExpandedFamilies((current) => {
+                            const next = new Set(current)
+                            if (next.has(orig.ledgerId)) {
+                              next.delete(orig.ledgerId)
+                            } else {
+                              next.add(orig.ledgerId)
+                            }
+                            return next
+                          })
+                          return
+                        }
+                        if (isModelRow) {
+                          setExpandedModels((current) => {
+                            const next = new Set(current)
+                            if (next.has(orig.ledgerId)) {
+                              next.delete(orig.ledgerId)
+                            } else {
+                              next.add(orig.ledgerId)
+                            }
+                            return next
+                          })
+                        }
+                      }
+
+                      cellContent = (
+                        <div
+                          data-ledger-level={orig.ledgerLevel}
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '6px',
+                            minWidth: 0,
+                            paddingLeft: `${indentPx.toString()}px`,
+                          }}
+                        >
+                          {orig.isExpandable ? (
+                            <button
+                              type='button'
+                              aria-label={`${isExpanded ? 'Collapse' : 'Expand'} ${orig.ledgerLabel} ${orig.ledgerLevel} rows`}
+                              onClick={(event) => {
+                                event.stopPropagation()
+                                toggleExpansion()
+                              }}
+                              style={{
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                width: '16px',
+                                height: '16px',
+                                flex: '0 0 16px',
+                                padding: 0,
+                                border: '0',
+                                background: 'transparent',
+                                color: providerColor,
+                                cursor: 'pointer',
+                              }}
+                            >
+                              {isExpanded ? (
+                                <ChevronDown size={13} aria-hidden='true' />
+                              ) : (
+                                <ChevronRight size={13} aria-hidden='true' />
+                              )}
+                            </button>
+                          ) : (
+                            <span
+                              aria-hidden='true'
+                              style={{ width: '16px', flex: '0 0 16px' }}
+                            />
+                          )}
+                          <span
+                            style={{
+                              minWidth: 0,
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                              whiteSpace: 'nowrap',
+                              color:
+                                orig.ledgerLevel === 'model' ||
+                                orig.ledgerLevel === 'repository'
+                                  ? 'var(--fg)'
+                                  : providerColor,
+                              fontWeight:
+                                orig.ledgerLevel === 'repository'
+                                  ? 400
+                                  : orig.ledgerLevel === 'model'
+                                    ? 500
+                                    : 700,
+                            }}
+                          >
+                            {orig.ledgerLabel}
+                          </span>
+                          {orig.ledgerLevel !== 'repository' &&
+                            (orig.ledgerLevel !== 'model' ||
+                              orig.childCount > 0) && (
+                              <span
+                                style={{
+                                  flex: '0 0 auto',
+                                  color: 'var(--fg-muted)',
+                                  fontSize: '9px',
+                                  whiteSpace: 'nowrap',
+                                }}
+                              >
+                                {orig.ledgerLevel === 'model'
+                                  ? `${orig.childCount.toString()} ${
+                                      orig.childCount === 1 ? 'repo' : 'repos'
+                                    }`
+                                  : `${orig.exactModelCount.toString()} ${
+                                      orig.exactModelCount === 1
+                                        ? 'model'
+                                        : 'models'
+                                    }`}
+                              </span>
+                            )}
+                        </div>
+                      )
+                    } else {
+                      // Other numeric columns (p50ms, p95ms, $/1k, 4K/5K cols)
+                      cellColor = 'var(--accent-cool)'
+                      cellContent = flexRender(
+                        cell.column.columnDef.cell,
+                        cell.getContext()
+                      ) as ReactElement | string
+                    }
+
+                    const isNumericAlign =
+                      colId !== 'model' &&
+                      colId !== 'provider' &&
+                      colId !== 'sparkline'
+
+                    // 14-F.1: add .number class to numeric cells for CSS class system parity
+                    const isNumericCell =
+                      colId !== 'model' &&
+                      colId !== 'provider' &&
+                      colId !== 'sparkline'
+
+                    // Build className: meta class + optional number class
+                    const tdClassName =
+                      [meta?.className, isNumericCell ? 'number' : undefined]
+                        .filter(Boolean)
+                        .join(' ') || undefined
+
+                    return (
+                      <td
+                        key={cell.id}
+                        data-col-id={colId}
+                        className={tdClassName}
+                        style={{
+                          padding: '6px 8px',
+                          fontFamily: 'var(--font-mono)',
+                          color: cellColor,
+                          borderRight: '1px solid var(--border)',
+                          borderLeft: isFirst ? '4px solid' : undefined,
+                          borderLeftColor: isFirst ? providerColor : undefined,
+                          paddingLeft: isFirst ? '6px' : undefined,
+                          textAlign: isNumericAlign ? 'right' : 'left',
+                        }}
+                      >
+                        {cellContent}
+                      </td>
+                    )
+                  })}
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+    </>
+  )
+}
+
+export const MasterLedgerTable = memo(MasterLedgerTableInner)

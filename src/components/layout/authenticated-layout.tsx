@@ -1,4 +1,5 @@
-import { Outlet } from '@tanstack/react-router'
+import { Outlet, useLocation } from '@tanstack/react-router'
+import { remoteDashboardMetadata } from '@/shell/remote-dashboard-metadata'
 import { getCookie } from '@/lib/cookies'
 import { cn } from '@/lib/utils'
 import { LayoutProvider } from '@/context/layout-provider'
@@ -13,12 +14,14 @@ type AuthenticatedLayoutProps = {
 
 export function AuthenticatedLayout({ children }: AuthenticatedLayoutProps) {
   const defaultOpen = getCookie('sidebar_state') !== 'false'
+  const location = useLocation()
+  const usesPhosphorSidebar = isPhosphorSidebarRoute(location.pathname)
   return (
     <SearchProvider>
       <LayoutProvider>
         <SidebarProvider defaultOpen={defaultOpen}>
           <SkipToMain />
-          <AppSidebar />
+          {!usesPhosphorSidebar && <AppSidebar />}
           <SidebarInset
             className={cn(
               // Set content container, so we can use container queries
@@ -38,5 +41,16 @@ export function AuthenticatedLayout({ children }: AuthenticatedLayoutProps) {
         </SidebarProvider>
       </LayoutProvider>
     </SearchProvider>
+  )
+}
+
+function isPhosphorSidebarRoute(pathname: string) {
+  return (
+    pathname === '/' ||
+    remoteDashboardMetadata.some(
+      (dashboard) =>
+        pathname === dashboard.basePath ||
+        pathname.startsWith(`${dashboard.basePath}/`)
+    )
   )
 }

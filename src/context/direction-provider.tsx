@@ -1,25 +1,24 @@
-import { createContext, useContext, useEffect, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { DirectionProvider as RdxDirProvider } from '@radix-ui/react-direction'
 import { getCookie, setCookie, removeCookie } from '@/lib/cookies'
-
-export type Direction = 'ltr' | 'rtl'
+import { DirectionContext, type Direction } from './direction-context'
 
 const DEFAULT_DIRECTION = 'ltr'
 const DIRECTION_COOKIE_NAME = 'dir'
 const DIRECTION_COOKIE_MAX_AGE = 60 * 60 * 24 * 365 // 1 year
 
-type DirectionContextType = {
-  defaultDir: Direction
-  dir: Direction
-  setDir: (dir: Direction) => void
-  resetDir: () => void
+const VALID_DIRECTIONS = new Set<Direction>(['ltr', 'rtl'])
+
+function parseDirectionCookie(value: string | undefined): Direction {
+  if (value && VALID_DIRECTIONS.has(value as Direction)) {
+    return value as Direction
+  }
+  return DEFAULT_DIRECTION
 }
 
-const DirectionContext = createContext<DirectionContextType | null>(null)
-
 export function DirectionProvider({ children }: { children: React.ReactNode }) {
-  const [dir, _setDir] = useState<Direction>(
-    () => (getCookie(DIRECTION_COOKIE_NAME) as Direction) || DEFAULT_DIRECTION
+  const [dir, _setDir] = useState<Direction>(() =>
+    parseDirectionCookie(getCookie(DIRECTION_COOKIE_NAME))
   )
 
   useEffect(() => {
@@ -49,13 +48,4 @@ export function DirectionProvider({ children }: { children: React.ReactNode }) {
       <RdxDirProvider dir={dir}>{children}</RdxDirProvider>
     </DirectionContext>
   )
-}
-
-// eslint-disable-next-line react-refresh/only-export-components
-export function useDirection() {
-  const context = useContext(DirectionContext)
-  if (!context) {
-    throw new Error('useDirection must be used within a DirectionProvider')
-  }
-  return context
 }
