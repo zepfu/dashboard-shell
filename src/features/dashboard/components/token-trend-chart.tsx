@@ -50,7 +50,6 @@ import {
   useMemo,
   useRef,
   useState,
-  type CSSProperties,
   type ReactElement,
   type ReactNode,
 } from 'react'
@@ -2292,56 +2291,36 @@ export function TokenTrendChart({
                           day.maxHourTotal
                         )
 
+                        const stackedHourSeries = series.map((s) => ({
+                          key: s.key,
+                          label: s.label,
+                          color: s.color,
+                          cssClass: s.cssClass,
+                          tokens: hourBucket.totals[s.key] ?? 0,
+                        }))
+
                         const hourBar = (
-                          <div
-                            className='tt-hour-bar trend-bar'
-                            data-day={hourBucket.day}
-                            data-hour={hourBucket.hour}
-                            style={{
-                              flex: '0 0 auto',
-                              width: '100%',
-                              height: `${hourHeightPct.toFixed(1)}%`,
-                              display: 'flex',
-                              flexDirection: 'column-reverse',
-                              overflow: 'hidden',
-                              minWidth: 0,
-                              border: '0',
-                              opacity: 0.66,
-                              position: 'relative',
-                              zIndex: 1,
-                            }}
-                            onPointerEnter={() => {
+                          <StackedBar
+                            className='tt-hour-bar'
+                            series={stackedHourSeries}
+                            total={hourBucket.total}
+                            heightPct={hourHeightPct}
+                            opacity={0.66}
+                            resolveColor={resolveSliceColor}
+                            dataDay={hourBucket.day}
+                            dataHour={hourBucket.hour}
+                            onBarPointerEnter={() => {
                               reportHourHover({
                                 day: hourBucket.day,
                                 hour: hourBucket.hour,
                               })
                             }}
-                          >
-                            {series.map((s) => {
-                              const tokens = hourBucket.totals[s.key] ?? 0
-                              if (tokens <= 0) return null
-
-                              const pct =
-                                hourBucket.total > 0
-                                  ? (tokens / hourBucket.total) * 100
-                                  : 0
-                              const sliceStyle: CSSProperties = {
-                                flexBasis: `${pct.toFixed(4)}%`,
-                                flexShrink: 0,
-                                minHeight: '1px',
-                                width: '100%',
-                                background: resolveSliceColor(s.key, s.color),
-                              }
-
-                              return (
-                                <div
-                                  key={s.key}
-                                  className={`tt-slice ${s.cssClass}`}
-                                  style={sliceStyle}
-                                />
-                              )
-                            })}
-                          </div>
+                            extraBarStyle={{
+                              border: '0',
+                              position: 'relative',
+                              zIndex: 1,
+                            }}
+                          />
                         )
 
                         const hourShell = (

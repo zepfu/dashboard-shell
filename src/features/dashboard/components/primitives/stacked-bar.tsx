@@ -17,6 +17,10 @@ export interface StackedBarProps {
   resolveColor?: (key: string, color: string) => string
   className?: string
   extraBarStyle?: CSSProperties
+  /** Hourly token-trend bars: parity with former inline `data-day` / `data-hour`. */
+  dataDay?: string
+  dataHour?: number
+  onBarPointerEnter?: () => void
 }
 
 export function StackedBar({
@@ -28,6 +32,9 @@ export function StackedBar({
   resolveColor,
   className,
   extraBarStyle,
+  dataDay,
+  dataHour,
+  onBarPointerEnter,
 }: StackedBarProps): ReactElement {
   const barStyle: CSSProperties = {
     flex,
@@ -45,6 +52,11 @@ export function StackedBar({
     <div
       className={['trend-bar', className].filter(Boolean).join(' ')}
       style={barStyle}
+      {...(dataDay !== undefined ? { 'data-day': dataDay } : {})}
+      {...(dataHour !== undefined ? { 'data-hour': dataHour } : {})}
+      {...(onBarPointerEnter !== undefined
+        ? { onPointerEnter: onBarPointerEnter }
+        : {})}
     >
       {series.map((s) => {
         if (s.tokens <= 0) return null
