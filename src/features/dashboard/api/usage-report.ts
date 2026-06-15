@@ -1,3 +1,50 @@
+import { z } from 'zod'
+import { queryOptions } from '@tanstack/react-query'
+
+const LIVE_DASHBOARD_QUOTAS_REFETCH_INTERVAL_MS = 60_000
+
+/** Shared React Query key for quota fetches (index + phosphor-dashboard). */
+export function usageReportQuotasKey(
+  from: string,
+  to: string,
+  cacheBust?: string
+): readonly [string, string, string, ...string[]] {
+  const key: [string, string, string, ...string[]] = [
+    'usage-report-quotas',
+    from,
+    to,
+  ]
+  if (cacheBust !== undefined) {
+    key.push(cacheBust)
+  }
+  return key
+}
+
+export interface UsageReportQuotasQueryOptionsParams {
+  from: string
+  to: string
+  /** Optional bust token; included in queryKey when set (manual refresh / report refresh). */
+  cacheBust?: string
+}
+
+/** Shared quotas query options (index + phosphor-dashboard). */
+export function usageReportQuotasQueryOptions({
+  from,
+  to,
+  cacheBust,
+}: UsageReportQuotasQueryOptionsParams) {
+  const resolvedCacheBust =
+    cacheBust !== undefined && cacheBust !== '' ? cacheBust : undefined
+  return queryOptions({
+    queryKey: usageReportQuotasKey(from, to, resolvedCacheBust),
+    queryFn: ({ signal }) =>
+      fetchUsageReportQuotas({ cacheBust: resolvedCacheBust }, signal),
+    staleTime: LIVE_DASHBOARD_QUOTAS_REFETCH_INTERVAL_MS,
+    refetchInterval: LIVE_DASHBOARD_QUOTAS_REFETCH_INTERVAL_MS,
+    refetchIntervalInBackground: true,
+  })
+}
+
 export const usageReportGroupPresets = [
   {
     value: 'daily-model',
@@ -990,6 +1037,7 @@ export interface UsageReportTokenTrendDayParams extends UsageReportFilterParams 
   from: string
   to: string
   date: string
+  cacheBust?: string
 }
 
 export interface UsageReportTokenTrendSummaryParams extends UsageReportFilterParams {
@@ -1038,13 +1086,46 @@ export interface UsageReportTokenTrendDayResponse {
   rows: UsageReportTokenTrendDayDetailRow[]
 }
 
+const zUsageJsonObject = z.record(z.string(), z.unknown())
+
+function assertUsageReportSpotCheck(
+  json: unknown,
+  options: { requireSummary?: boolean; firstRowKey?: string }
+): void {
+  if (json === null || typeof json !== 'object' || Array.isArray(json)) {
+    throw new Error('Invalid usage report response')
+  }
+  const record = json as Record<string, unknown>
+  if (!zUsageJsonObject.safeParse(record.metadata).success) {
+    throw new Error('Invalid usage report metadata')
+  }
+  if (options.requireSummary !== false) {
+    if (!zUsageJsonObject.safeParse(record.summary).success) {
+      throw new Error('Invalid usage report summary')
+    }
+    const rows = record.rows
+    if (Array.isArray(rows) && rows.length > 0) {
+      if (!zUsageJsonObject.safeParse(rows[0]).success) {
+        throw new Error('Invalid usage report row')
+      }
+    }
+  }
+  const rowKey = options.firstRowKey
+  if (rowKey !== undefined) {
+    const rows = record[rowKey]
+    if (Array.isArray(rows) && rows.length > 0) {
+      if (!zUsageJsonObject.safeParse(rows[0]).success) {
+        throw new Error(`Invalid usage report ${rowKey} row`)
+      }
+    }
+  }
+}
+
 function appendUsageReportFilters(
   searchParams: URLSearchParams,
   params: UsageReportFilterParams
 ): void {
-  // 15-D.1: Append multi-value dimension filters as comma-separated params.
-  // The server's appendMultiValueFilter() calls parseCsv(searchParams.get(key))
-  // which splits on commas. Empty arrays → param omitted → no server-side filter.
+  // 15-D.1: Multi-value filters — encode each element so commas in values are safe.
   const filterKeys = [
     'provider',
     'repository',
@@ -1055,7 +1136,10 @@ function appendUsageReportFilters(
   for (const key of filterKeys) {
     const values = params[key]
     if (values !== undefined && values.length > 0) {
-      searchParams.set(key, values.join(','))
+      searchParams.set(
+        key,
+        values.map((value) => encodeURIComponent(value)).join(',')
+      )
     }
   }
 
@@ -1068,7 +1152,10 @@ function appendUsageReportFilters(
   for (const key of configChangeFilterKeys) {
     const values = params[key]
     if (values !== undefined && values.length > 0) {
-      searchParams.set(key, values.join(','))
+      searchParams.set(
+        key,
+        values.map((value) => encodeURIComponent(value)).join(',')
+      )
     }
   }
 }
@@ -1108,7 +1195,9 @@ export async function fetchUsageReport(
     throw new Error(message)
   }
 
-  return response.json()
+  const json: unknown = await response.json()
+  assertUsageReportSpotCheck(json, { requireSummary: true })
+  return json as UsageReportResponse
 }
 
 export async function fetchShellHealth(
@@ -1152,7 +1241,12 @@ export async function fetchUsageReportQuotaRangeHistory(
     throw new Error(message)
   }
 
-  return response.json()
+  const json: unknown = await response.json()
+  assertUsageReportSpotCheck(json, {
+    requireSummary: false,
+    firstRowKey: 'quotaRangeHistory',
+  })
+  return json as UsageReportQuotaRangeHistoryResponse
 }
 
 export async function fetchUsageReportQuotaHistory(
@@ -1180,7 +1274,12 @@ export async function fetchUsageReportQuotaHistory(
     throw new Error(message)
   }
 
-  return response.json()
+  const json: unknown = await response.json()
+  assertUsageReportSpotCheck(json, {
+    requireSummary: false,
+    firstRowKey: 'quotaHistory',
+  })
+  return json as UsageReportQuotaHistoryResponse
 }
 
 export async function fetchUsageReportQuotaEstimator(
@@ -1208,7 +1307,12 @@ export async function fetchUsageReportQuotaEstimator(
     throw new Error(message)
   }
 
-  return response.json()
+  const json: unknown = await response.json()
+  assertUsageReportSpotCheck(json, {
+    requireSummary: false,
+    firstRowKey: 'estimates',
+  })
+  return json as UsageReportQuotaEstimatorResponse
 }
 
 export async function fetchUsageReportToolActivity(
@@ -1237,7 +1341,12 @@ export async function fetchUsageReportToolActivity(
     throw new Error(message)
   }
 
-  return response.json()
+  const json: unknown = await response.json()
+  assertUsageReportSpotCheck(json, {
+    requireSummary: false,
+    firstRowKey: 'toolActivity',
+  })
+  return json as UsageReportToolActivityResponse
 }
 
 export async function fetchUsageReportTokenTrendSummary(
@@ -1266,7 +1375,12 @@ export async function fetchUsageReportTokenTrendSummary(
     throw new Error(message)
   }
 
-  return response.json()
+  const json: unknown = await response.json()
+  assertUsageReportSpotCheck(json, {
+    requireSummary: false,
+    firstRowKey: 'tokenTrendHours',
+  })
+  return json as UsageReportTokenTrendSummaryResponse
 }
 
 export async function fetchUsageReportTokenTrendDay(
@@ -1279,6 +1393,9 @@ export async function fetchUsageReportTokenTrendDay(
     date: params.date,
   })
   appendUsageReportFilters(searchParams, params)
+  if (params.cacheBust !== undefined && params.cacheBust !== '') {
+    searchParams.set('cache_bust', params.cacheBust)
+  }
 
   const response = await fetch(
     `/api/shell/reports/usage/token-trend-day?${searchParams}`,
@@ -1293,7 +1410,12 @@ export async function fetchUsageReportTokenTrendDay(
     throw new Error(message)
   }
 
-  return response.json()
+  const json: unknown = await response.json()
+  assertUsageReportSpotCheck(json, {
+    requireSummary: false,
+    firstRowKey: 'rows',
+  })
+  return json as UsageReportTokenTrendDayResponse
 }
 
 export async function fetchUsageReportQuotas(
@@ -1319,5 +1441,10 @@ export async function fetchUsageReportQuotas(
     throw new Error(message)
   }
 
-  return response.json()
+  const json: unknown = await response.json()
+  assertUsageReportSpotCheck(json, {
+    requireSummary: false,
+    firstRowKey: 'quotas',
+  })
+  return json as UsageReportQuotasResponse
 }
