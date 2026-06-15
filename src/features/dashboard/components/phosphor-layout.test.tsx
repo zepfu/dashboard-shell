@@ -49,6 +49,12 @@ test('test_phosphor_layout_applies_grid_class', () => {
 })
 
 test('test_phosphor_layout_3col_grid_template', () => {
+  // S5-38 / Wave 18-Cards: display:grid and gridTemplateColumns are owned by the
+  // CSS module (.phosphor-layout class — baseline 220px minmax(0,1fr) 260px).
+  // jsdom cannot evaluate CSS class rules, so we assert the structural 3-region
+  // layout intent: the grid wrapper carries the `phosphor-layout` class, and all
+  // three structural regions (sidebar aside, header, main) are rendered as direct
+  // children within it so they participate in the 3-column grid track.
   const { container } = render(
     <PhosphorLayout
       sidebar={<div>SB</div>}
@@ -60,14 +66,20 @@ test('test_phosphor_layout_3col_grid_template', () => {
 
   const outerEl = container.firstChild as HTMLElement
   expect(outerEl).not.toBeNull()
-  // Wave 18-Cards: gridTemplateColumns moved from inline style to CSS module
-  // (with !important) so that media-query breakpoints at 1600/2560/3840/5120px
-  // are not silently blocked by inline specificity. jsdom cannot evaluate CSS
-  // module class rules, so we verify the phosphor-layout CSS class is present
-  // (which carries the baseline 220px 1fr 260px rule) and that display:grid is
-  // set inline (preserved for jsdom detectability of the grid container).
+
+  // Grid wrapper carries the CSS class that owns the 3-column template.
   expect(outerEl.className).toContain('phosphor-layout')
-  expect(outerEl.style?.display).toBe('grid')
+
+  // All three structural regions are rendered as direct children of the grid.
+  const sidebar = outerEl.querySelector(':scope > aside.sidebar')
+  const headerEl = outerEl.querySelector(':scope > header')
+  const mainEl = outerEl.querySelector(':scope > main')
+  expect(sidebar).not.toBeNull()
+  expect(headerEl).not.toBeNull()
+  expect(mainEl).not.toBeNull()
+
+  // Inline display is empty — grid is class-owned, not inline (S5-38).
+  expect(outerEl.style?.display).toBe('')
 })
 
 test('test_phosphor_layout_can_render_without_alerts_column', () => {
