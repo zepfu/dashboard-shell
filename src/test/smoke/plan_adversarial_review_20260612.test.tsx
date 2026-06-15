@@ -170,10 +170,18 @@ test('test_dashboard_mounts_with_populated_report_symbol_check', () => {
   expect(typeof Dashboard).toBe('function')
 })
 
-/**
- * test_no_axios_import_after_w9: activate after W9 deletion sprint.
- */
-test.todo('test_no_axios_import_after_w9 — activate after W9 deletion sprint')
+test('test_no_axios_import_after_w9', async () => {
+  const { readFile } = await import('node:fs/promises')
+  const { dirname, join } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const mainPath = join(
+    dirname(fileURLToPath(import.meta.url)),
+    '../../main.tsx'
+  )
+  const mainSource = await readFile(mainPath, 'utf8')
+  expect(mainSource).not.toMatch(/\bfrom ['"]axios['"]/)
+  expect(mainSource).not.toMatch(/\bAxiosError\b/)
+})
 
 /**
  * test_lazy_tooltip_not_in_dom_until_hover: activate after W11.

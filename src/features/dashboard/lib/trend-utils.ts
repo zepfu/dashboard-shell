@@ -156,25 +156,6 @@ export interface TokenTrendDayEnvelopeRangeOptions {
   to?: string
 }
 
-export interface TokenTrendVersionTrackPoint {
-  day: string
-  hour: number
-  x: number
-  y: number
-  globalHour: number
-}
-
-export interface TokenTrendVersionTrack {
-  id: string
-  provider: string
-  clientName: string
-  clientVersion: string
-  firstSeenAt: string | null
-  lastSeenAt: string | null
-  releasePoint: TokenTrendVersionTrackPoint | null
-  segments: TokenTrendVersionTrackPoint[][]
-}
-
 export type TokenTrendActiveVersionFamilyKey =
   | 'claude'
   | 'codex'
@@ -229,10 +210,6 @@ export interface TokenTrendModelFirstSeenGroup {
   hour: number
   globalHour: number
   markers: TokenTrendModelFirstSeenMarker[]
-}
-
-interface TokenTrendVersionTrackOptions {
-  gapToleranceHours?: number
 }
 
 const TOKEN_TREND_ACTIVE_VERSION_FAMILIES: readonly {
@@ -454,165 +431,6 @@ export function classifyTokenTrendActiveVersionFamily(row: {
   if (provider === 'google') return 'gemini'
 
   return null
-}
-
-function providerMidpointPct(
-  hourBucket: TokenTrendHourBucket,
-  provider: string,
-  seriesKeys: readonly string[]
-): number | null {
-  const providerTokens = hourBucket.totals[provider] ?? 0
-  if (hourBucket.total <= 0 || providerTokens <= 0) return null
-
-  const orderedKeys = [
-    ...seriesKeys,
-    ...Object.keys(hourBucket.totals).filter(
-      (key) => !seriesKeys.includes(key)
-    ),
-  ]
-  let precedingTokens = 0
-  for (const key of orderedKeys) {
-    const tokens = hourBucket.totals[key] ?? 0
-    if (key === provider) {
-      return ((precedingTokens + tokens / 2) / hourBucket.total) * 100
-    }
-    precedingTokens += tokens
-  }
-
-  return null
-}
-
-function versionTrackPoint(
-  envelope: TokenTrendDayEnvelope,
-  dayIndex: number,
-  hour: number,
-  provider: string,
-  seriesKeys: readonly string[],
-  maxDayTotal: number
-): TokenTrendVersionTrackPoint | null {
-  const hourBucket = envelope.hours[hour]
-  if (hourBucket === undefined || envelope.maxHourTotal <= 0) return null
-
-  const stackMidpointPct = providerMidpointPct(hourBucket, provider, seriesKeys)
-  if (stackMidpointPct === null) return null
-
-  const dayHeightPct = tokenTrendDayHeightPct(envelope.total, maxDayTotal)
-  const hourHeightPct = tokenTrendHourHeightPct(
-    hourBucket.total,
-    envelope.maxHourTotal
-  )
-  const y = 100 - (dayHeightPct * hourHeightPct * stackMidpointPct) / 10_000
-
-  return {
-    day: envelope.day,
-    hour,
-    x: dayIndex * 24 + hour + 0.5,
-    y,
-    globalHour: dayIndex * 24 + hour,
-  }
-}
-
-export function deriveTokenTrendVersionTracks(
-  envelopes: readonly TokenTrendDayEnvelope[],
-  intervals: readonly UsageReportTokenTrendVersionIntervalRow[],
-  seriesKeys: readonly string[],
-  options: TokenTrendVersionTrackOptions = {}
-): TokenTrendVersionTrack[] {
-  const gapToleranceHours = Math.max(0, options.gapToleranceHours ?? 2)
-  const dayIndexByDay = new Map(
-    envelopes.map((envelope, index) => [envelope.day, index])
-  )
-  const maxDayTotal = Math.max(
-    0,
-    ...envelopes.map((envelope) => envelope.total)
-  )
-  const tracks: TokenTrendVersionTrack[] = []
-
-  for (const interval of intervals) {
-    const provider = canonicalProvider(interval.provider)
-    const firstSeenHour =
-      typeof interval.first_seen_hour === 'number'
-        ? Math.trunc(interval.first_seen_hour)
-        : null
-    const lastSeenHour =
-      typeof interval.last_seen_hour === 'number'
-        ? Math.trunc(interval.last_seen_hour)
-        : null
-    const firstGlobalHour = versionHourIndex(
-      dayIndexByDay,
-      interval.first_seen_day,
-      firstSeenHour
-    )
-    const lastGlobalHour = versionHourIndex(
-      dayIndexByDay,
-      interval.last_seen_day,
-      lastSeenHour
-    )
-    if (firstGlobalHour === null || lastGlobalHour === null) continue
-
-    const rangeStart = Math.min(firstGlobalHour, lastGlobalHour)
-    const rangeEnd = Math.max(firstGlobalHour, lastGlobalHour)
-    const points: TokenTrendVersionTrackPoint[] = []
-
-    for (let dayIndex = 0; dayIndex < envelopes.length; dayIndex += 1) {
-      const envelope = envelopes[dayIndex]
-      if (envelope === undefined) continue
-
-      for (let hour = 0; hour < 24; hour += 1) {
-        const globalHour = dayIndex * 24 + hour
-        if (globalHour < rangeStart || globalHour > rangeEnd) continue
-
-        const point = versionTrackPoint(
-          envelope,
-          dayIndex,
-          hour,
-          provider,
-          seriesKeys,
-          maxDayTotal
-        )
-        if (point !== null) points.push(point)
-      }
-    }
-
-    if (!points.length) continue
-
-    const segments: TokenTrendVersionTrackPoint[][] = []
-    let currentSegment: TokenTrendVersionTrackPoint[] = []
-    let previousPoint: TokenTrendVersionTrackPoint | null = null
-
-    for (const point of points) {
-      const missingHours =
-        previousPoint === null
-          ? 0
-          : point.globalHour - previousPoint.globalHour - 1
-      if (previousPoint !== null && missingHours > gapToleranceHours) {
-        if (currentSegment.length > 0) segments.push(currentSegment)
-        currentSegment = []
-      }
-      currentSegment.push(point)
-      previousPoint = point
-    }
-    if (currentSegment.length > 0) segments.push(currentSegment)
-
-    tracks.push({
-      id: [
-        provider,
-        interval.client_name,
-        interval.client_version,
-        interval.first_seen_at ?? interval.first_seen_day ?? 'unknown',
-      ].join('|'),
-      provider,
-      clientName: interval.client_name,
-      clientVersion: interval.client_version,
-      firstSeenAt: interval.first_seen_at,
-      lastSeenAt: interval.last_seen_at,
-      releasePoint:
-        points.find((point) => point.globalHour === firstGlobalHour) ?? null,
-      segments,
-    })
-  }
-
-  return tracks
 }
 
 export function deriveTokenTrendActiveVersionLanes(
