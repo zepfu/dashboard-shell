@@ -42,7 +42,6 @@ import {
   type QuotaTipModel,
   type TopModelRow,
 } from './provider-card'
-import type { RepoRow } from './repo-breakdown-table'
 
 /** Cell count expected by HealthStrip inside ProviderCard. */
 export const HEALTH_CELL_COUNT = 288
@@ -3003,118 +3002,6 @@ export function canonicalRepositoryName(
   repository: string | null | undefined
 ): string {
   return (repository ?? '(unknown)').replace(/\s+\(memory\)$/i, '')
-}
-
-/**
- * Builds RepoRow[] from raw UsageReportRow records by aggregating per
- * repository.
- */
-export function buildRepoRows(
-  rows: {
-    repository?: string
-    token_total: number | null
-    usd_cost: number | null
-    traces: number | null
-    model?: string
-  }[],
-  trendRows: UsageReportTrendRow[]
-): RepoRow[] {
-  // Build per-repository sparkline series from trend data (24h buckets).
-  // Each bucket can have multiple rows (one per provider+model combination for
-  // that repository). Aggregate token_total per (repository, bucket) first so
-  // each sparkline point represents the full repository output for that bucket,
-  // then sort chronologically so the polyline reads left-to-right oldest-to-newest.
-  const bucketSumByRepo = new Map<string, Map<string, number>>()
-  for (const t of trendRows) {
-    const repo = canonicalRepositoryName(t.repository)
-    const bucketMap = bucketSumByRepo.get(repo) ?? new Map<string, number>()
-    bucketMap.set(t.bucket, (bucketMap.get(t.bucket) ?? 0) + t.token_total)
-    bucketSumByRepo.set(repo, bucketMap)
-  }
-  const sparkByRepo = new Map<string, number[]>()
-  for (const [repo, bucketMap] of bucketSumByRepo) {
-    const sortedBuckets = [...bucketMap.entries()].sort(([a], [b]) =>
-      a < b ? -1 : a > b ? 1 : 0
-    )
-    sparkByRepo.set(
-      repo,
-      sortedBuckets.map(([, sum]) => sum)
-    )
-  }
-
-  // 15-B.7: Track per-repo model token sums so we can pick the genuine top
-  // model (max token_total) instead of the last-iterated model.
-  const repoMap = new Map<
-    string,
-    {
-      tokens: number
-      cost: number
-      traces: number
-      modelTokens: Map<string, number>
-    }
-  >()
-
-  for (const row of rows) {
-    const repo = canonicalRepositoryName(row.repository)
-    const rowTokens = row.token_total ?? 0
-    const existing = repoMap.get(repo)
-    if (existing === undefined) {
-      const modelTokens = new Map<string, number>()
-      if (row.model) modelTokens.set(row.model, rowTokens)
-      repoMap.set(repo, {
-        tokens: rowTokens,
-        cost: row.usd_cost ?? 0,
-        traces: row.traces ?? 0,
-        modelTokens,
-      })
-    } else {
-      existing.tokens += rowTokens
-      existing.cost += row.usd_cost ?? 0
-      existing.traces += row.traces ?? 0
-      // Accumulate per-model token totals for max selection
-      if (row.model) {
-        existing.modelTokens.set(
-          row.model,
-          (existing.modelTokens.get(row.model) ?? 0) + rowTokens
-        )
-      }
-    }
-  }
-
-  return [...repoMap.entries()]
-    .sort(([, a], [, b]) => b.tokens - a.tokens)
-    .map(([repository, data]) => {
-      // 15-B.7: Pick the model with the most accumulated tokens for this repo.
-      // 16-D: Exclude sentinel/placeholder model names ('', 'unknown', 'null')
-      // from the top-model competition. These entries (e.g. rows where
-      // sh.model IS NULL in the DB) were out-massing named models and causing
-      // every repo to display top_model="unknown". Token sums are unaffected —
-      // only the topModel picker is filtered.
-      let topModel = ''
-      let topTokens = -1
-      for (const [model, modelTokens] of data.modelTokens) {
-        const normalized = model.toLowerCase().trim()
-        if (
-          normalized === '' ||
-          normalized === 'unknown' ||
-          normalized === 'null'
-        ) {
-          continue
-        }
-        if (modelTokens > topTokens) {
-          topTokens = modelTokens
-          topModel = model
-        }
-      }
-      return {
-        repository,
-        tokens: data.tokens,
-        cost_usd: data.cost,
-        traces: data.traces,
-        top_model: topModel,
-        spark: sparkByRepo.get(repository) ?? [data.tokens],
-      }
-    })
 }
 
 function latencySummaryFromReportRow(
