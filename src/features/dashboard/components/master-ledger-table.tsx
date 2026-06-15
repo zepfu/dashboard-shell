@@ -80,6 +80,13 @@ import {
   formatLatency,
   formatUsd,
 } from '../lib/usage-report-display'
+import {
+  familyDefinitionsForProvider,
+  formatLedgerModelDisplayName,
+  modelFamilyForRow,
+  OTHER_FAMILY_DEFINITION,
+  type ModelFamilyDefinition,
+} from './master-ledger-model-meta'
 import { HoverTooltip } from './primitives/hover-tooltip'
 import { ReasoningTokenValue } from './primitives/reasoning-token-value'
 import { Sparkline } from './primitives/sparkline'
@@ -583,93 +590,6 @@ interface RepositoryModelEntry {
   family: ModelFamilyDefinition | null
 }
 
-interface ModelFamilyDefinition {
-  key: string
-  label: string
-  matches: (model: string) => boolean
-}
-
-const MODEL_FAMILY_DEFINITIONS: Record<string, ModelFamilyDefinition[]> = {
-  anthropic: [
-    {
-      key: 'opus',
-      label: 'Opus',
-      matches: (model) => model.includes('opus'),
-    },
-    {
-      key: 'sonnet',
-      label: 'Sonnet',
-      matches: (model) => model.includes('sonnet'),
-    },
-    {
-      key: 'haiku',
-      label: 'Haiku',
-      matches: (model) => model.includes('haiku'),
-    },
-    {
-      key: 'auto-review',
-      label: 'Auto Review',
-      matches: (model) =>
-        model.includes('auto-review') ||
-        model.includes('auto_review') ||
-        model.includes('auto review'),
-    },
-  ],
-  openai: [
-    {
-      key: 'codex-spark',
-      label: 'Codex Spark',
-      matches: (model) => model.includes('codex-spark'),
-    },
-    {
-      key: 'codex',
-      label: 'Codex',
-      matches: (model) => model.includes('codex'),
-    },
-    {
-      key: 'mini',
-      label: 'Mini',
-      matches: (model) => model.includes('mini'),
-    },
-    {
-      key: 'gpt',
-      label: 'GPT',
-      matches: (model) => model.includes('gpt'),
-    },
-  ],
-  google: [
-    {
-      key: 'gemini',
-      label: 'Gemini',
-      matches: (model) => model.includes('gemini'),
-    },
-    {
-      key: 'flash-lite',
-      label: 'Flash Lite',
-      matches: (model) =>
-        model.includes('flash-lite') ||
-        model.includes('flash_lite') ||
-        model.includes('flash lite'),
-    },
-    {
-      key: 'flash',
-      label: 'Flash',
-      matches: (model) => model.includes('flash'),
-    },
-    {
-      key: 'pro',
-      label: 'Pro',
-      matches: (model) => model.includes('pro'),
-    },
-  ],
-}
-
-const OTHER_FAMILY_DEFINITION: ModelFamilyDefinition = {
-  key: 'other',
-  label: 'Other',
-  matches: () => true,
-}
-
 function providerDisplayName(provider: string): string {
   const key = canonicalProvider(provider)
   switch (key) {
@@ -690,113 +610,6 @@ function providerDisplayName(provider: string): string {
     default:
       return formatModelDisplayName(provider)
   }
-}
-
-function formatOpenRouterVendorLabel(vendor: string): string {
-  const normalized = vendor.trim().toLowerCase()
-  if (normalized === 'openai') return 'OpenAI'
-  if (normalized === 'xai') return 'xAI'
-  if (normalized === 'qwen') return 'Qwen'
-  if (normalized === 'inclusionai') return 'InclusionAI'
-  if (normalized === 'deepseek') return 'DeepSeek'
-  return formatModelDisplayName(vendor)
-}
-
-function inferOpenRouterVendor(model: string): string {
-  const normalized = model
-    .toLowerCase()
-    .replace(/^openrouter\//, '')
-    .replace(/:(free|stealth)$/i, '')
-  const parts = normalized.split('/').filter(Boolean)
-  const pathVendor =
-    parts.length > 1
-      ? parts[0] === 'free' && parts[1] !== undefined
-        ? parts[1]
-        : parts[0]
-      : undefined
-  if (pathVendor !== undefined) return pathVendor
-  if (normalized.startsWith('qwen')) return 'qwen'
-  if (
-    normalized.startsWith('gpt') ||
-    normalized.startsWith('o1') ||
-    normalized.startsWith('o3') ||
-    normalized.startsWith('o4')
-  ) {
-    return 'openai'
-  }
-  if (normalized.startsWith('claude')) return 'anthropic'
-  if (normalized.startsWith('gemini')) return 'google'
-  if (normalized.startsWith('grok')) return 'xai'
-  if (normalized.startsWith('llama')) return 'meta'
-  if (normalized.startsWith('deepseek')) return 'deepseek'
-  if (normalized.startsWith('cohere')) return 'cohere'
-  if (normalized.startsWith('mistral')) return 'mistral'
-  if (normalized.startsWith('minimax')) return 'minimax'
-  if (normalized.startsWith('nvidia')) return 'nvidia'
-  if (normalized.startsWith('inclusion')) return 'inclusionai'
-  return 'other'
-}
-
-function openRouterFamilyForModel(model: string): ModelFamilyDefinition {
-  const vendor = inferOpenRouterVendor(model)
-  const key = vendor.replace(/[^a-z0-9-]+/g, '-')
-  return {
-    key,
-    label: formatOpenRouterVendorLabel(vendor),
-    matches: (candidate) =>
-      inferOpenRouterVendor(candidate).replace(/[^a-z0-9-]+/g, '-') === key,
-  }
-}
-
-function familyDefinitionsForProvider(
-  providerKey: string,
-  rows: readonly ModelRow[]
-): ModelFamilyDefinition[] | undefined {
-  if (providerKey !== 'openrouter') return MODEL_FAMILY_DEFINITIONS[providerKey]
-
-  const definitions = new Map<string, ModelFamilyDefinition>()
-  for (const row of rows) {
-    const definition = openRouterFamilyForModel(row.model)
-    definitions.set(definition.key, definition)
-  }
-  return [...definitions.values()].sort((left, right) =>
-    left.label.localeCompare(right.label, undefined, { sensitivity: 'base' })
-  )
-}
-
-function modelFamilyForRow(
-  provider: string,
-  model: string
-): ModelFamilyDefinition | null {
-  const providerKey = canonicalProvider(provider)
-  if (providerKey === 'openrouter') return openRouterFamilyForModel(model)
-
-  const definitions = MODEL_FAMILY_DEFINITIONS[providerKey]
-  if (definitions === undefined) return null
-  const normalizedModel = model.toLowerCase()
-  return (
-    definitions.find((definition) => definition.matches(normalizedModel)) ??
-    OTHER_FAMILY_DEFINITION
-  )
-}
-
-function formatLedgerModelDisplayName(
-  providerKey: string,
-  model: string
-): string {
-  if (providerKey === 'anthropic') {
-    const normalized = model.trim()
-    const match = normalized.match(
-      /^claude[-_\s]+(opus|sonnet|haiku)[-_\s]+(\d+)[-_.\s]+(\d+)(.*)$/i
-    )
-    if (match) {
-      const family = match[1][0].toUpperCase() + match[1].slice(1).toLowerCase()
-      const suffix = match[4].trim()
-      return `${family} ${match[2]}.${match[3]}${suffix ? ` ${suffix}` : ''}`
-    }
-    return formatModelDisplayName(normalized).replace(/^Claude\s+/i, '')
-  }
-  return formatModelDisplayName(model)
 }
 
 function sumSpark(rows: readonly ModelRow[]): number[] | undefined {
