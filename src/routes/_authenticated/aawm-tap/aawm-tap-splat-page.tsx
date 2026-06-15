@@ -1,9 +1,9 @@
 import { useParams } from '@tanstack/react-router'
-import { AawmTapDashboardRoute } from '@/shell/aawm-tap-dashboard'
+import { RemoteDashboardRoute } from '@/shell/remote-dashboard'
 
 export function AawmTapSplatPage() {
   const { _splat } = useParams({ from: '/_authenticated/aawm-tap/$' })
   const routePath = `/${_splat ?? ''}`
 
-  return <AawmTapDashboardRoute routePath={routePath} />
+  return <RemoteDashboardRoute moduleKey='aawm-tap' routePath={routePath} />
 }

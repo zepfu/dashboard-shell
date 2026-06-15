@@ -14,18 +14,12 @@
  *   assert the CORRECT behavior: the strip is NOT blanket aria-hidden and its
  *   tooltips are reachable by assistive technology.
  *
- * Wave 8 (S5-40) — DonutChart a11y case:
- *   The DonutChart component is deleted in Wave 9. The import and assertions are
- *   removed here in W8 (plan spec: "a11y DonutChart import already removed in W8").
- *   The test function body is replaced with a placeholder note; W9 removes the test.
  */
 import { render, screen, fireEvent } from '@testing-library/react'
 import { AlertsRail } from './alerts-rail'
 import AnchorBar from './anchor-bar'
 import { MasterLedgerTable } from './master-ledger-table'
 import { HealthStrip } from './primitives/health-strip'
-
-// DonutChart import removed in W8 (component deleted in W9; a11y case cleared here)
 
 // ---------------------------------------------------------------------------
 // Shared fixtures
@@ -46,7 +40,6 @@ const mockLedgerRows = [
   },
 ]
 
-// donutSlices removed in W8 — DonutChart component deleted in W9
 const healthCells = Array.from({ length: 288 }, () => ({
   color: 'var(--card-2)',
 }))
@@ -81,13 +74,6 @@ test('test_master_ledger_has_aria_label', () => {
   const table = container.querySelector('table')
   expect(table).not.toBeNull()
   expect(table!.getAttribute('aria-label')).toBe('Model usage ledger')
-})
-
-test('test_donut_chart_has_role_img_and_aria_label', () => {
-  // Wave 8 (S5-40): DonutChart import and assertions removed here.
-  // The component is deleted in Wave 9; W9 removes this test function entirely.
-  // Placeholder assertion prevents the test from being counted as empty by vitest.
-  expect(true).toBe(true) // W9 deletes this test
 })
 
 /**

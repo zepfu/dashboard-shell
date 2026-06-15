@@ -3,8 +3,7 @@
  *
  * These are the canonical implementations that supersede the local copies
  * that previously lived in kpi-strip.tsx, provider-card.tsx,
- * master-ledger-table.tsx, comparison-panel.tsx, repo-breakdown-table.tsx,
- * and client-breakdown-table.tsx.
+ * master-ledger-table.tsx, and comparison-panel.tsx.
  *
  * Canonical choices (see ⚠-1 / ⚠-2 in wave34-code-css-audit.md):
  *   - `fmtCompact`: uppercase suffixes (B/M/K), full four-tier coverage
