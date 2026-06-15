@@ -14,7 +14,21 @@ import { URL } from 'node:url'
 import { promisify } from 'node:util'
 import { gzip as gzipCallback, gunzip as gunzipCallback } from 'node:zlib'
 import pg from 'pg'
-import { createClient } from 'redis'
+
+// Dynamic import for redis so that the module can be imported in environments
+// where the 'redis' package is not installed (e.g. root workspace running the
+// server vitest project after only adding pgsql-parser as a devDep). All
+// call sites already guard on the presence of a usable redisClient; when the
+// package is absent we simply get a null client and cache paths degrade to
+// local/SQL as designed. This keeps the pure query-builder functions
+// importable without requiring a live Redis or the package at test time.
+let createClient = null
+try {
+  const redisMod = await import('redis')
+  createClient = redisMod.createClient
+} catch {
+  // redis not resolvable; redisClient remains null below.
+}
 
 const { Pool } = pg
 const gzip = promisify(gzipCallback)
@@ -611,7 +625,7 @@ end
 return 0
 `
 
-const redisClient = REPORT_CACHE_REDIS_URL
+const redisClient = REPORT_CACHE_REDIS_URL && createClient
   ? createClient({
       url: REPORT_CACHE_REDIS_URL,
       socket: {
