@@ -1619,6 +1619,10 @@ export function formatTipVelocity(
   return `avg +${pctPerUnit.toFixed(1)}%/${unitLabel} since reset`
 }
 
+/** Test-only aliases for legacy tip unit tests. */
+export const _formatTipWindowForTest = formatTipWindow
+export const _formatTipVelocityForTest = formatTipVelocity
+
 /**
  * Derives top-3 tipModels from a UsageReportQuotaUsageBreakdown array.
  *
