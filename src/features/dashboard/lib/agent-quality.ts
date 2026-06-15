@@ -801,9 +801,7 @@ export function agentQualityIssueSortValue(
   const handoffIssueCount =
     (summary.ignoredPathTracking?.violationCount ?? 0) +
     (summary.baselineDeflection?.incidentIncidents ?? 0) +
-    (summary.sleepWellnessInterruption?.incidentIncidents ?? 0) +
-    summary.discoveryInventoryCoverage.issueCount +
-    summary.terminalCompletion.issueCount
+    (summary.sleepWellnessInterruption?.incidentIncidents ?? 0)
   const discoveryIssueCount =
     summary.discoveryInventoryCoverage.issueCount +
     summary.discoveryInventoryMissingCount +
