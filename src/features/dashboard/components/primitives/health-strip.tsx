@@ -628,9 +628,8 @@ export function HealthStrip({
   }
 
   return (
-    <div aria-hidden='true'>
+    <div className='health-strip-root'>
       <div
-        aria-hidden='true'
         className='health-strip-wrapper'
         style={{ borderRight: '1px solid var(--border)' }}
       >

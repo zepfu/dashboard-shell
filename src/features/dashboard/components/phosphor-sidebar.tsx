@@ -176,20 +176,34 @@ function SidebarAlertDot({
     </div>
   )
 
+  const issueCount = alerts.issues.length
+
   return (
-    <HoverTooltip
-      content={tooltipContent}
-      panelStyle={{
-        minWidth: '260px',
-        maxWidth: 'min(420px, calc(100vw - 16px))',
-      }}
-    >
-      <span
-        aria-label={`Dashboard alert status: ${alerts.severity}`}
-        className={`sidebar-alert-dot ${alerts.severity}`}
-        role='status'
-      />
-    </HoverTooltip>
+    <>
+      <HoverTooltip
+        content={tooltipContent}
+        panelStyle={{
+          minWidth: '260px',
+          maxWidth: 'min(420px, calc(100vw - 16px))',
+        }}
+      >
+        <span
+          aria-label={`Dashboard alert status: ${alerts.severity}`}
+          className={`sidebar-alert-dot ${alerts.severity}`}
+          role='status'
+        />
+      </HoverTooltip>
+      {issueCount > 0 ? (
+        <button
+          type='button'
+          className='sidebar-alert-issues-disclosure'
+          aria-label={`${issueCount.toString()} alert issues — expand for details`}
+          aria-expanded={false}
+        >
+          {issueCount.toString()}
+        </button>
+      ) : null}
+    </>
   )
 }
 

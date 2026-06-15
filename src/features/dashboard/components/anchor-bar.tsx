@@ -7,6 +7,7 @@
  * route through `onActivate`; standalone renders fall back to section scrolling.
  */
 import { useCallback, useEffect, useRef, type ReactElement } from 'react'
+import { shouldSuppressListboxShortcutKey } from './slicer-bar-keyboard'
 
 interface AnchorBarProps {
   /** The currently active shortcut or section slug. */
@@ -150,25 +151,23 @@ export default function AnchorBar({
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent): void => {
-      // Skip modifier combos
-      if (event.ctrlKey || event.metaKey || event.altKey) return
+      // Skip modifier combos (including Shift+letter shortcuts)
+      if (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) {
+        return
+      }
 
       // Skip when focus is on interactive text elements (check both the event
       // target and document.activeElement, as jsdom dispatches global events
       // with target=document even when an input has focus).
-      const target = event.target as HTMLElement
-      const active = document.activeElement as HTMLElement | null
-      const focused = active ?? target
-
-      const isInteractive = (el: HTMLElement): boolean =>
-        el instanceof HTMLInputElement ||
-        el instanceof HTMLTextAreaElement ||
-        el instanceof HTMLSelectElement ||
-        el.isContentEditable
+      const target = event.target instanceof HTMLElement ? event.target : null
+      const active =
+        document.activeElement instanceof HTMLElement
+          ? document.activeElement
+          : null
 
       if (
-        isInteractive(target) ||
-        (active !== null && isInteractive(focused))
+        shouldSuppressListboxShortcutKey(target) ||
+        shouldSuppressListboxShortcutKey(active)
       ) {
         return
       }
@@ -208,6 +207,8 @@ export default function AnchorBar({
           <a
             key={key}
             href={`#${targetId}`}
+            aria-current={isActive ? 'page' : undefined}
+            aria-keyshortcuts={key}
             onClick={(e) => {
               e.preventDefault()
               const section = KEY_MAP.get(key)
