@@ -25,6 +25,8 @@
    minmax(0,1fr) prevents the middle column from expanding beyond available space
    when grid children have wide content (provider-summary 4-col grid at 1600px). */
 .phosphor-layout {
+  display: grid !important;
+  grid-template-rows: auto auto;
   grid-template-columns: 220px minmax(0, 1fr) 260px !important;
   padding: 12px 16px !important;
   gap: 4px !important;
