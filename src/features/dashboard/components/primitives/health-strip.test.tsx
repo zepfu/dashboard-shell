@@ -1137,3 +1137,64 @@ test('test_health_strip_event_count_sums_occurrences', () => {
   // (16 events − 14 cap = 2 overflow)
   expect(tipText).toMatch(/\+2\s*more\s*events?/i)
 })
+
+// ---------------------------------------------------------------------------
+// Wave 7 — S3-14: p90 memoisation guard (p50 path deleted)
+// ---------------------------------------------------------------------------
+
+/**
+ * test_health_strip_p90_only_one_sort (S3-14)
+ *
+ * After the Wave 7 engineer change:
+ *   - `computeP50Threshold` is DELETED from health-strip.tsx.
+ *   - `computeP90Threshold` remains and is the sole latency threshold.
+ *
+ * This test is a behaviour-preserving regression guard asserting:
+ *   1. The p90 threshold correctly classifies a cell above the p90 as orange.
+ *   2. The p90 threshold correctly classifies a cell at or below p90 as green.
+ *   3. The output colours are unchanged from the pre-deletion behaviour.
+ *
+ * It does NOT import or call computeP50Threshold (the engineer will delete it).
+ * Any existing test that asserts the p50 path or imports computeP50Threshold
+ * is noted in the Wave 7 report and must be removed by the engineer.
+ *
+ * The p50 path was previously called in deriveCellStyle with `void p50Threshold`
+ * (no-op) — so deleting computeP50Threshold and the p50 call is
+ * behaviour-preserving. This guard validates that promise.
+ */
+test('test_health_strip_p90_only_one_sort', () => {
+  // 11 non-padding cells so p90 index = floor(11 * 0.9) = 9 → sorted[9] = 3000ms.
+  // Cell at index 0 has rawP95Ms = 5000ms > p90 (3000ms) → orange (high latency).
+  // Cell at index 1 has rawP95Ms = 100ms ≤ p90 (3000ms), no errors → green.
+  const cells = [
+    { color: 'var(--card-2)', rawP95Ms: 5000, rawErrorCount: 0 }, // > p90 → orange
+    { color: 'var(--card-2)', rawP95Ms: 100, rawErrorCount: 0 }, // ≤ p90 → green
+    { color: 'var(--card-2)', rawP95Ms: 200, rawErrorCount: 0 },
+    { color: 'var(--card-2)', rawP95Ms: 300, rawErrorCount: 0 },
+    { color: 'var(--card-2)', rawP95Ms: 400, rawErrorCount: 0 },
+    { color: 'var(--card-2)', rawP95Ms: 500, rawErrorCount: 0 },
+    { color: 'var(--card-2)', rawP95Ms: 600, rawErrorCount: 0 },
+    { color: 'var(--card-2)', rawP95Ms: 700, rawErrorCount: 0 },
+    { color: 'var(--card-2)', rawP95Ms: 800, rawErrorCount: 0 },
+    { color: 'var(--card-2)', rawP95Ms: 900, rawErrorCount: 0 },
+    { color: 'var(--card-2)', rawP95Ms: 3000, rawErrorCount: 0 }, // p90 anchor
+    ...Array.from({ length: 277 }, () => ({ color: 'var(--card-2)' })),
+  ]
+
+  const { container } = render(<HealthStrip cells={cells} />)
+  const cellEls = container.querySelectorAll('.health-strip-cell')
+
+  // Cell 0: 5000ms > p90 (3000ms) → orange (high latency).
+  const firstCell = cellEls[0] as HTMLElement
+  const firstBg = firstCell.style.background || firstCell.style.backgroundColor
+  expect(firstBg).toMatch(/rgba?\(245,\s*158,\s*11/)
+
+  // Cell 1: 100ms ≤ p90 (3000ms), no errors → green (healthy).
+  const secondCell = cellEls[1] as HTMLElement
+  const secondBg =
+    secondCell.style.background || secondCell.style.backgroundColor
+  expect(secondBg).toMatch(/rgba?\(16,\s*185,\s*129/)
+
+  // Behavioural invariant: orange and green are distinct (the threshold matters).
+  expect(firstBg).not.toBe(secondBg)
+})
