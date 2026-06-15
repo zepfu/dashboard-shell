@@ -2115,14 +2115,6 @@ export default function PhosphorDashboard({
                   gitCommits: summary?.git_commit ?? 0,
                   gitPushes: summary?.git_push ?? 0,
                   invalidToolCalls: 0,
-                  recentErrors: healthRows.reduce(
-                    (s, r) =>
-                      s +
-                      r.provider_error_events +
-                      r.provider_5xx_events +
-                      r.provider_timeout_events,
-                    0
-                  ),
                 }}
                 anomalies={anomalies}
               />

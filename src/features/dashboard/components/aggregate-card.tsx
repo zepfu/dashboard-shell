@@ -30,7 +30,7 @@
  *   `quotas={[]}` so the Quotas section is unconditionally suppressed.
  *
  * Implementation note: fleet activity rows use a semantic `<dl>` description
- * list where each label is a `<dt>` and each value+sublabel are `<dd>` elements.
+ * list where each label is a `<dt>` and each value is a `<dd>` element.
  * Tests query labels with `{ exact: true }` to avoid substring ambiguity between
  * "Tool Calls" and "Invalid Tool Calls".
  */
@@ -52,7 +52,6 @@ export interface FleetActivity {
   gitCommits: number
   gitPushes: number
   invalidToolCalls: number
-  recentErrors?: number
 }
 
 export interface AggregateCardProps {
@@ -70,8 +69,6 @@ export interface AggregateCardProps {
 interface FleetRowProps {
   label: string
   value: string
-  /** Optional sublabel (e.g. "+12% vs prior", "3.2/min"). Rendered in third column. */
-  sublabel?: string
   /** When true, value is rendered in accent-hot (red) color and row gets `.invalid` class. */
   hot?: boolean
   /**
@@ -83,14 +80,12 @@ interface FleetRowProps {
 }
 
 /**
- * A single fleet activity row rendered as dt + dd (value) + dd (sublabel).
- * Uses `display: contents` so all three cells flow into the parent grid's
- * three columns: `minmax(0, 1fr) 64px auto`.
+ * A single fleet activity row rendered as dt + dd (value).
+ * Uses `display: contents` so cells flow into the parent grid columns.
  */
 function FleetRow({
   label,
   value,
-  sublabel,
   hot = false,
   inlineGlyph,
 }: FleetRowProps): ReactElement {
@@ -103,10 +98,6 @@ function FleetRow({
         {label}
       </dt>
       <dd className={valClass}>{value}</dd>
-      <dd className='sublabel'>
-        {/* TODO: populate with real "vs prior" / rate / status data when available */}
-        {sublabel ?? ''}
-      </dd>
     </div>
   )
 }
@@ -161,10 +152,9 @@ export function AggregateCard({
       </h4>
 
       {/*
-       * 3-column grid per mockup lines 1101-1135:
+       * Fleet activity grid per mockup lines 1101-1135:
        *   col 1: label (minmax(0, 1fr)) — muted, mono, 10px
        *   col 2: value (64px) — right-aligned, fg color; accent-hot when invalid
-       *   col 3: sublabel (auto) — muted, 9px, lowercase, right-aligned
        *
        * Each <div class="fleet-activity-row"> uses `display: contents` so its
        * dt/dd children flow directly into the grid columns.
