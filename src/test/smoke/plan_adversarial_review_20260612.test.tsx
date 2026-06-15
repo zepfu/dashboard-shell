@@ -88,7 +88,7 @@ test('test_signedDelta_exports_from_usage_report_display', async () => {
  * RED until the engineer creates the export.
  */
 test('test_usageReportQuotasKey_exports_from_index', async () => {
-  const mod = await import('../../features/dashboard/index')
+  const mod = await import('../../features/dashboard/api/usage-report')
   const fn = (mod as unknown as Record<string, unknown>)['usageReportQuotasKey']
   expect(typeof fn).toBe('function')
 })
