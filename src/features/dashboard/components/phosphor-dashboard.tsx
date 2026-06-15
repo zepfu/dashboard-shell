@@ -80,12 +80,10 @@ import styles from './phosphor-dashboard.module.css'
 import {
   buildAggregateHealthCells,
   buildAggregateMetrics,
-  buildHistoryBarsForProvider,
   buildModelRows,
   buildProviderMetrics,
   buildProviderQuotaHistoryTabs,
   buildProviderLanes,
-  buildQuotaRows,
   buildTopModels,
   deriveProviders,
   fmtIntervalCompact,
@@ -96,6 +94,8 @@ import {
   quotaHistoryRequests,
   localFallbackRange,
 } from './phosphor-dashboard.testkit'
+// fmtIntervalCompact is re-exported from the testkit (defined locally after flat-path
+// deletion) so it is available for quota-history rendering in this component.
 import { ProviderCard, type ProviderCardConfig } from './provider-card'
 import { type SlicerFilters, type SlicerOptions } from './slicer-bar'
 import {
@@ -2064,26 +2064,13 @@ export default function PhosphorDashboard({
                 // Wave 41: build structured QuotaLane[] for providers with lane
                 // definitions. Each lane groups
                 // the current bar + prior bars for a single quota type side-by-side.
-                // Providers without lane defs (nvidia_nim, local) fall
-                // back to the flat quotaIntervals path via quotas prop.
+                // Providers without lane defs (nvidia_nim, local) are not
+                // rendered in the status grid (no lane defs = no quota bars).
                 const lanes = buildProviderLanes(
                   provider,
                   quotaRows,
                   quotaHistoryRows
                 )
-                // Flat quota list is still needed for providers without lane defs.
-                const currentBars =
-                  lanes.length === 0 ? buildQuotaRows(provider, quotaRows) : []
-                const historyBars =
-                  lanes.length === 0
-                    ? buildHistoryBarsForProvider(
-                        provider,
-                        quotaHistoryRows,
-                        currentBars
-                      )
-                    : []
-                const quotaIntervals =
-                  lanes.length === 0 ? [...currentBars, ...historyBars] : []
                 const topModels = buildTopModels(
                   providerStatusUsage,
                   provider,
@@ -2096,7 +2083,7 @@ export default function PhosphorDashboard({
                     config={config}
                     data={metrics}
                     healthCells={cells}
-                    quotas={quotaIntervals}
+                    quotas={[]}
                     lanes={lanes.length > 0 ? lanes : undefined}
                     anomalies={anomalies}
                     topModels={topModels}

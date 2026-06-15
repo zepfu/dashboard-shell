@@ -113,50 +113,15 @@ export function formatDashboardIntervalCompact(start: Date, end: Date): string {
   return `${format(start)} → ${format(end)}`
 }
 
-const PROVIDER_ALIASES: Record<string, readonly string[]> = {
-  antigravity: ['antigravity'],
-  google: ['google', 'gemini'],
-  local: [
-    'local',
-    'local_biomed',
-    'local_embed',
-    'local_litellm',
-    'local_llm',
-    'local_rerank',
-  ],
-  xai: ['xai', 'x.ai', 'oa_xai'],
-}
+// PROVIDER_ALIASES moved to lib/provider-identity.ts (Wave 11 single-owner).
+// The re-exports of canonicalProvider/providerAliases below delegate there.
+// (The constant definition itself is removed to avoid unused-variable noise.)
 
-/**
- * Returns all alias strings that should be matched for a given canonical
- * provider key (case-insensitive lower).
- *
- * Wave 15-B.2: Use when filtering `providerLatencyHealth` rows to avoid
- * dropping gemini rows for the google provider card.
- */
-export function providerAliases(provider: string): readonly string[] {
-  const key = provider.toLowerCase()
-  return PROVIDER_ALIASES[key] ?? [key]
-}
-
-/**
- * Maps any DB/alias provider string to its canonical key.
- *
- * Wave 15-B.2: Use in buildModelRows to normalise health row provider keys
- * so that DB keys like 'gemini' map to the canonical 'google' key used in
- * providerStatusUsage, ensuring health latency lookups succeed.
- *
- * @example canonicalProvider('gemini') → 'google'
- * @example canonicalProvider('openai') → 'openai'
- */
-export function canonicalProvider(provider: string): string {
-  const key = provider.toLowerCase()
-  if (key.startsWith('xai/') || key.startsWith('oa_xai/')) return 'xai'
-  for (const [canonical, aliases] of Object.entries(PROVIDER_ALIASES)) {
-    if (aliases.includes(key)) return canonical
-  }
-  return key
-}
+// Re-export canonicalProvider and providerAliases from the single-owner
+// provider-identity module (Wave 11). This preserves the existing import
+// paths for callers in master-ledger-table.tsx and provider-card.tsx
+// (Engineer B's files) without requiring edits to those files.
+export { canonicalProvider, providerAliases } from './provider-identity'
 
 const providerColorsByKey: Record<string, string> = {
   openai: '#2563eb',
