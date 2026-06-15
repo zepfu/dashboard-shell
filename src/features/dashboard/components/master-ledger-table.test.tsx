@@ -19,6 +19,10 @@ import { vi } from 'vitest'
 import { type UsageReportToolActivityRow } from '../api/usage-report'
 import { providerBrandHex } from '../lib/usage-report-display'
 import {
+  formatLedgerModelDisplayName,
+  modelFamilyForRow,
+} from './master-ledger-model-meta'
+import {
   buildToolActivity,
   MasterLedgerTable,
   SHELL_CLASS_TOOL_NAMES,
@@ -2667,4 +2671,26 @@ test('test_segments_fixture_independent_assertion', () => {
   // This is the FAILING assertion for S2-T8 — the cell must be identifiable
   // by attribute, not by array index. Until added, this fails.
   expect(sparkCell!.getAttribute('data-col-id')).toBe('sparkline')
+})
+
+/**
+ * S2-14: OpenAI o-series reasoning models must classify to a real family, not Other.
+ */
+test('test_family_matching_anchored_o3_files_to_openai', () => {
+  for (const modelId of ['o1', 'o3', 'o4']) {
+    const family = modelFamilyForRow('openai', modelId)
+    expect(family).not.toBeNull()
+    expect(family!.key).not.toBe('other')
+    expect(family!.label).not.toBe('Other')
+    expect(family!.key).toBe('reasoning')
+  }
+})
+
+/**
+ * S2-15: Display names must not retain a leading path/separator after prefix removal.
+ */
+test('test_model_display_name_no_dangling_separator', () => {
+  expect(formatLedgerModelDisplayName('openai', 'openai/gpt-4o')).toBe('GPT 4o')
+  expect(formatLedgerModelDisplayName('openai', '/gpt-4o')).toBe('GPT 4o')
+  expect(formatLedgerModelDisplayName('openai', 'o3')).toBe('O3')
 })
