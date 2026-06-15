@@ -11,10 +11,10 @@ import type {
   UsageReportTrendRow,
 } from '../api/usage-report'
 import {
-  buildToolActivity,
   type ModelLatencySummary,
   type ModelRow,
-} from '../components/master-ledger-table'
+} from '../components/master-ledger-aggregation'
+import { buildToolActivity } from '../components/master-ledger-tool-activity'
 import type { TopModelRow } from '../components/provider-card'
 import {
   agentQualityFromFlatRow,

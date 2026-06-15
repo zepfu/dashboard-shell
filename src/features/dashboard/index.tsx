@@ -41,7 +41,7 @@ import AnchorBar from './components/anchor-bar'
 import { computeDeltaPct } from './components/comparison-panel'
 import { DateControls } from './components/date-controls'
 import { KpiStrip } from './components/kpi-strip'
-import type { LedgerView } from './components/master-ledger-table'
+import type { LedgerView } from './components/master-ledger-aggregation'
 import PhosphorDashboard, {
   type ProviderSectionView,
 } from './components/phosphor-dashboard'

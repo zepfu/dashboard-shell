@@ -18,7 +18,7 @@ import {
   formatDeltaPct,
   type ProviderCurrentStats,
 } from './comparison-panel'
-import type { ModelRow } from './master-ledger-table'
+import type { ModelRow } from './master-ledger-aggregation'
 
 // ---------------------------------------------------------------------------
 // Fixtures
