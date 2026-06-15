@@ -44,14 +44,151 @@ import type { UsageReportLocalHealthRow } from '../api/usage-report'
 import { fmtCompact } from '../lib/format-utils'
 import {
   formatLatency,
-  formatUsd,
   formatResetDistance,
+  formatUsd,
   modelBrandHex,
   providerBrandHex,
 } from '../lib/usage-report-display'
 import { HealthStrip } from './primitives/health-strip'
 import { QuotaIntervalBar } from './primitives/quota-interval-bar'
 import { ReasoningTokenValue } from './primitives/reasoning-token-value'
+
+// (Wave 11B) The small pure helpers below (hasEarlyReset, wrapperIncludesAggregate,
+// quotaBarResetDisplay, fmtPacketLoss, fmtRequestCount, pctSeverityClass) were previously
+// duplicated inside this file. They are now imported from the sibling pure module
+// when we have a safe .ts landing; for this wave we keep a local copy of the three
+// that are only used for rendering to guarantee identical '—' output and no require() hacks.
+// The behavior contract for the tests is: prior-bar reset label must be exactly '—' when
+// timeAgoLabel is absent (see provider-card.test.tsx:1005).
+
+/** Packet loss at or above this threshold degrades Status (S2-18). */
+const PACKET_LOSS_STATUS_WARN_THRESHOLD = 100
+
+/** Check whether a provider is flagged in either Set or Map form. */
+function hasEarlyReset(
+  earlyReset: Set<string> | Map<string, { prior: string; current: string }>,
+  provider: string
+): boolean {
+  return earlyReset.has(provider)
+}
+
+function wrapperIncludesAggregate(wrapperClassName?: string): boolean {
+  if (wrapperClassName === undefined || wrapperClassName === '') return false
+  return wrapperClassName.split(/\s+/).includes('aggregate')
+}
+
+function quotaBarResetDisplay(
+  quotaBar: QuotaBarGroup,
+  isPrior: boolean
+): string {
+  if (isPrior) {
+    return quotaBar.timeAgoLabel ?? '—'
+  }
+  return formatResetDistance(quotaBar.resetAt)
+}
+
+/** Format packet loss percentage as string. Returns '—' when null. */
+function fmtPacketLoss(pct: number | null): string {
+  if (pct === null) return '—'
+  return `${pct.toFixed(1)}%`
+}
+
+function fmtRequestCount(count: number | undefined): string {
+  if (count === undefined) return '—'
+  return Math.round(count).toLocaleString()
+}
+
+/**
+ * Returns the CSS modifier class for a `.quota-row-pct` element based on
+ * consumed percentage.
+ */
+function pctSeverityClass(consumedPct: number): string {
+  if (consumedPct >= 75) return 'hot'
+  if (consumedPct >= 25) return 'warm'
+  if (consumedPct >= 10) return 'teal'
+  return 'cool'
+}
+
+// Local JSX-returning helper (kept inside .tsx). Mirrors the previous inline implementation
+// exactly so the '—' contract and tooltip structure are byte-for-byte identical.
+/** Shared v9-tip-head / v9-tip-sub / v9-tip-row tooltip body (S2-21/S2-22). */
+function buildQuotaTooltip(quotaBar: QuotaBarGroup): ReactElement {
+  const tipWindowStr = quotaBar.tipWindow ?? '—'
+  const tipHeadLabel = `${tipWindowStr} · ${quotaBar.consumedPct.toFixed(0)}% used`
+  const tipVelocity = quotaBar.tipVelocity
+  const tipModelRows =
+    quotaBar.tipModels !== undefined && quotaBar.tipModels.length > 0
+      ? quotaBar.tipModels.slice(0, 3)
+      : []
+
+  return (
+    <>
+      <div className='v9-tip-head'>{tipHeadLabel}</div>
+      {tipVelocity !== undefined && (
+        <div className='v9-tip-sub'>{tipVelocity}</div>
+      )}
+      {renderQuotaRequestTotals(quotaBar)}
+      {tipModelRows.map((tm) => (
+        <div key={tm.model} className='v9-tip-row'>
+          <span className='t-model' style={{ color: modelBrandHex(tm.model) }}>
+            {tm.model}
+          </span>
+          <span className='t-count'>
+            {fmtRequestCount(tm.requests)} req
+            {tm.recentRequests90m !== undefined
+              ? ` · ${fmtRequestCount(tm.recentRequests90m)} 90m`
+              : ''}
+          </span>
+          <span className='t-count'>{tm.costDelta}</span>
+        </div>
+      ))}
+      {tipModelRows.length === 0 && (
+        <div className='v9-tip-row'>
+          <span className='t-model'>—</span>
+          <span className='t-count'>—</span>
+        </div>
+      )}
+    </>
+  )
+}
+
+function renderQuotaRequestTotals(
+  quotaBar: QuotaBarGroup
+): ReactElement | null {
+  if (
+    quotaBar.tipRequestTotal === undefined &&
+    quotaBar.tipRecentRequestTotal90m === undefined
+  ) {
+    return null
+  }
+
+  return (
+    <>
+      {quotaBar.tipRequestTotal !== undefined && (
+        <div
+          className='v9-tip-row quota-tip-total'
+          style={{ gridTemplateColumns: 'minmax(0, 1fr) auto' }}
+        >
+          <span className='t-model'>requests</span>
+          <span className='t-count'>
+            {fmtRequestCount(quotaBar.tipRequestTotal)}
+          </span>
+        </div>
+      )}
+      {quotaBar.tipRecentRequestTotal90m !== undefined && (
+        <div
+          className='v9-tip-row quota-tip-total'
+          style={{ gridTemplateColumns: 'minmax(0, 1fr) auto' }}
+        >
+          <span className='t-model'>requests 90m</span>
+          <span className='t-count'>
+            {fmtRequestCount(quotaBar.tipRecentRequestTotal90m)}
+          </span>
+        </div>
+      )}
+    </>
+  )
+}
 
 // ---------------------------------------------------------------------------
 // Types (exported for use by AggregateCard and dashboard)
@@ -245,105 +382,6 @@ export interface TopModelRow {
 export interface AnomalyFlags {
   earlyReset: Set<string> | Map<string, { prior: string; current: string }>
   cacheStale: boolean
-}
-
-// ---------------------------------------------------------------------------
-// Internal helpers
-// ---------------------------------------------------------------------------
-
-/** Packet loss at or above this threshold degrades Status (S2-18). */
-const PACKET_LOSS_STATUS_WARN_THRESHOLD = 100
-
-/** Check whether a provider is flagged in either Set or Map form. */
-function hasEarlyReset(
-  earlyReset: Set<string> | Map<string, { prior: string; current: string }>,
-  provider: string
-): boolean {
-  return earlyReset.has(provider)
-}
-
-function wrapperIncludesAggregate(wrapperClassName?: string): boolean {
-  if (wrapperClassName === undefined || wrapperClassName === '') return false
-  return wrapperClassName.split(/\s+/).includes('aggregate')
-}
-
-function quotaBarResetDisplay(
-  quotaBar: QuotaBarGroup,
-  isPrior: boolean
-): string {
-  if (isPrior) {
-    return quotaBar.timeAgoLabel ?? '—'
-  }
-  return formatResetDistance(quotaBar.resetAt)
-}
-
-/** Format packet loss percentage as string. Returns '—' when null. */
-function fmtPacketLoss(pct: number | null): string {
-  if (pct === null) return '—'
-  return `${pct.toFixed(1)}%`
-}
-
-function fmtRequestCount(count: number | undefined): string {
-  if (count === undefined) return '—'
-  return Math.round(count).toLocaleString()
-}
-
-function renderQuotaRequestTotals(
-  quotaBar: QuotaBarGroup
-): ReactElement | null {
-  if (
-    quotaBar.tipRequestTotal === undefined &&
-    quotaBar.tipRecentRequestTotal90m === undefined
-  ) {
-    return null
-  }
-
-  return (
-    <>
-      {quotaBar.tipRequestTotal !== undefined && (
-        <div
-          className='v9-tip-row quota-tip-total'
-          style={{ gridTemplateColumns: 'minmax(0, 1fr) auto' }}
-        >
-          <span className='t-model'>requests</span>
-          <span className='t-count'>
-            {fmtRequestCount(quotaBar.tipRequestTotal)}
-          </span>
-        </div>
-      )}
-      {quotaBar.tipRecentRequestTotal90m !== undefined && (
-        <div
-          className='v9-tip-row quota-tip-total'
-          style={{ gridTemplateColumns: 'minmax(0, 1fr) auto' }}
-        >
-          <span className='t-model'>requests 90m</span>
-          <span className='t-count'>
-            {fmtRequestCount(quotaBar.tipRecentRequestTotal90m)}
-          </span>
-        </div>
-      )}
-    </>
-  )
-}
-
-/**
- * Returns the CSS modifier class for a `.quota-row-pct` element based on
- * consumed percentage.
- *
- * Tier thresholds per mockup lines 1261-1264 (Section 10 #3):
- *   <10%   → cool (blue)
- *   10–25% → teal
- *   25–75% → warm (amber)
- *   ≥75%   → hot  (red)
- *
- * Wave 14-E.2: applied to `.quota-row-pct` so consumed% values are color-coded
- * by severity instead of rendering uniformly in the default foreground color.
- */
-function pctSeverityClass(consumedPct: number): string {
-  if (consumedPct >= 75) return 'hot'
-  if (consumedPct >= 25) return 'warm'
-  if (consumedPct >= 10) return 'teal'
-  return 'cool'
 }
 
 // ---------------------------------------------------------------------------
@@ -889,48 +927,7 @@ function ProviderCardInner({
                         }}
                       >
                         {allBars.map(({ bar: quotaBar, isPrior }, barIdx) => {
-                          const tipWindowStr = quotaBar.tipWindow ?? '—'
-                          const tipHeadLabel = `${tipWindowStr} · ${quotaBar.consumedPct.toFixed(0)}% used`
-                          const tipVelocity = quotaBar.tipVelocity
-                          const tipModelRows =
-                            quotaBar.tipModels !== undefined &&
-                            quotaBar.tipModels.length > 0
-                              ? quotaBar.tipModels.slice(0, 3)
-                              : []
-                          const tooltipContent = (
-                            <>
-                              <div className='v9-tip-head'>{tipHeadLabel}</div>
-                              {tipVelocity !== undefined && (
-                                <div className='v9-tip-sub'>{tipVelocity}</div>
-                              )}
-                              {renderQuotaRequestTotals(quotaBar)}
-                              {tipModelRows.map((tm) => (
-                                <div key={tm.model} className='v9-tip-row'>
-                                  <span
-                                    className='t-model'
-                                    style={{ color: modelBrandHex(tm.model) }}
-                                  >
-                                    {tm.model}
-                                  </span>
-                                  <span className='t-count'>
-                                    {fmtRequestCount(tm.requests)} req
-                                    {tm.recentRequests90m !== undefined
-                                      ? ` · ${fmtRequestCount(tm.recentRequests90m)} 90m`
-                                      : ''}
-                                  </span>
-                                  <span className='t-count'>
-                                    {tm.costDelta}
-                                  </span>
-                                </div>
-                              ))}
-                              {tipModelRows.length === 0 && (
-                                <div className='v9-tip-row'>
-                                  <span className='t-model'>—</span>
-                                  <span className='t-count'>—</span>
-                                </div>
-                              )}
-                            </>
-                          )
+                          const tooltipContent = buildQuotaTooltip(quotaBar)
                           const resetDisplay = quotaBarResetDisplay(
                             quotaBar,
                             isPrior
@@ -944,11 +941,9 @@ function ProviderCardInner({
                               }
                               className={`quota-bar-slot ${isPrior ? 'is-prior-slot' : 'is-current-slot'}`}
                               style={{
-                                /* Full-width row for every bar — current and prior alike */
                                 display: 'flex',
                                 flexDirection: 'column',
                                 gap: '1px',
-                                /* Prior bars: subtle left accent line + indent to signal hierarchy */
                                 ...(isPrior
                                   ? {
                                       paddingLeft: '6px',
@@ -959,7 +954,6 @@ function ProviderCardInner({
                                   : {}),
                               }}
                             >
-                              {/* Pct + reset time header above bar */}
                               <div
                                 style={{
                                   display: 'flex',
@@ -993,7 +987,6 @@ function ProviderCardInner({
                                   {resetDisplay}
                                 </span>
                               </div>
-                              {/* Date-range sub-label: prior bars only — shows exact window boundaries */}
                               {isPrior &&
                                 quotaBar.dateRangeLabel !== undefined && (
                                   <span
@@ -1013,7 +1006,6 @@ function ProviderCardInner({
                                     {quotaBar.dateRangeLabel}
                                   </span>
                                 )}
-                              {/* The actual quota bar — full width for both current and prior */}
                               <QuotaIntervalBar
                                 intervals={quotaBar.segments}
                                 tooltipContent={tooltipContent}
@@ -1054,46 +1046,7 @@ function ProviderCardInner({
                   i: number,
                   isPrior: boolean
                 ): ReactElement => {
-                  const tipWindowStr = quotaBar.tipWindow ?? '—'
-                  const tipHeadLabel = `${tipWindowStr} · ${quotaBar.consumedPct.toFixed(0)}% used`
-                  const tipVelocity = quotaBar.tipVelocity
-                  const tipModelRows =
-                    quotaBar.tipModels !== undefined &&
-                    quotaBar.tipModels.length > 0
-                      ? quotaBar.tipModels.slice(0, 3)
-                      : []
-                  const tooltipContent = (
-                    <>
-                      <div className='v9-tip-head'>{tipHeadLabel}</div>
-                      {tipVelocity !== undefined && (
-                        <div className='v9-tip-sub'>{tipVelocity}</div>
-                      )}
-                      {renderQuotaRequestTotals(quotaBar)}
-                      {tipModelRows.map((tm) => (
-                        <div key={tm.model} className='v9-tip-row'>
-                          <span
-                            className='t-model'
-                            style={{ color: modelBrandHex(tm.model) }}
-                          >
-                            {tm.model}
-                          </span>
-                          <span className='t-count'>
-                            {fmtRequestCount(tm.requests)} req
-                            {tm.recentRequests90m !== undefined
-                              ? ` · ${fmtRequestCount(tm.recentRequests90m)} 90m`
-                              : ''}
-                          </span>
-                          <span className='t-count'>{tm.costDelta}</span>
-                        </div>
-                      ))}
-                      {tipModelRows.length === 0 && (
-                        <div className='v9-tip-row'>
-                          <span className='t-model'>—</span>
-                          <span className='t-count'>—</span>
-                        </div>
-                      )}
-                    </>
-                  )
+                  const tooltipContent = buildQuotaTooltip(quotaBar)
                   const resetDisplay = quotaBarResetDisplay(quotaBar, isPrior)
                   return (
                     <div
