@@ -44,11 +44,13 @@ describe('aawm-tap allowlist derived from metadata (S6-4)', () => {
     // is written to import only the route's exported allowedPages constant once
     // the engineer exports it:
     const { allowedPages } =
-      await import('../routes/_authenticated/aawm-tap/$page').catch(() => {
-        throw new Error(
-          'allowedPages must be exported from $page.tsx so it can be tested'
-        )
-      })
+      await import('../routes/_authenticated/aawm-tap/allowed-pages').catch(
+        () => {
+          throw new Error(
+            'allowedPages must be exported from $page.tsx so it can be tested'
+          )
+        }
+      )
 
     for (const navPath of metadataNavPaths) {
       expect(allowedPages.has(navPath)).toBe(true)
@@ -84,10 +86,12 @@ describe('aawm-tap allowlist derived from metadata (S6-4)', () => {
         'Splat route src/routes/_authenticated/aawm-tap/$.tsx must exist to reach sub-paths'
       )
     }
-    // Splat route must pass the full path to AawmTapDashboardRoute, not just $page
-    expect(splatRouteContent).toMatch(
-      /AawmTapDashboardRoute|RemoteDashboardRoute/
+    const splatPageContent = readFileSync(
+      'src/routes/_authenticated/aawm-tap/aawm-tap-splat-page.tsx',
+      'utf8'
     )
+    const routeWiring = `${splatRouteContent}\n${splatPageContent}`
+    expect(routeWiring).toMatch(/AawmTapDashboardRoute|RemoteDashboardRoute/)
   })
 })
 
@@ -110,7 +114,7 @@ describe('retryable import cache (S6-3)', () => {
     //
     // RED: currently no such export exists.
     const { createRetryableImporter } =
-      await import('./remote-dashboard').catch(() => ({
+      await import('./remote-dashboard-runtime').catch(() => ({
         createRetryableImporter: undefined,
       }))
 
