@@ -52,7 +52,7 @@
  *   Zero/null/undefined tool counts now render '—' (no hover) matching the
  *   fmtOrDash contract used by all other optional numeric columns.
  */
-import { useState, useMemo, type ReactElement } from 'react'
+import { useState, useMemo, useEffect, type ReactElement } from 'react'
 import {
   createColumnHelper,
   flexRender,
@@ -103,6 +103,7 @@ export type ProviderErrorObservation = UsageReportProviderErrorObservationRow
  * They are instead aggregated into the right SHELL column header count.
  * Must stay in sync with the server's shell-classification list.
  */
+// eslint-disable-next-line react-refresh/only-export-components -- shared with tests/consumers
 export const SHELL_CLASS_TOOL_NAMES = new Set([
   'Bash',
   'exec_command',
@@ -373,6 +374,7 @@ function normalizeShellCommandLabel(label: string | null | undefined): string {
  * @param rows - All `toolActivity` rows for one (provider, model) pair.
  *   Both `kind === 'outer'` and `kind === 'shell'` rows are expected.
  */
+// eslint-disable-next-line react-refresh/only-export-components -- unit-tested helper
 export function buildToolActivity(
   rows: UsageReportToolActivityRow[]
 ): ModelToolActivity {
@@ -544,8 +546,10 @@ export interface ModelRow {
   git_commits?: number
   git_pushes?: number
   inval?: number
-  // Sparkline data
+  // Sparkline data (numeric series parallel to sparkBuckets when bucket-aligned)
   spark?: number[]
+  /** ISO date (or bucket key) per spark point; enables bucket-aligned aggregation. */
+  sparkBuckets?: string[]
   // W33: pre-processed tool activity for TOOL cell hover tooltip
   toolActivity?: ModelToolActivity
   /** Deterministic session-history agent-quality score rollup. */
@@ -634,6 +638,11 @@ const MODEL_FAMILY_DEFINITIONS: Record<string, ModelFamilyDefinition[]> = {
     },
   ],
   google: [
+    {
+      key: 'gemini',
+      label: 'Gemini',
+      matches: (model) => model.includes('gemini'),
+    },
     {
       key: 'flash-lite',
       label: 'Flash Lite',
@@ -791,6 +800,25 @@ function formatLedgerModelDisplayName(
 }
 
 function sumSpark(rows: readonly ModelRow[]): number[] | undefined {
+  const hasBucketAxis = rows.some(
+    (row) => (row.sparkBuckets?.length ?? 0) > 0 && (row.spark?.length ?? 0) > 0
+  )
+  if (hasBucketAxis) {
+    const bucketTotals = new Map<string, number>()
+    for (const row of rows) {
+      const buckets = row.sparkBuckets ?? []
+      const values = row.spark ?? []
+      for (let i = 0; i < values.length; i++) {
+        const bucket = buckets[i]
+        if (bucket === undefined) continue
+        bucketTotals.set(bucket, (bucketTotals.get(bucket) ?? 0) + values[i])
+      }
+    }
+    if (bucketTotals.size === 0) return undefined
+    const orderedBuckets = [...bucketTotals.keys()].sort()
+    return orderedBuckets.map((bucket) => bucketTotals.get(bucket) ?? 0)
+  }
+
   const maxLength = Math.max(0, ...rows.map((row) => row.spark?.length ?? 0))
   if (maxLength === 0) return undefined
 
@@ -798,6 +826,9 @@ function sumSpark(rows: readonly ModelRow[]): number[] | undefined {
     rows.reduce((sum, row) => sum + (row.spark?.[index] ?? 0), 0)
   )
 }
+
+// eslint-disable-next-line react-refresh/only-export-components -- Wave 2 unit-test export
+export { sumSpark as _sumSparkForTest }
 
 function maxNullable(values: readonly (number | null | undefined)[]) {
   const present = values.filter((value): value is number => value != null)
@@ -904,10 +935,6 @@ function aggregateRows(
   const requests = rows.reduce((sum, row) => sum + row.requests, 0)
   const cost = rows.reduce((sum, row) => sum + row.cost_usd, 0)
   const cacheToks = rows.reduce((sum, row) => sum + (row.cache_toks ?? 0), 0)
-  const cacheMissCost = rows.reduce(
-    (sum, row) => sum + (row.cache_miss_usd_cost ?? 0),
-    0
-  )
   const weightedErrorTotal = rows.reduce(
     (sum, row) => sum + row.error_pct * row.requests,
     0
@@ -923,6 +950,16 @@ function aggregateRows(
     const total = values.reduce((sum, value) => sum + value, 0)
     return total > 0 || keepZero ? total : undefined
   }
+  const cacheMissUsdDefined = rows.some(
+    (row) => row.cache_miss_usd_cost !== undefined
+  )
+  const cacheMissUsdSum = rows.reduce(
+    (sum, row) => sum + (row.cache_miss_usd_cost ?? 0),
+    0
+  )
+  // queue/resets: summed across children; explicit zero contributes (not suppressed).
+  const queueSum = optionalSum((row) => row.queue, true)
+  const resetsSum = optionalSum((row) => row.resets, true)
 
   return {
     model: overrides.ledgerLabel,
@@ -946,14 +983,26 @@ function aggregateRows(
               1000
           ) / 10
         : undefined,
-    cache_miss_pct:
-      cacheMissCost > 0 && cost > 0
-        ? Math.round((cacheMissCost / cost) * 1000) / 10
-        : undefined,
-    cache_miss_usd_cost: cacheMissCost > 0 ? cacheMissCost : undefined,
+    cache_miss_pct: (() => {
+      const defined = rows.filter((row) => row.cache_miss_pct !== undefined)
+      if (defined.length === 0) return undefined
+      const definedRequests = defined.reduce(
+        (sum, row) => sum + row.requests,
+        0
+      )
+      if (definedRequests <= 0) return undefined
+      const weighted = defined.reduce(
+        (sum, row) => sum + (row.cache_miss_pct ?? 0) * row.requests,
+        0
+      )
+      return Math.round((weighted / definedRequests) * 10) / 10
+    })(),
+    cache_miss_usd_cost: cacheMissUsdDefined ? cacheMissUsdSum : undefined,
     reasoning_reported: optionalSum((row) => row.reasoning_reported, true),
     reasoning_estimated: optionalSum((row) => row.reasoning_estimated, true),
     cache_toks: cacheToks > 0 ? cacheToks : undefined,
+    queue: queueSum,
+    resets: resetsSum,
     tool: optionalSum((row) => row.tool),
     git_commits: optionalSum((row) => row.git_commits),
     git_pushes: optionalSum((row) => row.git_pushes),
@@ -967,6 +1016,9 @@ function aggregateRows(
     ...overrides,
   }
 }
+
+// eslint-disable-next-line react-refresh/only-export-components -- Wave 2 unit-test export
+export { aggregateRows as _aggregateRowsForTest }
 
 function toModelDisplayRow(
   row: ModelRow,
@@ -1074,7 +1126,13 @@ function sortLedgerRows<T extends LedgerDisplayRow>(
   rows: readonly T[],
   sorting: SortingState
 ): T[] {
-  if (sorting.length === 0) return [...rows]
+  if (sorting.length === 0) {
+    return [...rows].sort((left, right) =>
+      left.ledgerLabel.localeCompare(right.ledgerLabel, undefined, {
+        sensitivity: 'base',
+      })
+    )
+  }
   return [...rows].sort((left, right) => {
     for (const sort of sorting) {
       const result = compareLedgerValues(left, right, sort.id)
@@ -1810,7 +1868,15 @@ const baseVolumeColumns = [
   }),
   helper.accessor('provider', {
     header: 'Provider',
-    cell: (info) => info.getValue() as string,
+    cell: ({ row }) => {
+      if (
+        row.original.ledgerLevel === 'repository' ||
+        row.original.ledgerLevel === 'provider'
+      ) {
+        return '—'
+      }
+      return providerDisplayName(row.original.providerKey)
+    },
   }),
   helper.accessor('requests', {
     header: 'Requests',
@@ -1851,25 +1917,19 @@ const cacheMissDollarAndReasoningColumns = [
   }),
   // Consolidated Reasoning column: reported + estimated in one cell.
   // sortingFn uses combined value (reported + estimated).
-  helper.display({
-    id: 'reasoning',
-    header: 'Reasoning',
-    enableSorting: true,
-    sortingFn: (rowA, rowB) => {
-      const sumA =
-        (rowA.original.reasoning_reported ?? 0) +
-        (rowA.original.reasoning_estimated ?? 0)
-      const sumB =
-        (rowB.original.reasoning_reported ?? 0) +
-        (rowB.original.reasoning_estimated ?? 0)
-      return sumA - sumB
-    },
-    cell: ({ row }) => {
-      const reported = row.original.reasoning_reported
-      const estimated = row.original.reasoning_estimated
-      return <ReasoningTokenValue reported={reported} estimated={estimated} />
-    },
-  }),
+  helper.accessor(
+    (row) => (row.reasoning_reported ?? 0) + (row.reasoning_estimated ?? 0),
+    {
+      id: 'reasoning',
+      header: 'Reasoning',
+      enableSorting: true,
+      cell: ({ row }) => {
+        const reported = row.original.reasoning_reported
+        const estimated = row.original.reasoning_estimated
+        return <ReasoningTokenValue reported={reported} estimated={estimated} />
+      },
+    }
+  ),
 ]
 
 const agentQualityColumn = [
@@ -1944,19 +2004,18 @@ const fourKColumns = [
   }),
 ]
 
-// Cols 17–20: 5K-only columns
+// Cols 17–20: extended columns (5K-only except TOOL, which is always visible).
 // W33/W36-fix: TOOL column has no responsive-class guard — it is always visible.
 // The col-5k-only guard was the primary reason the TOOL column never appeared:
 // display:none below 5120px meant virtually no user ever saw it. The column is
 // intentionally ungated so it shows on 1080p/1440p/4K displays alongside the
 // rest of the base ledger. GIT/INVAL columns remain col-5k-only (rarely needed).
-const fiveKColumns = [
+const extendedColumns = [
   helper.accessor('tool', {
     id: 'tool',
     header: 'TOOL',
     // No meta className — column is always visible (not 5K-gated).
-    // W33: cell rendering is handled in MasterLedgerTable body so we can access
-    // the full row's toolActivity field to build the 2-column hover tooltip.
+    // Body renderer owns TOOL hover; column def intentionally has no cell output.
     cell: () => null,
   }),
   helper.accessor('git_commits', {
@@ -1990,7 +2049,7 @@ const sparklineColumn = [
     id: 'sparkline',
     header: 'Tokens Trend',
     enableSorting: false,
-    // Cell rendering is handled in MasterLedgerTable body to access severity color
+    // Body renderer owns sparkline tint; column def intentionally has no cell output.
     cell: () => null,
   },
 ]
@@ -2015,7 +2074,7 @@ const allColumns = [
   ...latencyCostColumns,
   ...cacheMissPctColumn,
   ...fourKColumns,
-  ...fiveKColumns,
+  ...extendedColumns,
   ...sparklineColumn,
 ]
 
@@ -2051,16 +2110,36 @@ export function MasterLedgerTable({
   onLedgerViewChange,
   errorObservations = [],
 }: MasterLedgerTableProps): ReactElement {
-  const [internalLedgerView, setInternalLedgerView] =
-    useState<LedgerView>('model')
-  const ledgerView = ledgerViewProp ?? internalLedgerView
-  const setLedgerView = onLedgerViewChange ?? setInternalLedgerView
-  const showInternalTabs =
-    ledgerViewProp === undefined || onLedgerViewChange === undefined
-  const [sorting, setSorting] = useState<SortingState>([])
-  const [expandedProviders, setExpandedProviders] = useState<Set<string>>(
-    () => new Set()
+  const [internalLedgerView, setInternalLedgerView] = useState<LedgerView>(
+    () => ledgerViewProp ?? 'model'
   )
+  const isControlled =
+    ledgerViewProp !== undefined && onLedgerViewChange !== undefined
+  const ledgerView = isControlled ? ledgerViewProp! : internalLedgerView
+  const setLedgerView = isControlled
+    ? onLedgerViewChange!
+    : setInternalLedgerView
+  const showInternalTabs = !isControlled
+
+  useEffect(() => {
+    if (
+      ledgerViewProp !== undefined &&
+      onLedgerViewChange === undefined &&
+      import.meta.env.DEV
+    ) {
+      // eslint-disable-next-line no-console -- S2-4: intentional half-controlled dev warning
+      console.warn(
+        'MasterLedgerTable: ledgerView was provided without onLedgerViewChange; using internal state only (half-controlled).'
+      )
+    }
+  }, [ledgerViewProp, onLedgerViewChange])
+
+  const [sorting, setSorting] = useState<SortingState>([])
+  const [expandedProvidersModel, setExpandedProvidersModel] = useState<
+    Set<string>
+  >(() => new Set())
+  const [expandedProvidersRepository, setExpandedProvidersRepository] =
+    useState<Set<string>>(() => new Set())
   const [expandedFamilies, setExpandedFamilies] = useState<Set<string>>(
     () => new Set()
   )
@@ -2145,7 +2224,7 @@ export function MasterLedgerTable({
 
         for (const providerRow of providerRows) {
           result.push(providerRow)
-          if (!expandedProviders.has(providerRow.ledgerId)) continue
+          if (!expandedProvidersRepository.has(providerRow.ledgerId)) continue
 
           const providerEntries = providerMap.get(providerRow.providerKey) ?? []
           const definitions = familyDefinitionsForProvider(
@@ -2270,7 +2349,7 @@ export function MasterLedgerTable({
 
     for (const providerRow of sortedProviderEntries) {
       result.push(providerRow)
-      if (!expandedProviders.has(providerRow.providerKey)) continue
+      if (!expandedProvidersModel.has(providerRow.providerKey)) continue
 
       const providerRows = providerMap.get(providerRow.providerKey) ?? []
       const definitions = familyDefinitionsForProvider(
@@ -2397,12 +2476,14 @@ export function MasterLedgerTable({
     rows,
     sorting,
     ledgerView,
-    expandedProviders,
+    expandedProvidersModel,
+    expandedProvidersRepository,
     expandedFamilies,
     expandedModels,
     expandedRepositories,
   ])
 
+  // eslint-disable-next-line react-hooks/incompatible-library -- TanStack Table API
   const table = useReactTable({
     data: displayRows,
     columns: allColumns,
@@ -2577,17 +2658,19 @@ export function MasterLedgerTable({
                       // C7: err% severity color
                       cellColor = errorPctColor(orig.error_pct)
                       const pct = orig.error_pct
-                      const rowProvider = orig.provider.toLowerCase()
-                      const rowModel = orig.model.toLowerCase()
-                      // Q8 (Wave 31): filter observations to this row's provider+model,
-                      // sort newest-first and cap at MAX_ERROR_HOVER_ROWS.
+                      const rowProviderKey = orig.providerKey
+                      const rowModelKey = orig.model.toLowerCase()
+                      const repoScopeKey = orig.repositoryKey
+                      // Q8 (Wave 31): filter observations by canonical providerKey + model;
+                      // repository-view model rows annotate tooltip with repo scope (S2-3).
                       const rowObs =
                         pct > 0 && orig.ledgerLevel === 'model'
                           ? errorObservations
                               .filter(
                                 (o) =>
-                                  o.provider.toLowerCase() === rowProvider &&
-                                  o.model.toLowerCase() === rowModel
+                                  canonicalProvider(o.provider) ===
+                                    rowProviderKey &&
+                                  o.model.toLowerCase() === rowModelKey
                               )
                               .sort((a, b) => {
                                 const aMs = a.observed_at
@@ -2612,7 +2695,11 @@ export function MasterLedgerTable({
                               style={{ marginBottom: '4px' }}
                             >
                               {rowObs.length} most recent error
-                              {rowObs.length === 1 ? '' : 's'}:
+                              {rowObs.length === 1 ? '' : 's'}
+                              {repoScopeKey !== undefined
+                                ? ` (scoped to: ${repoScopeKey})`
+                                : ''}
+                              :
                             </div>
                             {rowObs.map((e, idx) => (
                               <div
@@ -2963,8 +3050,9 @@ export function MasterLedgerTable({
                       const isModelRow = orig.ledgerLevel === 'model'
                       const isRepositoryRow = orig.ledgerLevel === 'repository'
                       const isExpanded = isProviderRow
-                        ? expandedProviders.has(orig.ledgerId) ||
-                          expandedProviders.has(orig.providerKey)
+                        ? ledgerView === 'repository'
+                          ? expandedProvidersRepository.has(orig.ledgerId)
+                          : expandedProvidersModel.has(orig.providerKey)
                         : isFamilyRow
                           ? expandedFamilies.has(orig.ledgerId)
                           : isModelRow
@@ -2984,19 +3072,27 @@ export function MasterLedgerTable({
                               : 0
                       const toggleExpansion = (): void => {
                         if (isProviderRow) {
-                          setExpandedProviders((current) => {
-                            const next = new Set(current)
-                            const expansionKey =
-                              ledgerView === 'repository'
-                                ? orig.ledgerId
-                                : orig.providerKey
-                            if (next.has(expansionKey)) {
-                              next.delete(expansionKey)
-                            } else {
-                              next.add(expansionKey)
-                            }
-                            return next
-                          })
+                          if (ledgerView === 'repository') {
+                            setExpandedProvidersRepository((current) => {
+                              const next = new Set(current)
+                              if (next.has(orig.ledgerId)) {
+                                next.delete(orig.ledgerId)
+                              } else {
+                                next.add(orig.ledgerId)
+                              }
+                              return next
+                            })
+                          } else {
+                            setExpandedProvidersModel((current) => {
+                              const next = new Set(current)
+                              if (next.has(orig.providerKey)) {
+                                next.delete(orig.providerKey)
+                              } else {
+                                next.add(orig.providerKey)
+                              }
+                              return next
+                            })
+                          }
                           return
                         }
                         if (isRepositoryRow && orig.isExpandable) {
@@ -3155,6 +3251,7 @@ export function MasterLedgerTable({
                     return (
                       <td
                         key={cell.id}
+                        data-col-id={colId}
                         className={tdClassName}
                         style={{
                           padding: '6px 8px',
