@@ -1860,3 +1860,174 @@ test('test_wave31_bar_height_proportional_to_day_total', () => {
   expect(Number.isNaN(largePct)).toBe(false)
   expect(Number.isNaN(smallPct)).toBe(false)
 })
+
+// ---------------------------------------------------------------------------
+// Wave 7 — S1-13: onHourHover identity guard + clear on leave
+// Wave 7 — S1-6 / S3-10: Intl.NumberFormat hoist behaviour-preserving guard
+// ---------------------------------------------------------------------------
+
+/**
+ * test_token_trend_detail_request_identity_guard (S1-13)
+ *
+ * After the Wave 7 engineer adds an identity guard to `onHourHover`:
+ *   - Hovering the SAME day/hour bar a second time must NOT call `onHourHover`
+ *     with a new invocation (the guard short-circuits it).
+ *
+ * The current bug (S1-13 pre-fix): every `pointerEnter` on an hour bar fires
+ * `onHourHover` unconditionally, causing `setTokenTrendHoverTarget` to run on
+ * every mouse movement — even when the same bar is re-entered. This creates
+ * unnecessary state updates and downstream re-fetches.
+ *
+ * The fix adds a guard inside the chart: if the incoming (day, hour) matches
+ * the last reported target, skip the `onHourHover` call.
+ *
+ * This test will be RED until the engineer adds the guard to token-trend-chart.tsx.
+ */
+test('test_token_trend_detail_request_identity_guard', () => {
+  const rows = [
+    {
+      day: '2026-05-20',
+      hour: 8,
+      provider: 'anthropic',
+      traces: 5,
+      token_total: 500,
+      usd_cost: 0,
+    },
+  ]
+  const envelopes = buildTokenTrendDayEnvelopes(rows)
+  const onHoverSpy = vi.fn()
+
+  const { container } = render(
+    <TokenTrendChart
+      series={series}
+      dayEnvelopes={envelopes}
+      healthRows={[...trendHealthRows]}
+      onHourHover={onHoverSpy}
+    />
+  )
+
+  // Find an hour bar and trigger pointerEnter.
+  const hourBars = container.querySelectorAll('.tt-hour-bar')
+  expect(hourBars.length).toBeGreaterThan(0)
+
+  const targetBar = hourBars[0] as HTMLElement
+
+  // First hover — must fire.
+  fireEvent.pointerEnter(targetBar)
+  expect(onHoverSpy).toHaveBeenCalledTimes(1)
+  const firstCallArg = onHoverSpy.mock.calls[0][0] as {
+    day: string
+    hour: number
+  }
+  expect(firstCallArg).toHaveProperty('day')
+  expect(firstCallArg).toHaveProperty('hour')
+
+  // Second pointerEnter on the SAME bar without leaving — after the fix the
+  // guard must prevent a second call. Before the fix: two calls are made.
+  // This assertion is the RED phase: it FAILS before the identity guard lands.
+  fireEvent.pointerEnter(targetBar)
+  expect(onHoverSpy).toHaveBeenCalledTimes(1)
+})
+
+/**
+ * test_token_trend_hour_hover_cleared_on_mouse_leave (S1-13)
+ *
+ * After the Wave 7 engineer adds a clear-on-leave handler:
+ *   - When the pointer leaves the chart's day envelope container, `onHourHover`
+ *     must be called with `null` (or an equivalent sentinel) to clear the active
+ *     hover state upstream.
+ *
+ * Current bug: there is no `onPointerLeave` handler on the chart. The hover
+ * state set by `onHourHover({ day, hour })` is never cleared — leaving stale
+ * detail requests active even after the user moves their mouse off the chart.
+ *
+ * This test will be RED until the engineer adds a clear-on-leave callback.
+ */
+test('test_token_trend_hour_hover_cleared_on_mouse_leave', () => {
+  const rows = [
+    {
+      day: '2026-05-20',
+      hour: 8,
+      provider: 'anthropic',
+      traces: 5,
+      token_total: 500,
+      usd_cost: 0,
+    },
+  ]
+  const envelopes = buildTokenTrendDayEnvelopes(rows)
+  const onHoverSpy = vi.fn()
+
+  const { container } = render(
+    <TokenTrendChart
+      series={series}
+      dayEnvelopes={envelopes}
+      healthRows={[...trendHealthRows]}
+      onHourHover={onHoverSpy}
+    />
+  )
+
+  const hourBars = container.querySelectorAll('.tt-hour-bar')
+  expect(hourBars.length).toBeGreaterThan(0)
+
+  const targetBar = hourBars[0] as HTMLElement
+
+  // Hover to activate.
+  fireEvent.pointerEnter(targetBar)
+  expect(onHoverSpy).toHaveBeenCalledTimes(1)
+
+  // Pointer leaves the chart.
+  // After the fix: onHourHover must be called with null (or a clear value).
+  // Find the outermost chart element (the day hover shell or chart wrapper).
+  const dayShell = container.querySelector('.tt-day-hover-shell') as
+    | HTMLElement
+    | undefined
+  // If day shell not found, fire on container itself.
+  const leaveTarget = dayShell ?? (container.firstChild as HTMLElement)
+  expect(leaveTarget).not.toBeNull()
+
+  fireEvent.pointerLeave(leaveTarget!)
+
+  // After the fix: a second call with null must have been made to clear the request.
+  // Before the fix: onHoverSpy is NOT called again → count stays at 1 → FAILS.
+  expect(onHoverSpy).toHaveBeenCalledTimes(2)
+  const clearArg = onHoverSpy.mock.calls[1][0]
+  expect(clearArg).toBeNull()
+})
+
+/**
+ * test_format_compact_number_hoist_behavior_preserving (S1-6 / S3-10)
+ *
+ * The Wave 7 engineer hoists `Intl.NumberFormat` instances to module-level
+ * constants in token-trend-chart.tsx (formatCompactNumber) and
+ * usage-report-display.ts / phosphor-dashboard.testkit.ts (formatCompactQuantity).
+ *
+ * This is a behaviour-preserving guard. The formatted output MUST be identical
+ * before and after the hoist. We test the output contract by asserting specific
+ * known values that the formatter must produce, matching what an Intl.NumberFormat
+ * with notation='compact' and maximumFractionDigits=1 produces in en-US locale.
+ *
+ * We import formatCompactQuantity from the testkit (the valid import path per
+ * agent instructions) and assert the exact formatted strings remain unchanged.
+ */
+test('test_format_compact_number_hoist_behavior_preserving', async () => {
+  const { formatCompactQuantity } =
+    await import('../components/phosphor-dashboard.testkit')
+
+  // These assertions pin the exact Intl output after the hoist.
+  // The engineer must not change the formatter options when hoisting.
+  expect(formatCompactQuantity(0)).toBe('0')
+  expect(formatCompactQuantity(999)).toBe('999')
+  expect(formatCompactQuantity(1000)).toBe('1K')
+  expect(formatCompactQuantity(1100)).toBe('1.1K')
+  expect(formatCompactQuantity(1500)).toBe('1.5K')
+  expect(formatCompactQuantity(10000)).toBe('10K')
+  expect(formatCompactQuantity(100000)).toBe('100K')
+  expect(formatCompactQuantity(1000000)).toBe('1M')
+  expect(formatCompactQuantity(1550000)).toBe('1.6M')
+
+  // The formatter uses maximumFractionDigits=1, so 1050 → "1.1K" not "1.05K".
+  expect(formatCompactQuantity(1050)).toBe('1.1K')
+
+  // Negative values must format correctly (no sign stripping).
+  expect(formatCompactQuantity(-1000)).toBe('-1K')
+})
