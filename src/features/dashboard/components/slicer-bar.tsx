@@ -26,6 +26,7 @@ import {
   type KeyboardEvent,
   type ReactElement,
 } from 'react'
+import { handleListboxArrowKey } from './slicer-bar-keyboard'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -119,8 +120,12 @@ const DimensionDropdown = memo(function DimensionDropdown({
   shortcutTarget,
 }: DimensionDropdownProps): ReactElement {
   const [open, setOpen] = useState(false)
+  const [activeOptionIndex, setActiveOptionIndex] = useState(0)
   const [staleChips, setStaleChips] = useState<ReadonlySet<string>>(new Set())
   const wrapperRef = useRef<HTMLDivElement>(null)
+  const triggerRef = useRef<HTMLButtonElement>(null)
+  const optionRefs = useRef<Array<HTMLLIElement | null>>([])
+  const skipNextOptionClickRef = useRef(false)
 
   // Close on outside click
   useEffect(() => {
@@ -139,15 +144,69 @@ const DimensionDropdown = memo(function DimensionDropdown({
     }
   }, [open])
 
-  const handleKeyDown = useCallback(
+  const closeDropdown = useCallback((): void => {
+    setOpen(false)
+    triggerRef.current?.focus()
+  }, [])
+
+  const handleTriggerKeyDown = useCallback(
     (e: KeyboardEvent<HTMLButtonElement>): void => {
-      if (e.key === 'Escape') setOpen(false)
+      if (e.key === 'Escape') {
+        closeDropdown()
+        return
+      }
       if (e.key === 'Enter' || e.key === ' ') {
         e.preventDefault()
         setOpen((prev) => !prev)
       }
     },
-    []
+    [closeDropdown]
+  )
+
+  const focusOption = useCallback((index: number): void => {
+    optionRefs.current[index]?.focus()
+  }, [])
+
+  const handleListboxKeyDown = useCallback(
+    (e: KeyboardEvent<HTMLUListElement>): void => {
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        closeDropdown()
+        return
+      }
+      handleListboxArrowKey(
+        e,
+        options.length,
+        activeOptionIndex,
+        setActiveOptionIndex,
+        focusOption
+      )
+    },
+    [activeOptionIndex, closeDropdown, focusOption, options.length]
+  )
+
+  const handleOptionKeyDown = useCallback(
+    (e: KeyboardEvent<HTMLLIElement>, opt: string): void => {
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        closeDropdown()
+        return
+      }
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault()
+        skipNextOptionClickRef.current = true
+        onToggle(opt)
+        return
+      }
+      handleListboxArrowKey(
+        e,
+        options.length,
+        activeOptionIndex,
+        setActiveOptionIndex,
+        focusOption
+      )
+    },
+    [activeOptionIndex, closeDropdown, focusOption, onToggle, options.length]
   )
 
   const hasSelections = selected.length > 0
@@ -157,6 +216,7 @@ const DimensionDropdown = memo(function DimensionDropdown({
     <div className='slicer-dimension' ref={wrapperRef}>
       {/* Trigger button */}
       <button
+        ref={triggerRef}
         type='button'
         className={[
           'slicer-trigger',
@@ -171,7 +231,7 @@ const DimensionDropdown = memo(function DimensionDropdown({
         onClick={() => {
           setOpen((prev) => !prev)
         }}
-        onKeyDown={handleKeyDown}
+        onKeyDown={handleTriggerKeyDown}
       >
         <span className='slicer-label'>{label}</span>
         {hasSelections && (
@@ -244,12 +304,17 @@ const DimensionDropdown = memo(function DimensionDropdown({
               role='listbox'
               aria-multiselectable='true'
               aria-label={`${label} options`}
+              onKeyDown={handleListboxKeyDown}
             >
-              {options.map((opt) => {
+              {options.map((opt, index) => {
                 const isSelected = selected.includes(opt)
+                const isActive = index === activeOptionIndex
                 return (
                   <li
                     key={opt}
+                    ref={(el) => {
+                      optionRefs.current[index] = el
+                    }}
                     role='option'
                     aria-selected={isSelected}
                     className={[
@@ -258,11 +323,26 @@ const DimensionDropdown = memo(function DimensionDropdown({
                     ]
                       .filter(Boolean)
                       .join(' ')}
-                    tabIndex={0}
+                    tabIndex={isActive ? 0 : -1}
                     onClick={() => {
+                      if (skipNextOptionClickRef.current) {
+                        skipNextOptionClickRef.current = false
+                        return
+                      }
                       onToggle(opt)
                     }}
+                    onKeyDown={(e) => {
+                      handleOptionKeyDown(e, opt)
+                    }}
                   >
+                    <input
+                      type='checkbox'
+                      className='slicer-option-checkbox'
+                      checked={isSelected}
+                      tabIndex={-1}
+                      aria-hidden='true'
+                      readOnly
+                    />
                     <span className='slicer-option-check' aria-hidden='true'>
                       {isSelected ? '✓' : ' '}
                     </span>
