@@ -235,7 +235,6 @@ export interface TopModelRow {
   requests: number
   /** Upstream P95 latency in ms; null when no matching health row. */
   p95_ms?: number | null
-  sparkline?: number[]
 }
 
 /**
@@ -252,12 +251,30 @@ export interface AnomalyFlags {
 // Internal helpers
 // ---------------------------------------------------------------------------
 
+/** Packet loss at or above this threshold degrades Status (S2-18). */
+const PACKET_LOSS_STATUS_WARN_THRESHOLD = 100
+
 /** Check whether a provider is flagged in either Set or Map form. */
 function hasEarlyReset(
   earlyReset: Set<string> | Map<string, { prior: string; current: string }>,
   provider: string
 ): boolean {
   return earlyReset.has(provider)
+}
+
+function wrapperIncludesAggregate(wrapperClassName?: string): boolean {
+  if (wrapperClassName === undefined || wrapperClassName === '') return false
+  return wrapperClassName.split(/\s+/).includes('aggregate')
+}
+
+function quotaBarResetDisplay(
+  quotaBar: QuotaBarGroup,
+  isPrior: boolean
+): string {
+  if (isPrior) {
+    return quotaBar.timeAgoLabel ?? '—'
+  }
+  return formatResetDistance(quotaBar.resetAt)
 }
 
 /** Format packet loss percentage as string. Returns '—' when null. */
@@ -591,9 +608,13 @@ export function ProviderCard({
     anomalies !== undefined &&
     hasEarlyReset(anomalies.earlyReset, config.provider)
   const showCacheStale = anomalies?.cacheStale === true
+  const isAggregateVariant = wrapperIncludesAggregate(wrapperClassName)
 
-  // 14-C.6: status is healthy unless errors are significant or data says otherwise.
-  const isHealthy = data.errors === 0
+  // 14-C.6 / S2-18: healthy only when no errors and packet loss is not at warn tier.
+  const isHealthy =
+    data.errors === 0 &&
+    (data.packet_loss_pct === null ||
+      data.packet_loss_pct < PACKET_LOSS_STATUS_WARN_THRESHOLD)
   const statusColor = isHealthy
     ? providerBrandHex(config.provider)
     : 'var(--accent-hot)'
@@ -636,7 +657,7 @@ export function ProviderCard({
           // Only set the inline accent color for non-aggregate cards.
           // Aggregate cards have wrapperClassName='aggregate' and mockup L980-982
           // specifies color: var(--fg) for that variant — handled via CSS class.
-          ...(wrapperClassName !== 'aggregate' && {
+          ...(!isAggregateVariant && {
             color: 'var(--accent-chrome)',
           }),
           fontWeight: 600,
@@ -780,6 +801,41 @@ export function ProviderCard({
         {(lanes !== undefined ? lanes.length > 0 : quotas.length > 0) && (
           <>
             <QuotaSectionTitle title='Quotas' />
+            {(showEarlyReset || showCacheStale) && (
+              <div
+                className='quota-anomaly-header'
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  marginBottom: '4px',
+                  fontFamily: 'var(--font-mono)',
+                  fontSize: '8px',
+                  color: 'var(--fg-muted)',
+                }}
+              >
+                {showEarlyReset && (
+                  <span
+                    className='quota-anomaly-icon icon-reset'
+                    aria-label='early reset'
+                    title='Early quota reset detected'
+                    style={{ fontSize: '8px' }}
+                  >
+                    ⟲
+                  </span>
+                )}
+                {showCacheStale && (
+                  <span
+                    className='quota-anomaly-icon icon-cache'
+                    aria-label='cache stale'
+                    title='Cache data is stale'
+                    style={{ fontSize: '8px' }}
+                  >
+                    ⚠
+                  </span>
+                )}
+              </div>
+            )}
             {lanes !== undefined ? (
               /* ── Wave 41: structured lane rendering ── */
               <div
@@ -848,8 +904,8 @@ export function ProviderCard({
                                 <div className='v9-tip-sub'>{tipVelocity}</div>
                               )}
                               {renderQuotaRequestTotals(quotaBar)}
-                              {tipModelRows.map((tm, mi) => (
-                                <div key={mi} className='v9-tip-row'>
+                              {tipModelRows.map((tm) => (
+                                <div key={tm.model} className='v9-tip-row'>
                                   <span
                                     className='t-model'
                                     style={{ color: modelBrandHex(tm.model) }}
@@ -875,15 +931,17 @@ export function ProviderCard({
                               )}
                             </>
                           )
-                          // Time display: current → "resets in Xh Ym"; prior → "Xh ago" / "Xd ago"
-                          const resetDisplay =
-                            isPrior && quotaBar.timeAgoLabel !== undefined
-                              ? quotaBar.timeAgoLabel
-                              : formatResetDistance(quotaBar.resetAt)
+                          const resetDisplay = quotaBarResetDisplay(
+                            quotaBar,
+                            isPrior
+                          )
 
                           return (
                             <div
-                              key={barIdx}
+                              key={
+                                quotaBar.resetAt ??
+                                `${lane.laneKey}-${isPrior ? 'prior' : 'current'}-${barIdx.toString()}`
+                              }
                               className={`quota-bar-slot ${isPrior ? 'is-prior-slot' : 'is-current-slot'}`}
                               style={{
                                 /* Full-width row for every bar — current and prior alike */
@@ -934,27 +992,6 @@ export function ProviderCard({
                                 >
                                   {resetDisplay}
                                 </span>
-                                {/* Anomaly icons only on current bar */}
-                                {!isPrior && showEarlyReset && (
-                                  <span
-                                    className='quota-anomaly-icon icon-reset'
-                                    aria-label='early reset'
-                                    title='Early quota reset detected'
-                                    style={{ fontSize: '8px' }}
-                                  >
-                                    ⟲
-                                  </span>
-                                )}
-                                {!isPrior && showCacheStale && (
-                                  <span
-                                    className='quota-anomaly-icon icon-cache'
-                                    aria-label='cache stale'
-                                    title='Cache data is stale'
-                                    style={{ fontSize: '8px' }}
-                                  >
-                                    ⚠
-                                  </span>
-                                )}
                               </div>
                               {/* Date-range sub-label: prior bars only — shows exact window boundaries */}
                               {isPrior &&
@@ -1032,8 +1069,8 @@ export function ProviderCard({
                         <div className='v9-tip-sub'>{tipVelocity}</div>
                       )}
                       {renderQuotaRequestTotals(quotaBar)}
-                      {tipModelRows.map((tm, mi) => (
-                        <div key={mi} className='v9-tip-row'>
+                      {tipModelRows.map((tm) => (
+                        <div key={tm.model} className='v9-tip-row'>
                           <span
                             className='t-model'
                             style={{ color: modelBrandHex(tm.model) }}
@@ -1057,12 +1094,14 @@ export function ProviderCard({
                       )}
                     </>
                   )
-                  const resetDisplay =
-                    isPrior && quotaBar.timeAgoLabel !== undefined
-                      ? quotaBar.timeAgoLabel
-                      : formatResetDistance(quotaBar.resetAt)
+                  const resetDisplay = quotaBarResetDisplay(quotaBar, isPrior)
                   return (
-                    <div key={i}>
+                    <div
+                      key={
+                        quotaBar.resetAt ??
+                        `${quotaBar.label}-${isPrior ? 'prior' : 'current'}-${i.toString()}`
+                      }
+                    >
                       <div
                         className='quota-row'
                         style={{
@@ -1095,24 +1134,6 @@ export function ProviderCard({
                           >
                             {quotaBar.label}
                           </span>
-                          {!isPrior && showEarlyReset && (
-                            <span
-                              className='quota-anomaly-icon icon-reset'
-                              aria-label='early reset'
-                              title='Early quota reset detected'
-                            >
-                              ⟲
-                            </span>
-                          )}
-                          {!isPrior && showCacheStale && (
-                            <span
-                              className='quota-anomaly-icon icon-cache'
-                              aria-label='cache stale'
-                              title='Cache data is stale'
-                            >
-                              ⚠
-                            </span>
-                          )}
                         </div>
                         <span
                           className={`quota-row-pct ${pctSeverityClass(quotaBar.consumedPct)}`}
@@ -1133,23 +1154,6 @@ export function ProviderCard({
                         >
                           {resetDisplay}
                         </span>
-                        {!isPrior && (showEarlyReset || showCacheStale) && (
-                          <span className='quota-anomaly-sub'>
-                            {showEarlyReset && (
-                              <>
-                                <span className='anomaly-glyph-reset'>⟲</span>
-                                {'early reset '}
-                              </>
-                            )}
-                            {showEarlyReset && showCacheStale && ' · '}
-                            {showCacheStale && (
-                              <>
-                                <span className='anomaly-glyph-cache'>⚠</span>
-                                {'cache stale'}
-                              </>
-                            )}
-                          </span>
-                        )}
                       </div>
                       <QuotaIntervalBar
                         intervals={quotaBar.segments}
@@ -1258,9 +1262,9 @@ export function ProviderCard({
           >
             Top Models
           </div>
-          {topModels.map((m, i) => (
+          {topModels.map((m) => (
             <div
-              key={i}
+              key={m.model}
               className='model-mini-row'
               style={{
                 display: 'grid',
@@ -1321,7 +1325,7 @@ export function ProviderCard({
                   fontSize: '9.5px',
                 }}
               >
-                {formatLatency(m.p95_ms ?? 0)}
+                {formatLatency(m.p95_ms)}
               </span>
             </div>
           ))}
