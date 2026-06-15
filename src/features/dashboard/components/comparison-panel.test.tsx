@@ -297,12 +297,24 @@ test('test_comparison_panel_falls_back_to_dash_when_no_prior_stats', () => {
   const { container } = render(
     <ComparisonPanel providers={PROVIDERS} modelRows={MODEL_ROWS} />
   )
-  // All four Δ columns render '—' when priorStats absent
+  // All four Δ columns render '—' when priorStats absent; also Cache % when avgCachePct=0
   const allTds = Array.from(container.querySelectorAll('tbody td'))
   const dashCount = allTds.filter((td) => td.textContent === '—').length
   // 4 delta columns × 2 providers = 8 dashes, plus 2 Cache % dashes (avgCachePct=0
   // renders '—' per component logic) → 10 total
   expect(dashCount).toBe(10)
+
+  // Per-cell localization: count dashes per row independently to verify
+  // each provider row has the correct fallback count (not a global table sum).
+  const rows = Array.from(container.querySelectorAll('tbody tr'))
+  expect(rows).toHaveLength(2)
+
+  for (const row of rows) {
+    const cells = Array.from(row.querySelectorAll('td'))
+    const rowDashCount = cells.filter((td) => td.textContent === '—').length
+    // Each provider row: 4 delta dashes + 1 cache dash = 5
+    expect(rowDashCount).toBe(5)
+  }
 })
 
 test('test_comparison_panel_falls_back_to_dash_for_missing_provider_in_prior', () => {
@@ -317,12 +329,41 @@ test('test_comparison_panel_falls_back_to_dash_for_missing_provider_in_prior', (
   )
   // anthropic gets computed values
   expect(screen.getByText('+40.0%')).toBeTruthy()
-  // openai: 4 delta dashes + 1 cache dash (avgCachePct=0) = 5
+
+  // Per-cell localization: count dashes per row independently.
+  const rows = Array.from(partialContainer.querySelectorAll('tbody tr'))
+  expect(rows).toHaveLength(2)
+
+  // Find the anthropic and openai rows by their provider name cell (first td)
+  const anthropicRow = rows.find((r) =>
+    r
+      .querySelectorAll('td')[0]
+      ?.textContent?.toUpperCase()
+      .includes('ANTHROPIC')
+  )
+  const openaiRow = rows.find((r) =>
+    r.querySelectorAll('td')[0]?.textContent?.toUpperCase().includes('OPENAI')
+  )
+
+  expect(anthropicRow).toBeDefined()
+  expect(openaiRow).toBeDefined()
+
   // anthropic: Δ Err prior=0 → computeDeltaPct(0,0)=null → '—', plus 1 cache dash = 2
-  // Total dashes: 5 + 2 = 7
+  const anthropicDashes = Array.from(
+    anthropicRow!.querySelectorAll('td')
+  ).filter((td) => td.textContent === '—').length
+  expect(anthropicDashes).toBe(2)
+
+  // openai: 4 delta dashes + 1 cache dash (avgCachePct=0) = 5
+  const openaiDashes = Array.from(openaiRow!.querySelectorAll('td')).filter(
+    (td) => td.textContent === '—'
+  ).length
+  expect(openaiDashes).toBe(5)
+
+  // Total dashes across the whole table = 2 + 5 = 7
   const allTds = Array.from(partialContainer.querySelectorAll('tbody td'))
-  const dashCount = allTds.filter((td) => td.textContent === '—').length
-  expect(dashCount).toBe(7)
+  const totalDashCount = allTds.filter((td) => td.textContent === '—').length
+  expect(totalDashCount).toBe(7)
 })
 
 // ---------------------------------------------------------------------------
