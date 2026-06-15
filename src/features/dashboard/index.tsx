@@ -30,7 +30,8 @@ import {
   fetchUsageReport,
   fetchUsageReportQuotaHistory,
   fetchUsageReportQuotaRangeHistory,
-  fetchUsageReportQuotas,
+  usageReportQuotasKey,
+  usageReportQuotasQueryOptions,
   type UsageReportGrain,
   type UsageReportProviderLatencyHealthRow,
   type UsageReportQuotaRow,
@@ -175,9 +176,8 @@ export function Dashboard(): ReactElement {
     useState<LowerLaneMode>('tui')
   const [ledgerView, setLedgerView] = useState<LedgerView>('model')
 
-  const defaults = useMemo(() => defaultDateRange(), [])
-  const [from, setFrom] = useState(defaults.from)
-  const [to, setTo] = useState(defaults.to)
+  const [from, setFrom] = useState(() => defaultDateRange().from)
+  const [to, setTo] = useState(() => defaultDateRange().to)
   // Wave 16-V: grain hardcoded to 'day'; per-visual grain logic in PhosphorDashboard untouched
   const grain: UsageReportGrain = 'day'
   // 15-C.4: controlled search input state for client-side row filtering
@@ -204,6 +204,19 @@ export function Dashboard(): ReactElement {
     const id = setInterval(() => {
       setRecencyNow(new Date())
     }, 10_000)
+    return () => {
+      clearInterval(id)
+    }
+  }, [])
+
+  useEffect(() => {
+    const syncRangeToEasternDay = (): void => {
+      const { from: nextFrom, to: nextTo } = defaultDateRange()
+      setFrom((prev) => (prev === nextFrom ? prev : nextFrom))
+      setTo((prev) => (prev === nextTo ? prev : nextTo))
+    }
+    syncRangeToEasternDay()
+    const id = setInterval(syncRangeToEasternDay, 60_000)
     return () => {
       clearInterval(id)
     }
@@ -438,17 +451,11 @@ export function Dashboard(): ReactElement {
   // date shape so React Query can dedupe normal load subscribers. The optional
   // cache-bust element is only populated by manual quota refresh.
   const { data: quotasData, isFetching: quotasFetching } = useQuery({
-    queryKey: ['usage-report-quotas', from, to, quotaCacheBust],
-    queryFn: ({ signal }) =>
-      fetchUsageReportQuotas(
-        {
-          cacheBust: quotaCacheBust,
-        },
-        signal
-      ),
-    staleTime: LIVE_DASHBOARD_REFETCH_INTERVAL_MS,
-    refetchInterval: LIVE_DASHBOARD_REFETCH_INTERVAL_MS,
-    refetchIntervalInBackground: true,
+    ...usageReportQuotasQueryOptions({
+      from,
+      to,
+      cacheBust: quotaCacheBust,
+    }),
   })
 
   const { data: quotaRangeHistoryData, isFetching: quotaRangeHistoryFetching } =
@@ -621,18 +628,10 @@ export function Dashboard(): ReactElement {
   }, [refetchSummaryReport])
 
   const handleQuotaRefresh = useCallback(async (): Promise<void> => {
-    const cacheBust = Date.now().toString()
-    setQuotaCacheBust(cacheBust)
-    await queryClient.fetchQuery({
-      queryKey: ['usage-report-quotas', from, to, cacheBust],
-      queryFn: ({ signal }) =>
-        fetchUsageReportQuotas(
-          {
-            cacheBust,
-          },
-          signal
-        ),
-      staleTime: LIVE_DASHBOARD_REFETCH_INTERVAL_MS,
+    const bust = Date.now().toString()
+    setQuotaCacheBust(bust)
+    await queryClient.refetchQueries({
+      queryKey: usageReportQuotasKey(from, to, bust),
     })
   }, [from, queryClient, to])
 
@@ -642,7 +641,8 @@ export function Dashboard(): ReactElement {
     quotaRows,
     summaryReport?.providerErrorObservations,
     summaryReport?.dockerLogErrors,
-    summaryReport?.providerLatencyHealth
+    summaryReport?.providerLatencyHealth,
+    recencyNow
   )
 
   return (

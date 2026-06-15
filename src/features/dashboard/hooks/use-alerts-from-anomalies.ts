@@ -117,6 +117,15 @@ function parseTime(value: string | null | undefined): number | null {
   return Number.isFinite(time) ? time : null
 }
 
+function formatResetMoveSub(prior: string, current: string): string {
+  const priorDay = prior.slice(0, 10)
+  const currentDay = current.slice(0, 10)
+  if (priorDay === currentDay) {
+    return `Reset moved ${prior} -> ${current}`
+  }
+  return `Reset moved ${priorDay} -> ${currentDay}`
+}
+
 function compactAlertMessage(value: string | null | undefined): string | null {
   const compact = value?.replace(/\s+/g, ' ').trim()
   if (!compact) return null
@@ -298,13 +307,11 @@ export function buildDashboardAlertSummary({
     if (count > 0 && row.status_probe_success_pct !== null) {
       failures += Math.round(count * (1 - row.status_probe_success_pct / 100))
     }
-    if (count === 0) {
-      failures +=
-        (row.icmp_failures ?? 0) +
-        (row.dns_failures ?? 0) +
-        (row.tcp_failures ?? 0) +
-        (row.tls_failures ?? 0)
-    }
+    failures +=
+      (row.icmp_failures ?? 0) +
+      (row.dns_failures ?? 0) +
+      (row.tcp_failures ?? 0) +
+      (row.tls_failures ?? 0)
     if (failures <= 0) continue
     const provider = providerLabel(row.provider)
     recentPingFailures.set(
@@ -325,7 +332,7 @@ export function buildDashboardAlertSummary({
     issues.push({
       severity: 'warning',
       head: `Early reset from ${providerLabel(provider)}`,
-      sub: `Reset moved ${prior.slice(0, 10)} -> ${current.slice(0, 10)}`,
+      sub: formatResetMoveSub(prior, current),
     })
   }
 
@@ -396,7 +403,8 @@ export function useDashboardAlertSummary(
   quotas?: UsageReportQuotaRow[],
   providerErrorObservations?: UsageReportProviderErrorObservationRow[],
   dockerLogErrors?: UsageReportDockerLogErrorRow[],
-  providerLatencyHealth?: UsageReportProviderLatencyHealthRow[]
+  providerLatencyHealth?: UsageReportProviderLatencyHealthRow[],
+  now?: Date
 ): DashboardAlertSummary {
   return useMemo(
     () =>
@@ -407,6 +415,7 @@ export function useDashboardAlertSummary(
         providerErrorObservations,
         dockerLogErrors,
         providerLatencyHealth,
+        now,
       }),
     [
       anomalies,
@@ -415,6 +424,7 @@ export function useDashboardAlertSummary(
       providerErrorObservations,
       dockerLogErrors,
       providerLatencyHealth,
+      now,
     ]
   )
 }
@@ -447,7 +457,7 @@ export function useAlertsFromAnomalies(
       alerts.push({
         type: 'early-reset',
         head: `⟲ Early reset — ${provider}`,
-        sub: `Reset moved ${prior.slice(0, 10)} → ${current.slice(0, 10)}`,
+        sub: formatResetMoveSub(prior, current),
       })
     }
 
@@ -537,23 +547,23 @@ export function useAlertsFromAnomalies(
     // ── Wave 11 PR7-lite: always-on per-provider healthy alerts ────── //
     // For each canonical provider with no anomalies (no early-reset entry),
     // emit an info alert "Provider X: healthy".
-    const anomalouProviders = new Set(
-      [...anomalies.earlyReset.keys()].map((p) => p.toLowerCase())
+    const anomalousCanonical = new Set(
+      [...anomalies.earlyReset.keys()].map((p) => canonicalProvider(p))
     )
+    const emittedHealthy = new Set<string>()
     for (const providerName of CANONICAL_PROVIDERS) {
-      if (!anomalouProviders.has(providerName.toLowerCase())) {
-        alerts.push({
-          type: 'info',
-          head: `${providerName}: healthy`,
-        })
-      }
+      const canonicalKey =
+        Object.entries(PROVIDER_LABELS).find(
+          ([, label]) => label === providerName
+        )?.[0] ?? canonicalProvider(providerName)
+      if (anomalousCanonical.has(canonicalKey)) continue
+      if (emittedHealthy.has(providerName)) continue
+      emittedHealthy.add(providerName)
+      alerts.push({
+        type: 'info',
+        head: `${providerName}: healthy`,
+      })
     }
-
-    // ── Wave 11 PR7-lite: always-on sync status ───────────────────── //
-    alerts.push({
-      type: 'info',
-      head: 'Sync on schedule',
-    })
 
     return alerts
   }, [anomalies, summary, quotas])

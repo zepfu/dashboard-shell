@@ -11,6 +11,8 @@ export type AgentQualityFamilyKey =
 export interface AgentQualityFamilySummary {
   score: number | null
   evaluated: number
+  /** Rows that contributed a numeric score (honest coverage denominator). */
+  scoredEvaluated: number
   possible: number
   issueCount: number
 }
@@ -220,11 +222,17 @@ function familyFromFlat(
   possible: unknown,
   issueCount: unknown
 ): AgentQualityFamilySummary {
+  const evaluatedN = finiteNumber(evaluated)
+  const issueN = finiteNumber(issueCount)
+  const scoreN = nullableScore(score)
+  const scoredEvaluated =
+    scoreN === null ? 0 : Math.max(0, Math.min(evaluatedN, evaluatedN - issueN))
   return {
-    score: nullableScore(score),
-    evaluated: finiteNumber(evaluated),
+    score: scoreN,
+    evaluated: evaluatedN,
+    scoredEvaluated,
     possible: finiteNumber(possible),
-    issueCount: finiteNumber(issueCount),
+    issueCount: issueN,
   }
 }
 
@@ -492,7 +500,9 @@ export function agentQualityFromFlatRow(
     !hasHandoffSignals &&
     summary.reasons.length === 0
   ) {
-    return undefined
+    if (finiteNumber(row.agent_score_rows ?? row.traces) <= 0) {
+      return undefined
+    }
   }
   return summary
 }
@@ -507,11 +517,14 @@ function combineFamily(
   let possible = 0
   let issueCount = 0
 
+  let scoredEvaluated = 0
+
   for (const summary of summaries) {
     const item = summary[family]
     evaluated += item.evaluated
     possible += item.possible
     issueCount += item.issueCount
+    scoredEvaluated += item.scoredEvaluated
     if (item.score !== null && item.evaluated > 0) {
       scoreNumerator += item.score * item.evaluated
       scoreDenominator += item.evaluated
@@ -521,6 +534,7 @@ function combineFamily(
   return {
     score: scoreDenominator > 0 ? scoreNumerator / scoreDenominator : null,
     evaluated,
+    scoredEvaluated,
     possible,
     issueCount,
   }

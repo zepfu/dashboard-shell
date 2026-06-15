@@ -40,7 +40,7 @@ import {
   fetchUsageReport,
   fetchUsageReportQuotaEstimator,
   fetchUsageReportQuotaHistory,
-  fetchUsageReportQuotas,
+  usageReportQuotasQueryOptions,
   fetchUsageReportToolActivity,
   fetchUsageReportTokenTrendDay,
   fetchUsageReportTokenTrendSummary,
@@ -1296,26 +1296,13 @@ export default function PhosphorDashboard({
     isFetching: internalQuotasFetching,
     refetch: refetchInternalQuotas,
   } = useQuery({
-    queryKey: [
-      'usage-report-quotas',
-      resolvedFrom,
-      resolvedTo,
-      reportRefreshKey,
-    ],
-    queryFn: ({ signal }) =>
-      fetchUsageReportQuotas(
-        {
-          cacheBust: reportRefreshKey,
-        },
-        signal
-      ),
+    ...usageReportQuotasQueryOptions({
+      from: resolvedFrom,
+      to: resolvedTo,
+      cacheBust: reportRefreshKey,
+    }),
     // Skip when the parent has already provided quota rows.
     enabled: internalQuotasEnabled,
-    // Match the staleTime override used by index.tsx so Storybook /
-    // standalone behaviour is consistent with production.
-    staleTime: LIVE_DASHBOARD_REFETCH_INTERVAL_MS,
-    refetchInterval: LIVE_DASHBOARD_REFETCH_INTERVAL_MS,
-    refetchIntervalInBackground: true,
   })
   const quotasFetching = internalQuotasEnabled
     ? internalQuotasFetching
