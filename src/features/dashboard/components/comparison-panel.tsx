@@ -34,29 +34,21 @@
  */
 import type { CSSProperties, ReactElement } from 'react'
 import { fmtCompact } from '../lib/format-utils'
-import { formatLatency, formatUsd } from '../lib/usage-report-display'
+import {
+  formatLatency,
+  formatUsd,
+  providerBrandHex,
+} from '../lib/usage-report-display'
+import {
+  BURN_DAILY_HOT_THRESHOLD_USD,
+  buildCurrentStats,
+  computeDeltaPct,
+  deltaColor,
+  formatDeltaPctWithPrior,
+  type ProviderCurrentStats,
+} from './comparison-panel.helpers'
 import type { ModelRow } from './master-ledger-table'
 import type { TrendBucket } from './token-trend-chart'
-
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
-/**
- * Aggregated stats per provider for one time window.
- * Exported so PhosphorDashboard can build the same shape for the prior window
- * and pass it as the `priorStats` prop.
- */
-export interface ProviderCurrentStats {
-  provider: string
-  totalCost: number
-  totalTokens: number
-  avgP95: number
-  avgErrPct: number
-  avgCachePct: number
-  /** Burn = avg daily spend = totalCost / periodDays. */
-  burn: number
-}
 
 /** Props for ComparisonPanel. */
 interface ComparisonPanelProps {
@@ -99,95 +91,6 @@ interface ComparisonPanelProps {
    * `from`/`to` parameters. See Wave 32-Deltas implementation.
    */
   priorStats?: ProviderCurrentStats[]
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-export function buildCurrentStats(
-  providers: string[],
-  modelRows: ModelRow[],
-  periodDays: number
-): ProviderCurrentStats[] {
-  return providers.map((provider) => {
-    const rows = modelRows.filter(
-      (r) => r.provider.toLowerCase() === provider.toLowerCase()
-    )
-    const totalCost = rows.reduce((s, r) => s + r.cost_usd, 0)
-    const totalTokens = rows.reduce((s, r) => s + r.tokens_in + r.tokens_out, 0)
-
-    const p95Values = rows.map((r) => r.p95_ms).filter((v) => v > 0)
-    const avgP95 =
-      p95Values.length > 0
-        ? p95Values.reduce((s, v) => s + v, 0) / p95Values.length
-        : 0
-
-    const errPcts = rows.map((r) => r.error_pct).filter((v) => v > 0)
-    const avgErrPct =
-      errPcts.length > 0
-        ? errPcts.reduce((s, v) => s + v, 0) / errPcts.length
-        : 0
-
-    const cachePcts = rows
-      .map((r) => r.cache_pct)
-      .filter((v): v is number => v !== undefined && v > 0)
-    const avgCachePct =
-      cachePcts.length > 0
-        ? cachePcts.reduce((s, v) => s + v, 0) / cachePcts.length
-        : 0
-
-    // Burn = avg daily spend. Divide by the actual window length so the value
-    // is correct regardless of the user-selected date range. When periodDays=1
-    // (the default 1-day window), burn equals totalCost (i.e. the raw daily
-    // spend for that single day).
-    const burn = totalCost / periodDays
-
-    return {
-      provider,
-      totalCost,
-      totalTokens,
-      avgP95,
-      avgErrPct,
-      avgCachePct,
-      burn,
-    }
-  })
-}
-
-// ---------------------------------------------------------------------------
-// Delta helpers (Wave 32-Deltas)
-// ---------------------------------------------------------------------------
-
-/**
- * Computes a signed percentage change: ((current - prior) / prior) * 100.
- * Returns `null` when prior is zero or either value is not finite, which
- * causes the caller to render `—` instead of a misleading Infinity/NaN.
- */
-export function computeDeltaPct(current: number, prior: number): number | null {
-  if (!isFinite(prior) || !isFinite(current) || prior === 0) return null
-  return ((current - prior) / prior) * 100
-}
-
-/**
- * Formats a signed percentage delta for display: `+N.N%` or `-N.N%`.
- * Returns `—` when `delta` is `null` (no prior data or division by zero).
- */
-export function formatDeltaPct(delta: number | null): string {
-  if (delta === null) return '—'
-  const sign = delta >= 0 ? '+' : ''
-  return `${sign}${delta.toFixed(1)}%`
-}
-
-/**
- * Returns the CSS color token for a delta value.
- *
- * For cost / tokens / latency / error metrics a positive delta (increase) is
- * hot (bad) and a negative delta (decrease) is cool (good). Zero stays neutral.
- */
-export function deltaColor(delta: number | null): string {
-  if (delta === null || delta === 0) return 'var(--fg-muted)'
-  return delta > 0 ? 'var(--accent-hot)' : 'var(--accent-teal)'
 }
 
 /**
@@ -314,11 +217,12 @@ export function ComparisonPanel({
   periodDays = 1,
   priorStats,
 }: ComparisonPanelProps): ReactElement {
-  const stats = buildCurrentStats(providers, modelRows, periodDays)
+  const windowDays = Math.max(1, Math.round(periodDays))
+  const stats = buildCurrentStats(providers, modelRows, windowDays)
 
   /** Derive title label from actual period length. */
   const periodLabel =
-    periodDays === 1 ? '1-day' : `${periodDays.toString()}-day`
+    windowDays === 1 ? '1-day' : `${windowDays.toString()}-day`
 
   /** Common TH style */
   const thStyle: CSSProperties = {
@@ -389,7 +293,7 @@ export function ComparisonPanel({
         <tbody>
           {stats.map((stat) => {
             const sparkPoints = providerSparkPoints(stat.provider, trendBuckets)
-            const providerColor = 'var(--accent-cool)'
+            const providerColor = providerBrandHex(stat.provider)
 
             // Wave 32-Deltas: look up the matching prior-window entry.
             const prior = priorStats?.find(
@@ -447,7 +351,11 @@ export function ComparisonPanel({
                       : `Current period cost: ${formatUsd(stat.totalCost)}`
                   }
                 >
-                  {formatDeltaPct(deltaCost)}
+                  {formatDeltaPctWithPrior(
+                    stat.totalCost,
+                    prior?.totalCost,
+                    deltaCost
+                  )}
                 </td>
 
                 {/* Δ Tok — signed % change vs prior window */}
@@ -465,7 +373,11 @@ export function ComparisonPanel({
                       : `Current period tokens: ${fmtCompact(stat.totalTokens)}`
                   }
                 >
-                  {formatDeltaPct(deltaTok)}
+                  {formatDeltaPctWithPrior(
+                    stat.totalTokens,
+                    prior?.totalTokens,
+                    deltaTok
+                  )}
                 </td>
 
                 {/* Δ p95 — signed % change vs prior window */}
@@ -483,7 +395,11 @@ export function ComparisonPanel({
                       : `Current period p95: ${formatLatency(stat.avgP95)}`
                   }
                 >
-                  {formatDeltaPct(deltaP95)}
+                  {formatDeltaPctWithPrior(
+                    stat.avgP95,
+                    prior?.avgP95,
+                    deltaP95
+                  )}
                 </td>
 
                 {/* Δ Err — signed % change vs prior window */}
@@ -501,7 +417,11 @@ export function ComparisonPanel({
                       : `Current period err%: ${stat.avgErrPct.toFixed(1)}%`
                   }
                 >
-                  {formatDeltaPct(deltaErr)}
+                  {formatDeltaPctWithPrior(
+                    stat.avgErrPct,
+                    prior?.avgErrPct,
+                    deltaErr
+                  )}
                 </td>
 
                 {/* Cache % — current-period prompt-cache hit ratio */}
@@ -528,7 +448,10 @@ export function ComparisonPanel({
                     padding: '5px 6px',
                     textAlign: 'right',
                     borderRight: '1px solid var(--border)',
-                    color: stat.burn > 100 ? 'var(--accent-hot)' : 'var(--fg)',
+                    color:
+                      stat.burn > BURN_DAILY_HOT_THRESHOLD_USD
+                        ? 'var(--accent-hot)'
+                        : 'var(--fg)',
                     whiteSpace: 'nowrap',
                   }}
                 >

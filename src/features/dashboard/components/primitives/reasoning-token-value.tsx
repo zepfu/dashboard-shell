@@ -42,7 +42,7 @@ export function ReasoningTokenValue({
   }
 
   const reportedValue = reported ?? 0
-  const estimatedValue = estimated ?? 0
+  const estimatedValue = Math.max(0, estimated ?? 0)
   const total = reportedValue + estimatedValue
   const content = (
     <span className='reasoning-token-value'>

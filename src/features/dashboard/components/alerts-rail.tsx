@@ -50,6 +50,11 @@ function alertItemStyle(type: AlertItem['type']): React.CSSProperties {
         borderLeftColor: 'var(--accent-hot)',
         color: 'var(--accent-hot)',
         background: 'var(--card-2)',
+        whiteSpace: 'normal',
+        overflow: 'visible',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '2px',
       }
     case 'early-reset':
       return {
