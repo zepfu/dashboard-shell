@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo } from 'react'
 import type {
   ColumnFiltersState,
   OnChangeFn,
@@ -125,17 +125,10 @@ export function useTableUrlState(
   const globalFilterEnabled = globalFilterCfg?.enabled ?? true
   const trimGlobal = globalFilterCfg?.trim ?? true
 
-  const columnFiltersFromUrl = useMemo(
+  const columnFilters: ColumnFiltersState = useMemo(
     () => columnFiltersFromSearch(search, columnFiltersCfg),
     [search, columnFiltersCfg]
   )
-
-  const [columnFilters, setColumnFilters] =
-    useState<ColumnFiltersState>(columnFiltersFromUrl)
-
-  useEffect(() => {
-    setColumnFilters(columnFiltersFromUrl)
-  }, [columnFiltersFromUrl])
 
   const pagination: PaginationState = useMemo(() => {
     const pageNum = clampPage((search as SearchRecord)[pageKey], defaultPage)
@@ -160,19 +153,11 @@ export function useTableUrlState(
     })
   }
 
-  const globalFilterFromUrl = useMemo(() => {
+  const globalFilter: string | undefined = useMemo(() => {
     if (!globalFilterEnabled) return undefined
     const raw = (search as SearchRecord)[globalFilterKey]
     return typeof raw === 'string' ? raw : ''
   }, [search, globalFilterKey, globalFilterEnabled])
-
-  const [globalFilter, setGlobalFilter] = useState<string | undefined>(
-    globalFilterFromUrl
-  )
-
-  useEffect(() => {
-    setGlobalFilter(globalFilterFromUrl)
-  }, [globalFilterFromUrl])
 
   const onGlobalFilterChange: OnChangeFn<string> | undefined =
     globalFilterEnabled
@@ -182,7 +167,6 @@ export function useTableUrlState(
               ? updater(globalFilter ?? '')
               : updater
           const value = trimGlobal ? next.trim() : next
-          setGlobalFilter(value)
           navigate({
             search: (prev) => ({
               ...(prev as SearchRecord),
@@ -196,7 +180,6 @@ export function useTableUrlState(
   const onColumnFiltersChange: OnChangeFn<ColumnFiltersState> = (updater) => {
     const next =
       typeof updater === 'function' ? updater(columnFilters) : updater
-    setColumnFilters(next)
 
     const patch: Record<string, unknown> = {}
 
