@@ -23,11 +23,13 @@ import {
   modelFamilyForRow,
 } from './master-ledger-model-meta'
 import {
-  buildToolActivity,
   MasterLedgerTable,
-  SHELL_CLASS_TOOL_NAMES,
   type ProviderErrorObservation,
 } from './master-ledger-table'
+import {
+  buildToolActivity,
+  SHELL_CLASS_TOOL_NAMES,
+} from './master-ledger-tool-activity'
 
 /** Opens lazy HoverTooltip panels for table cells (tooltip content mounts on hover). */
 function openLazyHoverTooltipsIn(container: HTMLElement): void {

@@ -29,11 +29,8 @@ import {
   formatDashboardTime,
   providerAliases,
 } from '../lib/usage-report-display'
-import {
-  buildToolActivity,
-  type ModelLatencySummary,
-  type ModelRow,
-} from './master-ledger-table'
+import type { ModelLatencySummary, ModelRow } from './master-ledger-aggregation'
+import { buildToolActivity } from './master-ledger-tool-activity'
 import { type CellDef, type HealthStripEvent } from './primitives/health-strip'
 import {
   type ProviderMetrics,
