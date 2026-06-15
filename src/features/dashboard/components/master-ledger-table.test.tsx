@@ -1575,9 +1575,7 @@ test('test_sumSpark_aligns_by_bucket_not_index', async () => {
   // sparkline reflects `sumSpark` output through `aggregateRows`.
 
   // Import the test export added by the engineer.
-  const mod = await import('./master-ledger-table')
-  // Engineer must add: export { sumSpark as _sumSparkForTest }
-  // Until then this will throw → test stays red for the right reason.
+  const mod = await import('./master-ledger-aggregation')
   const sumSparkFn = (mod as Record<string, unknown>)['_sumSparkForTest'] as
     | ((
         rows: { spark?: number[]; sparkBuckets?: string[] }[]
@@ -1586,9 +1584,7 @@ test('test_sumSpark_aligns_by_bucket_not_index', async () => {
 
   if (sumSparkFn === undefined) {
     throw new Error(
-      'S2-1: _sumSparkForTest is not exported from master-ledger-table.tsx. ' +
-        'Engineer must add: export { sumSpark as _sumSparkForTest } and update ' +
-        'ModelRow to carry sparkBuckets?: string[] for bucket-aligned aggregation.'
+      'S2-1: _sumSparkForTest is not exported from master-ledger-aggregation.ts.'
     )
   }
 
@@ -1622,7 +1618,7 @@ test('test_sumSpark_aligns_by_bucket_not_index', async () => {
  * Engineer must export: export { aggregateRows as _aggregateRowsForTest }
  */
 test('test_aggregateRows_math', async () => {
-  const mod = await import('./master-ledger-table')
+  const mod = await import('./master-ledger-aggregation')
   const aggregateRowsFn = (mod as Record<string, unknown>)[
     '_aggregateRowsForTest'
   ] as
@@ -1655,8 +1651,7 @@ test('test_aggregateRows_math', async () => {
 
   if (aggregateRowsFn === undefined) {
     throw new Error(
-      'S2-2/S2-5/S2-T2: _aggregateRowsForTest is not exported from master-ledger-table.tsx. ' +
-        'Engineer must add: export { aggregateRows as _aggregateRowsForTest }'
+      'S2-2/S2-5/S2-T2: _aggregateRowsForTest is not exported from master-ledger-aggregation.ts.'
     )
   }
 
