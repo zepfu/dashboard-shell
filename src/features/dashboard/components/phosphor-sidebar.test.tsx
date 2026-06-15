@@ -4,7 +4,7 @@ import {
   createRouter,
   RouterProvider,
 } from '@tanstack/react-router'
-import { act, render, screen, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import type { DashboardAlertSummary } from '../hooks/use-alerts-from-anomalies'
 import { PhosphorSidebar } from './phosphor-sidebar'
 
@@ -88,6 +88,7 @@ test('renders dashboard alert status dot with hover details', async () => {
     name: 'Dashboard alert status: error',
   })
   expect(status).toHaveClass('sidebar-alert-dot', 'error')
+  fireEvent.pointerEnter(status.parentElement ?? status)
   expect(screen.getByText('10 529 errors from Anthropic')).toBeInTheDocument()
 })
 

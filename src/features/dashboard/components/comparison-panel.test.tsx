@@ -9,6 +9,7 @@
  *   with periodDays defaulting to 1 (the Wave 16-V default window).
  */
 import { render, screen } from '@testing-library/react'
+import { formatUsd } from '../lib/usage-report-display'
 import {
   buildCurrentStats,
   ComparisonPanel,
@@ -49,15 +50,6 @@ const MODEL_ROWS: ModelRow[] = [
   makeRow('anthropic', 70), // 70 USD for the period
   makeRow('openai', 14), // 14 USD for the period
 ]
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/** Formats a USD value the same way formatUsd does (2 decimal places, $ prefix). */
-function formatUsd(n: number): string {
-  return `$${n.toFixed(2)}`
-}
 
 // ---------------------------------------------------------------------------
 // Tests

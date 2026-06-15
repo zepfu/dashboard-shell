@@ -54,7 +54,9 @@ export function ReasoningTokenValue({
   if (estimatedValue <= 0) return content
 
   return (
-    <HoverTooltip content={reasoningTooltip(reportedValue, estimatedValue)}>
+    <HoverTooltip
+      content={() => reasoningTooltip(reportedValue, estimatedValue)}
+    >
       {content}
     </HoverTooltip>
   )

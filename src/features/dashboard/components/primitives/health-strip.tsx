@@ -581,7 +581,7 @@ export function HealthStrip({
           <div aria-hidden='true' style={shellStyle}>
             <div style={{ pointerEvents: 'auto', height: '100%' }}>
               <HoverTooltip
-                content={resolvedTooltip}
+                content={() => resolvedTooltip}
                 variant='health'
                 panelStyle={tooltipPanelStyle}
               >
@@ -594,7 +594,7 @@ export function HealthStrip({
 
       return (
         <HoverTooltip
-          content={resolvedTooltip}
+          content={() => resolvedTooltip}
           variant='health'
           panelStyle={tooltipPanelStyle}
         >

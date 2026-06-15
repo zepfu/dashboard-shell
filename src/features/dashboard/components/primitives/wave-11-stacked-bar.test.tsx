@@ -29,8 +29,6 @@
  */
 import { render } from '@testing-library/react'
 import { describe, expect, test } from 'vitest'
-// RED: module does not exist yet — import fails until Engineer C creates it.
-// @ts-expect-error — module created by Engineer C in W11
 import { StackedBar } from './stacked-bar'
 
 // ---------------------------------------------------------------------------

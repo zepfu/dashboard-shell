@@ -181,7 +181,7 @@ function SidebarAlertDot({
   return (
     <>
       <HoverTooltip
-        content={tooltipContent}
+        content={() => tooltipContent}
         panelStyle={{
           minWidth: '260px',
           maxWidth: 'min(420px, calc(100vw - 16px))',

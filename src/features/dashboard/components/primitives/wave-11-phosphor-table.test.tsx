@@ -24,8 +24,6 @@
  */
 import { fireEvent, render, screen } from '@testing-library/react'
 import { describe, expect, test } from 'vitest'
-// RED: module does not exist yet — import fails until Engineer C creates it.
-// @ts-expect-error — module created by Engineer C in W11
 import { PhosphorTable } from './phosphor-table'
 
 // ---------------------------------------------------------------------------
@@ -211,8 +209,10 @@ describe('PhosphorTable keyboard-operable sort (S5-14)', () => {
     fireEvent.click(providerHeader)
     const afterClick = providerHeader.getAttribute('aria-sort')
 
-    // Reset via rerender.
-    rerender(<PhosphorTable columns={COLUMNS} rows={ROWS} />)
+    // Remount so sort state resets (parity with a fresh click interaction).
+    rerender(
+      <PhosphorTable key='keyboard-parity' columns={COLUMNS} rows={ROWS} />
+    )
 
     // Keyboard Enter to sort.
     const providerHeaderFresh = screen.getByRole('columnheader', {
