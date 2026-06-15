@@ -14,6 +14,7 @@ const userRoleSchema = z.union([
   z.literal('cashier'),
   z.literal('manager'),
 ])
+export type UserRole = z.infer<typeof userRoleSchema>
 
 const _userSchema = z.object({
   id: z.string(),
