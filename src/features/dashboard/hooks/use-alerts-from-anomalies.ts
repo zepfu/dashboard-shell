@@ -26,6 +26,7 @@ import type {
 } from '../api/usage-report'
 import type { AlertItem } from '../components/alerts-rail'
 import type { AnomalyFlags } from '../hooks/use-anomaly-detection'
+import { CANONICAL_PROVIDERS } from '../lib/provider-identity'
 import {
   canonicalProvider,
   googleQuotaClass,
@@ -70,19 +71,10 @@ export interface DashboardAlertSummary {
 // Constants
 // ---------------------------------------------------------------------------
 
-/**
- * Canonical 7-provider list for always-on healthy alerts (Wave 11 PR7-lite).
- * Inline duplicate per spec to avoid crossing PR2's phosphor-dashboard.tsx.
- */
-const CANONICAL_PROVIDERS: ReadonlyArray<string> = [
-  'Anthropic',
-  'OpenAI',
-  'Google',
-  'xAI',
-  'NVIDIA',
-  'OpenRouter',
-  'Local',
-]
+// CANONICAL_PROVIDERS is now imported from the single-owner
+// lib/provider-identity.ts module (Wave 11). The prior inline 7-entry
+// list was missing 'antigravity' and used title-case labels; the
+// canonical list is lowercase and includes all 8 providers.
 
 const PROVIDER_LABELS: Readonly<Record<string, string>> = {
   anthropic: 'Anthropic',

@@ -19,6 +19,7 @@ import {
   combineAgentQualitySummaries,
   type AgentQualitySummary,
 } from '../lib/agent-quality'
+import { CANONICAL_PROVIDERS } from '../lib/provider-identity'
 import {
   addDaysToDateString,
   canonicalProvider,
@@ -1221,155 +1222,6 @@ function buildQuotaSegments(
   })
 }
 
-/**
- * Builds QuotaBarGroup[] from all quota rows for a single provider.
- *
- * Wave 11 PR3 (11-h): replaces the legacy flat QuotaRowConfig[] return.
- * Each active interval type (weekly, short, special, monthly) produces one
- * QuotaBarGroup whose `segments` field holds the 100-segment array.
- */
-function buildQuotaIntervals(
-  quotaRows: UsageReportQuotaRow[],
-  provider: string
-): QuotaBarGroup[] {
-  const providerQuotas = quotaRows.filter(
-    (r) => r.provider.toLowerCase() === provider.toLowerCase()
-  )
-  if (providerQuotas.length === 0) return []
-
-  const result: QuotaBarGroup[] = []
-  for (const row of providerQuotas) {
-    // F-QB-1 / 15-B.10: Added short_special so openai's exhausted
-    // short_special_remaining_pct=0 (and similar) is rendered.
-    // Include interval metadata so tooltip window and velocity can be derived.
-    const candidates = [
-      {
-        remainingPct: row.weekly_remaining_pct,
-        active: row.weekly_active,
-        label: 'Weekly',
-        interval: 'weekly' as const,
-        resetAt: row.weekly_reset_at ?? undefined,
-        usedTokens: row.weekly_usage_tokens,
-        intervalStart: row.weekly_interval_start,
-        intervalEnd: row.weekly_interval_end,
-        durationHours: quotaDurationHours(provider, 'weekly'),
-        velocitySegments: row.weekly_velocity_segments,
-        velocityScores: row.weekly_velocity_scores,
-      },
-      {
-        remainingPct: row.short_remaining_pct,
-        active: row.short_active,
-        label: 'Short',
-        interval: 'short' as const,
-        resetAt: row.short_reset_at ?? undefined,
-        usedTokens: row.short_usage_tokens,
-        intervalStart: row.short_interval_start,
-        intervalEnd: row.short_interval_end,
-        durationHours: quotaDurationHours(provider, 'short'),
-        velocitySegments: row.short_velocity_segments,
-        velocityScores: row.short_velocity_scores,
-      },
-      {
-        remainingPct: row.special_remaining_pct,
-        active: row.special_active,
-        label: 'Special',
-        interval: 'special' as const,
-        resetAt: row.special_reset_at ?? undefined,
-        usedTokens: row.special_usage_tokens,
-        intervalStart: row.special_interval_start,
-        intervalEnd: row.special_interval_end,
-        durationHours: quotaDurationHours(provider, 'special'),
-        velocitySegments: row.special_velocity_segments,
-        velocityScores: row.special_velocity_scores,
-      },
-      {
-        remainingPct: row.short_special_remaining_pct,
-        active: row.short_special_active,
-        label: 'Short-Special',
-        interval: 'short_special' as const,
-        resetAt: row.short_special_reset_at ?? undefined,
-        usedTokens: row.short_special_usage_tokens,
-        intervalStart: row.short_special_interval_start,
-        intervalEnd: row.short_special_interval_end,
-        durationHours: quotaDurationHours(provider, 'short_special'),
-        velocitySegments: row.short_special_velocity_segments,
-        velocityScores: row.short_special_velocity_scores,
-      },
-      {
-        remainingPct: row.monthly_remaining_pct,
-        active: row.monthly_active,
-        label: 'Monthly',
-        interval: 'monthly' as const,
-        resetAt: row.monthly_reset_at ?? undefined,
-        usedTokens: row.monthly_usage_tokens,
-        intervalStart: row.monthly_interval_start,
-        intervalEnd: row.monthly_interval_end,
-        durationHours: quotaDurationHours(provider, 'monthly'),
-        velocitySegments: row.monthly_velocity_segments,
-        velocityScores: row.monthly_velocity_scores,
-      },
-      {
-        remainingPct: row.wtus_remaining_pct,
-        active: row.wtus_active ?? false,
-        label: 'WTUs',
-        interval: 'wtus' as const,
-        resetAt: row.wtus_reset_at ?? undefined,
-        usedTokens: row.wtus_usage_tokens ?? 0,
-        intervalStart: row.wtus_interval_start ?? null,
-        intervalEnd: row.wtus_interval_end ?? null,
-        durationHours: quotaDurationHours(provider, 'wtus'),
-        velocitySegments: row.wtus_velocity_segments,
-        velocityScores: row.wtus_velocity_scores,
-      },
-    ]
-
-    for (const candidate of candidates) {
-      if (!candidate.active || candidate.remainingPct == null) continue
-      const consumedPct = Math.max(
-        0,
-        Math.min(100, 100 - candidate.remainingPct)
-      )
-      result.push({
-        label: candidate.label,
-        consumedPct,
-        remainingPct: candidate.remainingPct,
-        resetAt: candidate.resetAt,
-        segments: buildQuotaSegments(
-          candidate.remainingPct,
-          candidate.velocitySegments,
-          candidate.velocityScores
-        ),
-        tipWindow: formatTipWindow(
-          candidate.interval,
-          candidate.intervalStart,
-          candidate.intervalEnd,
-          candidate.resetAt ?? null,
-          candidate.durationHours
-        ),
-        tipVelocity: formatTipVelocity(
-          consumedPct,
-          candidate.resetAt ?? null,
-          candidate.durationHours
-        ),
-      })
-    }
-  }
-
-  return result
-}
-
-/**
- * Classifies a raw model string into a Google quota class label.
- *
- * API quota rows for Google have model names like 'gemini-2.5-pro',
- * 'gemini-3-pro-preview', 'gemini-2.5-flash', 'gemini-2.5-flash-lite', etc.
- * The mockup aggregates these into three display classes per F1:
- *   gemini-*-pro*  → 'gemini-pro'
- *   gemini-*-flash-lite* → 'gemini-flash-lite'
- *   gemini-*-flash* → 'gemini-flash'  (must be checked AFTER flash-lite)
- *
- * Returns null for non-gemini or unrecognised model strings.
- */
 export function classifyGeminiModel(model: string): string | null {
   const lower = model.toLowerCase()
   if (!lower.startsWith('gemini-')) return null
@@ -1589,6 +1441,41 @@ export function formatTipWindow(
   // Emit absolute date+time using the shared compact formatter (30-min snapped).
   return fmtIntervalCompact(effectiveStart, effectiveEnd)
 }
+
+/**
+ * Rounds a UTC timestamp to the nearest 30-minute boundary.
+ * Used to collapse sub-minute poll-jitter duplicates (e.g. 00:04:53, 00:04:54,
+ * 00:04:56 → all round to 00:00) into a single logical reset slot.
+ *
+ * Wave 11: Extracted from the deleted flat-path block; still needed by
+ * buildPriorBarFromHistory and lane dedup logic.
+ */
+function roundToNearest30Min(iso: string): Date {
+  const ms = 30 * 60 * 1000
+  return new Date(Math.round(new Date(iso).getTime() / ms) * ms)
+}
+
+/**
+ * Formats a compact inline date-range label for prior-bar row display, e.g.
+ * `5/19 10:00 → 5/20 10:00`. Both bounds are 30-min snapped before formatting
+ * so the displayed range matches the snapped slot used for time-ago.
+ *
+ * Falls back to '—' when either bound is null/unparseable.
+ *
+ * Wave 11: Extracted from the deleted flat-path block; still needed by
+ * buildPriorBarFromHistory.
+ */
+export function fmtIntervalCompact(
+  start: string | null,
+  end: string | null
+): string {
+  if (start === null || end === null) return '—'
+  const s = roundToNearest30Min(start)
+  const e = roundToNearest30Min(end)
+  if (Number.isNaN(s.getTime()) || Number.isNaN(e.getTime())) return '—'
+  return formatDashboardIntervalCompact(s, e)
+}
+
 /**
  * Derives a reset-window-aware average burn-rate label.
  *
@@ -2000,488 +1887,6 @@ function makeQuotaBarGroupAlways(
     tipRequestTotal: tipRequestTotalFromBreakdown(breakdown),
     tipRecentRequestTotal90m: tipRecentRequestTotal90mFromBreakdown(breakdown),
   }
-}
-
-/**
- * Builds per-provider curated QuotaBarGroup[] matching the operator F1 mockup.
- *
- * This replaces the raw `buildQuotaIntervals` call at the ProviderCard callsite
- * so each provider shows only the quota rows relevant to its contract shape.
- * `buildQuotaIntervals` is preserved for multi-bar rendering compatibility.
- *
- * ### Returned shape (QuotaBarGroup[])
- * Each element has:
- *   - `label`        — display label per mockup (e.g. `'all · 5h'`, `'gemini-pro · 24h'`)
- *   - `consumedPct`  — 0–100 (100 − remainingPct, clamped)
- *   - `remainingPct` — raw API remaining_pct
- *   - `resetAt?`     — ISO timestamp of next reset if known
- *   - `segments`     — 100-segment array from buildQuotaSegments
- *
- * ### Provider → row mapping (Operator F1)
- * | provider   | rows included                                                   |
- * |------------|-----------------------------------------------------------------|
- * | openai     | all·5h (short), all·7d (weekly), codex-spark·5h, codex-spark·7d|
- * | anthropic  | all·5h (short), all·7d (weekly), sonnet·7d (W29: sonnet·5h dropped)|
- * | google     | gemini-flash·24h, gemini-pro·24h, gemini-flash-lite·24h (short, mockup order) |
- * | xai        | grok·monthly                                                    |
- * | nvidia_nim | NIM credits·monthly                                             |
- * | openrouter | free requests·24h                                            |
- * | local      | [] (no quotas)                                                  |
- *
- * openai always emits exactly 4 bars (inactive intervals render at 0% consumed).
- * anthropic emits 3 bars (sonnet·5h dropped in W29 Fix #3).
- * All other providers silently omit inactive intervals.
- *
- * @param provider - Canonical provider name from CANONICAL_PROVIDERS
- * @param allQuotaRows - Full quota rows array from /api/shell/reports/quotas
- */
-export function buildQuotaRows(
-  provider: string,
-  allQuotaRows: UsageReportQuotaRow[]
-): QuotaBarGroup[] {
-  const providerLower = provider.toLowerCase()
-
-  // Filter all quota rows to this provider (API returns canonical names for quotas)
-  const providerRows = allQuotaRows.filter(
-    (r) => r.provider.toLowerCase() === providerLower
-  )
-
-  if (providerRows.length === 0 || provider === 'local') return []
-
-  const result: QuotaBarGroup[] = []
-
-  switch (providerLower) {
-    case 'openai': {
-      // 22-PhosphorDash Fix ⚠-W21-1: the live API encodes codex-spark quotas in
-      // the special_* and short_special_* columns of the model=null row — there is
-      // no separate model-scoped row for codex-spark.  Read all 4 bars from the
-      // single provider-level row:
-      //   short          → 'all · 5h'
-      //   weekly         → 'all · 7d'
-      //   short_special  → 'codex-spark · 5h'
-      //   special        → 'codex-spark · 7d'
-      //
-      // W28: always emit all 4 bars (inactive → 0% consumed) via
-      // makeQuotaBarGroupAlways so the card layout is stable.
-      const allRow = providerRows.find((r) => r.model === null)
-      if (allRow !== undefined) {
-        result.push(makeQuotaBarGroupAlways('all · 5h', allRow, 'short'))
-        result.push(makeQuotaBarGroupAlways('all · 7d', allRow, 'weekly'))
-        result.push(
-          makeQuotaBarGroupAlways('codex-spark · 5h', allRow, 'short_special')
-        )
-        result.push(
-          makeQuotaBarGroupAlways('codex-spark · 7d', allRow, 'special')
-        )
-      }
-      break
-    }
-
-    case 'anthropic': {
-      // 22-PhosphorDash Fix ⚠-W21-1: same pattern as OpenAI — sonnet quotas live
-      // in the special_* / short_special_* columns of the model=null row.
-      //   short          → 'all · 5h'
-      //   weekly         → 'all · 7d'
-      //   special        → 'sonnet · 7d'
-      //
-      // W29 Fix #3: operator dropped the sonnet·5h bar — emit 3 bars only.
-      // short_special (sonnet·5h) is omitted entirely.
-      const allRow = providerRows.find((r) => r.model === null)
-      if (allRow !== undefined) {
-        const g5h = makeQuotaBarGroup('all · 5h', allRow, 'short')
-        if (g5h !== null) result.push(g5h)
-        const g7d = makeQuotaBarGroup('all · 7d', allRow, 'weekly')
-        if (g7d !== null) result.push(g7d)
-        const gs7d = makeQuotaBarGroup('sonnet · 7d', allRow, 'special')
-        if (gs7d !== null) result.push(gs7d)
-      }
-      break
-    }
-
-    case 'google': {
-      // Google uses short interval but labels it as '24h' per the mockup.
-      // Aggregate by gemini model class (gemini-pro / gemini-flash / gemini-flash-lite).
-      // When multiple API rows map to the same class, take the first active one
-      // (they share the same rate-limit pool per class in practice).
-      //
-      // 22-PhosphorDash Fix ⚠-W21-2275-#1: emit in mockup order
-      // (gemini-flash · 24h, gemini-pro · 24h, gemini-flash-lite · 24h).
-      // See mockup 06-phosphor-atlas.html L2533–2548.  We collect the best row
-      // per class first (sorting by name length so shorter names are preferred),
-      // then emit rows in the canonical class order.
-      const GOOGLE_CLASS_ORDER: Record<string, number> = {
-        'gemini-flash': 0,
-        'gemini-pro': 1,
-        'gemini-flash-lite': 2,
-      }
-
-      const bestRowByClass = new Map<string, UsageReportQuotaRow>()
-      for (const cls of Object.keys(GOOGLE_CLASS_ORDER)) {
-        const row = pickBestGoogleQuotaRowForClass(providerRows, cls)
-        if (row !== null) bestRowByClass.set(cls, row)
-      }
-
-      // Emit in mockup order
-      const orderedClasses = [...bestRowByClass.keys()].sort(
-        (a, b) => (GOOGLE_CLASS_ORDER[a] ?? 99) - (GOOGLE_CLASS_ORDER[b] ?? 99)
-      )
-      for (const cls of orderedClasses) {
-        const row = bestRowByClass.get(cls)
-        if (row === undefined) continue
-        const g = makeQuotaBarGroup(`${cls} · 24h`, row, 'short')
-        if (g !== null) result.push(g)
-      }
-      break
-    }
-
-    case 'xai': {
-      // All xAI quota rows aggregate under 'grok · monthly'
-      // Take the first active monthly row (usually provider-level, model=null)
-      for (const row of providerRows) {
-        const g = makeQuotaBarGroup('grok · monthly', row, 'monthly')
-        if (g !== null) {
-          result.push(g)
-          break
-        }
-      }
-      break
-    }
-
-    case 'nvidia_nim': {
-      // NIM credits → monthly
-      for (const row of providerRows) {
-        const g = makeQuotaBarGroup('NIM credits · monthly', row, 'monthly')
-        if (g !== null) {
-          result.push(g)
-          break
-        }
-      }
-      break
-    }
-
-    case 'openrouter': {
-      // Provider-level (model === null): 'credits · monthly'
-      const creditsRow = providerRows.find((r) => r.model === null)
-      if (creditsRow !== undefined) {
-        const gc = makeQuotaBarGroup('credits · monthly', creditsRow, 'monthly')
-        if (gc !== null) result.push(gc)
-      }
-      // Free-tier model rows by name
-      const gemmaRow = providerRows.find(
-        (r) => r.model !== null && r.model.toLowerCase().includes('gemma-4-31b')
-      )
-      if (gemmaRow !== undefined) {
-        const gg = makeQuotaBarGroup(
-          'gemma-4-31b free · monthly',
-          gemmaRow,
-          'monthly'
-        )
-        if (gg !== null) result.push(gg)
-      }
-      const qwenRow = providerRows.find(
-        (r) => r.model !== null && r.model.toLowerCase().includes('qwen3-coder')
-      )
-      if (qwenRow !== undefined) {
-        const gq = makeQuotaBarGroup(
-          'qwen3-coder free · monthly',
-          qwenRow,
-          'monthly'
-        )
-        if (gq !== null) result.push(gq)
-      }
-      break
-    }
-
-    default:
-      // Unknown provider: fall back to raw interval rendering
-      return buildQuotaIntervals(allQuotaRows, provider)
-  }
-
-  return result
-}
-
-/**
- * Maps a normalised quota_type string from quotaHistory[] to the operator
- * display label prefix used in buildQuotaRows labels (e.g. 'weekly' → '7d',
- * 'short' → '5h'). Falls back to the raw quota_type when unrecognised.
- */
-function quotaTypeToSuffix(quotaType: string): string {
-  switch (quotaType.toLowerCase()) {
-    case 'weekly':
-      return '7d'
-    case 'short':
-      return '5h'
-    case 'special':
-      return '7d'
-    case 'short_special':
-      return '5h'
-    case 'monthly':
-      return 'monthly'
-    default:
-      return quotaType
-  }
-}
-
-/**
- * Rounds a UTC timestamp to the nearest 30-minute boundary.
- * Used to collapse sub-minute poll-jitter duplicates (e.g. 00:04:53, 00:04:54,
- * 00:04:56 → all round to 00:00) into a single logical reset slot.
- */
-function roundToNearest30Min(iso: string): Date {
-  const ms = 30 * 60 * 1000
-  return new Date(Math.round(new Date(iso).getTime() / ms) * ms)
-}
-
-/**
- * Formats a compact inline date-range label for prior-bar row display, e.g.
- * `5/19 10:00 → 5/20 10:00`. Both bounds are 30-min snapped before formatting
- * so the displayed range matches the snapped slot used for time-ago.
- *
- * Falls back to '—' when either bound is null/unparseable.
- */
-export function fmtIntervalCompact(
-  start: string | null,
-  end: string | null
-): string {
-  if (start === null || end === null) return '—'
-  const s = roundToNearest30Min(start)
-  const e = roundToNearest30Min(end)
-  if (Number.isNaN(s.getTime()) || Number.isNaN(e.getTime())) return '—'
-  return formatDashboardIntervalCompact(s, e)
-}
-
-/**
- * Builds QuotaBarGroup[] for past reset windows from quotaHistory[] for a
- * single provider. Full parity with current bars: identical 100-segment fills,
- * per-model tooltip content, and visual weight. Only the label heading differs
- * (model prefix · time-ago instead of model prefix · duration tag).
- *
- * Wave 40 multi-quota redesign changes:
- *
- * #1 Google model-class aggregation (prior bars only):
- *   Raw model names (gemini-2.5-flash-001, gemini-2.5-flash-preview, …) are
- *   aggregated into class buckets: flash-lite / flash / pro / other. The
- *   tooltip shows the class name, not individual model names. The current
- *   active bar (built by buildQuotaRows) is NOT changed.
- *
- * #2 Anthropic/OpenAI weekly-tier display names:
- *   For Anthropic weekly + special quota types: tooltip displays 'sonnet'.
- *   For OpenAI weekly + special quota types: tooltip displays 'codex-spark'.
- *   Short/5hr bars use the standard tipModelsFromBreakdown (per-model).
- *
- * #3 Render ALL history bars (no fixed-count slice):
- *   The 1.5× lookback server change (Engineer A, W40) extends the window.
- *   All returned bars are rendered; the operator can always see the full
- *   1.5× interval history for each tier.
- *
- * #4 30-min snapped period_start for time-ago base:
- *   timeAgoLabel is derived from roundToNearest30Min(expected_reset_at) so
- *   the displayed age matches the bar's rounded date label.
- *
- * #5 Time-ago in label and reset cell:
- *   Label format changed from 'prefix · YYYY-MM-DD HH:MM' to 'prefix · Xd ago'
- *   (time-ago of the rounded expected_reset_at). The same string populates
- *   timeAgoLabel for the reset cell in provider-card.tsx.
- *
- * #6 periodType set on all history bars for stacked-lane grouping.
- *
- * Dedup: history rows whose expected_reset_at matches the resetAt of any
- * current bar (same live window) are skipped.
- *
- * Sort: descending by expected_reset_at (most-recent past reset first).
- *
- * @param provider - canonical provider name
- * @param historyRows - flat quotaHistory[] from the API response
- * @param currentBars - already-built current QuotaBarGroup[] for this provider
- *   (used for deduplication and quota_type → model-label mapping)
- */
-export function buildHistoryBarsForProvider(
-  provider: string,
-  historyRows: UsageReportQuotaHistoryRow[],
-  currentBars: QuotaBarGroup[]
-): QuotaBarGroup[] {
-  const aliases = providerAliases(provider)
-  const providerLower = provider.toLowerCase()
-
-  // Filter history to this provider (handle aliases like 'gemini' → 'google').
-  const relevant = historyRows.filter((h) =>
-    aliases.includes(h.provider.toLowerCase())
-  )
-  if (relevant.length === 0) return []
-
-  // If no current bars exist the provider has no active quotas — skip history.
-  if (currentBars.length === 0) return []
-
-  // Build an array of numeric timestamps (ms) from current bars' rounded reset
-  // times.  We use numeric comparison for ±30 min proximity so that rounding
-  // artefacts from Math.round (which can push a past reset into the future
-  // slot) don't slip through an exact ISO-string match.
-  const THIRTY_MIN_MS_H = 30 * 60 * 1000
-  const currentRoundedResetMsList: number[] = currentBars
-    .map((b) => b.resetAt)
-    .filter((r): r is string => r !== undefined)
-    .map((r) => roundToNearest30Min(r).getTime())
-
-  /** Returns true if slotMs is within ±30 min of any current bar's reset. */
-  const isNearCurrentReset = (slotMs: number): boolean =>
-    currentRoundedResetMsList.some(
-      (cur) => Math.abs(cur - slotMs) <= THIRTY_MIN_MS_H
-    )
-
-  // Build a lookup: quota_type → model-prefix from current bar labels.
-  // e.g. 'all · 7d' for quota_type='weekly' gives prefix='all'.
-  const modelPrefixByQuotaType = new Map<string, string>()
-  for (const bar of currentBars) {
-    const dotIdx = bar.label.indexOf(' · ')
-    if (dotIdx === -1) continue
-    const suffix = bar.label.slice(dotIdx + 3)
-    const modelPrefix = bar.label.slice(0, dotIdx)
-    for (const qt of [
-      'weekly',
-      'short',
-      'special',
-      'short_special',
-      'monthly',
-    ] as const) {
-      if (quotaTypeToSuffix(qt) === suffix && !modelPrefixByQuotaType.has(qt)) {
-        modelPrefixByQuotaType.set(qt, modelPrefix)
-      }
-    }
-  }
-
-  // Pre-pass: for each rounded slot, collect the set of distinct quota_types
-  // that appear.  Any slot with >1 quota_type needs label disambiguation so
-  // bars that would otherwise render identical labels become distinguishable.
-  const quotaTypesPerSlot = new Map<string, Set<string>>()
-  for (const h of relevant) {
-    if (h.min_remaining_pct === null) continue
-    if (h.expected_reset_at === null) continue
-    const slotDate = roundToNearest30Min(h.expected_reset_at)
-    if (isNearCurrentReset(slotDate.getTime())) continue
-    const slot = slotDate.toISOString()
-    let types = quotaTypesPerSlot.get(slot)
-    if (types === undefined) {
-      types = new Set<string>()
-      quotaTypesPerSlot.set(slot, types)
-    }
-    types.add(h.quota_type.toLowerCase())
-  }
-
-  // Deduplicate by (quota_type, rounded-slot) — sub-minute poll-jitter
-  // duplicates of the same quota type collapse to one bar per 30-min window.
-  const seen = new Set<string>()
-  const result: QuotaBarGroup[] = []
-
-  for (const h of relevant) {
-    // Skip rows without usable data.
-    if (h.min_remaining_pct === null) continue
-
-    const roundedSlotDate =
-      h.expected_reset_at !== null
-        ? roundToNearest30Min(h.expected_reset_at)
-        : null
-    const roundedSlot =
-      roundedSlotDate !== null ? roundedSlotDate.toISOString() : ''
-
-    // Dedup against current bars — skip if within ±30 min of any live reset
-    // window (proximity check absorbs Math.round artefacts).
-    if (
-      roundedSlotDate !== null &&
-      isNearCurrentReset(roundedSlotDate.getTime())
-    ) {
-      continue
-    }
-
-    // Dedup across multiple history rows for the same (quota_type, rounded slot).
-    const dedupeKey = `${h.quota_type}::${roundedSlot}`
-    if (seen.has(dedupeKey)) continue
-    seen.add(dedupeKey)
-
-    const quotaTypeLower = h.quota_type.toLowerCase()
-
-    // Wave 40 #5: time-ago label derived from the 30-min-snapped reset time.
-    // Used in both the bar label (replaces YYYY-MM-DD HH:MM) and the reset cell.
-    const timeAgoLabel =
-      roundedSlotDate !== null ? formatTimeAgo(roundedSlotDate) : '—'
-
-    // Build the display label: '<model-prefix> · <time-ago>[(quota_type)]'
-    // The time-ago replaces the previous absolute date string so the operator
-    // sees "flash · 2d ago" instead of "flash · 2026-05-18 00:00".
-    const modelPrefix =
-      modelPrefixByQuotaType.get(quotaTypeLower) ??
-      (h.model !== null ? h.model : 'all')
-    const disambig =
-      roundedSlot !== '' && (quotaTypesPerSlot.get(roundedSlot)?.size ?? 0) > 1
-        ? ` (${quotaTypeLower})`
-        : ''
-    const label = `${modelPrefix} · ${timeAgoLabel}${disambig}`
-
-    // Wave 40 #6: determine periodType for stacked-lane grouping.
-    const periodType = quotaTypeToPeriodType(quotaTypeLower)
-
-    // Wave 40 #1/#2: choose the correct tipModels builder based on provider
-    // and quota type.
-    let tipModels: QuotaTipModel[] | undefined
-    if (providerLower === 'google') {
-      // #1: Google history bars → aggregate by model class (flash-lite/flash/pro/other)
-      tipModels = tipModelsFromBreakdownGoogleAggregated(h.usage_breakdown)
-    } else if (
-      providerLower === 'anthropic' &&
-      (quotaTypeLower === 'weekly' || quotaTypeLower === 'special')
-    ) {
-      // #2: Anthropic weekly-tier bars → single 'sonnet' label
-      tipModels = tipModelsFromBreakdownSingleLabel(h.usage_breakdown, 'sonnet')
-    } else if (
-      providerLower === 'openai' &&
-      (quotaTypeLower === 'weekly' || quotaTypeLower === 'special')
-    ) {
-      // #2: OpenAI weekly-tier bars → single 'codex-spark' label
-      tipModels = tipModelsFromBreakdownSingleLabel(
-        h.usage_breakdown,
-        'codex-spark'
-      )
-    } else {
-      // All other providers/tiers: standard per-model breakdown
-      tipModels = tipModelsFromBreakdown(h.usage_breakdown)
-    }
-
-    // Full-parity 100-segment render using the same buildQuotaSegments function
-    // as current bars. Use min_remaining_pct (peak consumption).
-    const remainingPct = h.min_remaining_pct
-    const consumedPct = Math.max(0, Math.min(100, 100 - remainingPct))
-
-    result.push({
-      label,
-      consumedPct,
-      remainingPct,
-      resetAt: h.expected_reset_at ?? undefined,
-      segments: buildQuotaSegments(
-        remainingPct,
-        h.velocity_segments,
-        h.velocity_scores
-      ),
-      tipWindow: fmtIntervalCompact(h.interval_start, h.interval_end),
-      tipModels,
-      tipRequestTotal: tipRequestTotalFromBreakdown(h.usage_breakdown),
-      tipRecentRequestTotal90m: tipRecentRequestTotal90mFromBreakdown(
-        h.usage_breakdown
-      ),
-      // Wave 40 #3: no slice — all history bars returned (1.5× lookback from server).
-      // Wave 40 #4/#5: time-ago label for the reset cell.
-      timeAgoLabel,
-      // Wave 40 #6: stacked-lane grouping by period type.
-      periodType,
-    })
-  }
-
-  // Sort descending by expected_reset_at (most-recent past reset first).
-  result.sort((a, b) => {
-    const aDate = a.resetAt ?? ''
-    const bDate = b.resetAt ?? ''
-    return bDate < aDate ? -1 : bDate > aDate ? 1 : 0
-  })
-
-  return result
 }
 
 // ---------------------------------------------------------------------------
@@ -2970,23 +2375,9 @@ export function buildProviderLanes(
 // the react-refresh/only-export-components constraint.
 // ---------------------------------------------------------------------------
 
-/**
- * Canonical provider order — always present in fixed sequence.
- *
- * Wave 11 PR2 (11-f): the dashboard always shows all 8 canonical providers so
- * the status grid (7 providers + aggregate) is fully populated regardless of
- * which providers the API returns in a given time range.
- */
-const CANONICAL_PROVIDERS = [
-  'anthropic',
-  'openai',
-  'google',
-  'antigravity',
-  'xai',
-  'openrouter',
-  'nvidia_nim',
-  'local',
-] as const
+// CANONICAL_PROVIDERS is now imported from the single-owner
+// lib/provider-identity.ts module (Wave 11). deriveProviders is a thin
+// wrapper that returns a fresh copy for callers that expect mutability.
 
 /**
  * Always returns the canonical 8 providers in fixed order.
