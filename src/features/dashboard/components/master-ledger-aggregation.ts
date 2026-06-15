@@ -77,7 +77,7 @@ export interface ModelRow {
   /** ISO date (or bucket key) per spark point; enables bucket-aligned aggregation. */
   sparkBuckets?: string[]
   // W33: pre-processed tool activity for TOOL cell hover tooltip
-  toolActivity?: import('./master-ledger-table').ModelToolActivity
+  toolActivity?: import('./master-ledger-tool-activity').ModelToolActivity
   /** Deterministic session-history agent-quality score rollup. */
   agentQuality?: AgentQualitySummary
   /** Millisecond timing split and throughput rollup from session_history. */

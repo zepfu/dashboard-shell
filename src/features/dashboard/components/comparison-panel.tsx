@@ -47,7 +47,7 @@ import {
   formatDeltaPctWithPrior,
   type ProviderCurrentStats,
 } from './comparison-panel.helpers'
-import type { ModelRow } from './master-ledger-table'
+import type { ModelRow } from './master-ledger-aggregation'
 import type { TrendBucket } from './token-trend-chart'
 
 /** Props for ComparisonPanel. */
