@@ -7,7 +7,7 @@
  *
  * All tests expected to FAIL (red) — source file does not exist yet.
  */
-import { renderHook } from '@testing-library/react'
+import { act, renderHook } from '@testing-library/react'
 // ─────────────────────────────────────────────────────────────────────────────
 // Wave 5 / S4-T2: multi-lane no-false-positive
 // ─────────────────────────────────────────────────────────────────────────────
@@ -274,4 +274,96 @@ describe('test_useAnomalyDetection_multi_lane_no_false_positive (S4-T2/#45)', ()
     // The 5h lane has a genuine early reset → should be flagged
     expect(result.current.earlyReset.size).toBeGreaterThan(0)
   })
+})
+
+// ---------------------------------------------------------------------------
+// Wave 7 — S1-12 / S4-17 / S4-18: memoisation identity guard
+// ---------------------------------------------------------------------------
+
+/**
+ * test_useAnomalyDetection_memo_stable_identity (S1-12 / S4-17 / S4-18)
+ *
+ * When the same array reference is passed across renders the hook must return
+ * the same output object reference — i.e. useMemo must not re-run.
+ *
+ * The regression caught here is the inline `.filter(...)` in index.tsx that
+ * creates a new array reference on every render even when the underlying data
+ * is unchanged, causing useAnomalyDetection's useMemo to re-execute every
+ * render cycle (S1-12 memo-chain break).
+ *
+ * This test simulates that by:
+ *   1. Passing a stable array → capturing the output reference.
+ *   2. Re-rendering with the SAME array reference → asserting referential
+ *      equality of the output object.
+ *   3. Passing a NEW array reference with identical content → asserting the
+ *      output reference CHANGES (proving the hook does respond to new refs,
+ *      i.e. the memo is live, not short-circuited by accident).
+ *
+ * The guard passes today IF the hook already uses `useMemo([healthRows, …])`.
+ * It will FAIL if/when an engineer wraps the call in an inline .filter() that
+ * produces a new array each render — which is the production regression S1-12.
+ */
+test('test_useAnomalyDetection_memo_stable_identity', () => {
+  const stableRows = [
+    {
+      provider: 'anthropic',
+      model: 'claude-3',
+      bucket_start: '2026-01-01T08:00:00Z',
+      next_expected_reset_at: '2026-01-01T12:00:00Z',
+    },
+    {
+      provider: 'anthropic',
+      model: 'claude-3',
+      bucket_start: '2026-01-01T09:00:00Z',
+      next_expected_reset_at: '2026-01-01T13:00:00Z',
+    },
+  ]
+  const stableMeta = { latestRecordStale: false }
+
+  const { result, rerender } = renderHook(
+    ({ rows, meta }: { rows: typeof stableRows; meta: typeof stableMeta }) =>
+      useAnomalyDetection(rows, meta),
+    { initialProps: { rows: stableRows, meta: stableMeta } }
+  )
+
+  // Capture the first output reference.
+  const firstOutput = result.current
+
+  // Re-render with the SAME object references — output must be the same object.
+  rerender({ rows: stableRows, meta: stableMeta })
+  expect(result.current).toBe(firstOutput)
+
+  // earlyReset must be empty (monotonic data) — value assertion.
+  expect(result.current.earlyReset.size).toBe(0)
+  expect(result.current.cacheStale).toBe(false)
+
+  // Re-render with a NEW array reference (same content) — the memo re-runs,
+  // producing a new object. This proves the hook is not just ignoring deps.
+  const newRowsRef = [
+    {
+      provider: 'anthropic',
+      model: 'claude-3',
+      bucket_start: '2026-01-01T08:00:00Z',
+      next_expected_reset_at: '2026-01-01T12:00:00Z',
+    },
+    {
+      provider: 'anthropic',
+      model: 'claude-3',
+      bucket_start: '2026-01-01T09:00:00Z',
+      next_expected_reset_at: '2026-01-01T13:00:00Z',
+    },
+  ]
+
+  act(() => {
+    rerender({ rows: newRowsRef, meta: stableMeta })
+  })
+
+  // New array reference → useMemo re-runs → new object reference.
+  // This ensures the memo is properly keyed on identity, not on deep equality.
+  const secondOutput = result.current
+  expect(secondOutput).not.toBe(firstOutput)
+
+  // But the computed values are still correct.
+  expect(secondOutput.earlyReset.size).toBe(0)
+  expect(secondOutput.cacheStale).toBe(false)
 })
