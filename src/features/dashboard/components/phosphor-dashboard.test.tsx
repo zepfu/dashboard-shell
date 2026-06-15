@@ -35,19 +35,21 @@ import type {
   ShellHealthResponse,
   UsageReportTrendRow,
 } from '../api/usage-report'
-import PhosphorDashboard, {
-  _buildRepoRowsForTest,
-  _formatTimeAgoForTest,
-  _quotaTypeToPeriodTypeForTest,
-  _tipModelsGoogleForTest,
-  _tipModelsSingleLabelForTest,
-  _padHealthCellsForTest,
-  _buildAggregateHealthCellsForTest,
-  _buildProviderLanesForTest,
-  _classifyGeminiModelForTest,
-  _fmtIntervalCompactForTest,
-  _buildPriorBarFromHistoryForTest,
-} from './phosphor-dashboard'
+import PhosphorDashboard from './phosphor-dashboard'
+import {
+  buildRepoRows,
+  formatTimeAgo,
+  quotaTypeToPeriodType,
+  tipModelsFromBreakdownGoogleAggregated,
+  tipModelsFromBreakdownSingleLabel,
+  padHealthCells,
+  buildAggregateHealthCells,
+  buildProviderLanes,
+  classifyGeminiModel,
+  fmtIntervalCompact,
+  buildPriorBarFromHistory,
+  buildTopModels,
+} from './phosphor-dashboard.testkit'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -247,7 +249,7 @@ test('test_buildRepoRows_merges_trailing_memory_suffix_rows', () => {
     },
   ]
 
-  const repoRows = _buildRepoRowsForTest(rows, trendRows)
+  const repoRows = buildRepoRows(rows, trendRows)
   const shellRows = repoRows.filter((row) =>
     row.repository.startsWith('dashboard-shell')
   )
@@ -1584,7 +1586,7 @@ describe('Provider health cell classification', () => {
   }
 
   test('test_probe_backed_no_traffic_bucket_is_green_not_blue', () => {
-    const cells = _padHealthCellsForTest(
+    const cells = padHealthCells(
       [
         makeHealthRow({
           status_probe_count: 8,
@@ -1607,7 +1609,7 @@ describe('Provider health cell classification', () => {
   })
 
   test('test_xai_alias_row_feeds_xai_provider_health', () => {
-    const cells = _padHealthCellsForTest(
+    const cells = padHealthCells(
       [
         makeHealthRow({
           provider: 'x.ai',
@@ -1623,7 +1625,7 @@ describe('Provider health cell classification', () => {
   })
 
   test('test_total_latency_fallback_prevents_false_missing_upstream_miss', () => {
-    const cells = _padHealthCellsForTest(
+    const cells = padHealthCells(
       [
         makeHealthRow({
           provider: 'openrouter',
@@ -1646,7 +1648,7 @@ describe('Provider health cell classification', () => {
   })
 
   test('test_missing_upstream_latency_bucket_is_miss', () => {
-    const cells = _padHealthCellsForTest(
+    const cells = padHealthCells(
       [
         makeHealthRow({
           requests: 12,
@@ -1664,7 +1666,7 @@ describe('Provider health cell classification', () => {
   })
 
   test('test_true_no_probe_no_traffic_bucket_stays_raw_blue_path', () => {
-    const cells = _padHealthCellsForTest([makeHealthRow()], 'xai')
+    const cells = padHealthCells([makeHealthRow()], 'xai')
 
     expect(cells[287].category).toBeUndefined()
     expect(cells[287].rawP95Ms).toBeNull()
@@ -1672,7 +1674,7 @@ describe('Provider health cell classification', () => {
   })
 
   test('test_provider_without_health_rows_renders_no_data_blue_path', () => {
-    const cells = _padHealthCellsForTest([], 'local')
+    const cells = padHealthCells([], 'local')
 
     expect(cells).toHaveLength(288)
     expect(cells[0].category).toBeUndefined()
@@ -1682,7 +1684,7 @@ describe('Provider health cell classification', () => {
   })
 
   test('test_aggregate_health_cells_overlay_provider_errors_by_bucket', () => {
-    const cells = _buildAggregateHealthCellsForTest([
+    const cells = buildAggregateHealthCells([
       makeHealthRow({
         provider: 'openai',
         requests: 10,
@@ -1702,7 +1704,7 @@ describe('Provider health cell classification', () => {
   })
 
   test('test_aggregate_health_cells_include_probe_degradation_counts', () => {
-    const cells = _buildAggregateHealthCellsForTest([
+    const cells = buildAggregateHealthCells([
       makeHealthRow({
         provider: 'openai',
         status_probe_count: 4,
@@ -1716,7 +1718,7 @@ describe('Provider health cell classification', () => {
   })
 
   test('test_probe_degradation_overrides_passive_latency_green_path', () => {
-    const cells = _padHealthCellsForTest(
+    const cells = padHealthCells(
       [
         makeHealthRow({
           requests: 12,
@@ -1734,7 +1736,7 @@ describe('Provider health cell classification', () => {
   })
 
   test('test_aggregate_health_cells_exclude_proxy_internal_rows', () => {
-    const cells = _buildAggregateHealthCellsForTest([
+    const cells = buildAggregateHealthCells([
       makeHealthRow({
         provider: 'proxy_internal',
         provider_error_events: 7,
@@ -1752,7 +1754,7 @@ describe('Provider health cell classification', () => {
   })
 
   test('test_provider_health_cells_include_timestamped_error_log_events', () => {
-    const cells = _padHealthCellsForTest(
+    const cells = padHealthCells(
       [
         makeHealthRow({
           bucket_start: '2026-05-21T20:45:00.000Z',
@@ -1785,7 +1787,7 @@ describe('Provider health cell classification', () => {
   })
 
   test('test_aggregate_health_cells_include_provider_in_error_log_model_label', () => {
-    const cells = _buildAggregateHealthCellsForTest(
+    const cells = buildAggregateHealthCells(
       [
         makeHealthRow({
           bucket_start: '2026-05-21T20:45:00.000Z',
@@ -1931,7 +1933,7 @@ describe('PhosphorDashboard — TCG-3: prior-report query skipped when showCompa
 // Wave 40 multi-quota redesign — unit tests for new helper functions
 // ---------------------------------------------------------------------------
 
-// S1-T3 flake fix: use fake timers so Date.now() inside _formatTimeAgoForTest
+// S1-T3 flake fix: use fake timers so Date.now() inside formatTimeAgo
 // is pinned to a known epoch and cannot race with real wall-clock progression.
 describe('Wave 40 — formatTimeAgo', () => {
   // Pinned epoch: 2026-05-21T12:00:00.000Z (arbitrary, far from DST boundaries)
@@ -1948,28 +1950,28 @@ describe('Wave 40 — formatTimeAgo', () => {
 
   test('test_format_time_ago_minutes', () => {
     const d = new Date(PINNED_NOW - 45 * 60_000) // 45 minutes ago
-    expect(_formatTimeAgoForTest(d)).toBe('45m ago')
+    expect(formatTimeAgo(d)).toBe('45m ago')
   })
 
   test('test_format_time_ago_hours', () => {
     const d = new Date(PINNED_NOW - 3 * 60 * 60_000) // 3 hours ago
-    expect(_formatTimeAgoForTest(d)).toBe('3h ago')
+    expect(formatTimeAgo(d)).toBe('3h ago')
   })
 
   test('test_format_time_ago_days', () => {
     const d = new Date(PINNED_NOW - 2 * 24 * 60 * 60_000) // 2 days ago
-    expect(_formatTimeAgoForTest(d)).toBe('2d ago')
+    expect(formatTimeAgo(d)).toBe('2d ago')
   })
 
   test('test_format_time_ago_weeks', () => {
     const d = new Date(PINNED_NOW - 15 * 24 * 60 * 60_000) // 15 days ago → 2w
-    expect(_formatTimeAgoForTest(d)).toBe('2w ago')
+    expect(formatTimeAgo(d)).toBe('2w ago')
   })
 
   test('test_format_time_ago_future_within_1min_returns_just_now', () => {
     // Within 1 minute in the future → boundary label (rounding artefact safe)
     const d = new Date(PINNED_NOW + 60_000) // exactly 1 minute in the future
-    expect(_formatTimeAgoForTest(d)).toBe('just now')
+    expect(formatTimeAgo(d)).toBe('just now')
   })
 
   test('test_format_time_ago_future_over_1min_returns_time_label', () => {
@@ -1977,33 +1979,33 @@ describe('Wave 40 — formatTimeAgo', () => {
     // label rather than "now" for rounding artefacts (e.g. 30m-ago rounded up).
     // We use 2h+30s future so sub-second timing jitter doesn't affect floor().
     const d = new Date(PINNED_NOW + 2 * 60 * 60_000 + 30_000) // ~2h 30s in the future
-    expect(_formatTimeAgoForTest(d)).toBe('2h ago')
+    expect(formatTimeAgo(d)).toBe('2h ago')
   })
 })
 
 describe('Wave 40 — quotaTypeToPeriodType', () => {
   test('test_quota_type_short_maps_to_5hr', () => {
-    expect(_quotaTypeToPeriodTypeForTest('short')).toBe('5hr')
+    expect(quotaTypeToPeriodType('short')).toBe('5hr')
   })
 
   test('test_quota_type_short_special_maps_to_5hr', () => {
-    expect(_quotaTypeToPeriodTypeForTest('short_special')).toBe('5hr')
+    expect(quotaTypeToPeriodType('short_special')).toBe('5hr')
   })
 
   test('test_quota_type_weekly_maps_to_weekly', () => {
-    expect(_quotaTypeToPeriodTypeForTest('weekly')).toBe('weekly')
+    expect(quotaTypeToPeriodType('weekly')).toBe('weekly')
   })
 
   test('test_quota_type_special_maps_to_special', () => {
-    expect(_quotaTypeToPeriodTypeForTest('special')).toBe('special')
+    expect(quotaTypeToPeriodType('special')).toBe('special')
   })
 
   test('test_quota_type_monthly_maps_to_monthly', () => {
-    expect(_quotaTypeToPeriodTypeForTest('monthly')).toBe('monthly')
+    expect(quotaTypeToPeriodType('monthly')).toBe('monthly')
   })
 
   test('test_quota_type_unknown_defaults_to_weekly', () => {
-    expect(_quotaTypeToPeriodTypeForTest('requests')).toBe('weekly')
+    expect(quotaTypeToPeriodType('requests')).toBe('weekly')
   })
 })
 
@@ -2025,11 +2027,11 @@ describe('Wave 40 — tipModelsFromBreakdownGoogleAggregated', () => {
     }))
 
   test('test_google_aggregated_empty_returns_undefined', () => {
-    expect(_tipModelsGoogleForTest([])).toBeUndefined()
+    expect(tipModelsFromBreakdownGoogleAggregated([])).toBeUndefined()
   })
 
   test('test_google_aggregated_flash_lite_bucket', () => {
-    const result = _tipModelsGoogleForTest(
+    const result = tipModelsFromBreakdownGoogleAggregated(
       makeBreakdown([{ model: 'gemini-2.5-flash-lite', cost: 10 }])
     )
     expect(result).toHaveLength(1)
@@ -2037,7 +2039,7 @@ describe('Wave 40 — tipModelsFromBreakdownGoogleAggregated', () => {
   })
 
   test('test_google_aggregated_flash_bucket_excludes_flash_lite', () => {
-    const result = _tipModelsGoogleForTest(
+    const result = tipModelsFromBreakdownGoogleAggregated(
       makeBreakdown([
         { model: 'gemini-2.5-flash-lite', cost: 5 },
         { model: 'gemini-2.0-flash', cost: 8 },
@@ -2052,7 +2054,7 @@ describe('Wave 40 — tipModelsFromBreakdownGoogleAggregated', () => {
   })
 
   test('test_google_aggregated_pro_bucket', () => {
-    const result = _tipModelsGoogleForTest(
+    const result = tipModelsFromBreakdownGoogleAggregated(
       makeBreakdown([{ model: 'gemini-2.5-pro', cost: 20 }])
     )
     expect(result![0].model).toBe('pro')
@@ -2060,7 +2062,7 @@ describe('Wave 40 — tipModelsFromBreakdownGoogleAggregated', () => {
   })
 
   test('test_google_aggregated_sums_costs_within_class', () => {
-    const result = _tipModelsGoogleForTest(
+    const result = tipModelsFromBreakdownGoogleAggregated(
       makeBreakdown([
         {
           model: 'gemini-2.0-flash-001',
@@ -2103,11 +2105,11 @@ describe('Wave 40 — tipModelsFromBreakdownSingleLabel', () => {
     }))
 
   test('test_single_label_empty_returns_undefined', () => {
-    expect(_tipModelsSingleLabelForTest([], 'sonnet')).toBeUndefined()
+    expect(tipModelsFromBreakdownSingleLabel([], 'sonnet')).toBeUndefined()
   })
 
   test('test_single_label_returns_one_entry_with_display_label', () => {
-    const result = _tipModelsSingleLabelForTest(
+    const result = tipModelsFromBreakdownSingleLabel(
       makeBreakdown([
         {
           model: 'claude-sonnet-4-6',
@@ -2132,7 +2134,7 @@ describe('Wave 40 — tipModelsFromBreakdownSingleLabel', () => {
   })
 
   test('test_single_label_codex_spark_for_openai', () => {
-    const result = _tipModelsSingleLabelForTest(
+    const result = tipModelsFromBreakdownSingleLabel(
       makeBreakdown([{ model: 'gpt-4o', cost: 7.5 }]),
       'codex-spark'
     )
@@ -2148,40 +2150,34 @@ describe('Wave 40 — tipModelsFromBreakdownSingleLabel', () => {
 describe('Wave 41 — classifyGeminiModel', () => {
   test('test_classify_flash_lite_before_flash', () => {
     // flash-lite must be returned for models containing 'flash-lite', not 'flash'.
-    expect(_classifyGeminiModelForTest('gemini-2.5-flash-lite')).toBe(
+    expect(classifyGeminiModel('gemini-2.5-flash-lite')).toBe(
       'gemini-flash-lite'
     )
-    expect(_classifyGeminiModelForTest('gemini-3.1-flash-lite-preview')).toBe(
+    expect(classifyGeminiModel('gemini-3.1-flash-lite-preview')).toBe(
       'gemini-flash-lite'
     )
   })
 
   test('test_classify_flash', () => {
-    expect(_classifyGeminiModelForTest('gemini-2.5-flash')).toBe('gemini-flash')
-    expect(_classifyGeminiModelForTest('gemini-3-flash-preview')).toBe(
-      'gemini-flash'
-    )
+    expect(classifyGeminiModel('gemini-2.5-flash')).toBe('gemini-flash')
+    expect(classifyGeminiModel('gemini-3-flash-preview')).toBe('gemini-flash')
   })
 
   test('test_classify_pro', () => {
-    expect(_classifyGeminiModelForTest('gemini-2.5-pro')).toBe('gemini-pro')
-    expect(_classifyGeminiModelForTest('gemini-3-pro-preview')).toBe(
-      'gemini-pro'
-    )
+    expect(classifyGeminiModel('gemini-2.5-pro')).toBe('gemini-pro')
+    expect(classifyGeminiModel('gemini-3-pro-preview')).toBe('gemini-pro')
   })
 
   test('test_classify_non_gemini_returns_null', () => {
-    expect(_classifyGeminiModelForTest('gpt-4o')).toBeNull()
+    expect(classifyGeminiModel('gpt-4o')).toBeNull()
     expect(
-      _classifyGeminiModelForTest(
-        'google_code_assist_requests:daily_request_pool'
-      )
+      classifyGeminiModel('google_code_assist_requests:daily_request_pool')
     ).toBeNull()
-    expect(_classifyGeminiModelForTest('')).toBeNull()
+    expect(classifyGeminiModel('')).toBeNull()
   })
 
   test('test_classify_gemini_no_known_class_returns_null', () => {
-    expect(_classifyGeminiModelForTest('gemini-unknown-model')).toBeNull()
+    expect(classifyGeminiModel('gemini-unknown-model')).toBeNull()
   })
 })
 
@@ -2258,7 +2254,7 @@ describe('Wave 41 — buildProviderLanes', () => {
 
   test('test_anthropic_has_3_lanes', () => {
     const quotaRows = [makeAnthropicQuotaRow()]
-    const lanes = _buildProviderLanesForTest('anthropic', quotaRows, [])
+    const lanes = buildProviderLanes('anthropic', quotaRows, [])
     // Lanes that have a current bar or prior bars: all 3 have current bars.
     expect(lanes.length).toBe(3)
     const keys = lanes.map((l) => l.laneKey)
@@ -2269,7 +2265,7 @@ describe('Wave 41 — buildProviderLanes', () => {
 
   test('test_anthropic_lane_order_short_special_weekly', () => {
     const quotaRows = [makeAnthropicQuotaRow()]
-    const lanes = _buildProviderLanesForTest('anthropic', quotaRows, [])
+    const lanes = buildProviderLanes('anthropic', quotaRows, [])
     expect(lanes[0].laneKey).toBe('anthropic/short')
     expect(lanes[1].laneKey).toBe('anthropic/special')
     expect(lanes[2].laneKey).toBe('anthropic/weekly')
@@ -2277,7 +2273,7 @@ describe('Wave 41 — buildProviderLanes', () => {
 
   test('test_anthropic_short_lane_has_current_bar', () => {
     const quotaRows = [makeAnthropicQuotaRow()]
-    const lanes = _buildProviderLanesForTest('anthropic', quotaRows, [])
+    const lanes = buildProviderLanes('anthropic', quotaRows, [])
     const shortLane = lanes.find((l) => l.laneKey === 'anthropic/short')
     expect(shortLane).toBeDefined()
     expect(shortLane!.currentBar).not.toBeNull()
@@ -2300,7 +2296,7 @@ describe('Wave 41 — buildProviderLanes', () => {
         short_velocity_scores: velocityScores,
       }),
     ]
-    const lanes = _buildProviderLanesForTest('anthropic', quotaRows, [])
+    const lanes = buildProviderLanes('anthropic', quotaRows, [])
     const shortLane = lanes.find((l) => l.laneKey === 'anthropic/short')
     const segments = shortLane!.currentBar!.segments
 
@@ -2329,11 +2325,7 @@ describe('Wave 41 — buildProviderLanes', () => {
         min_remaining_pct: 60,
       }),
     ]
-    const lanes = _buildProviderLanesForTest(
-      'anthropic',
-      quotaRows,
-      historyRows
-    )
+    const lanes = buildProviderLanes('anthropic', quotaRows, historyRows)
     const shortLane = lanes.find((l) => l.laneKey === 'anthropic/short')
     expect(shortLane!.priorBars).toHaveLength(2)
   })
@@ -2349,11 +2341,7 @@ describe('Wave 41 — buildProviderLanes', () => {
         min_remaining_pct: 10,
       }),
     ]
-    const lanes = _buildProviderLanesForTest(
-      'anthropic',
-      quotaRows,
-      historyRows
-    )
+    const lanes = buildProviderLanes('anthropic', quotaRows, historyRows)
     const shortLane = lanes.find((l) => l.laneKey === 'anthropic/short')
     // Should be 0 prior bars since the only history row matches current.
     expect(shortLane!.priorBars).toHaveLength(0)
@@ -2370,7 +2358,7 @@ describe('Wave 41 — buildProviderLanes', () => {
       short_special_active: true,
       short_special_usage_tokens: 50,
     }
-    const lanes = _buildProviderLanesForTest('openai', [openaiRow], [])
+    const lanes = buildProviderLanes('openai', [openaiRow], [])
     expect(lanes.length).toBe(4)
     const keys = lanes.map((l) => l.laneKey)
     expect(keys).toContain('openai/short')
@@ -2409,7 +2397,7 @@ describe('Wave 41 — buildProviderLanes', () => {
       }),
     ]
 
-    const lanes = _buildProviderLanesForTest('openai', [openaiRow], historyRows)
+    const lanes = buildProviderLanes('openai', [openaiRow], historyRows)
     const spark5hLane = lanes.find((l) => l.laneKey === 'openai/short_special')
 
     expect(spark5hLane).toBeDefined()
@@ -2437,7 +2425,7 @@ describe('Wave 41 — buildProviderLanes', () => {
       makeGoogleRow('gemini-2.5-flash-lite', 58),
       makeGoogleRow('gemini-2.5-pro', 99),
     ]
-    const lanes = _buildProviderLanesForTest('google', quotaRows, [])
+    const lanes = buildProviderLanes('google', quotaRows, [])
     expect(lanes.length).toBe(3)
     const keys = lanes.map((l) => l.laneKey)
     expect(keys).toContain('google/flash-lite')
@@ -2465,7 +2453,7 @@ describe('Wave 41 — buildProviderLanes', () => {
       // This model should be excluded (not flash/flash-lite/pro).
       makeGoogleRow('google_code_assist_requests:daily_request_pool', 0),
     ]
-    const lanes = _buildProviderLanesForTest('google', quotaRows, [])
+    const lanes = buildProviderLanes('google', quotaRows, [])
     // Only flash lane (flash-lite and pro have no rows).
     expect(lanes.length).toBe(1)
     expect(lanes[0].laneKey).toBe('google/flash')
@@ -2518,7 +2506,7 @@ describe('Wave 41 — buildProviderLanes', () => {
       }),
     ]
 
-    const lanes = _buildProviderLanesForTest(
+    const lanes = buildProviderLanes(
       'antigravity',
       [
         makeAntigravityRow('antigravity_code_assist:gemini_pool', 88),
@@ -2560,7 +2548,7 @@ describe('Wave 41 — buildProviderLanes', () => {
       special_remaining_pct: null,
       special_active: false,
     }
-    const lanes = _buildProviderLanesForTest('xai', [xaiRow], [])
+    const lanes = buildProviderLanes('xai', [xaiRow], [])
     expect(lanes.length).toBe(1)
     expect(lanes[0].laneKey).toBe('xai/monthly')
     expect(lanes[0].laneLabel).toBe('All Models · 30d')
@@ -2596,11 +2584,7 @@ describe('Wave 41 — buildProviderLanes', () => {
       }),
     ]
 
-    const lanes = _buildProviderLanesForTest(
-      'openrouter',
-      [openrouterRow],
-      historyRows
-    )
+    const lanes = buildProviderLanes('openrouter', [openrouterRow], historyRows)
 
     expect(lanes).toHaveLength(1)
     expect(lanes[0].laneKey).toBe('openrouter/requests')
@@ -2611,7 +2595,7 @@ describe('Wave 41 — buildProviderLanes', () => {
   })
 
   test('test_unknown_provider_returns_empty_lanes', () => {
-    const lanes = _buildProviderLanesForTest('nvidia_nim', [], [])
+    const lanes = buildProviderLanes('nvidia_nim', [], [])
     expect(lanes).toHaveLength(0)
   })
 })
@@ -2747,7 +2731,7 @@ describe('Wave 47 — buildProviderLanes future-slot prior bar dedup', () => {
       makeWeeklyHistoryRow('2026-05-19T00:04:54.000Z', 4),
       makeWeeklyHistoryRow('2026-05-19T00:04:53.000Z', 2),
     ]
-    const lanes = _buildProviderLanesForTest('openai', [openaiRow], historyRows)
+    const lanes = buildProviderLanes('openai', [openaiRow], historyRows)
     const weeklyLane = lanes.find((l) => l.laneKey === 'openai/weekly')
     expect(weeklyLane).toBeDefined()
     // Current bar: pct = 100 − 84 = 16% consumed
@@ -2774,7 +2758,7 @@ describe('Wave 47 — buildProviderLanes future-slot prior bar dedup', () => {
       // Prior slot 5/18 15:00 — single row
       makeSpecialHistoryRow('2026-05-18T15:08:42.000Z', 0),
     ]
-    const lanes = _buildProviderLanesForTest('openai', [openaiRow], historyRows)
+    const lanes = buildProviderLanes('openai', [openaiRow], historyRows)
     const specialLane = lanes.find((l) => l.laneKey === 'openai/special')
     expect(specialLane).toBeDefined()
     expect(specialLane!.currentBar).not.toBeNull()
@@ -2799,7 +2783,7 @@ describe('Wave 47 — buildProviderLanes future-slot prior bar dedup', () => {
       // Only one prior slot — should become the single prior bar
       makeWeeklyHistoryRow('2026-05-19T00:04:56.000Z', 39),
     ]
-    const lanes = _buildProviderLanesForTest('openai', [openaiRow], historyRows)
+    const lanes = buildProviderLanes('openai', [openaiRow], historyRows)
     const weeklyLane = lanes.find((l) => l.laneKey === 'openai/weekly')
     expect(weeklyLane!.priorBars).toHaveLength(1)
     // min_remaining_pct=39 → consumed=61
@@ -2825,7 +2809,7 @@ describe('Wave 47 — buildProviderLanes future-slot prior bar dedup', () => {
       // Prior slot at 5/24 14:00 — must NOT be filtered (>30min from 18:30)
       makeWeeklyHistoryRow('2026-05-24T14:00:00.000Z', 60),
     ]
-    const lanes = _buildProviderLanesForTest('openai', [openaiRow], historyRows)
+    const lanes = buildProviderLanes('openai', [openaiRow], historyRows)
     const weeklyLane = lanes.find((l) => l.laneKey === 'openai/weekly')
     // 1 prior bar — not cross-filtered by the special lane's reset at 19:30
     expect(weeklyLane!.priorBars).toHaveLength(1)
@@ -2841,7 +2825,7 @@ describe('Wave 47 — buildProviderLanes future-slot prior bar dedup', () => {
 describe('Wave 43 — fmtIntervalCompact', () => {
   test('test_fmt_interval_compact_formats_snapped_range', () => {
     // 2026-05-19T10:00:00Z → 2026-05-20T10:00:00Z (already on 30-min boundary)
-    const result = _fmtIntervalCompactForTest(
+    const result = fmtIntervalCompact(
       '2026-05-19T10:00:00Z',
       '2026-05-20T10:00:00Z'
     )
@@ -2851,7 +2835,7 @@ describe('Wave 43 — fmtIntervalCompact', () => {
   test('test_fmt_interval_compact_snaps_to_nearest_30min', () => {
     // 2026-05-20T09:44:00Z: nearest 30-min boundary is 09:30 (44m → round down)
     // 2026-05-20T14:52:00Z: nearest 30-min boundary is 15:00 (52m → round up)
-    const result = _fmtIntervalCompactForTest(
+    const result = fmtIntervalCompact(
       '2026-05-20T09:44:00Z',
       '2026-05-20T14:52:00Z'
     )
@@ -2859,18 +2843,18 @@ describe('Wave 43 — fmtIntervalCompact', () => {
   })
 
   test('test_fmt_interval_compact_returns_dash_on_null_start', () => {
-    const result = _fmtIntervalCompactForTest(null, '2026-05-20T10:00:00Z')
+    const result = fmtIntervalCompact(null, '2026-05-20T10:00:00Z')
     expect(result).toBe('—')
   })
 
   test('test_fmt_interval_compact_returns_dash_on_null_end', () => {
-    const result = _fmtIntervalCompactForTest('2026-05-19T10:00:00Z', null)
+    const result = fmtIntervalCompact('2026-05-19T10:00:00Z', null)
     expect(result).toBe('—')
   })
 
   test('test_fmt_interval_compact_pads_hours_and_minutes', () => {
     // 2026-05-03T01:00:00Z — single-digit month and day, leading-zero hour
-    const result = _fmtIntervalCompactForTest(
+    const result = fmtIntervalCompact(
       '2026-05-03T01:00:00Z',
       '2026-05-03T06:00:00Z'
     )
@@ -2878,7 +2862,7 @@ describe('Wave 43 — fmtIntervalCompact', () => {
   })
 
   test('test_fmt_interval_compact_crosses_month_boundary', () => {
-    const result = _fmtIntervalCompactForTest(
+    const result = fmtIntervalCompact(
       '2026-04-30T22:00:00Z',
       '2026-05-01T04:00:00Z'
     )
@@ -2914,7 +2898,7 @@ describe('Wave 43 — buildPriorBarFromHistory dateRangeLabel', () => {
       interval_start: '2026-05-19T10:00:00Z',
       expected_reset_at: '2026-05-20T10:00:00Z',
     })
-    const bar = _buildPriorBarFromHistoryForTest(h, 'anthropic')
+    const bar = buildPriorBarFromHistory(h, 'anthropic')
     expect(bar.dateRangeLabel).toBe('5/19 06:00 → 5/20 06:00')
   })
 
@@ -2924,7 +2908,7 @@ describe('Wave 43 — buildPriorBarFromHistory dateRangeLabel', () => {
       interval_start: '2026-05-19T09:46:00Z',
       expected_reset_at: '2026-05-20T09:53:00Z',
     })
-    const bar = _buildPriorBarFromHistoryForTest(h, 'anthropic')
+    const bar = buildPriorBarFromHistory(h, 'anthropic')
     // Both snap to :00 of the hour
     expect(bar.dateRangeLabel).toBe('5/19 06:00 → 5/20 06:00')
   })
@@ -2935,7 +2919,7 @@ describe('Wave 43 — buildPriorBarFromHistory dateRangeLabel', () => {
       interval_start: null,
       expected_reset_at: '2026-05-20T10:00:00Z',
     })
-    const bar = _buildPriorBarFromHistoryForTest(h, 'anthropic')
+    const bar = buildPriorBarFromHistory(h, 'anthropic')
     // fmtIntervalCompact returns '—' for null start; field is still set
     expect(bar.dateRangeLabel).toBe('—')
   })
@@ -2945,7 +2929,7 @@ describe('Wave 43 — buildPriorBarFromHistory dateRangeLabel', () => {
       interval_start: '2026-05-19T10:00:00Z',
       expected_reset_at: null,
     })
-    const bar = _buildPriorBarFromHistoryForTest(h, 'anthropic')
+    const bar = buildPriorBarFromHistory(h, 'anthropic')
     expect(bar.dateRangeLabel).toBe('—')
   })
 
@@ -2954,7 +2938,7 @@ describe('Wave 43 — buildPriorBarFromHistory dateRangeLabel', () => {
       interval_start: '2026-05-19T10:00:00Z',
       expected_reset_at: '2026-05-20T10:00:00Z',
     })
-    const bar = _buildPriorBarFromHistoryForTest(h, 'anthropic')
+    const bar = buildPriorBarFromHistory(h, 'anthropic')
     expect(bar.timeAgoLabel).toBeDefined()
     expect(bar.dateRangeLabel).toBeDefined()
     expect(bar.dateRangeLabel).toContain('→')
@@ -2974,7 +2958,7 @@ describe('Wave 43 — buildPriorBarFromHistory dateRangeLabel', () => {
       velocity_segments: velocitySegments,
       velocity_scores: velocityScores,
     })
-    const bar = _buildPriorBarFromHistoryForTest(h, 'anthropic')
+    const bar = buildPriorBarFromHistory(h, 'anthropic')
 
     expect(bar.segments).toHaveLength(100)
     expect(bar.segments[0].highVelocity).toBe(false)
@@ -3013,7 +2997,7 @@ describe('S1-3 — buildPriorBarFromHistory null min_remaining_pct', () => {
       usage_breakdown: [],
     }
 
-    const bar = _buildPriorBarFromHistoryForTest(h, 'anthropic')
+    const bar = buildPriorBarFromHistory(h, 'anthropic')
 
     // The bug: `remainingPct = h.min_remaining_pct ?? 0` treats null as 0,
     // producing consumedPct = 100. A null remaining_pct must NOT render as
@@ -3128,7 +3112,7 @@ describe('S1-4 — buildProviderLanes distinct null-reset rows not collapsed', (
       weekly_usage_tokens: 1000,
     })
 
-    const lanes = _buildProviderLanesForTest(
+    const lanes = buildProviderLanes(
       'anthropic',
       [currentQuotaRow],
       historyRows
@@ -3224,7 +3208,7 @@ describe('S1-5 — health event join normalizes +00:00 offset bucket_start', () 
     }
 
     // Build aggregate health cells with the +00:00 health row and a matching observation
-    const cells = _buildAggregateHealthCellsForTest([healthRow], [observation])
+    const cells = buildAggregateHealthCells([healthRow], [observation])
 
     // The cell containing our health row should have an events array with the
     // observation joined to it. If bucket_start normalisation is broken, the
@@ -3318,7 +3302,7 @@ describe('S1-7 — Google best row prefers recent interval_start not shortest na
       { short_remaining_pct: 30 }
     )
 
-    const lanes = _buildProviderLanesForTest(
+    const lanes = buildProviderLanes(
       'google',
       [olderShortName, newerLongName],
       [] // no history rows needed
@@ -3473,124 +3457,69 @@ describe('S1-10 — buildModelRows alias provider joins via canonical key', () =
 // ---------------------------------------------------------------------------
 
 describe('S1-11 — buildTopModels falls back to total_p95_ms', () => {
-  test('test_buildTopModels_falls_back_to_total_p95_ms', async () => {
-    // Scenario: local-route model where upstream spans are not emitted.
-    // upstream_p95_ms === null but total_p95_ms = 150.
-    // Expected top-models p95 cell: '150ms' (or similar non-dash value).
-    // Current bug: matchingHealthRow?.upstream_p95_ms ?? null → always null
-    //              → renders '—' in the ProviderCard p95 cell.
-    const report: UsageReportResponse = {
-      ...MOCK_REPORT,
-      providerStatusUsage: [
-        {
-          provider: 'local',
-          model: 'local-llama-3.3',
-          traces: 20,
-          token_total: 5000,
-          usd_cost: 0.0,
-          period_start: '2026-05-18',
-          period_end: '2026-05-19',
-          upstream_p50_ms: null,
-          upstream_p95_ms: null,
-          upstream_p99_ms: null,
-          total_p95_ms: null,
-          proxy_processing_p95_ms: null,
-          missing_upstream_latency: 20,
-          provider_error_events: 0,
-          rate_limit_events: 0,
-          capacity_events: 0,
-          provider_5xx_events: 0,
-          provider_timeout_events: 0,
-          network_error_events: 0,
-          auth_failed_events: 0,
-          adapter_error_events: 0,
-        },
-      ],
-      providerLatencyHealth: [
-        {
-          bucket_start: '2026-05-18T23:00:00.000Z',
-          environment: 'production',
-          provider: 'local',
-          model: 'local-llama-3.3',
-          model_group: 'local',
-          requests: 20,
-          passive_latency_sample_status: 'ok',
-          upstream_p50_ms: null, // no upstream spans
-          upstream_p95_ms: null, // no upstream spans ← the null case
-          upstream_p99_ms: null,
-          total_p95_ms: 150, // total latency IS available ← must be used
-          proxy_processing_p95_ms: null,
-          missing_upstream_latency: 20,
-          provider_error_events: 0,
-          rate_limit_events: 0,
-          capacity_events: 0,
-          provider_5xx_events: 0,
-          provider_timeout_events: 0,
-          network_error_events: 0,
-          auth_failed_events: 0,
-          adapter_error_events: 0,
-          status_probe_count: 0,
-          status_probe_success_pct: null,
-          status_probe_p95_ms: null,
-          provider_ping_avg_ms: null,
-          provider_ping_packet_loss_pct: null,
-          control_ping_avg_ms: null,
-          control_packet_loss_pct: null,
-          control_probe_success_pct: null,
-          provider_ping_minus_control_ms: null,
-          dns_failures: 0,
-          tcp_failures: 0,
-          tls_failures: 0,
-          icmp_failures: 0,
-          probed_endpoints: null,
-          status_error_classes: null,
-          min_remaining_pct: null,
-          max_remaining_pct: null,
-          next_expected_reset_at: null,
-          quota_keys: null,
-          request_period_start: null,
-          request_period_end: null,
-        },
-      ],
-    }
+  test('test_buildTopModels_falls_back_to_total_p95_ms', () => {
+    const statusRows = [
+      {
+        provider: 'local',
+        model: 'local-llama-3.3',
+        traces: 20,
+        token_total: 5000,
+        usd_cost: 0.0,
+      },
+    ]
+    const healthRows: UsageReportProviderLatencyHealthRow[] = [
+      {
+        bucket_start: '2026-05-18T23:00:00.000Z',
+        environment: 'production',
+        provider: 'local',
+        model: 'local-llama-3.3',
+        model_group: 'local',
+        requests: 20,
+        passive_latency_sample_status: 'ok',
+        upstream_p50_ms: null,
+        upstream_p95_ms: null,
+        upstream_p99_ms: null,
+        total_p95_ms: 150,
+        proxy_processing_p95_ms: null,
+        missing_upstream_latency: 20,
+        provider_error_events: 0,
+        rate_limit_events: 0,
+        capacity_events: 0,
+        provider_5xx_events: 0,
+        provider_timeout_events: 0,
+        network_error_events: 0,
+        auth_failed_events: 0,
+        adapter_error_events: 0,
+        status_probe_count: 0,
+        status_probe_success_pct: null,
+        status_probe_p95_ms: null,
+        provider_ping_avg_ms: null,
+        provider_ping_packet_loss_pct: null,
+        control_ping_avg_ms: null,
+        control_packet_loss_pct: null,
+        control_probe_success_pct: null,
+        provider_ping_minus_control_ms: null,
+        dns_failures: 0,
+        tcp_failures: 0,
+        tls_failures: 0,
+        icmp_failures: 0,
+        probed_endpoints: null,
+        status_error_classes: null,
+        min_remaining_pct: null,
+        max_remaining_pct: null,
+        next_expected_reset_at: null,
+        quota_keys: null,
+        request_period_start: null,
+        request_period_end: null,
+      },
+    ]
 
-    await act(async () => {
-      render(
-        <Wrapper>
-          <PhosphorDashboard
-            from='2026-05-18'
-            to='2026-05-19'
-            report={report}
-            reportLoading={false}
-            showComparison={false}
-            quotas={[]}
-            quotaHistory={[]}
-          />
-        </Wrapper>
-      )
-    })
+    const top = buildTopModels(statusRows, 'local', healthRows)
 
-    // The ProviderCard for 'local' should show top-models with p95 from total_p95_ms.
-    // Navigate to the STATUS tab which shows provider cards.
-    fireEvent.click(screen.getByRole('tab', { name: 'Health' }))
-
-    // The local provider card's top-models section should display '150ms' not '—'.
-    // '150ms' or '150 ms' depending on formatter — query for text containing '150'
-    // within the local provider context.
-    // If the bug is present, all of the p95 values render as '—'.
-    // We check that at least one element with '150' appears in the document,
-    // indicating the total_p95_ms value was surfaced.
-    await waitFor(() => {
-      const elements150 = screen.queryAllByText(/150/)
-      // '—' elements would dominate if the bug persists
-      const dashElements = screen.queryAllByText('—')
-      // With fix: '150' is present; without fix: only '—'
-      // This assertion fails on buggy implementation.
-      expect(elements150.length).toBeGreaterThan(0)
-      // Guard: in the buggy implementation ALL p95 cells show '—', so if
-      // we find many dashes and zero '150', the fix is missing.
-      expect(dashElements.length).toBeLessThan(elements150.length + 10)
-    })
+    expect(top).toHaveLength(1)
+    expect(top[0]?.model).toBe('local-llama-3.3')
+    expect(top[0]?.p95_ms).toBe(150)
+    expect(top[0]?.p95_ms).not.toBeNull()
   })
 })
 
