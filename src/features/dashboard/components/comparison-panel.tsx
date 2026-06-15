@@ -32,7 +32,7 @@
  * — Default=1 is mathematically sound: burn = totalCost / 1 = raw total cost,
  *   which is the correct daily burn rate for a 1-day window.
  */
-import type { CSSProperties, ReactElement } from 'react'
+import { useMemo, type CSSProperties, type ReactElement } from 'react'
 import { fmtCompact } from '../lib/format-utils'
 import {
   formatLatency,
@@ -218,7 +218,19 @@ export function ComparisonPanel({
   priorStats,
 }: ComparisonPanelProps): ReactElement {
   const windowDays = Math.max(1, Math.round(periodDays))
-  const stats = buildCurrentStats(providers, modelRows, windowDays)
+  const stats = useMemo(
+    () => buildCurrentStats(providers, modelRows, windowDays),
+    [providers, modelRows, windowDays]
+  )
+
+  const priorByProvider = useMemo(() => {
+    const map = new Map<string, ProviderCurrentStats>()
+    if (priorStats === undefined) return map
+    for (const entry of priorStats) {
+      map.set(entry.provider.toLowerCase(), entry)
+    }
+    return map
+  }, [priorStats])
 
   /** Derive title label from actual period length. */
   const periodLabel =
@@ -296,9 +308,7 @@ export function ComparisonPanel({
             const providerColor = providerBrandHex(stat.provider)
 
             // Wave 32-Deltas: look up the matching prior-window entry.
-            const prior = priorStats?.find(
-              (p) => p.provider.toLowerCase() === stat.provider.toLowerCase()
-            )
+            const prior = priorByProvider.get(stat.provider.toLowerCase())
 
             const deltaCost =
               prior !== undefined

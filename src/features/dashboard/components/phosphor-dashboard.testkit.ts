@@ -47,11 +47,13 @@ import type { RepoRow } from './repo-breakdown-table'
 /** Cell count expected by HealthStrip inside ProviderCard. */
 export const HEALTH_CELL_COUNT = 288
 export const HEALTH_BUCKET_MS = 5 * 60 * 1000
+const FORMAT_COMPACT_QUANTITY = new Intl.NumberFormat('en-US', {
+  notation: 'compact',
+  maximumFractionDigits: 1,
+})
+
 export function formatCompactQuantity(value: number): string {
-  return new Intl.NumberFormat('en-US', {
-    notation: 'compact',
-    maximumFractionDigits: 1,
-  }).format(value)
+  return FORMAT_COMPACT_QUANTITY.format(value)
 }
 
 export function quotaHistoryConsumedPct(

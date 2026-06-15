@@ -440,10 +440,16 @@ export function Dashboard(): ReactElement {
     return result
   }, [kpiSummary, priorSummary, priorHealth])
 
+  const healthRowsForAnomaly = useMemo(
+    () =>
+      (summaryReport?.providerLatencyHealth ?? []).filter(
+        (r): r is typeof r & { bucket_start: string } => r.bucket_start !== null
+      ),
+    [summaryReport?.providerLatencyHealth]
+  )
+
   const anomalies = useAnomalyDetection(
-    (summaryReport?.providerLatencyHealth ?? []).filter(
-      (r): r is typeof r & { bucket_start: string } => r.bucket_start !== null
-    ),
+    healthRowsForAnomaly,
     summaryReport?.metadata
   )
 

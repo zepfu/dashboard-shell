@@ -45,6 +45,7 @@
  * Accessibility: the outer container carries a descriptive aria-label.
  */
 import {
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -79,6 +80,11 @@ import {
   PROVIDER_BRAND_HEX,
 } from '../lib/usage-report-display'
 import { HoverTooltip } from './primitives/hover-tooltip'
+
+const FORMAT_COMPACT_NUMBER = new Intl.NumberFormat('en-US', {
+  notation: 'compact',
+  maximumFractionDigits: 1,
+})
 
 // ---------------------------------------------------------------------------
 // Provider colour map
@@ -340,10 +346,7 @@ function buildBarTooltip(
       {rows.map(([key, count]) => {
         const providerLabel = labelMap.get(key) ?? key
         const pct = total > 0 ? ((count / total) * 100).toFixed(0) : '0'
-        const formatted = new Intl.NumberFormat('en-US', {
-          notation: 'compact',
-          maximumFractionDigits: 1,
-        }).format(count)
+        const formatted = FORMAT_COMPACT_NUMBER.format(count)
         return (
           <div
             key={key}
@@ -369,10 +372,7 @@ function buildBarTooltip(
 }
 
 function formatCompactNumber(value: number): string {
-  return new Intl.NumberFormat('en-US', {
-    notation: 'compact',
-    maximumFractionDigits: 1,
-  }).format(value)
+  return FORMAT_COMPACT_NUMBER.format(value)
 }
 
 function formatDayLabel(day: string): string {
@@ -1807,7 +1807,7 @@ export interface TokenTrendChartProps {
   scoreRows?: UsageReportTokenTrendScoreRow[]
   dayDetail?: UsageReportTokenTrendDayResponse | null
   detailLoading?: boolean
-  onHourHover?: (target: { day: string; hour: number }) => void
+  onHourHover?: (target: { day: string; hour: number } | null) => void
   lowerLaneMode?: LowerLaneMode
   onLowerLaneModeChange?: (mode: LowerLaneMode) => void
 }
@@ -2120,6 +2120,23 @@ export function TokenTrendChart({
 }: TokenTrendChartProps): ReactElement {
   const [internalLowerLaneMode, setInternalLowerLaneMode] =
     useState<LowerLaneMode>('tui')
+  const lastHourHoverRef = useRef<{ day: string; hour: number } | null>(null)
+  const reportHourHover = useCallback(
+    (target: { day: string; hour: number } | null): void => {
+      if (target === null) {
+        lastHourHoverRef.current = null
+        onHourHover?.(null)
+        return
+      }
+      const last = lastHourHoverRef.current
+      if (last?.day === target.day && last.hour === target.hour) {
+        return
+      }
+      lastHourHoverRef.current = target
+      onHourHover?.(target)
+    },
+    [onHourHover]
+  )
   void dayEnvelopeRange
   const lowerLaneMode = lowerLaneModeProp ?? internalLowerLaneMode
   const handleLowerLaneModeChange = (mode: LowerLaneMode): void => {
@@ -2233,10 +2250,13 @@ export function TokenTrendChart({
                   }}
                   onPointerEnter={(event) => {
                     if (event.target !== event.currentTarget) return
-                    onHourHover?.({
+                    reportHourHover({
                       day: day.day,
                       hour: hoverHour,
                     })
+                  }}
+                  onPointerLeave={() => {
+                    reportHourHover(null)
                   }}
                 >
                   <div
@@ -2290,7 +2310,7 @@ export function TokenTrendChart({
                               zIndex: 1,
                             }}
                             onPointerEnter={() => {
-                              onHourHover?.({
+                              reportHourHover({
                                 day: hourBucket.day,
                                 hour: hourBucket.hour,
                               })

@@ -6,7 +6,7 @@
  * the first filter and date controls. Tab/focus actions are delegated to the
  * route through `onActivate`; standalone renders fall back to section scrolling.
  */
-import { useEffect, type ReactElement } from 'react'
+import { useCallback, useEffect, useRef, type ReactElement } from 'react'
 
 interface AnchorBarProps {
   /** The currently active shortcut or section slug. */
@@ -130,16 +130,25 @@ export default function AnchorBar({
   onSectionChange,
   onActivate,
 }: AnchorBarProps): ReactElement {
-  useEffect(() => {
-    const activate = (section: SectionDef): void => {
-      onSectionChange(section.value)
-      if (onActivate !== undefined) {
-        onActivate(section.value)
-        return
-      }
-      scrollTargetIntoView(section.targetId)
-    }
+  const onSectionChangeRef = useRef(onSectionChange)
+  const onActivateRef = useRef(onActivate)
 
+  useEffect(() => {
+    onSectionChangeRef.current = onSectionChange
+    onActivateRef.current = onActivate
+  })
+
+  const activate = useCallback((section: SectionDef): void => {
+    onSectionChangeRef.current(section.value)
+    const onAct = onActivateRef.current
+    if (onAct !== undefined) {
+      onAct(section.value)
+      return
+    }
+    scrollTargetIntoView(section.targetId)
+  }, [])
+
+  useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent): void => {
       // Skip modifier combos
       if (event.ctrlKey || event.metaKey || event.altKey) return
@@ -175,7 +184,7 @@ export default function AnchorBar({
     return () => {
       document.removeEventListener('keydown', handleKeyDown)
     }
-  }, [onActivate, onSectionChange])
+  }, [activate])
 
   return (
     <nav
@@ -203,12 +212,7 @@ export default function AnchorBar({
               e.preventDefault()
               const section = KEY_MAP.get(key)
               if (section !== undefined) {
-                onSectionChange(section.value)
-                if (onActivate !== undefined) {
-                  onActivate(section.value)
-                } else {
-                  scrollTargetIntoView(section.targetId)
-                }
+                activate(section)
               }
             }}
             className='anchor-link'
