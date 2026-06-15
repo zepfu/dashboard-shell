@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type {
   ColumnFiltersState,
   OnChangeFn,
@@ -14,6 +14,9 @@ export type NavigateFn = (opts: {
     | ((prev: SearchRecord) => Partial<SearchRecord> | SearchRecord)
   replace?: boolean
 }) => void
+
+const MAX_PAGE_SIZE = 100
+const MIN_PAGE_SIZE = 1
 
 type UseTableUrlStateParams = {
   search: SearchRecord
@@ -34,7 +37,6 @@ type UseTableUrlStateParams = {
         columnId: string
         searchKey: string
         type?: 'string'
-        // Optional transformers for custom types
         serialize?: (value: unknown) => unknown
         deserialize?: (value: unknown) => unknown
       }
@@ -49,20 +51,58 @@ type UseTableUrlStateParams = {
 }
 
 type UseTableUrlStateReturn = {
-  // Global filter
   globalFilter?: string
   onGlobalFilterChange?: OnChangeFn<string>
-  // Column filters
   columnFilters: ColumnFiltersState
   onColumnFiltersChange: OnChangeFn<ColumnFiltersState>
-  // Pagination
   pagination: PaginationState
   onPaginationChange: OnChangeFn<PaginationState>
-  // Helpers
   ensurePageInRange: (
     pageCount: number,
     opts?: { resetTo?: 'first' | 'last' }
   ) => void
+}
+
+function clampPageSize(raw: unknown, defaultPageSize: number): number {
+  if (typeof raw !== 'number' || !Number.isFinite(raw)) {
+    return defaultPageSize
+  }
+  const rounded = Math.floor(raw)
+  if (rounded < MIN_PAGE_SIZE) {
+    return defaultPageSize
+  }
+  return Math.min(rounded, MAX_PAGE_SIZE)
+}
+
+function clampPage(raw: unknown, defaultPage: number): number {
+  if (typeof raw !== 'number' || !Number.isFinite(raw)) {
+    return defaultPage
+  }
+  const rounded = Math.floor(raw)
+  return rounded >= 1 ? rounded : defaultPage
+}
+
+function columnFiltersFromSearch(
+  search: SearchRecord,
+  columnFiltersCfg: UseTableUrlStateParams['columnFilters']
+): ColumnFiltersState {
+  const collected: ColumnFiltersState = []
+  for (const cfg of columnFiltersCfg ?? []) {
+    const raw = search[cfg.searchKey]
+    const deserialize = cfg.deserialize ?? ((v: unknown) => v)
+    if (cfg.type === 'string') {
+      const value = (deserialize(raw) as string) ?? ''
+      if (typeof value === 'string' && value.trim() !== '') {
+        collected.push({ id: cfg.columnId, value })
+      }
+    } else {
+      const value = (deserialize(raw) as unknown[]) ?? []
+      if (Array.isArray(value) && value.length > 0) {
+        collected.push({ id: cfg.columnId, value })
+      }
+    }
+  }
+  return collected
 }
 
 export function useTableUrlState(
@@ -85,44 +125,31 @@ export function useTableUrlState(
   const globalFilterEnabled = globalFilterCfg?.enabled ?? true
   const trimGlobal = globalFilterCfg?.trim ?? true
 
-  // Build initial column filters from the current search params
-  const initialColumnFilters: ColumnFiltersState = useMemo(() => {
-    const collected: ColumnFiltersState = []
-    for (const cfg of columnFiltersCfg) {
-      const raw = (search as SearchRecord)[cfg.searchKey]
-      const deserialize = cfg.deserialize ?? ((v: unknown) => v)
-      if (cfg.type === 'string') {
-        const value = (deserialize(raw) as string) ?? ''
-        if (typeof value === 'string' && value.trim() !== '') {
-          collected.push({ id: cfg.columnId, value })
-        }
-      } else {
-        // default to array type
-        const value = (deserialize(raw) as unknown[]) ?? []
-        if (Array.isArray(value) && value.length > 0) {
-          collected.push({ id: cfg.columnId, value })
-        }
-      }
-    }
-    return collected
-  }, [columnFiltersCfg, search])
+  const columnFiltersFromUrl = useMemo(
+    () => columnFiltersFromSearch(search, columnFiltersCfg),
+    [search, columnFiltersCfg]
+  )
 
   const [columnFilters, setColumnFilters] =
-    useState<ColumnFiltersState>(initialColumnFilters)
+    useState<ColumnFiltersState>(columnFiltersFromUrl)
+
+  useEffect(() => {
+    setColumnFilters(columnFiltersFromUrl)
+  }, [columnFiltersFromUrl])
 
   const pagination: PaginationState = useMemo(() => {
-    const rawPage = (search as SearchRecord)[pageKey]
-    const rawPageSize = (search as SearchRecord)[pageSizeKey]
-    const pageNum = typeof rawPage === 'number' ? rawPage : defaultPage
-    const pageSizeNum =
-      typeof rawPageSize === 'number' ? rawPageSize : defaultPageSize
+    const pageNum = clampPage((search as SearchRecord)[pageKey], defaultPage)
+    const pageSizeNum = clampPageSize(
+      (search as SearchRecord)[pageSizeKey],
+      defaultPageSize
+    )
     return { pageIndex: Math.max(0, pageNum - 1), pageSize: pageSizeNum }
   }, [search, pageKey, pageSizeKey, defaultPage, defaultPageSize])
 
   const onPaginationChange: OnChangeFn<PaginationState> = (updater) => {
     const next = typeof updater === 'function' ? updater(pagination) : updater
     const nextPage = next.pageIndex + 1
-    const nextPageSize = next.pageSize
+    const nextPageSize = clampPageSize(next.pageSize, defaultPageSize)
     navigate({
       search: (prev) => ({
         ...(prev as SearchRecord),
@@ -133,11 +160,19 @@ export function useTableUrlState(
     })
   }
 
-  const [globalFilter, setGlobalFilter] = useState<string | undefined>(() => {
+  const globalFilterFromUrl = useMemo(() => {
     if (!globalFilterEnabled) return undefined
     const raw = (search as SearchRecord)[globalFilterKey]
     return typeof raw === 'string' ? raw : ''
-  })
+  }, [search, globalFilterKey, globalFilterEnabled])
+
+  const [globalFilter, setGlobalFilter] = useState<string | undefined>(
+    globalFilterFromUrl
+  )
+
+  useEffect(() => {
+    setGlobalFilter(globalFilterFromUrl)
+  }, [globalFilterFromUrl])
 
   const onGlobalFilterChange: OnChangeFn<string> | undefined =
     globalFilterEnabled
@@ -194,8 +229,7 @@ export function useTableUrlState(
     pageCount: number,
     opts: { resetTo?: 'first' | 'last' } = { resetTo: 'first' }
   ) => {
-    const currentPage = (search as SearchRecord)[pageKey]
-    const pageNum = typeof currentPage === 'number' ? currentPage : defaultPage
+    const pageNum = clampPage((search as SearchRecord)[pageKey], defaultPage)
     if (pageCount > 0 && pageNum > pageCount) {
       navigate({
         replace: true,
