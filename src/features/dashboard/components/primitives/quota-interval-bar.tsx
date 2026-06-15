@@ -27,7 +27,6 @@
  */
 import type { CSSProperties, ReactElement, ReactNode } from 'react'
 import { HoverTooltip } from './hover-tooltip'
-import './quota-interval-bar.module.css'
 
 export interface QuotaInterval {
   widthPct: number
@@ -135,9 +134,28 @@ function buildVelocityOverlayMask(
   return `linear-gradient(to right, ${stops.join(', ')})`
 }
 
+export type QuotaProjectionTier = 'sustainable' | 'approaching' | 'over'
+
+function projectionTickClasses(
+  projectionPct: number,
+  projectionTier?: QuotaProjectionTier
+): string {
+  if (projectionTier !== undefined) {
+    return `qbar-projection ${projectionTier}`
+  }
+  if (projectionPct > 100) {
+    return 'qbar-projection over'
+  }
+  if (projectionPct >= 80) {
+    return 'qbar-projection approaching'
+  }
+  return 'qbar-projection sustainable'
+}
+
 interface QuotaIntervalBarProps {
   intervals: QuotaInterval[]
   projectionPct?: number
+  projectionTier?: QuotaProjectionTier
   tooltipContent?: ReactNode
   /**
    * Optional velocity annotation rendered as a `.quota-row-velocity` row
@@ -164,6 +182,7 @@ interface QuotaIntervalBarProps {
 export function QuotaIntervalBar({
   intervals,
   projectionPct,
+  projectionTier,
   tooltipContent,
   velocityLabel,
   velocityTier = 'steady',
@@ -174,6 +193,12 @@ export function QuotaIntervalBar({
     .join(' ')
 
   const displayIntervals = mergeQuotaIntervalsForDisplay(intervals)
+  const segmentCount = displayIntervals.length
+  const barGap = segmentCount > 50 ? 0 : '2px'
+  const clampedProjectionPct =
+    projectionPct === undefined
+      ? undefined
+      : Math.min(100, Math.max(0, projectionPct))
   const velocityMask = buildVelocityOverlayMask(displayIntervals)
   const velocityOverlayStyle: CSSProperties | undefined =
     velocityMask === undefined
@@ -190,7 +215,7 @@ export function QuotaIntervalBar({
         style={{
           position: 'relative',
           display: 'flex',
-          gap: intervals.length > 50 ? 0 : '2px',
+          gap: barGap,
           width: '100%',
           height: '6px',
           background: 'var(--card-2)',
@@ -217,6 +242,8 @@ export function QuotaIntervalBar({
               width: `${interval.widthPct}%`,
               flex: `0 0 ${interval.widthPct}%`,
               height: '100%',
+              minWidth: 0,
+              boxSizing: 'border-box',
             }}
           />
         ))}
@@ -229,12 +256,15 @@ export function QuotaIntervalBar({
             <span className='quota-row-velocity-sweep' />
           </div>
         )}
-        {projectionPct !== undefined && (
+        {clampedProjectionPct !== undefined && (
           <div
-            className='qbar-projection sustainable'
+            className={projectionTickClasses(
+              projectionPct ?? clampedProjectionPct,
+              projectionTier
+            )}
             style={{
               position: 'absolute',
-              left: `${projectionPct}%`,
+              left: `${clampedProjectionPct}%`,
               top: 0,
               bottom: 0,
               width: '2px',

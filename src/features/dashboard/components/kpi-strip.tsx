@@ -20,18 +20,13 @@
  */
 import type { ReactElement } from 'react'
 import { fmtCompact } from '../lib/format-utils'
-
-interface KpiSummary {
-  token_in: number
-  token_out: number
-  cost_usd: number
-  requests: number
-  errors: number
-  p95_ms: number
-}
-
-/** Keys matching KpiSummary fields, used for delta lookup. */
-type KpiKey = keyof KpiSummary
+import { formatLatency, formatUsd } from '../lib/usage-report-display'
+import {
+  kpiMicrobarFillPct,
+  renderDelta,
+  type KpiKey,
+  type KpiSummary,
+} from './kpi-strip.helpers'
 
 interface KpiStripProps {
   summary: KpiSummary | undefined
@@ -49,34 +44,9 @@ interface KpiStripProps {
   className?: string
 }
 
-/**
- * Format a cost value as a dollar string with two decimal places and
- * thousand-separator commas for values ≥ $1000 (operator F#10).
- *
- * Examples: 7196.60 → "$7,196.60", 0.50 → "$0.50"
- */
-function formatCost(n: number): string {
-  return `$${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-}
-
 /** Format an integer with thousand-separator commas. */
 function formatCount(n: number): string {
   return new Intl.NumberFormat().format(n)
-}
-
-/** Format a P95 latency value. */
-function formatLatency(ms: number): string {
-  if (ms >= 1000) {
-    return `${(ms / 1000).toFixed(1)}s`
-  }
-  return `${ms}ms`
-}
-
-/** Render a delta fraction as a ↑/↓ percentage string. */
-function renderDelta(delta: number | undefined): string {
-  if (delta === undefined) return '—'
-  const pct = (Math.abs(delta) * 100).toFixed(1)
-  return delta >= 0 ? `↑ ${pct}%` : `↓ ${pct}%`
 }
 
 interface TileData {
@@ -105,7 +75,7 @@ function buildTiles(summary: KpiSummary): TileData[] {
       label: 'Cost',
       key: 'cost_usd',
       rawValue: summary.cost_usd,
-      value: formatCost(summary.cost_usd),
+      value: formatUsd(summary.cost_usd),
     },
     {
       label: 'Requests',
@@ -213,10 +183,6 @@ export function KpiStrip({
 
   const tiles = buildTiles(summary)
 
-  // Compute max raw value across tiles for proportional microbar fill.
-  // Use max of all rawValues; guard against zero-division with fallback of 1.
-  const maxRaw = Math.max(...tiles.map((t) => t.rawValue), 1)
-
   return (
     <div className={className} style={stripStyle}>
       {tiles.map(({ label, key, rawValue, value, isError }, i) => {
@@ -224,7 +190,12 @@ export function KpiStrip({
         const deltaStr = renderDelta(deltaVal)
         // 14-B.6: mockup §5 line 300 — .kpi-delta { color: var(--fg-muted); }
         // All deltas use uniform muted color regardless of sign (no amber/red).
-        const fillPct = Math.round((rawValue / maxRaw) * 100)
+        const fillPct = kpiMicrobarFillPct(
+          key,
+          summary,
+          rawValue,
+          deltas?.[key]
+        )
 
         return (
           <div
