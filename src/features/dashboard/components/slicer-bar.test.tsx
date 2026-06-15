@@ -13,6 +13,12 @@
  *  - "Clear" button resets a single dimension
  *  - "Clear all" button is shown only when any filter is active and resets all
  *  - Empty options renders "No options" message
+ *
+ * Wave 8 (S5-6) — a11y red-phase additions:
+ *  - Arrow-key navigation through listbox options (roving tabindex / ArrowDown/Up)
+ *  - Focus restored to trigger button on dropdown close (Escape)
+ *  - Unique dropdown IDs across all five dimensions
+ *  - aria-controls on trigger points to a listbox with matching id
  */
 import { render, screen, fireEvent } from '@testing-library/react'
 import {
@@ -252,6 +258,208 @@ test('test_slicer_no_double_toggle_on_enter', () => {
  * Note: since this is a synchronous DOM update test, we check immediately
  * after the click for the stale class before the element is unmounted.
  */
+// ---------------------------------------------------------------------------
+// Wave 8 (S5-6) — a11y keyboard nav, focus restore, unique ids, aria-controls
+// ---------------------------------------------------------------------------
+
+/**
+ * S5-6 — Arrow keys navigate through listbox options.
+ *
+ * ARIA listbox pattern: when the dropdown is open and a list option has focus,
+ * ArrowDown moves focus to the next option and ArrowUp to the previous. Options
+ * must be individually focusable (tabIndex=0 on each, or roving tabIndex managed
+ * by the parent listbox). After fix the active descendant or focused element
+ * must change on each arrow keystroke.
+ *
+ * EXPECTED FAIL: current implementation gives each <li role="option"> a static
+ * tabIndex=0 but does NOT handle ArrowDown/ArrowUp on the listbox to move focus
+ * between items. Pressing ArrowDown while an option has focus does nothing.
+ */
+test('test_slicer_arrow_key_nav_moves_focus_between_options', () => {
+  renderBar()
+
+  // Open Provider dropdown
+  const providerTrigger = screen.getByRole('button', { name: /provider/i })
+  fireEvent.click(providerTrigger)
+
+  // Listbox must be present
+  const listbox = screen.getByRole('listbox', { name: /provider options/i })
+  expect(listbox).toBeInTheDocument()
+
+  const options = Array.from(
+    listbox.querySelectorAll('[role="option"]')
+  ) as HTMLElement[]
+  expect(options.length).toBeGreaterThan(0)
+
+  // Focus the first option
+  options[0].focus()
+  expect(document.activeElement).toBe(options[0])
+
+  // ArrowDown on the listbox (or focused option) must move focus to option[1]
+  fireEvent.keyDown(options[0], { key: 'ArrowDown', code: 'ArrowDown' })
+
+  // EXPECTED FAIL: without arrow-key handling, focus stays on options[0]
+  expect(document.activeElement).toBe(options[1])
+})
+
+/**
+ * S5-6 — ArrowUp on first option wraps to the last option (or stops at first).
+ *
+ * The ARIA listbox pattern allows either wrap-around or stopping at boundaries.
+ * After fix: pressing ArrowUp on the first option must move focus to the last
+ * option (wrap) OR keep focus on the first option — either is valid.
+ * The critical constraint: focus must NOT leave the listbox.
+ *
+ * EXPECTED FAIL: currently ArrowUp is unhandled — focus escapes the listbox.
+ */
+test('test_slicer_arrow_up_on_first_option_stays_in_listbox', () => {
+  renderBar()
+
+  const providerTrigger = screen.getByRole('button', { name: /provider/i })
+  fireEvent.click(providerTrigger)
+
+  const listbox = screen.getByRole('listbox', { name: /provider options/i })
+  const options = Array.from(
+    listbox.querySelectorAll('[role="option"]')
+  ) as HTMLElement[]
+  expect(options.length).toBeGreaterThan(0)
+
+  // Focus the first option
+  options[0].focus()
+  expect(document.activeElement).toBe(options[0])
+
+  // ArrowUp — focus must remain within the listbox (wrap to last or stay at first)
+  fireEvent.keyDown(options[0], { key: 'ArrowUp', code: 'ArrowUp' })
+
+  const activeInListbox = listbox.contains(document.activeElement)
+  // EXPECTED FAIL: without ArrowUp handling, focus may leave the listbox
+  expect(activeInListbox).toBe(true)
+})
+
+/**
+ * S5-6 — Focus is restored to the trigger button when the dropdown closes via Escape.
+ *
+ * When a keyboard user presses Escape to close a dropdown, focus MUST return
+ * to the trigger that opened it (ARIA authoring practices §3.15). Without focus
+ * restoration, the keyboard user loses their position in the page.
+ *
+ * EXPECTED FAIL: current implementation closes the dropdown on Escape (correct)
+ * but does NOT call triggerRef.current?.focus() after setOpen(false), so focus
+ * is lost / remains on whatever element had it last inside the now-unmounted panel.
+ */
+test('test_slicer_focus_restored_to_trigger_on_escape', () => {
+  const { container } = renderBar()
+
+  const providerDimension = container.querySelector('.slicer-dimension')
+  const providerTrigger = providerDimension?.querySelector(
+    '.slicer-trigger'
+  ) as HTMLButtonElement | null
+  expect(providerTrigger).not.toBeNull()
+
+  // Open via click
+  fireEvent.click(providerTrigger!)
+
+  // Dropdown is open — verify listbox is present
+  const listbox = screen.getByRole('listbox', { name: /provider options/i })
+  const options = Array.from(
+    listbox.querySelectorAll('[role="option"]')
+  ) as HTMLElement[]
+  expect(options.length).toBeGreaterThan(0)
+
+  // Move focus into the listbox
+  options[0].focus()
+
+  // Press Escape to close
+  fireEvent.keyDown(options[0], { key: 'Escape', code: 'Escape' })
+
+  // EXPECTED FAIL: trigger does not regain focus — focus is lost/elsewhere
+  expect(document.activeElement).toBe(providerTrigger)
+})
+
+/**
+ * S5-6 — Every dimension dropdown has a unique id.
+ *
+ * With five dimension dropdowns (Provider, Repository, Client, Environment,
+ * Model), each listbox must have a distinct `id` attribute so that the trigger's
+ * `aria-controls` points to the correct listbox unambiguously.
+ *
+ * EXPECTED FAIL: if the id is derived from a non-unique suffix (e.g. always
+ * 'slicer-dropdown') without including the dimension label, all five dropdowns
+ * would share the same id — a silent duplicate-id a11y violation.
+ *
+ * Current implementation: `id={dropdownId}` where
+ * `dropdownId = 'slicer-${label.toLowerCase()}-dropdown'` — this should be
+ * unique per dimension. The test verifies it IS unique after fix.
+ * It FAILS currently if labels collide or if the id is hardcoded.
+ */
+test('test_slicer_dropdown_ids_are_unique_per_dimension', () => {
+  const { container } = renderBar()
+
+  // Open all five dropdowns by clicking each trigger in sequence.
+  // Because dropdowns are conditionally rendered only when open, we must open
+  // them one at a time and record each id before closing.
+  const dimensions = container.querySelectorAll('.slicer-dimension')
+  expect(dimensions.length).toBe(5)
+
+  const seenIds = new Set<string>()
+
+  for (const dim of Array.from(dimensions)) {
+    const trigger = dim.querySelector('.slicer-trigger') as HTMLElement | null
+    expect(trigger).not.toBeNull()
+    fireEvent.click(trigger!)
+
+    const listbox = dim.querySelector('[role="listbox"]') as HTMLElement | null
+    expect(listbox).not.toBeNull()
+
+    const id = listbox?.getAttribute('id')
+    expect(id).toBeTruthy()
+    // EXPECTED FAIL if any two dimensions share the same id
+    expect(seenIds.has(id!)).toBe(false)
+    seenIds.add(id!)
+
+    // Close before opening the next dimension
+    fireEvent.click(trigger!)
+  }
+
+  expect(seenIds.size).toBe(5)
+})
+
+/**
+ * S5-6 — Trigger's aria-controls value matches the listbox id.
+ *
+ * The trigger button carries `aria-controls={dropdownId}` and the listbox
+ * carries `id={dropdownId}`. Screen readers use this to announce the relationship.
+ * If the ids diverge, the aria-controls relationship is broken.
+ *
+ * EXPECTED FAIL: if the component fails to assign aria-controls correctly, or if
+ * the listbox id does not match the trigger's aria-controls value, this test fails.
+ */
+test('test_slicer_aria_controls_matches_listbox_id', () => {
+  const { container } = renderBar()
+
+  const firstDimension = container.querySelector('.slicer-dimension')
+  expect(firstDimension).not.toBeNull()
+
+  const trigger = firstDimension!.querySelector(
+    '.slicer-trigger'
+  ) as HTMLButtonElement | null
+  expect(trigger).not.toBeNull()
+
+  const ariaControls = trigger!.getAttribute('aria-controls')
+  expect(ariaControls).toBeTruthy()
+
+  // Open the dropdown to make the listbox available in the DOM
+  fireEvent.click(trigger!)
+
+  const listbox = firstDimension!.querySelector(
+    '[role="listbox"]'
+  ) as HTMLElement | null
+  expect(listbox).not.toBeNull()
+
+  // EXPECTED FAIL: if the listbox id does not match aria-controls
+  expect(listbox!.getAttribute('id')).toBe(ariaControls)
+})
+
 test('test_slicer_stale_chip_muted_style', () => {
   const onChange = vi.fn((nextFilters: SlicerFilters) => {
     // onChange is called but we do NOT re-render (no state update in the stub)
