@@ -22,6 +22,20 @@ import { HealthStrip, type CellDef } from '../primitives/health-strip'
 
 const CELL_COUNT = 288 // 24h * 12 (5-min buckets)
 
+/** Opens lazy health-strip HoverTooltip (auto-resolved tooltip mounts on hover). */
+function openHealthStripTooltip(container: HTMLElement): void {
+  const wrapper = container.querySelector(
+    '.health-strip-wrapper'
+  ) as HTMLElement | null
+  const shell = container.querySelector(
+    '[aria-hidden="true"]'
+  ) as HTMLElement | null
+  const target = wrapper ?? shell?.firstElementChild ?? shell
+  if (target instanceof HTMLElement) {
+    fireEvent.pointerEnter(target)
+  }
+}
+
 test('test_health_strip_renders_288_cells', () => {
   const cells = Array.from({ length: CELL_COUNT }, () => ({
     color: 'var(--card-2)',
@@ -314,7 +328,7 @@ test('test_health_strip_vertical_shows_tip_health_on_hover', () => {
     </>
   )
 
-  render(
+  const { container } = render(
     <HealthStrip
       cells={cells}
       orientation='vertical'
@@ -322,11 +336,11 @@ test('test_health_strip_vertical_shows_tip_health_on_hover', () => {
     />
   )
 
-  // Tip panel should be present (hidden initially via opacity)
+  openHealthStripTooltip(container)
+
   const tip = document.body.querySelector('.v9-tip')
   expect(tip).not.toBeNull()
 
-  // Head and row structure
   const head = document.body.querySelector('.v9-tip-head')
   expect(head).not.toBeNull()
   expect(head?.textContent).toContain('event')
@@ -566,7 +580,11 @@ test('test_health_strip_tip_health_renders_one_row_per_event', () => {
     ...Array.from({ length: 287 }, () => ({ color: 'var(--card-2)' })),
   ]
 
-  render(<HealthStrip cells={cells} orientation='vertical' />)
+  const { container } = render(
+    <HealthStrip cells={cells} orientation='vertical' />
+  )
+
+  openHealthStripTooltip(container)
 
   const rows = document.body.querySelectorAll('.v9-tip-row')
   expect(rows.length).toBe(2)
@@ -596,7 +614,11 @@ test('test_health_strip_tip_health_empty_events_shows_placeholder', () => {
     ...Array.from({ length: 287 }, () => ({ color: 'var(--card-2)' })),
   ]
 
-  render(<HealthStrip cells={cells} orientation='vertical' />)
+  const { container } = render(
+    <HealthStrip cells={cells} orientation='vertical' />
+  )
+
+  openHealthStripTooltip(container)
 
   const rows = document.body.querySelectorAll('.v9-tip-row')
   expect(rows.length).toBe(1)
@@ -619,9 +641,12 @@ test('test_health_strip_tip_health_undefined_events_no_breakdown_shows_head_only
     ...Array.from({ length: 287 }, () => ({ color: 'var(--card-2)' })),
   ]
 
-  render(<HealthStrip cells={cells} orientation='vertical' />)
+  const { container } = render(
+    <HealthStrip cells={cells} orientation='vertical' />
+  )
 
-  // Head should be present
+  openHealthStripTooltip(container)
+
   const head = document.body.querySelector('.v9-tip-head')
   expect(head).not.toBeNull()
 
@@ -653,7 +678,11 @@ test('test_health_strip_tip_health_raw_error_breakdown_renders_nonzero_rows', ()
     ...Array.from({ length: 287 }, () => ({ color: 'var(--card-2)' })),
   ]
 
-  render(<HealthStrip cells={cells} orientation='vertical' />)
+  const { container } = render(
+    <HealthStrip cells={cells} orientation='vertical' />
+  )
+
+  openHealthStripTooltip(container)
 
   // Should have one row per non-zero field (4 non-zero: provider_error, 5xx, rate_limit, capacity)
   const rows = document.body.querySelectorAll('.v9-tip-row')
@@ -698,7 +727,11 @@ test('test_health_strip_tip_health_raw_error_breakdown_all_zero_shows_head_only'
     ...Array.from({ length: 287 }, () => ({ color: 'var(--card-2)' })),
   ]
 
-  render(<HealthStrip cells={cells} orientation='vertical' />)
+  const { container } = render(
+    <HealthStrip cells={cells} orientation='vertical' />
+  )
+
+  openHealthStripTooltip(container)
 
   const head = document.body.querySelector('.v9-tip-head')
   expect(head).not.toBeNull()
@@ -728,7 +761,11 @@ test('test_health_strip_tip_health_raw_error_breakdown_display_order', () => {
     ...Array.from({ length: 287 }, () => ({ color: 'var(--card-2)' })),
   ]
 
-  render(<HealthStrip cells={cells} orientation='vertical' />)
+  const { container } = render(
+    <HealthStrip cells={cells} orientation='vertical' />
+  )
+
+  openHealthStripTooltip(container)
 
   const rows = document.body.querySelectorAll('.v9-tip-row')
   expect(rows.length).toBe(6)
@@ -764,7 +801,11 @@ test('test_health_strip_tip_health_degraded_breakdown_renders_signal_rows', () =
     ...Array.from({ length: 287 }, () => ({ color: 'var(--card-2)' })),
   ]
 
-  render(<HealthStrip cells={cells} orientation='vertical' />)
+  const { container } = render(
+    <HealthStrip cells={cells} orientation='vertical' />
+  )
+
+  openHealthStripTooltip(container)
 
   const head = document.body.querySelector('.v9-tip-head')
   expect(head?.textContent).toContain('2 signals')
@@ -809,7 +850,11 @@ test('test_health_strip_auto_tooltip_prefers_newest_error_or_degraded_bucket', (
     },
   }
 
-  render(<HealthStrip cells={cells} orientation='vertical' />)
+  const { container } = render(
+    <HealthStrip cells={cells} orientation='vertical' />
+  )
+
+  openHealthStripTooltip(container)
 
   const head = document.body.querySelector('.v9-tip-head')
   expect(head?.textContent).toContain('3 events')
