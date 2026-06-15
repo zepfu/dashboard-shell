@@ -47,7 +47,7 @@ import { Route as AuthenticatedSettingsAccountRouteImport } from './routes/_auth
 import { Route as AuthenticatedErrorsErrorRouteImport } from './routes/_authenticated/errors/$error'
 import { Route as AuthenticatedAegisSplatRouteImport } from './routes/_authenticated/aegis/$'
 import { Route as AuthenticatedAawmSplatRouteImport } from './routes/_authenticated/aawm/$'
-import { Route as AuthenticatedAawmTapPageRouteImport } from './routes/_authenticated/aawm-tap/$page'
+import { Route as AuthenticatedAawmTapSplatRouteImport } from './routes/_authenticated/aawm-tap/$'
 import { Route as AuthenticatedAawmObserveSplatRouteImport } from './routes/_authenticated/aawm-observe/$'
 
 const ClerkRouteRoute = ClerkRouteRouteImport.update({
@@ -250,10 +250,10 @@ const AuthenticatedAawmSplatRoute = AuthenticatedAawmSplatRouteImport.update({
   path: '/aawm/$',
   getParentRoute: () => AuthenticatedRouteRoute,
 } as any)
-const AuthenticatedAawmTapPageRoute =
-  AuthenticatedAawmTapPageRouteImport.update({
-    id: '/aawm-tap/$page',
-    path: '/aawm-tap/$page',
+const AuthenticatedAawmTapSplatRoute =
+  AuthenticatedAawmTapSplatRouteImport.update({
+    id: '/aawm-tap/$',
+    path: '/aawm-tap/$',
     getParentRoute: () => AuthenticatedRouteRoute,
   } as any)
 const AuthenticatedAawmObserveSplatRoute =
@@ -278,7 +278,7 @@ export interface FileRoutesByFullPath {
   '/500': typeof errors500Route
   '/503': typeof errors503Route
   '/aawm-observe/$': typeof AuthenticatedAawmObserveSplatRoute
-  '/aawm-tap/$page': typeof AuthenticatedAawmTapPageRoute
+  '/aawm-tap/$': typeof AuthenticatedAawmTapSplatRoute
   '/aawm/$': typeof AuthenticatedAawmSplatRoute
   '/aegis/$': typeof AuthenticatedAegisSplatRoute
   '/errors/$error': typeof AuthenticatedErrorsErrorRoute
@@ -316,7 +316,7 @@ export interface FileRoutesByTo {
   '/503': typeof errors503Route
   '/': typeof AuthenticatedIndexRoute
   '/aawm-observe/$': typeof AuthenticatedAawmObserveSplatRoute
-  '/aawm-tap/$page': typeof AuthenticatedAawmTapPageRoute
+  '/aawm-tap/$': typeof AuthenticatedAawmTapSplatRoute
   '/aawm/$': typeof AuthenticatedAawmSplatRoute
   '/aegis/$': typeof AuthenticatedAegisSplatRoute
   '/errors/$error': typeof AuthenticatedErrorsErrorRoute
@@ -359,7 +359,7 @@ export interface FileRoutesById {
   '/(errors)/503': typeof errors503Route
   '/_authenticated/': typeof AuthenticatedIndexRoute
   '/_authenticated/aawm-observe/$': typeof AuthenticatedAawmObserveSplatRoute
-  '/_authenticated/aawm-tap/$page': typeof AuthenticatedAawmTapPageRoute
+  '/_authenticated/aawm-tap/$': typeof AuthenticatedAawmTapSplatRoute
   '/_authenticated/aawm/$': typeof AuthenticatedAawmSplatRoute
   '/_authenticated/aegis/$': typeof AuthenticatedAegisSplatRoute
   '/_authenticated/errors/$error': typeof AuthenticatedErrorsErrorRoute
@@ -400,7 +400,7 @@ export interface FileRouteTypes {
     | '/500'
     | '/503'
     | '/aawm-observe/$'
-    | '/aawm-tap/$page'
+    | '/aawm-tap/$'
     | '/aawm/$'
     | '/aegis/$'
     | '/errors/$error'
@@ -438,7 +438,7 @@ export interface FileRouteTypes {
     | '/503'
     | '/'
     | '/aawm-observe/$'
-    | '/aawm-tap/$page'
+    | '/aawm-tap/$'
     | '/aawm/$'
     | '/aegis/$'
     | '/errors/$error'
@@ -480,7 +480,7 @@ export interface FileRouteTypes {
     | '/(errors)/503'
     | '/_authenticated/'
     | '/_authenticated/aawm-observe/$'
-    | '/_authenticated/aawm-tap/$page'
+    | '/_authenticated/aawm-tap/$'
     | '/_authenticated/aawm/$'
     | '/_authenticated/aegis/$'
     | '/_authenticated/errors/$error'
@@ -788,11 +788,11 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedAawmSplatRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
-    '/_authenticated/aawm-tap/$page': {
-      id: '/_authenticated/aawm-tap/$page'
-      path: '/aawm-tap/$page'
-      fullPath: '/aawm-tap/$page'
-      preLoaderRoute: typeof AuthenticatedAawmTapPageRouteImport
+    '/_authenticated/aawm-tap/$': {
+      id: '/_authenticated/aawm-tap/$'
+      path: '/aawm-tap/$'
+      fullPath: '/aawm-tap/$'
+      preLoaderRoute: typeof AuthenticatedAawmTapSplatRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
     '/_authenticated/aawm-observe/$': {
@@ -832,7 +832,7 @@ interface AuthenticatedRouteRouteChildren {
   AuthenticatedSettingsRouteRoute: typeof AuthenticatedSettingsRouteRouteWithChildren
   AuthenticatedIndexRoute: typeof AuthenticatedIndexRoute
   AuthenticatedAawmObserveSplatRoute: typeof AuthenticatedAawmObserveSplatRoute
-  AuthenticatedAawmTapPageRoute: typeof AuthenticatedAawmTapPageRoute
+  AuthenticatedAawmTapSplatRoute: typeof AuthenticatedAawmTapSplatRoute
   AuthenticatedAawmSplatRoute: typeof AuthenticatedAawmSplatRoute
   AuthenticatedAegisSplatRoute: typeof AuthenticatedAegisSplatRoute
   AuthenticatedErrorsErrorRoute: typeof AuthenticatedErrorsErrorRoute
@@ -853,7 +853,7 @@ const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
   AuthenticatedSettingsRouteRoute: AuthenticatedSettingsRouteRouteWithChildren,
   AuthenticatedIndexRoute: AuthenticatedIndexRoute,
   AuthenticatedAawmObserveSplatRoute: AuthenticatedAawmObserveSplatRoute,
-  AuthenticatedAawmTapPageRoute: AuthenticatedAawmTapPageRoute,
+  AuthenticatedAawmTapSplatRoute: AuthenticatedAawmTapSplatRoute,
   AuthenticatedAawmSplatRoute: AuthenticatedAawmSplatRoute,
   AuthenticatedAegisSplatRoute: AuthenticatedAegisSplatRoute,
   AuthenticatedErrorsErrorRoute: AuthenticatedErrorsErrorRoute,
