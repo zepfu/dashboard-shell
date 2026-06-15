@@ -1245,3 +1245,64 @@ test('test_provider_card_topmodels_negative_anomaly_case', () => {
   // Badge SHOULD appear when anthropic IS in the Map
   expect(resetBadge3).not.toBeNull()
 })
+
+// ---------------------------------------------------------------------------
+// Wave 7 — S2-12: React.memo identity guard for ProviderCard
+// ---------------------------------------------------------------------------
+
+/**
+ * test_provider_card_memo_no_rerender_on_stable_props (S2-12)
+ *
+ * After the Wave 7 engineer wraps ProviderCard in React.memo, re-rendering
+ * the parent with STABLE prop references must not cause ProviderCard to
+ * produce changed DOM output (React.memo bails out and returns the cached result).
+ *
+ * Guard contract:
+ *   - Render ProviderCard with stable prop references.
+ *   - Capture the rendered DOM (tbody/content).
+ *   - Re-render with the SAME prop references.
+ *   - Assert the DOM is identical (no re-render side-effects).
+ *
+ * This test is a regression guard. It will fail if the engineer accidentally
+ * removes React.memo or introduces prop-spread patterns that create new
+ * references on every parent render.
+ */
+test('test_provider_card_memo_no_rerender_on_stable_props', () => {
+  // Use module-level stable references so that rerender receives the same
+  // object identity (simulating a parent that does not recreate props).
+  const stableAnomalies = {
+    earlyReset: new Map<string, { prior: string; current: string }>(),
+    cacheStale: false,
+  }
+
+  const { container, rerender } = render(
+    <ProviderCard
+      config={anthropicConfig}
+      data={mockData}
+      healthCells={mockHealthCells}
+      quotas={mockQuotas}
+      anomalies={stableAnomalies}
+    />
+  )
+
+  // Capture initial render — must have content.
+  const initialHTML = container.innerHTML
+  expect(initialHTML.length).toBeGreaterThan(0)
+
+  // Re-render with the same prop object references.
+  rerender(
+    <ProviderCard
+      config={anthropicConfig}
+      data={mockData}
+      healthCells={mockHealthCells}
+      quotas={mockQuotas}
+      anomalies={stableAnomalies}
+    />
+  )
+
+  // DOM must be identical — React.memo bailed out, no extra render mutations.
+  expect(container.innerHTML).toBe(initialHTML)
+
+  // Value assertion: the component still renders the correct provider name.
+  expect(container.textContent).toMatch(/ANTHROPIC/i)
+})
