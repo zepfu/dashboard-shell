@@ -117,6 +117,7 @@ function DimensionDropdown({
   shortcutTarget,
 }: DimensionDropdownProps): ReactElement {
   const [open, setOpen] = useState(false)
+  const [staleChips, setStaleChips] = useState<ReadonlySet<string>>(new Set())
   const wrapperRef = useRef<HTMLDivElement>(null)
 
   // Close on outside click
@@ -145,19 +146,6 @@ function DimensionDropdown({
       }
     },
     []
-  )
-
-  const handleOptionKeyDown = useCallback(
-    (e: KeyboardEvent<HTMLLIElement>, value: string): void => {
-      if (e.key === 'Enter' || e.key === ' ') {
-        e.preventDefault()
-        onToggle(value)
-      }
-      if (e.key === 'Escape') {
-        setOpen(false)
-      }
-    },
-    [onToggle]
   )
 
   const hasSelections = selected.length > 0
@@ -201,13 +189,23 @@ function DimensionDropdown({
       {hasSelections && (
         <div className='slicer-chips' aria-label={`${label} filter chips`}>
           {selected.map((v) => (
-            <span key={v} className='slicer-chip'>
+            <span
+              key={v}
+              className={[
+                'slicer-chip',
+                staleChips.has(v) ? 'slicer-chip--stale' : '',
+                staleChips.has(v) ? 'slicer-chip--muted' : '',
+              ]
+                .filter(Boolean)
+                .join(' ')}
+            >
               <span className='slicer-chip-text'>{v}</span>
               <button
                 type='button'
                 className='slicer-chip-remove'
                 aria-label={`Remove ${v} from ${label} filter`}
                 onClick={() => {
+                  setStaleChips((prev) => new Set(prev).add(v))
                   onToggle(v)
                 }}
               >
@@ -261,9 +259,6 @@ function DimensionDropdown({
                     tabIndex={0}
                     onClick={() => {
                       onToggle(opt)
-                    }}
-                    onKeyDown={(e) => {
-                      handleOptionKeyDown(e, opt)
                     }}
                   >
                     <span className='slicer-option-check' aria-hidden='true'>

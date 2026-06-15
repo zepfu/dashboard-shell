@@ -40,7 +40,17 @@ export function DateControls({
   const [from, setFrom] = useState(initialFrom)
   const [to, setTo] = useState(initialTo)
 
-  const canApply = isValidDateOnly(from) && isValidDateOnly(to) && from < to
+  const fromValid = isValidDateOnly(from)
+  const toValid = isValidDateOnly(to)
+  const rangeOrdered = from <= to
+  const canApply = fromValid && toValid && rangeOrdered
+
+  const applyDisabledReason =
+    !fromValid || !toValid
+      ? 'Enter valid From and To dates (YYYY-MM-DD).'
+      : !rangeOrdered
+        ? 'From date must be on or before To date.'
+        : ''
 
   const handleApply = (): void => {
     if (canApply) {
@@ -65,12 +75,12 @@ export function DateControls({
         <input
           id='date-from'
           data-shortcut-target='first-date'
-          type='text'
+          type='date'
           value={from}
+          aria-invalid={from.length > 0 && !fromValid}
           onChange={(e: ChangeEvent<HTMLInputElement>) => {
             setFrom(e.target.value)
           }}
-          placeholder='YYYY-MM-DD'
           style={{ marginInlineStart: '0.25rem' }}
         />
       </label>
@@ -82,19 +92,30 @@ export function DateControls({
         To
         <input
           id='date-to'
-          type='text'
+          type='date'
           value={to}
+          aria-invalid={to.length > 0 && !toValid}
           onChange={(e: ChangeEvent<HTMLInputElement>) => {
             setTo(e.target.value)
           }}
-          placeholder='YYYY-MM-DD'
           style={{ marginInlineStart: '0.25rem' }}
         />
       </label>
 
-      <button type='button' disabled={!canApply} onClick={handleApply}>
+      <button
+        type='button'
+        disabled={!canApply}
+        title={!canApply ? applyDisabledReason : undefined}
+        aria-describedby={!canApply ? 'date-apply-hint' : undefined}
+        onClick={handleApply}
+      >
         Apply
       </button>
+      {!canApply && applyDisabledReason.length > 0 && (
+        <span id='date-apply-hint' className='sr-only'>
+          {applyDisabledReason}
+        </span>
+      )}
     </div>
   )
 }
