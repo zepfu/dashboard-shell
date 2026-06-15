@@ -53,7 +53,10 @@ import { DirectionProvider } from '../../context/direction-provider'
 import { LayoutProvider } from '../../context/layout-provider'
 import { SearchProvider } from '../../context/search-provider'
 import { server } from '../../test/setup'
-import type { UsageReportResponse } from './api/usage-report'
+import {
+  usageReportQuotasKey,
+  type UsageReportResponse,
+} from './api/usage-report'
 // ─────────────────────────────────────────────────────────────────────────────
 // Wave 5 / S4-T5 / S4-20: usageReportQuotasKey factory used in both index + phosphor
 // ─────────────────────────────────────────────────────────────────────────────
@@ -67,7 +70,6 @@ import type { UsageReportResponse } from './api/usage-report'
  *
  * The import is RED (ModuleNotFoundError) until the engineer creates the export.
  */
-import { usageReportQuotasKey } from './index'
 import {
   formatDashboardDate,
   addDaysToDateString,

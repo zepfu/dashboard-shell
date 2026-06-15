@@ -53,9 +53,23 @@ export function formatDashboardDate(date: Date): string {
 }
 
 export function addDaysToDateString(value: string, days: number): string {
-  const [year, month, day] = value.split('-').map(Number)
+  const parts = value.split('-')
+  if (parts.length !== 3) return value
+  const [year, month, day] = parts.map(Number)
+  if (![year, month, day].every(Number.isFinite)) return value
   const date = new Date(Date.UTC(year, month - 1, day + days))
+  const time = date.getTime()
+  if (!Number.isFinite(time)) return value
   return date.toISOString().slice(0, 10)
+}
+
+/**
+ * Signed fractional delta (current − prior) / prior; null when prior is zero.
+ */
+export function signedDelta(current: number, prior: number): number | null {
+  if (prior === 0) return null
+  if (!Number.isFinite(current) || !Number.isFinite(prior)) return null
+  return (current - prior) / prior
 }
 
 export function dashboardDateToUtcMs(value: string): number {
@@ -457,10 +471,22 @@ function colorHash(value: string, modulo: number) {
 
 export function colorWithAlpha(color: string, alpha: number) {
   const normalized = color.trim()
-  const hex = normalized.match(/^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i)
-  if (!hex) return normalized
-
-  const [, red, green, blue] = hex
+  const hex6 = normalized.match(/^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i)
+  const hex3 = normalized.match(/^#?([a-f\d])([a-f\d])([a-f\d])$/i)
+  let red: string
+  let green: string
+  let blue: string
+  if (hex6) {
+    red = hex6[1] ?? '00'
+    green = hex6[2] ?? '00'
+    blue = hex6[3] ?? '00'
+  } else if (hex3) {
+    red = (hex3[1] ?? '0') + (hex3[1] ?? '0')
+    green = (hex3[2] ?? '0') + (hex3[2] ?? '0')
+    blue = (hex3[3] ?? '0') + (hex3[3] ?? '0')
+  } else {
+    return normalized
+  }
   return `rgb(${Number.parseInt(red, 16)} ${Number.parseInt(green, 16)} ${Number.parseInt(blue, 16)} / ${alpha})`
 }
 
