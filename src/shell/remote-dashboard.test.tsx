@@ -11,7 +11,7 @@
  *    (promise ??= import().catch(reset) pattern so the NEXT import() call retries).
  *  - Exports `getRemoteModuleImportCache` or similar for testability, OR the
  *    test observes retry behaviour through the rendered component boundary.
- *  - Derives the allowlist for aawm-tap/$page from remoteDashboardMetadata
+ *  - Derives the allowlist for aawm-tap from remoteDashboardMetadata
  *    instead of a hardcoded Set literal.
  */
 import { readFileSync } from 'node:fs'
@@ -24,10 +24,8 @@ import { remoteDashboardMetadata } from './remote-dashboard-metadata'
 
 describe('aawm-tap allowlist derived from metadata (S6-4)', () => {
   test('test_aawm_tap_allowlist_matches_metadata_navItem_paths', async () => {
-    // The route file at src/routes/_authenticated/aawm-tap/$page.tsx currently
-    // has a hardcoded allowedPages Set. The fix: derive it from metadata.
-    // This test imports the route module and verifies the allowedPages exported
-    // or injected matches the navItems from remoteDashboardMetadata.
+    // The ignored helper derives allowedPages from metadata so it stays out of
+    // TanStack Router's route-file scan while remaining directly testable.
     const aawmTapMeta = remoteDashboardMetadata.find(
       (d) => d.key === 'aawm-tap'
     )
@@ -38,16 +36,13 @@ describe('aawm-tap allowlist derived from metadata (S6-4)', () => {
       item.path.replace(/^\//, '')
     )
 
-    // Import the route module to inspect its allowedPages.
-    // NOTE: This import will fail at the module-federation boundary in test env
-    // (the $page.tsx file imports AawmTapPage which uses federation). The test
-    // is written to import only the route's exported allowedPages constant once
-    // the engineer exports it:
+    // Import only the ignored helper so the test does not cross the
+    // module-federation boundary.
     const { allowedPages } =
-      await import('../routes/_authenticated/aawm-tap/allowed-pages').catch(
+      await import('../routes/_authenticated/aawm-tap/-allowed-pages').catch(
         () => {
           throw new Error(
-            'allowedPages must be exported from $page.tsx so it can be tested'
+            'allowedPages must be exported from the ignored aawm-tap helper so it can be tested'
           )
         }
       )
@@ -61,20 +56,13 @@ describe('aawm-tap allowlist derived from metadata (S6-4)', () => {
   })
 
   test('test_aawm_tap_splat_route_reaches_sub_paths', () => {
-    // The current route is /_authenticated/aawm-tap/$page which only handles
-    // single-segment paths like /aawm-tap/overview.
-    // Sub-paths like /aawm-tap/processes/detail would 404.
-    // Fix: change to a splat route (/$) that passes the full sub-path.
-    //
-    // Assert: the aawm-tap metadata has the basePath /aawm-tap and the navItems
-    // include paths that could have sub-routes. A splat route file should exist.
+    // The splat route must pass the full sub-path through to the remote
+    // dashboard, while helper components stay in ignored route files.
     const aawmTapMeta = remoteDashboardMetadata.find(
       (d) => d.key === 'aawm-tap'
     )
     expect(aawmTapMeta).toBeDefined()
 
-    // The splat route file should exist (currently only $page.tsx does).
-    // The engineer must create /routes/_authenticated/aawm-tap/$.tsx.
     let splatRouteContent: string
     try {
       splatRouteContent = readFileSync(
@@ -87,7 +75,7 @@ describe('aawm-tap allowlist derived from metadata (S6-4)', () => {
       )
     }
     const splatPageContent = readFileSync(
-      'src/routes/_authenticated/aawm-tap/aawm-tap-splat-page.tsx',
+      'src/routes/_authenticated/aawm-tap/-aawm-tap-splat-page.tsx',
       'utf8'
     )
     const routeWiring = `${splatRouteContent}\n${splatPageContent}`
