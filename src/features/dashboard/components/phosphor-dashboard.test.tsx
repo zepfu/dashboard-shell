@@ -1186,7 +1186,9 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
     fireEvent.click(screen.getByRole('tab', { name: 'Diagnostics' }))
 
     await waitFor(() => {
-      expect(screen.getByText('Session diagnostics')).toBeInTheDocument()
+      expect(
+        screen.getByText('Loading session diagnostics...')
+      ).toBeInTheDocument()
     })
     expect(seenFrom).toBe('2026-05-20')
     expect(seenTo).toBe('2026-05-21')
@@ -1195,9 +1197,9 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
     expect(seenRepository).toBe('dashboard-shell')
     expect(seenClient).toBe('grok-build')
     expect(seenLimit).toBe('100')
-    const diagnosticsCard = screen
-      .getByText('grok-composer-2.5-fast')
-      .closest('article') as HTMLElement
+    const diagnosticsCard = (
+      await screen.findByText('grok-composer-2.5-fast')
+    ).closest('article') as HTMLElement
 
     expect(
       within(diagnosticsCard).getByText('xai_grok_oidc')
@@ -1627,7 +1629,7 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
       await new Promise((resolve) => setTimeout(resolve, 50))
     })
 
-    // The internal useQuery is gated by `internalQueryEnabled = reportProp === undefined`.
+    // The internal useQuery is gated by parent-managed report loading/fetching.
     // Since we supplied `report`, NO fetch to /api/shell/reports/usage should occur.
     expect(usageCallCount).toBe(0)
   })
@@ -2112,6 +2114,80 @@ describe('Provider health cell classification', () => {
 // ---------------------------------------------------------------------------
 
 describe('PhosphorDashboard — TCG-3: prior-report query skipped when showComparison=false', () => {
+  test('test_parent_managed_loading_without_report_does_not_duplicate_usage_query', async () => {
+    let usageCallCount = 0
+    server.use(
+      http.get('/api/shell/reports/usage', () => {
+        usageCallCount += 1
+        return HttpResponse.json(MOCK_REPORT)
+      })
+    )
+
+    await act(async () => {
+      render(
+        <Wrapper>
+          <PhosphorDashboard
+            from='2026-04-19'
+            to='2026-05-19'
+            reportLoading={true}
+            reportFetching={true}
+            onRefreshReport={async () => undefined}
+            showComparison={false}
+          />
+        </Wrapper>
+      )
+    })
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50))
+    })
+
+    expect(usageCallCount).toBe(0)
+  })
+
+  test('test_status_diagnostics_tab_reachable_while_report_loading', async () => {
+    server.use(
+      http.get('/api/shell/reports/usage/token-trend-summary', () =>
+        HttpResponse.json({
+          metadata: {
+            from: '2026-05-20',
+            to: '2026-05-21',
+          },
+          tokenTrendHours: [],
+          tokenTrendVersions: [],
+        })
+      )
+    )
+
+    await act(async () => {
+      render(
+        <Wrapper>
+          <PhosphorDashboard
+            from='2026-05-20'
+            to='2026-05-21'
+            reportLoading={true}
+            reportFetching={true}
+            onRefreshReport={async () => undefined}
+            showComparison={false}
+            quotas={[]}
+          />
+        </Wrapper>
+      )
+    })
+
+    expect(screen.getByRole('heading', { name: 'STATUS' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('tab', { name: 'Diagnostics' }))
+
+    await waitFor(
+      () => {
+        expect(
+          screen.getByText('Loading session diagnostics...')
+        ).toBeInTheDocument()
+      },
+      { timeout: 3000 }
+    )
+  })
+
   test('test_phosphor_dashboard_no_prior_fetch_when_show_comparison_false', async () => {
     // Track every hit to /api/shell/reports/usage; we'll distinguish
     // current vs prior by counting total calls — with showComparison=false

@@ -47,6 +47,15 @@ fields when the source database exposes them; quota rows keep percentage fields
 stable while exposing normalized billing details under per-lane
 `billing_details` for operator drilldowns.
 
+The default General dashboard cold-load path keeps `/api/shell/reports/usage`
+bounded enough to complete through PgBouncer on the local `session_history`
+dataset. Heavy row-level latency percentiles and detailed score aggregates are
+left for focused drilldowns, while the top agent-score reasons are sampled from
+recent rows so the Ledger hover remains useful. `/api/shell/reports/usage/tool-activity`
+also reads a recent bounded tool-activity window by default. Operators can tune
+those bounds with `SHELL_REPORT_AGENT_SCORE_REASON_RECENT_ROW_LIMIT` and
+`SHELL_REPORT_TOOL_ACTIVITY_RECENT_ROW_LIMIT`.
+
 Session-level debugging lives behind the General dashboard `STATUS` section's
 `Diagnostics` tab and is served by
 `/api/shell/reports/usage/session-diagnostics`. That endpoint returns bounded

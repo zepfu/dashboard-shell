@@ -1,9 +1,9 @@
 /**
- * Wave 37 cycle-3 — Dashboard index loading skeleton tests (TCG-2).
+ * Wave 37 cycle-3 — Dashboard index cold-load render tests (TCG-2 / D1-226).
  *
  * TCG-2: Verify that when `summaryLoading === true && summaryReport === undefined`,
- *   the dashboard renders `.dashboard-loading-skeleton` instead of the full
- *   layout. When data arrives the skeleton disappears.
+ *   the dashboard keeps PhosphorDashboard mounted so STATUS tabs remain reachable
+ *   while section bodies skeletonize locally.
  *
  * Strategy:
  *   - Polyfill jsdom gaps: window.matchMedia, window.ResizeObserver.
@@ -121,6 +121,17 @@ beforeEach(() => {
           generatedAt: '2026-05-19T00:00:00.000Z',
         },
         toolActivity: [],
+      })
+    ),
+    http.get('/api/shell/reports/usage/session-diagnostics', () =>
+      HttpResponse.json({
+        metadata: {
+          from: '2026-04-19',
+          to: '2026-05-19',
+          limit: 100,
+          generatedAt: '2026-05-19T00:00:00.000Z',
+        },
+        sessionDiagnostics: [],
       })
     )
   )
@@ -280,8 +291,8 @@ async function importDashboard(): Promise<React.ComponentType> {
 // TCG-2: Loading skeleton
 // ---------------------------------------------------------------------------
 
-describe('Dashboard — TCG-2: loading skeleton render path', () => {
-  test('test_dashboard_shows_skeleton_while_loading', async () => {
+describe('Dashboard — TCG-2: cold-load render path', () => {
+  test('test_dashboard_keeps_status_tabs_reachable_while_loading', async () => {
     registerTokenTrendSummaryHandler()
     // Register a handler that NEVER resolves so the query stays in loading state.
     let resolveUsageRequest: (() => void) | null = null
@@ -313,30 +324,40 @@ describe('Dashboard — TCG-2: loading skeleton render path', () => {
 
     const { container } = renderWithProviders(Dashboard)
 
-    // After initial router mount with a pending query, the skeleton should be
-    // present. The skeleton element has class "dashboard-loading-skeleton" and
-    // aria-busy="true".
     await waitFor(
       () => {
-        expect(
-          container.querySelector('.dashboard-loading-skeleton')
-        ).not.toBeNull()
+        expect(container.querySelector('.phosphor-dashboard')).not.toBeNull()
       },
       { timeout: 5000 }
     )
-    const skeleton = container.querySelector('.dashboard-loading-skeleton')
-    expect(skeleton).not.toBeNull()
-    expect(skeleton?.getAttribute('aria-busy')).toBe('true')
 
-    // The full PhosphorDashboard (class "phosphor-dashboard") should NOT be visible yet.
-    const fullDashboard = container.querySelector('.phosphor-dashboard')
-    expect(fullDashboard).toBeNull()
+    expect(container.querySelector('.dashboard-loading-skeleton')).toBeNull()
+    expect(screen.getByRole('heading', { name: 'STATUS' })).toBeInTheDocument()
+    const statusTabs = screen.getByRole('tablist', { name: 'Status view' })
+    expect(
+      within(statusTabs).getByRole('tab', { name: 'Health' })
+    ).toHaveAttribute('aria-selected', 'true')
+    expect(
+      within(statusTabs).getByRole('tab', { name: 'Diagnostics' })
+    ).toBeInTheDocument()
+
+    fireEvent.click(
+      within(statusTabs).getByRole('tab', { name: 'Diagnostics' })
+    )
+    await waitFor(
+      () => {
+        expect(
+          screen.getByText('Loading session diagnostics...')
+        ).toBeInTheDocument()
+      },
+      { timeout: 3000 }
+    )
 
     // Clean up by resolving the pending request to avoid test interference.
     resolveUsageRequest?.()
   }, 15_000)
 
-  test('test_dashboard_skeleton_disappears_after_data_arrives', async () => {
+  test('test_dashboard_renders_full_sections_after_data_arrives', async () => {
     registerTokenTrendSummaryHandler()
     // Immediately resolve the usage query with data.
     server.use(
@@ -369,14 +390,55 @@ describe('Dashboard — TCG-2: loading skeleton render path', () => {
       { timeout: 3000 }
     )
 
-    // Once data arrives, the skeleton should be gone (the ternary branch
-    // resolves to PhosphorDashboard instead of the skeleton div).
     expect(container.querySelector('.dashboard-loading-skeleton')).toBeNull()
     const recency = screen.getByLabelText('Underlying data recency')
     expect(recency).toBeInTheDocument()
     expect(within(recency).getByText('Session')).toBeInTheDocument()
     expect(within(recency).getByText('Quota')).toBeInTheDocument()
     expect(within(recency).getByText('Health')).toBeInTheDocument()
+  })
+
+  test('test_dashboard_parent_managed_loading_does_not_duplicate_usage_query', async () => {
+    let usageCallCount = 0
+    registerTokenTrendSummaryHandler()
+    server.use(
+      http.get('/api/shell/reports/usage', () => {
+        usageCallCount += 1
+        return new Promise<Response>(() => undefined)
+      })
+    )
+    server.use(
+      http.get('/api/shell/reports/quotas', () =>
+        HttpResponse.json({
+          metadata: {
+            generatedAt: '2026-05-19T00:00:00.000Z',
+            latestRecordAt: null,
+            latestRecordAgeMinutes: null,
+            latestRecordStale: false,
+            staleRecordThresholdMinutes: 60,
+          },
+          quotas: [],
+        })
+      )
+    )
+
+    const Dashboard = await importDashboard()
+    renderWithProviders(Dashboard)
+
+    await waitFor(
+      () => {
+        expect(
+          screen.getByRole('heading', { name: 'STATUS' })
+        ).toBeInTheDocument()
+      },
+      { timeout: 5000 }
+    )
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50))
+    })
+
+    expect(usageCallCount).toBe(1)
   })
 
   test('test_force_refresh_button_adds_cache_bust_to_usage_request', async () => {
@@ -890,8 +952,8 @@ describe('Dashboard — S4-21/S4-22: refresh handlers and cache key discipline',
     await waitFor(
       () => {
         expect(
-          screen.queryByRole('button', { name: /refresh provider data/i })
-        ).not.toBeNull()
+          screen.getByRole('button', { name: /refresh provider data/i })
+        ).not.toBeDisabled()
       },
       { timeout: 5_000 }
     )

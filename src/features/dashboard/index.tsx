@@ -832,88 +832,40 @@ export function Dashboard(): ReactElement {
           {/* 15-D.5: filters + onOptionsReady wired for slicer */}
           {/* Wave 35: onPriorSummaryReady wired to receive prior-period summary for KPI deltas */}
           {/* Wave 36 Fix 1: report + reportLoading hoisted from index.tsx query (dedup). */}
-          {/* Wave 36 Fix 3: skeleton rendered when loading and no data yet (see below). */}
+          {/* D1-226: keep PhosphorDashboard mounted during cold load so STATUS tabs
+              and Diagnostics remain reachable while section bodies skeletonize. */}
           {/* Wave 36 Fix 4: showComparison gates priorReport query to ≥3840px viewports. */}
-          {summaryLoading && summaryReport === undefined ? (
-            <div
-              className='dashboard-loading-skeleton'
-              aria-busy='true'
-              aria-label='Loading dashboard'
-            >
-              {/* Header bar placeholder */}
-              <div
-                className='skeleton-block'
-                style={{ height: '32px', marginBottom: '16px', width: '40%' }}
-              />
-              {/* KPI tile row placeholder (6 tiles) */}
-              <div
-                style={{
-                  display: 'grid',
-                  gridTemplateColumns: 'repeat(6, 1fr)',
-                  gap: '8px',
-                  marginBottom: '16px',
-                }}
-              >
-                {Array.from({ length: 6 }).map((_, i) => (
-                  // Index key is safe: static placeholder, no state or reorder
-                  <div
-                    key={i}
-                    className='skeleton-block'
-                    style={{ height: '64px' }}
-                  />
-                ))}
-              </div>
-              {/* Provider card grid placeholder (~8 cards) */}
-              <div
-                style={{
-                  display: 'grid',
-                  gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))',
-                  gap: '8px',
-                }}
-              >
-                {Array.from({ length: 8 }).map((_, i) => (
-                  // Index key is safe: static placeholder, no state or reorder
-                  <div
-                    key={i}
-                    className='skeleton-block'
-                    style={{ height: '160px' }}
-                  />
-                ))}
-              </div>
-            </div>
-          ) : (
-            <PhosphorDashboard
-              from={from}
-              to={to}
-              grain={grain}
-              searchTerm={searchTerm}
-              filters={slicerFilters}
-              onOptionsReady={handleSlicerOptionsReady}
-              onPriorSummaryReady={handlePriorSummaryReady}
-              onPriorHealthReady={handlePriorHealthReady}
-              report={summaryReport}
-              reportLoading={summaryLoading}
-              showComparison={showComparison}
-              reportRefreshKey={reportCacheBust}
-              quotas={quotasData?.quotas}
-              reportFetching={summaryFetching}
-              quotasFetching={quotasFetching}
-              quotaHistory={quotaHistoryData?.quotaHistory ?? []}
-              quotaHistoryFetching={quotaHistoryFetching}
-              quotaRangeHistory={quotaRangeHistoryData?.quotaRangeHistory ?? []}
-              quotaRangeHistoryFetching={quotaRangeHistoryFetching}
-              onRefreshReport={handleReportRefresh}
-              onRefreshQuotas={handleQuotaRefresh}
-              onRefreshQuotaHistory={handleQuotaHistoryRefresh}
-              onRefreshQuotaRangeHistory={handleQuotaRangeHistoryRefresh}
-              providerSectionView={providerSectionView}
-              onProviderSectionViewChange={setProviderSectionView}
-              trendLowerLaneMode={trendLowerLaneMode}
-              onTrendLowerLaneModeChange={setTrendLowerLaneMode}
-              ledgerView={ledgerView}
-              onLedgerViewChange={setLedgerView}
-            />
-          )}
+          <PhosphorDashboard
+            from={from}
+            to={to}
+            grain={grain}
+            searchTerm={searchTerm}
+            filters={slicerFilters}
+            onOptionsReady={handleSlicerOptionsReady}
+            onPriorSummaryReady={handlePriorSummaryReady}
+            onPriorHealthReady={handlePriorHealthReady}
+            report={summaryReport}
+            reportLoading={summaryLoading}
+            showComparison={showComparison}
+            reportRefreshKey={reportCacheBust}
+            quotas={quotasData?.quotas}
+            reportFetching={summaryFetching}
+            quotasFetching={quotasFetching}
+            quotaHistory={quotaHistoryData?.quotaHistory ?? []}
+            quotaHistoryFetching={quotaHistoryFetching}
+            quotaRangeHistory={quotaRangeHistoryData?.quotaRangeHistory ?? []}
+            quotaRangeHistoryFetching={quotaRangeHistoryFetching}
+            onRefreshReport={handleReportRefresh}
+            onRefreshQuotas={handleQuotaRefresh}
+            onRefreshQuotaHistory={handleQuotaHistoryRefresh}
+            onRefreshQuotaRangeHistory={handleQuotaRangeHistoryRefresh}
+            providerSectionView={providerSectionView}
+            onProviderSectionViewChange={setProviderSectionView}
+            trendLowerLaneMode={trendLowerLaneMode}
+            onTrendLowerLaneModeChange={setTrendLowerLaneMode}
+            ledgerView={ledgerView}
+            onLedgerViewChange={setLedgerView}
+          />
         </div>
       }
     />

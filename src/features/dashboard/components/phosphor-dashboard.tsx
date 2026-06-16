@@ -364,7 +364,9 @@ export default function PhosphorDashboard({
   // request is shared across the whole dashboard. This internal query is ONLY
   // used when PhosphorDashboard is rendered in isolation (e.g. Storybook, tests)
   // without a parent supplying `report` + `reportLoading` props.
-  const internalQueryEnabled = reportProp === undefined
+  const parentManagesReport =
+    reportLoadingProp || reportFetchingProp || onRefreshReport !== undefined
+  const internalQueryEnabled = reportProp === undefined && !parentManagesReport
   const {
     data: internalReport,
     isLoading: internalLoading,
@@ -1232,7 +1234,7 @@ export default function PhosphorDashboard({
         >
           STATUS
         </SectionTitle>
-        {reportLoading ? (
+        {reportLoading && providerSectionView === 'health' ? (
           <SectionSkeleton height={120} />
         ) : providerSectionView === 'health' ? (
           <>

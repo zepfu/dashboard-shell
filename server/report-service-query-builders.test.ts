@@ -451,6 +451,7 @@ describe('D1-223/224/225 usage identity and billing contracts', () => {
     expect(query.values).toEqual([
       '2026-05-01',
       '2026-05-08',
+      10000,
       ['agent_harness'],
     ])
     expect(query.sql).toContain("NULLIF(to_jsonb(a)->>'agent_id', '')")
@@ -650,13 +651,13 @@ describe('report-service query builders', () => {
     expect(query.sql).toContain('AS agent_compact_summary_verify_contexts')
     expect(query.sql).toContain('AS agent_compact_summary_source_counts')
     expect(query.sql).toContain(
-      'COUNT(*) FILTER (WHERE sh.is_compact_summary IS TRUE)'
+      'NULL::double precision AS agent_compact_summary_events'
     )
     expect(query.sql).toContain(
-      "sh.is_compact_summary IS NOT TRUE AND sh.compact_summary_role = 'resume_context'"
+      'NULL::double precision AS agent_compact_summary_resume_contexts'
     )
     expect(query.sql).toContain(
-      "sh.is_compact_summary IS NOT TRUE AND sh.compact_summary_role = 'verify'"
+      'NULL::double precision AS agent_compact_summary_verify_contexts'
     )
     expect(query.sql).toContain('AS agent_empty_completion_failures')
     expect(query.sql).toContain('AS agent_score_reasons_top')
@@ -666,15 +667,18 @@ describe('report-service query builders', () => {
       'AS agent_sleep_wellness_interruption_incident_score'
     )
     expect(query.sql).toContain(
-      'SUM(sh.trace_quality_score) FILTER (WHERE sh.trace_quality_score IS NOT NULL)'
+      'NULL::double precision AS agent_quality_score'
     )
     expect(query.sql).not.toContain(
       'COALESCE(sh.discovery_inventory_coverage_score, 0)'
     )
     expect(query.sql).not.toContain('/compact')
-    expect(query.sql).toContain("jsonb_typeof(reason_value.value) = 'string'")
-    expect(query.sql).toContain("jsonb_typeof(reason_value.value) = 'object'")
-    expect(query.sql).toContain("reason_value.value ->> 'evidence_mode'")
+    expect(query.sql).toContain('reason_source AS MATERIALIZED')
+    expect(query.sql).toContain(
+      "COALESCE(reason_summary.agent_score_reasons_top, '[]'::jsonb) AS agent_score_reasons_top"
+    )
+    expect(query.sql).toContain('jsonb_each(')
+    expect(query.sql).toContain('reason_value.value ->>')
     expect(query.sql).not.toContain('COALESCE(sh.trace_quality_score, 0)')
   })
 
@@ -699,7 +703,6 @@ describe('report-service query builders', () => {
     expect(query.sql).toContain('sh.agent_score_reasons')
     expect(query.sql).toContain('sh.sleep_wellness_interruption_elapsed_ms')
     expect(query.sql).toContain('FROM filtered sh')
-    expect(query.sql).toContain('jsonb_each(')
   })
 
   test('test_buildUsageQuery_exposes_latency_split_and_throughput_percentiles', () => {
@@ -754,7 +757,7 @@ describe('report-service query builders', () => {
     expect(query.sql).toContain('(sh.changed_gitignore IS FALSE)')
   })
 
-  test('test_buildUsageQuery_applies_global_reportable_session_history_filter', () => {
+  test('test_buildUsageQuery_uses_fast_usage_signal_filter', () => {
     const query = buildUsageQuery(
       new URLSearchParams({
         from: '2026-05-01',
@@ -765,13 +768,14 @@ describe('report-service query builders', () => {
       })
     )
 
-    expectReportableSessionHistoryFilter(query.sql)
-    expect(query.sql).toContain(
-      "lower(COALESCE(sh.client_name, '')) = 'grok-build'"
+    expect(query.sql).toContain('COALESCE(sh.input_tokens, 0)')
+    expect(query.sql).toContain('COALESCE(sh.response_cost_usd, 0)')
+    expect(query.sql).toContain('COALESCE(sh.tool_call_count, 0) > 0')
+    expect(query.sql).not.toContain(
+      "sh.metadata->>'session_history_usage_record'"
     )
-    expect(query.sql).toContain(
-      "COALESCE(NULLIF(sh.model, ''), 'unknown') = 'unknown'"
-    )
+    expect(query.sql).toContain('reason_bounds AS')
+    expect(query.sql).toContain('reason_source AS MATERIALIZED')
   })
 
   test('test_buildSourceTableHealthQuery_uses_latest_row_source_table_probes', () => {
@@ -933,15 +937,14 @@ describe('report-service query builders', () => {
       new URLSearchParams({ from: '2026-05-01', to: '2026-05-08' })
     )
 
-    expect(query.values).toEqual(['2026-05-01', '2026-05-08'])
-    expect(query.sql).toContain('WITH filtered_sessions AS MATERIALIZED')
+    expect(query.values).toEqual(['2026-05-01', '2026-05-08', 10000])
+    expect(query.sql).toContain('WITH bounds AS')
+    expect(query.sql).toContain('recent_activity AS MATERIALIZED')
     expect(query.sql).toContain('tool_rows AS MATERIALIZED')
-    expect(query.sql).toContain('FROM public.session_history sh')
-    expect(query.sql).toContain('JOIN public.session_history_tool_activity a')
+    expect(query.sql).toContain('FROM public.session_history_tool_activity a')
+    expect(query.sql).toContain('JOIN public.session_history sh')
+    expect(query.sql).toContain('a.id > b.min_id')
     expect(query.sql).toContain('FROM tool_rows')
-    expect(query.sql).not.toContain(
-      'FROM public.session_history_tool_activity a\n    JOIN public.session_history sh'
-    )
   })
 
   test('test_token_trend_signal_queries_cover_full_range_and_hourly_scores', () => {

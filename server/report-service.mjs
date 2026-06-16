@@ -306,6 +306,21 @@ const REPORT_CACHE_PREWARM_LOCK_TTL_MS = Math.max(
   Number(process.env.SHELL_REPORT_CACHE_PREWARM_LOCK_TTL_MS ?? 2 * 60 * 60 * 1000)
 )
 const MAX_REPORT_CACHE_ENTRIES = 20
+function positiveIntegerEnv(name, fallback, minimum = 1) {
+  const parsed = Number(process.env[name] ?? fallback)
+  if (!Number.isFinite(parsed)) return fallback
+  return Math.max(minimum, Math.floor(parsed))
+}
+const TOOL_ACTIVITY_RECENT_ROW_LIMIT = positiveIntegerEnv(
+  'SHELL_REPORT_TOOL_ACTIVITY_RECENT_ROW_LIMIT',
+  10_000,
+  1_000
+)
+const AGENT_SCORE_REASON_RECENT_ROW_LIMIT = positiveIntegerEnv(
+  'SHELL_REPORT_AGENT_SCORE_REASON_RECENT_ROW_LIMIT',
+  10_000,
+  1_000
+)
 const USAGE_REPORT_CACHE_SCOPES = new Set([
   'usage',
   'usage-token-trend-summary-v3',
@@ -2248,6 +2263,18 @@ function appendReportableSessionHistoryWhere(whereParts, alias = 'sh') {
   whereParts.push(sessionHistoryReportablePredicate(alias))
 }
 
+function sessionHistoryFastUsageSignalPredicate(alias = 'sh') {
+  return `(
+    ${sessionHistoryTokenSignalExpression(alias)} > 0
+    OR ${sessionHistoryCostSignalExpression(alias)} > 0
+    OR COALESCE(${alias}.tool_call_count, 0) > 0
+)`
+}
+
+function appendFastUsageSignalWhere(whereParts, alias = 'sh') {
+  whereParts.push(sessionHistoryFastUsageSignalPredicate(alias))
+}
+
 const grains = {
   day: `${createdAtEastern}::date`,
   week: `date_trunc('week', ${createdAtEastern})::date`,
@@ -2412,6 +2439,53 @@ const latencyMetricSelectParts = [
   `COUNT(*) FILTER (WHERE sh.llm_upstream_stream_ms > 0)::double precision AS llm_stream_output_tokens_per_second_count`,
 ]
 
+function buildFastLatencyMetricSelects(column, alias) {
+  return [
+    `NULL::double precision AS ${alias}_p50_ms`,
+    `NULL::double precision AS ${alias}_p95_ms`,
+    `NULL::double precision AS ${alias}_p99_ms`,
+    `COUNT(sh.${column})::double precision AS ${alias}_count`,
+  ]
+}
+
+const fastUsageLatencyMetricSelectParts = [
+  'COUNT(*)::double precision AS latency_sample_rows',
+  ...buildFastLatencyMetricSelects('litellm_pre_send_ms', 'litellm_pre_send'),
+  ...buildFastLatencyMetricSelects(
+    'litellm_post_response_ms',
+    'litellm_post_response'
+  ),
+  ...buildFastLatencyMetricSelects('litellm_processing_ms', 'litellm_processing'),
+  ...buildFastLatencyMetricSelects(
+    'llm_upstream_time_to_first_byte_ms',
+    'llm_upstream_time_to_first_byte'
+  ),
+  ...buildFastLatencyMetricSelects(
+    'llm_upstream_elapsed_ms',
+    'llm_upstream_elapsed'
+  ),
+  ...buildFastLatencyMetricSelects('llm_upstream_stream_ms', 'llm_upstream_stream'),
+  ...buildFastLatencyMetricSelects('ttft_ms', 'ttft'),
+  ...buildFastLatencyMetricSelects(
+    'total_server_elapsed_ms',
+    'total_server_elapsed'
+  ),
+  ...buildFastLatencyMetricSelects(
+    'latency_unclassified_ms',
+    'latency_unclassified'
+  ),
+  ...buildFastLatencyMetricSelects(
+    'previous_response_to_current_request_ms',
+    'previous_response_to_current_request'
+  ),
+  `NULL::double precision AS llm_upstream_output_tokens_per_second_p50`,
+  `NULL::double precision AS llm_upstream_output_tokens_per_second_p95`,
+  `COUNT(*) FILTER (WHERE sh.llm_upstream_elapsed_ms > 0)::double precision AS llm_upstream_output_tokens_per_second_count`,
+  `NULL::double precision AS llm_stream_output_tokens_per_second_p50`,
+  `NULL::double precision AS llm_stream_output_tokens_per_second_p95`,
+  `COUNT(*) FILTER (WHERE sh.llm_upstream_stream_ms > 0)::double precision AS llm_stream_output_tokens_per_second_count`,
+]
+
 function buildAgentPassScoreSelects(family, columns) {
   const scoreSum = columns
     .map(
@@ -2512,6 +2586,26 @@ const agentScoreSelectParts = [
       'gemini-cli', COUNT(*) FILTER (WHERE sh.is_compact_summary IS TRUE AND sh.compact_summary_source = 'gemini-cli')
   ) AS agent_compact_summary_source_counts`,
 ]
+
+function fastUsageAgentScoreSelect(part) {
+  const alias = part.match(/\sAS\s+([a-z0-9_]+)\s*$/i)?.[1]
+  if (!alias) return part
+  if (alias === 'agent_score_rows') {
+    return 'COUNT(*)::double precision AS agent_score_rows'
+  }
+  if (alias === 'agent_compact_summary_source_counts') {
+    return `jsonb_build_object(
+      'claude-code', NULL,
+      'codex', NULL,
+      'gemini-cli', NULL
+  ) AS agent_compact_summary_source_counts`
+  }
+  return `NULL::double precision AS ${alias}`
+}
+
+const fastUsageAgentScoreSelectParts = agentScoreSelectParts.map(
+  fastUsageAgentScoreSelect
+)
 
 const configChangeAnyEvaluated = configChangeFlagColumns
   .map((column) => `sh.${column} IS NOT NULL`)
@@ -3074,7 +3168,11 @@ function buildFilteredWhere(searchParams, options = {}) {
   if (options.includeDateRange !== false) {
     appendStartTimeDateRangeWhere(whereParts, values, from, to)
   }
-  appendReportableSessionHistoryWhere(whereParts)
+  if (options.fastUsageSignal) {
+    appendFastUsageSignalWhere(whereParts)
+  } else {
+    appendReportableSessionHistoryWhere(whereParts)
+  }
 
   for (const key of Object.keys(filterColumns)) {
     if (excludedFilterKeys.has(key)) continue
@@ -3179,7 +3277,9 @@ function buildTokenTrendFilteredWhere(searchParams) {
 }
 
 function buildSummaryQuery(searchParams) {
-  const { values, whereParts } = buildFilteredWhere(searchParams)
+  const { values, whereParts } = buildFilteredWhere(searchParams, {
+    fastUsageSignal: true,
+  })
 
   const sql = `
 SELECT
@@ -3218,7 +3318,9 @@ function buildTrendQuery(searchParams) {
     throw new Error(`Unsupported grain: ${grain}`)
   }
 
-  const { values, whereParts } = buildFilteredWhere(searchParams)
+  const { values, whereParts } = buildFilteredWhere(searchParams, {
+    fastUsageSignal: true,
+  })
   const bucketExpression = grains[grain]
 
   const sql = `
@@ -3631,7 +3733,9 @@ ORDER BY
 }
 
 function buildClientUsageQuery(searchParams) {
-  const { values, whereParts } = buildFilteredWhere(searchParams)
+  const { values, whereParts } = buildFilteredWhere(searchParams, {
+    fastUsageSignal: true,
+  })
   values.push(MAX_CLIENT_ROWS)
 
   const sql = `
@@ -3902,7 +4006,9 @@ LIMIT $1;
 // buildClientUsageQuery and buildSummaryQuery, keyed on start_time for
 // consistency with the rest of the providerStatusUsage surface.
 function buildProviderStatusUsageQuery(searchParams) {
-  const { values, whereParts } = buildFilteredWhere(searchParams)
+  const { values, whereParts } = buildFilteredWhere(searchParams, {
+    fastUsageSignal: true,
+  })
   values.push(MAX_PROVIDER_STATUS_ROWS)
 
   const sql = `
@@ -3920,7 +4026,7 @@ SELECT
     SUM(COALESCE(sh.tool_call_count, 0))::double precision AS tool_calls,
     SUM(COALESCE(sh.git_commit_count, 0))::double precision AS git_commit,
     SUM(COALESCE(sh.git_push_count, 0))::double precision AS git_push,
-    ${latencyMetricSelectParts.join(',\n    ')},
+    ${fastUsageLatencyMetricSelectParts.join(',\n    ')},
     MIN(COALESCE(sh.start_time, sh.created_at)) AS period_start,
     MAX(COALESCE(sh.end_time, sh.start_time, sh.created_at)) AS period_end
 FROM public.session_history sh
@@ -5288,12 +5394,14 @@ export function buildToolActivityQuery(searchParams) {
   const { values, whereParts } = buildFilteredWhere(searchParams, {
     excludeFilterKeys: ['agent_id'],
   })
+  values.push(TOOL_ACTIVITY_RECENT_ROW_LIMIT)
+  const recentRowLimitIndex = values.length
   const agentIdFilterValues = parseCsv(searchParams.get('agent_id'))
   let agentIdFilterClause = ''
   if (agentIdFilterValues.length > 0) {
     values.push(agentIdFilterValues)
     agentIdFilterClause = `
-    WHERE COALESCE(NULLIF(to_jsonb(a)->>'agent_id', ''), fs.session_agent_id, 'uncaptured_agent_id') = ANY($${values.length}::text[])`
+      AND COALESCE(ra.activity_agent_id, NULLIF(to_jsonb(sh)->>'agent_id', ''), 'uncaptured_agent_id') = ANY($${values.length}::text[])`
   }
 
   // Inline the same provider-normalisation CASE that providerDimension uses,
@@ -5316,28 +5424,36 @@ CASE
 END`
 
   const sql = `
-WITH filtered_sessions AS MATERIALIZED (
+WITH bounds AS (
+    SELECT GREATEST(COALESCE(MAX(id), 0) - $${recentRowLimitIndex}::bigint, 0) AS min_id
+    FROM public.session_history_tool_activity
+),
+recent_activity AS MATERIALIZED (
     SELECT
-        sh.litellm_call_id,
-        ${providerExpr} AS provider,
-        COALESCE(sh.model, 'unknown') AS model,
-        NULLIF(to_jsonb(sh)->>'agent_name', '') AS session_agent_name,
-        NULLIF(to_jsonb(sh)->>'agent_id', '') AS session_agent_id
-    FROM public.session_history sh
-    WHERE ${whereParts.join('\n      AND ')}
+        a.litellm_call_id,
+        COALESCE(a.tool_kind, 'other') AS tool_kind,
+        a.tool_name,
+        a.command_text,
+        NULLIF(to_jsonb(a)->>'agent_id', '') AS activity_agent_id
+    FROM public.session_history_tool_activity a
+    CROSS JOIN bounds b
+    WHERE a.id > b.min_id
+      AND a.created_at >= ($1::date::timestamp AT TIME ZONE 'America/New_York')
+      AND a.created_at < ($2::date::timestamp AT TIME ZONE 'America/New_York')
 ),
 tool_rows AS MATERIALIZED (
     SELECT
-        fs.provider,
-        fs.model,
-        fs.session_agent_name AS agent_name,
-        COALESCE(NULLIF(to_jsonb(a)->>'agent_id', ''), fs.session_agent_id) AS agent_id,
-        COALESCE(a.tool_kind, 'other') AS tool_kind,
-        a.tool_name,
-        a.command_text
-    FROM filtered_sessions fs
-    JOIN public.session_history_tool_activity a
-      ON a.litellm_call_id = fs.litellm_call_id
+        ${providerExpr} AS provider,
+        COALESCE(sh.model, 'unknown') AS model,
+        NULLIF(to_jsonb(sh)->>'agent_name', '') AS agent_name,
+        COALESCE(ra.activity_agent_id, NULLIF(to_jsonb(sh)->>'agent_id', '')) AS agent_id,
+        ra.tool_kind,
+        ra.tool_name,
+        ra.command_text
+    FROM recent_activity ra
+    JOIN public.session_history sh
+      ON sh.litellm_call_id = ra.litellm_call_id
+    WHERE ${whereParts.join('\n      AND ')}
 ${agentIdFilterClause}
 ),
 outer_counts AS (
@@ -7356,7 +7472,7 @@ export function buildUsageQuery(searchParams) {
 
   const values = [from, to]
   const whereParts = [...startTimeDateRangeWhere]
-  appendReportableSessionHistoryWhere(whereParts)
+  appendFastUsageSignalWhere(whereParts)
 
   for (const key of Object.keys(filterColumns)) {
     appendMultiValueFilter(searchParams, key, whereParts, values)
@@ -7453,15 +7569,29 @@ SELECT
     ROUND(CAST(SUM(COALESCE(sh.llm_upstream_elapsed_ms, 0)) AS numeric), 2)::double precision AS llm_upstream_elapsed_total_ms,
     ROUND(CAST(AVG(sh.llm_upstream_elapsed_ms) AS numeric), 2)::double precision AS llm_upstream_elapsed_average_ms,
 
-    ${latencyMetricSelectParts.join(',\n    ')},
+    ${fastUsageLatencyMetricSelectParts.join(',\n    ')},
 
-    ${agentScoreSelectParts.join(',\n    ')},
+    ${fastUsageAgentScoreSelectParts.join(',\n    ')},
 
     MIN(sh.start_time) AS period_start,
     MAX(sh.end_time) AS period_end
 FROM filtered sh
 GROUP BY
     ${groupParts.join(',\n    ')}
+),
+reason_bounds AS (
+    SELECT GREATEST(COALESCE(MAX(id), 0) - ${AGENT_SCORE_REASON_RECENT_ROW_LIMIT}::bigint, 0) AS min_id
+    FROM public.session_history
+),
+reason_source AS MATERIALIZED (
+    SELECT
+${usageFilteredColumnSelects.join(',\n')}
+    FROM public.session_history sh
+    CROSS JOIN reason_bounds rb
+    WHERE sh.id > rb.min_id
+      AND ${whereParts.join('\n      AND ')}
+      AND sh.agent_score_reasons IS NOT NULL
+      AND sh.agent_score_reasons <> '{}'::jsonb
 ),
 reason_counts AS (
 SELECT
@@ -7481,7 +7611,7 @@ SELECT
         ELSE NULL
     END AS reason,
     COUNT(*)::double precision AS reason_count
-FROM filtered sh
+FROM reason_source sh
 CROSS JOIN LATERAL jsonb_each(
     CASE
         WHEN jsonb_typeof(sh.agent_score_reasons) = 'object'
@@ -7500,9 +7630,7 @@ CROSS JOIN LATERAL jsonb_array_elements(
         ELSE '[]'::jsonb
     END
 ) AS reason_value(value)
-WHERE sh.agent_score_reasons IS NOT NULL
-  AND sh.agent_score_reasons <> '{}'::jsonb
-  AND (
+WHERE (
       jsonb_typeof(reason_value.value) = 'string'
       OR (
           jsonb_typeof(reason_value.value) = 'object'
