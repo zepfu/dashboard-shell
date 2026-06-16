@@ -32,6 +32,7 @@ import type {
   UsageReportQuotaRow,
   UsageReportQuotaUsageBreakdown,
   UsageReportResponse,
+  UsageReportSessionDiagnosticsResponse,
   ShellHealthResponse,
 } from '../api/usage-report'
 import PhosphorDashboard from './phosphor-dashboard'
@@ -141,6 +142,19 @@ beforeEach(() => {
         },
         estimates: [],
       } satisfies UsageReportQuotaEstimatorResponse)
+    )
+  )
+  server.use(
+    http.get('/api/shell/reports/usage/session-diagnostics', () =>
+      HttpResponse.json({
+        metadata: {
+          from: '2026-04-19',
+          to: '2026-05-19',
+          limit: 100,
+          generatedAt: '2026-05-19T00:00:00.000Z',
+        },
+        sessionDiagnostics: [],
+      } satisfies UsageReportSessionDiagnosticsResponse)
     )
   )
 })
@@ -1010,6 +1024,353 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
     expect(
       screen.getAllByText(/limited_identifiability/i).length
     ).toBeGreaterThan(0)
+  })
+
+  test('test_status_diagnostics_tab_fetches_session_diagnostics_and_renders_metadata_families', async () => {
+    let seenFrom: string | null = null
+    let seenTo: string | null = null
+    let seenProvider: string | null = null
+    let seenModel: string | null = null
+    let seenRepository: string | null = null
+    let seenClient: string | null = null
+    let seenLimit: string | null = null
+
+    server.use(
+      http.get(
+        '/api/shell/reports/usage/session-diagnostics',
+        ({ request }) => {
+          const url = new URL(request.url)
+          seenFrom = url.searchParams.get('from')
+          seenTo = url.searchParams.get('to')
+          seenProvider = url.searchParams.get('provider')
+          seenModel = url.searchParams.get('model')
+          seenRepository = url.searchParams.get('repository')
+          seenClient = url.searchParams.get('client')
+          seenLimit = url.searchParams.get('limit')
+          return HttpResponse.json({
+            metadata: {
+              from: '2026-05-20',
+              to: '2026-05-21',
+              limit: 100,
+              generatedAt: '2026-05-21T00:00:00.000Z',
+            },
+            sessionDiagnostics: [
+              {
+                created_at: '2026-05-20T12:00:00.000Z',
+                session_id: 'sess-1',
+                trace_id: 'trace-1',
+                litellm_call_id: 'call-1',
+                provider: 'xai',
+                model: 'grok-composer-2.5-fast',
+                repository: 'dashboard-shell',
+                client: 'grok-build',
+                diagnostic_flags: [
+                  'grok_oauth',
+                  'alias_routing',
+                  'output_contract',
+                  'tool_definitions',
+                  'xai_sanitizer',
+                  'transcript_attribution',
+                ],
+                diagnostic_categories: [
+                  'route_identity',
+                  'route_timeline',
+                  'agent_quality',
+                  'tool_contract',
+                  'request_shape',
+                  'model_attribution',
+                ],
+                grok_oauth: {
+                  credential_family: 'xai_grok_oidc',
+                  grok_native_oauth_managed: true,
+                  grok_native_entrypoint: 'openai_responses',
+                },
+                output_contract: {
+                  usage_output_contract_required_final_phrase_present: false,
+                  usage_output_contract_failure_class:
+                    'missing_required_final_phrase',
+                  usage_output_contract_setup_only_detected: true,
+                },
+                xai_sanitizer: {
+                  xai_responses_request_sanitized: true,
+                  xai_responses_sanitized_removed_params: [
+                    'instructions',
+                    'tool_choice',
+                  ],
+                  xai_responses_sanitized_tool_count: 2,
+                  xai_responses_sanitized_tool_types: ['function'],
+                  xai_tool_choice_without_tools_removed: {
+                    name: 'Bash',
+                    type: 'function',
+                  },
+                  xai_tool_choice_without_tools_removed_reason: 'missing_tools',
+                  request_tags: [
+                    'xai-tool-choice-without-tools-removed',
+                    'xai-tool-choice-without-tools:function',
+                  ],
+                  xai_responses_sanitized_tools: [
+                    { name: 'Bash', type: 'function' },
+                    { name: 'Read', type: 'function' },
+                  ],
+                  passthrough_route_family: 'grok_cli_chat_proxy',
+                },
+                tool_definitions: {
+                  aawm_tool_definition_capture_version: 'v1',
+                  aawm_tool_definition_count: 3,
+                  aawm_tool_definition_captured_count: 2,
+                  aawm_tool_definition_names: ['Bash', 'Read'],
+                  aawm_tool_definition_types: ['function', 'function'],
+                  snapshot_hash: 'abc123',
+                  aawm_tool_definition_snapshot_truncated: true,
+                  tool_definition_snapshot: [
+                    { name: 'Bash', type: 'function' },
+                    { name: 'Read', type: 'function' },
+                  ],
+                },
+                alias_route_events: [
+                  {
+                    observed_at: '2026-05-20T12:00:00.000Z',
+                    alias_model: 'aawm-code',
+                    provider: 'anthropic',
+                    model: 'claude-sonnet-4-6',
+                    event_type: 'candidate_selected',
+                    attempt_number: 2,
+                    cooldown_state: 'active',
+                    redispatch_required: true,
+                    last_resort: false,
+                  },
+                ],
+                transcript_attribution: {
+                  session_history_transcript_attribution_status:
+                    'unrecoverable',
+                  session_history_transcript_attribution_source:
+                    'd1-229-claude-raw-transcript-attribution',
+                  session_history_transcript_attribution: {
+                    status: 'unrecoverable',
+                    reason: 'no_explicit_transcript_model_event',
+                    match_rule: 'transcript_model_event',
+                    updated_at: '2026-05-20T12:05:00.000Z',
+                  },
+                },
+              },
+            ],
+          } satisfies UsageReportSessionDiagnosticsResponse)
+        }
+      )
+    )
+
+    await act(async () => {
+      render(
+        <Wrapper>
+          <PhosphorDashboard
+            from='2026-05-20'
+            to='2026-05-21'
+            filters={{
+              providers: ['xai'],
+              repositories: ['dashboard-shell'],
+              clients: ['grok-build'],
+              environments: [],
+              models: ['grok-composer-2.5-fast'],
+            }}
+            report={MOCK_REPORT}
+            reportLoading={false}
+            showComparison={false}
+            quotas={[]}
+          />
+        </Wrapper>
+      )
+    })
+
+    expect(screen.queryByText('Session diagnostics')).toBeNull()
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Diagnostics' }))
+
+    await waitFor(() => {
+      expect(screen.getByText('Session diagnostics')).toBeInTheDocument()
+    })
+    expect(seenFrom).toBe('2026-05-20')
+    expect(seenTo).toBe('2026-05-21')
+    expect(seenProvider).toBe('xai')
+    expect(seenModel).toBe('grok-composer-2.5-fast')
+    expect(seenRepository).toBe('dashboard-shell')
+    expect(seenClient).toBe('grok-build')
+    expect(seenLimit).toBe('100')
+    const diagnosticsCard = screen
+      .getByText('grok-composer-2.5-fast')
+      .closest('article') as HTMLElement
+
+    expect(
+      within(diagnosticsCard).getByText('xai_grok_oidc')
+    ).toBeInTheDocument()
+    expect(
+      within(diagnosticsCard).getByText('missing_required_final_phrase')
+    ).toBeInTheDocument()
+    expect(
+      within(diagnosticsCard).getByText('missing_tools')
+    ).toBeInTheDocument()
+    expect(within(diagnosticsCard).getByText('abc123')).toBeInTheDocument()
+    expect(
+      within(diagnosticsCard).getByText('1 audit events')
+    ).toBeInTheDocument()
+    expect(
+      within(diagnosticsCard).getByText('unrecoverable')
+    ).toBeInTheDocument()
+
+    expect(
+      within(diagnosticsCard).getByText('aawm_tool_definition_captured_count')
+    ).toBeInTheDocument()
+    expect(
+      within(diagnosticsCard).getByText('aawm_tool_definition_count')
+    ).toBeInTheDocument()
+    expect(
+      within(diagnosticsCard).getByText(
+        'aawm_tool_definition_snapshot_truncated'
+      )
+    ).toBeInTheDocument()
+    expect(
+      within(diagnosticsCard).getByText('aawm_tool_definition_names')
+    ).toBeInTheDocument()
+    expect(
+      within(diagnosticsCard).getByText('aawm_tool_definition_types')
+    ).toBeInTheDocument()
+    expect(within(diagnosticsCard).getByText('Bash, Read')).toBeInTheDocument()
+    expect(
+      within(diagnosticsCard).getByText('function, function')
+    ).toBeInTheDocument()
+
+    expect(
+      within(diagnosticsCard).getByText('responses_sanitized_removed_params')
+    ).toBeInTheDocument()
+    expect(
+      within(diagnosticsCard).getByText('tool_choice_without_tools_removed')
+    ).toBeInTheDocument()
+    expect(
+      within(diagnosticsCard).getByText(
+        'tool_choice_without_tools_removed_reason'
+      )
+    ).toBeInTheDocument()
+    expect(
+      within(diagnosticsCard).getByText('request_tags')
+    ).toBeInTheDocument()
+    expect(
+      within(diagnosticsCard).getByText('instructions, tool_choice')
+    ).toBeInTheDocument()
+    expect(
+      within(diagnosticsCard).getByText('{"name":"Bash","type":"function"}')
+    ).toBeInTheDocument()
+    expect(
+      within(diagnosticsCard).getByText(
+        'xai-tool-choice-without-tools-removed, xai-tool-choice-without-tools:function'
+      )
+    ).toBeInTheDocument()
+
+    const sanitizedToolsDetail = within(diagnosticsCard)
+      .getByText('sanitized tools')
+      .closest('details') as HTMLElement
+    fireEvent.click(within(sanitizedToolsDetail).getByText('sanitized tools'))
+    expect(
+      within(sanitizedToolsDetail).getByText(/"name": "Bash"/)
+    ).toBeInTheDocument()
+    expect(
+      within(sanitizedToolsDetail).getByText(/"name": "Read"/)
+    ).toBeInTheDocument()
+
+    const removedToolChoiceDetail = within(diagnosticsCard)
+      .getByText('removed tool choice')
+      .closest('details') as HTMLElement
+    fireEvent.click(
+      within(removedToolChoiceDetail).getByText('removed tool choice')
+    )
+    expect(
+      within(removedToolChoiceDetail).getByText(/"type": "function"/)
+    ).toBeInTheDocument()
+
+    const toolDefinitionSnapshotDetail = within(diagnosticsCard)
+      .getByText('tool definition snapshot')
+      .closest('details') as HTMLElement
+    fireEvent.click(
+      within(toolDefinitionSnapshotDetail).getByText('tool definition snapshot')
+    )
+    expect(
+      within(toolDefinitionSnapshotDetail).getByText(/"name": "Bash"/)
+    ).toBeInTheDocument()
+    expect(
+      within(toolDefinitionSnapshotDetail).getByText(/"name": "Read"/)
+    ).toBeInTheDocument()
+
+    const aliasTimelineRow = within(diagnosticsCard)
+      .getByText('candidate_selected')
+      .closest('.status-diagnostics-timeline-row') as HTMLElement
+    expect(
+      within(aliasTimelineRow).getByText('2026-05-20T12:00:00.000Z')
+    ).toBeInTheDocument()
+    expect(
+      within(aliasTimelineRow).getByText(
+        'aawm-code -> anthropic -> claude-sonnet-4-6'
+      )
+    ).toBeInTheDocument()
+    expect(within(aliasTimelineRow).getByText(/attempt/i)).toBeInTheDocument()
+    expect(within(aliasTimelineRow).getByText(/cooldown/i)).toBeInTheDocument()
+    expect(
+      within(aliasTimelineRow).getByText(/redispatch/i)
+    ).toBeInTheDocument()
+    expect(
+      within(aliasTimelineRow).getByText(/last resort/i)
+    ).toBeInTheDocument()
+
+    fireEvent.click(within(diagnosticsCard).getByText('alias route events'))
+    expect(
+      within(diagnosticsCard).getByText(
+        /"observed_at": "2026-05-20T12:00:00.000Z"/
+      )
+    ).toBeInTheDocument()
+    expect(
+      within(diagnosticsCard).getByText(/"attempt_number": 2/)
+    ).toBeInTheDocument()
+    expect(
+      within(diagnosticsCard).getByText(/"cooldown_state": "active"/)
+    ).toBeInTheDocument()
+    expect(
+      within(diagnosticsCard).getByText(/"redispatch_required": true/)
+    ).toBeInTheDocument()
+    expect(
+      within(diagnosticsCard).getByText(/"last_resort": false/)
+    ).toBeInTheDocument()
+
+    expect(
+      within(diagnosticsCard).getByText('unknown model (unrecoverable)')
+    ).toBeInTheDocument()
+    expect(
+      within(diagnosticsCard).getByText('no_explicit_transcript_model_event')
+    ).toBeInTheDocument()
+    expect(
+      within(diagnosticsCard).getByText('transcript_model_event')
+    ).toBeInTheDocument()
+    expect(
+      within(diagnosticsCard).getByText('2026-05-20T12:05:00.000Z')
+    ).toBeInTheDocument()
+
+    fireEvent.click(
+      within(diagnosticsCard).getByText('transcript attribution detail')
+    )
+    expect(
+      within(diagnosticsCard).getByText(/"status": "unrecoverable"/)
+    ).toBeInTheDocument()
+    expect(
+      within(diagnosticsCard).getByText(
+        /"reason": "no_explicit_transcript_model_event"/
+      )
+    ).toBeInTheDocument()
+    expect(
+      within(diagnosticsCard).getByText(
+        /"match_rule": "transcript_model_event"/
+      )
+    ).toBeInTheDocument()
+    expect(
+      within(diagnosticsCard).getByText(
+        /"updated_at": "2026-05-20T12:05:00.000Z"/
+      )
+    ).toBeInTheDocument()
   })
 
   // S1-T4 flake fix: replace the 40ms real-delay race with a deferred-promise

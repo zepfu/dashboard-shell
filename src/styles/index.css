@@ -2189,6 +2189,61 @@
   font-size: 10px;
 }
 
+.status-diagnostics-grid {
+  grid-template-columns: repeat(1, minmax(0, 1fr));
+}
+
+@media (min-width: 1600px) {
+  .status-diagnostics-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+.status-diagnostics-card {
+  border-top-color: color-mix(in srgb, #38bdf8 55%, var(--border));
+}
+
+.status-diagnostics-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+}
+
+.status-diagnostics-chip {
+  border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  background: color-mix(in srgb, var(--card) 75%, transparent);
+  color: var(--fg-muted);
+  padding: 1px 4px;
+  font-size: 8px;
+  line-height: 1.4;
+  text-transform: uppercase;
+}
+
+.status-diagnostics-details {
+  margin-top: 3px;
+  border-top: 1px solid color-mix(in srgb, var(--border) 45%, transparent);
+  padding-top: 3px;
+}
+
+.status-diagnostics-details summary {
+  cursor: pointer;
+  color: var(--accent-chrome);
+  font-size: 8px;
+  text-transform: uppercase;
+}
+
+.status-diagnostics-details pre {
+  max-height: 180px;
+  overflow: auto;
+  margin: 4px 0 0;
+  border: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
+  background: var(--card);
+  color: var(--fg-muted);
+  padding: 5px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 /* ─────────────────────────────────────────────────────────────────────────── */
 /* Wave 14-B: page-header chrome removal, search input, attribution legend    */
 /* ─────────────────────────────────────────────────────────────────────────── */

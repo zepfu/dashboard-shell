@@ -108,6 +108,7 @@ const MAX_LIMIT = 50000
 // of magnitude of MAX_LIMIT and is safe for memory given that client
 // rows are a small aggregate (6 columns per pair).
 const MAX_CLIENT_ROWS = 5000
+const MAX_SESSION_DIAGNOSTICS_ROWS = 500
 // Provider health strips are fixed 24-hour surfaces: 288 buckets × 5 minutes.
 // Report date filters can span days/months, but the status bars should stay a
 // bounded rolling window ending at "now" for live ranges, or the selected `to`
@@ -1516,6 +1517,11 @@ async function loadPgBouncerAdminSummary(sidecar) {
     connectionTimeoutMillis: PGBOUNCER_ADMIN_QUERY_TIMEOUT_MS,
     query_timeout: PGBOUNCER_ADMIN_QUERY_TIMEOUT_MS,
   })
+  adminPool.on('error', (error) => {
+    process.stderr.write(
+      `[report-service] WARN: idle PgBouncer admin client error for ${sidecar.key}: ${formatError(error)}\n`
+    )
+  })
 
   try {
     const client = await adminPool.connect()
@@ -2773,6 +2779,12 @@ function parseLimit(value) {
   return Math.min(Math.floor(parsed), MAX_LIMIT)
 }
 
+function parseSessionDiagnosticsLimit(value) {
+  const parsed = Number(value ?? 100)
+  if (!Number.isFinite(parsed) || parsed < 1) return 100
+  return Math.min(Math.floor(parsed), MAX_SESSION_DIAGNOSTICS_ROWS)
+}
+
 function parseGroupBy(value) {
   const requested = parseCsv(value)
   const groupBy = requested.length ? requested : DEFAULT_GROUP_BY
@@ -3069,6 +3081,82 @@ function buildFilteredWhere(searchParams, options = {}) {
     appendMultiValueFilter(searchParams, key, whereParts, values)
   }
   appendConfigChangeFilters(searchParams, whereParts)
+
+  return { from, to, values, whereParts }
+}
+
+function appendSessionDiagnosticsFilter(searchParams, key, whereParts, values) {
+  const selected = parseCsv(searchParams.get(key))
+  if (!selected.length) return
+
+  const column =
+    key === 'client'
+      ? "COALESCE(sh.client_name, 'unknown')"
+      : key === 'environment'
+        ? "COALESCE(sh.litellm_environment, 'unknown')"
+        : filterColumns[key]
+  values.push(selected)
+  whereParts.push(`${column} = ANY($${values.length}::text[])`)
+}
+
+function buildSessionDiagnosticsWhere(searchParams) {
+  const from = parseDateParam(searchParams.get('from'), defaultFromDate)
+  const to = parseDateParam(searchParams.get('to'), defaultToDate)
+  const values = []
+  const whereParts = []
+
+  appendCreatedAtDateRangeWhere(whereParts, values, from, to)
+  for (const key of ['provider', 'model', 'repository', 'client', 'environment']) {
+    appendSessionDiagnosticsFilter(searchParams, key, whereParts, values)
+  }
+
+  for (const key of ['session_id', 'trace_id', 'litellm_call_id']) {
+    const selected = parseCsv(searchParams.get(key))
+    if (!selected.length) continue
+    values.push(selected)
+    if (key === 'session_id') {
+      whereParts.push(`sh.session_id::text = ANY($${values.length}::text[])`)
+    } else if (key === 'litellm_call_id') {
+      whereParts.push(`sh.litellm_call_id::text = ANY($${values.length}::text[])`)
+    } else {
+      whereParts.push(`NULLIF(to_jsonb(sh)->>'trace_id', '') = ANY($${values.length}::text[])`)
+    }
+  }
+
+  whereParts.push(`(
+    sh.metadata->>'credential_family' IS NOT NULL
+    OR sh.metadata->>'grok_native_oauth_managed' IS NOT NULL
+    OR sh.metadata->>'grok_native_entrypoint' IS NOT NULL
+    OR sh.metadata->>'usage_output_contract_required_final_phrase' IS NOT NULL
+    OR sh.metadata->>'usage_output_contract_required_final_phrase_present' IS NOT NULL
+    OR sh.metadata->>'usage_output_contract_failure_class' IS NOT NULL
+    OR sh.metadata->>'usage_output_contract_setup_only_detected' IS NOT NULL
+    OR sh.metadata->>'aawm_tool_definition_capture_version' IS NOT NULL
+    OR sh.metadata->>'aawm_tool_definition_snapshot_hash' IS NOT NULL
+    OR sh.metadata->>'aawm_tool_definition_snapshot' IS NOT NULL
+    OR sh.metadata->>'xai_responses_request_sanitized' IS NOT NULL
+    OR sh.metadata->>'xai_responses_sanitized_removed_params' IS NOT NULL
+    OR sh.metadata->>'xai_responses_sanitized_tool_count' IS NOT NULL
+    OR sh.metadata->>'xai_responses_sanitized_tool_types' IS NOT NULL
+    OR sh.metadata->>'xai_tool_choice_without_tools_removed' IS NOT NULL
+    OR sh.metadata->>'xai_tool_choice_without_tools_removed_reason' IS NOT NULL
+    OR sh.metadata->>'session_history_transcript_attribution_status' IS NOT NULL
+    OR sh.metadata->>'session_history_transcript_attribution_source' IS NOT NULL
+    OR sh.metadata->>'session_history_transcript_attribution' IS NOT NULL
+    OR sh.metadata->>'aawm_alias_routing_audit_events' IS NOT NULL
+    OR sh.metadata->>'codex_auto_agent_audit_events' IS NOT NULL
+    OR sh.metadata->>'anthropic_auto_agent_audit_events' IS NOT NULL
+    OR EXISTS (
+      SELECT 1
+      FROM public.aawm_alias_routing_audit aa_probe
+      WHERE (
+        aa_probe.litellm_call_id::text IS NOT DISTINCT FROM sh.litellm_call_id::text
+        OR aa_probe.session_id::text IS NOT DISTINCT FROM sh.session_id::text
+        OR aa_probe.trace_id::text IS NOT DISTINCT FROM NULLIF(to_jsonb(sh)->>'trace_id', '')
+      )
+      LIMIT 1
+    )
+  )`)
 
   return { from, to, values, whereParts }
 }
@@ -5361,6 +5449,298 @@ function normalizeToolActivityRow(row) {
   }
 }
 
+export function buildSessionDiagnosticsQuery(searchParams) {
+  const { from, to, values, whereParts } =
+    buildSessionDiagnosticsWhere(searchParams)
+  const limit = parseSessionDiagnosticsLimit(searchParams.get('limit'))
+  values.push(limit)
+  const limitPlaceholder = `$${values.length.toString()}`
+
+  const sql = `
+WITH recent_sessions AS MATERIALIZED (
+    SELECT
+        sh.created_at,
+        sh.start_time,
+        sh.end_time,
+        sh.session_id::text AS session_id,
+        NULLIF(to_jsonb(sh)->>'trace_id', '') AS trace_id,
+        sh.litellm_call_id::text AS litellm_call_id,
+        ${providerDimension} AS provider,
+        COALESCE(sh.model, 'unknown') AS model,
+        NULLIF(to_jsonb(sh)->>'model_group', '') AS model_group,
+        COALESCE(sh.tenant_id, 'unknown') AS repository,
+        COALESCE(sh.client_name, 'unknown') AS client,
+        COALESCE(sh.client_version, '0.0.0') AS client_version,
+        COALESCE(sh.litellm_environment, 'unknown') AS environment,
+        NULLIF(to_jsonb(sh)->>'inbound_model_alias', '') AS inbound_model_alias,
+        NULLIF(to_jsonb(sh)->>'agent_name', '') AS agent_name,
+        NULLIF(to_jsonb(sh)->>'agent_id', '') AS agent_id,
+        COALESCE(sh.metadata, '{}'::jsonb) AS metadata,
+        COALESCE(sh.agent_score_reasons, '{}'::jsonb) AS agent_score_reasons
+    FROM public.session_history sh
+    WHERE ${whereParts.join('\n      AND ')}
+    ORDER BY sh.created_at DESC
+    LIMIT ${limitPlaceholder}
+),
+diagnostic_rows AS (
+    SELECT
+        rs.*,
+        alias_audit.alias_route_events,
+        tool_snapshots.tool_definition_snapshot
+    FROM recent_sessions rs
+    LEFT JOIN LATERAL (
+        SELECT
+            jsonb_agg(
+                jsonb_strip_nulls(
+                    jsonb_build_object(
+                        'observed_at', to_jsonb(aa)->>'observed_at',
+                        'session_id', to_jsonb(aa)->>'session_id',
+                        'trace_id', to_jsonb(aa)->>'trace_id',
+                        'litellm_call_id', to_jsonb(aa)->>'litellm_call_id',
+                        'alias_model', to_jsonb(aa)->>'alias_model',
+                        'alias_family', to_jsonb(aa)->>'alias_family',
+                        'provider', to_jsonb(aa)->>'provider',
+                        'model', to_jsonb(aa)->>'model',
+                        'route_family', to_jsonb(aa)->>'route_family',
+                        'attempt_number', to_jsonb(aa)->>'attempt_number',
+                        'event_type', to_jsonb(aa)->>'event_type',
+                        'failure_class', to_jsonb(aa)->>'failure_class',
+                        'cooldown_state', to_jsonb(aa)->>'cooldown_state',
+                        'cooldown_until', to_jsonb(aa)->>'cooldown_until',
+                        'redispatch_required', to_jsonb(aa)->>'redispatch_required',
+                        'last_resort', to_jsonb(aa)->>'last_resort',
+                        'details', to_jsonb(aa)->'details'
+                    )
+                )
+                ORDER BY observed_at
+            ) AS alias_route_events
+        FROM public.aawm_alias_routing_audit aa
+        WHERE (
+            NULLIF(to_jsonb(aa)->>'litellm_call_id', '') IS NOT DISTINCT FROM rs.litellm_call_id
+            OR NULLIF(to_jsonb(aa)->>'session_id', '') IS NOT DISTINCT FROM rs.session_id
+            OR NULLIF(to_jsonb(aa)->>'trace_id', '') IS NOT DISTINCT FROM rs.trace_id
+        )
+    ) alias_audit ON TRUE
+    LEFT JOIN LATERAL (
+        SELECT
+            jsonb_agg(
+                jsonb_strip_nulls(
+                    jsonb_build_object(
+                        'snapshot_hash', to_jsonb(td)->>'snapshot_hash',
+                        'session_id', to_jsonb(td)->>'session_id',
+                        'first_litellm_call_id', to_jsonb(td)->>'first_litellm_call_id',
+                        'first_trace_id', to_jsonb(td)->>'first_trace_id',
+                        'snapshot_storage_key', to_jsonb(td)->>'snapshot_storage_key',
+                        'metadata', to_jsonb(td)->'metadata',
+                        'sanitized_snapshot', to_jsonb(td)->'sanitized_snapshot'
+                    )
+                )
+                ORDER BY COALESCE(to_jsonb(td)->>'created_at', to_jsonb(td)->>'updated_at') DESC NULLS LAST
+            ) AS tool_definition_snapshot
+        FROM public.session_history_tool_definition_snapshots td
+        WHERE NULLIF(to_jsonb(td)->>'session_id', '') IS NOT DISTINCT FROM rs.session_id
+          AND (
+              NULLIF(rs.metadata->>'aawm_tool_definition_snapshot_hash', '') IS NULL
+              OR NULLIF(to_jsonb(td)->>'snapshot_hash', '') = rs.metadata->>'aawm_tool_definition_snapshot_hash'
+          )
+    ) tool_snapshots ON TRUE
+)
+SELECT
+    created_at,
+    start_time,
+    end_time,
+    session_id,
+    trace_id,
+    litellm_call_id,
+    provider,
+    model,
+    model_group,
+    repository,
+    client,
+    client_version,
+    environment,
+    inbound_model_alias,
+    agent_name,
+    agent_id,
+    ARRAY_REMOVE(ARRAY[
+        CASE WHEN metadata->>'credential_family' IS NOT NULL
+             OR metadata->>'grok_native_oauth_managed' IS NOT NULL
+             OR metadata->>'grok_native_entrypoint' IS NOT NULL
+             THEN 'grok_oauth'::text END,
+        CASE WHEN alias_route_events IS NOT NULL
+             OR metadata->>'aawm_alias_routing_audit_events' IS NOT NULL
+             OR metadata->>'codex_auto_agent_audit_events' IS NOT NULL
+             OR metadata->>'anthropic_auto_agent_audit_events' IS NOT NULL
+             THEN 'alias_routing'::text END,
+        CASE WHEN metadata->>'usage_output_contract_required_final_phrase' IS NOT NULL
+             OR metadata->>'usage_output_contract_required_final_phrase_present' IS NOT NULL
+             OR metadata->>'usage_output_contract_failure_class' IS NOT NULL
+             OR metadata->>'usage_output_contract_setup_only_detected' IS NOT NULL
+             THEN 'output_contract'::text END,
+        CASE WHEN metadata->>'aawm_tool_definition_capture_version' IS NOT NULL
+             OR metadata->>'aawm_tool_definition_snapshot_hash' IS NOT NULL
+             OR metadata->>'aawm_tool_definition_snapshot' IS NOT NULL
+             THEN 'tool_definitions'::text END,
+        CASE WHEN metadata->>'xai_responses_request_sanitized' IS NOT NULL
+             OR metadata->>'xai_responses_sanitized_removed_params' IS NOT NULL
+             OR metadata->>'xai_tool_choice_without_tools_removed' IS NOT NULL
+             OR metadata->>'xai_tool_choice_without_tools_removed_reason' IS NOT NULL
+             THEN 'xai_sanitizer'::text END,
+        CASE WHEN metadata->>'session_history_transcript_attribution_status' IS NOT NULL
+             OR metadata->>'session_history_transcript_attribution_source' IS NOT NULL
+             OR metadata->>'session_history_transcript_attribution' IS NOT NULL
+             THEN 'transcript_attribution'::text END
+    ], NULL) AS diagnostic_flags,
+    ARRAY_REMOVE(ARRAY[
+        CASE WHEN metadata->>'credential_family' IS NOT NULL
+             OR metadata->>'grok_native_oauth_managed' IS NOT NULL
+             THEN 'route_identity'::text END,
+        CASE WHEN alias_route_events IS NOT NULL
+             OR metadata->>'aawm_alias_routing_audit_events' IS NOT NULL
+             THEN 'route_timeline'::text END,
+        CASE WHEN metadata->>'usage_output_contract_required_final_phrase_present' IS NOT NULL
+             OR metadata->>'usage_output_contract_failure_class' IS NOT NULL
+             THEN 'agent_quality'::text END,
+        CASE WHEN metadata->>'aawm_tool_definition_snapshot_hash' IS NOT NULL
+             OR metadata->>'aawm_tool_definition_snapshot' IS NOT NULL
+             THEN 'tool_contract'::text END,
+        CASE WHEN metadata->>'xai_responses_request_sanitized' IS NOT NULL
+             OR metadata->>'xai_tool_choice_without_tools_removed' IS NOT NULL
+             THEN 'request_shape'::text END,
+        CASE WHEN metadata->>'session_history_transcript_attribution_status' IS NOT NULL
+             THEN 'model_attribution'::text END
+    ], NULL) AS diagnostic_categories,
+    jsonb_strip_nulls(jsonb_build_object(
+        'credential_family', NULLIF(metadata->>'credential_family', ''),
+        'grok_native_oauth_managed',
+            CASE WHEN metadata ? 'grok_native_oauth_managed'
+                 THEN lower(COALESCE(metadata->>'grok_native_oauth_managed', '')) = 'true'
+            END,
+        'grok_native_entrypoint', NULLIF(metadata->>'grok_native_entrypoint', ''),
+        'passthrough_route_family', NULLIF(metadata->>'passthrough_route_family', ''),
+        'route_family', NULLIF(metadata->>'route_family', ''),
+        'auth_mode', NULLIF(metadata->>'auth_mode', ''),
+        'grok_model_override', NULLIF(metadata->>'grok_model_override', '')
+    )) AS grok_oauth,
+    jsonb_strip_nulls(jsonb_build_object(
+        'usage_output_contract_required_final_phrase', NULLIF(metadata->>'usage_output_contract_required_final_phrase', ''),
+        'usage_output_contract_required_final_phrase_present',
+            CASE WHEN metadata ? 'usage_output_contract_required_final_phrase_present'
+                 THEN lower(COALESCE(metadata->>'usage_output_contract_required_final_phrase_present', '')) = 'true'
+            END,
+        'usage_output_contract_required_final_phrase_source', NULLIF(metadata->>'usage_output_contract_required_final_phrase_source', ''),
+        'usage_output_contract_failure_class', NULLIF(metadata->>'usage_output_contract_failure_class', ''),
+        'usage_output_contract_failure_count',
+            CASE WHEN COALESCE(metadata->>'usage_output_contract_failure_count', '') ~ '^-?[0-9]+$'
+                 THEN (metadata->>'usage_output_contract_failure_count')::integer
+            END,
+        'usage_output_contract_setup_only_detected',
+            CASE WHEN metadata ? 'usage_output_contract_setup_only_detected'
+                 THEN lower(COALESCE(metadata->>'usage_output_contract_setup_only_detected', '')) = 'true'
+            END,
+        'usage_output_contract_setup_only_markers', metadata->'usage_output_contract_setup_only_markers',
+        'usage_output_contract_final_text_chars',
+            CASE WHEN COALESCE(metadata->>'usage_output_contract_final_text_chars', '') ~ '^-?[0-9]+$'
+                 THEN (metadata->>'usage_output_contract_final_text_chars')::integer
+            END,
+        'usage_agent_score_reasons', COALESCE(metadata->'usage_agent_score_reasons', agent_score_reasons)
+    )) AS output_contract,
+    jsonb_strip_nulls(jsonb_build_object(
+        'xai_responses_request_sanitized',
+            CASE WHEN metadata ? 'xai_responses_request_sanitized'
+                 THEN lower(COALESCE(metadata->>'xai_responses_request_sanitized', '')) = 'true'
+            END,
+        'xai_responses_sanitized_removed_params', metadata->'xai_responses_sanitized_removed_params',
+        'xai_responses_sanitized_tool_count',
+            CASE WHEN COALESCE(metadata->>'xai_responses_sanitized_tool_count', '') ~ '^-?[0-9]+$'
+                 THEN (metadata->>'xai_responses_sanitized_tool_count')::integer
+            END,
+        'xai_responses_sanitized_tool_types', metadata->'xai_responses_sanitized_tool_types',
+        'xai_responses_sanitized_tools', metadata->'xai_responses_sanitized_tools',
+        'xai_tool_choice_without_tools_removed', COALESCE(metadata->'xai_tool_choice_without_tools_removed', to_jsonb(NULLIF(metadata->>'xai_tool_choice_without_tools_removed', ''))),
+        'xai_tool_choice_without_tools_removed_reason', NULLIF(metadata->>'xai_tool_choice_without_tools_removed_reason', ''),
+        'request_tags', metadata->'request_tags',
+        'openai_passthrough_route_family', NULLIF(metadata->>'openai_passthrough_route_family', ''),
+        'passthrough_route_family', NULLIF(metadata->>'passthrough_route_family', ''),
+        'route_family', NULLIF(metadata->>'route_family', ''),
+        'credential_family', NULLIF(metadata->>'credential_family', '')
+    )) AS xai_sanitizer,
+    jsonb_strip_nulls(jsonb_build_object(
+        'session_history_transcript_attribution_status', NULLIF(metadata->>'session_history_transcript_attribution_status', ''),
+        'session_history_transcript_attribution_source', NULLIF(metadata->>'session_history_transcript_attribution_source', ''),
+        'reason', NULLIF(metadata->'session_history_transcript_attribution'->>'reason', ''),
+        'match_rule', NULLIF(metadata->'session_history_transcript_attribution'->>'match_rule', ''),
+        'updated_at', NULLIF(metadata->'session_history_transcript_attribution'->>'updated_at', ''),
+        'session_history_transcript_attribution', COALESCE(metadata->'session_history_transcript_attribution', to_jsonb(NULLIF(metadata->>'session_history_transcript_attribution', '')))
+    )) AS transcript_attribution,
+    jsonb_strip_nulls(jsonb_build_object(
+        'aawm_tool_definition_capture_version', NULLIF(metadata->>'aawm_tool_definition_capture_version', ''),
+        'aawm_tool_definition_capture_source', NULLIF(metadata->>'aawm_tool_definition_capture_source', ''),
+        'aawm_tool_definition_count',
+            CASE WHEN COALESCE(metadata->>'aawm_tool_definition_count', '') ~ '^-?[0-9]+$'
+                 THEN (metadata->>'aawm_tool_definition_count')::integer
+            END,
+        'aawm_tool_definition_captured_count',
+            CASE WHEN COALESCE(metadata->>'aawm_tool_definition_captured_count', '') ~ '^-?[0-9]+$'
+                 THEN (metadata->>'aawm_tool_definition_captured_count')::integer
+            END,
+        'aawm_tool_definition_sources', metadata->'aawm_tool_definition_sources',
+        'aawm_tool_definition_names', metadata->'aawm_tool_definition_names',
+        'aawm_tool_definition_types', metadata->'aawm_tool_definition_types',
+        'snapshot_hash', NULLIF(metadata->>'aawm_tool_definition_snapshot_hash', ''),
+        'aawm_tool_definition_snapshot_truncated',
+            CASE WHEN metadata ? 'aawm_tool_definition_snapshot_truncated'
+                 THEN lower(COALESCE(metadata->>'aawm_tool_definition_snapshot_truncated', '')) = 'true'
+            END,
+        'aawm_tool_definition_snapshot_storage', NULLIF(metadata->>'aawm_tool_definition_snapshot_storage', ''),
+        'aawm_tool_definition_snapshot_storage_key', NULLIF(metadata->>'aawm_tool_definition_snapshot_storage_key', ''),
+        'tool_definition_snapshot', COALESCE(tool_definition_snapshot, metadata->'aawm_tool_definition_snapshot')
+    )) AS tool_definitions,
+    COALESCE(
+        alias_route_events,
+        metadata->'aawm_alias_routing_audit_events',
+        metadata->'codex_auto_agent_audit_events',
+        metadata->'anthropic_auto_agent_audit_events',
+        '[]'::jsonb
+    ) AS alias_route_events
+FROM diagnostic_rows
+ORDER BY created_at DESC;
+`
+
+  return { sql, values, metadata: { from, to, limit } }
+}
+
+function normalizeSessionDiagnosticsRow(row) {
+  return {
+    created_at: row.created_at ?? null,
+    start_time: row.start_time ?? null,
+    end_time: row.end_time ?? null,
+    session_id: row.session_id ?? null,
+    trace_id: row.trace_id ?? null,
+    litellm_call_id: row.litellm_call_id ?? null,
+    provider: row.provider ?? 'unknown',
+    model: row.model ?? 'unknown',
+    model_group: row.model_group ?? null,
+    repository: row.repository ?? 'unknown',
+    client: row.client ?? 'unknown',
+    client_version: row.client_version ?? '0.0.0',
+    environment: row.environment ?? 'unknown',
+    inbound_model_alias: row.inbound_model_alias ?? null,
+    agent_name: row.agent_name ?? null,
+    agent_id: row.agent_id ?? null,
+    diagnostic_flags: normalizeStringArray(row.diagnostic_flags),
+    diagnostic_categories: normalizeStringArray(row.diagnostic_categories),
+    grok_oauth: normalizeJsonRecord(row.grok_oauth),
+    output_contract: normalizeJsonRecord(row.output_contract),
+    xai_sanitizer: normalizeJsonRecord(row.xai_sanitizer),
+    transcript_attribution: normalizeJsonRecord(row.transcript_attribution),
+    tool_definitions: normalizeJsonRecord(row.tool_definitions),
+    alias_route_events: Array.isArray(row.alias_route_events)
+      ? row.alias_route_events
+      : [],
+  }
+}
+
 async function loadQuotaReport(options = {}) {
   return cachedReport('quotas', loadQuotaReportFromDatabase, {
     decorateMetadata: options.decorateMetadata,
@@ -7612,6 +7992,18 @@ async function loadUsageToolActivity(searchParams) {
   }
 }
 
+async function loadUsageSessionDiagnostics(searchParams) {
+  const query = buildSessionDiagnosticsQuery(searchParams)
+  const result = await queryReportDatabase(query.sql, query.values)
+  return {
+    metadata: {
+      ...query.metadata,
+      generatedAt: new Date().toISOString(),
+    },
+    sessionDiagnostics: result.rows.map(normalizeSessionDiagnosticsRow),
+  }
+}
+
 async function loadUsageTokenTrendSummary(searchParams) {
   const hoursQuery = buildTokenTrendHoursQuery(searchParams)
   const healthQuery = buildTokenTrendHealthQuery(searchParams)
@@ -7755,6 +8147,26 @@ async function handleUsageToolActivity(req, res) {
   const body = await cachedReport(
     'usage-tool-activity',
     () => loadUsageToolActivity(requestUrl.searchParams),
+    {
+      searchParams: requestUrl.searchParams,
+    }
+  )
+
+  sendJson(res, 200, body)
+}
+
+async function handleUsageSessionDiagnostics(req, res) {
+  if (!pool) {
+    sendJson(res, 503, {
+      error: 'DATABASE_URL is not configured for the shell report service.',
+    })
+    return
+  }
+
+  const requestUrl = new URL(req.url, `http://${req.headers.host}`)
+  const body = await cachedReport(
+    'usage-session-diagnostics-v1',
+    () => loadUsageSessionDiagnostics(requestUrl.searchParams),
     {
       searchParams: requestUrl.searchParams,
     }
@@ -8073,6 +8485,14 @@ async function handleRequest(req, res) {
     requestUrl.pathname === '/api/shell/reports/usage/tool-activity'
   ) {
     await handleUsageToolActivity(req, res)
+    return
+  }
+
+  if (
+    req.method === 'GET' &&
+    requestUrl.pathname === '/api/shell/reports/usage/session-diagnostics'
+  ) {
+    await handleUsageSessionDiagnostics(req, res)
     return
   }
 

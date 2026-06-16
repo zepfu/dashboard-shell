@@ -38,6 +38,7 @@ import {
   fetchUsageReport,
   fetchUsageReportQuotaEstimator,
   fetchUsageReportQuotaHistory,
+  fetchUsageReportSessionDiagnostics,
   usageReportQuotasQueryOptions,
   fetchUsageReportToolActivity,
   fetchUsageReportTokenTrendDay,
@@ -94,6 +95,7 @@ import {
   SectionTabs,
   SectionSkeleton,
 } from './status-section/section-chrome'
+import { SessionDiagnosticsPanel } from './status-section/session-diagnostics-panel'
 import {
   TokenTrendChart,
   type LowerLaneMode,
@@ -186,7 +188,7 @@ const PROVIDER_SERIES: ProviderSeries[] = [
 // Types
 // ---------------------------------------------------------------------------
 
-export type ProviderSectionView = 'health' | 'quota' | 'weights'
+export type ProviderSectionView = 'health' | 'quota' | 'weights' | 'diagnostics'
 
 export interface PhosphorDashboardProps {
   /** ISO date string for the range start (YYYY-MM-DD). */
@@ -498,6 +500,44 @@ export default function PhosphorDashboard({
         signal
       ),
     enabled: providerSectionView === 'weights',
+    staleTime: LIVE_DASHBOARD_REFETCH_INTERVAL_MS,
+    refetchInterval: false,
+    refetchIntervalInBackground: true,
+  })
+
+  const {
+    data: sessionDiagnosticsData,
+    isFetching: sessionDiagnosticsFetching,
+    isLoading: sessionDiagnosticsLoading,
+    refetch: refetchSessionDiagnostics,
+  } = useQuery({
+    queryKey: [
+      'usage-report-session-diagnostics',
+      resolvedFrom,
+      resolvedTo,
+      filters?.providers,
+      filters?.repositories,
+      filters?.clients,
+      filters?.environments,
+      filters?.models,
+      reportRefreshKey,
+    ],
+    queryFn: ({ signal }) =>
+      fetchUsageReportSessionDiagnostics(
+        {
+          from: resolvedFrom,
+          to: resolvedTo,
+          provider: filters?.providers,
+          repository: filters?.repositories,
+          client: filters?.clients,
+          environment: filters?.environments,
+          model: filters?.models,
+          limit: 100,
+          cacheBust: reportRefreshKey,
+        },
+        signal
+      ),
+    enabled: providerSectionView === 'diagnostics',
     staleTime: LIVE_DASHBOARD_REFETCH_INTERVAL_MS,
     refetchInterval: false,
     refetchIntervalInBackground: true,
@@ -1070,6 +1110,10 @@ export default function PhosphorDashboard({
     await refetchQuotaEstimator()
   }, [refetchQuotaEstimator])
 
+  const refreshSessionDiagnostics = useCallback(async (): Promise<void> => {
+    await refetchSessionDiagnostics()
+  }, [refetchSessionDiagnostics])
+
   const refreshStatusSection = useCallback(async (): Promise<void> => {
     if (providerSectionView === 'quota') {
       await Promise.all([refreshQuotas(), refreshQuotaRangeHistory()])
@@ -1077,6 +1121,10 @@ export default function PhosphorDashboard({
     }
     if (providerSectionView === 'weights') {
       await refreshQuotaEstimator()
+      return
+    }
+    if (providerSectionView === 'diagnostics') {
+      await refreshSessionDiagnostics()
       return
     }
     await Promise.all([
@@ -1093,6 +1141,7 @@ export default function PhosphorDashboard({
     refreshQuotaRangeHistory,
     refreshQuotas,
     refreshReport,
+    refreshSessionDiagnostics,
   ])
 
   const refreshTokenSection = useCallback(async (): Promise<void> => {
@@ -1124,10 +1173,12 @@ export default function PhosphorDashboard({
       ? quotasFetching || quotaRangeHistoryFetching
       : providerSectionView === 'weights'
         ? quotaEstimatorFetching
-        : reportFetching ||
-          quotasFetching ||
-          quotaHistoryFetching ||
-          shellHealthFetching
+        : providerSectionView === 'diagnostics'
+          ? sessionDiagnosticsFetching
+          : reportFetching ||
+            quotasFetching ||
+            quotaHistoryFetching ||
+            shellHealthFetching
   const reportUpdating = reportFetching || toolActivityFetching
   const tokenTrendUpdating =
     reportFetching || tokenTrendSummaryFetching || tokenTrendDayDetailFetching
@@ -1163,6 +1214,7 @@ export default function PhosphorDashboard({
                 { value: 'health', label: 'Health' },
                 { value: 'quota', label: 'Quota' },
                 { value: 'weights', label: 'Weights' },
+                { value: 'diagnostics', label: 'Diagnostics' },
               ]}
               onChange={setProviderSectionView}
             />
@@ -1268,10 +1320,15 @@ export default function PhosphorDashboard({
               />
             ))}
           </div>
-        ) : (
+        ) : providerSectionView === 'weights' ? (
           <QuotaEstimatorWeightsPanel
             response={quotaEstimatorData}
             loading={quotaEstimatorLoading || quotaEstimatorFetching}
+          />
+        ) : (
+          <SessionDiagnosticsPanel
+            response={sessionDiagnosticsData}
+            loading={sessionDiagnosticsLoading || sessionDiagnosticsFetching}
           />
         )}
       </section>

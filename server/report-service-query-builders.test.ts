@@ -36,6 +36,7 @@ import {
   buildQuotaQuery,
   buildQuotaRangeHistoryQuery,
   buildReportQueryPressureQuery,
+  buildSessionDiagnosticsQuery,
   buildSourceTableHealthQuery,
   buildTokenTrendHealthQuery,
   buildTokenTrendHoursQuery,
@@ -471,6 +472,116 @@ describe('D1-223/224/225 usage identity and billing contracts', () => {
     }
     expect(quotaQuery.sql).toContain('public.rate_limit_observations')
     expect(estimatorQuery.sql).toContain('public.rate_limit_observations')
+  })
+})
+
+
+// ---------------------------------------------------------------------------
+// D1-212/215/213/178/221/222 session diagnostics contracts
+// ---------------------------------------------------------------------------
+
+describe('D1-212/215/213/178/221/222 session diagnostics contracts', () => {
+  const exactMetadataKeys = [
+    'credential_family',
+    'grok_native_oauth_managed',
+    'grok_native_entrypoint',
+    'usage_output_contract_required_final_phrase',
+    'usage_output_contract_required_final_phrase_present',
+    'usage_output_contract_failure_class',
+    'usage_output_contract_setup_only_detected',
+    'xai_responses_request_sanitized',
+    'xai_responses_sanitized_removed_params',
+    'xai_responses_sanitized_tool_count',
+    'xai_responses_sanitized_tool_types',
+    'xai_tool_choice_without_tools_removed',
+    'xai_tool_choice_without_tools_removed_reason',
+    'session_history_transcript_attribution_status',
+    'session_history_transcript_attribution_source',
+    'session_history_transcript_attribution',
+    'aawm_tool_definition_snapshot_hash',
+    'aawm_tool_definition_snapshot',
+    'aawm_alias_routing_audit_events',
+  ] as const
+
+  test('test_buildSessionDiagnosticsQuery_selects_exact_metadata_keys_and_filters', () => {
+    const query = buildSessionDiagnosticsQuery(
+      new URLSearchParams({
+        from: '2026-05-01',
+        to: '2026-05-08',
+        provider: 'xai,anthropic',
+        model: 'grok-composer-2.5-fast,claude-opus-4-8',
+        repository: 'dashboard-shell',
+        client: 'grok-build,codex-tui',
+        limit: '250',
+      })
+    )
+
+    expect(query.metadata).toEqual({
+      from: '2026-05-01',
+      to: '2026-05-08',
+      limit: 250,
+    })
+    expect(query.values).toEqual([
+      '2026-05-01',
+      '2026-05-08',
+      ['xai', 'anthropic'],
+      ['grok-composer-2.5-fast', 'claude-opus-4-8'],
+      ['dashboard-shell'],
+      ['grok-build', 'codex-tui'],
+      250,
+    ])
+    expect(query.sql).toContain('FROM public.session_history sh')
+    expect(query.sql).toContain('ORDER BY sh.created_at DESC')
+    expect(query.sql).toContain('LIMIT $7')
+    expect(query.sql).not.toMatch(/metadata::text/i)
+
+    for (const key of exactMetadataKeys) {
+      expect(query.sql).toContain(`sh.metadata->>'${key}'`)
+    }
+
+    expect(query.sql).toContain('AS diagnostic_flags')
+    expect(query.sql).toContain('AS diagnostic_categories')
+    expect(query.sql).toContain('AS grok_oauth')
+    expect(query.sql).toContain('AS output_contract')
+    expect(query.sql).toContain('AS xai_sanitizer')
+    expect(query.sql).toContain('AS transcript_attribution')
+    expect(query.sql).toContain('AS tool_definitions')
+    expect(query.sql).toContain('AS alias_route_events')
+  })
+
+  test('test_buildSessionDiagnosticsQuery_joins_alias_audit_and_tool_definition_snapshots', () => {
+    const query = buildSessionDiagnosticsQuery(
+      new URLSearchParams({
+        from: '2026-05-01',
+        to: '2026-05-08',
+        limit: '100',
+      })
+    )
+
+    expect(query.sql).toContain('public.aawm_alias_routing_audit')
+    expect(query.sql).toContain('public.session_history_tool_definition_snapshots')
+    expect(query.sql).toContain('alias_route_events')
+    expect(query.sql).toContain('tool_definition_snapshot')
+    expect(query.sql).toContain('snapshot_hash')
+    expect(query.sql).toContain('ORDER BY observed_at')
+    expect(query.sql).toContain('aawm_tool_definition_snapshot_hash')
+    expect(query.sql).toContain('aawm_tool_definition_snapshot')
+    expect(query.sql).toContain('aawm_alias_routing_audit_events')
+    expect(query.sql).toContain('session_history_transcript_attribution')
+    expect(query.sql).toContain(
+      "metadata->'session_history_transcript_attribution'->>'reason'"
+    )
+    expect(query.sql).toContain(
+      "metadata->'session_history_transcript_attribution'->>'match_rule'"
+    )
+    expect(query.sql).toContain(
+      "metadata->'session_history_transcript_attribution'->>'updated_at'"
+    )
+    expect(query.sql).toContain('xai_responses_sanitized_tools')
+    expect(query.sql).toContain('xai_tool_choice_without_tools_removed_reason')
+    expect(query.sql).toContain('usage_output_contract_setup_only_detected')
+    expect(query.sql).toContain('grok_native_oauth_managed')
+    expect(query.sql).toContain('grok_native_entrypoint')
   })
 })
 

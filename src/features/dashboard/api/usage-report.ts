@@ -294,6 +294,16 @@ export interface UsageReportToolActivityParams extends UsageReportFilterParams {
   cacheBust?: string
 }
 
+export interface UsageReportSessionDiagnosticsParams extends UsageReportFilterParams {
+  from: string
+  to: string
+  session_id?: readonly string[]
+  trace_id?: readonly string[]
+  litellm_call_id?: readonly string[]
+  limit?: number
+  cacheBust?: string
+}
+
 export interface UsageReportRow
   extends UsageReportLatencyFields, UsageReportConfigChangeFields {
   bucket: string
@@ -928,6 +938,107 @@ export interface UsageReportToolActivityRow {
   calls: number
 }
 
+export interface UsageReportAliasRouteEvent {
+  observed_at?: string | null
+  session_id?: string | null
+  trace_id?: string | null
+  litellm_call_id?: string | null
+  alias_model?: string | null
+  alias_family?: string | null
+  provider?: string | null
+  model?: string | null
+  route_family?: string | null
+  attempt_number?: number | string | null
+  event_type?: string | null
+  failure_class?: string | null
+  cooldown_state?: string | null
+  cooldown_until?: string | null
+  redispatch_required?: boolean | string | null
+  last_resort?: boolean | string | null
+  details?: Record<string, unknown> | null
+}
+
+export interface UsageReportSessionDiagnosticsRow {
+  created_at?: string | null
+  start_time?: string | null
+  end_time?: string | null
+  session_id?: string | null
+  trace_id?: string | null
+  litellm_call_id?: string | null
+  provider?: string | null
+  model?: string | null
+  model_group?: string | null
+  repository?: string | null
+  client?: string | null
+  client_version?: string | null
+  environment?: string | null
+  inbound_model_alias?: string | null
+  agent_name?: string | null
+  agent_id?: string | null
+  diagnostic_flags?: string[]
+  diagnostic_categories?: string[]
+  grok_oauth?: {
+    credential_family?: string | null
+    grok_native_oauth_managed?: boolean | string | null
+    grok_native_entrypoint?: string | null
+    passthrough_route_family?: string | null
+    route_family?: string | null
+    auth_mode?: string | null
+    grok_model_override?: string | null
+  } | null
+  output_contract?: {
+    usage_output_contract_required_final_phrase?: string | null
+    usage_output_contract_required_final_phrase_present?:
+      | boolean
+      | string
+      | null
+    usage_output_contract_required_final_phrase_source?: string | null
+    usage_output_contract_failure_class?: string | null
+    usage_output_contract_failure_count?: number | null
+    usage_output_contract_setup_only_detected?: boolean | string | null
+    usage_output_contract_setup_only_markers?: unknown
+    usage_output_contract_final_text_chars?: number | null
+    usage_agent_score_reasons?: unknown
+  } | null
+  xai_sanitizer?: {
+    xai_responses_request_sanitized?: boolean | string | null
+    xai_responses_sanitized_removed_params?: string[] | unknown
+    xai_responses_sanitized_tool_count?: number | null
+    xai_responses_sanitized_tool_types?: string[] | unknown
+    xai_responses_sanitized_tools?: unknown
+    xai_tool_choice_without_tools_removed?: unknown
+    xai_tool_choice_without_tools_removed_reason?: string | null
+    request_tags?: unknown
+    openai_passthrough_route_family?: string | null
+    passthrough_route_family?: string | null
+    route_family?: string | null
+    credential_family?: string | null
+  } | null
+  transcript_attribution?: {
+    session_history_transcript_attribution_status?: string | null
+    session_history_transcript_attribution_source?: string | null
+    reason?: string | null
+    match_rule?: string | null
+    updated_at?: string | null
+    session_history_transcript_attribution?: unknown
+  } | null
+  tool_definitions?: {
+    aawm_tool_definition_capture_version?: string | null
+    aawm_tool_definition_capture_source?: string | null
+    aawm_tool_definition_count?: number | null
+    aawm_tool_definition_captured_count?: number | null
+    aawm_tool_definition_sources?: unknown
+    aawm_tool_definition_names?: string[] | unknown
+    aawm_tool_definition_types?: string[] | unknown
+    snapshot_hash?: string | null
+    aawm_tool_definition_snapshot_truncated?: boolean | string | null
+    aawm_tool_definition_snapshot_storage?: string | null
+    aawm_tool_definition_snapshot_storage_key?: string | null
+    tool_definition_snapshot?: unknown
+  } | null
+  alias_route_events?: UsageReportAliasRouteEvent[]
+}
+
 export interface UsageReportResponse {
   metadata: {
     from: string
@@ -1129,6 +1240,24 @@ export interface UsageReportToolActivityResponse {
   toolActivity: UsageReportToolActivityRow[]
 }
 
+export interface UsageReportSessionDiagnosticsResponse {
+  metadata: {
+    from: string
+    to: string
+    limit: number
+    generatedAt?: string
+    cacheBackend?: string
+    cacheFreshUntil?: string | null
+    cacheGeneratedAt?: string | null
+    cacheKeyHash?: string
+    cacheScope?: string
+    cacheStaleUntil?: string | null
+    cacheStatus?: string
+    cacheRefreshing?: boolean
+  }
+  sessionDiagnostics: UsageReportSessionDiagnosticsRow[]
+}
+
 export interface UsageReportTokenTrendDayParams extends UsageReportFilterParams {
   from: string
   to: string
@@ -1256,6 +1385,19 @@ function appendUsageReportFilters(
         values.map((value) => encodeURIComponent(value)).join(',')
       )
     }
+  }
+}
+
+function appendStringArrayParam(
+  searchParams: URLSearchParams,
+  key: string,
+  values: readonly string[] | undefined
+): void {
+  if (values !== undefined && values.length > 0) {
+    searchParams.set(
+      key,
+      values.map((value) => encodeURIComponent(value)).join(',')
+    )
   }
 }
 
@@ -1446,6 +1588,50 @@ export async function fetchUsageReportToolActivity(
     firstRowKey: 'toolActivity',
   })
   return json as UsageReportToolActivityResponse
+}
+
+export async function fetchUsageReportSessionDiagnostics(
+  params: UsageReportSessionDiagnosticsParams,
+  signal?: AbortSignal
+): Promise<UsageReportSessionDiagnosticsResponse> {
+  const searchParams = new URLSearchParams({
+    from: params.from,
+    to: params.to,
+  })
+  appendUsageReportFilters(searchParams, params)
+  appendStringArrayParam(searchParams, 'session_id', params.session_id)
+  appendStringArrayParam(searchParams, 'trace_id', params.trace_id)
+  appendStringArrayParam(
+    searchParams,
+    'litellm_call_id',
+    params.litellm_call_id
+  )
+  if (params.limit !== undefined) {
+    searchParams.set('limit', String(params.limit))
+  }
+  if (params.cacheBust !== undefined && params.cacheBust !== '') {
+    searchParams.set('cache_bust', params.cacheBust)
+  }
+
+  const response = await fetch(
+    `/api/shell/reports/usage/session-diagnostics?${searchParams}`,
+    { signal }
+  )
+  if (!response.ok) {
+    const payload = await response.json().catch(() => null)
+    const message =
+      typeof payload?.error === 'string'
+        ? payload.error
+        : `Session diagnostics request failed with ${response.status}`
+    throw new Error(message)
+  }
+
+  const json: unknown = await response.json()
+  assertUsageReportSpotCheck(json, {
+    requireSummary: false,
+    firstRowKey: 'sessionDiagnostics',
+  })
+  return json as UsageReportSessionDiagnosticsResponse
 }
 
 export async function fetchUsageReportTokenTrendSummary(

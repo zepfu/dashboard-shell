@@ -45,11 +45,23 @@ service. Usage report grouping and filters support first-class
 `session_history.inbound_model_alias`, `agent_name`, and `agent_id` identity
 fields when the source database exposes them; quota rows keep percentage fields
 stable while exposing normalized billing details under per-lane
-`billing_details` for operator drilldowns. The dev shell, dev remote, and dev
-report service all join the external `aawm-tap_default` network used by the
-aawm-tap model containers. The dev report service also joins `aawm_default` so
-host-style database URLs can be rewritten to the internal `aawm-pgbouncer:6432`
-runtime pooler while development stays containerized. If TAP
+`billing_details` for operator drilldowns.
+
+Session-level debugging lives behind the General dashboard `STATUS` section's
+`Diagnostics` tab and is served by
+`/api/shell/reports/usage/session-diagnostics`. That endpoint returns bounded
+recent `session_history` rows with exact-key metadata for route identity, alias
+routing audit events, output-contract evidence, tool-definition snapshots, xAI
+Responses request-shape sanitization, and Claude transcript attribution repair
+state. It intentionally stays separate from the high-level usage report so
+debug-only rows can remain visible without changing Provider Status, Ledger, or
+Token Trend attribution.
+
+The dev shell, dev remote, and dev report service all join the external
+`aawm-tap_default` network used by the aawm-tap model containers. The dev report
+service also joins `aawm_default` so host-style database URLs can be rewritten to
+the internal `aawm-pgbouncer:6432` runtime pooler while development stays
+containerized. If TAP
 requires a dashboard key, set `AAWM_TAP_API_KEY` in this repo's `.env`; the shell
 service injects it as `X-API-Key` and strips client-sent auth before forwarding.
 Do not keep a real TAP key in `../aawm-tap-dashboard/.env` as a `VITE_*` value,

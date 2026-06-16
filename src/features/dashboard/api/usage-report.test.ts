@@ -6,6 +6,7 @@ import {
   fetchUsageReportQuotaHistory,
   fetchUsageReportQuotaRangeHistory,
   fetchUsageReportQuotas,
+  fetchUsageReportSessionDiagnostics,
   fetchUsageReportTokenTrendDay,
   fetchUsageReportTokenTrendSummary,
   fetchUsageReportToolActivity,
@@ -394,6 +395,203 @@ test('test_real_abort_rejects_with_AbortError', async () => {
       err instanceof Error &&
       (err.name === 'AbortError' || err.message.toLowerCase().includes('abort'))
   )
+})
+
+// ---------------------------------------------------------------------------
+// D1-212/215/213/178/221/222 session diagnostics API contracts
+// ---------------------------------------------------------------------------
+
+describe('D1-212/215/213/178/221/222 session diagnostics API contracts', () => {
+  const diagnosticTypeFields = [
+    'diagnostic_flags',
+    'diagnostic_categories',
+    'grok_oauth',
+    'output_contract',
+    'xai_sanitizer',
+    'transcript_attribution',
+    'tool_definitions',
+    'alias_route_events',
+  ] as const
+
+  test('test_usage_report_types_expose_session_diagnostics_response_and_row_shapes', async () => {
+    const { readFile } = await import('node:fs/promises')
+    const { dirname, join } = await import('node:path')
+    const { fileURLToPath } = await import('node:url')
+
+    const source = await readFile(
+      join(dirname(fileURLToPath(import.meta.url)), './usage-report.ts'),
+      'utf8'
+    )
+
+    expect(source).toContain(
+      'export interface UsageReportSessionDiagnosticsParams'
+    )
+    expect(source).toContain(
+      'export interface UsageReportSessionDiagnosticsRow'
+    )
+    expect(source).toContain(
+      'export interface UsageReportSessionDiagnosticsResponse'
+    )
+    expect(source).toContain(
+      'export async function fetchUsageReportSessionDiagnostics'
+    )
+
+    for (const field of diagnosticTypeFields) {
+      expect(source).toContain(`${field}?:`)
+    }
+
+    expect(source).toContain('credential_family?:')
+    expect(source).toContain('grok_native_oauth_managed?:')
+    expect(source).toContain('grok_native_entrypoint?:')
+    expect(source).toContain('usage_output_contract_required_final_phrase?:')
+    expect(source).toContain(
+      'usage_output_contract_required_final_phrase_present?:'
+    )
+    expect(source).toContain('usage_output_contract_failure_class?:')
+    expect(source).toContain('usage_output_contract_setup_only_detected?:')
+    expect(source).toContain('xai_responses_request_sanitized?:')
+    expect(source).toContain('xai_responses_sanitized_removed_params?:')
+    expect(source).toContain('xai_responses_sanitized_tool_count?:')
+    expect(source).toContain('xai_responses_sanitized_tool_types?:')
+    expect(source).toContain('xai_tool_choice_without_tools_removed?:')
+    expect(source).toContain('xai_tool_choice_without_tools_removed_reason?:')
+    expect(source).toContain('session_history_transcript_attribution_status?:')
+    expect(source).toContain('session_history_transcript_attribution_source?:')
+    expect(source).toContain('reason?:')
+    expect(source).toContain('match_rule?:')
+    expect(source).toContain('updated_at?:')
+    expect(source).toContain('session_history_transcript_attribution?:')
+    expect(source).toContain('tool_definition_snapshot?:')
+    expect(source).toContain('alias_route_events?:')
+  })
+
+  test('test_fetchUsageReportSessionDiagnostics_forwards_filters_and_returns_diagnostic_rows', async () => {
+    let capturedUrl: URL | null = null
+
+    server.use(
+      http.get(
+        '/api/shell/reports/usage/session-diagnostics',
+        ({ request }) => {
+          capturedUrl = new URL(request.url)
+          return HttpResponse.json({
+            metadata: {
+              from: '2026-05-20',
+              to: '2026-05-21',
+              limit: 100,
+              generatedAt: '2026-05-21T00:00:00.000Z',
+            },
+            sessionDiagnostics: [
+              {
+                session_id: 'sess-1',
+                litellm_call_id: 'call-1',
+                provider: 'xai',
+                model: 'grok-composer-2.5-fast',
+                repository: 'dashboard-shell',
+                client: 'grok-build',
+                diagnostic_flags: ['grok_oauth', 'xai_sanitizer'],
+                diagnostic_categories: ['route_identity', 'request_shape'],
+                grok_oauth: {
+                  credential_family: 'xai_grok_oidc',
+                  grok_native_oauth_managed: true,
+                  grok_native_entrypoint: 'openai_responses',
+                },
+                output_contract: {
+                  usage_output_contract_required_final_phrase: 'done',
+                  usage_output_contract_required_final_phrase_present: true,
+                  usage_output_contract_failure_class: null,
+                  usage_output_contract_setup_only_detected: false,
+                },
+                xai_sanitizer: {
+                  xai_responses_request_sanitized: true,
+                  xai_responses_sanitized_removed_params: ['instructions'],
+                  xai_responses_sanitized_tool_count: 2,
+                  xai_responses_sanitized_tool_types: ['web_search'],
+                  xai_tool_choice_without_tools_removed: {
+                    name: 'Bash',
+                    type: 'function',
+                  },
+                  xai_tool_choice_without_tools_removed_reason: 'missing_tools',
+                },
+                transcript_attribution: {
+                  session_history_transcript_attribution_status: 'recoverable',
+                  session_history_transcript_attribution_source:
+                    'd1-229-claude-raw-transcript-attribution',
+                  session_history_transcript_attribution: {
+                    status: 'recoverable',
+                    match_rule: 'transcript_model_event',
+                  },
+                },
+                tool_definitions: {
+                  snapshot_hash: 'abc123',
+                  tool_definition_snapshot: [
+                    { name: 'Bash', type: 'function' },
+                  ],
+                },
+                alias_route_events: [
+                  {
+                    observed_at: '2026-05-20T12:00:00.000Z',
+                    alias_model: 'aawm-code',
+                    provider: 'anthropic',
+                    model: 'claude-sonnet-4-6',
+                    event_type: 'candidate_selected',
+                    redispatch_required: false,
+                  },
+                ],
+              },
+            ],
+          })
+        }
+      )
+    )
+
+    const response = await fetchUsageReportSessionDiagnostics({
+      from: '2026-05-20',
+      to: '2026-05-21',
+      provider: ['xai', 'anthropic'],
+      model: ['grok-composer-2.5-fast'],
+      repository: ['dashboard-shell'],
+      client: ['grok-build'],
+      limit: 100,
+    } as Parameters<typeof fetchUsageReportSessionDiagnostics>[0])
+
+    expect(capturedUrl?.searchParams.get('from')).toBe('2026-05-20')
+    expect(capturedUrl?.searchParams.get('to')).toBe('2026-05-21')
+    expect(capturedUrl?.searchParams.get('provider')).toBe('xai,anthropic')
+    expect(capturedUrl?.searchParams.get('model')).toBe(
+      'grok-composer-2.5-fast'
+    )
+    expect(capturedUrl?.searchParams.get('repository')).toBe('dashboard-shell')
+    expect(capturedUrl?.searchParams.get('client')).toBe('grok-build')
+    expect(capturedUrl?.searchParams.get('limit')).toBe('100')
+
+    expect(response.sessionDiagnostics[0]).toMatchObject({
+      provider: 'xai',
+      model: 'grok-composer-2.5-fast',
+      diagnostic_flags: ['grok_oauth', 'xai_sanitizer'],
+      grok_oauth: {
+        credential_family: 'xai_grok_oidc',
+        grok_native_oauth_managed: true,
+      },
+      output_contract: {
+        usage_output_contract_required_final_phrase_present: true,
+      },
+      xai_sanitizer: {
+        xai_tool_choice_without_tools_removed_reason: 'missing_tools',
+      },
+      transcript_attribution: {
+        session_history_transcript_attribution_status: 'recoverable',
+      },
+      tool_definitions: {
+        snapshot_hash: 'abc123',
+      },
+      alias_route_events: [
+        {
+          alias_model: 'aawm-code',
+          event_type: 'candidate_selected',
+        },
+      ],
+    })
+  })
 })
 
 // ---------------------------------------------------------------------------
