@@ -2183,6 +2183,12 @@ function providerDimensionForAlias(alias = 'sh') {
 
 const providerDimensionRecent = providerDimensionForAlias('sh_recent')
 const healthProviderDimension = providerDimensionForAlias('h')
+const inboundModelAliasDimension =
+  "COALESCE(NULLIF(to_jsonb(sh)->>'inbound_model_alias', ''), 'unknown_inbound_model')"
+const agentNameDimension =
+  "COALESCE(NULLIF(to_jsonb(sh)->>'agent_name', ''), 'unknown_agent_name')"
+const agentIdDimension =
+  "COALESCE(NULLIF(to_jsonb(sh)->>'agent_id', ''), 'uncaptured_agent_id')"
 
 function sessionHistoryTokenSignalExpression(alias = 'sh') {
   return `(COALESCE(${alias}.input_tokens, 0)
@@ -2250,6 +2256,9 @@ const dimensions = {
   repository: "COALESCE(sh.tenant_id, 'unknown')",
   provider: providerDimension,
   model: "COALESCE(sh.model, 'unknown')",
+  inbound_model_alias: inboundModelAliasDimension,
+  agent_name: agentNameDimension,
+  agent_id: agentIdDimension,
   provider_model:
     `${providerDimension} || '/' || COALESCE(sh.model, 'unknown')`,
 }
@@ -2260,6 +2269,9 @@ const filterColumns = {
   repository: "COALESCE(sh.tenant_id, 'unknown')",
   provider: providerDimension,
   model: "COALESCE(sh.model, 'unknown')",
+  inbound_model_alias: inboundModelAliasDimension,
+  agent_name: agentNameDimension,
+  agent_id: agentIdDimension,
   provider_model: dimensions.provider_model,
 }
 
@@ -2615,6 +2627,12 @@ const usageFilteredColumns = [
   'compact_summary_source',
   'agent_score_reasons',
   ...configChangeFlagColumns,
+]
+const usageFilteredColumnSelects = [
+  ...usageFilteredColumns.map((column) => `        sh.${column}`),
+  "        NULLIF(to_jsonb(sh)->>'inbound_model_alias', '') AS inbound_model_alias",
+  "        NULLIF(to_jsonb(sh)->>'agent_name', '') AS agent_name",
+  "        NULLIF(to_jsonb(sh)->>'agent_id', '') AS agent_id",
 ]
 
 function sendJson(res, status, body) {
@@ -3039,6 +3057,7 @@ function buildFilteredWhere(searchParams, options = {}) {
   const to = parseDateParam(searchParams.get('to'), defaultToDate)
   const values = options.values ?? []
   const whereParts = []
+  const excludedFilterKeys = new Set(options.excludeFilterKeys ?? [])
 
   if (options.includeDateRange !== false) {
     appendStartTimeDateRangeWhere(whereParts, values, from, to)
@@ -3046,6 +3065,7 @@ function buildFilteredWhere(searchParams, options = {}) {
   appendReportableSessionHistoryWhere(whereParts)
 
   for (const key of Object.keys(filterColumns)) {
+    if (excludedFilterKeys.has(key)) continue
     appendMultiValueFilter(searchParams, key, whereParts, values)
   }
   appendConfigChangeFilters(searchParams, whereParts)
@@ -3833,6 +3853,9 @@ export function buildQuotaQuery() {
   const sql = `
 WITH normalized AS (
     SELECT
+        ri.provider AS raw_provider,
+        ri.quota_type AS raw_quota_type,
+        ri.quota_key,
         CASE
             WHEN lower(COALESCE(ri.provider, 'unknown')) IN ('google', 'gemini') THEN 'google'
             WHEN lower(COALESCE(ri.provider, 'unknown')) = 'antigravity' THEN 'antigravity'
@@ -3906,9 +3929,12 @@ selected_with_fallbacks AS (
     FROM selected
     UNION ALL
     SELECT
+        weekly.raw_provider,
         weekly.provider,
         weekly.model,
         'special' AS quota_type,
+        'weekly_special' AS raw_quota_type,
+        NULL::text AS quota_key,
         weekly.expected_reset_at,
         0::double precision AS remaining_pct,
         weekly.interval_start,
@@ -3928,9 +3954,12 @@ selected_with_fallbacks AS (
       )
     UNION ALL
     SELECT
+        short.raw_provider,
         short.provider,
         short.model,
         'short_special' AS quota_type,
+        'short_special' AS raw_quota_type,
+        NULL::text AS quota_key,
         short.expected_reset_at,
         0::double precision AS remaining_pct,
         short.interval_start,
@@ -3957,6 +3986,35 @@ usage_by_type AS (
         0::double precision AS usage_tokens,
         '[]'::jsonb AS usage_breakdown
     FROM selected_with_fallbacks
+),
+billing_by_type AS (
+    SELECT DISTINCT ON (s.provider, COALESCE(s.model, ''), s.quota_type)
+        s.provider,
+        s.model,
+        s.quota_type,
+        o.observed_at AS billing_observed_at,
+        NULLIF(to_jsonb(o)->>'quota_limit', '')::double precision AS quota_limit,
+        NULLIF(to_jsonb(o)->>'quota_used', '')::double precision AS quota_used,
+        NULLIF(to_jsonb(o)->>'quota_remaining', '')::double precision AS quota_remaining,
+        NULLIF(to_jsonb(o)->>'billing_period_start_at', '') AS billing_period_start_at,
+        NULLIF(to_jsonb(o)->>'billing_period_end_at', '') AS billing_period_end_at,
+        COALESCE(to_jsonb(o)->'raw_provider_fields', '{}'::jsonb) AS raw_provider_fields,
+        COALESCE(to_jsonb(o)->'evidence', '{}'::jsonb) AS evidence
+    FROM selected_with_fallbacks s
+    JOIN public.rate_limit_observations o
+      ON o.provider = s.raw_provider
+     AND o.quota_key IS NOT DISTINCT FROM s.quota_key
+     AND (
+          s.expected_reset_at IS NULL
+          OR o.expected_reset_at IS NOT DISTINCT FROM s.expected_reset_at
+     )
+    WHERE s.quota_key IS NOT NULL
+      AND o.observed_at IS NOT NULL
+    ORDER BY
+        s.provider,
+        COALESCE(s.model, ''),
+        s.quota_type,
+        o.observed_at DESC
 )
 SELECT
     s.provider,
@@ -3968,6 +4026,14 @@ SELECT
     MAX(s.active::int) FILTER (WHERE s.quota_type = 'weekly')::double precision AS weekly_active,
     MAX(usage.usage_tokens) FILTER (WHERE s.quota_type = 'weekly')::double precision AS weekly_usage_tokens,
     (ARRAY_AGG(usage.usage_breakdown) FILTER (WHERE s.quota_type = 'weekly'))[1] AS weekly_usage_breakdown,
+    MAX(billing.quota_limit) FILTER (WHERE s.quota_type = 'weekly')::double precision AS weekly_quota_limit,
+    MAX(billing.quota_used) FILTER (WHERE s.quota_type = 'weekly')::double precision AS weekly_quota_used,
+    MAX(billing.quota_remaining) FILTER (WHERE s.quota_type = 'weekly')::double precision AS weekly_quota_remaining,
+    MAX(billing.billing_observed_at) FILTER (WHERE s.quota_type = 'weekly') AS weekly_billing_observed_at,
+    MAX(billing.billing_period_start_at) FILTER (WHERE s.quota_type = 'weekly') AS weekly_billing_period_start_at,
+    MAX(billing.billing_period_end_at) FILTER (WHERE s.quota_type = 'weekly') AS weekly_billing_period_end_at,
+    (ARRAY_AGG(billing.raw_provider_fields) FILTER (WHERE s.quota_type = 'weekly'))[1] AS weekly_raw_provider_fields,
+    (ARRAY_AGG(billing.evidence) FILTER (WHERE s.quota_type = 'weekly'))[1] AS weekly_evidence,
     MAX(s.remaining_pct) FILTER (WHERE s.quota_type = 'short')::double precision AS short_remaining_pct,
     MAX(s.expected_reset_at) FILTER (WHERE s.quota_type = 'short') AS short_reset_at,
     MAX(s.interval_start) FILTER (WHERE s.quota_type = 'short') AS short_interval_start,
@@ -3975,6 +4041,14 @@ SELECT
     MAX(s.active::int) FILTER (WHERE s.quota_type = 'short')::double precision AS short_active,
     MAX(usage.usage_tokens) FILTER (WHERE s.quota_type = 'short')::double precision AS short_usage_tokens,
     (ARRAY_AGG(usage.usage_breakdown) FILTER (WHERE s.quota_type = 'short'))[1] AS short_usage_breakdown,
+    MAX(billing.quota_limit) FILTER (WHERE s.quota_type = 'short')::double precision AS short_quota_limit,
+    MAX(billing.quota_used) FILTER (WHERE s.quota_type = 'short')::double precision AS short_quota_used,
+    MAX(billing.quota_remaining) FILTER (WHERE s.quota_type = 'short')::double precision AS short_quota_remaining,
+    MAX(billing.billing_observed_at) FILTER (WHERE s.quota_type = 'short') AS short_billing_observed_at,
+    MAX(billing.billing_period_start_at) FILTER (WHERE s.quota_type = 'short') AS short_billing_period_start_at,
+    MAX(billing.billing_period_end_at) FILTER (WHERE s.quota_type = 'short') AS short_billing_period_end_at,
+    (ARRAY_AGG(billing.raw_provider_fields) FILTER (WHERE s.quota_type = 'short'))[1] AS short_raw_provider_fields,
+    (ARRAY_AGG(billing.evidence) FILTER (WHERE s.quota_type = 'short'))[1] AS short_evidence,
     MAX(s.remaining_pct) FILTER (WHERE s.quota_type = 'special')::double precision AS special_remaining_pct,
     MAX(s.expected_reset_at) FILTER (WHERE s.quota_type = 'special') AS special_reset_at,
     MAX(s.interval_start) FILTER (WHERE s.quota_type = 'special') AS special_interval_start,
@@ -3982,6 +4056,14 @@ SELECT
     MAX(s.active::int) FILTER (WHERE s.quota_type = 'special')::double precision AS special_active,
     MAX(usage.usage_tokens) FILTER (WHERE s.quota_type = 'special')::double precision AS special_usage_tokens,
     (ARRAY_AGG(usage.usage_breakdown) FILTER (WHERE s.quota_type = 'special'))[1] AS special_usage_breakdown,
+    MAX(billing.quota_limit) FILTER (WHERE s.quota_type = 'special')::double precision AS special_quota_limit,
+    MAX(billing.quota_used) FILTER (WHERE s.quota_type = 'special')::double precision AS special_quota_used,
+    MAX(billing.quota_remaining) FILTER (WHERE s.quota_type = 'special')::double precision AS special_quota_remaining,
+    MAX(billing.billing_observed_at) FILTER (WHERE s.quota_type = 'special') AS special_billing_observed_at,
+    MAX(billing.billing_period_start_at) FILTER (WHERE s.quota_type = 'special') AS special_billing_period_start_at,
+    MAX(billing.billing_period_end_at) FILTER (WHERE s.quota_type = 'special') AS special_billing_period_end_at,
+    (ARRAY_AGG(billing.raw_provider_fields) FILTER (WHERE s.quota_type = 'special'))[1] AS special_raw_provider_fields,
+    (ARRAY_AGG(billing.evidence) FILTER (WHERE s.quota_type = 'special'))[1] AS special_evidence,
     MAX(s.remaining_pct) FILTER (WHERE s.quota_type = 'short_special')::double precision AS short_special_remaining_pct,
     MAX(s.expected_reset_at) FILTER (WHERE s.quota_type = 'short_special') AS short_special_reset_at,
     MAX(s.interval_start) FILTER (WHERE s.quota_type = 'short_special') AS short_special_interval_start,
@@ -3989,6 +4071,14 @@ SELECT
     MAX(s.active::int) FILTER (WHERE s.quota_type = 'short_special')::double precision AS short_special_active,
     MAX(usage.usage_tokens) FILTER (WHERE s.quota_type = 'short_special')::double precision AS short_special_usage_tokens,
     (ARRAY_AGG(usage.usage_breakdown) FILTER (WHERE s.quota_type = 'short_special'))[1] AS short_special_usage_breakdown,
+    MAX(billing.quota_limit) FILTER (WHERE s.quota_type = 'short_special')::double precision AS short_special_quota_limit,
+    MAX(billing.quota_used) FILTER (WHERE s.quota_type = 'short_special')::double precision AS short_special_quota_used,
+    MAX(billing.quota_remaining) FILTER (WHERE s.quota_type = 'short_special')::double precision AS short_special_quota_remaining,
+    MAX(billing.billing_observed_at) FILTER (WHERE s.quota_type = 'short_special') AS short_special_billing_observed_at,
+    MAX(billing.billing_period_start_at) FILTER (WHERE s.quota_type = 'short_special') AS short_special_billing_period_start_at,
+    MAX(billing.billing_period_end_at) FILTER (WHERE s.quota_type = 'short_special') AS short_special_billing_period_end_at,
+    (ARRAY_AGG(billing.raw_provider_fields) FILTER (WHERE s.quota_type = 'short_special'))[1] AS short_special_raw_provider_fields,
+    (ARRAY_AGG(billing.evidence) FILTER (WHERE s.quota_type = 'short_special'))[1] AS short_special_evidence,
     MAX(s.remaining_pct) FILTER (WHERE s.quota_type = 'monthly')::double precision AS monthly_remaining_pct,
     MAX(s.expected_reset_at) FILTER (WHERE s.quota_type = 'monthly') AS monthly_reset_at,
     MAX(s.interval_start) FILTER (WHERE s.quota_type = 'monthly') AS monthly_interval_start,
@@ -3996,18 +4086,38 @@ SELECT
     MAX(s.active::int) FILTER (WHERE s.quota_type = 'monthly')::double precision AS monthly_active,
     MAX(usage.usage_tokens) FILTER (WHERE s.quota_type = 'monthly')::double precision AS monthly_usage_tokens,
     (ARRAY_AGG(usage.usage_breakdown) FILTER (WHERE s.quota_type = 'monthly'))[1] AS monthly_usage_breakdown,
+    MAX(billing.quota_limit) FILTER (WHERE s.quota_type = 'monthly')::double precision AS monthly_quota_limit,
+    MAX(billing.quota_used) FILTER (WHERE s.quota_type = 'monthly')::double precision AS monthly_quota_used,
+    MAX(billing.quota_remaining) FILTER (WHERE s.quota_type = 'monthly')::double precision AS monthly_quota_remaining,
+    MAX(billing.billing_observed_at) FILTER (WHERE s.quota_type = 'monthly') AS monthly_billing_observed_at,
+    MAX(billing.billing_period_start_at) FILTER (WHERE s.quota_type = 'monthly') AS monthly_billing_period_start_at,
+    MAX(billing.billing_period_end_at) FILTER (WHERE s.quota_type = 'monthly') AS monthly_billing_period_end_at,
+    (ARRAY_AGG(billing.raw_provider_fields) FILTER (WHERE s.quota_type = 'monthly'))[1] AS monthly_raw_provider_fields,
+    (ARRAY_AGG(billing.evidence) FILTER (WHERE s.quota_type = 'monthly'))[1] AS monthly_evidence,
     MAX(s.remaining_pct) FILTER (WHERE s.quota_type = 'wtus')::double precision AS wtus_remaining_pct,
     MAX(s.expected_reset_at) FILTER (WHERE s.quota_type = 'wtus') AS wtus_reset_at,
     MAX(s.interval_start) FILTER (WHERE s.quota_type = 'wtus') AS wtus_interval_start,
     MAX(s.interval_end) FILTER (WHERE s.quota_type = 'wtus') AS wtus_interval_end,
     MAX(s.active::int) FILTER (WHERE s.quota_type = 'wtus')::double precision AS wtus_active,
     MAX(usage.usage_tokens) FILTER (WHERE s.quota_type = 'wtus')::double precision AS wtus_usage_tokens,
-    (ARRAY_AGG(usage.usage_breakdown) FILTER (WHERE s.quota_type = 'wtus'))[1] AS wtus_usage_breakdown
+    (ARRAY_AGG(usage.usage_breakdown) FILTER (WHERE s.quota_type = 'wtus'))[1] AS wtus_usage_breakdown,
+    MAX(billing.quota_limit) FILTER (WHERE s.quota_type = 'wtus')::double precision AS wtus_quota_limit,
+    MAX(billing.quota_used) FILTER (WHERE s.quota_type = 'wtus')::double precision AS wtus_quota_used,
+    MAX(billing.quota_remaining) FILTER (WHERE s.quota_type = 'wtus')::double precision AS wtus_quota_remaining,
+    MAX(billing.billing_observed_at) FILTER (WHERE s.quota_type = 'wtus') AS wtus_billing_observed_at,
+    MAX(billing.billing_period_start_at) FILTER (WHERE s.quota_type = 'wtus') AS wtus_billing_period_start_at,
+    MAX(billing.billing_period_end_at) FILTER (WHERE s.quota_type = 'wtus') AS wtus_billing_period_end_at,
+    (ARRAY_AGG(billing.raw_provider_fields) FILTER (WHERE s.quota_type = 'wtus'))[1] AS wtus_raw_provider_fields,
+    (ARRAY_AGG(billing.evidence) FILTER (WHERE s.quota_type = 'wtus'))[1] AS wtus_evidence
 FROM selected_with_fallbacks s
 LEFT JOIN usage_by_type usage
   ON usage.provider = s.provider
  AND usage.model IS NOT DISTINCT FROM s.model
  AND usage.quota_type = s.quota_type
+LEFT JOIN billing_by_type billing
+  ON billing.provider = s.provider
+ AND billing.model IS NOT DISTINCT FROM s.model
+ AND billing.quota_type = s.quota_type
 GROUP BY s.provider, s.model
 ORDER BY s.provider ASC, s.model ASC NULLS FIRST;
 `
@@ -4954,7 +5064,14 @@ observations AS (
         o.quota_type AS raw_observation_quota_type,
         o.expected_reset_at,
         o.observed_at,
-        MAX(GREATEST(0, LEAST(100, 100 - o.remaining_pct)))::double precision AS consumed_pct
+        MAX(GREATEST(0, LEAST(100, 100 - o.remaining_pct)))::double precision AS consumed_pct,
+        MAX(NULLIF(to_jsonb(o)->>'quota_limit', '')::double precision) AS quota_limit,
+        MAX(NULLIF(to_jsonb(o)->>'quota_used', '')::double precision) AS quota_used,
+        MAX(NULLIF(to_jsonb(o)->>'quota_remaining', '')::double precision) AS quota_remaining,
+        MAX(NULLIF(to_jsonb(o)->>'billing_period_start_at', '')) AS billing_period_start_at,
+        MAX(NULLIF(to_jsonb(o)->>'billing_period_end_at', '')) AS billing_period_end_at,
+        (ARRAY_AGG(COALESCE(to_jsonb(o)->'raw_provider_fields', '{}'::jsonb) ORDER BY o.observed_at DESC))[1] AS raw_provider_fields,
+        (ARRAY_AGG(COALESCE(to_jsonb(o)->'evidence', '{}'::jsonb) ORDER BY o.observed_at DESC))[1] AS evidence
     FROM public.rate_limit_observations o
     WHERE o.provider IN ('anthropic', 'openai')
       AND o.quota_key IN (
@@ -4990,7 +5107,14 @@ SELECT
     rw.reset_start_at,
     COALESCE(rw.reset_end_at, o.expected_reset_at) AS reset_end_at,
     o.observed_at,
-    o.consumed_pct
+    o.consumed_pct,
+    o.quota_limit,
+    o.quota_used,
+    o.quota_remaining,
+    o.billing_period_start_at,
+    o.billing_period_end_at,
+    o.raw_provider_fields,
+    o.evidence
 FROM observations o
 LEFT JOIN reset_windows rw
        ON rw.provider = o.provider
@@ -5073,9 +5197,16 @@ function buildFreshnessQuery() {
 //   kind='shell' — one row per (provider, model, cmd_label) for command rows
 // Both are filtered to the caller's from/to date window via session_history.created_at.
 export function buildToolActivityQuery(searchParams) {
-  const from = parseDateParam(searchParams.get('from'), defaultFromDate)
-  const to = parseDateParam(searchParams.get('to'), defaultToDate)
-  const values = [from, to]
+  const { values, whereParts } = buildFilteredWhere(searchParams, {
+    excludeFilterKeys: ['agent_id'],
+  })
+  const agentIdFilterValues = parseCsv(searchParams.get('agent_id'))
+  let agentIdFilterClause = ''
+  if (agentIdFilterValues.length > 0) {
+    values.push(agentIdFilterValues)
+    agentIdFilterClause = `
+    WHERE COALESCE(NULLIF(to_jsonb(a)->>'agent_id', ''), fs.session_agent_id, 'uncaptured_agent_id') = ANY($${values.length}::text[])`
+  }
 
   // Inline the same provider-normalisation CASE that providerDimension uses,
   // but referenced against sh.provider (the authoritative join column).
@@ -5101,21 +5232,25 @@ WITH filtered_sessions AS MATERIALIZED (
     SELECT
         sh.litellm_call_id,
         ${providerExpr} AS provider,
-        COALESCE(sh.model, 'unknown') AS model
+        COALESCE(sh.model, 'unknown') AS model,
+        NULLIF(to_jsonb(sh)->>'agent_name', '') AS session_agent_name,
+        NULLIF(to_jsonb(sh)->>'agent_id', '') AS session_agent_id
     FROM public.session_history sh
-    WHERE ${startTimeDateRangeWhere.join('\n      AND ')}
-      AND ${sessionHistoryReportablePredicate()}
+    WHERE ${whereParts.join('\n      AND ')}
 ),
 tool_rows AS MATERIALIZED (
     SELECT
         fs.provider,
         fs.model,
+        fs.session_agent_name AS agent_name,
+        COALESCE(NULLIF(to_jsonb(a)->>'agent_id', ''), fs.session_agent_id) AS agent_id,
         COALESCE(a.tool_kind, 'other') AS tool_kind,
         a.tool_name,
         a.command_text
     FROM filtered_sessions fs
     JOIN public.session_history_tool_activity a
       ON a.litellm_call_id = fs.litellm_call_id
+${agentIdFilterClause}
 ),
 outer_counts AS (
     SELECT
@@ -5123,6 +5258,8 @@ outer_counts AS (
         model,
         tool_kind,
         tool_name,
+        jsonb_agg(DISTINCT agent_name) FILTER (WHERE agent_name IS NOT NULL) AS agent_names,
+        jsonb_agg(DISTINCT agent_id) FILTER (WHERE agent_id IS NOT NULL) AS agent_ids,
         COUNT(*)::bigint AS calls
     FROM tool_rows
     GROUP BY
@@ -5154,6 +5291,8 @@ shell_labels AS (
                 ELSE lower(split_part(trim(command_text), ' ', 1))
             END
         ) AS cmd_label,
+        jsonb_agg(DISTINCT agent_name) FILTER (WHERE agent_name IS NOT NULL) AS agent_names,
+        jsonb_agg(DISTINCT agent_id) FILTER (WHERE agent_id IS NOT NULL) AS agent_ids,
         COUNT(*)::bigint AS calls
     FROM tool_rows
     WHERE tool_kind = 'command'
@@ -5190,6 +5329,8 @@ SELECT
     model,
     'outer' AS kind,
     tool_name AS label,
+    COALESCE(agent_names, '[]'::jsonb) AS agent_names,
+    COALESCE(agent_ids, '[]'::jsonb) AS agent_ids,
     calls
 FROM outer_counts
 UNION ALL
@@ -5198,6 +5339,8 @@ SELECT
     model,
     'shell' AS kind,
     cmd_label AS label,
+    COALESCE(agent_names, '[]'::jsonb) AS agent_names,
+    COALESCE(agent_ids, '[]'::jsonb) AS agent_ids,
     calls
 FROM shell_labels
 ORDER BY provider ASC, model ASC, kind ASC, calls DESC;
@@ -5212,6 +5355,8 @@ function normalizeToolActivityRow(row) {
     model: row.model ?? 'unknown',
     kind: row.kind,
     label: row.label,
+    agent_names: normalizeStringArray(row.agent_names),
+    agent_ids: normalizeStringArray(row.agent_ids),
     calls: normalizeNumber(row.calls) ?? 0,
   }
 }
@@ -5566,6 +5711,93 @@ function normalizeUsageBreakdown(value) {
   }))
 }
 
+function normalizeStringArray(value) {
+  const source = (() => {
+    if (Array.isArray(value)) return value
+    if (typeof value === 'string') {
+      try {
+        const parsed = JSON.parse(value)
+        return Array.isArray(parsed) ? parsed : [value]
+      } catch {
+        return [value]
+      }
+    }
+    return []
+  })()
+
+  return source
+    .filter((entry) => typeof entry === 'string')
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+}
+
+function normalizeJsonRecord(value) {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    return value
+  }
+  if (typeof value === 'string' && value.trim() !== '') {
+    try {
+      const parsed = JSON.parse(value)
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return parsed
+      }
+    } catch {
+      return {}
+    }
+  }
+  return {}
+}
+
+function hasRecordEntries(value) {
+  return value && typeof value === 'object' && Object.keys(value).length > 0
+}
+
+function normalizeQuotaBillingDetail(row, prefix) {
+  const rawProviderFields = normalizeJsonRecord(
+    row[`${prefix}_raw_provider_fields`]
+  )
+  const evidence = normalizeJsonRecord(row[`${prefix}_evidence`])
+  const detail = {
+    quota_limit: normalizeNumber(row[`${prefix}_quota_limit`]),
+    quota_used: normalizeNumber(row[`${prefix}_quota_used`]),
+    quota_remaining: normalizeNumber(row[`${prefix}_quota_remaining`]),
+    billing_observed_at: row[`${prefix}_billing_observed_at`] ?? null,
+    billing_period_start_at: row[`${prefix}_billing_period_start_at`] ?? null,
+    billing_period_end_at: row[`${prefix}_billing_period_end_at`] ?? null,
+    raw_provider_fields: rawProviderFields,
+    evidence,
+  }
+  const hasBillingValue =
+    detail.quota_limit !== null ||
+    detail.quota_used !== null ||
+    detail.quota_remaining !== null ||
+    detail.billing_observed_at !== null ||
+    detail.billing_period_start_at !== null ||
+    detail.billing_period_end_at !== null ||
+    hasRecordEntries(rawProviderFields) ||
+    hasRecordEntries(evidence)
+
+  return hasBillingValue ? detail : null
+}
+
+function normalizeQuotaBillingDetails(row) {
+  const details = {}
+  for (const quotaType of [
+    'weekly',
+    'short',
+    'special',
+    'short_special',
+    'monthly',
+    'wtus',
+  ]) {
+    const detail = normalizeQuotaBillingDetail(row, quotaType)
+    if (detail !== null) {
+      details[quotaType] = detail
+    }
+  }
+  return details
+}
+
 
 function normalizeQuotaVelocityScores(value) {
   if (!Array.isArray(value)) return []
@@ -5625,6 +5857,7 @@ function normalizeQuotaRow(row) {
   return {
     provider: row.provider,
     model: row.model ?? null,
+    billing_details: normalizeQuotaBillingDetails(row),
     weekly_remaining_pct: normalizeNumber(row.weekly_remaining_pct),
     weekly_reset_at: row.weekly_reset_at ?? null,
     weekly_interval_start: row.weekly_interval_start ?? null,
@@ -5802,6 +6035,13 @@ function normalizeQuotaEstimatorObservationRow(row) {
     reset_end_at: row.reset_end_at ?? null,
     observed_at: row.observed_at ?? null,
     consumed_pct: normalizeNumber(row.consumed_pct),
+    quota_limit: normalizeNumber(row.quota_limit),
+    quota_used: normalizeNumber(row.quota_used),
+    quota_remaining: normalizeNumber(row.quota_remaining),
+    billing_period_start_at: row.billing_period_start_at ?? null,
+    billing_period_end_at: row.billing_period_end_at ?? null,
+    raw_provider_fields: normalizeJsonRecord(row.raw_provider_fields),
+    evidence: normalizeJsonRecord(row.evidence),
   }
 }
 
@@ -6757,14 +6997,10 @@ export function buildUsageQuery(searchParams) {
     (column) =>
       `base.${column} IS NOT DISTINCT FROM reason_summary.${column}`
   )
-  const filteredColumnSelects = usageFilteredColumns.map(
-    (column) => `        sh.${column}`
-  )
-
   const sql = `
 WITH filtered AS (
     SELECT
-${filteredColumnSelects.join(',\n')}
+${usageFilteredColumnSelects.join(',\n')}
     FROM public.session_history sh
     WHERE ${whereParts.join('\n      AND ')}
 ),

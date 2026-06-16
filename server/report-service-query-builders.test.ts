@@ -376,6 +376,104 @@ describe('reportable-filter sweep (S4-8)', () => {
 // (moved verbatim; W10 adds pgsql-parser + observation-query assertions above)
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// D1-223/224/225 usage identity and billing contracts
+// ---------------------------------------------------------------------------
+
+describe('D1-223/224/225 usage identity and billing contracts', () => {
+  const billingDetailFields = [
+    'quota_limit',
+    'quota_used',
+    'quota_remaining',
+    'billing_period_start_at',
+    'billing_period_end_at',
+    'raw_provider_fields',
+    'evidence',
+  ] as const
+
+  test('test_buildUsageQuery_supports_inbound_model_alias_agent_name_and_agent_id_dimensions', () => {
+    const query = buildUsageQuery(
+      new URLSearchParams({
+        from: '2026-05-01',
+        to: '2026-05-08',
+        grain: 'day',
+        group_by: 'repository,inbound_model_alias,agent_name,agent_id',
+        limit: '50000',
+      })
+    )
+
+    expect(query.metadata.groupBy).toEqual([
+      'repository',
+      'inbound_model_alias',
+      'agent_name',
+      'agent_id',
+    ])
+    expect(query.sql).toContain('AS inbound_model_alias')
+    expect(query.sql).toContain('AS agent_name')
+    expect(query.sql).toContain('AS agent_id')
+    expect(query.sql).toContain("NULLIF(to_jsonb(sh)->>'inbound_model_alias', '')")
+    expect(query.sql).toContain("NULLIF(to_jsonb(sh)->>'agent_name', '')")
+    expect(query.sql).toContain("NULLIF(to_jsonb(sh)->>'agent_id', '')")
+  })
+
+  test('test_buildUsageQuery_applies_inbound_model_alias_agent_name_and_agent_id_filters', () => {
+    const query = buildUsageQuery(
+      new URLSearchParams({
+        from: '2026-05-01',
+        to: '2026-05-08',
+        grain: 'day',
+        group_by: 'repository,provider_model',
+        limit: '50000',
+        inbound_model_alias: 'aawm-read-anthropic',
+        agent_name: 'orchestrator',
+        agent_id: 'agent_harness',
+      })
+    )
+
+    expect(query.values).toContainEqual(['aawm-read-anthropic'])
+    expect(query.values).toContainEqual(['orchestrator'])
+    expect(query.values).toContainEqual(['agent_harness'])
+    expect(query.sql).toContain("COALESCE(NULLIF(to_jsonb(sh)->>'inbound_model_alias', ''), 'unknown_inbound_model') = ANY(")
+    expect(query.sql).toContain("COALESCE(NULLIF(to_jsonb(sh)->>'agent_name', ''), 'unknown_agent_name') = ANY(")
+    expect(query.sql).toContain("COALESCE(NULLIF(to_jsonb(sh)->>'agent_id', ''), 'uncaptured_agent_id') = ANY(")
+  })
+
+  test('test_buildToolActivityQuery_includes_and_returns_agent_id_grouping', () => {
+    const query = buildToolActivityQuery(
+      new URLSearchParams({
+        from: '2026-05-01',
+        to: '2026-05-08',
+        agent_id: 'agent_harness',
+      })
+    )
+
+    expect(query.values).toEqual([
+      '2026-05-01',
+      '2026-05-08',
+      ['agent_harness'],
+    ])
+    expect(query.sql).toContain("NULLIF(to_jsonb(a)->>'agent_id', '')")
+    expect(query.sql).toContain("NULLIF(to_jsonb(sh)->>'agent_id', '')")
+    expect(query.sql).toContain('agent_name')
+    expect(query.sql).toContain('GROUP BY')
+    expect(query.sql).toMatch(/SELECT[\s\S]*agent_ids[\s\S]*FROM outer_counts/)
+  })
+
+  test('test_quota_queries_surface_billing_detail_fields_when_present', () => {
+    const quotaQuery = buildQuotaQuery()
+    const estimatorQuery = buildQuotaEstimatorObservationQuery(
+      new URLSearchParams({ from: '2026-05-01', to: '2026-05-08' })
+    )
+
+    for (const field of billingDetailFields) {
+      expect(quotaQuery.sql).toContain(field)
+      expect(estimatorQuery.sql).toContain(field)
+    }
+    expect(quotaQuery.sql).toContain('public.rate_limit_observations')
+    expect(estimatorQuery.sql).toContain('public.rate_limit_observations')
+  })
+})
+
 describe('report-service query builders', () => {
   test('test_buildUsageQuery_keeps_legacy_quota_columns_without_rate_limit_joins', () => {
     const query = buildUsageQuery(

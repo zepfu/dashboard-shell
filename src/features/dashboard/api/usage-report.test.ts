@@ -395,3 +395,189 @@ test('test_real_abort_rejects_with_AbortError', async () => {
       (err.name === 'AbortError' || err.message.toLowerCase().includes('abort'))
   )
 })
+
+// ---------------------------------------------------------------------------
+// D1-223/224/225 usage identity and billing contracts
+// ---------------------------------------------------------------------------
+
+describe('D1-223/224/225 usage identity and billing contracts', () => {
+  const usageIdentityDimensions = [
+    'inbound_model_alias',
+    'agent_name',
+    'agent_id',
+  ] as const
+
+  const usageIdentityFilters = [
+    'inbound_model_alias',
+    'agent_name',
+    'agent_id',
+  ] as const
+
+  const billingDetailFields = [
+    'quota_limit',
+    'quota_used',
+    'quota_remaining',
+    'billing_period_start_at',
+    'billing_period_end_at',
+    'raw_provider_fields',
+    'evidence',
+  ] as const
+
+  test('test_usage_report_types_expose_inbound_model_alias_agent_name_and_agent_id', async () => {
+    const { readFile } = await import('node:fs/promises')
+    const { dirname, join } = await import('node:path')
+    const { fileURLToPath } = await import('node:url')
+
+    const source = await readFile(
+      join(dirname(fileURLToPath(import.meta.url)), './usage-report.ts'),
+      'utf8'
+    )
+
+    for (const dimension of usageIdentityDimensions) {
+      expect(source).toContain(`${dimension}?:`)
+    }
+    for (const filter of usageIdentityFilters) {
+      expect(source).toContain(`${filter}?: readonly string[]`)
+    }
+    expect(source).toContain('inbound_model_alias?: string | null')
+    expect(source).toContain('agent_name?: string | null')
+    expect(source).toContain('agent_id?: string | null')
+  })
+
+  test('test_fetchUsageReport_forwards_inbound_model_alias_agent_name_and_agent_id_filters', async () => {
+    let capturedUrl: URL | null = null
+
+    server.use(
+      http.get('/api/shell/reports/usage', ({ request }) => {
+        capturedUrl = new URL(request.url)
+        return HttpResponse.json({
+          metadata: {
+            from: '2026-05-20',
+            to: '2026-05-21',
+            grain: 'day',
+            groupBy: [
+              'repository',
+              'inbound_model_alias',
+              'agent_name',
+              'agent_id',
+            ],
+            limit: 50_000,
+            generatedAt: '2026-05-21T00:00:00.000Z',
+            latestRecordAt: null,
+            latestRecordAgeMinutes: null,
+            latestRecordStale: false,
+            staleRecordThresholdMinutes: 60,
+          },
+          summary: {
+            traces: 0,
+            token_in: 0,
+            token_out: 0,
+            token_cache_input: 0,
+            token_cache_creation: 0,
+            token_reasoning_reported: 0,
+            token_reasoning_estimated: 0,
+            token_total: 0,
+            usd_cost: 0,
+            cache_miss_usd_cost: 0,
+            tool_calls: 0,
+            git_commit: 0,
+            git_push: 0,
+            period_start: '2026-05-20',
+            period_end: '2026-05-21',
+            latest_record_at: null,
+          },
+          trend: [],
+          clients: [],
+          providerLatencyHealth: [],
+          providerErrorObservations: [],
+          providerStatusUsage: [],
+          quotas: [],
+          quotaHistory: [],
+          toolActivity: [],
+          rows: [],
+        })
+      })
+    )
+
+    await fetchUsageReport({
+      from: '2026-05-20',
+      to: '2026-05-21',
+      grain: 'day',
+      groupBy: ['repository', 'inbound_model_alias', 'agent_name', 'agent_id'],
+      inbound_model_alias: ['aawm-read-anthropic'],
+      agent_name: ['orchestrator'],
+      agent_id: ['agent_harness'],
+    } as Parameters<typeof fetchUsageReport>[0])
+
+    expect(capturedUrl?.searchParams.get('group_by')).toBe(
+      'repository,inbound_model_alias,agent_name,agent_id'
+    )
+    expect(capturedUrl?.searchParams.get('inbound_model_alias')).toBe(
+      'aawm-read-anthropic'
+    )
+    expect(capturedUrl?.searchParams.get('agent_name')).toBe('orchestrator')
+    expect(capturedUrl?.searchParams.get('agent_id')).toBe('agent_harness')
+  })
+
+  test('test_fetchUsageReportToolActivity_forwards_agent_id_filter_and_returns_grouped_rows', async () => {
+    let capturedUrl: URL | null = null
+
+    server.use(
+      http.get('/api/shell/reports/usage/tool-activity', ({ request }) => {
+        capturedUrl = new URL(request.url)
+        return HttpResponse.json({
+          metadata: {
+            from: '2026-05-20',
+            to: '2026-05-21',
+            generatedAt: '2026-05-21T00:00:00.000Z',
+          },
+          toolActivity: [
+            {
+              provider: 'anthropic',
+              model: 'claude-sonnet-4-6',
+              agent_names: ['orchestrator'],
+              agent_ids: ['agent_harness'],
+              kind: 'outer',
+              label: 'Bash',
+              calls: 3,
+            },
+          ],
+        })
+      })
+    )
+
+    const response = await fetchUsageReportToolActivity({
+      from: '2026-05-20',
+      to: '2026-05-21',
+      agent_id: ['agent_harness'],
+    } as Parameters<typeof fetchUsageReportToolActivity>[0])
+
+    expect(capturedUrl?.searchParams.get('agent_id')).toBe('agent_harness')
+    expect(response.toolActivity[0]).toMatchObject({
+      provider: 'anthropic',
+      model: 'claude-sonnet-4-6',
+      agent_names: ['orchestrator'],
+      agent_ids: ['agent_harness'],
+      kind: 'outer',
+      label: 'Bash',
+      calls: 3,
+    })
+  })
+
+  test('test_quota_response_contract_surfaces_billing_detail_fields', async () => {
+    const { readFile } = await import('node:fs/promises')
+    const { dirname, join } = await import('node:path')
+    const { fileURLToPath } = await import('node:url')
+
+    const source = await readFile(
+      join(dirname(fileURLToPath(import.meta.url)), './usage-report.ts'),
+      'utf8'
+    )
+
+    for (const field of billingDetailFields) {
+      expect(source).toContain(`${field}?:`)
+    }
+    expect(source).toContain('raw_provider_fields?: Record<string, unknown>')
+    expect(source).toContain('evidence?: Record<string, unknown>')
+  })
+})

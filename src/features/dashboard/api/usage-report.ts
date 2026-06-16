@@ -74,6 +74,11 @@ export const usageReportGroupPresets = [
 ] as const
 
 export const usageReportGrains = ['day', 'week', 'month'] as const
+export const usageReportIdentityDimensions = [
+  'inbound_model_alias',
+  'agent_name',
+  'agent_id',
+] as const
 
 export type UsageReportGrain = (typeof usageReportGrains)[number]
 export type UsageReportGroupPreset = (typeof usageReportGroupPresets)[number]
@@ -131,7 +136,9 @@ export function isReportCacheMetadata(
   }
   return true
 }
-export type UsageReportDimension = UsageReportGroupPreset['groupBy'][number]
+export type UsageReportDimension =
+  | UsageReportGroupPreset['groupBy'][number]
+  | (typeof usageReportIdentityDimensions)[number]
 export type UsageReportConfigChangeFilterValue =
   | 'true'
   | 'false'
@@ -146,9 +153,9 @@ export type UsageReportConfigChangeFilterValue =
  * 15-D.1: The server uses parseCsv() on each param, so values are joined as
  * comma-separated strings in the query string (e.g. `provider=openai,anthropic`).
  * The server's filterColumns map accepts: provider, repository, client,
- * environment, model, provider_model. Config-change filters accept true, false,
- * null/unknown/unevaluated, or evaluated. Empty arrays → no filter applied (all
- * values returned).
+ * environment, model, provider_model, inbound_model_alias, agent_name, and
+ * agent_id. Config-change filters accept true, false, null/unknown/unevaluated,
+ * or evaluated. Empty arrays → no filter applied (all values returned).
  *
  * Param names (singular) match the server's filterColumns keys exactly.
  */
@@ -163,6 +170,12 @@ export interface UsageReportFilterParams {
   environment?: readonly string[]
   /** Filter to specific models (empty = all). */
   model?: readonly string[]
+  /** Filter to requested inbound aliases/models captured by session_history. */
+  inbound_model_alias?: readonly string[]
+  /** Filter to display agent names captured by session_history. */
+  agent_name?: readonly string[]
+  /** Filter to opaque agent IDs captured by session/tool activity rows. */
+  agent_id?: readonly string[]
   /** Filter by sessions that changed .pre-commit config. */
   changed_pre_commit_config?: readonly UsageReportConfigChangeFilterValue[]
   /** Filter by sessions that changed .env* files. */
@@ -289,6 +302,9 @@ export interface UsageReportRow
   repository?: string
   provider?: string
   model?: string
+  inbound_model_alias?: string | null
+  agent_name?: string | null
+  agent_id?: string | null
   provider_model?: string
   weekly_reset_first: string | null
   weekly_reset_last: string | null
@@ -756,9 +772,31 @@ export interface UsageReportProviderStatusUsageRow extends UsageReportLatencyFie
   period_end: string | null
 }
 
+export type UsageReportQuotaBillingLane =
+  | 'weekly'
+  | 'short'
+  | 'special'
+  | 'short_special'
+  | 'monthly'
+  | 'wtus'
+
+export interface UsageReportQuotaBillingDetail {
+  quota_limit?: number | null
+  quota_used?: number | null
+  quota_remaining?: number | null
+  billing_observed_at?: string | null
+  billing_period_start_at?: string | null
+  billing_period_end_at?: string | null
+  raw_provider_fields?: Record<string, unknown>
+  evidence?: Record<string, unknown>
+}
+
 export interface UsageReportQuotaRow {
   provider: string
   model: string | null
+  billing_details?: Partial<
+    Record<UsageReportQuotaBillingLane, UsageReportQuotaBillingDetail>
+  >
   weekly_remaining_pct: number | null
   weekly_reset_at: string | null
   weekly_interval_start: string | null
@@ -883,6 +921,10 @@ export interface UsageReportToolActivityRow {
   kind: 'outer' | 'shell'
   /** Tool name (outer rows) or command label (shell rows). */
   label: string
+  /** Distinct display agent names represented by the grouped row. */
+  agent_names?: string[]
+  /** Distinct opaque agent IDs represented by the grouped row. */
+  agent_ids?: string[]
   calls: number
 }
 
@@ -1186,6 +1228,9 @@ function appendUsageReportFilters(
     'client',
     'environment',
     'model',
+    'inbound_model_alias',
+    'agent_name',
+    'agent_id',
   ] as const
   for (const key of filterKeys) {
     const values = params[key]

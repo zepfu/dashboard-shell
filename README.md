@@ -41,11 +41,15 @@ proxied through `/hook-api/*` to `AAWM_HOOK_API_TARGET`.
 The same dev stack starts the shell report API on `SHELL_REPORT_PORT`, which
 defaults to `3010`. The browser reads the General dashboard report through
 `/api/shell/reports/usage`; `DATABASE_URL` is only read by that server-side
-service. The dev shell, dev remote, and dev report service all join the external
-`aawm-tap_default` network used by the aawm-tap model containers. The dev report
-service also joins `aawm_default` so host-style database URLs can be rewritten to
-the internal `aawm-pgbouncer:6432` runtime pooler while development stays
-containerized. If TAP
+service. Usage report grouping and filters support first-class
+`session_history.inbound_model_alias`, `agent_name`, and `agent_id` identity
+fields when the source database exposes them; quota rows keep percentage fields
+stable while exposing normalized billing details under per-lane
+`billing_details` for operator drilldowns. The dev shell, dev remote, and dev
+report service all join the external `aawm-tap_default` network used by the
+aawm-tap model containers. The dev report service also joins `aawm_default` so
+host-style database URLs can be rewritten to the internal `aawm-pgbouncer:6432`
+runtime pooler while development stays containerized. If TAP
 requires a dashboard key, set `AAWM_TAP_API_KEY` in this repo's `.env`; the shell
 service injects it as `X-API-Key` and strips client-sent auth before forwarding.
 Do not keep a real TAP key in `../aawm-tap-dashboard/.env` as a `VITE_*` value,
