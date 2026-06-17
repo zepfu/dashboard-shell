@@ -1250,6 +1250,7 @@ export default function PhosphorDashboard({
             />
             <div
               className={`provider-summary ${styles['provider-summary-grid']}`}
+              style={{ alignItems: 'start' }}
             >
               {providers.map((provider) => {
                 const config: ProviderCardConfig = {

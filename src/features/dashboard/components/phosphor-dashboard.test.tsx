@@ -308,6 +308,34 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
     expect(onRefreshQuotaRangeHistory).toHaveBeenCalledTimes(1)
   })
 
+  test('test_status_health_provider_grid_does_not_stretch_sparse_cards', async () => {
+    let container: HTMLElement | undefined
+
+    await act(async () => {
+      const result = render(
+        <Wrapper>
+          <PhosphorDashboard
+            from='2026-05-20'
+            to='2026-05-21'
+            report={MOCK_REPORT}
+            reportLoading={false}
+            showComparison={false}
+            quotas={[]}
+            quotaHistory={[]}
+          />
+        </Wrapper>
+      )
+      container = result.container
+    })
+
+    const providerGrid = container?.querySelector(
+      'section#status .provider-summary'
+    ) as HTMLElement | null
+
+    expect(providerGrid).not.toBeNull()
+    expect(providerGrid).toHaveStyle({ alignItems: 'start' })
+  })
+
   test('test_health_tab_renders_pgbouncer_sidecar_health', async () => {
     server.use(
       http.get('/api/shell/health', () =>

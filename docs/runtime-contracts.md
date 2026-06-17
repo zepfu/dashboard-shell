@@ -53,6 +53,11 @@ tooltip. The shell uses `pointer-events: none` with an inner hover zone restorin
 pointer events so the tooltip remains reachable without adding blank space above
 the provider header.
 
+The Provider Status Health grid top-aligns cards instead of stretching all cards
+in a row to the tallest provider. Recent quota-history bars may make one provider
+card taller than its neighbors, but sparse provider cards should keep compact
+heights rather than rendering large empty panels.
+
 ## CSP And Asset Loading
 
 Static/prod-style shell hosting serves remotes from same-origin
