@@ -308,7 +308,7 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
     expect(onRefreshQuotaRangeHistory).toHaveBeenCalledTimes(1)
   })
 
-  test('test_status_health_provider_grid_does_not_stretch_sparse_cards', async () => {
+  test('test_status_health_provider_grid_uses_compact_auto_rows', async () => {
     let container: HTMLElement | undefined
 
     await act(async () => {
@@ -333,7 +333,10 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
     ) as HTMLElement | null
 
     expect(providerGrid).not.toBeNull()
-    expect(providerGrid).toHaveStyle({ alignItems: 'start' })
+    expect(providerGrid).toHaveStyle({
+      alignItems: 'start',
+      gridAutoRows: 'auto',
+    })
   })
 
   test('test_health_tab_renders_pgbouncer_sidecar_health', async () => {
