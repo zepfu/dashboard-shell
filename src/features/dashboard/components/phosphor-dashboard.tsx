@@ -387,19 +387,22 @@ export default function PhosphorDashboard({
       filters?.environments,
       filters?.models,
     ],
-    queryFn: () =>
-      fetchUsageReport({
-        from: resolvedFrom,
-        to: resolvedTo,
-        grain: resolvedGrain,
-        groupBy: ['provider', 'model', 'repository'],
-        // 15-D.4: pass multi-value filter arrays; empty array = no filter
-        provider: filters?.providers,
-        repository: filters?.repositories,
-        client: filters?.clients,
-        environment: filters?.environments,
-        model: filters?.models,
-      }),
+    queryFn: ({ signal }) =>
+      fetchUsageReport(
+        {
+          from: resolvedFrom,
+          to: resolvedTo,
+          grain: resolvedGrain,
+          groupBy: ['provider', 'model', 'repository'],
+          // 15-D.4: pass multi-value filter arrays; empty array = no filter
+          provider: filters?.providers,
+          repository: filters?.repositories,
+          client: filters?.clients,
+          environment: filters?.environments,
+          model: filters?.models,
+        },
+        signal
+      ),
     // Skip when the parent has already provided the report data.
     enabled: internalQueryEnabled,
     refetchInterval: LIVE_DASHBOARD_REFETCH_INTERVAL_MS,
@@ -415,6 +418,7 @@ export default function PhosphorDashboard({
   const reportFetching = internalQueryEnabled
     ? internalFetching
     : reportFetchingProp
+  const secondaryReportQueriesEnabled = report !== undefined && !reportLoading
 
   // 15-C.5 / Wave 37 SF-1: Include resolvedFrom/resolvedTo in the queryKey so
   // the quotas query re-fetches when the user changes the date range. The
@@ -611,6 +615,7 @@ export default function PhosphorDashboard({
         signal
       ),
     staleTime: LIVE_DASHBOARD_REFETCH_INTERVAL_MS,
+    enabled: secondaryReportQueriesEnabled,
     refetchInterval: LIVE_DASHBOARD_REFETCH_INTERVAL_MS,
     refetchIntervalInBackground: true,
   })
@@ -805,6 +810,7 @@ export default function PhosphorDashboard({
         signal
       ),
     staleTime: LIVE_DASHBOARD_REFETCH_INTERVAL_MS,
+    enabled: secondaryReportQueriesEnabled,
     refetchInterval: LIVE_DASHBOARD_REFETCH_INTERVAL_MS,
     refetchIntervalInBackground: true,
   })

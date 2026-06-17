@@ -52,8 +52,8 @@ export function buildProviderMetrics(
   )
   const p95 =
     latestP95Row !== undefined
-      ? (latestP95Row.upstream_p95_ms ?? latestP95Row.total_p95_ms ?? 0)
-      : 0
+      ? (latestP95Row.upstream_p95_ms ?? latestP95Row.total_p95_ms ?? null)
+      : null
 
   // Wave 14-C: rate_limits, capacity from health rows; packet_loss from ping probe.
   const rate_limits = providerHealthRows.reduce(

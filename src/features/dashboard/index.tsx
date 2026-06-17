@@ -265,19 +265,22 @@ export function Dashboard(): ReactElement {
       slicerFilters.models,
       reportCacheBust,
     ],
-    queryFn: () =>
-      fetchUsageReport({
-        from,
-        to,
-        grain,
-        groupBy: ['provider', 'model', 'repository'],
-        provider: slicerFilters.providers,
-        repository: slicerFilters.repositories,
-        client: slicerFilters.clients,
-        environment: slicerFilters.environments,
-        model: slicerFilters.models,
-        cacheBust: reportCacheBust,
-      }),
+    queryFn: ({ signal }) =>
+      fetchUsageReport(
+        {
+          from,
+          to,
+          grain,
+          groupBy: ['provider', 'model', 'repository'],
+          provider: slicerFilters.providers,
+          repository: slicerFilters.repositories,
+          client: slicerFilters.clients,
+          environment: slicerFilters.environments,
+          model: slicerFilters.models,
+          cacheBust: reportCacheBust,
+        },
+        signal
+      ),
     // Keep React Query freshness aligned with the report-service default TTL.
     // The dashboard polls every minute, so new session rows should be eligible
     // for display on the next scheduled refresh.

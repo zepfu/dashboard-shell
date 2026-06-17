@@ -293,7 +293,11 @@ async function importDashboard(): Promise<React.ComponentType> {
 
 describe('Dashboard — TCG-2: cold-load render path', () => {
   test('test_dashboard_keeps_status_tabs_reachable_while_loading', async () => {
-    registerTokenTrendSummaryHandler()
+    const tokenTrendUrls: string[] = []
+    const toolActivityUrls: string[] = []
+    registerTokenTrendSummaryHandler((url) => {
+      tokenTrendUrls.push(url)
+    })
     // Register a handler that NEVER resolves so the query stays in loading state.
     let resolveUsageRequest: (() => void) | null = null
     server.use(
@@ -318,6 +322,19 @@ describe('Dashboard — TCG-2: cold-load render path', () => {
           quotas: [],
         })
       )
+    )
+    server.use(
+      http.get('/api/shell/reports/usage/tool-activity', ({ request }) => {
+        toolActivityUrls.push(request.url)
+        return HttpResponse.json({
+          metadata: {
+            from: '2026-04-19',
+            to: '2026-05-19',
+            generatedAt: '2026-05-19T00:00:00.000Z',
+          },
+          toolActivity: [],
+        })
+      })
     )
 
     const Dashboard = await importDashboard()
@@ -352,6 +369,13 @@ describe('Dashboard — TCG-2: cold-load render path', () => {
       },
       { timeout: 3000 }
     )
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50))
+    })
+
+    expect(tokenTrendUrls).toHaveLength(0)
+    expect(toolActivityUrls).toHaveLength(0)
 
     // Clean up by resolving the pending request to avoid test interference.
     resolveUsageRequest?.()

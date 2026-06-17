@@ -1402,7 +1402,8 @@ function appendStringArrayParam(
 }
 
 export async function fetchUsageReport(
-  params: UsageReportParams
+  params: UsageReportParams,
+  signal?: AbortSignal
 ): Promise<UsageReportResponse> {
   // Wave 24-D30: raised limit from 500 to 50000 to fix 30-day undercounting.
   // At 30-day daily grain with provider+model+repository groupBy, row count
@@ -1426,7 +1427,9 @@ export async function fetchUsageReport(
     searchParams.set('cache_bust', params.cacheBust)
   }
 
-  const response = await fetch(`/api/shell/reports/usage?${searchParams}`)
+  const response = await fetch(`/api/shell/reports/usage?${searchParams}`, {
+    signal,
+  })
   if (!response.ok) {
     const payload = await response.json().catch(() => null)
     const message =

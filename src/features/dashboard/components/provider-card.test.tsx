@@ -148,6 +148,25 @@ test('test_provider_card_renders_6_metric_rows', () => {
   }
 })
 
+test('test_provider_card_unmeasured_p95_renders_dash_not_zero', () => {
+  const { container } = render(
+    <ProviderCard
+      config={anthropicConfig}
+      data={{ ...mockData, p95_ms: null }}
+      healthCells={mockHealthCells}
+      quotas={mockQuotas}
+    />
+  )
+
+  const latencyMetric = Array.from(
+    container.querySelectorAll('.provider-metric')
+  ).find((el) => el.textContent?.includes('p95 Latency'))
+  const value = latencyMetric?.querySelector('.provider-metric-value')
+
+  expect(value?.textContent).toBe('—')
+  expect(latencyMetric?.textContent).not.toContain('0ms')
+})
+
 test('test_provider_card_does_not_render_requests_tokens_cost_metric_rows', () => {
   const { container } = render(
     <ProviderCard

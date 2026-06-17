@@ -15,7 +15,7 @@ export interface ProviderMetrics {
   cost_usd: number
   requests: number
   errors: number
-  p95_ms: number
+  p95_ms: number | null
   cache_input: number
   cache_creation: number
   /** Dollar cost of cache misses (from cache_miss_usd_cost API field). */
