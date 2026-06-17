@@ -44,6 +44,15 @@ remote dashboards. If a release needs production stack trace symbolication, use
 an upload-only or hidden-source-map workflow and verify the generated `.map`
 files are not served from the public static containers.
 
+## Provider Status Health Strips
+
+Provider Status cards render vertical health strips as overlay affordances. The
+strip shell must stay absolutely positioned inside the card and must not
+participate in normal card layout flow, even when the strip has an auto-generated
+tooltip. The shell uses `pointer-events: none` with an inner hover zone restoring
+pointer events so the tooltip remains reachable without adding blank space above
+the provider header.
+
 ## CSP And Asset Loading
 
 Static/prod-style shell hosting serves remotes from same-origin
