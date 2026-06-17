@@ -171,6 +171,22 @@
   opacity: 0.85;
 }
 
+.section-degraded-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 20px;
+  padding: 2px 6px;
+  border: 1px solid color-mix(in srgb, var(--accent-hot) 60%, var(--border));
+  background: color-mix(in srgb, var(--accent-hot) 12%, var(--card-2));
+  color: var(--accent-hot);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
 .section-refresh-icon {
   flex: 0 0 auto;
 }

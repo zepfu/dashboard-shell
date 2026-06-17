@@ -350,6 +350,85 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
     ).toBe(true)
   })
 
+  test('test_status_health_shows_degraded_badge_for_quota_history_timeout', async () => {
+    server.use(
+      http.get('/api/shell/reports/usage/quota-history', () =>
+        HttpResponse.json({
+          metadata: {
+            generatedAt: '2026-05-19T00:00:00.000Z',
+            degraded: true,
+            degradedReason: 'database_timeout',
+            degradedMessage: 'Quota history exceeded the bounded timeout.',
+            quotaHistoryStatementTimeoutMs: 15000,
+          },
+          quotaHistory: [],
+        })
+      )
+    )
+
+    await act(async () => {
+      render(
+        <Wrapper>
+          <PhosphorDashboard
+            from='2026-05-20'
+            to='2026-05-21'
+            report={MOCK_REPORT}
+            reportLoading={false}
+            showComparison={false}
+            quotas={[]}
+          />
+        </Wrapper>
+      )
+    })
+
+    expect(await screen.findByText('Degraded')).toHaveClass(
+      'section-degraded-badge'
+    )
+  })
+
+  test('test_token_trend_shows_degraded_badge_for_summary_timeout', async () => {
+    server.use(
+      http.get('/api/shell/reports/usage/token-trend-summary', () =>
+        HttpResponse.json({
+          metadata: {
+            from: '2026-05-20',
+            to: '2026-05-21',
+            degraded: true,
+            degradedReason: 'database_timeout',
+            degradedMessage:
+              'Token trend summary exceeded the bounded timeout.',
+            tokenTrendSummaryStatementTimeoutMs: 15000,
+          },
+          tokenTrendHours: [],
+          tokenTrendHealth: [],
+          tokenTrendScores: [],
+          tokenTrendVersions: [],
+          tokenTrendModelFirstSeen: [],
+        })
+      )
+    )
+
+    await act(async () => {
+      render(
+        <Wrapper>
+          <PhosphorDashboard
+            from='2026-05-20'
+            to='2026-05-21'
+            report={MOCK_REPORT}
+            reportLoading={false}
+            showComparison={false}
+            quotas={[]}
+            quotaHistory={[]}
+          />
+        </Wrapper>
+      )
+    })
+
+    expect(await screen.findByText('Degraded')).toHaveClass(
+      'section-degraded-badge'
+    )
+  })
+
   test('test_health_tab_renders_pgbouncer_sidecar_health', async () => {
     server.use(
       http.get('/api/shell/health', () =>

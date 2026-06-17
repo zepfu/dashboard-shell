@@ -42,6 +42,43 @@ test('test_fetchUsageReportTokenTrendSummary_sends_filters', async () => {
   expect(requestedUrl?.searchParams.get('model')).toBe('claude-sonnet-4')
 })
 
+test('test_fetchUsageReportTokenTrendSummary_preserves_degraded_metadata', async () => {
+  server.use(
+    http.get('/api/shell/reports/usage/token-trend-summary', () =>
+      HttpResponse.json({
+        metadata: {
+          from: '2026-05-20',
+          to: '2026-05-21',
+          degraded: true,
+          degradedReason: 'database_timeout',
+          degradedMessage: 'Token trend summary exceeded the bounded timeout.',
+          tokenTrendSummaryStatementTimeoutMs: 15000,
+        },
+        tokenTrendHours: [],
+        tokenTrendHealth: [],
+        tokenTrendScores: [],
+        tokenTrendVersions: [],
+        tokenTrendModelFirstSeen: [],
+      })
+    )
+  )
+
+  await expect(
+    fetchUsageReportTokenTrendSummary({
+      from: '2026-05-20',
+      to: '2026-05-21',
+    })
+  ).resolves.toMatchObject({
+    metadata: {
+      degraded: true,
+      degradedReason: 'database_timeout',
+      tokenTrendSummaryStatementTimeoutMs: 15000,
+    },
+    tokenTrendHours: [],
+    tokenTrendVersions: [],
+  })
+})
+
 test('test_fetchUsageReportTokenTrendDay_sends_date_filters_and_signal', async () => {
   let requestedUrl: URL | null = null
   const controller = new AbortController()
@@ -98,6 +135,32 @@ test('test_fetchUsageReportTokenTrendDay_uses_server_error_message', async () =>
       date: '2026-05-20',
     })
   ).rejects.toThrow('bad day')
+})
+
+test('test_fetchUsageReportQuotaHistory_preserves_degraded_metadata', async () => {
+  server.use(
+    http.get('/api/shell/reports/usage/quota-history', () =>
+      HttpResponse.json({
+        metadata: {
+          generatedAt: '2026-05-21T00:00:00.000Z',
+          degraded: true,
+          degradedReason: 'database_timeout',
+          degradedMessage: 'Quota history exceeded the bounded timeout.',
+          quotaHistoryStatementTimeoutMs: 15000,
+        },
+        quotaHistory: [],
+      })
+    )
+  )
+
+  await expect(fetchUsageReportQuotaHistory()).resolves.toMatchObject({
+    metadata: {
+      degraded: true,
+      degradedReason: 'database_timeout',
+      quotaHistoryStatementTimeoutMs: 15000,
+    },
+    quotaHistory: [],
+  })
 })
 
 // ─────────────────────────────────────────────────────────────────────────────

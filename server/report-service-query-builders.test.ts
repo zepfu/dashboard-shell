@@ -33,8 +33,11 @@ import {
   buildQuotaEstimatorObservationQuery,
   buildQuotaEstimatorReport,
   buildQuotaEstimatorUsageBucketQuery,
+  buildQuotaHistoryQuery,
   buildQuotaQuery,
   buildQuotaRangeHistoryQuery,
+  buildDegradedUsageQuotaHistoryReport,
+  buildDegradedUsageTokenTrendSummaryReport,
   buildDegradedUsageToolActivityReport,
   buildReportQueryPressureQuery,
   buildSessionDiagnosticsQuery,
@@ -183,6 +186,13 @@ describe('SQL parse-validation (pgsql-parser) (S4-8)', () => {
     const query = buildQuotaRangeHistoryQuery(
       new URLSearchParams({ from: '2026-05-01', to: '2026-05-08' })
     )
+    const tree = await parseSQL(query.sql)
+    expect(Array.isArray(tree)).toBe(true)
+    expect((tree as unknown[]).length).toBeGreaterThan(0)
+  })
+
+  test('test_buildQuotaHistoryQuery_sql_is_syntactically_valid', async () => {
+    const query = buildQuotaHistoryQuery(new URLSearchParams())
     const tree = await parseSQL(query.sql)
     expect(Array.isArray(tree)).toBe(true)
     expect((tree as unknown[]).length).toBeGreaterThan(0)
@@ -362,6 +372,7 @@ describe('reportable-filter sweep (S4-8)', () => {
       buildTokenTrendHoursQuery(params),
       buildTokenTrendScoreQuery(params),
       buildTokenTrendModelFirstSeenQuery(params),
+      buildQuotaHistoryQuery(params),
       buildQuotaRangeHistoryQuery(params),
       buildQuotaEstimatorUsageBucketQuery(params),
       buildToolActivityQuery(params),
@@ -913,6 +924,48 @@ describe('report-service query builders', () => {
     expect(query.sql).not.toContain('COALESCE(sh.start_time, sh.created_at)')
   })
 
+  test('test_buildQuotaHistoryQuery_precomputes_recent_trace_counts', () => {
+    const query = buildQuotaHistoryQuery(new URLSearchParams())
+
+    expect(query.sql).toContain('recent_traces_90m AS (')
+    expect(query.sql).toContain('LEFT JOIN recent_traces_90m recent')
+    expect(query.sql).toContain(
+      "COALESCE(sh_recent.start_time, sh_recent.created_at) >= now() - INTERVAL '90 minutes'"
+    )
+    expect(query.sql).not.toContain('SELECT COUNT(*)::double precision\n            FROM public.session_history sh_recent')
+  })
+
+  test('test_degraded_secondary_usage_reports_return_visible_empty_payloads', () => {
+    const params = new URLSearchParams({
+      from: '2026-05-01',
+      to: '2026-05-08',
+    })
+
+    expect(buildDegradedUsageQuotaHistoryReport()).toMatchObject({
+      metadata: {
+        degraded: true,
+        degradedReason: 'database_timeout',
+        quotaHistoryStatementTimeoutMs: expect.any(Number),
+      },
+      quotaHistory: [],
+    })
+
+    expect(buildDegradedUsageTokenTrendSummaryReport(params)).toMatchObject({
+      metadata: {
+        from: '2026-05-01',
+        to: '2026-05-08',
+        degraded: true,
+        degradedReason: 'database_timeout',
+        tokenTrendSummaryStatementTimeoutMs: expect.any(Number),
+      },
+      tokenTrendHours: [],
+      tokenTrendHealth: [],
+      tokenTrendScores: [],
+      tokenTrendVersions: [],
+      tokenTrendModelFirstSeen: [],
+    })
+  })
+
   test('test_session_history_reportable_filter_reaches_reporting_query_paths', () => {
     const params = new URLSearchParams({
       from: '2026-05-01',
@@ -923,6 +976,7 @@ describe('report-service query builders', () => {
       buildTokenTrendHoursQuery(params),
       buildTokenTrendScoreQuery(params),
       buildTokenTrendModelFirstSeenQuery(params),
+      buildQuotaHistoryQuery(params),
       buildQuotaRangeHistoryQuery(params),
       buildQuotaEstimatorUsageBucketQuery(params),
       buildToolActivityQuery(params),

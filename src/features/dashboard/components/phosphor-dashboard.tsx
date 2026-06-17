@@ -45,6 +45,7 @@ import {
   fetchUsageReportTokenTrendSummary,
   type UsageReportProviderErrorObservationRow,
   type UsageReportQuotaHistoryRow,
+  type UsageReportQuotaHistoryResponse,
   type UsageReportQuotaRow,
   type UsageReportResponse,
   type UsageReportSummary,
@@ -280,6 +281,8 @@ export interface PhosphorDashboardProps {
   quotasFetching?: boolean
   /** Recent quota history rows for Provider Status health-tab quota lanes. */
   quotaHistory?: UsageReportQuotaHistoryRow[]
+  /** Metadata for the recent quota history response. */
+  quotaHistoryMetadata?: UsageReportQuotaHistoryResponse['metadata']
   /** True whenever the recent quota history query is fetching/refetching. */
   quotaHistoryFetching?: boolean
   /** Range-aware quota history rows for the Status / Quota tab. */
@@ -341,6 +344,7 @@ export default function PhosphorDashboard({
   quotas: quotasProp,
   quotasFetching: quotasFetchingProp = false,
   quotaHistory: quotaHistoryProp,
+  quotaHistoryMetadata: quotaHistoryMetadataProp,
   quotaHistoryFetching: quotaHistoryFetchingProp = false,
   quotaRangeHistory: quotaRangeHistoryProp,
   quotaRangeHistoryFetching = false,
@@ -1220,6 +1224,11 @@ export default function PhosphorDashboard({
   const tokenTrendUpdating =
     reportFetching || tokenTrendSummaryFetching || tokenTrendDayDetailFetching
   const comparisonUpdating = reportFetching || priorReportFetching
+  const quotaHistoryMetadata =
+    quotaHistoryMetadataProp ?? internalQuotaHistoryData?.metadata
+  const statusDegraded =
+    providerSectionView === 'health' && quotaHistoryMetadata?.degraded === true
+  const tokenTrendDegraded = tokenTrendSummaryData?.metadata.degraded === true
 
   return (
     <div
@@ -1259,6 +1268,17 @@ export default function PhosphorDashboard({
           accessory={
             <div className='section-title-tools'>
               <ProviderStatusLegend />
+              {statusDegraded ? (
+                <span
+                  className='section-degraded-badge'
+                  title={
+                    quotaHistoryMetadata?.degradedMessage ??
+                    'Provider quota history is degraded.'
+                  }
+                >
+                  Degraded
+                </span>
+              ) : null}
               <SectionRefreshButton
                 label='Refresh provider data'
                 updating={statusUpdating}
@@ -1401,11 +1421,24 @@ export default function PhosphorDashboard({
         <SectionTitle
           id='section-tokens-heading'
           accessory={
-            <SectionRefreshButton
-              label='Refresh Token Trend data'
-              updating={tokenTrendUpdating}
-              onRefresh={refreshTokenSection}
-            />
+            <div className='section-title-tools'>
+              {tokenTrendDegraded ? (
+                <span
+                  className='section-degraded-badge'
+                  title={
+                    tokenTrendSummaryData?.metadata.degradedMessage ??
+                    'Token trend summary is degraded.'
+                  }
+                >
+                  Degraded
+                </span>
+              ) : null}
+              <SectionRefreshButton
+                label='Refresh Token Trend data'
+                updating={tokenTrendUpdating}
+                onRefresh={refreshTokenSection}
+              />
+            </div>
           }
         >
           TREND

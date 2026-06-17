@@ -1106,6 +1106,10 @@ export interface UsageReportQuotaRangeHistoryResponse {
 export interface UsageReportQuotaHistoryResponse {
   metadata: {
     generatedAt?: string
+    degraded?: boolean
+    degradedReason?: string
+    degradedMessage?: string
+    quotaHistoryStatementTimeoutMs?: number
     cacheBackend?: string
     cacheFreshUntil?: string | null
     cacheGeneratedAt?: string | null
@@ -1280,6 +1284,10 @@ export interface UsageReportTokenTrendSummaryResponse {
     from: string
     to: string
     generatedAt?: string
+    degraded?: boolean
+    degradedReason?: string
+    degradedMessage?: string
+    tokenTrendSummaryStatementTimeoutMs?: number
     cacheBackend?: string
     cacheFreshUntil?: string | null
     cacheGeneratedAt?: string | null

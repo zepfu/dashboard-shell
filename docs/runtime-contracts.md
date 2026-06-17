@@ -60,6 +60,12 @@ provider cards should keep compact heights and later cards should pack upward
 inside their column instead of reserving a row sized to the tallest provider
 card.
 
+Secondary General dashboard reports must fail visibly instead of hanging the
+page-load path. The `token-trend-summary` and `quota-history` report routes use
+endpoint-specific statement timeouts; on database timeout they return empty
+payloads with `metadata.degraded=true`, a `database_timeout` reason, and a
+section-level `Degraded` badge in the dashboard.
+
 ## CSP And Asset Loading
 
 Static/prod-style shell hosting serves remotes from same-origin

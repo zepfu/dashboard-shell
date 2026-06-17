@@ -53,16 +53,19 @@ dataset. Heavy row-level latency percentiles and detailed score aggregates are
 left for focused drilldowns, while the top agent-score reasons are sampled from
 recent rows so the Ledger hover remains useful. `/api/shell/reports/usage/tool-activity`
 also reads a recent bounded tool-activity window by default, but the browser
-waits for the main usage report before starting the secondary Token Trend and
-tool-activity report requests so cold loads do not fan out every large payload
-at once. The tool-activity route uses its own bounded statement timeout and, if
-Postgres still cancels the cold query under load, returns a degraded empty
-payload with `metadata.degraded=true` instead of surfacing a raw 500. Operators
-can tune those bounds with
+waits for the main usage report before starting the secondary Token Trend,
+Provider Status quota-history, and tool-activity report requests so cold loads
+do not fan out every large payload at once. The tool-activity,
+token-trend-summary, and quota-history routes use their own bounded statement
+timeouts and, if Postgres still cancels a cold query under load, return degraded
+empty payloads with `metadata.degraded=true` instead of surfacing a raw 500.
+Operators can tune those bounds with
 `SHELL_REPORT_AGENT_SCORE_REASON_RECENT_ROW_LIMIT` and
 `SHELL_REPORT_TOOL_ACTIVITY_RECENT_ROW_LIMIT`, and can tune the route timeout
-with `SHELL_REPORT_TOOL_ACTIVITY_STATEMENT_TIMEOUT_MS`. Provider Status p95 latency is
-displayed only when the report has a passive latency sample for the selected
+with `SHELL_REPORT_TOOL_ACTIVITY_STATEMENT_TIMEOUT_MS`,
+`SHELL_REPORT_TOKEN_TREND_SUMMARY_STATEMENT_TIMEOUT_MS`, and
+`SHELL_REPORT_QUOTA_HISTORY_STATEMENT_TIMEOUT_MS`. Provider Status p95 latency
+is displayed only when the report has a passive latency sample for the selected
 provider; an empty value means unmeasured in the current health window, not
 zero-millisecond latency.
 

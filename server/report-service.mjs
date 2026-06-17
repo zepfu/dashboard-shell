@@ -321,6 +321,16 @@ const TOOL_ACTIVITY_STATEMENT_TIMEOUT_MS = positiveIntegerEnv(
   Math.min(REPORT_DB_STATEMENT_TIMEOUT_MS, 30_000),
   1_000
 )
+const TOKEN_TREND_SUMMARY_STATEMENT_TIMEOUT_MS = positiveIntegerEnv(
+  'SHELL_REPORT_TOKEN_TREND_SUMMARY_STATEMENT_TIMEOUT_MS',
+  Math.min(REPORT_DB_STATEMENT_TIMEOUT_MS, 15_000),
+  1_000
+)
+const QUOTA_HISTORY_STATEMENT_TIMEOUT_MS = positiveIntegerEnv(
+  'SHELL_REPORT_QUOTA_HISTORY_STATEMENT_TIMEOUT_MS',
+  Math.min(REPORT_DB_STATEMENT_TIMEOUT_MS, 15_000),
+  1_000
+)
 const AGENT_SCORE_REASON_RECENT_ROW_LIMIT = positiveIntegerEnv(
   'SHELL_REPORT_AGENT_SCORE_REASON_RECENT_ROW_LIMIT',
   10_000,
@@ -4597,7 +4607,7 @@ ORDER BY s.provider ASC, s.model ASC NULLS FIRST, s.quota_type ASC;
   return { sql, values: [] }
 }
 
-function buildQuotaHistoryQuery(_searchParams) {
+export function buildQuotaHistoryQuery(_searchParams) {
   // Wave 40: lookback is interval-multiplier-driven (1.5× the reset period),
   // not dashboard date-range-driven. The from/to search params are intentionally
   // ignored — each (provider, quota_key) pair looks back exactly 1.5× its own
@@ -4924,6 +4934,17 @@ window_bounds AS (
     FROM normalized
     GROUP BY provider, model, quota_type, expected_reset_at
 ),
+recent_traces_90m AS (
+    SELECT
+        ${providerDimensionRecent} AS provider,
+        COALESCE(sh_recent.model, 'unknown') AS sh_model,
+        COUNT(*)::double precision AS recent_traces_90m
+    FROM public.session_history sh_recent
+    WHERE COALESCE(sh_recent.start_time, sh_recent.created_at) >= now() - INTERVAL '90 minutes'
+      AND COALESCE(sh_recent.start_time, sh_recent.created_at) < now()
+      AND ${sessionHistoryReportablePredicate('sh_recent')}
+    GROUP BY ${providerDimensionRecent}, COALESCE(sh_recent.model, 'unknown')
+),
 per_model_usage AS (
     SELECT
         wb.provider,
@@ -4941,16 +4962,7 @@ per_model_usage AS (
         )::double precision AS tokens,
         SUM(COALESCE(sh.response_cost_usd, 0))::double precision AS cost,
         COUNT(*)::double precision AS traces,
-        (
-            SELECT COUNT(*)::double precision
-            FROM public.session_history sh_recent
-            WHERE COALESCE(sh_recent.start_time, sh_recent.created_at) >= now() - INTERVAL '90 minutes'
-              AND COALESCE(sh_recent.start_time, sh_recent.created_at) < now()
-              AND ${sessionHistoryReportablePredicate('sh_recent')}
-              AND ${providerDimensionRecent} = wb.provider
-              AND COALESCE(sh_recent.model, 'unknown') = COALESCE(sh.model, 'unknown')
-              AND (wb.model IS NULL OR sh_recent.model = wb.model)
-        ) AS recent_traces_90m
+        COALESCE(recent.recent_traces_90m, 0)::double precision AS recent_traces_90m
     FROM window_bounds wb
     JOIN public.session_history sh
       ON wb.provider <> 'antigravity'
@@ -4981,7 +4993,11 @@ per_model_usage AS (
       AND COALESCE(sh.start_time, sh.created_at) < wb.expected_reset_at
       AND ${sessionHistoryReportablePredicate()}
       AND (wb.model IS NULL OR sh.model = wb.model)
-    GROUP BY wb.provider, wb.model, wb.quota_type, wb.expected_reset_at, COALESCE(sh.model, 'unknown'), sh.model
+    LEFT JOIN recent_traces_90m recent
+      ON recent.provider = wb.provider
+     AND recent.sh_model = COALESCE(sh.model, 'unknown')
+     AND (wb.model IS NULL OR recent.sh_model = wb.model)
+    GROUP BY wb.provider, wb.model, wb.quota_type, wb.expected_reset_at, COALESCE(sh.model, 'unknown'), recent.recent_traces_90m
 )
 SELECT
     wb.provider,
@@ -5591,6 +5607,53 @@ export function buildDegradedUsageToolActivityReport(searchParams) {
         'Tool activity exceeded the bounded database timeout; showing an empty degraded report.',
     }),
     toolActivity: [],
+  }
+}
+
+function buildUsageQuotaHistoryMetadata(extra = {}) {
+  return {
+    generatedAt: new Date().toISOString(),
+    ...extra,
+  }
+}
+
+export function buildDegradedUsageQuotaHistoryReport() {
+  return {
+    metadata: buildUsageQuotaHistoryMetadata({
+      degraded: true,
+      degradedReason: 'database_timeout',
+      degradedMessage:
+        'Quota history exceeded the bounded database timeout; showing an empty degraded report.',
+      quotaHistoryStatementTimeoutMs: QUOTA_HISTORY_STATEMENT_TIMEOUT_MS,
+    }),
+    quotaHistory: [],
+  }
+}
+
+function buildUsageTokenTrendSummaryMetadata(searchParams, extra = {}) {
+  return {
+    from: parseDateParam(searchParams.get('from'), defaultFromDate),
+    to: parseDateParam(searchParams.get('to'), defaultToDate),
+    generatedAt: new Date().toISOString(),
+    ...extra,
+  }
+}
+
+export function buildDegradedUsageTokenTrendSummaryReport(searchParams) {
+  return {
+    metadata: buildUsageTokenTrendSummaryMetadata(searchParams, {
+      degraded: true,
+      degradedReason: 'database_timeout',
+      degradedMessage:
+        'Token trend summary exceeded the bounded database timeout; showing an empty degraded report.',
+      tokenTrendSummaryStatementTimeoutMs:
+        TOKEN_TREND_SUMMARY_STATEMENT_TIMEOUT_MS,
+    }),
+    tokenTrendHours: [],
+    tokenTrendHealth: [],
+    tokenTrendScores: [],
+    tokenTrendVersions: [],
+    tokenTrendModelFirstSeen: [],
   }
 }
 
@@ -8091,12 +8154,21 @@ async function loadUsageReport(searchParams) {
 
 async function loadUsageQuotaHistory(searchParams) {
   const query = buildQuotaHistoryQuery(searchParams)
-  const result = await queryReportDatabase(query.sql, query.values)
-  return {
-    metadata: {
-      generatedAt: new Date().toISOString(),
-    },
-    quotaHistory: result.rows.map(normalizeQuotaHistoryRow),
+  try {
+    const result = await queryReportDatabase(query.sql, query.values, {
+      statementTimeoutMs: QUOTA_HISTORY_STATEMENT_TIMEOUT_MS,
+    })
+    return {
+      metadata: buildUsageQuotaHistoryMetadata({
+        quotaHistoryStatementTimeoutMs: QUOTA_HISTORY_STATEMENT_TIMEOUT_MS,
+      }),
+      quotaHistory: result.rows.map(normalizeQuotaHistoryRow),
+    }
+  } catch (error) {
+    if (isDatabaseTimeoutError(error)) {
+      return buildDegradedUsageQuotaHistoryReport()
+    }
+    throw error
   }
 }
 
@@ -8172,41 +8244,63 @@ async function loadUsageTokenTrendSummary(searchParams) {
   const scoreQuery = buildTokenTrendScoreQuery(searchParams)
   const versionsQuery = buildTokenTrendVersionIntervalsQuery(searchParams)
   const modelFirstSeenQuery = buildTokenTrendModelFirstSeenQuery(searchParams)
-  const [
-    hoursResult,
-    healthResult,
-    scoreResult,
-    versionsResult,
-    modelFirstSeenResult,
-  ] = await runTasksWithConcurrency(
-    [
-      () => queryReportDatabase(hoursQuery.sql, hoursQuery.values),
-      () => queryReportDatabase(healthQuery.sql, healthQuery.values),
-      () => queryReportDatabase(scoreQuery.sql, scoreQuery.values),
-      () => queryReportDatabase(versionsQuery.sql, versionsQuery.values),
-      () =>
-        queryReportDatabase(
-          modelFirstSeenQuery.sql,
-          modelFirstSeenQuery.values
-        ),
-    ],
-    REPORT_SQL_FANOUT_CONCURRENCY
-  )
+  try {
+    const [
+      hoursResult,
+      healthResult,
+      scoreResult,
+      versionsResult,
+      modelFirstSeenResult,
+    ] = await runTasksWithConcurrency(
+      [
+        () =>
+          queryReportDatabase(hoursQuery.sql, hoursQuery.values, {
+            statementTimeoutMs: TOKEN_TREND_SUMMARY_STATEMENT_TIMEOUT_MS,
+          }),
+        () =>
+          queryReportDatabase(healthQuery.sql, healthQuery.values, {
+            statementTimeoutMs: TOKEN_TREND_SUMMARY_STATEMENT_TIMEOUT_MS,
+          }),
+        () =>
+          queryReportDatabase(scoreQuery.sql, scoreQuery.values, {
+            statementTimeoutMs: TOKEN_TREND_SUMMARY_STATEMENT_TIMEOUT_MS,
+          }),
+        () =>
+          queryReportDatabase(versionsQuery.sql, versionsQuery.values, {
+            statementTimeoutMs: TOKEN_TREND_SUMMARY_STATEMENT_TIMEOUT_MS,
+          }),
+        () =>
+          queryReportDatabase(
+            modelFirstSeenQuery.sql,
+            modelFirstSeenQuery.values,
+            {
+              statementTimeoutMs: TOKEN_TREND_SUMMARY_STATEMENT_TIMEOUT_MS,
+            }
+          ),
+      ],
+      REPORT_SQL_FANOUT_CONCURRENCY
+    )
 
-  return {
-    metadata: {
-      from: parseDateParam(searchParams.get('from'), defaultFromDate),
-      to: parseDateParam(searchParams.get('to'), defaultToDate),
-    },
-    tokenTrendHours: hoursResult.rows.map(normalizeTokenTrendHourRow),
-    tokenTrendHealth: healthResult.rows.map(normalizeProviderLatencyHealthRow),
-    tokenTrendScores: scoreResult.rows.map(normalizeTokenTrendScoreRow),
-    tokenTrendVersions: versionsResult.rows.map(
-      normalizeTokenTrendVersionIntervalRow
-    ),
-    tokenTrendModelFirstSeen: modelFirstSeenResult.rows.map(
-      normalizeTokenTrendModelFirstSeenRow
-    ),
+    return {
+      metadata: buildUsageTokenTrendSummaryMetadata(searchParams, {
+        tokenTrendSummaryStatementTimeoutMs:
+          TOKEN_TREND_SUMMARY_STATEMENT_TIMEOUT_MS,
+      }),
+      tokenTrendHours: hoursResult.rows.map(normalizeTokenTrendHourRow),
+      tokenTrendHealth: healthResult.rows.map(normalizeProviderLatencyHealthRow),
+      tokenTrendScores: scoreResult.rows.map(normalizeTokenTrendScoreRow),
+      tokenTrendVersions: versionsResult.rows.map(
+        normalizeTokenTrendVersionIntervalRow
+      ),
+      tokenTrendModelFirstSeen: modelFirstSeenResult.rows.map(
+        normalizeTokenTrendModelFirstSeenRow
+      ),
+    }
+  } catch (error) {
+    if (isDatabaseTimeoutError(error)) {
+      return buildDegradedUsageTokenTrendSummaryReport(searchParams)
+    }
+    throw error
   }
 }
 

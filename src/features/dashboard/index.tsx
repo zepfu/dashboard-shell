@@ -855,6 +855,7 @@ export function Dashboard(): ReactElement {
             reportFetching={summaryFetching}
             quotasFetching={quotasFetching}
             quotaHistory={quotaHistoryData?.quotaHistory ?? []}
+            quotaHistoryMetadata={quotaHistoryData?.metadata}
             quotaHistoryFetching={quotaHistoryFetching}
             quotaRangeHistory={quotaRangeHistoryData?.quotaRangeHistory ?? []}
             quotaRangeHistoryFetching={quotaRangeHistoryFetching}
