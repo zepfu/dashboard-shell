@@ -11,9 +11,10 @@
 /**
  * Canonical provider keys — always 8, in fixed order.
  *
- * Wave 11 PR2 (11-f): the dashboard always shows all 8 canonical providers so
- * the status grid (7 providers + aggregate) is fully populated regardless of
- * which providers the API returns in a given time range.
+ * Wave 11 PR2 (11-f): the dashboard keeps all 8 canonical providers available
+ * for attribution, trend, ledger, alerts, and comparison surfaces regardless
+ * of which providers the API returns in a given time range. Provider Status may
+ * choose a smaller display list and roll provider detail into another card.
  *
  * Resolves S1-8: antigravity was missing from the 7-entry list in
  * use-alerts-from-anomalies.ts; nvidia_nim lane def is required.

@@ -23,7 +23,7 @@ import {
 } from './agent-quality'
 import { CANONICAL_PROVIDERS } from './provider-identity'
 import { keyFor } from './quota-bars/fields'
-import { canonicalProvider } from './usage-report-display'
+import { canonicalProvider, providerAliases } from './usage-report-display'
 
 // ---------------------------------------------------------------------------
 // computeFleetErrors lives in usage-report-display.ts (lib) so the helper
@@ -619,16 +619,19 @@ export function buildTopModels(
     traces: number
   }[],
   provider: string,
-  healthRows: UsageReportProviderLatencyHealthRow[]
+  healthRows: UsageReportProviderLatencyHealthRow[],
+  aliases: readonly string[] = providerAliases(provider)
 ): TopModelRow[] {
   // 20-PhosphorDash Fix ⚠-W19-1: canonicalize the target provider so that
   // callers passing 'google' correctly match health rows stored as 'gemini'.
   // Without this, all Google top-model .p95 cells render '0ms' despite real
   // latency data being available in providerLatencyHealth.
-  const targetCanonical = canonicalProvider(provider)
+  const sourceCanonicals = new Set(
+    aliases.map((alias) => canonicalProvider(alias))
+  )
 
   return rows
-    .filter((r) => r.provider.toLowerCase() === provider.toLowerCase())
+    .filter((r) => aliases.includes(r.provider.toLowerCase()))
     .sort((a, b) => b.token_total - a.token_total)
     .slice(0, 3)
     .map((r) => {
@@ -640,7 +643,7 @@ export function buildTopModels(
       const lowerModel = r.model.toLowerCase()
       const matchingHealthRow = healthRows.find(
         (h) =>
-          canonicalProvider(h.provider) === targetCanonical &&
+          sourceCanonicals.has(canonicalProvider(h.provider)) &&
           h.model.toLowerCase() === lowerModel &&
           (h.upstream_p95_ms ?? h.total_p95_ms) !== null
       )

@@ -153,26 +153,21 @@ export function buildProviderLanes(
   const laneDefs = PROVIDER_LANE_DEFS[providerLower]
   if (laneDefs === undefined || laneDefs.length === 0) return []
 
-  // Pre-filter quota rows to this provider.
-  const providerQuotas = allQuotaRows.filter(
-    (r) => r.provider.toLowerCase() === providerLower
-  )
-
-  // Pre-filter history rows to this provider (handle aliases e.g. gemini→google).
-  const aliases = providerAliases(providerLower)
-  const providerHistory = historyRows.filter((h) =>
-    aliases.includes(h.provider.toLowerCase())
-  )
-
   const result: QuotaLane[] = []
 
   for (const def of laneDefs) {
+    const laneProvider = (def.sourceProvider ?? providerLower).toLowerCase()
+    const laneAliases = providerAliases(laneProvider)
+    const laneQuotas = allQuotaRows.filter((r) =>
+      laneAliases.includes(r.provider.toLowerCase())
+    )
+
     // ── 1. Build current bar ────────────────────────────────────────────────
     let currentBar: QuotaBarGroup | null = null
 
-    if (providerLower === 'google' && def.googleClass !== null) {
+    if (laneProvider === 'google' && def.googleClass !== null) {
       const bestRow = pickBestGoogleQuotaRowForClass(
-        providerQuotas,
+        laneQuotas,
         def.googleClass
       )
       if (bestRow !== null) {
@@ -181,7 +176,7 @@ export function buildProviderLanes(
           // Aggregate short_usage_breakdown across ALL same-class rows so that
           // split quota rows (e.g. gemini-2.5-flash-lite vs gemini-3.1-flash-lite-preview)
           // are merged into one class-bucket tooltip instead of showing "— —".
-          const mergedBreakdown = providerQuotas
+          const mergedBreakdown = laneQuotas
             .filter(
               (r) =>
                 r.model !== null &&
@@ -200,14 +195,14 @@ export function buildProviderLanes(
           }
         }
       }
-    } else if (providerLower === 'antigravity' && def.quotaKey !== undefined) {
-      const row = providerQuotas.find((quota) => quota.model === def.quotaKey)
+    } else if (laneProvider === 'antigravity' && def.quotaKey !== undefined) {
+      const row = laneQuotas.find((quota) => quota.model === def.quotaKey)
       if (row !== undefined) {
         currentBar = makeQuotaBarGroup(def.laneLabel, row, 'wtus')
       }
-    } else if (providerLower === 'xai') {
+    } else if (laneProvider === 'xai') {
       // xAI: aggregate all rows under monthly.
-      for (const row of providerQuotas) {
+      for (const row of laneQuotas) {
         const g = makeQuotaBarGroup(def.laneLabel, row, 'monthly')
         if (g !== null) {
           currentBar = g
@@ -216,7 +211,7 @@ export function buildProviderLanes(
       }
     } else {
       // Anthropic / OpenAI: all quota data lives in the model=null row.
-      const allRow = providerQuotas.find((r) => r.model === null)
+      const allRow = laneQuotas.find((r) => r.model === null)
       if (allRow !== undefined) {
         const interval = ((): Parameters<typeof makeQuotaBarGroup>[2] => {
           switch (def.quotaType) {
@@ -237,7 +232,7 @@ export function buildProviderLanes(
           }
         })()
         const g =
-          providerLower === 'openai'
+          laneProvider === 'openai'
             ? makeQuotaBarGroupAlways(def.laneLabel, allRow, interval)
             : makeQuotaBarGroup(def.laneLabel, allRow, interval)
         if (g !== null) {
@@ -248,18 +243,19 @@ export function buildProviderLanes(
 
     // ── 2. Build prior bars ─────────────────────────────────────────────────
     // Filter history rows to this lane's quota_type (+ Google class).
-    const laneHistory = shouldSuppressProviderLanePriorBars(providerLower, def)
+    const laneHistory = shouldSuppressProviderLanePriorBars(laneProvider, def)
       ? []
-      : providerHistory.filter((h) => {
+      : historyRows.filter((h) => {
+          if (!laneAliases.includes(h.provider.toLowerCase())) return false
           const htLower = h.quota_type.toLowerCase()
           if (htLower !== quotaTypeToLaneKey(def.quotaType)) return false
           // Google: additionally filter by model class.
-          if (providerLower === 'google' && def.googleClass !== null) {
+          if (laneProvider === 'google' && def.googleClass !== null) {
             if (h.model === null) return false
             const cls = classifyGeminiModel(h.model)
             return cls === def.googleClass
           }
-          if (providerLower === 'antigravity' && def.quotaKey !== undefined) {
+          if (laneProvider === 'antigravity' && def.quotaKey !== undefined) {
             return h.model === def.quotaKey
           }
           return true
@@ -311,7 +307,7 @@ export function buildProviderLanes(
       if (seen.has(roundedSlot)) continue
       seen.add(roundedSlot)
 
-      priorBars.push(buildPriorBarFromHistory(h, providerLower))
+      priorBars.push(buildPriorBarFromHistory(h, laneProvider))
     }
 
     result.push({

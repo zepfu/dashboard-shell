@@ -15,11 +15,11 @@ export function buildProviderMetrics(
   provider: string,
   healthRows: UsageReportProviderLatencyHealthRow[],
   rows: UsageReportRow[],
-  now: Date = new Date()
+  now: Date = new Date(),
+  aliases: readonly string[] = providerAliases(provider)
 ): ProviderMetrics {
   // 15-B.2: expand canonical provider key to all DB aliases
   // (e.g. 'google' → ['google','gemini'] so gemini health rows are included)
-  const aliases = providerAliases(provider)
   const providerHealthRows = healthRows.filter((r) =>
     aliases.includes(r.provider.toLowerCase())
   )

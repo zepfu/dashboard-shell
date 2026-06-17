@@ -62,6 +62,7 @@ import {
   computeFleetErrors,
   computeFleetP95,
   providerBrandHex,
+  providerAliases,
 } from '../lib/usage-report-display'
 import { useControllableState } from '../lib/use-controllable-state'
 import { AggregateCard } from './aggregate-card'
@@ -118,6 +119,13 @@ function resolveProviderHealthColumnCount(viewportWidth: number): number {
 function getProviderHealthColumnCount(): number {
   if (typeof window === 'undefined') return 4
   return resolveProviderHealthColumnCount(window.innerWidth)
+}
+
+function providerHealthCardAliases(provider: string): readonly string[] {
+  const aliases = providerAliases(provider)
+  if (provider !== 'google') return aliases
+
+  return [...new Set([...aliases, 'antigravity'])]
 }
 
 /**
@@ -831,6 +839,10 @@ export default function PhosphorDashboard({
   })
 
   const providers = useMemo(() => deriveProviders(), [])
+  const providerHealthCardProviders = useMemo(
+    () => providers.filter((provider) => provider !== 'antigravity'),
+    [providers]
+  )
   const [providerHealthColumnCount, setProviderHealthColumnCount] = useState(
     () => getProviderHealthColumnCount()
   )
@@ -875,7 +887,8 @@ export default function PhosphorDashboard({
     for (const row of quotaRangeHistoryProp ??
       report?.quotaRangeHistory ??
       []) {
-      const provider = canonicalProvider(row.provider)
+      const canonical = canonicalProvider(row.provider)
+      const provider = canonical === 'antigravity' ? 'google' : canonical
       const rows = map.get(provider) ?? []
       rows.push(row)
       map.set(provider, rows)
@@ -1307,63 +1320,70 @@ export default function PhosphorDashboard({
                     key={`provider-health-column-${columnIndex.toString()}`}
                     className={`provider-health-summary-column ${styles['provider-health-summary-column']}`}
                   >
-                    {providers.map((provider, providerIndex) => {
-                      if (
-                        providerIndex % providerHealthColumnCount !==
-                        columnIndex
-                      ) {
-                        return null
-                      }
+                    {providerHealthCardProviders.map(
+                      (provider, providerIndex) => {
+                        if (
+                          providerIndex % providerHealthColumnCount !==
+                          columnIndex
+                        ) {
+                          return null
+                        }
 
-                      const config: ProviderCardConfig = {
-                        provider,
-                        // Wave 12 Fix 1: use reference brand hex for card header name color
-                        color: providerBrandHex(provider),
-                      }
-                      const metrics = buildProviderMetrics(
-                        provider,
-                        healthRows,
-                        report?.rows ?? []
-                      )
-                      const cells = padHealthCells(
-                        healthRows,
-                        provider,
-                        providerErrorObservations
-                      )
-                      // Wave 41: build structured QuotaLane[] for providers with lane
-                      // definitions. Each lane groups
-                      // the current bar + prior bars for a single quota type side-by-side.
-                      // Providers without lane defs (nvidia_nim, local) are not
-                      // rendered in the status grid (no lane defs = no quota bars).
-                      const lanes = buildProviderLanes(
-                        provider,
-                        quotaRows,
-                        quotaHistoryRows
-                      )
-                      const topModels = buildTopModels(
-                        providerStatusUsage,
-                        provider,
-                        healthRows
-                      )
+                        const config: ProviderCardConfig = {
+                          provider,
+                          // Wave 12 Fix 1: use reference brand hex for card header name color
+                          color: providerBrandHex(provider),
+                        }
+                        const aliases = providerHealthCardAliases(provider)
+                        const metrics = buildProviderMetrics(
+                          provider,
+                          healthRows,
+                          report?.rows ?? [],
+                          undefined,
+                          aliases
+                        )
+                        const cells = padHealthCells(
+                          healthRows,
+                          provider,
+                          providerErrorObservations,
+                          aliases
+                        )
+                        // Wave 41: build structured QuotaLane[] for providers with lane
+                        // definitions. Each lane groups
+                        // the current bar + prior bars for a single quota type side-by-side.
+                        // Providers without lane defs (nvidia_nim, local) are not
+                        // rendered in the status grid (no lane defs = no quota bars).
+                        const lanes = buildProviderLanes(
+                          provider,
+                          quotaRows,
+                          quotaHistoryRows
+                        )
+                        const topModels = buildTopModels(
+                          providerStatusUsage,
+                          provider,
+                          healthRows,
+                          aliases
+                        )
 
-                      return (
-                        <ProviderCard
-                          key={provider}
-                          config={config}
-                          data={metrics}
-                          healthCells={cells}
-                          quotas={[]}
-                          lanes={lanes.length > 0 ? lanes : undefined}
-                          anomalies={anomalies}
-                          topModels={topModels}
-                          localHealthItems={
-                            provider === 'local'
-                              ? (report?.localHealth ?? [])
-                              : []
-                          }
-                        />
-                      )
-                    })}
+                        return (
+                          <ProviderCard
+                            key={provider}
+                            config={config}
+                            data={metrics}
+                            healthCells={cells}
+                            quotas={[]}
+                            lanes={lanes.length > 0 ? lanes : undefined}
+                            anomalies={anomalies}
+                            topModels={topModels}
+                            localHealthItems={
+                              provider === 'local'
+                                ? (report?.localHealth ?? [])
+                                : []
+                            }
+                          />
+                        )
+                      }
+                    )}
                     {columnIndex === providerHealthColumnCount - 1 && (
                       <AggregateCard
                         config={aggregateConfig}
@@ -1387,7 +1407,7 @@ export default function PhosphorDashboard({
           <div
             className={`provider-summary provider-quota-summary ${styles['provider-summary-grid']}`}
           >
-            {providers.map((provider) => (
+            {providerHealthCardProviders.map((provider) => (
               <ProviderQuotaHistoryBucket
                 key={`quota-${provider}`}
                 provider={provider}

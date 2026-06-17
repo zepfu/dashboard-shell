@@ -528,10 +528,10 @@ function padHealthCellsFromRows(
 export function padHealthCells(
   rows: UsageReportProviderLatencyHealthRow[],
   provider: string,
-  errorObservations: UsageReportProviderErrorObservationRow[] = []
+  errorObservations: UsageReportProviderErrorObservationRow[] = [],
+  aliases: readonly string[] = providerAliases(provider)
 ): CellDef[] {
   // 15-B.2: use alias map so 'google' also picks up 'gemini' health rows
-  const aliases = providerAliases(provider)
   const providerRows = rows.filter((r) =>
     aliases.includes(r.provider.toLowerCase())
   )

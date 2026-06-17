@@ -48,6 +48,7 @@ import {
   fmtIntervalCompact,
   buildPriorBarFromHistory,
   buildTopModels,
+  buildProviderQuotaHistoryTabs,
 } from './phosphor-dashboard.testkit'
 
 // ---------------------------------------------------------------------------
@@ -366,7 +367,7 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
           .filter(Boolean)
       ).toContain('Σ AGGREGATE TOTALS')
       expect(columns.at(0)?.textContent).not.toContain('Σ AGGREGATE TOTALS')
-      expect(columns.at(-1)?.textContent).toContain('LOCAL')
+      expect(columns.at(-2)?.textContent).toContain('LOCAL')
       expect(columns.at(-1)?.textContent).toContain('Σ AGGREGATE TOTALS')
       expect(
         columns.at(-1)?.querySelector('.provider-card.aggregate')
@@ -377,6 +378,102 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
         value: originalInnerWidth,
       })
     }
+  })
+
+  test('test_status_health_rolls_antigravity_detail_into_google_card', async () => {
+    const makeAntigravityQuotaRow = (
+      quotaKey: string,
+      remainingPct: number
+    ): UsageReportQuotaRow => ({
+      provider: 'antigravity',
+      model: quotaKey,
+      weekly_remaining_pct: null,
+      weekly_reset_at: null,
+      weekly_interval_start: null,
+      weekly_interval_end: null,
+      weekly_active: false,
+      weekly_usage_tokens: 0,
+      weekly_usage_breakdown: [],
+      short_remaining_pct: null,
+      short_reset_at: null,
+      short_interval_start: null,
+      short_interval_end: null,
+      short_active: false,
+      short_usage_tokens: 0,
+      short_usage_breakdown: [],
+      special_remaining_pct: null,
+      special_reset_at: null,
+      special_interval_start: null,
+      special_interval_end: null,
+      special_active: false,
+      special_usage_tokens: 0,
+      special_usage_breakdown: [],
+      short_special_remaining_pct: null,
+      short_special_reset_at: null,
+      short_special_interval_start: null,
+      short_special_interval_end: null,
+      short_special_active: false,
+      short_special_usage_tokens: 0,
+      short_special_usage_breakdown: [],
+      monthly_remaining_pct: null,
+      monthly_reset_at: null,
+      monthly_interval_start: null,
+      monthly_interval_end: null,
+      monthly_active: false,
+      monthly_usage_tokens: 0,
+      monthly_usage_breakdown: [],
+      wtus_remaining_pct: remainingPct,
+      wtus_reset_at: '2026-06-06T00:04:07Z',
+      wtus_interval_start: '2026-06-05T19:04:12Z',
+      wtus_interval_end: '9999-12-31T00:00:00Z',
+      wtus_active: true,
+      wtus_usage_tokens: 0,
+      wtus_usage_breakdown: [],
+    })
+    let container: HTMLElement | undefined
+
+    await act(async () => {
+      const result = render(
+        <Wrapper>
+          <PhosphorDashboard
+            from='2026-05-20'
+            to='2026-05-21'
+            report={MOCK_REPORT}
+            reportLoading={false}
+            showComparison={false}
+            quotas={[
+              makeAntigravityQuotaRow(
+                'antigravity_code_assist:gemini_pool',
+                88
+              ),
+              makeAntigravityQuotaRow(
+                'antigravity_code_assist:vertex_pool',
+                76
+              ),
+            ]}
+            quotaHistory={[]}
+          />
+        </Wrapper>
+      )
+      container = result.container
+    })
+
+    const status = container?.querySelector('section#status') as HTMLElement
+    const providerNames = Array.from(
+      status.querySelectorAll('.provider-name')
+    ).map((node) => node.textContent?.trim())
+
+    expect(providerNames).toContain('GOOGLE')
+    expect(providerNames).not.toContain('ANTIGRAVITY')
+
+    const googleName = Array.from(
+      status.querySelectorAll('.provider-name')
+    ).find((node) => node.textContent?.trim() === 'GOOGLE')
+    const googleCard = googleName?.closest('.provider-card')
+
+    expect(googleCard).not.toBeNull()
+    expect(googleCard).toHaveTextContent('Antigravity Gemini Pool · WTUs')
+    expect(googleCard).toHaveTextContent('Antigravity Vertex Pool · WTUs')
   })
 
   test('test_status_health_shows_degraded_badge_for_quota_history_timeout', async () => {
@@ -3043,6 +3140,112 @@ describe('Wave 41 — buildProviderLanes', () => {
     expect(lanes[1].currentBar?.consumedPct).toBe(24)
     expect(lanes[0].priorBars).toHaveLength(1)
     expect(lanes[1].priorBars).toHaveLength(1)
+  })
+
+  test('test_google_lanes_include_antigravity_wtus_detail', () => {
+    const makeAntigravityRow = (
+      quotaKey: string,
+      remainingPct: number
+    ): UsageReportQuotaRow => ({
+      ...makeAnthropicQuotaRow(),
+      provider: 'antigravity',
+      model: quotaKey,
+      weekly_active: false,
+      weekly_remaining_pct: null,
+      short_active: false,
+      short_remaining_pct: null,
+      special_active: false,
+      special_remaining_pct: null,
+      short_special_active: false,
+      short_special_remaining_pct: null,
+      monthly_active: false,
+      monthly_remaining_pct: null,
+      wtus_remaining_pct: remainingPct,
+      wtus_reset_at: '2026-06-06T00:04:07Z',
+      wtus_interval_start: '2026-06-05T19:04:12Z',
+      wtus_interval_end: '9999-12-31T00:00:00Z',
+      wtus_active: true,
+      wtus_usage_tokens: 0,
+      wtus_usage_breakdown: [],
+    })
+    const historyRows: UsageReportQuotaHistoryRow[] = [
+      makeHistoryRow({
+        provider: 'antigravity',
+        model: 'antigravity_code_assist:gemini_pool',
+        quota_type: 'wtus',
+        expected_reset_at: '2026-06-05T14:51:55Z',
+        interval_start: '2026-06-05T10:52:21Z',
+        interval_end: '2026-06-05T14:51:55Z',
+        min_remaining_pct: 100,
+      }),
+      makeHistoryRow({
+        provider: 'antigravity',
+        model: 'antigravity_code_assist:vertex_pool',
+        quota_type: 'wtus',
+        expected_reset_at: '2026-06-05T15:52:18Z',
+        interval_start: '2026-06-05T10:52:21Z',
+        interval_end: '2026-06-05T15:52:18Z',
+        min_remaining_pct: 100,
+      }),
+    ]
+
+    const lanes = buildProviderLanes(
+      'google',
+      [
+        makeAntigravityRow('antigravity_code_assist:gemini_pool', 88),
+        makeAntigravityRow('antigravity_code_assist:vertex_pool', 76),
+      ],
+      historyRows
+    )
+
+    expect(lanes.map((lane) => lane.laneKey)).toEqual([
+      'google/antigravity-gemini-pool',
+      'google/antigravity-vertex-pool',
+    ])
+    expect(lanes.map((lane) => lane.laneLabel)).toEqual([
+      'Antigravity Gemini Pool · WTUs',
+      'Antigravity Vertex Pool · WTUs',
+    ])
+    expect(lanes[0].currentBar?.consumedPct).toBe(12)
+    expect(lanes[1].currentBar?.consumedPct).toBe(24)
+    expect(lanes[0].priorBars).toHaveLength(1)
+    expect(lanes[1].priorBars).toHaveLength(1)
+  })
+
+  test('test_google_quota_history_tabs_include_antigravity_wtus_detail', () => {
+    const tabs = buildProviderQuotaHistoryTabs('google', [
+      makeHistoryRow({
+        provider: 'antigravity',
+        model: 'antigravity_code_assist:gemini_pool',
+        quota_type: 'wtus',
+        expected_reset_at: '2026-06-05T14:51:55Z',
+        interval_start: '2026-06-05T10:52:21Z',
+        interval_end: '2026-06-05T14:51:55Z',
+        min_remaining_pct: 88,
+      }),
+      makeHistoryRow({
+        provider: 'antigravity',
+        model: 'antigravity_code_assist:vertex_pool',
+        quota_type: 'wtus',
+        expected_reset_at: '2026-06-05T15:52:18Z',
+        interval_start: '2026-06-05T10:52:21Z',
+        interval_end: '2026-06-05T15:52:18Z',
+        min_remaining_pct: 76,
+      }),
+    ])
+
+    expect(tabs.map((tab) => tab.tabKey)).toContain(
+      'google/antigravity-gemini-pool'
+    )
+    expect(tabs.map((tab) => tab.tabKey)).toContain(
+      'google/antigravity-vertex-pool'
+    )
+    expect(
+      tabs.find((tab) => tab.tabKey === 'google/antigravity-gemini-pool')?.rows
+    ).toHaveLength(1)
+    expect(
+      tabs.find((tab) => tab.tabKey === 'google/antigravity-vertex-pool')?.rows
+    ).toHaveLength(1)
   })
 
   test('test_xai_has_1_monthly_lane', () => {

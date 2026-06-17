@@ -9,6 +9,7 @@ export interface LaneDef {
   quotaType: string
   googleClass: string | null
   quotaKey?: string
+  sourceProvider?: string
 }
 
 const ANTHROPIC_LANE_DEFS: LaneDef[] = [
@@ -59,6 +60,23 @@ const OPENAI_LANE_DEFS: LaneDef[] = [
   },
 ]
 
+const ANTIGRAVITY_LANE_DEFS: LaneDef[] = [
+  {
+    laneKey: 'antigravity/gemini-pool',
+    laneLabel: 'Gemini Pool · WTUs',
+    quotaType: 'wtus',
+    googleClass: null,
+    quotaKey: 'antigravity_code_assist:gemini_pool',
+  },
+  {
+    laneKey: 'antigravity/vertex-pool',
+    laneLabel: 'Vertex Pool · WTUs',
+    quotaType: 'wtus',
+    googleClass: null,
+    quotaKey: 'antigravity_code_assist:vertex_pool',
+  },
+]
+
 const GOOGLE_LANE_DEFS: LaneDef[] = [
   // flash-lite MUST be checked before flash (substring containment).
   {
@@ -79,22 +97,21 @@ const GOOGLE_LANE_DEFS: LaneDef[] = [
     quotaType: 'short',
     googleClass: 'gemini-pro',
   },
-]
-
-const ANTIGRAVITY_LANE_DEFS: LaneDef[] = [
   {
-    laneKey: 'antigravity/gemini-pool',
-    laneLabel: 'Gemini Pool · WTUs',
+    laneKey: 'google/antigravity-gemini-pool',
+    laneLabel: 'Antigravity Gemini Pool · WTUs',
     quotaType: 'wtus',
     googleClass: null,
     quotaKey: 'antigravity_code_assist:gemini_pool',
+    sourceProvider: 'antigravity',
   },
   {
-    laneKey: 'antigravity/vertex-pool',
-    laneLabel: 'Vertex Pool · WTUs',
+    laneKey: 'google/antigravity-vertex-pool',
+    laneLabel: 'Antigravity Vertex Pool · WTUs',
     quotaType: 'wtus',
     googleClass: null,
     quotaKey: 'antigravity_code_assist:vertex_pool',
+    sourceProvider: 'antigravity',
   },
 ]
 
