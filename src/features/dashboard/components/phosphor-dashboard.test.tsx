@@ -308,46 +308,75 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
     expect(onRefreshQuotaRangeHistory).toHaveBeenCalledTimes(1)
   })
 
-  test('test_status_health_provider_cards_use_masonry_layout', async () => {
+  test('test_status_health_provider_cards_use_masonry_layout_with_trailing_aggregate', async () => {
+    const originalInnerWidth = window.innerWidth
     let container: HTMLElement | undefined
 
-    await act(async () => {
-      const result = render(
-        <Wrapper>
-          <PhosphorDashboard
-            from='2026-05-20'
-            to='2026-05-21'
-            report={MOCK_REPORT}
-            reportLoading={false}
-            showComparison={false}
-            quotas={[]}
-            quotaHistory={[]}
-          />
-        </Wrapper>
-      )
-      container = result.container
+    Object.defineProperty(window, 'innerWidth', {
+      configurable: true,
+      value: 2100,
     })
 
-    const providerLayout = container?.querySelector(
-      'section#status .provider-health-summary'
-    ) as HTMLElement | null
-
-    expect(providerLayout).not.toBeNull()
-    expect(providerLayout).toHaveClass('provider-health-summary')
-    expect(providerLayout?.className).not.toContain('provider-summary-grid')
-    expect(providerLayout?.classList.contains('provider-summary')).toBe(false)
-
-    const columns = Array.from(
-      providerLayout?.querySelectorAll('.provider-health-summary-column') ?? []
-    )
-    expect(columns.length).toBeGreaterThan(0)
-    expect(
-      columns.some((column) =>
-        Array.from(column.children).some((child) =>
-          child.classList.contains('provider-card')
+    try {
+      await act(async () => {
+        const result = render(
+          <Wrapper>
+            <PhosphorDashboard
+              from='2026-05-20'
+              to='2026-05-21'
+              report={MOCK_REPORT}
+              reportLoading={false}
+              showComparison={false}
+              quotas={[]}
+              quotaHistory={[]}
+            />
+          </Wrapper>
         )
+        container = result.container
+      })
+
+      const providerLayout = container?.querySelector(
+        'section#status .provider-health-summary'
+      ) as HTMLElement | null
+
+      expect(providerLayout).not.toBeNull()
+      expect(providerLayout).toHaveClass('provider-health-summary')
+      expect(providerLayout?.className).not.toContain('provider-summary-grid')
+      expect(providerLayout?.classList.contains('provider-summary')).toBe(false)
+
+      const columns = Array.from(
+        providerLayout?.querySelectorAll('.provider-health-summary-column') ??
+          []
       )
-    ).toBe(true)
+      expect(columns).toHaveLength(8)
+      expect(
+        columns.some((column) =>
+          Array.from(column.children).some((child) =>
+            child.classList.contains('provider-card')
+          )
+        )
+      ).toBe(true)
+      expect(
+        columns
+          .flatMap((column) =>
+            Array.from(column.querySelectorAll('.provider-name')).map((node) =>
+              node.textContent?.trim()
+            )
+          )
+          .filter(Boolean)
+      ).toContain('Σ AGGREGATE TOTALS')
+      expect(columns.at(0)?.textContent).not.toContain('Σ AGGREGATE TOTALS')
+      expect(columns.at(-1)?.textContent).toContain('LOCAL')
+      expect(columns.at(-1)?.textContent).toContain('Σ AGGREGATE TOTALS')
+      expect(
+        columns.at(-1)?.querySelector('.provider-card.aggregate')
+      ).not.toBeNull()
+    } finally {
+      Object.defineProperty(window, 'innerWidth', {
+        configurable: true,
+        value: originalInnerWidth,
+      })
+    }
   })
 
   test('test_status_health_shows_degraded_badge_for_quota_history_timeout', async () => {

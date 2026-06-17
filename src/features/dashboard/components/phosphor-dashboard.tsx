@@ -1364,9 +1364,7 @@ export default function PhosphorDashboard({
                         />
                       )
                     })}
-                    {providers.length % providerHealthColumnCount ===
-                      columnIndex && (
-                      /* D3: AggregateCard as 8th peer — Σ Aggregate Totals in the provider row */
+                    {columnIndex === providerHealthColumnCount - 1 && (
                       <AggregateCard
                         config={aggregateConfig}
                         data={aggregateMetrics}

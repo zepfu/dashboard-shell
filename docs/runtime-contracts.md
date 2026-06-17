@@ -58,7 +58,9 @@ of the shared Provider Status quota grid. Recent quota-history bars or Local
 health chips may make one provider card taller than its neighbors, but sparse
 provider cards should keep compact heights and later cards should pack upward
 inside their column instead of reserving a row sized to the tallest provider
-card.
+card. The aggregate totals card is the trailing Health card and belongs in the
+trailing responsive column; it must not be assigned from provider-count modulo
+column-count because the canonical provider list currently has eight entries.
 
 Secondary General dashboard reports must fail visibly instead of hanging the
 page-load path. The `token-trend-summary` and `quota-history` report routes use
