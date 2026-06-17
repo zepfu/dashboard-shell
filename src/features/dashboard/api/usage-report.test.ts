@@ -728,6 +728,9 @@ describe('D1-223/224/225 usage identity and billing contracts', () => {
             from: '2026-05-20',
             to: '2026-05-21',
             generatedAt: '2026-05-21T00:00:00.000Z',
+            degraded: true,
+            degradedReason: 'database_timeout',
+            toolActivityRecentRowLimit: 5000,
           },
           toolActivity: [
             {
@@ -751,6 +754,11 @@ describe('D1-223/224/225 usage identity and billing contracts', () => {
     } as Parameters<typeof fetchUsageReportToolActivity>[0])
 
     expect(capturedUrl?.searchParams.get('agent_id')).toBe('agent_harness')
+    expect(response.metadata).toMatchObject({
+      degraded: true,
+      degradedReason: 'database_timeout',
+      toolActivityRecentRowLimit: 5000,
+    })
     expect(response.toolActivity[0]).toMatchObject({
       provider: 'anthropic',
       model: 'claude-sonnet-4-6',

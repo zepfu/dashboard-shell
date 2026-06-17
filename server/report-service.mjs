@@ -313,7 +313,12 @@ function positiveIntegerEnv(name, fallback, minimum = 1) {
 }
 const TOOL_ACTIVITY_RECENT_ROW_LIMIT = positiveIntegerEnv(
   'SHELL_REPORT_TOOL_ACTIVITY_RECENT_ROW_LIMIT',
-  10_000,
+  5_000,
+  250
+)
+const TOOL_ACTIVITY_STATEMENT_TIMEOUT_MS = positiveIntegerEnv(
+  'SHELL_REPORT_TOOL_ACTIVITY_STATEMENT_TIMEOUT_MS',
+  Math.min(REPORT_DB_STATEMENT_TIMEOUT_MS, 30_000),
   1_000
 )
 const AGENT_SCORE_REASON_RECENT_ROW_LIMIT = positiveIntegerEnv(
@@ -571,10 +576,12 @@ function summarizeReportSql(sql) {
     .slice(0, 180)
 }
 
-async function queryReportDatabase(sql, values) {
+async function queryReportDatabase(sql, values, options = {}) {
   if (!pool) {
     throw new Error('DATABASE_URL is not configured for the shell report service.')
   }
+  const statementTimeoutMs =
+    options.statementTimeoutMs ?? REPORT_DB_STATEMENT_TIMEOUT_MS
   const queryId = reportQueryMetrics.nextQueryId
   reportQueryMetrics.nextQueryId += 1
   const startedAtMs = Date.now()
@@ -591,7 +598,7 @@ async function queryReportDatabase(sql, values) {
       pool,
       sql,
       values,
-      REPORT_DB_STATEMENT_TIMEOUT_MS
+      statementTimeoutMs
     )
     const durationMs = Date.now() - startedAtMs
     reportQueryMetrics.completed += 1
@@ -5565,6 +5572,28 @@ function normalizeToolActivityRow(row) {
   }
 }
 
+function buildUsageToolActivityMetadata(searchParams, extra = {}) {
+  return {
+    from: parseDateParam(searchParams.get('from'), defaultFromDate),
+    to: parseDateParam(searchParams.get('to'), defaultToDate),
+    generatedAt: new Date().toISOString(),
+    toolActivityRecentRowLimit: TOOL_ACTIVITY_RECENT_ROW_LIMIT,
+    ...extra,
+  }
+}
+
+export function buildDegradedUsageToolActivityReport(searchParams) {
+  return {
+    metadata: buildUsageToolActivityMetadata(searchParams, {
+      degraded: true,
+      degradedReason: 'database_timeout',
+      degradedMessage:
+        'Tool activity exceeded the bounded database timeout; showing an empty degraded report.',
+    }),
+    toolActivity: [],
+  }
+}
+
 export function buildSessionDiagnosticsQuery(searchParams) {
   const { from, to, values, whereParts } =
     buildSessionDiagnosticsWhere(searchParams)
@@ -8109,14 +8138,19 @@ async function loadUsageQuotaEstimator(searchParams) {
 
 async function loadUsageToolActivity(searchParams) {
   const query = buildToolActivityQuery(searchParams)
-  const result = await queryReportDatabase(query.sql, query.values)
-  return {
-    metadata: {
-      from: parseDateParam(searchParams.get('from'), defaultFromDate),
-      to: parseDateParam(searchParams.get('to'), defaultToDate),
-      generatedAt: new Date().toISOString(),
-    },
-    toolActivity: result.rows.map(normalizeToolActivityRow),
+  try {
+    const result = await queryReportDatabase(query.sql, query.values, {
+      statementTimeoutMs: TOOL_ACTIVITY_STATEMENT_TIMEOUT_MS,
+    })
+    return {
+      metadata: buildUsageToolActivityMetadata(searchParams),
+      toolActivity: result.rows.map(normalizeToolActivityRow),
+    }
+  } catch (error) {
+    if (isDatabaseTimeoutError(error)) {
+      return buildDegradedUsageToolActivityReport(searchParams)
+    }
+    throw error
   }
 }
 

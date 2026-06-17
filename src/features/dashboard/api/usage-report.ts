@@ -1228,6 +1228,10 @@ export interface UsageReportToolActivityResponse {
     from: string
     to: string
     generatedAt?: string
+    degraded?: boolean
+    degradedReason?: string
+    degradedMessage?: string
+    toolActivityRecentRowLimit?: number
     cacheBackend?: string
     cacheFreshUntil?: string | null
     cacheGeneratedAt?: string | null

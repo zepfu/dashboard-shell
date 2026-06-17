@@ -35,6 +35,7 @@ import {
   buildQuotaEstimatorUsageBucketQuery,
   buildQuotaQuery,
   buildQuotaRangeHistoryQuery,
+  buildDegradedUsageToolActivityReport,
   buildReportQueryPressureQuery,
   buildSessionDiagnosticsQuery,
   buildSourceTableHealthQuery,
@@ -451,7 +452,7 @@ describe('D1-223/224/225 usage identity and billing contracts', () => {
     expect(query.values).toEqual([
       '2026-05-01',
       '2026-05-08',
-      10000,
+      5000,
       ['agent_harness'],
     ])
     expect(query.sql).toContain("NULLIF(to_jsonb(a)->>'agent_id', '')")
@@ -937,7 +938,7 @@ describe('report-service query builders', () => {
       new URLSearchParams({ from: '2026-05-01', to: '2026-05-08' })
     )
 
-    expect(query.values).toEqual(['2026-05-01', '2026-05-08', 10000])
+    expect(query.values).toEqual(['2026-05-01', '2026-05-08', 5000])
     expect(query.sql).toContain('WITH bounds AS')
     expect(query.sql).toContain('recent_activity AS MATERIALIZED')
     expect(query.sql).toContain('tool_rows AS MATERIALIZED')
@@ -945,6 +946,23 @@ describe('report-service query builders', () => {
     expect(query.sql).toContain('JOIN public.session_history sh')
     expect(query.sql).toContain('a.id > b.min_id')
     expect(query.sql).toContain('FROM tool_rows')
+  })
+
+  test('test_buildDegradedUsageToolActivityReport_returns_bounded_timeout_payload', () => {
+    const report = buildDegradedUsageToolActivityReport(
+      new URLSearchParams({ from: '2026-05-01', to: '2026-05-08' })
+    )
+
+    expect(report).toMatchObject({
+      metadata: {
+        from: '2026-05-01',
+        to: '2026-05-08',
+        degraded: true,
+        degradedReason: 'database_timeout',
+        toolActivityRecentRowLimit: 5000,
+      },
+      toolActivity: [],
+    })
   })
 
   test('test_token_trend_signal_queries_cover_full_range_and_hourly_scores', () => {

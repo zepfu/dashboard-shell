@@ -55,9 +55,13 @@ recent rows so the Ledger hover remains useful. `/api/shell/reports/usage/tool-a
 also reads a recent bounded tool-activity window by default, but the browser
 waits for the main usage report before starting the secondary Token Trend and
 tool-activity report requests so cold loads do not fan out every large payload
-at once. Operators can tune those bounds with
+at once. The tool-activity route uses its own bounded statement timeout and, if
+Postgres still cancels the cold query under load, returns a degraded empty
+payload with `metadata.degraded=true` instead of surfacing a raw 500. Operators
+can tune those bounds with
 `SHELL_REPORT_AGENT_SCORE_REASON_RECENT_ROW_LIMIT` and
-`SHELL_REPORT_TOOL_ACTIVITY_RECENT_ROW_LIMIT`. Provider Status p95 latency is
+`SHELL_REPORT_TOOL_ACTIVITY_RECENT_ROW_LIMIT`, and can tune the route timeout
+with `SHELL_REPORT_TOOL_ACTIVITY_STATEMENT_TIMEOUT_MS`. Provider Status p95 latency is
 displayed only when the report has a passive latency sample for the selected
 provider; an empty value means unmeasured in the current health window, not
 zero-millisecond latency.
