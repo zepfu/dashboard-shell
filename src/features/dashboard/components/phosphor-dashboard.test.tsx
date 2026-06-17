@@ -308,7 +308,7 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
     expect(onRefreshQuotaRangeHistory).toHaveBeenCalledTimes(1)
   })
 
-  test('test_status_health_provider_grid_uses_compact_auto_rows', async () => {
+  test('test_status_health_provider_cards_use_masonry_layout', async () => {
     let container: HTMLElement | undefined
 
     await act(async () => {
@@ -328,15 +328,26 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
       container = result.container
     })
 
-    const providerGrid = container?.querySelector(
-      'section#status .provider-summary'
+    const providerLayout = container?.querySelector(
+      'section#status .provider-health-summary'
     ) as HTMLElement | null
 
-    expect(providerGrid).not.toBeNull()
-    expect(providerGrid).toHaveStyle({
-      alignItems: 'start',
-      gridAutoRows: 'auto',
-    })
+    expect(providerLayout).not.toBeNull()
+    expect(providerLayout).toHaveClass('provider-health-summary')
+    expect(providerLayout?.className).not.toContain('provider-summary-grid')
+    expect(providerLayout?.classList.contains('provider-summary')).toBe(false)
+
+    const columns = Array.from(
+      providerLayout?.querySelectorAll('.provider-health-summary-column') ?? []
+    )
+    expect(columns.length).toBeGreaterThan(0)
+    expect(
+      columns.some((column) =>
+        Array.from(column.children).some((child) =>
+          child.classList.contains('provider-card')
+        )
+      )
+    ).toBe(true)
   })
 
   test('test_health_tab_renders_pgbouncer_sidecar_health', async () => {

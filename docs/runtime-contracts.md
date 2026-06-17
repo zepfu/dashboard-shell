@@ -53,12 +53,12 @@ tooltip. The shell uses `pointer-events: none` with an inner hover zone restorin
 pointer events so the tooltip remains reachable without adding blank space above
 the provider header.
 
-The Provider Status Health grid top-aligns cards and uses automatic grid rows
-instead of stretching all cards or all rows to the tallest provider. Recent
-quota-history bars or Local health chips may make one provider card taller than
-its neighbors, but sparse provider cards should keep compact heights rather than
-rendering large empty panels or forcing later rows to reserve the tallest card's
-height.
+The Provider Status Health card list uses masonry-style column stacks instead
+of the shared Provider Status quota grid. Recent quota-history bars or Local
+health chips may make one provider card taller than its neighbors, but sparse
+provider cards should keep compact heights and later cards should pack upward
+inside their column instead of reserving a row sized to the tallest provider
+card.
 
 ## CSP And Asset Loading
 

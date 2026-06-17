@@ -29,6 +29,35 @@
   }
 }
 
+/* Health cards have uneven heights because active quota lanes vary by provider.
+   Use column stacks here so short cards can pack under earlier cards instead of
+   waiting for the tallest card in a CSS Grid row. */
+.provider-health-summary-masonry {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-top: 12px;
+  gap: 4px;
+}
+
+.provider-health-summary-column {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 4px;
+}
+
+@media (min-width: 1600px) {
+  .provider-health-summary-masonry {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 2100px) {
+  .provider-health-summary-masonry {
+    grid-template-columns: repeat(8, minmax(0, 1fr));
+  }
+}
+
 /* ── Ledger + Repo side-by-side row (Wave 11 PR1 — 11-c) ───────────────── */
 
 /** Below 1600px: stack Model Ledger above Repository Breakdown. */
