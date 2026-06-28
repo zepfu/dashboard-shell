@@ -203,6 +203,18 @@ function SessionDiagnosticsCard({
       row.transcript_attribution?.updated_at ??
       recordString(transcriptDetail, 'updated_at'),
   }
+  const hasGrokSideChannel =
+    diagnosticEntries(row.grok_side_channel, [
+      'endpoint_type',
+      'endpoint_template',
+      'content_type',
+      'body_byte_length',
+      'digest_source',
+      'body_sha256',
+      'json_container_type',
+      'array_length',
+      'top_level_key_types',
+    ]).length > 0
 
   return (
     <article className='status-estimator-lane status-diagnostics-card'>
@@ -238,6 +250,30 @@ function SessionDiagnosticsCard({
           ]}
         />
       </div>
+
+      {hasGrokSideChannel ? (
+        <div className='status-estimator-block'>
+          <strong>Grok side-channel</strong>
+          <DiagnosticKeyValues
+            value={row.grok_side_channel}
+            keys={[
+              'endpoint_type',
+              'endpoint_template',
+              'content_type',
+              'body_byte_length',
+              'digest_source',
+              'body_sha256',
+              'json_container_type',
+              'array_length',
+              'top_level_key_types',
+            ]}
+          />
+          <DiagnosticDetails
+            label='top-level key types'
+            value={row.grok_side_channel?.top_level_key_types}
+          />
+        </div>
+      ) : null}
 
       <div className='status-estimator-block'>
         <strong>Output contract</strong>

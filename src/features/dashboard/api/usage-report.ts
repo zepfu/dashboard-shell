@@ -300,6 +300,8 @@ export interface UsageReportSessionDiagnosticsParams extends UsageReportFilterPa
   session_id?: readonly string[]
   trace_id?: readonly string[]
   litellm_call_id?: readonly string[]
+  grok_side_channel?: boolean | string | null
+  grok_side_channel_endpoint_type?: readonly string[]
   limit?: number
   cacheBust?: string
 }
@@ -986,6 +988,18 @@ export interface UsageReportSessionDiagnosticsRow {
     auth_mode?: string | null
     grok_model_override?: string | null
   } | null
+  grok_side_channel?: {
+    enabled?: boolean | string | null
+    endpoint_type?: string | null
+    endpoint_template?: string | null
+    content_type?: string | null
+    body_byte_length?: number | null
+    body_sha256?: string | null
+    digest_source?: string | null
+    json_container_type?: string | null
+    top_level_key_types?: unknown
+    array_length?: number | null
+  } | null
   output_contract?: {
     usage_output_contract_required_final_phrase?: string | null
     usage_output_contract_required_final_phrase_present?:
@@ -1620,6 +1634,18 @@ export async function fetchUsageReportSessionDiagnostics(
     searchParams,
     'litellm_call_id',
     params.litellm_call_id
+  )
+  if (
+    params.grok_side_channel === true ||
+    params.grok_side_channel === 'true' ||
+    params.grok_side_channel === '1'
+  ) {
+    searchParams.set('grok_side_channel', 'true')
+  }
+  appendStringArrayParam(
+    searchParams,
+    'grok_side_channel_endpoint_type',
+    params.grok_side_channel_endpoint_type
   )
   if (params.limit !== undefined) {
     searchParams.set('limit', String(params.limit))

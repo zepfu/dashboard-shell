@@ -562,6 +562,41 @@ describe('D1-212/215/213/178/221/222 session diagnostics contracts', () => {
     expect(query.sql).toContain('AS alias_route_events')
   })
 
+
+  test('test_buildSessionDiagnosticsQuery_projects_grok_side_channel_metadata', () => {
+    const query = buildSessionDiagnosticsQuery(
+      new URLSearchParams({
+        from: '2026-05-01',
+        to: '2026-05-08',
+        grok_side_channel: 'true',
+        grok_side_channel_endpoint_type: 'register,replicas_update',
+        limit: '50',
+      })
+    )
+
+    expect(query.values).toEqual([
+      '2026-05-01',
+      '2026-05-08',
+      ['register', 'replicas_update'],
+      50,
+    ])
+    expect(query.sql).toContain("metadata->>'grok_side_channel'")
+    expect(query.sql).toContain("metadata->>'grok_side_channel_endpoint_type'")
+    expect(query.sql).toContain("metadata->>'grok_side_channel_endpoint_path_template'")
+    expect(query.sql).toContain("metadata->>'grok_side_channel_request_content_type'")
+    expect(query.sql).toContain("metadata->>'grok_side_channel_request_body_byte_length'")
+    expect(query.sql).toContain("metadata->>'grok_side_channel_request_body_sha256'")
+    expect(query.sql).toContain("metadata->>'grok_side_channel_request_body_digest_source'")
+    expect(query.sql).toContain("metadata->>'grok_side_channel_request_json_container_type'")
+    expect(query.sql).toContain("metadata->'grok_side_channel_request_top_level_key_types'")
+    expect(query.sql).toContain("metadata->>'grok_side_channel_request_array_length'")
+    expect(query.sql).toContain('AS grok_side_channel')
+    expect(query.sql).toContain("'grok_side_channel'::text")
+    expect(query.sql).not.toMatch(/metadata::text/i)
+    expect(query.sql).not.toContain('raw_body')
+    expect(query.sql).not.toContain('authorization')
+  })
+
   test('test_buildSessionDiagnosticsQuery_joins_alias_audit_and_tool_definition_snapshots', () => {
     const query = buildSessionDiagnosticsQuery(
       new URLSearchParams({

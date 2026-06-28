@@ -460,6 +460,67 @@ test('test_real_abort_rejects_with_AbortError', async () => {
   )
 })
 
+test('test_fetchUsageReportSessionDiagnostics_forwards_grok_side_channel_filters', async () => {
+  let capturedUrl: URL | null = null
+
+  server.use(
+    http.get('/api/shell/reports/usage/session-diagnostics', ({ request }) => {
+      capturedUrl = new URL(request.url)
+      return HttpResponse.json({
+        metadata: {
+          from: '2026-05-20',
+          to: '2026-05-21',
+          limit: 25,
+          generatedAt: '2026-05-21T00:00:00.000Z',
+        },
+        sessionDiagnostics: [
+          {
+            provider: 'xai',
+            model: 'grok-composer-2.5-fast',
+            diagnostic_flags: ['grok_side_channel'],
+            grok_side_channel: {
+              enabled: true,
+              endpoint_type: 'register',
+              endpoint_template: '/grok/v1/sessions/register',
+              content_type: 'application/json',
+              body_byte_length: 128,
+              body_sha256: 'abc123deadbeef',
+              digest_source: 'request_body',
+              json_container_type: 'object',
+              top_level_key_types: { session: 'object' },
+              array_length: null,
+            },
+          },
+        ],
+      })
+    })
+  )
+
+  const response = await fetchUsageReportSessionDiagnostics({
+    from: '2026-05-20',
+    to: '2026-05-21',
+    grok_side_channel: true,
+    grok_side_channel_endpoint_type: ['register'],
+    limit: 25,
+  })
+
+  expect(capturedUrl?.searchParams.get('grok_side_channel')).toBe('true')
+  expect(capturedUrl?.searchParams.get('grok_side_channel_endpoint_type')).toBe(
+    'register'
+  )
+  expect(response.sessionDiagnostics[0]?.grok_side_channel).toMatchObject({
+    endpoint_type: 'register',
+    body_sha256: 'abc123deadbeef',
+    digest_source: 'request_body',
+  })
+  const grok = response.sessionDiagnostics[0]?.grok_side_channel
+  expect(grok).toBeDefined()
+  expect(grok).not.toHaveProperty('request_body')
+  expect(grok).not.toHaveProperty('body_raw')
+  expect(grok).not.toHaveProperty('raw_body')
+  expect(JSON.stringify(grok)).not.toContain('RAW_SECRET')
+})
+
 // ---------------------------------------------------------------------------
 // D1-212/215/213/178/221/222 session diagnostics API contracts
 // ---------------------------------------------------------------------------
@@ -469,6 +530,7 @@ describe('D1-212/215/213/178/221/222 session diagnostics API contracts', () => {
     'diagnostic_flags',
     'diagnostic_categories',
     'grok_oauth',
+    'grok_side_channel',
     'output_contract',
     'xai_sanitizer',
     'transcript_attribution',
@@ -506,6 +568,9 @@ describe('D1-212/215/213/178/221/222 session diagnostics API contracts', () => {
     expect(source).toContain('credential_family?:')
     expect(source).toContain('grok_native_oauth_managed?:')
     expect(source).toContain('grok_native_entrypoint?:')
+    expect(source).toContain('endpoint_template?:')
+    expect(source).toContain('body_sha256?:')
+    expect(source).toContain('grok_side_channel?:')
     expect(source).toContain('usage_output_contract_required_final_phrase?:')
     expect(source).toContain(
       'usage_output_contract_required_final_phrase_present?:'

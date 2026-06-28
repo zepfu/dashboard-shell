@@ -78,6 +78,37 @@ Static/prod-style shell hosting serves remotes from same-origin
 scripts and same-origin XHR/fetch. Remotes should avoid direct upstream service
 URLs in browser code so the shell proxy remains the only network boundary.
 
+
+## Session Diagnostics (Grok Side-Channel)
+
+`/api/shell/reports/usage/session-diagnostics` exposes redacted Grok native
+session side-channel **request-shape metadata only**. It does not return raw
+request bodies, raw JSON payloads, authorization headers, OIDC credentials,
+prompt text, tool arguments, terminal output, storage artifacts, or concrete
+session IDs parsed from endpoint paths.
+
+Projected metadata keys (when present on `session_history.metadata`):
+
+- `grok_side_channel` (boolean flag on the row projection as `enabled`)
+- `grok_side_channel_endpoint_type`
+- `grok_side_channel_endpoint_path_template` (API/UI: `endpoint_template`)
+- `grok_side_channel_request_content_type`
+- `grok_side_channel_request_body_byte_length`
+- `grok_side_channel_request_body_sha256` (correlation/digest only)
+- `grok_side_channel_request_body_digest_source`
+- `grok_side_channel_request_json_container_type`
+- `grok_side_channel_request_top_level_key_types`
+- `grok_side_channel_request_array_length`
+
+Optional query filters:
+
+- `grok_side_channel=true` — narrow to rows with side-channel shape metadata
+- `grok_side_channel_endpoint_type` — comma-separated endpoint type filter
+
+Side-channel diagnostic rows are included in session diagnostics when shape
+metadata is present; they remain excluded from billable usage aggregation via
+existing `no_usage` / reportable-session rules on usage totals.
+
 ## Container Error Intake (`.analysis/*-error.jsonl`)
 
 `dashboard-shell-reports` and `dashboard-shell-reports-dev` tail Docker JSON

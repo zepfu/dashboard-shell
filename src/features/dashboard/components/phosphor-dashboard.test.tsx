@@ -1318,6 +1318,7 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
                   'tool_definitions',
                   'xai_sanitizer',
                   'transcript_attribution',
+                  'grok_side_channel',
                 ],
                 diagnostic_categories: [
                   'route_identity',
@@ -1331,6 +1332,18 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
                   credential_family: 'xai_grok_oidc',
                   grok_native_oauth_managed: true,
                   grok_native_entrypoint: 'openai_responses',
+                },
+                grok_side_channel: {
+                  enabled: true,
+                  endpoint_type: 'register',
+                  endpoint_template: '/grok/v1/sessions/register',
+                  content_type: 'application/json',
+                  body_byte_length: 256,
+                  body_sha256: 'deadbeefcafebabe',
+                  digest_source: 'request_body',
+                  json_container_type: 'object',
+                  top_level_key_types: { model: 'string', tools: 'array' },
+                  array_length: 3,
                 },
                 output_contract: {
                   usage_output_contract_required_final_phrase_present: false,
@@ -1387,6 +1400,8 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
                     last_resort: false,
                   },
                 ],
+                grok_side_channel_request_body_raw:
+                  'RAW_SECRET_BODY_SHOULD_NOT_RENDER',
                 transcript_attribution: {
                   session_history_transcript_attribution_status:
                     'unrecoverable',
@@ -1598,6 +1613,44 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
     expect(
       within(diagnosticsCard).getByText('2026-05-20T12:05:00.000Z')
     ).toBeInTheDocument()
+
+    const grokSideChannelBlock = within(diagnosticsCard)
+      .getByText('Grok side-channel')
+      .closest('.status-estimator-block') as HTMLElement
+    expect(grokSideChannelBlock).toBeInTheDocument()
+    expect(
+      within(grokSideChannelBlock).getByText('register')
+    ).toBeInTheDocument()
+    expect(
+      within(grokSideChannelBlock).getByText('/grok/v1/sessions/register')
+    ).toBeInTheDocument()
+    expect(
+      within(grokSideChannelBlock).getByText('application/json')
+    ).toBeInTheDocument()
+    expect(within(grokSideChannelBlock).getByText('256')).toBeInTheDocument()
+    expect(
+      within(grokSideChannelBlock).getByText('request_body')
+    ).toBeInTheDocument()
+    expect(
+      within(grokSideChannelBlock).getByText('deadbeefcafebabe')
+    ).toBeInTheDocument()
+    expect(within(grokSideChannelBlock).getByText('object')).toBeInTheDocument()
+    expect(within(grokSideChannelBlock).getByText('3')).toBeInTheDocument()
+    fireEvent.click(
+      within(grokSideChannelBlock).getByText('top-level key types')
+    )
+    expect(
+      within(grokSideChannelBlock).getByText(/"model": "string"/)
+    ).toBeInTheDocument()
+    expect(
+      within(grokSideChannelBlock).getByText(/"tools": "array"/)
+    ).toBeInTheDocument()
+    expect(
+      within(diagnosticsCard).queryByText('RAW_SECRET_BODY_SHOULD_NOT_RENDER')
+    ).toBeNull()
+    expect(document.body.textContent).not.toContain(
+      'RAW_SECRET_BODY_SHOULD_NOT_RENDER'
+    )
 
     fireEvent.click(
       within(diagnosticsCard).getByText('transcript attribution detail')

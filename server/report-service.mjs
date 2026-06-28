@@ -3229,6 +3229,44 @@ function appendSessionDiagnosticsFilter(searchParams, key, whereParts, values) {
   whereParts.push(`${column} = ANY($${values.length}::text[])`)
 }
 
+
+function grokSideChannelMetadataPresentClause(columnPrefix = 'sh.') {
+  const p = columnPrefix
+  return `(
+    lower(COALESCE(${p}metadata->>'grok_side_channel', '')) = 'true'
+    OR ${p}metadata->>'grok_side_channel_endpoint_type' IS NOT NULL
+    OR ${p}metadata->>'grok_side_channel_endpoint_path_template' IS NOT NULL
+    OR ${p}metadata->>'grok_side_channel_request_content_type' IS NOT NULL
+    OR ${p}metadata->>'grok_side_channel_request_body_byte_length' IS NOT NULL
+    OR ${p}metadata->>'grok_side_channel_request_body_sha256' IS NOT NULL
+    OR ${p}metadata->>'grok_side_channel_request_body_digest_source' IS NOT NULL
+    OR ${p}metadata->>'grok_side_channel_request_json_container_type' IS NOT NULL
+    OR ${p}metadata ? 'grok_side_channel_request_top_level_key_types'
+    OR ${p}metadata->>'grok_side_channel_request_array_length' IS NOT NULL
+  )`
+}
+
+function appendGrokSideChannelDiagnosticsFilters(searchParams, whereParts, values) {
+  const grokSideChannel = parseCsv(searchParams.get('grok_side_channel'))
+  if (
+    grokSideChannel.some((value) =>
+      ['true', '1', 'yes'].includes(value.toLowerCase())
+    )
+  ) {
+    whereParts.push(grokSideChannelMetadataPresentClause('sh.'))
+  }
+
+  const endpointTypes = parseCsv(
+    searchParams.get('grok_side_channel_endpoint_type')
+  )
+  if (endpointTypes.length) {
+    values.push(endpointTypes)
+    whereParts.push(
+      `sh.metadata->>'grok_side_channel_endpoint_type' = ANY($${values.length}::text[])`
+    )
+  }
+}
+
 function buildSessionDiagnosticsWhere(searchParams) {
   const from = parseDateParam(searchParams.get('from'), defaultFromDate)
   const to = parseDateParam(searchParams.get('to'), defaultToDate)
@@ -3253,6 +3291,8 @@ function buildSessionDiagnosticsWhere(searchParams) {
     }
   }
 
+  appendGrokSideChannelDiagnosticsFilters(searchParams, whereParts, values)
+
   whereParts.push(`(
     sh.metadata->>'credential_family' IS NOT NULL
     OR sh.metadata->>'grok_native_oauth_managed' IS NOT NULL
@@ -3276,6 +3316,7 @@ function buildSessionDiagnosticsWhere(searchParams) {
     OR sh.metadata->>'aawm_alias_routing_audit_events' IS NOT NULL
     OR sh.metadata->>'codex_auto_agent_audit_events' IS NOT NULL
     OR sh.metadata->>'anthropic_auto_agent_audit_events' IS NOT NULL
+    OR ${grokSideChannelMetadataPresentClause('sh.')}
     OR EXISTS (
       SELECT 1
       FROM public.aawm_alias_routing_audit aa_probe
@@ -5812,7 +5853,12 @@ SELECT
         CASE WHEN metadata->>'session_history_transcript_attribution_status' IS NOT NULL
              OR metadata->>'session_history_transcript_attribution_source' IS NOT NULL
              OR metadata->>'session_history_transcript_attribution' IS NOT NULL
-             THEN 'transcript_attribution'::text END
+             THEN 'transcript_attribution'::text END,
+        CASE WHEN lower(COALESCE(metadata->>'grok_side_channel', '')) = 'true'
+             OR metadata->>'grok_side_channel_endpoint_type' IS NOT NULL
+             OR metadata->>'grok_side_channel_endpoint_path_template' IS NOT NULL
+             OR metadata->>'grok_side_channel_request_body_sha256' IS NOT NULL
+             THEN 'grok_side_channel'::text END
     ], NULL) AS diagnostic_flags,
     ARRAY_REMOVE(ARRAY[
         CASE WHEN metadata->>'credential_family' IS NOT NULL
@@ -5830,6 +5876,11 @@ SELECT
         CASE WHEN metadata->>'xai_responses_request_sanitized' IS NOT NULL
              OR metadata->>'xai_tool_choice_without_tools_removed' IS NOT NULL
              THEN 'request_shape'::text END,
+        CASE WHEN lower(COALESCE(metadata->>'grok_side_channel', '')) = 'true'
+             OR metadata->>'grok_side_channel_endpoint_type' IS NOT NULL
+             OR metadata->>'grok_side_channel_endpoint_path_template' IS NOT NULL
+             OR metadata->>'grok_side_channel_request_body_sha256' IS NOT NULL
+             THEN 'request_shape'::text END,
         CASE WHEN metadata->>'session_history_transcript_attribution_status' IS NOT NULL
              THEN 'model_attribution'::text END
     ], NULL) AS diagnostic_categories,
@@ -5845,6 +5896,27 @@ SELECT
         'auth_mode', NULLIF(metadata->>'auth_mode', ''),
         'grok_model_override', NULLIF(metadata->>'grok_model_override', '')
     )) AS grok_oauth,
+    jsonb_strip_nulls(jsonb_build_object(
+        'enabled',
+            CASE WHEN metadata ? 'grok_side_channel'
+                 THEN lower(COALESCE(metadata->>'grok_side_channel', '')) = 'true'
+            END,
+        'endpoint_type', NULLIF(metadata->>'grok_side_channel_endpoint_type', ''),
+        'endpoint_template', NULLIF(metadata->>'grok_side_channel_endpoint_path_template', ''),
+        'content_type', NULLIF(metadata->>'grok_side_channel_request_content_type', ''),
+        'body_byte_length',
+            CASE WHEN COALESCE(metadata->>'grok_side_channel_request_body_byte_length', '') ~ '^-?[0-9]+$'
+                 THEN (metadata->>'grok_side_channel_request_body_byte_length')::integer
+            END,
+        'body_sha256', NULLIF(metadata->>'grok_side_channel_request_body_sha256', ''),
+        'digest_source', NULLIF(metadata->>'grok_side_channel_request_body_digest_source', ''),
+        'json_container_type', NULLIF(metadata->>'grok_side_channel_request_json_container_type', ''),
+        'top_level_key_types', metadata->'grok_side_channel_request_top_level_key_types',
+        'array_length',
+            CASE WHEN COALESCE(metadata->>'grok_side_channel_request_array_length', '') ~ '^-?[0-9]+$'
+                 THEN (metadata->>'grok_side_channel_request_array_length')::integer
+            END
+    )) AS grok_side_channel,
     jsonb_strip_nulls(jsonb_build_object(
         'usage_output_contract_required_final_phrase', NULLIF(metadata->>'usage_output_contract_required_final_phrase', ''),
         'usage_output_contract_required_final_phrase_present',
@@ -5954,6 +6026,7 @@ function normalizeSessionDiagnosticsRow(row) {
     diagnostic_flags: normalizeStringArray(row.diagnostic_flags),
     diagnostic_categories: normalizeStringArray(row.diagnostic_categories),
     grok_oauth: normalizeJsonRecord(row.grok_oauth),
+    grok_side_channel: normalizeJsonRecord(row.grok_side_channel),
     output_contract: normalizeJsonRecord(row.output_contract),
     xai_sanitizer: normalizeJsonRecord(row.xai_sanitizer),
     transcript_attribution: normalizeJsonRecord(row.transcript_attribution),
