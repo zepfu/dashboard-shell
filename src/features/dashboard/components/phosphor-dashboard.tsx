@@ -124,12 +124,7 @@ function getProviderHealthColumnCount(): number {
   return resolveProviderHealthColumnCount(window.innerWidth)
 }
 
-function providerHealthCardAliases(provider: string): readonly string[] {
-  const aliases = providerAliases(provider)
-  if (provider !== 'google') return aliases
-
-  return [...new Set([...aliases, 'antigravity'])]
-}
+const STATUS_HEALTH_CARD_OMIT_PROVIDERS = new Set(['google', 'antigravity'])
 
 /**
  * Ordered provider series for TokenTrendChart.
@@ -843,7 +838,10 @@ export default function PhosphorDashboard({
 
   const providers = useMemo(() => deriveProviders(), [])
   const providerHealthCardProviders = useMemo(
-    () => providers.filter((provider) => provider !== 'antigravity'),
+    () =>
+      providers.filter(
+        (provider) => !STATUS_HEALTH_CARD_OMIT_PROVIDERS.has(provider)
+      ),
     [providers]
   )
   const [providerHealthColumnCount, setProviderHealthColumnCount] = useState(
@@ -1342,7 +1340,7 @@ export default function PhosphorDashboard({
                           // Wave 12 Fix 1: use reference brand hex for card header name color
                           color: providerBrandHex(provider),
                         }
-                        const aliases = providerHealthCardAliases(provider)
+                        const aliases = providerAliases(provider)
                         const metrics = buildProviderMetrics(
                           provider,
                           healthRows,

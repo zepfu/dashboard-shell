@@ -367,7 +367,9 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
           .filter(Boolean)
       ).toContain('Σ AGGREGATE TOTALS')
       expect(columns.at(0)?.textContent).not.toContain('Σ AGGREGATE TOTALS')
-      expect(columns.at(-2)?.textContent).toContain('LOCAL')
+      expect(
+        columns.some((column) => column.textContent?.includes('LOCAL'))
+      ).toBe(true)
       expect(columns.at(-1)?.textContent).toContain('Σ AGGREGATE TOTALS')
       expect(
         columns.at(-1)?.querySelector('.provider-card.aggregate')
@@ -380,13 +382,10 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
     }
   })
 
-  test('test_status_health_rolls_antigravity_detail_into_google_card', async () => {
-    const makeAntigravityQuotaRow = (
-      quotaKey: string,
-      remainingPct: number
-    ): UsageReportQuotaRow => ({
-      provider: 'antigravity',
-      model: quotaKey,
+  test('test_status_health_omits_google_and_antigravity_provider_cards', async () => {
+    const makeGoogleQuotaRow = (): UsageReportQuotaRow => ({
+      provider: 'google',
+      model: 'gemini-2.5-flash-lite',
       weekly_remaining_pct: null,
       weekly_reset_at: null,
       weekly_interval_start: null,
@@ -394,12 +393,12 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
       weekly_active: false,
       weekly_usage_tokens: 0,
       weekly_usage_breakdown: [],
-      short_remaining_pct: null,
-      short_reset_at: null,
-      short_interval_start: null,
-      short_interval_end: null,
-      short_active: false,
-      short_usage_tokens: 0,
+      short_remaining_pct: 55,
+      short_reset_at: '2026-05-24T00:00:00.000Z',
+      short_interval_start: '2026-05-23T00:00:00.000Z',
+      short_interval_end: '2026-05-24T00:00:00.000Z',
+      short_active: true,
+      short_usage_tokens: 1000,
       short_usage_breakdown: [],
       special_remaining_pct: null,
       special_reset_at: null,
@@ -422,13 +421,28 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
       monthly_active: false,
       monthly_usage_tokens: 0,
       monthly_usage_breakdown: [],
+      wtus_remaining_pct: null,
+      wtus_reset_at: null,
+      wtus_interval_start: null,
+      wtus_interval_end: null,
+      wtus_active: false,
+      wtus_usage_tokens: 0,
+      wtus_usage_breakdown: [],
+    })
+    const makeAntigravityQuotaRow = (
+      quotaKey: string,
+      remainingPct: number
+    ): UsageReportQuotaRow => ({
+      ...makeGoogleQuotaRow(),
+      provider: 'antigravity',
+      model: quotaKey,
+      short_active: false,
+      short_remaining_pct: null,
       wtus_remaining_pct: remainingPct,
       wtus_reset_at: '2026-06-06T00:04:07Z',
       wtus_interval_start: '2026-06-05T19:04:12Z',
       wtus_interval_end: '9999-12-31T00:00:00Z',
       wtus_active: true,
-      wtus_usage_tokens: 0,
-      wtus_usage_breakdown: [],
     })
     let container: HTMLElement | undefined
 
@@ -442,6 +456,7 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
             reportLoading={false}
             showComparison={false}
             quotas={[
+              makeGoogleQuotaRow(),
               makeAntigravityQuotaRow(
                 'antigravity_code_assist:gemini_pool',
                 88
@@ -463,17 +478,10 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
       status.querySelectorAll('.provider-name')
     ).map((node) => node.textContent?.trim())
 
-    expect(providerNames).toContain('GOOGLE')
+    expect(providerNames).not.toContain('GOOGLE')
     expect(providerNames).not.toContain('ANTIGRAVITY')
-
-    const googleName = Array.from(
-      status.querySelectorAll('.provider-name')
-    ).find((node) => node.textContent?.trim() === 'GOOGLE')
-    const googleCard = googleName?.closest('.provider-card')
-
-    expect(googleCard).not.toBeNull()
-    expect(googleCard).toHaveTextContent('Antigravity Gemini Pool · WTUs')
-    expect(googleCard).toHaveTextContent('Antigravity Vertex Pool · WTUs')
+    expect(screen.queryByText(/Antigravity Gemini Pool/i)).toBeNull()
+    expect(screen.queryByText(/flash-lite · 24h/i)).toBeNull()
   })
 
   test('test_status_health_shows_degraded_badge_for_quota_history_timeout', async () => {
@@ -972,28 +980,12 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
     expect(anthropic.queryByRole('tab', { name: /5hr/i })).toBeNull()
     expect(anthropic.queryByText(/800 tok/i)).toBeNull()
 
-    const googleBucket = screen
-      .getByRole('tablist', { name: /google quota bars/i })
-      .closest('article')
-    expect(googleBucket).not.toBeNull()
-    const google = within(googleBucket as HTMLElement)
     expect(
-      google.getByRole('tab', { name: /flash-lite · 24h/i })
-    ).toHaveAttribute('aria-selected', 'true')
+      screen.queryByRole('tablist', { name: /google quota bars/i })
+    ).toBeNull()
     expect(
-      (googleBucket as HTMLElement).querySelector(
-        '.provider-quota-history-label'
-      )
-    ).toHaveTextContent('Flash-Lite')
-    expect(google.getByText(/1K tok · 10 req/i)).toBeInTheDocument()
-    expect(google.queryByText(/0 tok · 0 req/i)).toBeNull()
-    expect(
-      (googleBucket as HTMLElement).querySelectorAll(
-        '.provider-quota-history-row'
-      )
-    ).toHaveLength(1)
-    expect(google.queryByText(/gemini-2\.5-flash-lite/i)).toBeNull()
-    expect(google.queryByText(/gemini-3\.1-flash-lite-preview/i)).toBeNull()
+      screen.queryByRole('tablist', { name: /antigravity quota bars/i })
+    ).toBeNull()
 
     const xaiBucket = screen
       .getByRole('tablist', { name: /xai quota bars/i })
@@ -1038,6 +1030,12 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
     })
 
     fireEvent.click(screen.getByRole('tab', { name: 'Quota' }))
+
+    expect(screen.queryByText('google')).toBeNull()
+    expect(screen.queryByText('antigravity')).toBeNull()
+    expect(
+      screen.queryByRole('tablist', { name: /google quota bars/i })
+    ).toBeNull()
 
     const openaiBucket = screen.getByText('openai').closest('article')
     expect(openaiBucket).not.toBeNull()

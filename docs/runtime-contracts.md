@@ -59,10 +59,11 @@ health chips may make one provider card taller than its neighbors, but sparse
 provider cards should keep compact heights and later cards should pack upward
 inside their column instead of reserving a row sized to the tallest provider
 card. The aggregate totals card is the trailing Health card and belongs in the
-trailing responsive column. Provider Status intentionally does not render a
-standalone Antigravity card; Antigravity health, usage, WTU quota, and quota
-history detail are displayed under Google while Token Trend, Ledger, and raw
-provider attribution keep Antigravity as its own source provider.
+trailing responsive column. Provider Status and Provider Health omit Google and Antigravity
+entirely (no provider cards, quota buckets, lanes, or health rows for those
+providers in the STATUS Health and Quota tabs). Token Trend, Ledger, and raw
+provider attribution continue to preserve `google` and `antigravity` as distinct
+source providers.
 
 Secondary General dashboard reports must fail visibly instead of hanging the
 page-load path. The `token-trend-summary` and `quota-history` report routes use
