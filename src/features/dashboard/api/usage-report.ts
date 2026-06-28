@@ -1122,6 +1122,50 @@ export interface UsageReportProviderAuthHealth {
   entries: UsageReportProviderAuthHealthEntry[]
 }
 
+export type UsageReportProviderCreditLifecycleStatus =
+  | 'available'
+  | 'used'
+  | 'expired'
+  | string
+
+export interface UsageReportProviderCreditLifecycleEntry {
+  observed_at: string
+  environment: string
+  provider: string
+  account_hash_short?: string | null
+  credit_family: string
+  credit_type?: string | null
+  available_count: number
+  expires_at?: string | null
+  source?: string | null
+  credit_identity?: string | null
+  granted_at?: string | null
+  status: UsageReportProviderCreditLifecycleStatus
+  redeem_started_at?: string | null
+  redeemed_at?: string | null
+  operator_annotation?: string | null
+  source_url?: string | null
+}
+
+export interface UsageReportProviderCreditLifecycleSummary {
+  environment: string
+  provider: string
+  credit_family: string
+  label: string
+  available_count: number
+  used_count: number
+  expired_count: number
+  total_count: number
+}
+
+export interface UsageReportProviderCreditLifecycle {
+  data_source: 'provider_credit_current'
+  freshness_label: string
+  generated_at: string
+  summaries: UsageReportProviderCreditLifecycleSummary[]
+  entries: UsageReportProviderCreditLifecycleEntry[]
+}
+
 export interface UsageReportProviderAliasRouting {
   data_source: 'recent_observed_session_history'
   freshness_label: string
@@ -1159,6 +1203,7 @@ export interface UsageReportResponse {
   providerStatusUsage: UsageReportProviderStatusUsageRow[]
   providerAliasRouting?: UsageReportProviderAliasRouting
   providerAuthHealth?: UsageReportProviderAuthHealth
+  providerCreditLifecycle?: UsageReportProviderCreditLifecycle
   quotas: UsageReportQuotaRow[]
   /** W32: flat list of past reset windows per (provider, quota_type). */
   quotaHistory: UsageReportQuotaHistoryRow[]

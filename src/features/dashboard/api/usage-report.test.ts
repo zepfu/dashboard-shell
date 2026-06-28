@@ -299,6 +299,93 @@ test('test_fetchUsageReport_preserves_providerAuthHealth_contract', async () => 
   )
 })
 
+test('test_fetchUsageReport_preserves_providerCreditLifecycle_contract', async () => {
+  server.use(
+    http.get('/api/shell/reports/usage', () =>
+      HttpResponse.json({
+        metadata: {
+          from: '2026-05-20',
+          to: '2026-05-21',
+          grain: 'day',
+          groupBy: ['provider', 'model'],
+          limit: 50000,
+          generatedAt: '2026-05-21T00:00:00.000Z',
+          latestRecordAt: null,
+          latestRecordAgeMinutes: null,
+          latestRecordStale: false,
+          staleRecordThresholdMinutes: 60,
+        },
+        summary: {
+          traces: 0,
+          token_in: 0,
+          token_out: 0,
+          token_cache_input: 0,
+          token_cache_creation: 0,
+          token_reasoning_reported: 0,
+          token_reasoning_estimated: 0,
+          token_total: 0,
+          usd_cost: 0,
+          cache_miss_usd_cost: 0,
+          tool_calls: 0,
+          git_commit: 0,
+          git_push: 0,
+        },
+        trend: [],
+        clients: [],
+        providerLatencyHealth: [],
+        providerErrorObservations: [],
+        providerStatusUsage: [],
+        providerCreditLifecycle: {
+          data_source: 'provider_credit_current',
+          freshness_label: 'Current provider credit lifecycle',
+          generated_at: '2026-05-21T00:00:00.000Z',
+          summaries: [
+            {
+              environment: 'production',
+              provider: 'openai',
+              credit_family: 'codex_rate_limit_reset',
+              label: 'openai codex_rate_limit_reset credits',
+              available_count: 2,
+              used_count: 1,
+              expired_count: 0,
+              total_count: 3,
+            },
+          ],
+          entries: [
+            {
+              observed_at: '2026-05-21T00:00:00.000Z',
+              environment: 'production',
+              provider: 'openai',
+              account_hash_short: '8e928548',
+              credit_family: 'codex_rate_limit_reset',
+              status: 'available',
+              available_count: 1,
+              credit_identity: 'codex-1',
+            },
+          ],
+        },
+        quotas: [],
+        quotaHistory: [],
+        toolActivity: [],
+        rows: [],
+      })
+    )
+  )
+
+  const report = await fetchUsageReport({
+    from: '2026-05-20',
+    to: '2026-05-21',
+    grain: 'day',
+  })
+  expect(report.providerCreditLifecycle?.data_source).toBe(
+    'provider_credit_current'
+  )
+  expect(report.providerCreditLifecycle?.summaries[0]?.available_count).toBe(2)
+  expect(report.providerCreditLifecycle?.entries[0]?.credit_identity).toBe(
+    'codex-1'
+  )
+})
+
 test('test_fetchUsageReportQuotaHistory_preserves_degraded_metadata', async () => {
   server.use(
     http.get('/api/shell/reports/usage/quota-history', () =>

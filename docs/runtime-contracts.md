@@ -107,6 +107,58 @@ Redaction rules (server normalization and SQL projection):
 UI placement: General dashboard **Health** tab, after PgBouncer and AAWM alias
 routing panels and before provider health cards.
 
+
+## Provider Health — Provider Credit Lifecycle (D1-417 / D1-422)
+
+`GET /api/shell/reports/usage` may include a sibling field
+`providerCreditLifecycle` on `UsageReportResponse`. This is **not** merged into
+`providerLatencyHealth`, `providerStatusUsage`, quota rows, or
+`rate_limit_observations`.
+
+Data source:
+
+- Primary: `public.provider_credit_current` (current credit rows for OpenAI
+  Codex rate-limit reset credits: `provider = openai` and
+  `credit_family = codex_rate_limit_reset`).
+
+The API labels the payload as current provider credit lifecycle from
+`provider_credit_current`. Empty `entries` means **not observed**, not zero
+credits. Do not infer availability from quota reset windows.
+
+Projected / normalized fields per entry:
+
+- `observed_at`, `environment`, `provider`, `credit_family`, `credit_type`
+- `account_hash_short` (prefix only, not full `account_hash`)
+- `available_count`, `expires_at`, `source`, `credit_identity`, `granted_at`
+- `status` (`available`, `used`, `expired` preserved as distinct)
+- `redeem_started_at`, `redeemed_at`
+- sanitized `operator_annotation`, sanitized `source_url` (http/https only,
+  query/hash/userinfo stripped), truncated `source`
+
+Report-level `summaries` aggregate per environment/provider/credit_family:
+`available_count` sums current available units without double-counting legacy
+aggregate rows when per-credit detail rows exist for the same
+environment/provider/account_hash/credit_family/source group.
+
+Legacy aggregate filtering (SQL, before `LIMIT`):
+
+- `buildProviderCreditLifecycleQuery` uses a `filtered_credit_rows` CTE so rows
+  with empty `credit_identity` are omitted when detail rows exist for the same
+  environment, provider, `account_hash`, credit_family, and source **before**
+  the row limit is applied.
+- Aggregate fallback rows remain when no detail rows exist for that group.
+- `filterLegacyProviderCreditAggregateRows` remains for unit tests and direct-row
+  normalization; production correctness does not rely on post-`LIMIT` filtering.
+
+Redaction rules (server normalization and SQL projection):
+
+- Do **not** expose `raw_provider_fields`, `evidence`, full `account_hash`,
+  unfiltered `metadata`, `SELECT *`, or raw JSON blobs.
+- `source_url` must be http/https with credentials, query, and hash removed.
+
+UI placement: General dashboard **Health** tab (STATUS > Health), immediately
+after Provider auth health and before provider health cards.
+
 ## CSP And Asset Loading
 
 Static/prod-style shell hosting serves remotes from same-origin

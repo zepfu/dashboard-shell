@@ -4684,6 +4684,217 @@ describe('PhosphorDashboard — D1-338 provider auth health panel', () => {
       )
     })
 
-    expect(screen.getByText('not observed')).toBeInTheDocument()
+    const panel = screen.getByRole('region', { name: /provider auth health/i })
+    expect(within(panel).getByText('not observed')).toBeInTheDocument()
+  })
+})
+
+describe('PhosphorDashboard — D1-417 / D1-422 provider credit lifecycle panel', () => {
+  test('test_health_tab_renders_codex_summary_rows_and_status_distinction_without_secrets', async () => {
+    const report: UsageReportResponse = {
+      ...MOCK_REPORT,
+      providerCreditLifecycle: {
+        data_source: 'provider_credit_current',
+        freshness_label:
+          'Current provider credit lifecycle from provider_credit_current',
+        generated_at: '2026-05-19T00:00:00.000Z',
+        summaries: [
+          {
+            environment: 'production',
+            provider: 'openai',
+            credit_family: 'codex_rate_limit_reset',
+            label: 'openai codex_rate_limit_reset credits',
+            available_count: 2,
+            used_count: 1,
+            expired_count: 1,
+            total_count: 4,
+          },
+        ],
+        entries: [
+          {
+            observed_at: '2026-05-19T00:00:00.000Z',
+            environment: 'production',
+            provider: 'openai',
+            account_hash_short: '8e928548',
+            credit_family: 'codex_rate_limit_reset',
+            credit_identity: 'codex-available-1',
+            status: 'available',
+            available_count: 1,
+            granted_at: '2026-05-18T00:00:00.000Z',
+            expires_at: '2026-05-20T00:00:00.000Z',
+            operator_annotation: 'safe note',
+            source_url: 'https://x.com/status/1',
+          },
+          {
+            observed_at: '2026-05-19T00:05:00.000Z',
+            environment: 'production',
+            provider: 'openai',
+            account_hash_short: '8e928548',
+            credit_family: 'codex_rate_limit_reset',
+            credit_identity: 'codex-used-1',
+            status: 'used',
+            available_count: 0,
+            redeemed_at: '2026-05-18T12:00:00.000Z',
+          },
+          {
+            observed_at: '2026-05-19T00:10:00.000Z',
+            environment: 'production',
+            provider: 'openai',
+            account_hash_short: '8e928548',
+            credit_family: 'codex_rate_limit_reset',
+            credit_identity: 'codex-expired-1',
+            status: 'expired',
+            available_count: 0,
+            expires_at: '2026-05-17T00:00:00.000Z',
+          },
+        ],
+      },
+    }
+
+    await act(async () => {
+      render(
+        <Wrapper>
+          <PhosphorDashboard
+            from='2026-05-20'
+            to='2026-05-21'
+            report={report}
+            reportLoading={false}
+            showComparison={false}
+            quotas={[]}
+            quotaHistory={[]}
+          />
+        </Wrapper>
+      )
+    })
+
+    const panel = screen.getByRole('region', {
+      name: /provider credit lifecycle/i,
+    })
+    expect(panel).toBeInTheDocument()
+    expect(
+      within(panel).getByText(/OpenAI Codex reset credits: 2 available/i)
+    ).toBeInTheDocument()
+    expect(
+      within(panel).getByRole('table', {
+        name: /provider credit lifecycle entries/i,
+      })
+    ).toBeInTheDocument()
+    expect(
+      within(panel).getByRole('columnheader', { name: /credit/i })
+    ).toBeInTheDocument()
+    expect(
+      within(panel).getByRole('rowheader', { name: 'codex-available-1' })
+    ).toBeInTheDocument()
+    expect(
+      within(panel).getByRole('link', {
+        name: /source for openai codex_rate_limit_reset codex-available-1/i,
+      })
+    ).toBeInTheDocument()
+    expect(within(panel).getByText('codex-available-1')).toBeInTheDocument()
+    expect(within(panel).getByText('codex-used-1')).toBeInTheDocument()
+    expect(within(panel).getByText('codex-expired-1')).toBeInTheDocument()
+    expect(within(panel).getByText('used')).toBeInTheDocument()
+    expect(within(panel).getByText('expired')).toBeInTheDocument()
+    expect(screen.queryByText(/8e928548deadbeef/i)).toBeNull()
+    expect(screen.queryByText(/raw_provider_fields/i)).toBeNull()
+    expect(
+      screen.queryByText(/sk-secret-sentinel-should-not-render/i)
+    ).toBeNull()
+  })
+
+  test('test_health_tab_provider_credit_multiple_summaries_aggregate_headline', async () => {
+    const report: UsageReportResponse = {
+      ...MOCK_REPORT,
+      providerCreditLifecycle: {
+        data_source: 'provider_credit_current',
+        freshness_label: 'Current provider credit lifecycle',
+        generated_at: '2026-05-19T00:00:00.000Z',
+        summaries: [
+          {
+            environment: 'production',
+            provider: 'openai',
+            credit_family: 'codex_rate_limit_reset',
+            label: 'openai codex_rate_limit_reset credits',
+            available_count: 2,
+            used_count: 0,
+            expired_count: 0,
+            total_count: 2,
+          },
+          {
+            environment: 'staging',
+            provider: 'openai',
+            credit_family: 'codex_rate_limit_reset',
+            label: 'openai codex_rate_limit_reset credits',
+            available_count: 1,
+            used_count: 0,
+            expired_count: 0,
+            total_count: 1,
+          },
+        ],
+        entries: [],
+      },
+    }
+
+    await act(async () => {
+      render(
+        <Wrapper>
+          <PhosphorDashboard
+            from='2026-05-20'
+            to='2026-05-21'
+            report={report}
+            reportLoading={false}
+            showComparison={false}
+            quotas={[]}
+            quotaHistory={[]}
+          />
+        </Wrapper>
+      )
+    })
+
+    const panel = screen.getByRole('region', {
+      name: /provider credit lifecycle/i,
+    })
+    expect(
+      within(panel).getByText(/OpenAI Codex reset credits: 3 available/i)
+    ).toBeInTheDocument()
+    expect(
+      within(panel).getByText(/production: 2 available/i)
+    ).toBeInTheDocument()
+    expect(within(panel).getByText(/staging: 1 available/i)).toBeInTheDocument()
+    expect(within(panel).getByText('not observed')).toBeInTheDocument()
+  })
+
+  test('test_health_tab_provider_credit_empty_renders_not_observed', async () => {
+    const report: UsageReportResponse = {
+      ...MOCK_REPORT,
+      providerCreditLifecycle: {
+        data_source: 'provider_credit_current',
+        freshness_label: 'Current provider credit lifecycle',
+        generated_at: '2026-05-19T00:00:00.000Z',
+        summaries: [],
+        entries: [],
+      },
+    }
+
+    await act(async () => {
+      render(
+        <Wrapper>
+          <PhosphorDashboard
+            from='2026-05-20'
+            to='2026-05-21'
+            report={report}
+            reportLoading={false}
+            showComparison={false}
+            quotas={[]}
+            quotaHistory={[]}
+          />
+        </Wrapper>
+      )
+    })
+
+    const panel = screen.getByRole('region', {
+      name: /provider credit lifecycle/i,
+    })
+    expect(within(panel).getByText('not observed')).toBeInTheDocument()
   })
 })

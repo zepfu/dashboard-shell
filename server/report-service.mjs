@@ -6423,6 +6423,295 @@ export function normalizeProviderAuthHealthReport(rows, options = {}) {
   }
 }
 
+
+const PROVIDER_CREDIT_LIFECYCLE_ROW_LIMIT = 500
+
+export function buildProviderCreditLifecycleQuery(_searchParams) {
+  const sql = `
+WITH filtered_credit_rows AS (
+  SELECT
+    cr.observed_at,
+    COALESCE(cr.environment, 'unknown') AS environment,
+    cr.provider,
+    NULLIF(left(COALESCE(cr.account_hash, ''), 8), '') AS account_hash_short,
+    cr.credit_family,
+    cr.credit_type,
+    cr.available_count,
+    cr.expires_at,
+    cr.source,
+    cr.credit_identity,
+    cr.granted_at,
+    cr.status,
+    cr.redeem_started_at,
+    cr.redeemed_at,
+    cr.operator_annotation,
+    cr.source_url
+  FROM public.provider_credit_current cr
+  WHERE cr.provider = 'openai'
+    AND cr.credit_family = 'codex_rate_limit_reset'
+    AND (
+      NULLIF(BTRIM(COALESCE(cr.credit_identity, '')), '') IS NOT NULL
+      OR NOT EXISTS (
+        SELECT 1
+        FROM public.provider_credit_current detail
+        WHERE NULLIF(BTRIM(COALESCE(detail.credit_identity, '')), '') IS NOT NULL
+          AND COALESCE(detail.environment, 'unknown') = COALESCE(cr.environment, 'unknown')
+          AND detail.provider = cr.provider
+          AND COALESCE(detail.account_hash, '') = COALESCE(cr.account_hash, '')
+          AND COALESCE(detail.credit_family, '') = COALESCE(cr.credit_family, '')
+          AND COALESCE(detail.source, '') = COALESCE(cr.source, '')
+      )
+    )
+)
+SELECT
+    observed_at,
+    environment,
+    provider,
+    account_hash_short,
+    credit_family,
+    credit_type,
+    available_count,
+    expires_at,
+    source,
+    credit_identity,
+    granted_at,
+    status,
+    redeem_started_at,
+    redeemed_at,
+    operator_annotation,
+    source_url
+FROM filtered_credit_rows
+ORDER BY
+    observed_at DESC,
+    granted_at DESC NULLS LAST,
+    credit_identity ASC NULLS LAST
+LIMIT $1;
+`
+  return {
+    sql,
+    values: [PROVIDER_CREDIT_LIFECYCLE_ROW_LIMIT],
+    metadata: {
+      limit: PROVIDER_CREDIT_LIFECYCLE_ROW_LIMIT,
+      dataSource: 'provider_credit_current',
+    },
+  }
+}
+
+function nullIfEmptyProviderCredit(value) {
+  if (value === null || value === undefined) return null
+  const text = String(value).trim()
+  return text ? text : null
+}
+
+function parseProviderCreditTimestamp(value) {
+  if (value === null || value === undefined || value === '') return null
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    return value.toISOString()
+  }
+  const text = String(value).trim()
+  if (!text) return null
+  const date = new Date(text)
+  return Number.isNaN(date.getTime()) ? null : date.toISOString()
+}
+
+function shortProviderCreditAccountHash(value) {
+  const normalized = nullIfEmptyProviderCredit(value)
+  if (!normalized) return null
+  if (normalized.length <= 12) return normalized
+  return normalized.slice(0, 8)
+}
+
+function resolveProviderCreditAccountHashShort(row) {
+  return (
+    nullIfEmptyProviderCredit(row.account_hash_short) ??
+    shortProviderCreditAccountHash(row.account_hash)
+  )
+}
+
+function sanitizeProviderCreditOperatorAnnotation(value) {
+  const normalized = nullIfEmptyProviderCredit(value)
+  if (!normalized) return null
+  let message = normalized
+  message = message.replace(
+    /(?:Bearer\s+)?[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g,
+    '[redacted-token]'
+  )
+  message = message.replace(
+    /(?:api[_-]?key|token|secret|password)\s*[:=]\s*\S+/gi,
+    '[redacted-credential]'
+  )
+  message = message.replace(/\/(?:home|Users|tmp|var)[^\s]*/g, '[redacted-path]')
+  if (message.length > 240) {
+    message = `${message.slice(0, 237)}...`
+  }
+  return message
+}
+
+function sanitizeProviderCreditSource(value) {
+  const source = nullIfEmptyProviderCredit(value)
+  if (!source) return null
+  if (source.length > 120) {
+    return `${source.slice(0, 117)}...`
+  }
+  return source
+}
+
+function sanitizeProviderCreditSourceUrl(value) {
+  const normalized = nullIfEmptyProviderCredit(value)
+  if (!normalized) return null
+  try {
+    const parsed = new URL(normalized)
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return null
+    }
+    parsed.username = ''
+    parsed.password = ''
+    parsed.search = ''
+    parsed.hash = ''
+    return parsed.toString()
+  } catch {
+    return null
+  }
+}
+
+function normalizeProviderCreditStatus(value) {
+  const status = String(value ?? '')
+    .trim()
+    .toLowerCase()
+  if (!status) return 'unknown'
+  if (status === 'available' || status === 'used' || status === 'expired') {
+    return status
+  }
+  return status
+}
+
+function providerCreditLegacyGroupKey(row) {
+  return [
+    nullIfEmptyProviderCredit(row.environment) ?? 'unknown',
+    nullIfEmptyProviderCredit(row.provider) ?? 'unknown',
+    resolveProviderCreditAccountHashShort(row) ?? '',
+    nullIfEmptyProviderCredit(row.credit_family) ?? 'unknown',
+    nullIfEmptyProviderCredit(row.source) ?? '',
+  ].join('|')
+}
+
+export function filterLegacyProviderCreditAggregateRows(rows) {
+  const detailGroups = new Set()
+  for (const row of rows) {
+    if (nullIfEmptyProviderCredit(row.credit_identity)) {
+      detailGroups.add(providerCreditLegacyGroupKey(row))
+    }
+  }
+  if (detailGroups.size === 0) {
+    return rows
+  }
+  return rows.filter((row) => {
+    if (nullIfEmptyProviderCredit(row.credit_identity)) {
+      return true
+    }
+    return !detailGroups.has(providerCreditLegacyGroupKey(row))
+  })
+}
+
+function providerCreditAvailableUnits(row) {
+  const status = normalizeProviderCreditStatus(row.status)
+  if (status !== 'available') return 0
+  const count = Number(row.available_count)
+  if (Number.isFinite(count) && count >= 0) {
+    return count
+  }
+  return 1
+}
+
+export function buildProviderCreditLifecycleSummaries(entries) {
+  const summariesByKey = new Map()
+  for (const entry of entries) {
+    const key = [
+      entry.environment,
+      entry.provider,
+      entry.credit_family,
+    ].join('|')
+    const existing = summariesByKey.get(key) ?? {
+      environment: entry.environment,
+      provider: entry.provider,
+      credit_family: entry.credit_family,
+      label: `${entry.provider} ${entry.credit_family} credits`,
+      available_count: 0,
+      used_count: 0,
+      expired_count: 0,
+      total_count: 0,
+    }
+    existing.total_count += 1
+    const status = normalizeProviderCreditStatus(entry.status)
+    if (status === 'available') {
+      existing.available_count += providerCreditAvailableUnits(entry)
+    } else if (status === 'used') {
+      existing.used_count += 1
+    } else if (status === 'expired') {
+      existing.expired_count += 1
+    }
+    summariesByKey.set(key, existing)
+  }
+  return [...summariesByKey.values()].sort((left, right) =>
+    `${left.provider}:${left.credit_family}`.localeCompare(
+      `${right.provider}:${right.credit_family}`
+    )
+  )
+}
+
+export function normalizeProviderCreditLifecycleRow(row, options = {}) {
+  const observedAt =
+    parseProviderCreditTimestamp(row.observed_at) ??
+    options.generatedAt ??
+    new Date().toISOString()
+  const status = normalizeProviderCreditStatus(row.status)
+  const availableCountRaw = Number(row.available_count)
+  const availableCount =
+    Number.isFinite(availableCountRaw) && availableCountRaw >= 0
+      ? availableCountRaw
+      : status === 'available'
+        ? 1
+        : 0
+  return {
+    observed_at: observedAt,
+    environment: nullIfEmptyProviderCredit(row.environment) ?? 'unknown',
+    provider: nullIfEmptyProviderCredit(row.provider) ?? 'unknown',
+    account_hash_short: resolveProviderCreditAccountHashShort(row),
+    credit_family: nullIfEmptyProviderCredit(row.credit_family) ?? 'unknown',
+    credit_type: nullIfEmptyProviderCredit(row.credit_type),
+    available_count: availableCount,
+    expires_at: parseProviderCreditTimestamp(row.expires_at),
+    source: sanitizeProviderCreditSource(row.source),
+    credit_identity: nullIfEmptyProviderCredit(row.credit_identity),
+    granted_at: parseProviderCreditTimestamp(row.granted_at),
+    status,
+    redeem_started_at: parseProviderCreditTimestamp(row.redeem_started_at),
+    redeemed_at: parseProviderCreditTimestamp(row.redeemed_at),
+    operator_annotation: sanitizeProviderCreditOperatorAnnotation(
+      row.operator_annotation
+    ),
+    source_url: sanitizeProviderCreditSourceUrl(row.source_url),
+  }
+}
+
+export function normalizeProviderCreditLifecycleReport(rows, options = {}) {
+  const generatedAt =
+    options.generatedAt ?? new Date().toISOString()
+  const filteredRows = filterLegacyProviderCreditAggregateRows(rows)
+  const entries = filteredRows.map((row) =>
+    normalizeProviderCreditLifecycleRow(row, { generatedAt })
+  )
+  const summaries = buildProviderCreditLifecycleSummaries(entries)
+  return {
+    data_source: 'provider_credit_current',
+    freshness_label:
+      'Current provider credit lifecycle from provider_credit_current',
+    generated_at: generatedAt,
+    summaries,
+    entries,
+  }
+}
+
 export function buildSessionDiagnosticsQuery(searchParams) {
   const { from, to, values, whereParts } =
     buildSessionDiagnosticsWhere(searchParams)
@@ -8832,6 +9121,8 @@ async function loadUsageReport(searchParams) {
   const providerStatusUsageQuery = buildProviderStatusUsageQuery(searchParams)
   const providerAliasRoutingQuery = buildProviderAliasRoutingQuery(searchParams)
   const providerAuthHealthQuery = buildProviderAuthHealthQuery(searchParams)
+  const providerCreditLifecycleQuery =
+    buildProviderCreditLifecycleQuery(searchParams)
 
   const [
     result,
@@ -8843,6 +9134,7 @@ async function loadUsageReport(searchParams) {
     providerStatusUsageResult,
     providerAliasRoutingResult,
     providerAuthHealthResult,
+    providerCreditLifecycleResult,
     dockerLogErrors,
     localHealth,
   ] = await runTasksWithConcurrency(
@@ -8875,6 +9167,11 @@ async function loadUsageReport(searchParams) {
         queryReportDatabase(
           providerAuthHealthQuery.sql,
           providerAuthHealthQuery.values
+        ),
+      () =>
+        queryReportDatabase(
+          providerCreditLifecycleQuery.sql,
+          providerCreditLifecycleQuery.values
         ),
       () => loadDockerLogErrors(),
       () => loadLocalHealth(),
@@ -8922,6 +9219,9 @@ async function loadUsageReport(searchParams) {
     ),
     providerAuthHealth: normalizeProviderAuthHealthReport(
       providerAuthHealthResult.rows
+    ),
+    providerCreditLifecycle: normalizeProviderCreditLifecycleReport(
+      providerCreditLifecycleResult.rows
     ),
     quotas: [],
     quotaHistory: [],

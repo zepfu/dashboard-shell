@@ -47,6 +47,11 @@ import {
   classifyProviderAuthHealthState,
   normalizeProviderAuthHealthRow,
   normalizeProviderAuthHealthReport,
+  buildProviderCreditLifecycleQuery,
+  filterLegacyProviderCreditAggregateRows,
+  buildProviderCreditLifecycleSummaries,
+  normalizeProviderCreditLifecycleRow,
+  normalizeProviderCreditLifecycleReport,
   buildSourceTableHealthQuery,
   buildTokenTrendHealthQuery,
   buildTokenTrendHoursQuery,
@@ -1531,5 +1536,226 @@ describe('D1-338 provider auth health contracts', () => {
     ])
     expect(report.data_source).toBe('provider_auth_current')
     expect(report.entries[0]?.auth_health_state).toBe('failed')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// D1-417 / D1-422 provider credit lifecycle contracts
+// ---------------------------------------------------------------------------
+
+describe('D1-417 / D1-422 provider credit lifecycle contracts', () => {
+  test('test_buildProviderCreditLifecycleQuery_projects_safe_provider_credit_current_fields', () => {
+    const query = buildProviderCreditLifecycleQuery(new URLSearchParams())
+
+    expect(query.metadata).toMatchObject({
+      limit: 500,
+      dataSource: 'provider_credit_current',
+    })
+    expect(query.values).toEqual([500])
+    expect(query.sql).toContain('FROM public.provider_credit_current')
+    expect(query.sql).toContain("provider = 'openai'")
+    expect(query.sql).toContain("credit_family = 'codex_rate_limit_reset'")
+    expect(query.sql).toContain('AS account_hash_short')
+    expect(query.sql).toContain("left(COALESCE(cr.account_hash, ''), 8)")
+    expect(query.sql).not.toMatch(/\n\s*account_hash,\s*\n/)
+    expect(query.sql).not.toMatch(/\n\s*account_hash_short,\s*\n[\s\S]*\n\s*account_hash,\s*\n/)
+    expect(query.sql).toContain('credit_identity')
+    expect(query.sql).toContain('operator_annotation')
+    expect(query.sql).toContain('source_url')
+    expect(query.sql).not.toContain('raw_provider_fields')
+    expect(query.sql).not.toContain('evidence')
+    expect(query.sql).not.toContain('SELECT *')
+    expect(query.sql).not.toContain('metadata')
+    expect(query.sql).toContain('WITH filtered_credit_rows AS')
+    expect(query.sql).toContain('FROM public.provider_credit_current cr')
+    expect(query.sql).toContain('FROM public.provider_credit_current detail')
+    expect(query.sql).toContain('NOT EXISTS')
+    expect(query.sql).toContain('NULLIF(BTRIM(COALESCE(detail.credit_identity')
+    expect(query.sql).toMatch(/LIMIT \$1;/)
+    expect(query.sql).not.toMatch(/FROM filtered_credit_rows[\s\S]*LIMIT[\s\S]*NOT EXISTS/)
+  })
+
+  test('test_filterLegacyProviderCreditAggregateRows_keeps_aggregate_when_no_detail_and_drops_when_multiple_detail', () => {
+    const rows = [
+      {
+        environment: 'staging',
+        provider: 'openai',
+        account_hash: 'aaaaaaaa',
+        credit_family: 'codex_rate_limit_reset',
+        source: 'legacy',
+        credit_identity: '',
+        status: 'available',
+        available_count: 5,
+      },
+      {
+        environment: 'production',
+        provider: 'openai',
+        account_hash: 'bbbbbbbb',
+        credit_family: 'codex_rate_limit_reset',
+        source: 'x.com',
+        credit_identity: 'credit-a',
+        status: 'available',
+        available_count: 1,
+      },
+      {
+        environment: 'production',
+        provider: 'openai',
+        account_hash: 'bbbbbbbb',
+        credit_family: 'codex_rate_limit_reset',
+        source: 'x.com',
+        credit_identity: 'credit-b',
+        status: 'used',
+        available_count: 0,
+      },
+      {
+        environment: 'production',
+        provider: 'openai',
+        account_hash: 'bbbbbbbb',
+        credit_family: 'codex_rate_limit_reset',
+        source: 'x.com',
+        credit_identity: '',
+        status: 'available',
+        available_count: 99,
+      },
+    ]
+    const filtered = filterLegacyProviderCreditAggregateRows(rows)
+    expect(filtered.map((r) => r.credit_identity ?? '')).toEqual([
+      '',
+      'credit-a',
+      'credit-b',
+    ])
+  })
+
+  test('test_filterLegacyProviderCreditAggregateRows_drops_empty_identity_when_detail_exists', () => {
+    const rows = [
+      {
+        environment: 'production',
+        provider: 'openai',
+        account_hash: '8e928548abcd',
+        credit_family: 'codex_rate_limit_reset',
+        source: 'x.com',
+        credit_identity: 'credit-a',
+        status: 'available',
+        available_count: 1,
+      },
+      {
+        environment: 'production',
+        provider: 'openai',
+        account_hash: '8e928548abcd',
+        credit_family: 'codex_rate_limit_reset',
+        source: 'x.com',
+        credit_identity: '',
+        status: 'available',
+        available_count: 2,
+      },
+    ]
+    const filtered = filterLegacyProviderCreditAggregateRows(rows)
+    expect(filtered).toHaveLength(1)
+    expect(filtered[0]?.credit_identity).toBe('credit-a')
+  })
+
+  test('test_buildProviderCreditLifecycleSummaries_counts_available_used_expired', () => {
+    const entries = [
+      {
+        environment: 'production',
+        provider: 'openai',
+        credit_family: 'codex_rate_limit_reset',
+        status: 'available',
+        available_count: 1,
+      },
+      {
+        environment: 'production',
+        provider: 'openai',
+        credit_family: 'codex_rate_limit_reset',
+        status: 'available',
+        available_count: 1,
+      },
+      {
+        environment: 'production',
+        provider: 'openai',
+        credit_family: 'codex_rate_limit_reset',
+        status: 'used',
+        available_count: 0,
+      },
+      {
+        environment: 'production',
+        provider: 'openai',
+        credit_family: 'codex_rate_limit_reset',
+        status: 'expired',
+        available_count: 0,
+      },
+    ]
+    const summaries = buildProviderCreditLifecycleSummaries(entries)
+    expect(summaries[0]).toMatchObject({
+      provider: 'openai',
+      credit_family: 'codex_rate_limit_reset',
+      available_count: 2,
+      used_count: 1,
+      expired_count: 1,
+      total_count: 4,
+    })
+  })
+
+  test('test_normalizeProviderCreditLifecycleRow_redacts_url_and_operator', () => {
+    const row = normalizeProviderCreditLifecycleRow({
+      observed_at: '2026-06-28T20:00:00.000Z',
+      environment: 'production',
+      provider: 'openai',
+      account_hash: '8e928548deadbeef',
+      credit_family: 'codex_rate_limit_reset',
+      credit_type: 'reset',
+      available_count: 1,
+      expires_at: '2026-06-29T20:00:00.000Z',
+      source: 'x.com',
+      credit_identity: 'codex-credit-1',
+      granted_at: '2026-06-28T19:00:00.000Z',
+      status: 'available',
+      operator_annotation:
+        'token=sk-secret-sentinel-should-not-render path=/home/zepfu/.openai',
+      source_url:
+        'https://user:pass@x.com/status/123?utm=1#frag',
+    })
+
+    expect(row.account_hash_short).toBe('8e928548')
+    expect(row.account_hash_short).not.toBe('8e928548deadbeef')
+    expect(row.status).toBe('available')
+    expect(row.source_url).toBe('https://x.com/status/123')
+    expect(row.operator_annotation).toContain('[redacted')
+    const serialized = JSON.stringify(row)
+    expect(serialized).not.toContain('sk-secret-sentinel')
+    expect(serialized).not.toContain('/home/zepfu')
+    expect(serialized).not.toContain('raw_provider_fields')
+    expect(serialized).not.toContain('evidence')
+  })
+
+  test('test_normalizeProviderCreditLifecycleReport_preserves_used_vs_expired', () => {
+    const report = normalizeProviderCreditLifecycleReport([
+      {
+        observed_at: '2026-06-28T20:00:00.000Z',
+        environment: 'production',
+        provider: 'openai',
+        account_hash: '8e928548',
+        credit_family: 'codex_rate_limit_reset',
+        credit_identity: 'used-1',
+        status: 'used',
+        available_count: 0,
+        redeemed_at: '2026-06-28T18:00:00.000Z',
+      },
+      {
+        observed_at: '2026-06-28T20:00:00.000Z',
+        environment: 'production',
+        provider: 'openai',
+        account_hash: '8e928548',
+        credit_family: 'codex_rate_limit_reset',
+        credit_identity: 'expired-1',
+        status: 'expired',
+        available_count: 0,
+        expires_at: '2026-06-27T20:00:00.000Z',
+      },
+    ])
+    expect(report.data_source).toBe('provider_credit_current')
+    expect(report.entries.map((entry) => entry.status)).toEqual(['used', 'expired'])
+    expect(report.summaries[0]?.used_count).toBe(1)
+    expect(report.summaries[0]?.expired_count).toBe(1)
   })
 })
