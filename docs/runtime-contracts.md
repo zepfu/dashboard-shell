@@ -242,51 +242,54 @@ existing `no_usage` / reportable-session rules on usage totals.
 
 ## Container Error Intake (`.analysis/*-error.jsonl`)
 
-`dashboard-shell-reports` and `dashboard-shell-reports-dev` tail Docker JSON
-logs from a read-only host mount (`SHELL_REPORT_DOCKER_LOG_ROOT`, default
-`/host/docker/containers`) and continue to expose compact `dockerLogErrors` rows
-on usage reports for dashboard alerts.
+Every dashboard-shell-owned compose container runs
+`scripts/container-error-intake.sh` as its PID 1 wrapper. The wrapper forwards
+`SIGTERM`/`SIGINT` to the child process, keeps stdout/stderr on the Docker log
+stream, classifies actionable failures, and appends JSONL rows to
+`$SHELL_CONTAINER_ERROR_INTAKE_DIR/<safe-container-name>-error.jsonl` (compose
+mounts repo `./.analysis` at `/dashboard-shell-analysis` and sets
+`SHELL_CONTAINER_NAME` per service).
 
-In addition, actionable container log failures are appended durably under the
-repo-local `.analysis/` directory:
+`dashboard-shell-reports` and `dashboard-shell-reports-dev` still tail Docker JSON
+logs from a read-only host mount (`SHELL_REPORT_DOCKER_LOG_ROOT`, default
+`/host/docker/containers`) and expose bounded `dockerLogErrors` on usage reports
+for dashboard alerts. That path is aggregation and alerting only; it is not the
+sole durable writer for repo-owned containers.
+
+Durable intake layout:
 
 - Path pattern: `.analysis/<safe-container-name>-error.jsonl`
-- Writer: `server/report-service.mjs` via `server/docker-log-error-intake.mjs`
-- Intake directory: `SHELL_REPORT_ERROR_INTAKE_DIR` (default
-  `<process.cwd()>/.analysis`; compose sets `/app/.analysis` for prod reports
-  and `/workspace/dashboard-shell/.analysis` for dev reports)
+- Repo-owned writer: per-container `container-error-intake.sh`
+  (`source_identity`: `container-self-log`, `source_path`: `null`)
+- External fallback writer: `server/report-service.mjs` via
+  `server/docker-log-error-intake.mjs` for configured external containers only
+  (default `SHELL_REPORT_DOCKER_LOG_EXTERNAL_CONTAINERS=aawm-litellm,litellm-dev`)
+- Intake directory: `SHELL_CONTAINER_ERROR_INTAKE_DIR` and
+  `SHELL_REPORT_ERROR_INTAKE_DIR` (compose default `/dashboard-shell-analysis`,
+  bind-mounted to repo-local `./.analysis`)
 
 Each JSONL record includes normalized fields such as `observed_at`, `container`,
 `stream`, `level`, `status_code`, `provider`, compact `message`,
-`source_identity`, `source_path` (host log path when safe), `fingerprint`, and
-`ingested_at`. Real failures (errors, exceptions, tracebacks, 5xx, connection
-refused, timeouts) are classified at `error` or `critical`, not downgraded to
-`warning`.
+`source_identity`, `source_path` (host log path when report-service tails external
+containers), `fingerprint`, and `ingested_at`. Real failures (errors, exceptions,
+tracebacks, 5xx, connection refused, timeouts) are classified at `error` or
+`critical`, not downgraded to `warning`.
 
 Informational or debug lines that only mention the word `error` in a
 non-failure context (for example report-service `INFO: appended N docker log error
 row(s)` intake summaries) are not classified as actionable and are not appended
 to `*-error.jsonl`.
 
-Container scope defaults to repo-owned compose services (shell, report service,
-redis, and sibling remote dashboard containers in prod/dev compose). Legacy
-LiteLLM tails remain available through
-`SHELL_REPORT_DOCKER_LOG_EXTERNAL_CONTAINERS` (default
+Container scope for Docker JSON log tailing defaults to repo-owned compose
+services plus configured external containers. Legacy LiteLLM tails remain available
+through `SHELL_REPORT_DOCKER_LOG_EXTERNAL_CONTAINERS` (default
 `aawm-litellm,litellm-dev`). Setting `SHELL_REPORT_DOCKER_LOG_CONTAINERS`
 replaces the default scope entirely for operator overrides.
 
-The report service dedupes using `fingerprint` in two layers: an in-process
-`seenFingerprints` set for repeated poll cycles within one report-service
-process, and a persisted read of each `.analysis/<container>-error.jsonl` file
-before append so restarts and parallel `dashboard-shell-reports` /
-`dashboard-shell-reports-dev` instances do not re-append rows already on disk.
-Per intake file, a bounded directory lock (`<file>.intake.lock`, stale after
-~120s) reduces obvious concurrent duplicate races between report-service
-processes. Unseen fingerprints are committed only after a successful JSONL
-append; a failed append leaves the row eligible for retry on the next poll. All actionable rows found in the bounded
-tail are sorted and considered for intake; `SHELL_REPORT_DOCKER_LOG_ERROR_ROWS`
-caps only the `dockerLogErrors` dashboard payload, not durable intake. `.analysis` remains
-local-only and must not be committed to git.
+Report-service JSONL append skips repo-owned container names (see
+`filterDockerLogErrorsForCentralizedIntake` in `server/docker-log-error-intake.mjs`)
+so per-container writers and centralized external intake do not double-append the
+same repo-owned rows.
 
 Per `AGENTS.md`, new intake rows should be evaluated alongside handoffs and may
 open or update TODO items before unrelated feature work continues.

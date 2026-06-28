@@ -14,10 +14,15 @@ FROM nginx:1.27-alpine
 
 COPY --from=build /app/dist /usr/share/nginx/html
 COPY nginx.conf /etc/nginx/conf.d/default.conf
+COPY scripts/container-error-intake.sh /usr/local/bin/container-error-intake.sh
+RUN chmod +x /usr/local/bin/container-error-intake.sh
 
 EXPOSE 80
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD wget -qO- http://127.0.0.1/ >/dev/null || exit 1
 
+ENV SHELL_CONTAINER_NAME=dashboard-shell
+ENV SHELL_CONTAINER_ERROR_INTAKE_DIR=/dashboard-shell-analysis
+ENTRYPOINT ["/usr/local/bin/container-error-intake.sh"]
 CMD ["nginx", "-g", "daemon off;"]

@@ -18,6 +18,8 @@ import {
   isInformationalErrorMention,
   buildDockerLogErrorRow,
   safeContainerErrorIntakeBasename,
+  filterDockerLogErrorsForCentralizedIntake,
+  isRepoOwnedDockerLogContainerName,
 } from './docker-log-error-intake.mjs'
 
 describe('docker-log-error-intake', () => {
@@ -70,6 +72,76 @@ describe('docker-log-error-intake', () => {
     const msg = 'upstream connection refused while proxying request status 502'
     expect(isActionableErrorLog(msg)).toBe(true)
     expect(inferLogLevel(msg)).toBe('error')
+  })
+
+
+  test('status extraction ignores decimal timestamps package counts and bare port numbers', () => {
+    const falsePositives = [
+      '2026-06-28 21:31:54.557 upstream healthy',
+      'added 537 packages in 12s',
+      'audited 538 packages in 2s',
+      'listening on http://127.0.0.1:5020/api',
+      'connected to postgres://db:5432/main',
+      'D1-424 reopened for per-container intake',
+      'ERROR: D1-424 reopened without an HTTP status',
+    ]
+    for (const msg of falsePositives) {
+      const row = buildDockerLogErrorRow(
+        { time: '2026-06-28T21:31:54.000Z', stream: 'stdout', log: msg },
+        'dashboard-shell-dev'
+      )
+      expect(row?.status_code ?? null, msg).toBeNull()
+    }
+  })
+
+  test('status extraction keeps actionable HTTP and token-delimited error codes', () => {
+    const cases = [
+      ['upstream returned status 502 while proxying', 502],
+      ['HTTP 503 from provider', 503],
+      ['ERROR: D1-424 per-container smoke status 502', 502],
+      ['request failed with HTTP/1.1 404 and status 502', 502],
+      ['ERROR upstream gateway failure 502', 502],
+    ]
+    for (const [msg, expected] of cases) {
+      const row = buildDockerLogErrorRow(
+        { time: '2026-06-28T21:26:28.000Z', stream: 'stderr', log: msg },
+        'dashboard-shell-dev'
+      )
+      expect(row?.status_code, msg).toBe(expected)
+    }
+  })
+
+  test('status extraction prefers real 5xx when issue ids contain 4xx-looking tokens', () => {
+    const msg = 'ERROR: D1-424 per-container smoke status 502'
+    const row = buildDockerLogErrorRow(
+      {
+        time: '2026-06-28T21:26:28.000Z',
+        stream: 'stderr',
+        log: msg,
+      },
+      'dashboard-shell-dev'
+    )
+    expect(row?.status_code).toBe(502)
+  })
+
+  test('dependency audit summaries and routine shutdown logs are not actionable errors', () => {
+    const falsePositives = [
+      'added 537 packages, and audited 538 packages in 20s',
+      '27 vulnerabilities (5 low, 13 moderate, 7 high, 2 critical)',
+      '14:M 28 Jun 2026 21:31:54.557 * User requested shutdown...',
+      '14:M 28 Jun 2026 21:31:54.557 # Redis is now ready to exit, bye bye...',
+    ]
+
+    for (const msg of falsePositives) {
+      expect(isActionableErrorLog(msg), msg).toBe(false)
+      expect(
+        buildDockerLogErrorRow(
+          { time: '2026-06-28T21:31:54.000Z', stream: 'stdout', log: msg },
+          'dashboard-shell-dev'
+        ),
+        msg
+      ).toBeNull()
+    }
   })
 
   test('selects unseen rows without mutating seen until append commits', () => {
@@ -397,4 +469,51 @@ describe('docker-log-error-intake', () => {
     const text = await readFile(filePath, 'utf8')
     expect(text.trim().split('\n')).toHaveLength(1)
   })
+
+
+  test('repo-owned helper matches generated compose container names', () => {
+    expect(isRepoOwnedDockerLogContainerName('dashboard-shell-dashboard-shell-reports-1')).toBe(
+      true
+    )
+    expect(isRepoOwnedDockerLogContainerName('dashboard-shell-aawm-dashboard-1')).toBe(true)
+    expect(isRepoOwnedDockerLogContainerName('dashboard-shell-aawm-litellm-1')).toBe(false)
+    expect(isRepoOwnedDockerLogContainerName('otherproj-aawm-dashboard-1')).toBe(false)
+  })
+
+  test('repo-owned container rows are excluded from centralized report-service intake', () => {
+    const rows = [
+      {
+        container: 'dashboard-shell-reports-dev',
+        message: 'ERROR: synthetic',
+        fingerprint: 'repo-1',
+      },
+      {
+        container: 'dashboard-shell-dashboard-shell-reports-1',
+        message: 'ERROR: prod report service',
+        fingerprint: 'repo-prod-1',
+      },
+      {
+        container: 'dashboard-shell-aawm-dashboard-1',
+        message: 'ERROR: prod remote',
+        fingerprint: 'repo-prod-2',
+      },
+      {
+        container: 'aawm-litellm',
+        message: 'ERROR: external',
+        fingerprint: 'ext-1',
+      },
+      {
+        container: 'other-thing',
+        message: 'ERROR: other',
+        fingerprint: 'oth-1',
+      },
+    ]
+    const filtered = filterDockerLogErrorsForCentralizedIntake(rows, {
+      env: { SHELL_REPORT_DOCKER_LOG_EXTERNAL_CONTAINERS: 'aawm-litellm,litellm-dev' },
+    })
+    expect(filtered.map((r) => r.container)).toEqual(['aawm-litellm', 'other-thing'])
+    expect(isRepoOwnedDockerLogContainerName('dashboard-shell-redis')).toBe(true)
+    expect(isRepoOwnedDockerLogContainerName('aawm-litellm')).toBe(false)
+  })
+
 })

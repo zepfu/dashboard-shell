@@ -22,6 +22,7 @@ import {
   discoverDockerJsonLogSourcesFromConfigs,
   shouldDiscoverDockerJsonLogSources,
   splitDockerLogErrorsForDashboardAndIntake,
+  filterDockerLogErrorsForCentralizedIntake,
   stripAnsi,
 } from './docker-log-error-intake.mjs'
 
@@ -8986,7 +8987,10 @@ async function loadDockerLogErrors() {
     sorted,
     MAX_DOCKER_LOG_ERROR_ROWS
   )
-  await persistDockerLogErrorsToIntake(sorted)
+  const forCentralizedIntake = filterDockerLogErrorsForCentralizedIntake(sorted, {
+    env: process.env,
+  })
+  await persistDockerLogErrorsToIntake(forCentralizedIntake)
   return forDashboard
 }
 

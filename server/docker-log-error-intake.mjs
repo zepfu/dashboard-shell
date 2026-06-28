@@ -241,6 +241,67 @@ export function parseDockerLogContainerNames(value, fallback = DEFAULT_REPO_OWNE
 
 
 
+
+export function parseDockerLogExternalContainerNames(
+  value,
+  fallback = ['aawm-litellm', 'litellm-dev']
+) {
+  if (!value || !String(value).trim()) {
+    return [...fallback]
+  }
+  return String(value)
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean)
+}
+
+export function resolveDockerLogExternalContainerNames(env = process.env) {
+  return [
+    ...new Set(
+      parseDockerLogExternalContainerNames(
+        env.SHELL_REPORT_DOCKER_LOG_EXTERNAL_CONTAINERS ?? 'aawm-litellm,litellm-dev',
+        []
+      )
+    ),
+  ]
+}
+
+export function isRepoOwnedDockerLogContainerName(
+  containerName,
+  repoOwned = DEFAULT_REPO_OWNED_DOCKER_LOG_CONTAINERS
+) {
+  const normalized = normalizeDockerContainerName(containerName)
+  if (!normalized) return false
+  const owned = new Set((repoOwned ?? []).map((item) => String(item).trim()).filter(Boolean))
+  if (owned.has(normalized)) return true
+
+  const composeGenerated = /^dashboard-shell-(.+)-(\d+)$/.exec(normalized)
+  if (!composeGenerated) return false
+  const serviceName = composeGenerated[1]
+  if (!REPO_OWNED_COMPOSE_SERVICE_NAMES.includes(serviceName)) return false
+  return owned.has(serviceName)
+}
+
+export function filterDockerLogErrorsForCentralizedIntake(
+  rows,
+  options = {}
+) {
+  const repoOwned =
+    options.repoOwnedContainerNames ?? DEFAULT_REPO_OWNED_DOCKER_LOG_CONTAINERS
+  const external =
+    options.externalContainerNames ??
+    resolveDockerLogExternalContainerNames(options.env ?? process.env)
+  const externalSet = new Set(external.map((item) => String(item).trim()).filter(Boolean))
+  const list = Array.isArray(rows) ? rows : []
+  return list.filter((row) => {
+    const container = normalizeDockerContainerName(row?.container)
+    if (!container) return false
+    if (externalSet.has(container)) return true
+    return !isRepoOwnedDockerLogContainerName(container, repoOwned)
+  })
+}
+
+
 export function resolveDockerLogContainerNames(env = process.env) {
   const explicit = String(env.SHELL_REPORT_DOCKER_LOG_CONTAINERS ?? '').trim()
   if (explicit) {
@@ -274,6 +335,63 @@ export function inferLogProvider(message) {
   return 'unknown'
 }
 
+export function extractHttpStatusCodes(message) {
+  const text = String(message ?? '')
+  const lowerText = text.toLowerCase()
+  const codes = []
+  const seen = new Set()
+
+  const add = (code) => {
+    const normalized = String(code ?? '')
+    if (!/^(?:4\d{2}|5\d{2})$/.test(normalized)) return
+    const numeric = Number(normalized)
+    if (numeric < 400 || numeric > 599) return
+    if (seen.has(normalized)) return
+    seen.add(normalized)
+    codes.push(normalized)
+  }
+
+  const hasStatusContext = (codeIndex) => {
+    const before = lowerText.slice(Math.max(0, codeIndex - 56), codeIndex)
+    const after = lowerText.slice(codeIndex + 3, codeIndex + 56)
+    if (
+      /\b(?:status|statuscode|status_code|http|https|response|returned|code|upstream|gateway|error|failed|failure|fatal|critical)\b[\s:="'()[\]{},./\\-]{0,48}$/.test(
+        before
+      )
+    ) {
+      return true
+    }
+    return /^\s*(?:bad gateway|gateway timeout|service unavailable|internal server error|not found|too many requests)\b/.test(
+      after
+    )
+  }
+
+  for (const match of text.matchAll(/4\d{2}|5\d{2}/g)) {
+    const code = match[0]
+    const codeIndex = match.index
+    const before = codeIndex > 0 ? text[codeIndex - 1] : ''
+    const afterChar = text[codeIndex + code.length] ?? ''
+    if (/[0-9.]/.test(before) || /[0-9.]/.test(afterChar)) continue
+    if (before === '-') continue
+
+    const after = text.slice(codeIndex + code.length, codeIndex + code.length + 24).toLowerCase()
+    const beforeWindow = text.slice(Math.max(0, codeIndex - 16), codeIndex).toLowerCase()
+    if (/^\s*packages\b/.test(after)) continue
+    if (/\baudited\s*$/.test(beforeWindow)) continue
+    if (/\badded\s*$/.test(beforeWindow)) continue
+    if (/:\d{2}:\d{2}\.$/.test(text.slice(Math.max(0, codeIndex - 12), codeIndex + 1))) continue
+    if (!hasStatusContext(codeIndex)) continue
+
+    add(code)
+  }
+
+  return codes
+}
+
+export function hasHttpStatusSignal(message) {
+  return extractHttpStatusCodes(message).length > 0
+}
+
 export function inferLogLevel(message) {
   const lower = message.toLowerCase()
   if (/\bcritical\b|\bfatal\b/.test(lower)) return 'critical'
@@ -284,14 +402,24 @@ export function inferLogLevel(message) {
   ) {
     return 'error'
   }
-  if (/\b5\d{2}\b/.test(lower)) return 'error'
+  if (hasHttpStatusSignal(message)) return 'error'
   if (/\bwarn(?:ing)?\b/.test(lower)) return 'warning'
   return 'error'
 }
 
 export function inferLogStatusCode(message) {
-  const match = message.match(/(?<!\d)(4\d{2}|5\d{2})(?!\d)/)
-  return match ? Number(match[1]) : null
+  const codes = extractHttpStatusCodes(message)
+  if (!codes.length) return null
+  const serverError = codes.find((code) => code.startsWith('5'))
+  return Number(serverError ?? codes[0])
+}
+
+export function isIgnoredContainerLogNoise(message) {
+  const lower = String(message ?? '').toLowerCase()
+  if (!lower) return false
+  if (/\buser requested shutdown\b|\bready to exit, bye bye\b/.test(lower)) return true
+  if (/\b(?:added|audited)\s+\d+\s+packages\b/.test(lower)) return true
+  return /^\s*\d+\s+vulnerabilities\b/.test(lower)
 }
 
 export function isInformationalErrorMention(message) {
@@ -316,7 +444,7 @@ export function isInformationalErrorMention(message) {
   ) {
     return false
   }
-  if (/\b5\d{2}\b/.test(lower)) return false
+  if (hasHttpStatusSignal(message)) return false
 
   return /\berror\b/.test(lower)
 }
@@ -326,7 +454,8 @@ export function isActionableErrorLog(message) {
   if (/health\/(?:liveliness|readiness)|"get \/health\b/.test(lower)) {
     return false
   }
-  if (/\b5\d{2}\b/.test(lower)) return true
+  if (isIgnoredContainerLogNoise(lower)) return false
+  if (hasHttpStatusSignal(message)) return true
   if (/\bconnection refused\b|\betimed out\b|\btimeout\b/.test(lower)) return true
   if (/\b(?:critical|fatal|exception|traceback)\b/.test(lower)) return true
   if (isInformationalErrorMention(lower)) return false
