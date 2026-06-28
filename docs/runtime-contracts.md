@@ -77,3 +77,54 @@ Static/prod-style shell hosting serves remotes from same-origin
 `/api/<dashboard>/*` paths. The static shell CSP must therefore allow same-origin
 scripts and same-origin XHR/fetch. Remotes should avoid direct upstream service
 URLs in browser code so the shell proxy remains the only network boundary.
+
+## Container Error Intake (`.analysis/*-error.jsonl`)
+
+`dashboard-shell-reports` and `dashboard-shell-reports-dev` tail Docker JSON
+logs from a read-only host mount (`SHELL_REPORT_DOCKER_LOG_ROOT`, default
+`/host/docker/containers`) and continue to expose compact `dockerLogErrors` rows
+on usage reports for dashboard alerts.
+
+In addition, actionable container log failures are appended durably under the
+repo-local `.analysis/` directory:
+
+- Path pattern: `.analysis/<safe-container-name>-error.jsonl`
+- Writer: `server/report-service.mjs` via `server/docker-log-error-intake.mjs`
+- Intake directory: `SHELL_REPORT_ERROR_INTAKE_DIR` (default
+  `<process.cwd()>/.analysis`; compose sets `/app/.analysis` for prod reports
+  and `/workspace/dashboard-shell/.analysis` for dev reports)
+
+Each JSONL record includes normalized fields such as `observed_at`, `container`,
+`stream`, `level`, `status_code`, `provider`, compact `message`,
+`source_identity`, `source_path` (host log path when safe), `fingerprint`, and
+`ingested_at`. Real failures (errors, exceptions, tracebacks, 5xx, connection
+refused, timeouts) are classified at `error` or `critical`, not downgraded to
+`warning`.
+
+Informational or debug lines that only mention the word `error` in a
+non-failure context (for example report-service `INFO: appended N docker log error
+row(s)` intake summaries) are not classified as actionable and are not appended
+to `*-error.jsonl`.
+
+Container scope defaults to repo-owned compose services (shell, report service,
+redis, and sibling remote dashboard containers in prod/dev compose). Legacy
+LiteLLM tails remain available through
+`SHELL_REPORT_DOCKER_LOG_EXTERNAL_CONTAINERS` (default
+`aawm-litellm,litellm-dev`). Setting `SHELL_REPORT_DOCKER_LOG_CONTAINERS`
+replaces the default scope entirely for operator overrides.
+
+The report service dedupes using `fingerprint` in two layers: an in-process
+`seenFingerprints` set for repeated poll cycles within one report-service
+process, and a persisted read of each `.analysis/<container>-error.jsonl` file
+before append so restarts and parallel `dashboard-shell-reports` /
+`dashboard-shell-reports-dev` instances do not re-append rows already on disk.
+Per intake file, a bounded directory lock (`<file>.intake.lock`, stale after
+~120s) reduces obvious concurrent duplicate races between report-service
+processes. Unseen fingerprints are committed only after a successful JSONL
+append; a failed append leaves the row eligible for retry on the next poll. All actionable rows found in the bounded
+tail are sorted and considered for intake; `SHELL_REPORT_DOCKER_LOG_ERROR_ROWS`
+caps only the `dockerLogErrors` dashboard payload, not durable intake. `.analysis` remains
+local-only and must not be committed to git.
+
+Per `AGENTS.md`, new intake rows should be evaluated alongside handoffs and may
+open or update TODO items before unrelated feature work continues.

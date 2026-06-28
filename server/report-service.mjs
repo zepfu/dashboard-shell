@@ -13,6 +13,18 @@ import process from 'node:process'
 import { URL } from 'node:url'
 import { promisify } from 'node:util'
 import { gzip as gzipCallback, gunzip as gunzipCallback } from 'node:zlib'
+import {
+  appendDockerLogErrorsToIntake,
+  extractDockerLogErrorsFromTail,
+  selectNewDockerLogErrors,
+  resolveDockerLogContainerNames,
+  capDockerLogErrorsForDashboard,
+  discoverDockerJsonLogSourcesFromConfigs,
+  shouldDiscoverDockerJsonLogSources,
+  splitDockerLogErrorsForDashboardAndIntake,
+  stripAnsi,
+} from './docker-log-error-intake.mjs'
+
 import pg from 'pg'
 
 // Dynamic import for redis so that the module can be imported in environments
@@ -139,9 +151,12 @@ const DOCKER_LOG_TAIL_BYTES = Math.max(
 )
 const DOCKER_LOG_ROOT =
   process.env.SHELL_REPORT_DOCKER_LOG_ROOT ?? '/host/docker/containers'
-const DOCKER_LOG_CONTAINER_NAMES = parseCsv(
-  process.env.SHELL_REPORT_DOCKER_LOG_CONTAINERS ?? 'aawm-litellm,litellm-dev'
+const DOCKER_LOG_CONTAINER_NAMES = resolveDockerLogContainerNames(process.env)
+const DOCKER_LOG_ERROR_INTAKE_DIR = path.resolve(
+  process.env.SHELL_REPORT_ERROR_INTAKE_DIR ??
+    path.join(process.cwd(), '.analysis')
 )
+const dockerLogErrorIntakeSeenFingerprints = new Set()
 const LOCAL_HEALTH_TIMEOUT_MS = Math.max(
   250,
   Math.min(Number(process.env.SHELL_REPORT_LOCAL_HEALTH_TIMEOUT_MS ?? 900), 5_000)
@@ -7791,7 +7806,7 @@ LIMIT $${values.length};
 }
 
 async function findDockerJsonLogSources() {
-  if (!DOCKER_LOG_CONTAINER_NAMES.length || MAX_DOCKER_LOG_ERROR_ROWS <= 0) {
+  if (!shouldDiscoverDockerJsonLogSources(DOCKER_LOG_CONTAINER_NAMES)) {
     return []
   }
 
@@ -7807,8 +7822,7 @@ async function findDockerJsonLogSources() {
     return []
   }
 
-  const wanted = new Set(DOCKER_LOG_CONTAINER_NAMES)
-  const sources = []
+  const configs = []
   for (const entry of entries) {
     if (!entry.isDirectory()) continue
     const containerDir = path.join(DOCKER_LOG_ROOT, entry.name)
@@ -7820,16 +7834,10 @@ async function findDockerJsonLogSources() {
     } catch {
       continue
     }
-
-    const containerName = String(config?.Name ?? '').replace(/^\//, '')
-    if (!wanted.has(containerName)) continue
-
-    sources.push({
-      container: containerName,
-      logPath: path.join(containerDir, `${entry.name}-json.log`),
-    })
+    configs.push({ containerDir, entryId: entry.name, config })
   }
-  return sources
+
+  return discoverDockerJsonLogSourcesFromConfigs(configs, DOCKER_LOG_CONTAINER_NAMES)
 }
 
 async function readFileTail(filePath, maxBytes) {
@@ -7846,50 +7854,26 @@ async function readFileTail(filePath, maxBytes) {
   }
 }
 
-function stripAnsi(value) {
-  return value.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, '')
-}
 
-function compactLogMessage(value) {
-  return stripAnsi(value).replace(/\s+/g, ' ').trim().slice(0, 280)
-}
-
-function inferLogProvider(message) {
-  const lower = message.toLowerCase()
-  if (lower.includes('anthropic') || lower.includes('claude')) return 'anthropic'
-  if (lower.includes('openrouter')) return 'openrouter'
-  if (lower.includes('openai') || lower.includes('gpt-')) return 'openai'
-  if (lower.includes('google') || lower.includes('gemini')) return 'google'
-  if (lower.includes('xai') || lower.includes('grok')) return 'xai'
-  if (lower.includes('nvidia') || lower.includes('nim')) return 'nvidia_nim'
-  if (lower.includes('local')) return 'local'
-  return 'unknown'
-}
-
-function inferLogLevel(message) {
-  const lower = message.toLowerCase()
-  if (/\bcritical\b|\bfatal\b/.test(lower)) return 'critical'
-  if (/\berror\b|\bexception\b|\btraceback\b|\bfailed\b/.test(lower)) {
-    return 'error'
+async function persistDockerLogErrorsToIntake(rows) {
+  const fresh = selectNewDockerLogErrors(rows, dockerLogErrorIntakeSeenFingerprints)
+  if (!fresh.length) return
+  try {
+    const result = await appendDockerLogErrorsToIntake({
+      intakeDir: DOCKER_LOG_ERROR_INTAKE_DIR,
+      rows: fresh,
+      seenFingerprints: dockerLogErrorIntakeSeenFingerprints,
+    })
+    if (result.appended > 0) {
+      process.stderr.write(
+        `[report-service] INFO: appended ${result.appended} docker log error row(s) to ${DOCKER_LOG_ERROR_INTAKE_DIR}\n`
+      )
+    }
+  } catch (error) {
+    process.stderr.write(
+      `[report-service] WARN: unable to append docker log errors to intake: ${formatError(error)}\n`
+    )
   }
-  if (/\bwarn(?:ing)?\b/.test(lower)) return 'warning'
-  return 'error'
-}
-
-function inferLogStatusCode(message) {
-  const match = message.match(/(?<!\d)(4\d{2}|5\d{2})(?!\d)/)
-  return match ? Number(match[1]) : null
-}
-
-function isActionableErrorLog(message) {
-  const lower = message.toLowerCase()
-  if (/health\/(?:liveliness|readiness)|"get \/health\b/.test(lower)) {
-    return false
-  }
-  if (/\b(?:4\d{2}|5\d{2})\b/.test(lower)) return true
-  return /\b(?:critical|fatal|error|exception|traceback|failed|timeout|rate limit|overloaded)\b/.test(
-    lower
-  )
 }
 
 async function loadDockerLogErrors() {
@@ -7909,38 +7893,29 @@ async function loadDockerLogErrors() {
       continue
     }
 
-    const lines = tail.text.split('\n')
-    if (tail.truncated) lines.shift()
-    for (const line of lines) {
-      if (!line.trim()) continue
-      let parsed
-      try {
-        parsed = JSON.parse(line)
-      } catch {
-        continue
-      }
-
-      const observedAt = Date.parse(parsed?.time ?? '')
-      if (!Number.isFinite(observedAt) || observedAt < cutoffMs) continue
-
-      const message = compactLogMessage(String(parsed?.log ?? ''))
-      if (!message || !isActionableErrorLog(message)) continue
-
-      rows.push({
-        observed_at: new Date(observedAt).toISOString(),
-        container: source.container,
-        stream: String(parsed?.stream ?? 'unknown'),
-        provider: inferLogProvider(message),
-        status_code: inferLogStatusCode(message),
-        level: inferLogLevel(message),
-        message,
-      })
-    }
+    const extracted = extractDockerLogErrorsFromTail({
+      tailText: tail.text,
+      truncated: tail.truncated,
+      container: source.container,
+      cutoffMs,
+      source: {
+        sourceIdentity: 'docker-json-log',
+        sourcePath: source.logPath,
+      },
+    })
+    rows.push(...extracted)
   }
 
-  return rows
-    .sort((a, b) => String(b.observed_at).localeCompare(String(a.observed_at)))
-    .slice(0, MAX_DOCKER_LOG_ERROR_ROWS)
+  const sorted = rows.sort((a, b) =>
+    String(b.observed_at).localeCompare(String(a.observed_at))
+  )
+
+  const { forDashboard } = splitDockerLogErrorsForDashboardAndIntake(
+    sorted,
+    MAX_DOCKER_LOG_ERROR_ROWS
+  )
+  await persistDockerLogErrorsToIntake(sorted)
+  return forDashboard
 }
 
 function compactProbeMessage(value) {
@@ -8831,4 +8806,12 @@ export {
   canonicalizeSearchParams,
   resolveReportCacheTtlMs,
 } from './report-cache-identity.mjs'
+export {
+  resolveDockerLogContainerNames,
+  extractDockerLogErrorsFromTail,
+  selectNewDockerLogErrors,
+  capDockerLogErrorsForDashboard,
+  inferLogLevel,
+  isActionableErrorLog,
+} from './docker-log-error-intake.mjs'
 export { classifyCacheEntry }

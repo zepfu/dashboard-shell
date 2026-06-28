@@ -79,7 +79,9 @@ services:
       SHELL_REPORT_AGENT_SCORE_REASON_RECENT_ROW_LIMIT: "${SHELL_REPORT_AGENT_SCORE_REASON_RECENT_ROW_LIMIT:-10000}"
       SHELL_REPORT_TOOL_ACTIVITY_RECENT_ROW_LIMIT: "${SHELL_REPORT_TOOL_ACTIVITY_RECENT_ROW_LIMIT:-10000}"
       SHELL_REPORT_DOCKER_LOG_ROOT: "${SHELL_REPORT_DOCKER_LOG_ROOT:-/host/docker/containers}"
-      SHELL_REPORT_DOCKER_LOG_CONTAINERS: "${SHELL_REPORT_DOCKER_LOG_CONTAINERS:-aawm-litellm,litellm-dev}"
+      SHELL_REPORT_DOCKER_LOG_CONTAINERS: "${SHELL_REPORT_DOCKER_LOG_CONTAINERS:-}"
+      SHELL_REPORT_DOCKER_LOG_EXTERNAL_CONTAINERS: "${SHELL_REPORT_DOCKER_LOG_EXTERNAL_CONTAINERS:-aawm-litellm,litellm-dev}"
+      SHELL_REPORT_ERROR_INTAKE_DIR: "${SHELL_REPORT_ERROR_INTAKE_DIR:-/app/.analysis}"
     expose:
       - "3010"
     depends_on:
@@ -88,6 +90,7 @@ services:
     volumes:
       - ./server:/app/server:ro
       - /var/lib/docker/containers:/host/docker/containers:ro
+      - ./.analysis:/app/.analysis
     healthcheck:
       test:
         [
