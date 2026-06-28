@@ -89,6 +89,7 @@ import { ProviderCard, type ProviderCardConfig } from './provider-card'
 import { type SlicerFilters, type SlicerOptions } from './slicer-bar'
 import { AawmAliasRoutingPanel } from './status-section/aawm-alias-routing-panel'
 import { PgBouncerHealthPanel } from './status-section/pgbouncer-health-panel'
+import { ProviderAuthHealthPanel } from './status-section/provider-auth-health-panel'
 import { ProviderQuotaHistoryBucket } from './status-section/provider-quota-history-bucket'
 import { ProviderStatusLegend } from './status-section/provider-status-legend'
 import { QuotaEstimatorWeightsPanel } from './status-section/quota-estimator-weights-panel'
@@ -1312,6 +1313,7 @@ export default function PhosphorDashboard({
               loading={shellHealthFetching}
             />
             <AawmAliasRoutingPanel routing={report?.providerAliasRouting} />
+            <ProviderAuthHealthPanel authHealth={report?.providerAuthHealth} />
             <div
               className={`provider-health-summary ${styles['provider-health-summary-masonry']}`}
             >

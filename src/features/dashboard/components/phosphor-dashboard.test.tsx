@@ -4579,3 +4579,111 @@ describe('PhosphorDashboard — D1-323 alias routing health panel', () => {
     ).toBeNull()
   })
 })
+
+describe('PhosphorDashboard — D1-338 provider auth health panel', () => {
+  test('test_health_tab_renders_grok_oidc_refreshed_failed_and_not_observed_without_secret_sentinel', async () => {
+    const future = new Date(Date.now() + 600_000).toISOString()
+    const past = new Date(Date.now() - 60_000).toISOString()
+    const report: UsageReportResponse = {
+      ...MOCK_REPORT,
+      providerAuthHealth: {
+        data_source: 'provider_auth_current',
+        freshness_label:
+          'Current provider credential refresh state from provider_auth_current',
+        generated_at: '2026-05-19T00:00:00.000Z',
+        entries: [
+          {
+            observed_at: '2026-05-19T00:00:00.000Z',
+            environment: 'production',
+            provider: 'xai',
+            auth_family: 'grok_oidc',
+            status: 'refreshed',
+            attempted: true,
+            refreshed: true,
+            skipped: false,
+            expires_at: future,
+            last_success_at: '2026-05-19T00:00:00.000Z',
+            remaining_seconds: 600,
+            auth_health_state: 'refreshed',
+            source_task: 'grok_oidc_refresh',
+            auth_file_hash_short: 'grokoidc1',
+          },
+          {
+            observed_at: '2026-05-19T00:10:00.000Z',
+            environment: 'production',
+            provider: 'xai',
+            auth_family: 'grok_oidc',
+            credential_scope: 'secondary',
+            status: 'failed',
+            attempted: true,
+            refreshed: false,
+            skipped: false,
+            expires_at: past,
+            remaining_seconds: -60,
+            auth_health_state: 'failed',
+            source_task: 'grok_oidc_refresh',
+            error_class: 'refresh_error',
+            error_message: 'sanitized failure only',
+          },
+        ],
+      },
+    }
+
+    await act(async () => {
+      render(
+        <Wrapper>
+          <PhosphorDashboard
+            from='2026-05-20'
+            to='2026-05-21'
+            report={report}
+            reportLoading={false}
+            showComparison={false}
+            quotas={[]}
+            quotaHistory={[]}
+          />
+        </Wrapper>
+      )
+    })
+
+    const panel = screen.getByRole('region', { name: /provider auth health/i })
+    expect(panel).toBeInTheDocument()
+    expect(panel.textContent).toMatch(/grok_oidc/i)
+    expect(within(panel).getByText(/refreshed/i)).toBeInTheDocument()
+    expect(within(panel).getByText(/failed/i)).toBeInTheDocument()
+    expect(within(panel).getByText(/refresh_error/i)).toBeInTheDocument()
+    expect(
+      screen.queryByText(/sk-secret-sentinel-should-not-render/i)
+    ).toBeNull()
+    expect(screen.queryByText(/refresh_token/i)).toBeNull()
+  })
+
+  test('test_health_tab_provider_auth_empty_renders_not_observed', async () => {
+    const report: UsageReportResponse = {
+      ...MOCK_REPORT,
+      providerAuthHealth: {
+        data_source: 'provider_auth_current',
+        freshness_label: 'Current provider credential refresh state',
+        generated_at: '2026-05-19T00:00:00.000Z',
+        entries: [],
+      },
+    }
+
+    await act(async () => {
+      render(
+        <Wrapper>
+          <PhosphorDashboard
+            from='2026-05-20'
+            to='2026-05-21'
+            report={report}
+            reportLoading={false}
+            showComparison={false}
+            quotas={[]}
+            quotaHistory={[]}
+          />
+        </Wrapper>
+      )
+    })
+
+    expect(screen.getByText('not observed')).toBeInTheDocument()
+  })
+})

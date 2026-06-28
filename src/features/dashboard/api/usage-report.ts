@@ -1085,6 +1085,43 @@ export interface UsageReportProviderAliasRoutingEntry {
   skipped_candidates?: UsageReportProviderAliasRoutingCandidate[]
 }
 
+export type UsageReportProviderAuthHealthState =
+  | 'refreshed'
+  | 'skipped_valid'
+  | 'skipped_expired'
+  | 'failed'
+  | 'attempted'
+  | 'expired'
+  | 'unknown'
+
+export interface UsageReportProviderAuthHealthEntry {
+  observed_at: string
+  environment: string
+  provider: string
+  auth_family: string
+  credential_scope?: string | null
+  auth_file_hash_short?: string | null
+  status: string
+  attempted: boolean
+  refreshed: boolean
+  skipped: boolean
+  expires_at?: string | null
+  last_success_at?: string | null
+  remaining_seconds?: number | null
+  auth_health_state: UsageReportProviderAuthHealthState
+  source_task?: string | null
+  error_class?: string | null
+  error_message?: string | null
+  auth_file_source?: string | null
+}
+
+export interface UsageReportProviderAuthHealth {
+  data_source: 'provider_auth_current'
+  freshness_label: string
+  generated_at: string
+  entries: UsageReportProviderAuthHealthEntry[]
+}
+
 export interface UsageReportProviderAliasRouting {
   data_source: 'recent_observed_session_history'
   freshness_label: string
@@ -1121,6 +1158,7 @@ export interface UsageReportResponse {
   localHealth?: UsageReportLocalHealthRow[]
   providerStatusUsage: UsageReportProviderStatusUsageRow[]
   providerAliasRouting?: UsageReportProviderAliasRouting
+  providerAuthHealth?: UsageReportProviderAuthHealth
   quotas: UsageReportQuotaRow[]
   /** W32: flat list of past reset windows per (provider, quota_type). */
   quotaHistory: UsageReportQuotaHistoryRow[]

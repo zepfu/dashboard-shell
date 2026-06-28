@@ -70,6 +70,43 @@ endpoint-specific statement timeouts; on database timeout they return empty
 payloads with `metadata.degraded=true`, a `database_timeout` reason, and a
 section-level `Degraded` badge in the dashboard.
 
+
+## Provider Health — Provider Auth Expiry (D1-338)
+
+`GET /api/shell/reports/usage` may include a sibling field
+`providerAuthHealth` on `UsageReportResponse`. This is **not** merged into
+`providerLatencyHealth` rows.
+
+Data source:
+
+- Primary: `public.provider_auth_current` (latest row per environment,
+  provider, auth_family, credential_scope, auth_file_hash).
+
+The API labels the payload as current credential refresh state from
+`provider_auth_current`. Empty `entries` means **not observed**, not healthy.
+
+Projected / normalized fields per entry:
+
+- `observed_at`, `environment`, `provider`, `auth_family`, `credential_scope`
+- `auth_file_hash_short` (prefix only, not full hash)
+- `status`, `attempted`, `refreshed`, `skipped`
+- `expires_at`, `last_success_at`, `remaining_seconds`
+- `auth_health_state` (`refreshed`, `skipped_valid`, `skipped_expired`,
+  `failed`, `attempted`, `expired`, `unknown`)
+- `source_task`, `error_class`, sanitized `error_message`
+- `auth_file_source` from safe `metadata.auth_file_source` when present
+
+Redaction rules (server normalization and SQL projection):
+
+- Do **not** expose tokens, refresh tokens, raw auth JSON, raw auth-file paths,
+  full `auth_file_hash`, or unfiltered `metadata` blobs.
+- `skipped` must not classify as healthy when `expires_at` is missing or in the
+  past (`skipped_expired`).
+- Error messages are sanitized for token-like strings and filesystem paths.
+
+UI placement: General dashboard **Health** tab, after PgBouncer and AAWM alias
+routing panels and before provider health cards.
+
 ## CSP And Asset Loading
 
 Static/prod-style shell hosting serves remotes from same-origin

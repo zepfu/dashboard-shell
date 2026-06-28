@@ -6222,6 +6222,207 @@ export function normalizeProviderAliasRoutingReport(rows, options = {}) {
   }
 }
 
+const PROVIDER_AUTH_HEALTH_ROW_LIMIT = 200
+const PROVIDER_AUTH_BLOCKED_METADATA_KEYS = new Set([
+  'auth_file',
+  'auth_file_path',
+  'refresh_token',
+  'access_token',
+  'id_token',
+  'api_key',
+  'authorization',
+  'client_secret',
+  'raw_auth',
+  'raw_auth_json',
+  'token',
+  'tokens',
+])
+
+export function buildProviderAuthHealthQuery(_searchParams) {
+  const sql = `
+SELECT
+    observed_at,
+    COALESCE(environment, 'unknown') AS environment,
+    provider,
+    auth_family,
+    credential_scope,
+    NULLIF(left(COALESCE(auth_file_hash, ''), 8), '') AS auth_file_hash_short,
+    status,
+    attempted,
+    refreshed,
+    skipped,
+    expires_at,
+    last_success_at,
+    source_task,
+    error_class,
+    error_message,
+    NULLIF(metadata->>'auth_file_source', '') AS auth_file_source
+FROM public.provider_auth_current
+ORDER BY
+    provider ASC,
+    auth_family ASC,
+    environment ASC,
+    observed_at DESC
+LIMIT $1;
+`
+  return {
+    sql,
+    values: [PROVIDER_AUTH_HEALTH_ROW_LIMIT],
+    metadata: {
+      limit: PROVIDER_AUTH_HEALTH_ROW_LIMIT,
+      dataSource: 'provider_auth_current',
+    },
+  }
+}
+
+function nullIfEmptyProviderAuth(value) {
+  if (value === null || value === undefined) return null
+  const text = String(value).trim()
+  return text ? text : null
+}
+
+function parseProviderAuthTimestamp(value) {
+  if (value === null || value === undefined || value === '') return null
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    return value.toISOString()
+  }
+  const text = String(value).trim()
+  if (!text) return null
+  const date = new Date(text)
+  return Number.isNaN(date.getTime()) ? null : date.toISOString()
+}
+
+function providerAuthRemainingSeconds(expiresAtIso, nowMs = Date.now()) {
+  if (!expiresAtIso) return null
+  const expiresMs = Date.parse(expiresAtIso)
+  if (!Number.isFinite(expiresMs)) return null
+  return Math.round((expiresMs - nowMs) / 1000)
+}
+
+function shortProviderAuthFileHash(value) {
+  const normalized = nullIfEmptyProviderAuth(value)
+  if (!normalized) return null
+  if (normalized.length <= 12) return normalized
+  return normalized.slice(0, 8)
+}
+
+function sanitizeProviderAuthErrorMessage(value) {
+  const normalized = nullIfEmptyProviderAuth(value)
+  if (!normalized) return null
+  let message = normalized
+  message = message.replace(
+    /(?:Bearer\s+)?[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g,
+    '[redacted-token]'
+  )
+  message = message.replace(
+    /(?:api[_-]?key|token|secret|password)\s*[:=]\s*\S+/gi,
+    '[redacted-credential]'
+  )
+  message = message.replace(/\/(?:home|Users|tmp|var)[^\s]*/g, '[redacted-path]')
+  if (message.length > 240) {
+    message = `${message.slice(0, 237)}...`
+  }
+  return message
+}
+
+function sanitizeProviderAuthSource(value) {
+  const source = nullIfEmptyProviderAuth(value)
+  if (!source) return null
+  if (PROVIDER_AUTH_BLOCKED_METADATA_KEYS.has(source.toLowerCase())) {
+    return null
+  }
+  if (/^\/(?:home|Users|tmp|var)\b/.test(source)) {
+    return null
+  }
+  return source.length > 120 ? `${source.slice(0, 117)}...` : source
+}
+
+export function classifyProviderAuthHealthState(row, options = {}) {
+  const nowMs = options.nowMs ?? Date.now()
+  const status = String(row.status ?? '')
+    .trim()
+    .toLowerCase()
+  const expiresAt = parseProviderAuthTimestamp(row.expires_at)
+  const expiresInFuture =
+    expiresAt != null && Number.isFinite(Date.parse(expiresAt))
+      ? Date.parse(expiresAt) > nowMs
+      : false
+
+  if (status === 'failed' || row.error_class) {
+    return 'failed'
+  }
+  if (status === 'refreshed' || row.refreshed) {
+    if (expiresAt != null && !expiresInFuture) return 'expired'
+    return 'refreshed'
+  }
+  if (status === 'skipped' || row.skipped) {
+    if (!expiresAt || !expiresInFuture) return 'skipped_expired'
+    return 'skipped_valid'
+  }
+  if (status === 'attempted' || row.attempted) {
+    return 'attempted'
+  }
+  if (expiresAt != null && !expiresInFuture) {
+    return 'expired'
+  }
+  return 'unknown'
+}
+
+export function normalizeProviderAuthHealthRow(row, options = {}) {
+  const observedAt =
+    parseProviderAuthTimestamp(row.observed_at) ??
+    options.generatedAt ??
+    new Date().toISOString()
+  const expiresAt = parseProviderAuthTimestamp(row.expires_at)
+  const lastSuccessAt = parseProviderAuthTimestamp(row.last_success_at)
+  const remainingSeconds = providerAuthRemainingSeconds(
+    expiresAt,
+    options.nowMs
+  )
+  const authHealthState = classifyProviderAuthHealthState(row, options)
+  return {
+    observed_at: observedAt,
+    environment: nullIfEmptyProviderAuth(row.environment) ?? 'unknown',
+    provider: nullIfEmptyProviderAuth(row.provider) ?? 'unknown',
+    auth_family: nullIfEmptyProviderAuth(row.auth_family) ?? 'unknown',
+    credential_scope: nullIfEmptyProviderAuth(row.credential_scope),
+    auth_file_hash_short:
+      shortProviderAuthFileHash(row.auth_file_hash_short) ??
+      shortProviderAuthFileHash(row.auth_file_hash),
+    status: nullIfEmptyProviderAuth(row.status) ?? 'unknown',
+    attempted: Boolean(row.attempted),
+    refreshed: Boolean(row.refreshed),
+    skipped: Boolean(row.skipped),
+    expires_at: expiresAt,
+    last_success_at: lastSuccessAt,
+    remaining_seconds: remainingSeconds,
+    auth_health_state: authHealthState,
+    source_task: nullIfEmptyProviderAuth(row.source_task),
+    error_class: nullIfEmptyProviderAuth(row.error_class),
+    error_message: sanitizeProviderAuthErrorMessage(row.error_message),
+    auth_file_source: sanitizeProviderAuthSource(
+      row.auth_file_source ??
+        (normalizeJsonRecord(row.metadata) ?? {}).auth_file_source
+    ),
+  }
+}
+
+export function normalizeProviderAuthHealthReport(rows, options = {}) {
+  const generatedAt =
+    options.generatedAt ?? new Date().toISOString()
+  const nowMs = options.nowMs ?? Date.now()
+  const entries = rows.map((row) =>
+    normalizeProviderAuthHealthRow(row, { generatedAt, nowMs })
+  )
+  return {
+    data_source: 'provider_auth_current',
+    freshness_label:
+      'Current provider credential refresh state from provider_auth_current',
+    generated_at: generatedAt,
+    entries,
+  }
+}
+
 export function buildSessionDiagnosticsQuery(searchParams) {
   const { from, to, values, whereParts } =
     buildSessionDiagnosticsWhere(searchParams)
@@ -8630,6 +8831,7 @@ async function loadUsageReport(searchParams) {
     buildProviderErrorObservationQuery(searchParams)
   const providerStatusUsageQuery = buildProviderStatusUsageQuery(searchParams)
   const providerAliasRoutingQuery = buildProviderAliasRoutingQuery(searchParams)
+  const providerAuthHealthQuery = buildProviderAuthHealthQuery(searchParams)
 
   const [
     result,
@@ -8640,6 +8842,7 @@ async function loadUsageReport(searchParams) {
     providerErrorObservationResult,
     providerStatusUsageResult,
     providerAliasRoutingResult,
+    providerAuthHealthResult,
     dockerLogErrors,
     localHealth,
   ] = await runTasksWithConcurrency(
@@ -8667,6 +8870,11 @@ async function loadUsageReport(searchParams) {
         queryReportDatabase(
           providerAliasRoutingQuery.sql,
           providerAliasRoutingQuery.values
+        ),
+      () =>
+        queryReportDatabase(
+          providerAuthHealthQuery.sql,
+          providerAuthHealthQuery.values
         ),
       () => loadDockerLogErrors(),
       () => loadLocalHealth(),
@@ -8711,6 +8919,9 @@ async function loadUsageReport(searchParams) {
     ),
     providerAliasRouting: normalizeProviderAliasRoutingReport(
       providerAliasRoutingResult.rows
+    ),
+    providerAuthHealth: normalizeProviderAuthHealthReport(
+      providerAuthHealthResult.rows
     ),
     quotas: [],
     quotaHistory: [],

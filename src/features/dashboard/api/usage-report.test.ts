@@ -220,6 +220,85 @@ test('test_fetchUsageReport_preserves_providerAliasRouting_contract', async () =
   )
 })
 
+test('test_fetchUsageReport_preserves_providerAuthHealth_contract', async () => {
+  const future = new Date(Date.now() + 180_000).toISOString()
+  server.use(
+    http.get('/api/shell/reports/usage', () =>
+      HttpResponse.json({
+        metadata: {
+          from: '2026-05-20',
+          to: '2026-05-21',
+          grain: 'day',
+          groupBy: ['provider', 'model'],
+          limit: 50000,
+          generatedAt: '2026-05-21T00:00:00.000Z',
+          latestRecordAt: null,
+          latestRecordAgeMinutes: null,
+          latestRecordStale: false,
+          staleRecordThresholdMinutes: 60,
+        },
+        summary: {
+          traces: 0,
+          token_in: 0,
+          token_out: 0,
+          token_cache_input: 0,
+          token_cache_creation: 0,
+          token_reasoning_reported: 0,
+          token_reasoning_estimated: 0,
+          token_total: 0,
+          usd_cost: 0,
+          cache_miss_usd_cost: 0,
+          tool_calls: 0,
+          git_commit: 0,
+          git_push: 0,
+        },
+        trend: [],
+        clients: [],
+        providerLatencyHealth: [],
+        providerErrorObservations: [],
+        providerStatusUsage: [],
+        providerAuthHealth: {
+          data_source: 'provider_auth_current',
+          freshness_label: 'Current provider credential refresh state',
+          generated_at: '2026-05-21T00:00:00.000Z',
+          entries: [
+            {
+              observed_at: '2026-05-21T00:00:00.000Z',
+              environment: 'production',
+              provider: 'xai',
+              auth_family: 'grok_oidc',
+              status: 'refreshed',
+              attempted: true,
+              refreshed: true,
+              skipped: false,
+              expires_at: future,
+              remaining_seconds: 180,
+              auth_health_state: 'refreshed',
+              source_task: 'grok_oidc_refresh',
+              auth_file_hash_short: 'abcd1234',
+            },
+          ],
+        },
+        quotas: [],
+        quotaHistory: [],
+        toolActivity: [],
+        rows: [],
+      })
+    )
+  )
+
+  const report = await fetchUsageReport({
+    from: '2026-05-20',
+    to: '2026-05-21',
+    grain: 'day',
+  })
+  expect(report.providerAuthHealth?.data_source).toBe('provider_auth_current')
+  expect(report.providerAuthHealth?.entries[0]?.auth_family).toBe('grok_oidc')
+  expect(report.providerAuthHealth?.entries[0]?.auth_health_state).toBe(
+    'refreshed'
+  )
+})
+
 test('test_fetchUsageReportQuotaHistory_preserves_degraded_metadata', async () => {
   server.use(
     http.get('/api/shell/reports/usage/quota-history', () =>

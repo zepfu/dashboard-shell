@@ -43,6 +43,10 @@ import {
   buildSessionDiagnosticsQuery,
   buildProviderAliasRoutingQuery,
   normalizeProviderAliasRoutingReport,
+  buildProviderAuthHealthQuery,
+  classifyProviderAuthHealthState,
+  normalizeProviderAuthHealthRow,
+  normalizeProviderAuthHealthReport,
   buildSourceTableHealthQuery,
   buildTokenTrendHealthQuery,
   buildTokenTrendHoursQuery,
@@ -1426,5 +1430,106 @@ describe('D1-323 provider alias routing health contracts', () => {
     expect(
       report.entries.find((entry) => entry.state_kind === 'affinity')?.state_source
     ).toBe('durable_cache')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// D1-338 provider auth health contracts
+// ---------------------------------------------------------------------------
+
+describe('D1-338 provider auth health contracts', () => {
+  test('test_buildProviderAuthHealthQuery_projects_safe_provider_auth_current_fields', () => {
+    const query = buildProviderAuthHealthQuery(new URLSearchParams())
+
+    expect(query.metadata).toMatchObject({
+      limit: 200,
+      dataSource: 'provider_auth_current',
+    })
+    expect(query.values).toEqual([200])
+    expect(query.sql).toContain('FROM public.provider_auth_current')
+    expect(query.sql).toContain('auth_family')
+    expect(query.sql).toContain("left(COALESCE(auth_file_hash, ''), 8)")
+    expect(query.sql).toContain("metadata->>'auth_file_source'")
+    expect(query.sql).toContain('error_message')
+    expect(query.sql).not.toContain('refresh_token')
+    expect(query.sql).not.toContain('access_token')
+    expect(query.sql).not.toContain('metadata::text')
+    expect(query.sql).not.toContain('    metadata\n')
+  })
+
+  test('test_normalizeProviderAuthHealthRow_short_hash_and_redaction', () => {
+    const future = new Date(Date.now() + 120_000).toISOString()
+    const row = normalizeProviderAuthHealthRow(
+      {
+        observed_at: '2026-06-28T19:00:00.000Z',
+        environment: 'production',
+        provider: 'xai',
+        auth_family: 'grok_oidc',
+        credential_scope: 'default',
+        auth_file_hash: 'abcdef0123456789deadbeef',
+        status: 'refreshed',
+        attempted: true,
+        refreshed: true,
+        skipped: false,
+        expires_at: future,
+        last_success_at: '2026-06-28T19:00:00.000Z',
+        source_task: 'grok_oidc_refresh',
+        error_class: null,
+        error_message: 'Bearer eyJhbGciOiJIUzI1NiJ9.secret.sig at /home/zepfu/.grok/auth.json',
+        auth_file_source: '/home/zepfu/.grok/auth.json',
+        metadata: {
+          auth_file_source: 'auth_file',
+          refresh_token: 'must-not-leak',
+          auth_file: '/home/zepfu/.grok/auth.json',
+        },
+      },
+      { nowMs: Date.parse('2026-06-28T19:00:00.000Z') }
+    )
+
+    expect(row.auth_file_hash_short).toBe('abcdef01')
+    expect(row.auth_file_hash_short).not.toBe('abcdef0123456789deadbeef')
+    expect(row.auth_health_state).toBe('refreshed')
+    expect(row.auth_file_source).toBeNull()
+    expect(row.error_message).toContain('[redacted')
+    const serialized = JSON.stringify(row)
+    expect(serialized).not.toContain('must-not-leak')
+    expect(serialized).not.toContain('/home/zepfu')
+  })
+
+  test('test_classifyProviderAuthHealthState_skipped_expired_when_past_expiry', () => {
+    const past = new Date(Date.now() - 60_000).toISOString()
+    expect(
+      classifyProviderAuthHealthState({
+        status: 'skipped',
+        skipped: true,
+        expires_at: past,
+      })
+    ).toBe('skipped_expired')
+    expect(
+      classifyProviderAuthHealthState({
+        status: 'skipped',
+        skipped: true,
+        expires_at: null,
+      })
+    ).toBe('skipped_expired')
+  })
+
+  test('test_normalizeProviderAuthHealthReport_failed_row', () => {
+    const report = normalizeProviderAuthHealthReport([
+      {
+        observed_at: '2026-06-28T19:00:00.000Z',
+        environment: 'production',
+        provider: 'xai',
+        auth_family: 'grok_oidc',
+        status: 'failed',
+        attempted: true,
+        refreshed: false,
+        skipped: false,
+        error_class: 'refresh_error',
+        error_message: 'token refresh failed',
+      },
+    ])
+    expect(report.data_source).toBe('provider_auth_current')
+    expect(report.entries[0]?.auth_health_state).toBe('failed')
   })
 })
