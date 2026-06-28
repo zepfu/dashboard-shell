@@ -78,6 +78,47 @@ Static/prod-style shell hosting serves remotes from same-origin
 scripts and same-origin XHR/fetch. Remotes should avoid direct upstream service
 URLs in browser code so the shell proxy remains the only network boundary.
 
+## Provider Health — AAWM Alias Routing (D1-323)
+
+`GET /api/shell/reports/usage` may include a sibling field
+`providerAliasRouting` on `UsageReportResponse`. This is **not** merged into
+`providerLatencyHealth` rows.
+
+Data source:
+
+- Primary: recent `public.session_history.metadata` for `codex` and `anthropic`
+  auto-agent alias traffic (24-hour lookback, bounded row limit).
+- Supplemental: optional join to `public.aawm_alias_routing_audit` by
+  `litellm_call_id` for compact cooldown/audit events only.
+
+The API labels the payload as **recent observed session history**, not live
+Redis/DualCache state. Dashboard copy must preserve that distinction.
+
+Projected / normalized fields per entry:
+
+- `family` (`codex` | `anthropic`)
+- `alias_label`, `provider`, `model`, `route_family`
+- `state_kind` (`affinity` | `cooldown`)
+- `state_source` (`memory` | `durable_cache` | `local_fallback` |
+  `unknown`)
+- `observed_at`, `expires_at`, `cooldown_until`, `remaining_seconds` when
+  derivable
+- `selected` and `skipped_candidates` summaries (provider/model/route_family/
+  reason only)
+
+Redaction rules (server normalization and SQL projection):
+
+- Do **not** expose raw prompts, tool arguments, credentials, auth files, full
+  metadata blobs, `details` objects from audit tables, or unredacted Redis
+  values.
+- Skipped-candidate arrays are whitelisted to routing summary keys only; blocked
+  keys include `api_key`, `authorization`, `access_token`, `refresh_token`,
+  `auth_file`, `prompt`, `raw_prompt`, `tool_arguments`, `metadata`, and
+  `sanitized_snapshot`.
+
+Diagnostics tab behavior is unchanged: session diagnostics continues to expose
+full `alias_route_events` for operator drill-down; Provider Health uses only the
+sanitized `providerAliasRouting` sibling field.
 
 ## Session Diagnostics (Grok Side-Channel)
 

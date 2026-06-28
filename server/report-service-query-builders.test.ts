@@ -41,6 +41,8 @@ import {
   buildDegradedUsageToolActivityReport,
   buildReportQueryPressureQuery,
   buildSessionDiagnosticsQuery,
+  buildProviderAliasRoutingQuery,
+  normalizeProviderAliasRoutingReport,
   buildSourceTableHealthQuery,
   buildTokenTrendHealthQuery,
   buildTokenTrendHoursQuery,
@@ -1318,5 +1320,111 @@ describe('report-service query builders', () => {
     expect(target.pathname).toBe('/suites/symbols')
     expect(target.searchParams.get('limit')).toBe('50')
     expect(target.searchParams.get('lane')).toBe('type_shape')
+  })
+})
+
+
+// ---------------------------------------------------------------------------
+// D1-323 provider alias routing health contracts
+// ---------------------------------------------------------------------------
+
+describe('D1-323 provider alias routing health contracts', () => {
+  const aliasRoutingMetadataKeys = [
+    'codex_auto_agent_affinity_state_source',
+    'codex_auto_agent_cooldown_state_source',
+    'anthropic_auto_agent_affinity_state_source',
+    'anthropic_auto_agent_cooldown_state_source',
+    'codex_auto_agent_selected_provider',
+    'codex_auto_agent_selected_model',
+    'codex_auto_agent_selected_route_family',
+    'anthropic_auto_agent_selected_provider',
+    'anthropic_auto_agent_selected_model',
+    'requested_model_alias',
+    'model_alias_label',
+    'codex_auto_agent_skipped_candidates',
+    'anthropic_auto_agent_skipped_candidates',
+  ] as const
+
+  test('test_buildProviderAliasRoutingQuery_projects_safe_metadata_keys', () => {
+    const query = buildProviderAliasRoutingQuery(new URLSearchParams())
+
+    expect(query.metadata).toMatchObject({
+      lookbackHours: 24,
+      limit: 400,
+      dataSource: 'recent_observed_session_history',
+    })
+    expect(query.values).toEqual([400, 24])
+    expect(query.sql).toContain('FROM public.session_history sh')
+    expect(query.sql).toContain('public.aawm_alias_routing_audit')
+    expect(query.sql).not.toMatch(/metadata::text/i)
+
+    for (const key of aliasRoutingMetadataKeys) {
+      expect(query.sql).toContain(`'${key}'`)
+    }
+
+    expect(query.sql).not.toContain('raw_prompt')
+    expect(query.sql).not.toContain('authorization')
+    expect(query.sql).not.toContain('access_token')
+    expect(query.sql).not.toContain('refresh_token')
+    expect(query.sql).not.toContain('sanitized_snapshot')
+    expect(query.sql).toContain('cooldown_state_source')
+    expect(query.sql).toContain('alias_route_events')
+  })
+
+  test('test_normalizeProviderAliasRoutingReport_strips_blocked_candidate_fields', () => {
+    const future = new Date(Date.now() + 60_000).toISOString()
+    const report = normalizeProviderAliasRoutingReport(
+      [
+        {
+          created_at: '2026-06-28T19:00:00.000Z',
+          provider: 'openai',
+          model: 'gpt-5',
+          inbound_model_alias: 'aawm-code',
+          metadata: {
+            codex_auto_agent_alias: 'aawm-code',
+            codex_auto_agent_affinity_state_source: 'durable_cache',
+            codex_auto_agent_selected_provider: 'openai',
+            codex_auto_agent_selected_model: 'gpt-5',
+            codex_auto_agent_selected_route_family: 'codex_primary',
+            codex_auto_agent_skipped_candidates: [
+              {
+                provider: 'openrouter',
+                model: 'gpt-4',
+                reason: 'cooldown',
+                api_key: 'sk-should-not-appear',
+                details: { prompt: 'secret' },
+              },
+            ],
+          },
+          alias_route_events: [
+            {
+              observed_at: '2026-06-28T19:00:00.000Z',
+              alias_family: 'codex',
+              provider: 'openrouter',
+              model: 'gpt-4',
+              cooldown_until: future,
+              cooldown_state_source: 'memory',
+              failure_class: 'rate_limited',
+            },
+          ],
+        },
+      ],
+      { generatedAt: '2026-06-28T19:00:00.000Z' }
+    )
+
+    expect(report.data_source).toBe('recent_observed_session_history')
+    expect(report.freshness_label).toContain('not live Redis')
+    const serialized = JSON.stringify(report)
+    expect(serialized).not.toContain('sk-should-not-appear')
+    expect(serialized).not.toContain('secret')
+    expect(report.entries.some((entry) => entry.state_kind === 'affinity')).toBe(
+      true
+    )
+    expect(report.entries.some((entry) => entry.state_kind === 'cooldown')).toBe(
+      true
+    )
+    expect(
+      report.entries.find((entry) => entry.state_kind === 'affinity')?.state_source
+    ).toBe('durable_cache')
   })
 })

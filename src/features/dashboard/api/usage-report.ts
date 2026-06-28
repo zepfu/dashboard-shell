@@ -1053,6 +1053,47 @@ export interface UsageReportSessionDiagnosticsRow {
   alias_route_events?: UsageReportAliasRouteEvent[]
 }
 
+export type UsageReportProviderAliasRoutingStateSource =
+  | 'memory'
+  | 'durable_cache'
+  | 'local_fallback'
+  | 'unknown'
+
+export interface UsageReportProviderAliasRoutingCandidate {
+  provider?: string | null
+  model?: string | null
+  route_family?: string | null
+  reason?: string | null
+}
+
+export interface UsageReportProviderAliasRoutingEntry {
+  family: 'codex' | 'anthropic'
+  alias_label?: string | null
+  provider?: string | null
+  model?: string | null
+  route_family?: string | null
+  state_kind: 'affinity' | 'cooldown'
+  state_source: UsageReportProviderAliasRoutingStateSource
+  observed_at: string
+  expires_at?: string | null
+  cooldown_until?: string | null
+  remaining_seconds?: number | null
+  is_active?: boolean
+  last_resort?: boolean | null
+  selection_reason?: string | null
+  selected?: UsageReportProviderAliasRoutingCandidate | null
+  skipped_candidates?: UsageReportProviderAliasRoutingCandidate[]
+}
+
+export interface UsageReportProviderAliasRouting {
+  data_source: 'recent_observed_session_history'
+  freshness_label: string
+  generated_at: string
+  lookback_hours: number
+  families: Array<{ family: 'codex' | 'anthropic'; observed: boolean }>
+  entries: UsageReportProviderAliasRoutingEntry[]
+}
+
 export interface UsageReportResponse {
   metadata: {
     from: string
@@ -1079,6 +1120,7 @@ export interface UsageReportResponse {
   dockerLogErrors?: UsageReportDockerLogErrorRow[]
   localHealth?: UsageReportLocalHealthRow[]
   providerStatusUsage: UsageReportProviderStatusUsageRow[]
+  providerAliasRouting?: UsageReportProviderAliasRouting
   quotas: UsageReportQuotaRow[]
   /** W32: flat list of past reset windows per (provider, quota_type). */
   quotaHistory: UsageReportQuotaHistoryRow[]

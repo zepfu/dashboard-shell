@@ -5713,6 +5713,515 @@ export function buildDegradedUsageTokenTrendSummaryReport(searchParams) {
   }
 }
 
+const PROVIDER_ALIAS_ROUTING_RECENT_LIMIT = 400
+const PROVIDER_ALIAS_ROUTING_LOOKBACK_HOURS = 24
+const PROVIDER_ALIAS_ROUTING_FAMILY_PREFIXES = {
+  codex: 'codex_auto_agent_',
+  anthropic: 'anthropic_auto_agent_',
+}
+
+export function buildProviderAliasRoutingQuery(_searchParams) {
+  const values = [
+    PROVIDER_ALIAS_ROUTING_RECENT_LIMIT,
+    PROVIDER_ALIAS_ROUTING_LOOKBACK_HOURS,
+  ]
+  const sql = `
+WITH recent_alias_sessions AS MATERIALIZED (
+    SELECT
+        sh.created_at,
+        sh.litellm_call_id::text AS litellm_call_id,
+        ${providerDimension} AS provider,
+        COALESCE(sh.model, 'unknown') AS model,
+        NULLIF(to_jsonb(sh)->>'inbound_model_alias', '') AS inbound_model_alias,
+        COALESCE(sh.metadata, '{}'::jsonb) AS metadata
+    FROM public.session_history sh
+    WHERE sh.created_at >= NOW() - ($2::integer * INTERVAL '1 hour')
+      AND (
+        sh.metadata ? 'codex_auto_agent_alias'
+        OR sh.metadata ? 'anthropic_auto_agent_alias'
+        OR sh.metadata ? 'aawm_alias_routing_audit_events'
+        OR sh.metadata ? 'requested_model_alias'
+        OR sh.metadata ? 'codex_auto_agent_affinity_state_source'
+        OR sh.metadata ? 'anthropic_auto_agent_affinity_state_source'
+        OR sh.metadata ? 'codex_auto_agent_cooldown_state_source'
+        OR sh.metadata ? 'anthropic_auto_agent_cooldown_state_source'
+        OR sh.metadata ? 'codex_auto_agent_selected_provider'
+        OR sh.metadata ? 'anthropic_auto_agent_selected_provider'
+        OR sh.metadata ? 'codex_auto_agent_skipped_candidates'
+        OR sh.metadata ? 'anthropic_auto_agent_skipped_candidates'
+        OR sh.metadata ? 'model_alias_label'
+      )
+    ORDER BY sh.created_at DESC
+    LIMIT $1
+),
+audit_events AS (
+    SELECT
+        rs.litellm_call_id,
+        jsonb_agg(
+            jsonb_strip_nulls(
+                jsonb_build_object(
+                    'observed_at', aa.observed_at,
+                    'alias_family', aa.alias_family,
+                    'provider', aa.provider,
+                    'model', aa.model,
+                    'route_family', aa.route_family,
+                    'event_type', aa.event_type,
+                    'failure_class', aa.failure_class,
+                    'cooldown_state', COALESCE(aa.candidate_status, aa.event_type),
+                    'cooldown_until', aa.cooldown_until,
+                    'cooldown_state_source', aa.metadata->>'cooldown_state_source'
+                )
+            )
+            ORDER BY aa.observed_at
+        ) AS alias_route_events
+    FROM recent_alias_sessions rs
+    JOIN public.aawm_alias_routing_audit aa
+      ON rs.litellm_call_id IS NOT NULL
+     AND aa.litellm_call_id = rs.litellm_call_id
+    GROUP BY rs.litellm_call_id
+),
+projected_alias_sessions AS (
+    SELECT
+        rs.created_at,
+        rs.provider,
+        rs.model,
+        rs.inbound_model_alias,
+        jsonb_strip_nulls(jsonb_build_object(
+            'requested_model_alias', NULLIF(rs.metadata->>'requested_model_alias', ''),
+            'model_alias_label', NULLIF(rs.metadata->>'model_alias_label', ''),
+            'codex_auto_agent_alias', NULLIF(rs.metadata->>'codex_auto_agent_alias', ''),
+            'anthropic_auto_agent_alias', NULLIF(rs.metadata->>'anthropic_auto_agent_alias', ''),
+            'codex_auto_agent_affinity_state_source', NULLIF(rs.metadata->>'codex_auto_agent_affinity_state_source', ''),
+            'codex_auto_agent_cooldown_state_source', NULLIF(rs.metadata->>'codex_auto_agent_cooldown_state_source', ''),
+            'codex_auto_agent_selected_provider', NULLIF(rs.metadata->>'codex_auto_agent_selected_provider', ''),
+            'codex_auto_agent_selected_model', NULLIF(rs.metadata->>'codex_auto_agent_selected_model', ''),
+            'codex_auto_agent_selected_route_family', NULLIF(rs.metadata->>'codex_auto_agent_selected_route_family', ''),
+            'codex_auto_agent_selected_last_resort', NULLIF(rs.metadata->>'codex_auto_agent_selected_last_resort', ''),
+            'codex_auto_agent_selection_reason', NULLIF(rs.metadata->>'codex_auto_agent_selection_reason', ''),
+            'anthropic_auto_agent_affinity_state_source', NULLIF(rs.metadata->>'anthropic_auto_agent_affinity_state_source', ''),
+            'anthropic_auto_agent_cooldown_state_source', NULLIF(rs.metadata->>'anthropic_auto_agent_cooldown_state_source', ''),
+            'anthropic_auto_agent_selected_provider', NULLIF(rs.metadata->>'anthropic_auto_agent_selected_provider', ''),
+            'anthropic_auto_agent_selected_model', NULLIF(rs.metadata->>'anthropic_auto_agent_selected_model', ''),
+            'anthropic_auto_agent_selected_route_family', NULLIF(rs.metadata->>'anthropic_auto_agent_selected_route_family', ''),
+            'anthropic_auto_agent_selected_last_resort', NULLIF(rs.metadata->>'anthropic_auto_agent_selected_last_resort', ''),
+            'anthropic_auto_agent_selection_reason', NULLIF(rs.metadata->>'anthropic_auto_agent_selection_reason', ''),
+            'codex_auto_agent_skipped_candidates', rs.metadata->'codex_auto_agent_skipped_candidates',
+            'anthropic_auto_agent_skipped_candidates', rs.metadata->'anthropic_auto_agent_skipped_candidates'
+        )) AS metadata,
+        COALESCE(
+            audit.alias_route_events,
+            rs.metadata->'aawm_alias_routing_audit_events',
+            rs.metadata->'codex_auto_agent_audit_events',
+            rs.metadata->'anthropic_auto_agent_audit_events',
+            '[]'::jsonb
+        ) AS alias_route_events
+    FROM recent_alias_sessions rs
+    LEFT JOIN audit_events audit
+      ON audit.litellm_call_id = rs.litellm_call_id
+)
+SELECT
+    created_at,
+    provider,
+    model,
+    inbound_model_alias,
+    metadata,
+    alias_route_events
+FROM projected_alias_sessions
+ORDER BY created_at DESC;
+`
+
+  return {
+    sql,
+    values,
+    metadata: {
+      lookbackHours: PROVIDER_ALIAS_ROUTING_LOOKBACK_HOURS,
+      limit: PROVIDER_ALIAS_ROUTING_RECENT_LIMIT,
+      dataSource: 'recent_observed_session_history',
+    },
+  }
+}
+
+function nullIfEmptyProviderAliasRouting(value) {
+  if (value === null || value === undefined) return null
+  const text = String(value).trim()
+  return text ? text : null
+}
+
+function parseProviderAliasRoutingTimestamp(value) {
+  if (value === null || value === undefined || value === '') return null
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    const millis = value > 1_000_000_000_000 ? value : value * 1000
+    const date = new Date(millis)
+    return Number.isNaN(date.getTime()) ? null : date.toISOString()
+  }
+  const text = String(value).trim()
+  if (!text) return null
+  if (/^-?\d+(\.\d+)?$/.test(text)) {
+    const numeric = Number(text)
+    if (!Number.isFinite(numeric)) return null
+    const millis = numeric > 1_000_000_000_000 ? numeric : numeric * 1000
+    const date = new Date(millis)
+    return Number.isNaN(date.getTime()) ? null : date.toISOString()
+  }
+  const date = new Date(text)
+  return Number.isNaN(date.getTime()) ? null : date.toISOString()
+}
+
+function normalizeProviderAliasRoutingStateSource(value) {
+  const normalized = String(value ?? '')
+    .trim()
+    .toLowerCase()
+  if (
+    normalized === 'memory' ||
+    normalized === 'durable_cache' ||
+    normalized === 'local_fallback'
+  ) {
+    return normalized
+  }
+  return 'unknown'
+}
+
+function providerAliasRoutingRemainingSeconds(expiresAtIso) {
+  if (!expiresAtIso) return null
+  const expiresMs = Date.parse(expiresAtIso)
+  if (!Number.isFinite(expiresMs)) return null
+  return Math.max(0, Math.round((expiresMs - Date.now()) / 1000))
+}
+
+function providerAliasRoutingIsActive(expiresAtIso, cooldownUntilIso) {
+  const target = cooldownUntilIso ?? expiresAtIso
+  if (!target) return false
+  const expiresMs = Date.parse(target)
+  if (!Number.isFinite(expiresMs)) return false
+  return expiresMs > Date.now()
+}
+
+function providerAliasRoutingMetadataValue(metadata, family, suffix) {
+  const prefix = PROVIDER_ALIAS_ROUTING_FAMILY_PREFIXES[family]
+  if (!prefix) return null
+  return metadata[`${prefix}${suffix}`] ?? null
+}
+
+function providerAliasRoutingFamilyFromMetadata(metadata) {
+  if (
+    metadata.codex_auto_agent_alias != null ||
+    metadata.codex_auto_agent_selected_provider != null ||
+    metadata.codex_auto_agent_affinity_state_source != null ||
+    metadata.codex_auto_agent_cooldown_state_source != null
+  ) {
+    return 'codex'
+  }
+  if (
+    metadata.anthropic_auto_agent_alias != null ||
+    metadata.anthropic_auto_agent_selected_provider != null ||
+    metadata.anthropic_auto_agent_affinity_state_source != null ||
+    metadata.anthropic_auto_agent_cooldown_state_source != null
+  ) {
+    return 'anthropic'
+  }
+  const aliasLabel = String(
+    metadata.requested_model_alias ??
+      metadata.model_alias_label ??
+      ''
+  ).toLowerCase()
+  if (aliasLabel.includes('anthropic')) return 'anthropic'
+  if (aliasLabel.startsWith('aawm')) return 'codex'
+  return null
+}
+
+function sanitizeProviderAliasRoutingCandidate(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const record = value
+  const candidate = {
+    provider: nullIfEmptyProviderAliasRouting(record.provider),
+    model: nullIfEmptyProviderAliasRouting(record.model),
+    route_family: nullIfEmptyProviderAliasRouting(
+      record.route_family ?? record.routeFamily
+    ),
+    reason: nullIfEmptyProviderAliasRouting(
+      record.reason ?? record.skip_reason ?? record.failure_class
+    ),
+  }
+  if (
+    candidate.provider == null &&
+    candidate.model == null &&
+    candidate.route_family == null &&
+    candidate.reason == null
+  ) {
+    return null
+  }
+  return candidate
+}
+
+function sanitizeProviderAliasRoutingCandidateList(value) {
+  if (!Array.isArray(value)) return []
+  return value
+    .map((entry) => sanitizeProviderAliasRoutingCandidate(entry))
+    .filter((entry) => entry != null)
+    .slice(0, 8)
+}
+
+function buildProviderAliasRoutingAffinityEntry(
+  family,
+  metadata,
+  row,
+  observedAt
+) {
+  const provider = nullIfEmptyProviderAliasRouting(
+    providerAliasRoutingMetadataValue(metadata, family, 'selected_provider') ??
+      row.provider
+  )
+  const model = nullIfEmptyProviderAliasRouting(
+    providerAliasRoutingMetadataValue(metadata, family, 'selected_model') ??
+      row.model
+  )
+  const routeFamily = nullIfEmptyProviderAliasRouting(
+    providerAliasRoutingMetadataValue(metadata, family, 'selected_route_family')
+  )
+  const selectionReason = nullIfEmptyProviderAliasRouting(
+    providerAliasRoutingMetadataValue(metadata, family, 'selection_reason')
+  )
+  const stateSource = normalizeProviderAliasRoutingStateSource(
+    providerAliasRoutingMetadataValue(metadata, family, 'affinity_state_source')
+  )
+  const lastResortRaw = providerAliasRoutingMetadataValue(
+    metadata,
+    family,
+    'selected_last_resort'
+  )
+  const lastResort =
+    lastResortRaw == null
+      ? null
+      : ['true', '1', 'yes'].includes(String(lastResortRaw).toLowerCase())
+  const expiresAt = parseProviderAliasRoutingTimestamp(
+    metadata[`${family}_auto_agent_affinity_expires_at`] ??
+      providerAliasRoutingMetadataValue(metadata, family, 'affinity_expires_at')
+  )
+  const remainingSeconds = providerAliasRoutingRemainingSeconds(expiresAt)
+  const isActive =
+    expiresAt != null
+      ? providerAliasRoutingIsActive(expiresAt, null)
+      : stateSource === 'memory' || stateSource === 'durable_cache'
+  const skipped = sanitizeProviderAliasRoutingCandidateList(
+    providerAliasRoutingMetadataValue(metadata, family, 'skipped_candidates')
+  )
+  if (provider == null && model == null && routeFamily == null) {
+    return null
+  }
+  return {
+    family,
+    alias_label: nullIfEmptyProviderAliasRouting(
+      providerAliasRoutingMetadataValue(metadata, family, 'alias') ??
+        metadata.requested_model_alias ??
+        metadata.model_alias_label ??
+        row.inbound_model_alias
+    ),
+    provider,
+    model,
+    route_family: routeFamily,
+    state_kind: 'affinity',
+    state_source: stateSource,
+    observed_at: observedAt,
+    expires_at: expiresAt,
+    cooldown_until: null,
+    remaining_seconds: remainingSeconds,
+    is_active: isActive,
+    last_resort: lastResort,
+    selection_reason: selectionReason,
+    selected: sanitizeProviderAliasRoutingCandidate({
+      provider,
+      model,
+      route_family: routeFamily,
+      reason: selectionReason,
+    }),
+    skipped_candidates: skipped,
+  }
+}
+
+function buildProviderAliasRoutingCooldownEntries(
+  row,
+  metadata,
+  family,
+  observedAt,
+  auditEvents
+) {
+  const entries = []
+  const cooldownSource = normalizeProviderAliasRoutingStateSource(
+    providerAliasRoutingMetadataValue(metadata, family, 'cooldown_state_source')
+  )
+  const auditList = Array.isArray(auditEvents) ? auditEvents : []
+  for (const event of auditList.slice(-12)) {
+    if (!event || typeof event !== 'object') continue
+    const eventFamily = nullIfEmptyProviderAliasRouting(event.alias_family)
+    if (eventFamily && eventFamily !== family) continue
+    const cooldownUntil = parseProviderAliasRoutingTimestamp(
+      event.cooldown_until ?? event.expires_at
+    )
+    const cooldownState = nullIfEmptyProviderAliasRouting(
+      event.cooldown_state ?? event.event_type
+    )
+    if (cooldownUntil == null && cooldownState == null) continue
+    const provider = nullIfEmptyProviderAliasRouting(
+      event.provider ?? row.provider
+    )
+    const model = nullIfEmptyProviderAliasRouting(event.model ?? row.model)
+    const routeFamily = nullIfEmptyProviderAliasRouting(event.route_family)
+    const remainingSeconds = providerAliasRoutingRemainingSeconds(cooldownUntil)
+    const isActive = providerAliasRoutingIsActive(null, cooldownUntil)
+    if (!isActive && cooldownUntil != null) continue
+    entries.push({
+      family,
+      alias_label: nullIfEmptyProviderAliasRouting(
+        providerAliasRoutingMetadataValue(metadata, family, 'alias') ??
+          metadata.requested_model_alias ??
+          metadata.model_alias_label ??
+          row.inbound_model_alias
+      ),
+      provider,
+      model,
+      route_family: routeFamily,
+      state_kind: 'cooldown',
+      state_source: normalizeProviderAliasRoutingStateSource(
+        event.cooldown_state_source ?? cooldownSource
+      ),
+      observed_at:
+        parseProviderAliasRoutingTimestamp(event.observed_at) ?? observedAt,
+      expires_at: cooldownUntil,
+      cooldown_until: cooldownUntil,
+      remaining_seconds: remainingSeconds,
+      is_active: isActive,
+      last_resort: null,
+      selection_reason: nullIfEmptyProviderAliasRouting(
+        event.failure_class ?? event.event_type
+      ),
+      selected: null,
+      skipped_candidates: [
+        sanitizeProviderAliasRoutingCandidate({
+          provider,
+          model,
+          route_family: routeFamily,
+          reason: event.failure_class ?? event.event_type,
+        }),
+      ].filter((entry) => entry != null),
+    })
+  }
+  const skipped = sanitizeProviderAliasRoutingCandidateList(
+    providerAliasRoutingMetadataValue(metadata, family, 'skipped_candidates')
+  )
+  for (const candidate of skipped) {
+    entries.push({
+      family,
+      alias_label: nullIfEmptyProviderAliasRouting(
+        providerAliasRoutingMetadataValue(metadata, family, 'alias') ??
+          metadata.requested_model_alias ??
+          metadata.model_alias_label ??
+          row.inbound_model_alias
+      ),
+      provider: candidate.provider,
+      model: candidate.model,
+      route_family: candidate.route_family,
+      state_kind: 'cooldown',
+      state_source: cooldownSource,
+      observed_at: observedAt,
+      expires_at: null,
+      cooldown_until: null,
+      remaining_seconds: null,
+      is_active: false,
+      last_resort: null,
+      selection_reason: candidate.reason,
+      selected: null,
+      skipped_candidates: [candidate],
+    })
+  }
+  return entries
+}
+
+export function normalizeProviderAliasRoutingReport(rows, options = {}) {
+  const generatedAt =
+    options.generatedAt ?? new Date().toISOString()
+  const affinityBest = new Map()
+  const cooldownBest = new Map()
+  const familiesSeen = new Set()
+
+  for (const row of rows) {
+    const metadata = normalizeJsonRecord(row.metadata) ?? {}
+    const observedAt =
+      parseProviderAliasRoutingTimestamp(row.created_at) ?? generatedAt
+    const family = providerAliasRoutingFamilyFromMetadata(metadata)
+    if (!family) continue
+    familiesSeen.add(family)
+
+    const affinity = buildProviderAliasRoutingAffinityEntry(
+      family,
+      metadata,
+      row,
+      observedAt
+    )
+    if (affinity) {
+      const key = affinity.family
+      const prior = affinityBest.get(key)
+      if (
+        !prior ||
+        Date.parse(affinity.observed_at) > Date.parse(prior.observed_at)
+      ) {
+        affinityBest.set(key, affinity)
+      }
+    }
+
+    const cooldowns = buildProviderAliasRoutingCooldownEntries(
+      row,
+      metadata,
+      family,
+      observedAt,
+      row.alias_route_events
+    )
+    for (const entry of cooldowns) {
+      if (entry.state_kind !== 'cooldown') continue
+      const key = [
+        entry.family,
+        entry.provider ?? '',
+        entry.model ?? '',
+        entry.route_family ?? '',
+      ].join('|')
+      const prior = cooldownBest.get(key)
+      if (
+        !prior ||
+        Date.parse(entry.observed_at) > Date.parse(prior.observed_at)
+      ) {
+        cooldownBest.set(key, entry)
+      }
+    }
+  }
+
+  const deduped = []
+  for (const family of ['codex', 'anthropic']) {
+    const affinity = affinityBest.get(family)
+    if (affinity) deduped.push(affinity)
+    deduped.push(
+      ...[...cooldownBest.values()]
+        .filter((entry) => entry.family === family)
+        .sort(
+          (left, right) =>
+            Date.parse(right.observed_at) - Date.parse(left.observed_at)
+        )
+        .slice(0, 6)
+    )
+  }
+
+  return {
+    data_source: 'recent_observed_session_history',
+    freshness_label:
+      'Recent observed routing from session history (not live Redis/DualCache)',
+    generated_at: generatedAt,
+    lookback_hours: PROVIDER_ALIAS_ROUTING_LOOKBACK_HOURS,
+    families: ['codex', 'anthropic'].map((family) => ({
+      family,
+      observed: familiesSeen.has(family),
+    })),
+    entries: deduped,
+  }
+}
+
 export function buildSessionDiagnosticsQuery(searchParams) {
   const { from, to, values, whereParts } =
     buildSessionDiagnosticsWhere(searchParams)
@@ -8120,6 +8629,7 @@ async function loadUsageReport(searchParams) {
   const providerErrorObservationQuery =
     buildProviderErrorObservationQuery(searchParams)
   const providerStatusUsageQuery = buildProviderStatusUsageQuery(searchParams)
+  const providerAliasRoutingQuery = buildProviderAliasRoutingQuery(searchParams)
 
   const [
     result,
@@ -8129,6 +8639,7 @@ async function loadUsageReport(searchParams) {
     providerLatencyHealthResult,
     providerErrorObservationResult,
     providerStatusUsageResult,
+    providerAliasRoutingResult,
     dockerLogErrors,
     localHealth,
   ] = await runTasksWithConcurrency(
@@ -8151,6 +8662,11 @@ async function loadUsageReport(searchParams) {
         queryReportDatabase(
           providerStatusUsageQuery.sql,
           providerStatusUsageQuery.values
+        ),
+      () =>
+        queryReportDatabase(
+          providerAliasRoutingQuery.sql,
+          providerAliasRoutingQuery.values
         ),
       () => loadDockerLogErrors(),
       () => loadLocalHealth(),
@@ -8192,6 +8708,9 @@ async function loadUsageReport(searchParams) {
     localHealth: localHealth.map(normalizeLocalHealthRow),
     providerStatusUsage: providerStatusUsageResult.rows.map(
       normalizeProviderStatusUsageRow
+    ),
+    providerAliasRouting: normalizeProviderAliasRoutingReport(
+      providerAliasRoutingResult.rows
     ),
     quotas: [],
     quotaHistory: [],

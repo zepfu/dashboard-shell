@@ -4494,3 +4494,88 @@ describe('S1-T6 — populated report render shows real ledger tokens', () => {
     expect(tokensFallback400).toHaveLength(0)
   })
 })
+
+describe('PhosphorDashboard — D1-323 alias routing health panel', () => {
+  test('test_health_tab_renders_alias_routing_affinity_and_cooldown_without_secret_sentinel', async () => {
+    const future = new Date(Date.now() + 300_000).toISOString()
+    const report: UsageReportResponse = {
+      ...MOCK_REPORT,
+      providerAliasRouting: {
+        data_source: 'recent_observed_session_history',
+        freshness_label:
+          'Recent observed routing from session history (not live Redis/DualCache)',
+        generated_at: '2026-05-19T00:00:00.000Z',
+        lookback_hours: 24,
+        families: [
+          { family: 'codex', observed: true },
+          { family: 'anthropic', observed: true },
+        ],
+        entries: [
+          {
+            family: 'codex',
+            alias_label: 'aawm-code',
+            provider: 'openai',
+            model: 'gpt-5',
+            route_family: 'codex_primary',
+            state_kind: 'affinity',
+            state_source: 'durable_cache',
+            observed_at: '2026-05-19T00:00:00.000Z',
+            expires_at: future,
+            remaining_seconds: 300,
+            is_active: true,
+            skipped_candidates: [],
+          },
+          {
+            family: 'anthropic',
+            alias_label: 'aawm-code-anthropic',
+            provider: 'anthropic',
+            model: 'claude-opus-4',
+            route_family: 'anthropic_primary',
+            state_kind: 'cooldown',
+            state_source: 'memory',
+            observed_at: '2026-05-19T00:05:00.000Z',
+            cooldown_until: future,
+            remaining_seconds: 240,
+            is_active: true,
+            selection_reason: 'rate_limited',
+            skipped_candidates: [
+              {
+                provider: 'openrouter',
+                model: 'claude',
+                reason: 'cooldown',
+              },
+            ],
+          },
+        ],
+      },
+    }
+
+    await act(async () => {
+      render(
+        <Wrapper>
+          <PhosphorDashboard
+            from='2026-05-20'
+            to='2026-05-21'
+            report={report}
+            reportLoading={false}
+            showComparison={false}
+            quotas={[]}
+            quotaHistory={[]}
+          />
+        </Wrapper>
+      )
+    })
+
+    expect(
+      screen.getByRole('region', { name: /aawm alias routing health/i })
+    ).toBeInTheDocument()
+    expect(screen.getByText(/not live Redis\/DualCache/i)).toBeInTheDocument()
+    expect(screen.getByText(/durable cache/i)).toBeInTheDocument()
+    expect(screen.getByText(/process memory/i)).toBeInTheDocument()
+    expect(screen.getByText(/Affinity:/i)).toBeInTheDocument()
+    expect(screen.getByText(/Cooldown:/i)).toBeInTheDocument()
+    expect(
+      screen.queryByText(/sk-secret-sentinel-should-not-render/i)
+    ).toBeNull()
+  })
+})

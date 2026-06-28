@@ -588,6 +588,133 @@
   overflow-wrap: anywhere;
 }
 
+.alias-routing-health-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 6px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--card) 82%, transparent);
+}
+
+.alias-routing-panel-head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.2;
+  text-transform: uppercase;
+}
+
+.alias-routing-panel-sub {
+  color: var(--fg-muted);
+  font-size: 9px;
+  font-weight: 500;
+  text-transform: none;
+}
+
+.alias-routing-families {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.alias-routing-family-title {
+  margin-bottom: 4px;
+  color: var(--fg-muted);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.alias-routing-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.alias-routing-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 7px;
+  border: 1px solid var(--border);
+  background: var(--card-2);
+}
+
+.alias-routing-card--affinity {
+  border-left: 3px solid var(--accent-teal);
+}
+
+.alias-routing-card--cooldown {
+  border-left: 3px solid var(--accent-warm);
+}
+
+.alias-routing-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.alias-routing-family {
+  display: block;
+  color: var(--fg-muted);
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.alias-routing-headline {
+  display: block;
+  color: var(--fg);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.alias-routing-status-pill {
+  color: var(--fg-muted);
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.alias-routing-detail-grid {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 2px 8px;
+  font-size: 10px;
+}
+
+.alias-routing-detail-grid span {
+  color: var(--fg-muted);
+}
+
+.alias-routing-skipped {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.alias-routing-skipped-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 9px;
+  color: var(--fg-muted);
+}
+
+.alias-routing-empty {
+  padding: 6px;
+  color: var(--fg-muted);
+  font-size: 10px;
+}
+
 @media (min-width: 1600px) {
   .provider-summary {
     grid-template-columns: repeat(4, minmax(0, 1fr));
