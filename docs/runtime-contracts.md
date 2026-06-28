@@ -66,8 +66,9 @@ provider attribution continue to preserve `google` and `antigravity` as distinct
 source providers.
 
 Secondary General dashboard reports must fail visibly instead of hanging the
-page-load path. The `token-trend-summary` and `quota-history` report routes use
-endpoint-specific statement timeouts; on database timeout they return empty
+page-load path. The `token-trend-summary` and `quota-history` routes use
+endpoint-specific statement timeouts, and `GET /api/shell/reports/quotas` uses
+the bounded report statement timeout; on database timeout they return empty
 payloads with `metadata.degraded=true`, a `database_timeout` reason, and a
 section-level `Degraded` badge in the dashboard.
 

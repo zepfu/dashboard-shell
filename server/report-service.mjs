@@ -5674,6 +5674,22 @@ function buildUsageQuotaHistoryMetadata(extra = {}) {
   }
 }
 
+
+export function buildDegradedQuotaReport() {
+  return {
+    metadata: {
+      ...buildFreshnessMetadata(null),
+      degraded: true,
+      degradedReason: 'database_timeout',
+      degradedMessage:
+        'Quota report exceeded the bounded database timeout; showing an empty degraded report.',
+      staleRecordThresholdMinutes: STALE_RECORD_THRESHOLD_MINUTES,
+      quotaReportStatementTimeoutMs: REPORT_DB_STATEMENT_TIMEOUT_MS,
+    },
+    quotas: [],
+  }
+}
+
 export function buildDegradedUsageQuotaHistoryReport() {
   return {
     metadata: buildUsageQuotaHistoryMetadata({
@@ -7038,12 +7054,23 @@ function normalizeSessionDiagnosticsRow(row) {
 }
 
 async function loadQuotaReport(options = {}) {
-  return cachedReport('quotas', loadQuotaReportFromDatabase, {
+  return cachedReport('quotas', loadQuotaReportWithDatabaseTimeoutHandling, {
     decorateMetadata: options.decorateMetadata,
     lockWaitMs: 10_000,
     refreshStaleInForeground: true,
     searchParams: options.searchParams,
   })
+}
+
+async function loadQuotaReportWithDatabaseTimeoutHandling() {
+  try {
+    return await loadQuotaReportFromDatabase()
+  } catch (error) {
+    if (isDatabaseTimeoutError(error)) {
+      return buildDegradedQuotaReport()
+    }
+    throw error
+  }
 }
 
 async function loadQuotaReportFromDatabase() {
@@ -9637,7 +9664,7 @@ async function prewarmReportCaches() {
       const quotaStatus = await prewarmCachedReport(
         'quotas',
         undefined,
-        loadQuotaReportFromDatabase
+        loadQuotaReportWithDatabaseTimeoutHandling
       )
       process.stdout.write(
         `[report-service] prewarm quota cache status=${quotaStatus}\n`

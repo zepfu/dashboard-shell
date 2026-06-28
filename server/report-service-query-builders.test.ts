@@ -37,6 +37,7 @@ import {
   buildQuotaQuery,
   buildQuotaRangeHistoryQuery,
   buildDegradedUsageQuotaHistoryReport,
+  buildDegradedQuotaReport,
   buildDegradedUsageTokenTrendSummaryReport,
   buildDegradedUsageToolActivityReport,
   buildReportQueryPressureQuery,
@@ -1009,6 +1010,26 @@ describe('report-service query builders', () => {
       tokenTrendScores: [],
       tokenTrendVersions: [],
       tokenTrendModelFirstSeen: [],
+    })
+  })
+
+
+  test('test_buildDegradedQuotaReport_returns_bounded_timeout_payload', () => {
+    const report = buildDegradedQuotaReport()
+
+    expect(report).toMatchObject({
+      metadata: {
+        generatedAt: expect.any(String),
+        degraded: true,
+        degradedReason: 'database_timeout',
+        degradedMessage: expect.stringContaining('database timeout'),
+        quotaReportStatementTimeoutMs: expect.any(Number),
+        latestRecordAt: null,
+        latestRecordAgeMinutes: null,
+        latestRecordStale: true,
+        staleRecordThresholdMinutes: expect.any(Number),
+      },
+      quotas: [],
     })
   })
 
