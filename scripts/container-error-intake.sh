@@ -61,6 +61,13 @@ is_informational_error_mention() {
   return 1
 }
 
+is_successful_http_access_log() {
+  lower=$(printf '%s' "$1" | tr 'ABCDEFGHIJKLMNOPQRSTUVWXYZ' 'abcdefghijklmnopqrstuvwxyz')
+  # Ignore successful nginx access-log lines even when the URL/path contains "error".
+  printf '%s' "$lower" | grep -Eq '^[^[:space:]]+[[:space:]]+[^[:space:]]+[[:space:]]+[^[:space:]]+[[:space:]]+\[[^]]+\][[:space:]]+"[a-z]+ [^"]+ http/[0-9.]+"[[:space:]]+[23][0-9]{2}[[:space:]]+[0-9-]+' || return 1
+  return 0
+}
+
 is_ignored_container_log_noise() {
   lower=$(printf '%s' "$1" | tr 'ABCDEFGHIJKLMNOPQRSTUVWXYZ' 'abcdefghijklmnopqrstuvwxyz')
   case "$lower" in
@@ -91,6 +98,9 @@ is_actionable_error_log() {
     *critical*|*fatal*|*exception*|*traceback*) return 0 ;;
   esac
   if is_informational_error_mention "$lower"; then
+    return 1
+  fi
+  if is_successful_http_access_log "$lower"; then
     return 1
   fi
   case "$lower" in
@@ -147,6 +157,12 @@ infer_status_code() {
       rest = line
       while (match(rest, /http\/[0-9]+(\.[0-9]+)?[[:space:]]+(4[0-9]{2}|5[0-9]{2})/)) {
         add_code(substr(rest, RSTART + RLENGTH - 3, 3))
+        rest = substr(rest, RSTART + RLENGTH)
+      }
+      rest = line
+      while (match(rest, /"[a-z]+ [^"]+ http\/[0-9.]+"[[:space:]]+(4[0-9]{2}|5[0-9]{2})[[:space:]]+/)) {
+        m = substr(rest, RSTART, RLENGTH)
+        if (match(m, /[45][0-9]{2}[[:space:]]*$/)) add_code(substr(m, RSTART, 3))
         rest = substr(rest, RSTART + RLENGTH)
       }
     }

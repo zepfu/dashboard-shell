@@ -385,6 +385,10 @@ export function extractHttpStatusCodes(message) {
     add(code)
   }
 
+  for (const match of lowerText.matchAll(/"[a-z]+ [^"]+ http\/[0-9.]+"\s+(4\d{2}|5\d{2})\s+/g)) {
+    add(match[1])
+  }
+
   return codes
 }
 
@@ -449,6 +453,13 @@ export function isInformationalErrorMention(message) {
   return /\berror\b/.test(lower)
 }
 
+export function isSuccessfulHttpAccessLog(message) {
+  const lower = String(message ?? '').toLowerCase()
+  return /^[^\s]+\s+[^\s]+\s+[^\s]+\s+\[[^\]]+\]\s+"[a-z]+ [^"]+ http\/[0-9.]+"\s+[23][0-9]{2}\s+[0-9-]+/.test(
+    lower
+  )
+}
+
 function isSuccessfulCacheWaitFallbackWarning(message) {
   const lower = String(message ?? '').toLowerCase()
   return (
@@ -468,6 +479,7 @@ export function isActionableErrorLog(message) {
   if (/\bconnection refused\b|\betimed out\b|\btimeout\b/.test(lower)) return true
   if (/\b(?:critical|fatal|exception|traceback)\b/.test(lower)) return true
   if (isInformationalErrorMention(lower)) return false
+  if (isSuccessfulHttpAccessLog(message)) return false
   return /\b(?:critical|fatal|error|exception|traceback|failed|rate limit|overloaded)\b/.test(
     lower
   )

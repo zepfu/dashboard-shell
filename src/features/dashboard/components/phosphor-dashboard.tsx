@@ -203,6 +203,21 @@ const PROVIDER_SERIES: ProviderSeries[] = [
   },
 ]
 
+function shouldShowTokenTrendDegradedBadge(
+  metadata?: {
+    degraded?: boolean
+    degradedReason?: string
+    timeout?: boolean
+    timedOutSubqueries?: string[]
+  } | null
+): boolean {
+  if (metadata?.degraded !== true) return false
+  if (metadata.degradedReason !== 'bounded_raw_lane_policy') return true
+  return (
+    metadata.timeout === true || Boolean(metadata.timedOutSubqueries?.length)
+  )
+}
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -1257,7 +1272,9 @@ export default function PhosphorDashboard({
   const statusDegraded =
     providerSectionView === 'quota' &&
     statusQuotaDegradedMetadata?.degraded === true
-  const tokenTrendDegraded = tokenTrendSummaryData?.metadata.degraded === true
+  const tokenTrendDegraded = shouldShowTokenTrendDegradedBadge(
+    tokenTrendSummaryData?.metadata
+  )
 
   return (
     <div

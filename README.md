@@ -76,6 +76,8 @@ service skips `hours`, `scores`, `versions`, and `modelFirstSeen` raw
 `TREND` section remains visible. Degraded metadata includes
 `skippedSubqueries`, `unavailableSubqueries`,
 `tokenTrendSummaryRawLaneMaxDays`, and `tokenTrendSummaryRangeDays`.
+This bounded raw-lane mode is intended behavior and does not render a section
+`Degraded` badge for `TREND`.
 
 Session-level debugging lives behind the General dashboard `STATUS` section's
 `Diagnostics` tab and is served by

@@ -564,7 +564,7 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
     )
   })
 
-  test('test_token_trend_shows_bounded_raw_lane_policy_tooltip', async () => {
+  test('test_token_trend_does_not_show_degraded_badge_for_bounded_raw_lane_policy', async () => {
     server.use(
       http.get('/api/shell/reports/usage/token-trend-summary', () =>
         HttpResponse.json({
@@ -615,15 +615,71 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
       )
     })
 
+    const trendSection = (await screen.findByText('TREND')).closest('section')
+
+    expect(screen.queryByText('Degraded')).toBeNull()
+    expect(trendSection?.querySelector('.section-degraded-badge')).toBeNull()
+  })
+
+  test('test_token_trend_shows_degraded_badge_for_bounded_policy_timeout', async () => {
+    server.use(
+      http.get('/api/shell/reports/usage/token-trend-summary', () =>
+        HttpResponse.json({
+          metadata: {
+            from: '2026-05-20',
+            to: '2026-06-01',
+            degraded: true,
+            degradedReason: 'bounded_raw_lane_policy',
+            degradedMessage:
+              'Token trend summary skipped broad raw lanes and one query timed out.',
+            timeout: true,
+            timedOutSubqueries: ['health'],
+            skippedSubqueries: [
+              'hours',
+              'scores',
+              'versions',
+              'modelFirstSeen',
+            ],
+            unavailableSubqueries: [
+              'health',
+              'hours',
+              'scores',
+              'versions',
+              'modelFirstSeen',
+            ],
+            tokenTrendSummaryRawLaneMaxDays: 7,
+            tokenTrendSummaryRangeDays: 31,
+          },
+          tokenTrendHours: [],
+          tokenTrendHealth: [],
+          tokenTrendScores: [],
+          tokenTrendVersions: [],
+          tokenTrendModelFirstSeen: [],
+        })
+      )
+    )
+
+    await act(async () => {
+      render(
+        <Wrapper>
+          <PhosphorDashboard
+            from='2026-05-20'
+            to='2026-06-01'
+            report={MOCK_REPORT}
+            reportLoading={false}
+            showComparison={false}
+            quotas={[]}
+            quotaHistory={[]}
+          />
+        </Wrapper>
+      )
+    })
+
     const degradedBadge = await screen.findByText('Degraded')
     expect(degradedBadge).toHaveClass('section-degraded-badge')
     expect(degradedBadge).toHaveAttribute(
       'title',
-      expect.stringContaining('bounded raw-lane policy')
-    )
-    expect(degradedBadge).toHaveAttribute(
-      'title',
-      expect.stringContaining('"hours"')
+      expect.stringContaining('one query timed out')
     )
   })
 

@@ -55,6 +55,29 @@ describe('docker-log-error-intake', () => {
     expect(buildDockerLogErrorRow(JSON.parse(tail.trim()), 'dashboard-shell-reports-dev')).toBeNull()
   })
 
+  test('successful HTTP 200 nginx asset access logs with error-like filenames are not actionable', () => {
+    const msg =
+      '172.24.0.1 - - [30/Jun/2026:13:14:18 +0000] "GET /assets/general-error-IdO0Kgsj.js HTTP/1.1" 200 1989 "-" "-" "-"'
+    expect(isActionableErrorLog(msg)).toBe(false)
+    expect(
+      buildDockerLogErrorRow(
+        { time: '2026-06-30T13:14:18.000Z', stream: 'stdout', log: msg },
+        'dashboard-shell'
+      )
+    ).toBeNull()
+  })
+
+  test('500 nginx asset access logs remain actionable with extracted status code', () => {
+    const msg =
+      '172.24.0.1 - - [30/Jun/2026:13:14:18 +0000] "GET /assets/not-found-error-nSd2gCZ4.js HTTP/1.1" 500 1989 "-" "-" "-"'
+    expect(isActionableErrorLog(msg)).toBe(true)
+    const row = buildDockerLogErrorRow(
+      { time: '2026-06-30T13:14:18.000Z', stream: 'stdout', log: msg },
+      'dashboard-shell'
+    )
+    expect(row?.status_code).toBe(500)
+  })
+
   test('real failures stay actionable including 5xx connection refused timeout and exception', () => {
     const cases = [
       'upstream connection refused while proxying request status 502',

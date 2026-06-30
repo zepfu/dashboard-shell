@@ -86,6 +86,10 @@ When raw lanes are skipped, the payload is degraded with
 - `tokenTrendSummaryRawLaneMaxDays`
 - `tokenTrendSummaryRangeDays`
 
+This is an intentional partial-data mode; the dashboard keeps the `TREND`
+section visible and suppresses the section-level `Degraded` badge for this
+reason.
+
 If a SQL timeout still occurs under the same request, `degradedReason` remains
 `database_timeout` and `timedOutSubqueries` names the unavailable timed-out
 lane set.
@@ -304,6 +308,11 @@ Informational or debug lines that only mention the word `error` in a
 non-failure context (for example report-service `INFO: appended N docker log error
 row(s)` intake summaries) are not classified as actionable and are not appended
 to `*-error.jsonl`.
+
+Successful HTTP access-log lines are also ignored when the request completed
+with a 2xx/3xx status, even if the URL path contains `error` (for example static
+error-boundary chunk names). Matching 4xx/5xx access logs remain actionable and
+retain their `status_code`.
 
 Container scope for Docker JSON log tailing defaults to repo-owned compose
 services plus configured external containers. Legacy LiteLLM tails remain available
