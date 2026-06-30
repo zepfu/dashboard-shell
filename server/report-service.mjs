@@ -347,6 +347,28 @@ const QUOTA_HISTORY_STATEMENT_TIMEOUT_MS = positiveIntegerEnv(
   Math.min(REPORT_DB_STATEMENT_TIMEOUT_MS, 15_000),
   1_000
 )
+// Wave 41-QuotaHistory-1:
+// Explicitly bound the quota-history query window to avoid unbounded scans in
+// `rate_limit_intervals` and `session_history` while still keeping enough bars for
+// the active UI path (provider cards + quota detail). These defaults are hard
+// caps when callers do not provide tighter from/to ranges.
+const QUOTA_HISTORY_MAX_LOOKBACK_DAYS = positiveIntegerEnv(
+  'SHELL_REPORT_QUOTA_HISTORY_MAX_LOOKBACK_DAYS',
+  45,
+  1
+)
+const QUOTA_HISTORY_MAX_UPPER_HOURS = positiveIntegerEnv(
+  'SHELL_REPORT_QUOTA_HISTORY_MAX_UPPER_HOURS',
+  72,
+  0
+)
+const QUOTA_HISTORY_MAX_INTERVALS_PER_LANE = Math.max(
+  24,
+  Math.min(
+    Number(process.env.SHELL_REPORT_QUOTA_HISTORY_MAX_INTERVALS_PER_LANE ?? 180),
+    999
+  )
+)
 const AGENT_SCORE_REASON_RECENT_ROW_LIMIT = positiveIntegerEnv(
   'SHELL_REPORT_AGENT_SCORE_REASON_RECENT_ROW_LIMIT',
   10_000,
@@ -360,6 +382,7 @@ export const USAGE_TOKEN_TREND_SUMMARY_SUBQUERY_KEYS = [
   'modelFirstSeen',
 ]
 const USAGE_TOKEN_TREND_SUMMARY_CACHE_SCOPE = 'usage-token-trend-summary-v4'
+const USAGE_QUOTA_HISTORY_CACHE_SCOPE = 'usage-quota-history-v2'
 
 const USAGE_REPORT_CACHE_SCOPES = new Set([
   'usage',
@@ -4838,30 +4861,43 @@ normalized AS (
         --      a key whose median was dominated by sub-minute noise gaps).
         -- The CASE WHEN gap_count >= 2 guard ensures we never use a median
         -- derived from a single data point, which could be an outlier.
-        COALESCE(
-            CASE WHEN kh.gap_count >= 2 THEN kh.interval_hours END,
-            CASE
-                WHEN ri.quota_type = 'requests'
-                  AND lower(COALESCE(ri.provider, 'unknown')) NOT LIKE 'xai/%'
-                  AND lower(COALESCE(ri.provider, 'unknown')) NOT IN ('xai', 'x.ai')
-                THEN 24.0
-                WHEN ri.quota_type = 'wtus' THEN 5.0
-                WHEN ri.quota_type IN ('short', 'short_special') THEN 5.0
-                WHEN ri.quota_type IN ('weekly', 'weekly_special') THEN 168.0
-                WHEN ri.quota_type = 'requests'
-                  AND (
-                      lower(COALESCE(ri.provider, 'unknown')) LIKE 'xai/%'
-                      OR lower(COALESCE(ri.provider, 'unknown')) IN ('xai', 'x.ai')
-                  )
-                THEN 720.0
-                WHEN ri.quota_type = 'monthly'                    THEN 720.0
-                ELSE                                                   168.0
-            END
+        LEAST(
+            GREATEST(
+                COALESCE(
+                    CASE WHEN kh.gap_count >= 2 THEN kh.interval_hours END,
+                    CASE
+                        WHEN ri.quota_type = 'requests'
+                          AND lower(COALESCE(ri.provider, 'unknown')) NOT LIKE 'xai/%'
+                          AND lower(COALESCE(ri.provider, 'unknown')) NOT IN ('xai', 'x.ai')
+                        THEN 24.0
+                        WHEN ri.quota_type = 'wtus' THEN 5.0
+                        WHEN ri.quota_type IN ('short', 'short_special') THEN 5.0
+                        WHEN ri.quota_type IN ('weekly', 'weekly_special') THEN 168.0
+                        WHEN ri.quota_type = 'requests'
+                          AND (
+                              lower(COALESCE(ri.provider, 'unknown')) LIKE 'xai/%'
+                              OR lower(COALESCE(ri.provider, 'unknown')) IN ('xai', 'x.ai')
+                          )
+                        THEN 720.0
+                        WHEN ri.quota_type = 'monthly'                    THEN 720.0
+                        ELSE                                                   168.0
+                    END
+                ),
+                1.0
+            ),
+            ${QUOTA_HISTORY_MAX_LOOKBACK_DAYS} * 24.0
         ) AS interval_hours
     FROM public.rate_limit_intervals ri
     LEFT JOIN quota_key_interval_hours kh
            ON kh.provider  = ri.provider
           AND kh.quota_key = ri.quota_key
+    WHERE ri.quota_type IN ('weekly', 'weekly_special', 'short', 'short_special', 'requests', 'monthly', 'wtus')
+      AND ri.expected_reset_at IS NOT NULL
+),
+scoped_normalized AS (
+    SELECT
+        n.*
+    FROM normalized n
     -- 1.5× per-row interval lookback: each bar window is sized to 1.5× its own
     -- actual reset cadence, regardless of quota_type label.  Examples:
     --   Anthropic short (5 h)  → look back  7.5 h
@@ -4880,52 +4916,20 @@ normalized AS (
     --   OpenAI/Anthropic weekly → upper +14 d
     --   Google short (24 h)     → upper +48 h
     --   xAI monthly (30 d)      → upper +60 d
-    WHERE ri.quota_type IN ('weekly', 'weekly_special', 'short', 'short_special', 'requests', 'monthly', 'wtus')
-      AND ri.expected_reset_at IS NOT NULL
-      AND ri.expected_reset_at >= now() - (
-              COALESCE(
-                  CASE WHEN kh.gap_count >= 2 THEN kh.interval_hours END,
-                  CASE
-                      WHEN ri.quota_type = 'requests'
-                        AND lower(COALESCE(ri.provider, 'unknown')) NOT LIKE 'xai/%'
-                        AND lower(COALESCE(ri.provider, 'unknown')) NOT IN ('xai', 'x.ai')
-                      THEN 24.0
-                      WHEN ri.quota_type = 'wtus' THEN 5.0
-                      WHEN ri.quota_type IN ('short', 'short_special') THEN 5.0
-                      WHEN ri.quota_type IN ('weekly', 'weekly_special') THEN 168.0
-                      WHEN ri.quota_type = 'requests'
-                        AND (
-                            lower(COALESCE(ri.provider, 'unknown')) LIKE 'xai/%'
-                            OR lower(COALESCE(ri.provider, 'unknown')) IN ('xai', 'x.ai')
-                        )
-                      THEN 720.0
-                      WHEN ri.quota_type = 'monthly'                    THEN 720.0
-                      ELSE                                                   168.0
-                  END
-              ) * 1.5 * INTERVAL '1 hour'
+    WHERE n.expected_reset_at >= now() - (n.interval_hours * 1.5 * INTERVAL '1 hour')
+      AND n.expected_reset_at < now() + (
+              LEAST(n.interval_hours * 2.0, ${QUOTA_HISTORY_MAX_UPPER_HOURS}::double precision)
+              * INTERVAL '1 hour'
           )
-      AND ri.expected_reset_at < now() + (
-              COALESCE(
-                  CASE WHEN kh.gap_count >= 2 THEN kh.interval_hours END,
-                  CASE
-                      WHEN ri.quota_type = 'requests'
-                        AND lower(COALESCE(ri.provider, 'unknown')) NOT LIKE 'xai/%'
-                        AND lower(COALESCE(ri.provider, 'unknown')) NOT IN ('xai', 'x.ai')
-                      THEN 24.0
-                      WHEN ri.quota_type = 'wtus' THEN 5.0
-                      WHEN ri.quota_type IN ('short', 'short_special') THEN 5.0
-                      WHEN ri.quota_type IN ('weekly', 'weekly_special') THEN 168.0
-                      WHEN ri.quota_type = 'requests'
-                        AND (
-                            lower(COALESCE(ri.provider, 'unknown')) LIKE 'xai/%'
-                            OR lower(COALESCE(ri.provider, 'unknown')) IN ('xai', 'x.ai')
-                        )
-                      THEN 720.0
-                      WHEN ri.quota_type = 'monthly'                    THEN 720.0
-                      ELSE                                                   168.0
-                  END
-              ) * 2.0 * INTERVAL '1 hour'
-          )
+),
+bounded_normalized AS (
+    SELECT
+        n.*,
+        ROW_NUMBER() OVER (
+            PARTITION BY n.provider, COALESCE(n.model, ''), n.quota_type
+            ORDER BY n.expected_reset_at DESC
+        ) AS interval_rank
+    FROM scoped_normalized n
 ),
 history_observations AS (
     SELECT
@@ -4936,7 +4940,7 @@ history_observations AS (
         MAX(n.interval_hours)::double precision AS interval_hours,
         o.observed_at,
         MAX(GREATEST(0, LEAST(100, 100 - o.remaining_pct))) AS consumed_pct
-    FROM normalized n
+    FROM bounded_normalized n
     JOIN public.rate_limit_observations o
       ON n.quota_key IS NOT NULL
      AND n.expected_reset_at IS NOT NULL
@@ -4948,6 +4952,7 @@ history_observations AS (
      AND o.observed_at IS NOT NULL
      AND o.observed_at >= n.interval_start - INTERVAL '5 minutes'
      AND o.observed_at <= n.expected_reset_at + INTERVAL '5 minutes'
+     AND n.interval_rank <= ${QUOTA_HISTORY_MAX_INTERVALS_PER_LANE}
     GROUP BY n.provider, n.model, n.quota_type, n.expected_reset_at, o.observed_at
 ),
 ordered_history_observations AS (
@@ -5007,7 +5012,8 @@ history_velocity_arrays AS (
         jsonb_agg(LEAST(COALESCE(velocity.velocity_score, 0), 10000.0) ORDER BY segment.segment_index) AS velocity_scores
     FROM (
         SELECT DISTINCT provider, model, quota_type, expected_reset_at
-        FROM normalized
+        FROM bounded_normalized
+       WHERE interval_rank <= ${QUOTA_HISTORY_MAX_INTERVALS_PER_LANE}
     ) lanes
     CROSS JOIN generate_series(0, ${QUOTA_VELOCITY_SEGMENT_COUNT - 1}) AS segment(segment_index)
     LEFT JOIN history_velocity_segments velocity
@@ -5032,7 +5038,8 @@ window_bounds AS (
         MIN(interval_start) AS interval_start,
         MIN(remaining_pct)::double precision AS min_remaining_pct,
         MAX(remaining_pct)::double precision AS max_remaining_pct
-    FROM normalized
+    FROM bounded_normalized
+   WHERE interval_rank <= ${QUOTA_HISTORY_MAX_INTERVALS_PER_LANE}
     GROUP BY provider, model, quota_type, expected_reset_at
 ),
 recent_traces_90m AS (
@@ -5149,6 +5156,237 @@ GROUP BY
     hv.velocity_segments,
     hv.velocity_scores
 ORDER BY wb.expected_reset_at DESC;
+`
+
+  return { sql, values: [] }
+}
+
+export function buildQuotaHistoryFallbackQuery(_searchParams) {
+  const sql = `
+WITH
+quota_key_gaps AS (
+    SELECT
+        provider,
+        quota_key,
+        quota_type,
+        EXTRACT(EPOCH FROM (
+            expected_reset_at
+            - LAG(expected_reset_at) OVER (
+                PARTITION BY provider, quota_key
+                ORDER BY expected_reset_at
+            )
+        )) / 3600.0 AS gap_hours
+    FROM (
+        SELECT DISTINCT provider, quota_key, quota_type, expected_reset_at
+        FROM public.rate_limit_intervals
+        WHERE quota_type IN ('weekly', 'weekly_special', 'short', 'short_special', 'requests', 'monthly', 'wtus')
+          AND expected_reset_at IS NOT NULL
+    ) distinct_resets
+),
+quota_key_interval_hours AS (
+    SELECT
+        provider,
+        quota_key,
+        quota_type,
+        PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY gap_hours) AS interval_hours,
+        COUNT(*) AS gap_count
+    FROM quota_key_gaps
+    WHERE gap_hours >= 1.0
+    GROUP BY provider, quota_key, quota_type
+),
+normalized AS (
+    SELECT
+        ri.provider AS raw_provider,
+        ri.quota_type AS raw_quota_type,
+        ri.quota_key,
+        CASE
+            WHEN lower(COALESCE(ri.provider, 'unknown')) IN ('google', 'gemini') THEN 'google'
+            WHEN lower(COALESCE(ri.provider, 'unknown')) = 'antigravity' THEN 'antigravity'
+            WHEN lower(COALESCE(ri.provider, 'unknown')) IN ('claude', 'anthropic') THEN 'anthropic'
+            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'claude/%' THEN 'anthropic'
+            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'anthropic/%' THEN 'anthropic'
+            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'deepseek/%' THEN 'deepseek'
+            WHEN lower(COALESCE(ri.provider, 'unknown')) IN ('xai', 'x.ai') THEN 'xai'
+            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'xai/%' THEN 'xai'
+            WHEN lower(COALESCE(ri.provider, 'unknown')) = 'nvidia' THEN 'nvidia_nim'
+            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'nvidia_nim/%' THEN 'nvidia_nim'
+            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'nvidia/%' THEN 'nvidia_nim'
+            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'local/%' THEN 'local'
+            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'local_%' THEN 'local'
+            ELSE COALESCE(ri.provider, 'unknown')
+        END AS provider,
+        CASE
+            WHEN lower(COALESCE(ri.provider, 'unknown')) = 'antigravity'
+              AND ri.quota_key IN (
+                  'antigravity_code_assist:gemini_pool',
+                  'antigravity_code_assist:vertex_pool'
+              )
+            THEN ri.quota_key
+            WHEN ri.quota_type IN ('monthly', 'requests')
+              AND (
+                  lower(COALESCE(ri.provider, 'unknown')) LIKE 'xai/%'
+                  OR lower(COALESCE(ri.provider, 'unknown')) IN ('xai', 'x.ai')
+              )
+            THEN NULL
+            ELSE NULLIF(ri.model, '')
+        END AS model,
+        CASE
+            WHEN ri.quota_type = 'requests'
+              AND (
+                  lower(COALESCE(ri.provider, 'unknown')) LIKE 'xai/%'
+                  OR lower(COALESCE(ri.provider, 'unknown')) IN ('xai', 'x.ai')
+              )
+            THEN 'monthly'
+            WHEN ri.quota_type = 'weekly_special' THEN 'special'
+            WHEN ri.quota_type = 'short_special' THEN 'short_special'
+            WHEN ri.quota_type = 'requests' THEN 'short'
+            ELSE ri.quota_type
+        END AS quota_type,
+        ri.expected_reset_at,
+        ri.fromDate AS interval_start,
+        LEAST(
+            GREATEST(
+                COALESCE(
+                    CASE WHEN kh.gap_count >= 2 THEN kh.interval_hours END,
+                    CASE
+                        WHEN ri.quota_type = 'requests'
+                          AND lower(COALESCE(ri.provider, 'unknown')) NOT LIKE 'xai/%'
+                          AND lower(COALESCE(ri.provider, 'unknown')) NOT IN ('xai', 'x.ai')
+                        THEN 24.0
+                        WHEN ri.quota_type = 'wtus' THEN 5.0
+                        WHEN ri.quota_type IN ('short', 'short_special') THEN 5.0
+                        WHEN ri.quota_type IN ('weekly', 'weekly_special') THEN 168.0
+                        WHEN ri.quota_type = 'requests'
+                          AND (
+                              lower(COALESCE(ri.provider, 'unknown')) LIKE 'xai/%'
+                              OR lower(COALESCE(ri.provider, 'unknown')) IN ('xai', 'x.ai')
+                          )
+                        THEN 720.0
+                        WHEN ri.quota_type = 'monthly'                    THEN 720.0
+                        ELSE                                                   168.0
+                    END
+                ),
+                1.0
+            ),
+            ${QUOTA_HISTORY_MAX_LOOKBACK_DAYS} * 24.0
+        ) AS interval_hours,
+        LEAST(
+            COALESCE(
+                ri.remaining_pct,
+                100
+            ),
+            100
+        ) AS remaining_pct
+    FROM public.rate_limit_intervals ri
+    LEFT JOIN quota_key_interval_hours kh
+           ON kh.provider  = ri.provider
+          AND kh.quota_key = ri.quota_key
+    WHERE ri.quota_type IN ('weekly', 'weekly_special', 'short', 'short_special', 'requests', 'monthly', 'wtus')
+      AND ri.expected_reset_at IS NOT NULL
+      AND ri.expected_reset_at >= now() - (
+            LEAST(
+                GREATEST(
+                    COALESCE(
+                        CASE WHEN kh.gap_count >= 2 THEN kh.interval_hours END,
+                        CASE
+                            WHEN ri.quota_type = 'requests'
+                              AND lower(COALESCE(ri.provider, 'unknown')) NOT LIKE 'xai/%'
+                              AND lower(COALESCE(ri.provider, 'unknown')) NOT IN ('xai', 'x.ai')
+                            THEN 24.0
+                            WHEN ri.quota_type = 'wtus' THEN 5.0
+                            WHEN ri.quota_type IN ('short', 'short_special') THEN 5.0
+                            WHEN ri.quota_type IN ('weekly', 'weekly_special') THEN 168.0
+                            WHEN ri.quota_type = 'requests'
+                              AND (
+                                  lower(COALESCE(ri.provider, 'unknown')) LIKE 'xai/%'
+                                  OR lower(COALESCE(ri.provider, 'unknown')) IN ('xai', 'x.ai')
+                              )
+                            THEN 720.0
+                            WHEN ri.quota_type = 'monthly'                    THEN 720.0
+                            ELSE                                                   168.0
+                        END
+                    ),
+                    1.0
+                ),
+                ${QUOTA_HISTORY_MAX_LOOKBACK_DAYS} * 24.0
+            ) * 1.5 * INTERVAL '1 hour'
+        )
+      AND ri.expected_reset_at < now() + (
+            LEAST(
+                LEAST(
+                    GREATEST(
+                        COALESCE(
+                            CASE WHEN kh.gap_count >= 2 THEN kh.interval_hours END,
+                            CASE
+                                WHEN ri.quota_type = 'requests'
+                                  AND lower(COALESCE(ri.provider, 'unknown')) NOT LIKE 'xai/%'
+                                  AND lower(COALESCE(ri.provider, 'unknown')) NOT IN ('xai', 'x.ai')
+                                THEN 24.0
+                                WHEN ri.quota_type = 'wtus' THEN 5.0
+                                WHEN ri.quota_type IN ('short', 'short_special') THEN 5.0
+                                WHEN ri.quota_type IN ('weekly', 'weekly_special') THEN 168.0
+                                WHEN ri.quota_type = 'requests'
+                                  AND (
+                                      lower(COALESCE(ri.provider, 'unknown')) LIKE 'xai/%'
+                                      OR lower(COALESCE(ri.provider, 'unknown')) IN ('xai', 'x.ai')
+                                  )
+                                THEN 720.0
+                                WHEN ri.quota_type = 'monthly'                    THEN 720.0
+                                ELSE                                                   168.0
+                            END
+                        ),
+                        1.0
+                    ),
+                    ${QUOTA_HISTORY_MAX_LOOKBACK_DAYS} * 24.0
+                ),
+                ${QUOTA_HISTORY_MAX_UPPER_HOURS}::double precision
+            ) * 2.0 * INTERVAL '1 hour'
+        )
+),
+scoped_intervals AS (
+    SELECT
+        provider,
+        model,
+        quota_type,
+        expected_reset_at,
+        interval_start,
+        remaining_pct,
+        interval_hours,
+        ROW_NUMBER() OVER (
+            PARTITION BY provider, COALESCE(model, ''), quota_type
+            ORDER BY expected_reset_at DESC
+        ) AS interval_rank
+    FROM normalized
+),
+bounded_intervals AS (
+    SELECT
+        provider,
+        model,
+        quota_type,
+        expected_reset_at,
+        MIN(interval_start) AS interval_start,
+        MIN(remaining_pct)::double precision AS min_remaining_pct,
+        MAX(remaining_pct)::double precision AS max_remaining_pct
+    FROM scoped_intervals
+    WHERE interval_rank <= ${QUOTA_HISTORY_MAX_INTERVALS_PER_LANE}
+    GROUP BY provider, model, quota_type, expected_reset_at
+)
+SELECT
+    provider,
+    model,
+    quota_type,
+    expected_reset_at,
+    interval_start,
+    expected_reset_at AS interval_end,
+    min_remaining_pct,
+    max_remaining_pct,
+    0::double precision AS velocity_sample_count,
+    '[]'::jsonb AS velocity_segments,
+    '[]'::jsonb AS velocity_scores,
+    0::double precision AS usage_tokens,
+    '[]'::json AS usage_breakdown
+FROM bounded_intervals
+ORDER BY provider ASC, expected_reset_at DESC, quota_type ASC;
 `
 
   return { sql, values: [] }
@@ -5734,16 +5972,38 @@ export function buildDegradedQuotaReport() {
   }
 }
 
-export function buildDegradedUsageQuotaHistoryReport() {
+export function buildDegradedUsageQuotaHistoryReport({
+  timedOutSubqueries = [],
+  quotaHistory = [],
+  degradedMessage,
+} = {}) {
+  const normalizedTimedOutSubqueries = Array.from(
+    new Set(
+      (timedOutSubqueries ?? []).filter(
+        (subqueryKey) => typeof subqueryKey === 'string' && subqueryKey !== ''
+      )
+    )
+  )
+  const timedOutSubquery = normalizedTimedOutSubqueries[0]
+  const timedOutSubqueryMessage = timedOutSubquery
+    ? `subquery "${timedOutSubquery}"`
+    : null
+
   return {
     metadata: buildUsageQuotaHistoryMetadata({
       degraded: true,
       degradedReason: 'database_timeout',
       degradedMessage:
-        'Quota history exceeded the bounded database timeout; showing an empty degraded report.',
+        degradedMessage ??
+        (timedOutSubquery
+          ? `Quota history ${timedOutSubqueryMessage} exceeded the bounded database timeout; returning partial payload from base rows.`
+          : 'Quota history exceeded the bounded database timeout; returning partial payload from base rows.'),
+      timeout: true,
+      timedOutSubquery,
+      timedOutSubqueries: normalizedTimedOutSubqueries,
       quotaHistoryStatementTimeoutMs: QUOTA_HISTORY_STATEMENT_TIMEOUT_MS,
     }),
-    quotaHistory: [],
+    quotaHistory,
   }
 }
 
@@ -9346,7 +9606,27 @@ async function loadUsageQuotaHistory(searchParams) {
     }
   } catch (error) {
     if (isDatabaseTimeoutError(error)) {
-      return buildDegradedUsageQuotaHistoryReport()
+      const fallbackQuery = buildQuotaHistoryFallbackQuery(searchParams)
+      try {
+        const fallbackResult = await queryReportDatabase(
+          fallbackQuery.sql,
+          fallbackQuery.values,
+          {
+            statementTimeoutMs: QUOTA_HISTORY_STATEMENT_TIMEOUT_MS,
+          }
+        )
+        return buildDegradedUsageQuotaHistoryReport({
+          timedOutSubqueries: ['history_enrichment'],
+          quotaHistory: fallbackResult.rows.map(normalizeQuotaHistoryRow),
+        })
+      } catch (fallbackError) {
+        if (isDatabaseTimeoutError(fallbackError)) {
+          return buildDegradedUsageQuotaHistoryReport({
+            timedOutSubqueries: ['history_base', 'history_enrichment'],
+          })
+        }
+        throw fallbackError
+      }
     }
     throw error
   }
@@ -9597,7 +9877,7 @@ async function handleUsageQuotaHistory(req, res) {
 
   const requestUrl = new URL(req.url, `http://${req.headers.host}`)
   const body = await cachedReport(
-    'usage-quota-history',
+    USAGE_QUOTA_HISTORY_CACHE_SCOPE,
     () => loadUsageQuotaHistory(requestUrl.searchParams),
     {
       searchParams: requestUrl.searchParams,

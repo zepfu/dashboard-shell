@@ -496,6 +496,65 @@ test('test_fetchUsageReportQuotaHistory_preserves_degraded_metadata', async () =
   })
 })
 
+test('test_fetchUsageReportQuotaHistory_preserves_partial_payload', async () => {
+  server.use(
+    http.get('/api/shell/reports/usage/quota-history', () =>
+      HttpResponse.json({
+        metadata: {
+          generatedAt: '2026-06-01T00:00:00.000Z',
+          degraded: true,
+          degradedReason: 'database_timeout',
+          degradedMessage:
+            'Quota history history_enrichment exceeded the bounded database timeout; returning partial payload from base rows.',
+          timeout: true,
+          timedOutSubquery: 'history_enrichment',
+          timedOutSubqueries: ['history_enrichment'],
+          quotaHistoryStatementTimeoutMs: 15000,
+        },
+        quotaHistory: [
+          {
+            provider: 'openai',
+            model: null,
+            quota_type: 'weekly',
+            expected_reset_at: '2026-06-01T00:00:00.000Z',
+            interval_start: '2026-05-25T00:00:00.000Z',
+            interval_end: '2026-06-01T00:00:00.000Z',
+            min_remaining_pct: 10,
+            max_remaining_pct: 100,
+            velocity_segments: [true, false],
+            velocity_scores: [0.4, 0.6],
+            velocity_sample_count: 2,
+            usage_tokens: 1234,
+            usage_breakdown: [
+              {
+                model: 'gpt-5',
+                tokens: 1234,
+                cost: 1.23,
+                traces: 5,
+                recent_traces_90m: 2,
+              },
+            ],
+          },
+        ],
+      })
+    )
+  )
+
+  const report = await fetchUsageReportQuotaHistory()
+  expect(report).toMatchObject({
+    metadata: {
+      degraded: true,
+      degradedReason: 'database_timeout',
+      timeout: true,
+      timedOutSubquery: 'history_enrichment',
+      timedOutSubqueries: ['history_enrichment'],
+      quotaHistoryStatementTimeoutMs: 15000,
+    },
+  })
+  expect(report.quotaHistory).toHaveLength(1)
+  expect(report.quotaHistory?.[0]?.provider).toBe('openai')
+})
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Wave 5 / S4-1, S4-5: Boundary-validation and malformed-payload tests
 // ─────────────────────────────────────────────────────────────────────────────

@@ -1248,6 +1248,9 @@ export interface UsageReportQuotaHistoryResponse {
     degraded?: boolean
     degradedReason?: string
     degradedMessage?: string
+    timeout?: boolean
+    timedOutSubquery?: string
+    timedOutSubqueries?: string[]
     quotaHistoryStatementTimeoutMs?: number
     cacheBackend?: string
     cacheFreshUntil?: string | null

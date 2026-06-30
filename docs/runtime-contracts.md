@@ -68,9 +68,11 @@ source providers.
 Secondary General dashboard reports must fail visibly instead of hanging the
 page-load path. The `token-trend-summary` and `quota-history` routes use
 endpoint-specific statement timeouts, and `GET /api/shell/reports/quotas` uses
-the bounded report statement timeout; on database timeout they return empty
-payloads with `metadata.degraded=true`, a `database_timeout` reason, and a
-section-level `Degraded` badge in the dashboard.
+the bounded report statement timeout; on database timeout they return
+`metadata.degraded=true`, a `database_timeout` reason, and a section-level
+`Degraded` badge in the dashboard. `quota-history` first attempts to return a
+partial degraded payload from base quota rows when enrichment times out, with
+`metadata.timedOutSubqueries` naming the unavailable lane.
 
 
 ## Provider Health — Provider Auth Expiry (D1-338)

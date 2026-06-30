@@ -34,6 +34,7 @@ import {
   buildQuotaEstimatorReport,
   buildQuotaEstimatorUsageBucketQuery,
   buildQuotaHistoryQuery,
+  buildQuotaHistoryFallbackQuery,
   buildQuotaQuery,
   buildQuotaRangeHistoryQuery,
   buildDegradedUsageQuotaHistoryReport,
@@ -1084,6 +1085,22 @@ describe('report-service query builders', () => {
     expect(query.sql).not.toContain('SELECT COUNT(*)::double precision\n            FROM public.session_history sh_recent')
   })
 
+  test('test_buildQuotaHistoryFallbackQuery_returns_bounded_base_rows_without_enrichment', () => {
+    const query = buildQuotaHistoryFallbackQuery(new URLSearchParams())
+
+    expect(query.values).toEqual([])
+    expect(query.sql).toContain('ROW_NUMBER() OVER')
+    expect(query.sql).toContain('interval_rank <=')
+    expect(query.sql).toContain('0::double precision AS velocity_sample_count')
+    expect(query.sql).toContain("'[]'::jsonb AS velocity_segments")
+    expect(query.sql).toContain("'[]'::jsonb AS velocity_scores")
+    expect(query.sql).toContain("0::double precision AS usage_tokens")
+    expect(query.sql).toContain("'[]'::json AS usage_breakdown")
+    expect(query.sql).toContain('public.rate_limit_intervals')
+    expect(query.sql).not.toContain('public.session_history')
+    expect(query.sql).not.toContain('public.rate_limit_observations')
+  })
+
   test('test_degraded_secondary_usage_reports_return_visible_empty_payloads', () => {
     const params = new URLSearchParams({
       from: '2026-05-01',
@@ -1097,6 +1114,35 @@ describe('report-service query builders', () => {
         quotaHistoryStatementTimeoutMs: expect.any(Number),
       },
       quotaHistory: [],
+    })
+
+    expect(
+      buildDegradedUsageQuotaHistoryReport({
+        timedOutSubqueries: ['history_enrichment'],
+        quotaHistory: [
+          {
+            provider: 'openai',
+            model: null,
+            quota_type: 'weekly',
+          },
+        ],
+      })
+    ).toMatchObject({
+      metadata: {
+        degraded: true,
+        degradedReason: 'database_timeout',
+        timeout: true,
+        timedOutSubquery: 'history_enrichment',
+        timedOutSubqueries: ['history_enrichment'],
+        quotaHistoryStatementTimeoutMs: expect.any(Number),
+      },
+      quotaHistory: [
+        {
+          provider: 'openai',
+          model: null,
+          quota_type: 'weekly',
+        },
+      ],
     })
 
     expect(buildDegradedUsageTokenTrendSummaryReport(params)).toMatchObject({

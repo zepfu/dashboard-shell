@@ -48,7 +48,7 @@ describe('report cache policy', () => {
 
   test('leaves quota-style report scopes on the shorter default cadence', () => {
     expect(resolveReportCacheTtlMs('quotas')).toBe(MINUTE_MS)
-    expect(resolveReportCacheTtlMs('usage-quota-history')).toBe(MINUTE_MS)
+    expect(resolveReportCacheTtlMs('usage-quota-history-v2')).toBe(MINUTE_MS)
     expect(resolveReportCacheTtlMs('usage-quota-range-history')).toBe(MINUTE_MS)
   })
 
