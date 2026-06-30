@@ -359,10 +359,11 @@ export const USAGE_TOKEN_TREND_SUMMARY_SUBQUERY_KEYS = [
   'versions',
   'modelFirstSeen',
 ]
+const USAGE_TOKEN_TREND_SUMMARY_CACHE_SCOPE = 'usage-token-trend-summary-v4'
 
 const USAGE_REPORT_CACHE_SCOPES = new Set([
   'usage',
-  'usage-token-trend-summary-v3',
+  USAGE_TOKEN_TREND_SUMMARY_CACHE_SCOPE,
   'usage-tool-activity',
   'usage-token-trend-day',
 ])
@@ -2133,16 +2134,27 @@ function annotateTokenTrendSummarySubqueryTimeout(error, subqueryKey) {
 }
 
 async function runTokenTrendSummarySubqueries(labeledTasks) {
-  return runTasksWithConcurrency(
-    labeledTasks.map(({ subqueryKey, task }) => async () => {
+  const results = new Array(labeledTasks.length)
+  await runTasksWithConcurrency(
+    labeledTasks.map(({ subqueryKey, task }, index) => async () => {
       try {
-        return await task()
+        const value = await task()
+        results[index] = {
+          status: 'fulfilled',
+          subqueryKey,
+          value,
+        }
       } catch (error) {
-        throw annotateTokenTrendSummarySubqueryTimeout(error, subqueryKey)
+        results[index] = {
+          status: 'rejected',
+          subqueryKey,
+          error: annotateTokenTrendSummarySubqueryTimeout(error, subqueryKey),
+        }
       }
     }),
     REPORT_SQL_FANOUT_CONCURRENCY
   )
+  return results
 }
 
 function formatError(error) {
@@ -5746,7 +5758,14 @@ function buildUsageTokenTrendSummaryMetadata(searchParams, extra = {}) {
 
 export function buildDegradedUsageTokenTrendSummaryReport(
   searchParams,
-  { timedOutSubqueries = [] } = {}
+  {
+    timedOutSubqueries = [],
+    tokenTrendHours = [],
+    tokenTrendHealth = [],
+    tokenTrendScores = [],
+    tokenTrendVersions = [],
+    tokenTrendModelFirstSeen = [],
+  } = {}
 ) {
   const normalizedTimedOutSubqueries = Array.from(
     new Set(
@@ -5756,25 +5775,29 @@ export function buildDegradedUsageTokenTrendSummaryReport(
     )
   )
   const timedOutSubquery = normalizedTimedOutSubqueries[0]
+  const timedOutSubqueryMessage =
+    normalizedTimedOutSubqueries.length === 1
+      ? `subquery "${timedOutSubquery}"`
+      : `subqueries ${normalizedTimedOutSubqueries.map((key) => `"${key}"`).join(', ')}`
 
   return {
     metadata: buildUsageTokenTrendSummaryMetadata(searchParams, {
       degraded: true,
       degradedReason: 'database_timeout',
       degradedMessage: timedOutSubquery
-        ? `Token trend summary subquery "${timedOutSubquery}" exceeded the bounded database timeout; showing an empty degraded report.`
-        : 'Token trend summary exceeded the bounded database timeout; showing an empty degraded report.',
+        ? `Token trend summary ${timedOutSubqueryMessage} exceeded the bounded database timeout; returning partial payload from successful subqueries.`
+        : 'Token trend summary exceeded the bounded database timeout; returning partial payload from successful subqueries.',
       timeout: true,
       timedOutSubquery,
       timedOutSubqueries: normalizedTimedOutSubqueries,
       tokenTrendSummaryStatementTimeoutMs:
         TOKEN_TREND_SUMMARY_STATEMENT_TIMEOUT_MS,
     }),
-    tokenTrendHours: [],
-    tokenTrendHealth: [],
-    tokenTrendScores: [],
-    tokenTrendVersions: [],
-    tokenTrendModelFirstSeen: [],
+    tokenTrendHours,
+    tokenTrendHealth,
+    tokenTrendScores,
+    tokenTrendVersions,
+    tokenTrendModelFirstSeen,
   }
 }
 
@@ -9401,78 +9424,119 @@ async function loadUsageTokenTrendSummary(searchParams) {
   const scoreQuery = buildTokenTrendScoreQuery(searchParams)
   const versionsQuery = buildTokenTrendVersionIntervalsQuery(searchParams)
   const modelFirstSeenQuery = buildTokenTrendModelFirstSeenQuery(searchParams)
-  try {
-    const [
-      hoursResult,
-      healthResult,
-      scoreResult,
-      versionsResult,
-      modelFirstSeenResult,
-    ] = await runTokenTrendSummarySubqueries([
-      {
-        subqueryKey: 'hours',
-        task: () =>
-          queryReportDatabase(hoursQuery.sql, hoursQuery.values, {
-            statementTimeoutMs: TOKEN_TREND_SUMMARY_STATEMENT_TIMEOUT_MS,
-          }),
-      },
-      {
-        subqueryKey: 'health',
-        task: () =>
-          queryReportDatabase(healthQuery.sql, healthQuery.values, {
-            statementTimeoutMs: TOKEN_TREND_SUMMARY_STATEMENT_TIMEOUT_MS,
-          }),
-      },
-      {
-        subqueryKey: 'scores',
-        task: () =>
-          queryReportDatabase(scoreQuery.sql, scoreQuery.values, {
-            statementTimeoutMs: TOKEN_TREND_SUMMARY_STATEMENT_TIMEOUT_MS,
-          }),
-      },
-      {
-        subqueryKey: 'versions',
-        task: () =>
-          queryReportDatabase(versionsQuery.sql, versionsQuery.values, {
-            statementTimeoutMs: TOKEN_TREND_SUMMARY_STATEMENT_TIMEOUT_MS,
-          }),
-      },
-      {
-        subqueryKey: 'modelFirstSeen',
-        task: () =>
-          queryReportDatabase(
-            modelFirstSeenQuery.sql,
-            modelFirstSeenQuery.values,
-            {
-              statementTimeoutMs: TOKEN_TREND_SUMMARY_STATEMENT_TIMEOUT_MS,
-            }
-          ),
-      },
-    ])
+  const querySpecs = [
+    {
+      subqueryKey: 'hours',
+      task: () =>
+        queryReportDatabase(hoursQuery.sql, hoursQuery.values, {
+          statementTimeoutMs: TOKEN_TREND_SUMMARY_STATEMENT_TIMEOUT_MS,
+        }),
+    },
+    {
+      subqueryKey: 'health',
+      task: () =>
+        queryReportDatabase(healthQuery.sql, healthQuery.values, {
+          statementTimeoutMs: TOKEN_TREND_SUMMARY_STATEMENT_TIMEOUT_MS,
+        }),
+    },
+    {
+      subqueryKey: 'scores',
+      task: () =>
+        queryReportDatabase(scoreQuery.sql, scoreQuery.values, {
+          statementTimeoutMs: TOKEN_TREND_SUMMARY_STATEMENT_TIMEOUT_MS,
+        }),
+    },
+    {
+      subqueryKey: 'versions',
+      task: () =>
+        queryReportDatabase(versionsQuery.sql, versionsQuery.values, {
+          statementTimeoutMs: TOKEN_TREND_SUMMARY_STATEMENT_TIMEOUT_MS,
+        }),
+    },
+    {
+      subqueryKey: 'modelFirstSeen',
+      task: () =>
+        queryReportDatabase(modelFirstSeenQuery.sql, modelFirstSeenQuery.values, {
+          statementTimeoutMs: TOKEN_TREND_SUMMARY_STATEMENT_TIMEOUT_MS,
+        }),
+    },
+  ]
+  const prioritizedQuerySpecs =
+    REPORT_SQL_FANOUT_CONCURRENCY === 1
+      ? [
+          ...querySpecs.filter(({ subqueryKey }) => subqueryKey !== 'hours'),
+          ...querySpecs.filter(({ subqueryKey }) => subqueryKey === 'hours'),
+        ]
+      : querySpecs
 
-    return {
-      metadata: buildUsageTokenTrendSummaryMetadata(searchParams, {
-        tokenTrendSummaryStatementTimeoutMs:
-          TOKEN_TREND_SUMMARY_STATEMENT_TIMEOUT_MS,
-      }),
-      tokenTrendHours: hoursResult.rows.map(normalizeTokenTrendHourRow),
-      tokenTrendHealth: healthResult.rows.map(normalizeProviderLatencyHealthRow),
-      tokenTrendScores: scoreResult.rows.map(normalizeTokenTrendScoreRow),
-      tokenTrendVersions: versionsResult.rows.map(
-        normalizeTokenTrendVersionIntervalRow
-      ),
-      tokenTrendModelFirstSeen: modelFirstSeenResult.rows.map(
-        normalizeTokenTrendModelFirstSeenRow
-      ),
+  const queryResults = await runTokenTrendSummarySubqueries(prioritizedQuerySpecs)
+
+  const tokenTrendHoursRows = []
+  const tokenTrendHealthRows = []
+  const tokenTrendScoresRows = []
+  const tokenTrendVersionsRows = []
+  const tokenTrendModelFirstSeenRows = []
+  const timedOutSubqueries = []
+
+  for (const result of queryResults) {
+    if (result.status !== 'fulfilled') {
+      if (!isDatabaseTimeoutError(result.error)) {
+        throw result.error
+      }
+      timedOutSubqueries.push(result.subqueryKey)
+      continue
     }
-  } catch (error) {
-    if (isDatabaseTimeoutError(error)) {
-      const timedOutSubquery = error?.tokenTrendSummaryTimedOutSubquery
-      return buildDegradedUsageTokenTrendSummaryReport(searchParams, {
-        timedOutSubqueries: timedOutSubquery ? [timedOutSubquery] : [],
-      })
+
+    if (result.subqueryKey === 'hours') {
+      tokenTrendHoursRows.push(...result.value.rows.map(normalizeTokenTrendHourRow))
+      continue
     }
-    throw error
+    if (result.subqueryKey === 'health') {
+      tokenTrendHealthRows.push(
+        ...result.value.rows.map(normalizeProviderLatencyHealthRow)
+      )
+      continue
+    }
+    if (result.subqueryKey === 'scores') {
+      tokenTrendScoresRows.push(
+        ...result.value.rows.map(normalizeTokenTrendScoreRow)
+      )
+      continue
+    }
+    if (result.subqueryKey === 'versions') {
+      tokenTrendVersionsRows.push(
+        ...result.value.rows.map(normalizeTokenTrendVersionIntervalRow)
+      )
+      continue
+    }
+    if (result.subqueryKey === 'modelFirstSeen') {
+      tokenTrendModelFirstSeenRows.push(
+        ...result.value.rows.map(normalizeTokenTrendModelFirstSeenRow)
+      )
+    }
+  }
+
+  if (timedOutSubqueries.length > 0) {
+    return buildDegradedUsageTokenTrendSummaryReport(searchParams, {
+      timedOutSubqueries,
+      tokenTrendHours: tokenTrendHoursRows,
+      tokenTrendHealth: tokenTrendHealthRows,
+      tokenTrendScores: tokenTrendScoresRows,
+      tokenTrendVersions: tokenTrendVersionsRows,
+      tokenTrendModelFirstSeen: tokenTrendModelFirstSeenRows,
+    })
+  }
+
+  return {
+    metadata: buildUsageTokenTrendSummaryMetadata(searchParams, {
+      tokenTrendSummaryStatementTimeoutMs:
+        TOKEN_TREND_SUMMARY_STATEMENT_TIMEOUT_MS,
+    }),
+    tokenTrendHours: tokenTrendHoursRows,
+    tokenTrendHealth: tokenTrendHealthRows,
+    tokenTrendScores: tokenTrendScoresRows,
+    tokenTrendVersions: tokenTrendVersionsRows,
+    tokenTrendModelFirstSeen: tokenTrendModelFirstSeenRows,
   }
 }
 
@@ -9613,7 +9677,7 @@ async function handleUsageTokenTrendSummary(req, res) {
 
   const requestUrl = new URL(req.url, `http://${req.headers.host}`)
   const body = await cachedReport(
-    'usage-token-trend-summary-v3',
+    USAGE_TOKEN_TREND_SUMMARY_CACHE_SCOPE,
     () => loadUsageTokenTrendSummary(requestUrl.searchParams),
     {
       searchParams: requestUrl.searchParams,

@@ -1144,6 +1144,44 @@ describe('report-service query builders', () => {
     })
   })
 
+  test('test_buildDegradedUsageTokenTrendSummaryReport_preserves_partial_payload', () => {
+    const params = new URLSearchParams({
+      from: '2026-05-01',
+      to: '2026-05-08',
+    })
+
+    const healthRows = [{ provider: 'openai', score_bucket: 'p95' }]
+    const scoreRows = [{ provider: 'openai', date: '2026-05-01' }]
+    const versionRows = [{ provider: 'openai', day: '2026-05-01' }]
+    const modelFirstSeenRows = [{ date: '2026-05-01', provider: 'openai' }]
+
+    expect(
+      buildDegradedUsageTokenTrendSummaryReport(params, {
+        timedOutSubqueries: ['hours'],
+        tokenTrendHours: [],
+        tokenTrendHealth: healthRows,
+        tokenTrendScores: scoreRows,
+        tokenTrendVersions: versionRows,
+        tokenTrendModelFirstSeen: modelFirstSeenRows,
+      })
+    ).toMatchObject({
+      metadata: {
+        degraded: true,
+        degradedReason: 'database_timeout',
+        degradedMessage: expect.stringContaining('partial payload'),
+        timeout: true,
+        timedOutSubquery: 'hours',
+        timedOutSubqueries: ['hours'],
+        tokenTrendSummaryStatementTimeoutMs: expect.any(Number),
+      },
+      tokenTrendHours: [],
+      tokenTrendHealth: healthRows,
+      tokenTrendScores: scoreRows,
+      tokenTrendVersions: versionRows,
+      tokenTrendModelFirstSeen: modelFirstSeenRows,
+    })
+  })
+
   test('test_usageTokenTrendSummarySubqueryKeys_match_loader_fanout_order', () => {
     expect(USAGE_TOKEN_TREND_SUMMARY_SUBQUERY_KEYS).toEqual([
       'hours',

@@ -1,6 +1,8 @@
 import { http, HttpResponse } from 'msw'
+import { expectTypeOf } from 'vitest'
 import { server } from '../../../test/setup'
 import {
+  type UsageReportTokenTrendSummaryResponse,
   fetchUsageReport,
   fetchUsageReportQuotaEstimator,
   fetchUsageReportQuotaHistory,
@@ -83,6 +85,82 @@ test('test_fetchUsageReportTokenTrendSummary_preserves_degraded_metadata', async
     tokenTrendHours: [],
     tokenTrendVersions: [],
   })
+})
+
+test('test_fetchUsageReportTokenTrendSummary_supports_partial_degraded_payload', async () => {
+  let requestedUrl: URL | null = null
+  server.use(
+    http.get('/api/shell/reports/usage/token-trend-summary', ({ request }) => {
+      requestedUrl = new URL(request.url)
+      return HttpResponse.json({
+        metadata: {
+          from: '2026-05-20',
+          to: '2026-05-21',
+          degraded: true,
+          degradedReason: 'database_timeout',
+          degradedMessage:
+            'Token trend summary subquery "hours" exceeded timeout; returning partial payload.',
+          timeout: true,
+          timedOutSubquery: 'hours',
+          timedOutSubqueries: ['hours'],
+          tokenTrendSummaryStatementTimeoutMs: 15000,
+        },
+        tokenTrendHours: [],
+        tokenTrendHealth: [{ provider: 'openai', value: 1 }],
+        tokenTrendScores: [{ score_bucket: 0 }],
+        tokenTrendVersions: [{ provider: 'openai', model: 'gpt-5' }],
+        tokenTrendModelFirstSeen: [{ date: '2026-05-20', provider: 'openai' }],
+      })
+    })
+  )
+
+  const response = await fetchUsageReportTokenTrendSummary({
+    from: '2026-05-20',
+    to: '2026-05-21',
+    provider: ['anthropic'],
+  })
+
+  expect(response).toMatchObject({
+    metadata: {
+      degraded: true,
+      degradedReason: 'database_timeout',
+      timeout: true,
+      timedOutSubquery: 'hours',
+      timedOutSubqueries: ['hours'],
+      tokenTrendSummaryStatementTimeoutMs: 15000,
+    },
+    tokenTrendHours: [],
+    tokenTrendHealth: [{ provider: 'openai', value: 1 }],
+    tokenTrendScores: [{ score_bucket: 0 }],
+    tokenTrendVersions: [{ provider: 'openai', model: 'gpt-5' }],
+    tokenTrendModelFirstSeen: [{ date: '2026-05-20', provider: 'openai' }],
+  })
+  expect(requestedUrl?.searchParams.get('provider')).toBe('anthropic')
+})
+
+test('test_usageReportTokenTrendSummaryMetadataContract_allows_timeoutFields', () => {
+  expectTypeOf<
+    UsageReportTokenTrendSummaryResponse['metadata']
+  >().toEqualTypeOf<{
+    from: string
+    to: string
+    generatedAt?: string
+    degraded?: boolean
+    degradedReason?: string
+    degradedMessage?: string
+    timeout?: boolean
+    timedOutSubquery?: string
+    timedOutSubqueries?: string[]
+    tokenTrendSummaryStatementTimeoutMs?: number
+    cacheBackend?: string
+    cacheFreshUntil?: string | null
+    cacheGeneratedAt?: string | null
+    cacheKeyHash?: string
+    cacheScope?: string
+    cacheStaleUntil?: string | null
+    cacheStatus?: string
+    cacheRefreshing?: boolean
+  }>()
 })
 
 test('test_fetchUsageReportTokenTrendDay_sends_date_filters_and_signal', async () => {
