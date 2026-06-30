@@ -399,9 +399,10 @@ const TOKEN_TREND_SUMMARY_RAW_SUBQUERY_KEYS = [
 ]
 const USAGE_TOKEN_TREND_SUMMARY_CACHE_SCOPE = 'usage-token-trend-summary-v6'
 const USAGE_QUOTA_HISTORY_CACHE_SCOPE = 'usage-quota-history-v2'
+export const USAGE_REPORT_CACHE_SCOPE = 'usage-v2'
 
 const USAGE_REPORT_CACHE_SCOPES = new Set([
-  'usage',
+  USAGE_REPORT_CACHE_SCOPE,
   USAGE_TOKEN_TREND_SUMMARY_CACHE_SCOPE,
   'usage-tool-activity',
   'usage-token-trend-day',
@@ -738,6 +739,7 @@ let sourceTableHealthCache = null
 let sourceTableHealthPromise = null
 let pgBouncerHealthCache = null
 let pgBouncerHealthPromise = null
+let reportServiceShuttingDown = false
 
 if (redisClient) {
   redisClient.on('error', (error) => {
@@ -819,11 +821,7 @@ async function cachedReport(scope, load, options = {}) {
     }
 
     setLocalReportCache(identity.cacheKey, redisEntry.entry)
-    refreshReportCache(identity, load, { cacheTtlMs }).catch((error) => {
-      process.stderr.write(
-        `[report-service] WARN: background cache refresh failed for ${identity.scope}:${identity.hash}: ${formatError(error)}\n`
-      )
-    })
+    scheduleBackgroundCacheRefresh(identity, load, { cacheTtlMs }, 'background')
     return maybeDecorateCacheMetadata(
       redisEntry.entry.payload,
       {
@@ -840,11 +838,7 @@ async function cachedReport(scope, load, options = {}) {
   const localEntry = readLocalReportCache(identity.cacheKey)
   if (localEntry?.status === 'fresh' || localEntry?.status === 'stale') {
     if (localEntry.status === 'stale') {
-      refreshReportCache(identity, load, { cacheTtlMs }).catch((error) => {
-        process.stderr.write(
-          `[report-service] WARN: background cache refresh failed for ${identity.scope}:${identity.hash}: ${formatError(error)}\n`
-        )
-      })
+      scheduleBackgroundCacheRefresh(identity, load, { cacheTtlMs }, 'background')
     }
     return maybeDecorateCacheMetadata(
       localEntry.entry.payload,
@@ -863,14 +857,15 @@ async function cachedReport(scope, load, options = {}) {
     const localEntry = readLocalReportCache(identity.cacheKey)
     if (localEntry?.status === 'fresh' || localEntry?.status === 'stale') {
       if (localEntry.status === 'stale') {
-        refreshReportCache(identity, load, {
-          cacheTtlMs,
-          useRedis: false,
-        }).catch((error) => {
-          process.stderr.write(
-            `[report-service] WARN: local cache refresh failed for ${identity.scope}:${identity.hash}: ${formatError(error)}\n`
-          )
-        })
+        scheduleBackgroundCacheRefresh(
+          identity,
+          load,
+          {
+            cacheTtlMs,
+            useRedis: false,
+          },
+          'local'
+        )
       }
       return maybeDecorateCacheMetadata(
         localEntry.entry.payload,
@@ -902,8 +897,28 @@ async function cachedReport(scope, load, options = {}) {
   )
 }
 
+export function shouldSuppressCacheRefreshFailureDuringShutdown(
+  error,
+  shuttingDown = reportServiceShuttingDown
+) {
+  if (!shuttingDown) return false
+  const message = formatError(error)
+  return message.includes('Cannot use a pool after calling end on the pool')
+}
 
+function logCacheRefreshFailure(kind, identity, error) {
+  if (shouldSuppressCacheRefreshFailureDuringShutdown(error)) return
+  process.stderr.write(
+    `[report-service] WARN: ${kind} cache refresh failed for ${identity.scope}:${identity.hash}: ${formatError(error)}\n`
+  )
+}
 
+function scheduleBackgroundCacheRefresh(identity, load, options, kind) {
+  if (reportServiceShuttingDown) return
+  refreshReportCache(identity, load, options).catch((error) => {
+    logCacheRefreshFailure(kind, identity, error)
+  })
+}
 
 function readLocalReportCache(cacheKey) {
   const cached = reportCache.get(cacheKey)
@@ -2449,6 +2464,45 @@ function parseTruthySearchParam(value) {
   }
   const normalized = String(value).trim().toLowerCase()
   return normalized === '1' || normalized === 'true' || normalized === 'yes'
+}
+
+
+function isEmptyUsageRowFieldValue(value) {
+  return value === null || value === undefined || value === ''
+}
+
+export function compactUsageRow(row) {
+  if (!row || typeof row !== 'object') {
+    return row
+  }
+
+  const compacted = {}
+  for (const [key, value] of Object.entries(row)) {
+    if (!isEmptyUsageRowFieldValue(value)) {
+      compacted[key] = value
+    }
+  }
+  return compacted
+}
+
+export function shouldIncludeEmptyUsageRowFields(searchParams) {
+  return parseTruthySearchParam(searchParams.get('include_empty_row_fields'))
+}
+
+export function buildUsageReportRowSerializationMetadata(searchParams) {
+  const includeEmptyRowFields = shouldIncludeEmptyUsageRowFields(searchParams)
+  return {
+    compactRows: !includeEmptyRowFields,
+    rowNullFieldsOmitted: !includeEmptyRowFields,
+    includeEmptyRowFields,
+  }
+}
+
+function serializeUsageReportRows(rows, searchParams) {
+  if (shouldIncludeEmptyUsageRowFields(searchParams)) {
+    return rows
+  }
+  return rows.map(compactUsageRow)
 }
 
 export function shouldIncludeTokenTrendHealth(searchParams) {
@@ -9814,7 +9868,7 @@ async function loadUsageReport(searchParams) {
     REPORT_SQL_FANOUT_CONCURRENCY
   )
 
-  const rows = result.rows.map(normalizeRow)
+  const rows = serializeUsageReportRows(result.rows.map(normalizeRow), searchParams)
   const summary = normalizeSummary(firstRow(summaryResult))
 
   // Wave 35-C2 (⚠-8): warn when health rows approach MAX_HEALTH_ROWS cap.
@@ -9834,6 +9888,7 @@ async function loadUsageReport(searchParams) {
     metadata: {
       ...metadata,
       staleRecordThresholdMinutes: STALE_RECORD_THRESHOLD_MINUTES,
+      ...buildUsageReportRowSerializationMetadata(searchParams),
     },
     summary,
     trend: trendResult.rows.map(normalizeTrendRow),
@@ -10169,7 +10224,7 @@ async function handleUsageReport(req, res) {
   }
 
   const requestUrl = new URL(req.url, `http://${req.headers.host}`)
-  const body = await cachedReport('usage', () => loadUsageReport(requestUrl.searchParams), {
+  const body = await cachedReport(USAGE_REPORT_CACHE_SCOPE, () => loadUsageReport(requestUrl.searchParams), {
     searchParams: requestUrl.searchParams,
   })
 
@@ -10333,10 +10388,17 @@ async function handleUsageQuotas(req, res) {
 }
 
 function startReportCachePrewarm() {
-  if (!pool || !redisClient || !REPORT_CACHE_PREWARM || prewarmTimer) return
+  if (
+    reportServiceShuttingDown ||
+    !pool ||
+    !redisClient ||
+    !REPORT_CACHE_PREWARM ||
+    prewarmTimer
+  )
+    return
 
   const run = () => {
-    if (prewarmPromise) return
+    if (prewarmPromise || reportServiceShuttingDown) return
     prewarmPromise = prewarmReportCaches()
       .catch((error) => {
         process.stderr.write(
@@ -10358,7 +10420,7 @@ function startReportCachePrewarm() {
 }
 
 async function prewarmReportCaches() {
-  if (!redisClient?.isReady) return
+  if (!redisClient?.isReady || reportServiceShuttingDown) return
 
   const lockKey = `${REPORT_CACHE_PREFIX}:${REPORT_CACHE_VERSION}:prewarm:lock`
   const lockToken = await acquireRedisNamedLock(
@@ -10380,18 +10442,21 @@ async function prewarmReportCaches() {
     )
 
     for (const window of windows) {
+      if (reportServiceShuttingDown) break
       try {
         const searchParams = buildPrewarmUsageSearchParams(window.from, window.to)
-        const status = await prewarmCachedReport('usage', searchParams, () =>
+        const status = await prewarmCachedReport(USAGE_REPORT_CACHE_SCOPE, searchParams, () =>
           loadUsageReport(searchParams)
         )
         process.stdout.write(
           `[report-service] prewarm usage cache window=${window.name} status=${status} from=${window.from} to=${window.to}\n`
         )
       } catch (error) {
-        process.stderr.write(
-          `[report-service] WARN: prewarm usage cache failed window=${window.name} from=${window.from} to=${window.to}: ${formatError(error)}\n`
-        )
+        if (!shouldSuppressCacheRefreshFailureDuringShutdown(error)) {
+          process.stderr.write(
+            `[report-service] WARN: prewarm usage cache failed window=${window.name} from=${window.from} to=${window.to}: ${formatError(error)}\n`
+          )
+        }
         break
       }
     }
@@ -10406,9 +10471,11 @@ async function prewarmReportCaches() {
         `[report-service] prewarm quota cache status=${quotaStatus}\n`
       )
     } catch (error) {
-      process.stderr.write(
-        `[report-service] WARN: prewarm quota cache failed: ${formatError(error)}\n`
-      )
+      if (!shouldSuppressCacheRefreshFailureDuringShutdown(error)) {
+        process.stderr.write(
+          `[report-service] WARN: prewarm quota cache failed: ${formatError(error)}\n`
+        )
+      }
     }
   } finally {
     await releaseRedisNamedLock(lockKey, lockToken, 'prewarm')
@@ -10649,6 +10716,11 @@ if (shouldStartServer) {
 }
 
 async function shutdown() {
+  if (reportServiceShuttingDown) {
+    return
+  }
+  reportServiceShuttingDown = true
+
   if (prewarmTimer) {
     clearInterval(prewarmTimer)
     prewarmTimer = null

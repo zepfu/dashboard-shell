@@ -68,8 +68,13 @@ import {
   shouldIncludeTokenTrendHealth,
   applyTokenTrendSummaryHealthInclusion,
   findUpstreamApiProxy,
+  shouldSuppressCacheRefreshFailureDuringShutdown,
   normalizePgBouncerPoolRow,
   normalizePgBouncerStatsRow,
+  USAGE_REPORT_CACHE_SCOPE,
+  compactUsageRow,
+  shouldIncludeEmptyUsageRowFields,
+  buildUsageReportRowSerializationMetadata,
   proxyTargetUrl,
 } from './report-service.mjs'
 
@@ -2229,5 +2234,94 @@ describe('D1-417 / D1-422 provider credit lifecycle contracts', () => {
     expect(report.entries.map((entry) => entry.status)).toEqual(['used', 'expired'])
     expect(report.summaries[0]?.used_count).toBe(1)
     expect(report.summaries[0]?.expired_count).toBe(1)
+  })
+})
+
+// D1-437 usage row serialization and cache scope
+describe('D1-437 usage row serialization', () => {
+  test('test_shouldSuppressCacheRefreshFailureDuringShutdown_false_before_shutdown', () => {
+    const error = new Error('Cannot use a pool after calling end on the pool')
+    expect(
+      shouldSuppressCacheRefreshFailureDuringShutdown(error, false)
+    ).toBe(false)
+  })
+
+  test('test_shouldSuppressCacheRefreshFailureDuringShutdown_true_during_shutdown', () => {
+    const error = new Error('Cannot use a pool after calling end on the pool')
+    expect(
+      shouldSuppressCacheRefreshFailureDuringShutdown(error, true)
+    ).toBe(true)
+  })
+
+  test('test_shouldSuppressCacheRefreshFailureDuringShutdown_false_for_other_errors_during_shutdown', () => {
+    const error = new Error('unexpected database failure')
+    expect(
+      shouldSuppressCacheRefreshFailureDuringShutdown(error, true)
+    ).toBe(false)
+  })
+
+  test('test_compactUsageRow_omits_null_undefined_and_empty_string_fields', () => {
+    const row = {
+      provider: 'openai',
+      model: 'gpt-4',
+      traces: 12,
+      cache_miss_summary: null,
+      cache_attempted_summary: undefined,
+      reasoning_tokens_sources: '',
+      usd_cost: 1.5,
+    }
+    expect(compactUsageRow(row)).toEqual({
+      provider: 'openai',
+      model: 'gpt-4',
+      traces: 12,
+      usd_cost: 1.5,
+    })
+  })
+
+  test('test_shouldIncludeEmptyUsageRowFields_honors_truthy_query_param', () => {
+    expect(
+      shouldIncludeEmptyUsageRowFields(
+        new URLSearchParams({ include_empty_row_fields: '1' })
+      )
+    ).toBe(true)
+    expect(
+      shouldIncludeEmptyUsageRowFields(
+        new URLSearchParams({ include_empty_row_fields: 'true' })
+      )
+    ).toBe(true)
+    expect(
+      shouldIncludeEmptyUsageRowFields(
+        new URLSearchParams({ include_empty_row_fields: 'yes' })
+      )
+    ).toBe(true)
+    expect(
+      shouldIncludeEmptyUsageRowFields(new URLSearchParams())
+    ).toBe(false)
+  })
+
+  test('test_buildUsageReportRowSerializationMetadata_defaults_to_compact_rows', () => {
+    expect(
+      buildUsageReportRowSerializationMetadata(new URLSearchParams())
+    ).toEqual({
+      compactRows: true,
+      rowNullFieldsOmitted: true,
+      includeEmptyRowFields: false,
+    })
+  })
+
+  test('test_buildUsageReportRowSerializationMetadata_opt_in_full_rows', () => {
+    expect(
+      buildUsageReportRowSerializationMetadata(
+        new URLSearchParams({ include_empty_row_fields: 'yes' })
+      )
+    ).toEqual({
+      compactRows: false,
+      rowNullFieldsOmitted: false,
+      includeEmptyRowFields: true,
+    })
+  })
+
+  test('test_usage_report_cache_scope_is_versioned_usage_v2', () => {
+    expect(USAGE_REPORT_CACHE_SCOPE).toBe('usage-v2')
   })
 })

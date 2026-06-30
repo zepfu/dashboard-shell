@@ -82,12 +82,23 @@ is_ignored_container_log_noise() {
   return 1
 }
 
+is_successful_cache_wait_fallback_warning() {
+  lower=$(printf '%s' "$1" | tr 'ABCDEFGHIJKLMNOPQRSTUVWXYZ' 'abcdefghijklmnopqrstuvwxyz')
+  case "$lower" in
+    *"warn: timed out waiting for redis cache refresh"*"falling back to sql"*) return 0 ;;
+  esac
+  return 1
+}
+
 is_actionable_error_log() {
   lower=$(printf '%s' "$1" | tr 'ABCDEFGHIJKLMNOPQRSTUVWXYZ' 'abcdefghijklmnopqrstuvwxyz')
   case "$lower" in
     *health/liveliness*|*health/readiness*|*\"get\ /health*) return 1 ;;
   esac
   if is_ignored_container_log_noise "$lower"; then
+    return 1
+  fi
+  if is_successful_cache_wait_fallback_warning "$lower"; then
     return 1
   fi
   [ -z "$(infer_status_code "$lower")" ] || return 0

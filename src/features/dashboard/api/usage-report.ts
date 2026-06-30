@@ -190,6 +190,7 @@ export interface UsageReportParams extends UsageReportFilterParams {
   grain: UsageReportGrain
   groupBy?: readonly UsageReportDimension[]
   cacheBust?: string
+  includeEmptyRowFields?: boolean
 }
 
 export interface UsageReportAgentScoreReason {
@@ -1594,6 +1595,9 @@ export async function fetchUsageReport(
   appendUsageReportFilters(searchParams, params)
   if (params.cacheBust !== undefined && params.cacheBust !== '') {
     searchParams.set('cache_bust', params.cacheBust)
+  }
+  if (params.includeEmptyRowFields === true) {
+    searchParams.set('include_empty_row_fields', '1')
   }
 
   const response = await fetch(`/api/shell/reports/usage?${searchParams}`, {

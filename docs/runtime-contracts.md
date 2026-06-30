@@ -73,6 +73,23 @@ database timeout they return
 `metadata.degraded=true`, a `database_timeout` reason, and a section-level
 `Degraded` badge in the dashboard.
 
+`GET /api/shell/reports/usage` returns compact usage rows by default. The report
+service omits row properties whose normalized value is `null`, `undefined`, or
+an empty string, and marks the response with:
+
+- `metadata.compactRows=true`
+- `metadata.rowNullFieldsOmitted=true`
+- `metadata.includeEmptyRowFields=false`
+
+This keeps long-open dashboard tabs from repeatedly retaining thousands of
+explicit empty fields. Callers that need the legacy full row object shape can
+pass `include_empty_row_fields=1` (`true` and `yes` are also accepted). The full
+shape sets `metadata.compactRows=false`,
+`metadata.rowNullFieldsOmitted=false`, and
+`metadata.includeEmptyRowFields=true`. Main usage-report cache entries use the
+versioned `usage-v2` cache scope so compact rows and older cached full rows do
+not share a cache identity.
+
 `GET /api/shell/reports/usage/token-trend-summary` treats provider latency
 health as an opt-in lane. Unless the caller passes a truthy `include_health`
 query parameter (`1`, `true`, or `yes`), the service does not run the `health`

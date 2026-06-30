@@ -35,8 +35,8 @@ const SECOND_MS = 1000
 const MINUTE_MS = 60 * SECOND_MS
 
 describe('report cache policy', () => {
-  test('keeps usage summary reports fresh for ten minutes by default', () => {
-    expect(resolveReportCacheTtlMs('usage')).toBe(10 * MINUTE_MS)
+  test('keeps usage-v2 summary reports fresh for ten minutes by default', () => {
+    expect(resolveReportCacheTtlMs('usage-v2')).toBe(10 * MINUTE_MS)
     expect(resolveReportCacheTtlMs('usage-token-trend-summary-v6')).toBe(
       10 * MINUTE_MS
     )
@@ -54,7 +54,10 @@ describe('report cache policy', () => {
 
   test('writes fresh-until timestamps from the scope-specific cache policy', () => {
     const before = Date.now()
-    const usageEntry = buildReportCacheEntry({ ok: true }, { scope: 'usage' })
+    const usageEntry = buildReportCacheEntry(
+      { ok: true },
+      { scope: 'usage-v2' }
+    )
     const quotaEntry = buildReportCacheEntry({ ok: true }, { scope: 'quotas' })
     const after = Date.now()
 
@@ -75,8 +78,8 @@ describe('report cache policy', () => {
   //     expect(canonicalizeSearchParams(first)).toBe(
   //       'cache_bust=manual-1&from=2026-06-01&to=2026-06-06'  // WRONG
   //     )
-  //     expect(buildReportCacheIdentity('usage', first).hash).not.toBe(
-  //       buildReportCacheIdentity('usage', cacheBustChanged).hash  // WRONG
+  //     expect(buildReportCacheIdentity('usage-v2', first).hash).not.toBe(
+  //       buildReportCacheIdentity('usage-v2', cacheBustChanged).hash  // WRONG
   //     )
   //   })
   //
@@ -108,13 +111,13 @@ describe('report cache policy', () => {
     expect(canonicalized).toBe('from=2026-06-01&to=2026-06-06')
 
     // Two requests that differ only by cache_bust share one cache identity.
-    expect(buildReportCacheIdentity('usage', withBust1).hash).toBe(
-      buildReportCacheIdentity('usage', withBust2).hash
+    expect(buildReportCacheIdentity('usage-v2', withBust1).hash).toBe(
+      buildReportCacheIdentity('usage-v2', withBust2).hash
     )
 
     // A request without cache_bust and one WITH cache_bust also share identity.
-    expect(buildReportCacheIdentity('usage', withoutBust).hash).toBe(
-      buildReportCacheIdentity('usage', withBust1).hash
+    expect(buildReportCacheIdentity('usage-v2', withoutBust).hash).toBe(
+      buildReportCacheIdentity('usage-v2', withBust1).hash
     )
 
     // Requests with DIFFERENT date ranges must still differ.
@@ -123,8 +126,8 @@ describe('report cache policy', () => {
     differentRange.set('to', '2026-06-13')
     differentRange.set('cache_bust', 'manual-1')
 
-    expect(buildReportCacheIdentity('usage', withBust1).hash).not.toBe(
-      buildReportCacheIdentity('usage', differentRange).hash
+    expect(buildReportCacheIdentity('usage-v2', withBust1).hash).not.toBe(
+      buildReportCacheIdentity('usage-v2', differentRange).hash
     )
   })
 
@@ -138,7 +141,7 @@ describe('report cache policy', () => {
     params.set('to', '2026-06-06')
     params.set('cache_bust', 'any-value')
 
-    const identity = buildReportCacheIdentity('usage', params)
+    const identity = buildReportCacheIdentity('usage-v2', params)
 
     // RED: currently the hash includes all params, so cacheKey embeds 'any-value'.
     expect(identity.cacheKey).not.toContain('any-value')

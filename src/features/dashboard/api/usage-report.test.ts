@@ -131,6 +131,89 @@ test('test_fetchUsageReportTokenTrendSummary_preserves_degraded_metadata', async
   })
 })
 
+function minimalUsageReportPayload() {
+  return {
+    metadata: {
+      from: '2026-05-20',
+      to: '2026-05-21',
+      grain: 'day',
+      groupBy: ['provider', 'model', 'repository'],
+      limit: 50_000,
+      generatedAt: '2026-05-21T00:00:00.000Z',
+      latestRecordAt: null,
+      latestRecordAgeMinutes: null,
+      latestRecordStale: false,
+      staleRecordThresholdMinutes: 60,
+    },
+    summary: {
+      traces: 0,
+      token_in: 0,
+      token_out: 0,
+      token_cache_input: 0,
+      token_cache_creation: 0,
+      token_reasoning_reported: 0,
+      token_reasoning_estimated: 0,
+      token_total: 0,
+      usd_cost: 0,
+      cache_miss_usd_cost: 0,
+      tool_calls: 0,
+      git_commit: 0,
+      git_push: 0,
+      period_start: '2026-05-20',
+      period_end: '2026-05-21',
+      latest_record_at: null,
+    },
+    trend: [],
+    clients: [],
+    providerLatencyHealth: [],
+    providerErrorObservations: [],
+    providerStatusUsage: [],
+    quotas: [],
+    quotaHistory: [],
+    toolActivity: [],
+    rows: [],
+  }
+}
+
+test('test_fetchUsageReport_uses_compact_rows_by_default', async () => {
+  let requestedUrl: URL | null = null
+
+  server.use(
+    http.get('/api/shell/reports/usage', ({ request }) => {
+      requestedUrl = new URL(request.url)
+      return HttpResponse.json(minimalUsageReportPayload())
+    })
+  )
+
+  await fetchUsageReport({
+    from: '2026-05-20',
+    to: '2026-05-21',
+    grain: 'day',
+  })
+
+  expect(requestedUrl?.searchParams.has('include_empty_row_fields')).toBe(false)
+})
+
+test('test_fetchUsageReport_can_opt_into_full_empty_row_fields', async () => {
+  let requestedUrl: URL | null = null
+
+  server.use(
+    http.get('/api/shell/reports/usage', ({ request }) => {
+      requestedUrl = new URL(request.url)
+      return HttpResponse.json(minimalUsageReportPayload())
+    })
+  )
+
+  await fetchUsageReport({
+    from: '2026-05-20',
+    to: '2026-05-21',
+    grain: 'day',
+    includeEmptyRowFields: true,
+  })
+
+  expect(requestedUrl?.searchParams.get('include_empty_row_fields')).toBe('1')
+})
+
 test('test_fetchUsageReportTokenTrendSummary_supports_partial_degraded_payload', async () => {
   let requestedUrl: URL | null = null
   server.use(

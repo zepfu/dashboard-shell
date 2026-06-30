@@ -1148,8 +1148,12 @@ function getQueryObserverOptions(
 describe('Dashboard — D1-436: heavy query polling guardrails', () => {
   test('test_heavy_report_queries_do_not_poll_in_background', async () => {
     let quotasCallCount = 0
+    let usageReportUrl: URL | null = null
     server.use(
-      http.get('/api/shell/reports/usage', () => HttpResponse.json(MOCK_REPORT))
+      http.get('/api/shell/reports/usage', ({ request }) => {
+        usageReportUrl = new URL(request.url)
+        return HttpResponse.json(MOCK_REPORT)
+      })
     )
     server.use(
       http.get('/api/shell/reports/quotas', () => {
@@ -1206,6 +1210,9 @@ describe('Dashboard — D1-436: heavy query polling guardrails', () => {
       'usage-report-phosphor'
     )
     expect(phosphorOptions?.refetchIntervalInBackground).toBe(false)
+    expect(usageReportUrl?.searchParams.has('include_empty_row_fields')).toBe(
+      false
+    )
 
     const queries = client.getQueryCache().getAll()
     const normalQuotaQueries = queries.filter(

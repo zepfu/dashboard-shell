@@ -1,6 +1,8 @@
-import { appendFile, mkdtemp, readFile, rm } from 'node:fs/promises'
+import { execFile } from 'node:child_process'
+import { appendFile, mkdtemp, readFile, readdir, rm } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
+import { promisify } from 'node:util'
 import { afterEach, describe, expect, test } from 'vitest'
 import {
   appendDockerLogErrorsToIntake,
@@ -21,6 +23,8 @@ import {
   filterDockerLogErrorsForCentralizedIntake,
   isRepoOwnedDockerLogContainerName,
 } from './docker-log-error-intake.mjs'
+
+const execFileAsync = promisify(execFile)
 
 describe('docker-log-error-intake', () => {
   let tmpDirs = []
@@ -107,6 +111,32 @@ describe('docker-log-error-intake', () => {
         'dashboard-shell-reports-dev'
       )
     ).toBeNull()
+  })
+
+  test('container wrapper skips redis cache wait fallback warning', async () => {
+    const intakeDir = await mkdtemp(path.join(os.tmpdir(), 'd1-437-wrapper-'))
+    tmpDirs.push(intakeDir)
+    const msg =
+      '[report-service] WARN: timed out waiting for Redis cache refresh for usage-v2:abc123; falling back to SQL.'
+
+    await execFileAsync(
+      'sh',
+      [
+        path.resolve('scripts/container-error-intake.sh'),
+        'sh',
+        '-c',
+        `printf '%s\\n' "${msg}" >&2`,
+      ],
+      {
+        env: {
+          ...process.env,
+          SHELL_CONTAINER_NAME: 'dashboard-shell-reports-dev',
+          SHELL_CONTAINER_ERROR_INTAKE_DIR: intakeDir,
+        },
+      }
+    )
+
+    await expect(readdir(intakeDir)).resolves.toEqual([])
   })
 
 
