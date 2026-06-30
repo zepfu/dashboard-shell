@@ -18,7 +18,7 @@ const REPORT_CACHE_VERSION = process.env.SHELL_REPORT_CACHE_VERSION ?? 'v14'
 
 const USAGE_REPORT_CACHE_SCOPES = new Set([
   'usage',
-  'usage-token-trend-summary-v5',
+  'usage-token-trend-summary-v6',
   'usage-tool-activity',
   'usage-token-trend-day',
 ])

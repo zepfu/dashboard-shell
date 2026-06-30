@@ -5,15 +5,11 @@ const LIVE_DASHBOARD_QUOTAS_REFETCH_INTERVAL_MS = 60_000
 
 /** Shared React Query key for quota fetches (index + phosphor-dashboard). */
 export function usageReportQuotasKey(
-  from: string,
-  to: string,
+  _from?: string,
+  _to?: string,
   cacheBust?: string
-): readonly [string, string, string, ...string[]] {
-  const key: [string, string, string, ...string[]] = [
-    'usage-report-quotas',
-    from,
-    to,
-  ]
+): readonly [string, ...string[]] {
+  const key: [string, ...string[]] = ['usage-report-quotas']
   if (cacheBust !== undefined) {
     key.push(cacheBust)
   }
@@ -21,8 +17,10 @@ export function usageReportQuotasKey(
 }
 
 export interface UsageReportQuotasQueryOptionsParams {
-  from: string
-  to: string
+  /** Retained for call-site compatibility; /quotas is currently a live global endpoint. */
+  from?: string
+  /** Retained for call-site compatibility; /quotas is currently a live global endpoint. */
+  to?: string
   /** Optional bust token; included in queryKey when set (manual refresh / report refresh). */
   cacheBust?: string
 }
@@ -41,7 +39,7 @@ export function usageReportQuotasQueryOptions({
       fetchUsageReportQuotas({ cacheBust: resolvedCacheBust }, signal),
     staleTime: LIVE_DASHBOARD_QUOTAS_REFETCH_INTERVAL_MS,
     refetchInterval: LIVE_DASHBOARD_QUOTAS_REFETCH_INTERVAL_MS,
-    refetchIntervalInBackground: true,
+    refetchIntervalInBackground: false,
   })
 }
 
@@ -1426,6 +1424,7 @@ export interface UsageReportTokenTrendSummaryParams extends UsageReportFilterPar
   from: string
   to: string
   cacheBust?: string
+  includeHealth?: boolean
 }
 
 export interface UsageReportTokenTrendSummaryResponse {
@@ -1441,6 +1440,8 @@ export interface UsageReportTokenTrendSummaryResponse {
     timedOutSubqueries?: string[]
     skippedSubqueries?: string[]
     unavailableSubqueries?: string[]
+    includeTokenTrendHealth?: boolean
+    tokenTrendHealthOmitted?: boolean
     tokenTrendSummaryRawLaneMaxDays?: number
     tokenTrendSummaryRangeDays?: number
     tokenTrendSummaryStatementTimeoutMs?: number
@@ -1828,6 +1829,9 @@ export async function fetchUsageReportTokenTrendSummary(
   appendUsageReportFilters(searchParams, params)
   if (params.cacheBust !== undefined && params.cacheBust !== '') {
     searchParams.set('cache_bust', params.cacheBust)
+  }
+  if (params.includeHealth === true) {
+    searchParams.set('include_health', '1')
   }
 
   const response = await fetch(

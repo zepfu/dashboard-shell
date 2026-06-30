@@ -112,7 +112,9 @@ import {
 // Constants
 // ---------------------------------------------------------------------------
 
-const LIVE_DASHBOARD_REFETCH_INTERVAL_MS = 60_000
+const LIVE_DASHBOARD_LIGHTWEIGHT_REFETCH_INTERVAL_MS = 60_000
+const LIVE_DASHBOARD_HEAVY_REFETCH_INTERVAL_MS = 120_000
+const LIVE_DASHBOARD_HEAVY_REPORT_GC_TIME_MS = 90_000
 
 function resolveProviderHealthColumnCount(viewportWidth: number): number {
   if (viewportWidth >= 2100) return 8
@@ -299,9 +301,9 @@ export interface PhosphorDashboardProps {
   showComparison?: boolean
   /**
    * Wave 37 SF-1: Pre-fetched quota rows from the parent (index.tsx).
-   * Hoisting the /quotas query to index.tsx with the same queryKey shape
-   * (`['usage-report-quotas', from, to]`) eliminates the duplicate HTTP request
-   * that arose from the key mismatch between index.tsx and PhosphorDashboard.
+   * Hoisting /quotas onto the shared live `usage-report-quotas` query key
+   * eliminates duplicate HTTP requests between the shell sidebar, index.tsx,
+   * and standalone PhosphorDashboard fallback usage.
    * When provided, the internal quotas useQuery is bypassed.
    */
   quotas?: UsageReportQuotaRow[]
@@ -451,8 +453,10 @@ export default function PhosphorDashboard({
       ),
     // Skip when the parent has already provided the report data.
     enabled: internalQueryEnabled,
-    refetchInterval: LIVE_DASHBOARD_REFETCH_INTERVAL_MS,
-    refetchIntervalInBackground: true,
+    staleTime: LIVE_DASHBOARD_HEAVY_REFETCH_INTERVAL_MS,
+    refetchInterval: LIVE_DASHBOARD_HEAVY_REFETCH_INTERVAL_MS,
+    refetchIntervalInBackground: false,
+    gcTime: LIVE_DASHBOARD_HEAVY_REPORT_GC_TIME_MS,
   })
 
   // Resolve the effective report + loading state: prefer parent-supplied values
@@ -466,17 +470,12 @@ export default function PhosphorDashboard({
     : reportFetchingProp
   const secondaryReportQueriesEnabled = report !== undefined && !reportLoading
 
-  // 15-C.5 / Wave 37 SF-1: Include resolvedFrom/resolvedTo in the queryKey so
-  // the quotas query re-fetches when the user changes the date range. The
-  // /api/shell/reports/quotas endpoint does not currently accept from/to params
-  // (server-side it is a live snapshot from rate_limit_intervals). This wiring
-  // ensures the query invalidates on period changes, ready for when the API
-  // supports date-scoped quotas.
+  // 15-C.5 / Wave 37 SF-1 / D1-436: /quotas is a live global snapshot today, so
+  // Dashboard, sidebar, and standalone fallback callers share one query key.
   //
   // Wave 37 SF-1: this query is ONLY used when PhosphorDashboard is rendered
   // in isolation (e.g. Storybook, tests) without a parent supplying `quotas`.
-  // index.tsx hoists this query with the same prefix/date shape; the optional
-  // cache-bust element is only populated by explicit refresh.
+  // The optional cache-bust element is only populated by explicit refresh.
   const internalQuotasEnabled = quotasProp === undefined
   const {
     data: quotasData,
@@ -490,6 +489,7 @@ export default function PhosphorDashboard({
     }),
     // Skip when the parent has already provided quota rows.
     enabled: internalQuotasEnabled,
+    refetchIntervalInBackground: false,
   })
   const quotasFetching = internalQuotasEnabled
     ? internalQuotasFetching
@@ -504,9 +504,9 @@ export default function PhosphorDashboard({
     queryKey: ['usage-report-quota-history'],
     queryFn: ({ signal }) => fetchUsageReportQuotaHistory({}, signal),
     enabled: internalQuotaHistoryEnabled && providerSectionView === 'health',
-    staleTime: LIVE_DASHBOARD_REFETCH_INTERVAL_MS,
+    staleTime: LIVE_DASHBOARD_HEAVY_REFETCH_INTERVAL_MS,
     refetchInterval: false,
-    refetchIntervalInBackground: true,
+    refetchIntervalInBackground: false,
   })
   const quotaHistoryFetching = internalQuotaHistoryEnabled
     ? internalQuotaHistoryFetching
@@ -521,8 +521,8 @@ export default function PhosphorDashboard({
     queryFn: ({ signal }) => fetchShellHealth(signal),
     enabled: providerSectionView === 'health',
     staleTime: 15_000,
-    refetchInterval: LIVE_DASHBOARD_REFETCH_INTERVAL_MS,
-    refetchIntervalInBackground: true,
+    refetchInterval: LIVE_DASHBOARD_LIGHTWEIGHT_REFETCH_INTERVAL_MS,
+    refetchIntervalInBackground: false,
   })
 
   const {
@@ -552,9 +552,9 @@ export default function PhosphorDashboard({
         signal
       ),
     enabled: providerSectionView === 'weights',
-    staleTime: LIVE_DASHBOARD_REFETCH_INTERVAL_MS,
+    staleTime: LIVE_DASHBOARD_HEAVY_REFETCH_INTERVAL_MS,
     refetchInterval: false,
-    refetchIntervalInBackground: true,
+    refetchIntervalInBackground: false,
   })
 
   const {
@@ -590,9 +590,9 @@ export default function PhosphorDashboard({
         signal
       ),
     enabled: providerSectionView === 'diagnostics',
-    staleTime: LIVE_DASHBOARD_REFETCH_INTERVAL_MS,
+    staleTime: LIVE_DASHBOARD_HEAVY_REFETCH_INTERVAL_MS,
     refetchInterval: false,
-    refetchIntervalInBackground: true,
+    refetchIntervalInBackground: false,
   })
 
   const anomalies = useAnomalyDetection(
@@ -660,10 +660,11 @@ export default function PhosphorDashboard({
         },
         signal
       ),
-    staleTime: LIVE_DASHBOARD_REFETCH_INTERVAL_MS,
+    staleTime: LIVE_DASHBOARD_HEAVY_REFETCH_INTERVAL_MS,
     enabled: secondaryReportQueriesEnabled,
-    refetchInterval: LIVE_DASHBOARD_REFETCH_INTERVAL_MS,
-    refetchIntervalInBackground: true,
+    refetchInterval: LIVE_DASHBOARD_HEAVY_REFETCH_INTERVAL_MS,
+    refetchIntervalInBackground: false,
+    gcTime: LIVE_DASHBOARD_HEAVY_REPORT_GC_TIME_MS,
   })
 
   const tokenTrendVersions = useMemo(
@@ -683,18 +684,22 @@ export default function PhosphorDashboard({
       report?.tokenTrendModelFirstSeen,
     ]
   )
-  const tokenTrendHealthRows = useMemo(
-    () =>
+  const tokenTrendHealthRows = useMemo(() => {
+    if (tokenTrendSummaryData?.metadata.tokenTrendHealthOmitted === true) {
+      return report?.tokenTrendHealth ?? report?.providerLatencyHealth ?? []
+    }
+    return (
       tokenTrendSummaryData?.tokenTrendHealth ??
       report?.tokenTrendHealth ??
       report?.providerLatencyHealth ??
-      [],
-    [
-      tokenTrendSummaryData?.tokenTrendHealth,
-      report?.tokenTrendHealth,
-      report?.providerLatencyHealth,
-    ]
-  )
+      []
+    )
+  }, [
+    tokenTrendSummaryData?.metadata.tokenTrendHealthOmitted,
+    tokenTrendSummaryData?.tokenTrendHealth,
+    report?.tokenTrendHealth,
+    report?.providerLatencyHealth,
+  ])
   const summaryTokenTrendScores = tokenTrendSummaryData?.tokenTrendScores
   const reportTokenTrendScores = report?.tokenTrendScores
   const reportRows = report?.rows
@@ -781,6 +786,25 @@ export default function PhosphorDashboard({
     }
   }, [tokenTrendHoverTarget])
 
+  useEffect(() => {
+    const clearTokenTrendHoverDetail = (): void => {
+      setTokenTrendHoverTarget(null)
+      setTokenTrendDetailRequest(null)
+    }
+
+    const handleVisibilityChange = (): void => {
+      if (document.visibilityState === 'hidden') {
+        clearTokenTrendHoverDetail()
+      }
+    }
+
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
+      clearTokenTrendHoverDetail()
+    }
+  }, [])
+
   const {
     data: tokenTrendDayDetailData,
     isFetching: tokenTrendDayDetailFetching,
@@ -819,13 +843,20 @@ export default function PhosphorDashboard({
     enabled:
       tokenTrendDetailRequest !== null &&
       tokenTrendDetailRequest.scopeKey === tokenTrendScopeKey,
-    staleTime: LIVE_DASHBOARD_REFETCH_INTERVAL_MS,
-    refetchInterval:
-      tokenTrendDetailRequest !== null
-        ? LIVE_DASHBOARD_REFETCH_INTERVAL_MS
-        : false,
-    refetchIntervalInBackground: true,
+    staleTime: LIVE_DASHBOARD_HEAVY_REFETCH_INTERVAL_MS,
+    refetchInterval: false,
+    refetchIntervalInBackground: false,
+    gcTime: LIVE_DASHBOARD_HEAVY_REPORT_GC_TIME_MS,
   })
+  const tokenTrendDetailMatchesScope =
+    tokenTrendDetailRequest !== null &&
+    tokenTrendDetailRequest.scopeKey === tokenTrendScopeKey
+  const activeTokenTrendDayDetailData = tokenTrendDetailMatchesScope
+    ? tokenTrendDayDetailData
+    : undefined
+  const activeTokenTrendDayDetailFetching = tokenTrendDetailMatchesScope
+    ? tokenTrendDayDetailFetching
+    : false
 
   const {
     data: toolActivityData,
@@ -855,10 +886,11 @@ export default function PhosphorDashboard({
         },
         signal
       ),
-    staleTime: LIVE_DASHBOARD_REFETCH_INTERVAL_MS,
+    staleTime: LIVE_DASHBOARD_HEAVY_REFETCH_INTERVAL_MS,
     enabled: secondaryReportQueriesEnabled,
-    refetchInterval: LIVE_DASHBOARD_REFETCH_INTERVAL_MS,
-    refetchIntervalInBackground: true,
+    refetchInterval: LIVE_DASHBOARD_HEAVY_REFETCH_INTERVAL_MS,
+    refetchIntervalInBackground: false,
+    gcTime: LIVE_DASHBOARD_HEAVY_REPORT_GC_TIME_MS,
   })
 
   const providers = useMemo(() => deriveProviders(), [])
@@ -1113,6 +1145,10 @@ export default function PhosphorDashboard({
     // prior-window DB query is skipped entirely, saving a sequential waterfall
     // that previously added 20–30 s to the cold-load experience.
     enabled: !reportLoading && report !== undefined && showComparison,
+    staleTime: LIVE_DASHBOARD_HEAVY_REFETCH_INTERVAL_MS,
+    refetchInterval: false,
+    refetchIntervalInBackground: false,
+    gcTime: LIVE_DASHBOARD_HEAVY_REPORT_GC_TIME_MS,
   })
 
   // Wave 32-Deltas: build prior-window ProviderCurrentStats from priorReport,
@@ -1229,7 +1265,7 @@ export default function PhosphorDashboard({
       refreshReport(),
       refetchTokenTrendSummary(),
     ]
-    if (tokenTrendDetailRequest !== null) {
+    if (tokenTrendDetailMatchesScope) {
       refreshes.push(refetchTokenTrendDayDetail())
     }
     await Promise.all(refreshes)
@@ -1237,7 +1273,7 @@ export default function PhosphorDashboard({
     refreshReport,
     refetchTokenTrendSummary,
     refetchTokenTrendDayDetail,
-    tokenTrendDetailRequest,
+    tokenTrendDetailMatchesScope,
   ])
 
   const refreshComparisonSection = useCallback(async (): Promise<void> => {
@@ -1261,7 +1297,9 @@ export default function PhosphorDashboard({
             shellHealthFetching
   const reportUpdating = reportFetching || toolActivityFetching
   const tokenTrendUpdating =
-    reportFetching || tokenTrendSummaryFetching || tokenTrendDayDetailFetching
+    reportFetching ||
+    tokenTrendSummaryFetching ||
+    activeTokenTrendDayDetailFetching
   const comparisonUpdating = reportFetching || priorReportFetching
   const quotaHistoryMetadata =
     quotaHistoryMetadataProp ?? internalQuotaHistoryData?.metadata
@@ -1523,8 +1561,8 @@ export default function PhosphorDashboard({
             modelFirstSeen={tokenTrendModelFirstSeen}
             healthRows={tokenTrendHealthRows}
             scoreRows={tokenTrendScoreRows}
-            dayDetail={tokenTrendDayDetailData}
-            detailLoading={tokenTrendDayDetailFetching}
+            dayDetail={activeTokenTrendDayDetailData}
+            detailLoading={activeTokenTrendDayDetailFetching}
             onHourHover={handleTokenTrendHourHover}
             lowerLaneMode={trendLowerLaneMode}
             onLowerLaneModeChange={onTrendLowerLaneModeChange}

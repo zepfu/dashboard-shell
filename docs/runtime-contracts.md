@@ -73,13 +73,29 @@ database timeout they return
 `metadata.degraded=true`, a `database_timeout` reason, and a section-level
 `Degraded` badge in the dashboard.
 
+`GET /api/shell/reports/usage/token-trend-summary` treats provider latency
+health as an opt-in lane. Unless the caller passes a truthy `include_health`
+query parameter (`1`, `true`, or `yes`), the service does not run the `health`
+subquery and the response omits populated `tokenTrendHealth` data:
+
+- `tokenTrendHealth` is returned as an empty array.
+- `metadata.includeTokenTrendHealth` is `false`.
+- `metadata.tokenTrendHealthOmitted` is `true`.
+
+When `include_health=1` is present, the service runs the `health` lane,
+returns `tokenTrendHealth` rows, and sets `metadata.includeTokenTrendHealth`
+to `true` (without `tokenTrendHealthOmitted`). The General dashboard polls this
+route on the heavy report cadence without `include_health`, then falls back to
+`providerLatencyHealth` / summary-report health rows in the UI when
+`tokenTrendHealthOmitted` is set.
+
 `token-trend-summary` also enforces a bounded raw-lane policy for broad
 date windows. For requests where `to - from` exceeds
 `SHELL_REPORT_TOKEN_TREND_SUMMARY_RAW_LANE_MAX_DAYS` (default `7`), the
 service intentionally skips the raw `session_history` lanes `hours`, `scores`,
-`versions`, and `modelFirstSeen`, while always attempting the `health` lane.
-When raw lanes are skipped, the payload is degraded with
-`degradedReason: 'bounded_raw_lane_policy'` and metadata fields:
+`versions`, and `modelFirstSeen`. The `health` lane runs only when
+`include_health` is truthy. When raw lanes are skipped, the payload is degraded
+with `degradedReason: 'bounded_raw_lane_policy'` and metadata fields:
 
 - `skippedSubqueries`
 - `unavailableSubqueries`
@@ -93,6 +109,27 @@ reason.
 If a SQL timeout still occurs under the same request, `degradedReason` remains
 `database_timeout` and `timedOutSubqueries` names the unavailable timed-out
 lane set.
+
+### General Dashboard Report Polling
+
+The federated General dashboard keeps heavyweight usage and quota report
+queries on slower visible polling instead of background refresh. React Query
+uses `refetchIntervalInBackground: false` on these routes so hidden tabs do not
+keep refetching report SQL.
+
+Current cadence in `src/features/dashboard/index.tsx` and
+`src/features/dashboard/components/phosphor-dashboard.tsx`:
+
+- Primary usage report (`fetchUsageReport`): `staleTime` and `refetchInterval`
+  of `120_000` ms (`LIVE_DASHBOARD_HEAVY_REFETCH_INTERVAL_MS`).
+- Token trend summary (`fetchUsageReportTokenTrendSummary`): same
+  `120_000` ms visible polling; default requests omit `include_health`.
+- Shared quota snapshot (`usageReportQuotasQueryOptions` for
+  `GET /api/shell/reports/quotas`): `60_000` ms (`LIVE_DASHBOARD_QUOTAS_REFETCH_INTERVAL_MS`)
+  so the General dashboard and sidebar quota strip share one cache entry.
+- Quota history and quota-range-history: `staleTime` aligned to the heavy
+  report window but `refetchInterval: false` (manual refresh / cache-bust only).
+- Shell health (`fetchShellHealth`): lightweight `60_000` ms polling when enabled.
 
 `quota-history` first attempts to return a partial degraded payload from base quota rows when enrichment times out, with
 `metadata.timedOutSubqueries` naming the unavailable lane. `quota-range-history`

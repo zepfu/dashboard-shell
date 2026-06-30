@@ -64,6 +64,9 @@ import {
   buildTokenTrendScoreQuery,
   buildToolActivityQuery,
   buildUsageQuery,
+  parseUsageReportSort,
+  shouldIncludeTokenTrendHealth,
+  applyTokenTrendSummaryHealthInclusion,
   findUpstreamApiProxy,
   normalizePgBouncerPoolRow,
   normalizePgBouncerStatsRow,
@@ -949,6 +952,106 @@ describe('report-service query builders', () => {
     )
     expect(query.sql).toContain('reason_bounds AS')
     expect(query.sql).toContain('reason_source AS MATERIALIZED')
+  })
+
+
+  test('test_parseUsageReportSort_supports_period_start_dotted_desc', () => {
+    const { sort, sortDirection } = parseUsageReportSort(
+      new URLSearchParams({
+        sort: 'period_start.desc',
+      })
+    )
+
+    expect(sort).toBe('period_start')
+    expect(sortDirection).toBe('DESC')
+  })
+
+  test('test_parseUsageReportSort_supports_period_start_with_direction_param', () => {
+    const { sort, sortDirection } = parseUsageReportSort(
+      new URLSearchParams({
+        sort: 'period_start',
+        direction: 'asc',
+      })
+    )
+
+    expect(sort).toBe('period_start')
+    expect(sortDirection).toBe('ASC')
+  })
+
+  test('test_buildUsageQuery_orders_by_period_start_when_sort_is_dotted', () => {
+    const query = buildUsageQuery(
+      new URLSearchParams({
+        from: '2026-05-01',
+        to: '2026-05-08',
+        grain: 'day',
+        group_by: 'provider',
+        sort: 'period_start.desc',
+        limit: '10',
+      })
+    )
+
+    expect(query.sql).toContain('ORDER BY period_start DESC')
+  })
+
+  test('test_shouldIncludeTokenTrendHealth_defaults_false', () => {
+    expect(
+      shouldIncludeTokenTrendHealth(new URLSearchParams({ from: '2026-05-01' }))
+    ).toBe(false)
+    expect(
+      shouldIncludeTokenTrendHealth(
+        new URLSearchParams({ include_health: '1' })
+      )
+    ).toBe(true)
+  })
+
+  test('test_applyTokenTrendSummaryHealthInclusion_omits_health_by_default', () => {
+    const report = applyTokenTrendSummaryHealthInclusion(
+      new URLSearchParams({ from: '2026-05-01', to: '2026-05-08' }),
+      {
+        metadata: {
+          from: '2026-05-01',
+          to: '2026-05-08',
+          degraded: true,
+          degradedReason: 'bounded_raw_lane_policy',
+          tokenTrendSummaryRawLaneMaxDays: 7,
+          tokenTrendSummaryRangeDays: 30,
+        },
+        tokenTrendHours: [],
+        tokenTrendHealth: [{ provider: 'openai', value: 1 }],
+        tokenTrendScores: [],
+        tokenTrendVersions: [],
+        tokenTrendModelFirstSeen: [],
+      }
+    )
+
+    expect(report.tokenTrendHealth).toEqual([])
+    expect(report.metadata).toMatchObject({
+      includeTokenTrendHealth: false,
+      tokenTrendHealthOmitted: true,
+      degradedReason: 'bounded_raw_lane_policy',
+      tokenTrendSummaryRawLaneMaxDays: 7,
+    })
+  })
+
+  test('test_applyTokenTrendSummaryHealthInclusion_preserves_health_when_requested', () => {
+    const healthRows = [{ provider: 'openai', score_bucket: 'p95' }]
+    const report = applyTokenTrendSummaryHealthInclusion(
+      new URLSearchParams({ include_health: 'true' }),
+      {
+        metadata: { from: '2026-05-01', to: '2026-05-08' },
+        tokenTrendHours: [],
+        tokenTrendHealth: healthRows,
+        tokenTrendScores: [],
+        tokenTrendVersions: [],
+        tokenTrendModelFirstSeen: [],
+      }
+    )
+
+    expect(report.tokenTrendHealth).toEqual(healthRows)
+    expect(report.metadata).toMatchObject({
+      includeTokenTrendHealth: true,
+    })
+    expect(report.metadata).not.toHaveProperty('tokenTrendHealthOmitted')
   })
 
   test('test_buildSourceTableHealthQuery_uses_latest_row_source_table_probes', () => {

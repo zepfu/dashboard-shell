@@ -83,7 +83,9 @@ function defaultDateRange(): { from: string; to: string } {
   }
 }
 
-const LIVE_DASHBOARD_REFETCH_INTERVAL_MS = 60_000
+const LIVE_DASHBOARD_LIGHTWEIGHT_REFETCH_INTERVAL_MS = 60_000
+const LIVE_DASHBOARD_HEAVY_REFETCH_INTERVAL_MS = 120_000
+const LIVE_DASHBOARD_HEAVY_REPORT_GC_TIME_MS = 90_000
 
 interface RecencyBreakoutItem {
   label: string
@@ -284,17 +286,18 @@ export function Dashboard(): ReactElement {
     // Keep React Query freshness aligned with the report-service default TTL.
     // The dashboard polls every minute, so new session rows should be eligible
     // for display on the next scheduled refresh.
-    staleTime: LIVE_DASHBOARD_REFETCH_INTERVAL_MS,
-    refetchInterval: LIVE_DASHBOARD_REFETCH_INTERVAL_MS,
-    refetchIntervalInBackground: true,
+    staleTime: LIVE_DASHBOARD_HEAVY_REFETCH_INTERVAL_MS,
+    refetchInterval: LIVE_DASHBOARD_HEAVY_REFETCH_INTERVAL_MS,
+    refetchIntervalInBackground: false,
+    gcTime: LIVE_DASHBOARD_HEAVY_REPORT_GC_TIME_MS,
   })
 
   const { data: shellHealthData } = useQuery({
     queryKey: ['shell-health-pgbouncer'],
     queryFn: ({ signal }) => fetchShellHealth(signal),
     staleTime: 15_000,
-    refetchInterval: LIVE_DASHBOARD_REFETCH_INTERVAL_MS,
-    refetchIntervalInBackground: true,
+    refetchInterval: LIVE_DASHBOARD_LIGHTWEIGHT_REFETCH_INTERVAL_MS,
+    refetchIntervalInBackground: false,
   })
 
   const sessionFreshnessAt = useMemo(
@@ -465,6 +468,7 @@ export function Dashboard(): ReactElement {
       to,
       cacheBust: quotaCacheBust,
     }),
+    refetchIntervalInBackground: false,
   })
 
   const { data: quotaRangeHistoryData, isFetching: quotaRangeHistoryFetching } =
@@ -485,9 +489,9 @@ export function Dashboard(): ReactElement {
           signal
         ),
       enabled: providerSectionView === 'quota',
-      staleTime: LIVE_DASHBOARD_REFETCH_INTERVAL_MS,
+      staleTime: LIVE_DASHBOARD_HEAVY_REFETCH_INTERVAL_MS,
       refetchInterval: false,
-      refetchIntervalInBackground: true,
+      refetchIntervalInBackground: false,
     })
 
   const { data: quotaHistoryData, isFetching: quotaHistoryFetching } = useQuery(
@@ -501,9 +505,9 @@ export function Dashboard(): ReactElement {
           signal
         ),
       enabled: providerSectionView === 'health',
-      staleTime: LIVE_DASHBOARD_REFETCH_INTERVAL_MS,
+      staleTime: LIVE_DASHBOARD_HEAVY_REFETCH_INTERVAL_MS,
       refetchInterval: false,
-      refetchIntervalInBackground: true,
+      refetchIntervalInBackground: false,
     }
   )
 
@@ -558,7 +562,7 @@ export function Dashboard(): ReactElement {
             },
             signal
           ),
-        staleTime: LIVE_DASHBOARD_REFETCH_INTERVAL_MS,
+        staleTime: LIVE_DASHBOARD_HEAVY_REFETCH_INTERVAL_MS,
       })
     }, [from, queryClient, to])
 
@@ -574,7 +578,7 @@ export function Dashboard(): ReactElement {
           },
           signal
         ),
-      staleTime: LIVE_DASHBOARD_REFETCH_INTERVAL_MS,
+      staleTime: LIVE_DASHBOARD_HEAVY_REFETCH_INTERVAL_MS,
     })
   }, [queryClient])
 

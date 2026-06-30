@@ -397,7 +397,7 @@ const TOKEN_TREND_SUMMARY_RAW_SUBQUERY_KEYS = [
   'versions',
   'modelFirstSeen',
 ]
-const USAGE_TOKEN_TREND_SUMMARY_CACHE_SCOPE = 'usage-token-trend-summary-v5'
+const USAGE_TOKEN_TREND_SUMMARY_CACHE_SCOPE = 'usage-token-trend-summary-v6'
 const USAGE_QUOTA_HISTORY_CACHE_SCOPE = 'usage-quota-history-v2'
 
 const USAGE_REPORT_CACHE_SCOPES = new Set([
@@ -2437,9 +2437,73 @@ const configChangeFilterColumns = Object.fromEntries(
 
 const sortColumns = {
   period_end: 'period_end',
+  period_start: 'period_start',
   traces: 'traces',
   usd_cost: 'usd_cost',
   token_total: 'token_total',
+}
+
+function parseTruthySearchParam(value) {
+  if (value == null) {
+    return false
+  }
+  const normalized = String(value).trim().toLowerCase()
+  return normalized === '1' || normalized === 'true' || normalized === 'yes'
+}
+
+export function shouldIncludeTokenTrendHealth(searchParams) {
+  return parseTruthySearchParam(searchParams.get('include_health'))
+}
+
+export function applyTokenTrendSummaryHealthInclusion(searchParams, report) {
+  if (shouldIncludeTokenTrendHealth(searchParams)) {
+    return {
+      ...report,
+      metadata: {
+        ...report.metadata,
+        includeTokenTrendHealth: true,
+      },
+    }
+  }
+
+  return {
+    ...report,
+    metadata: {
+      ...report.metadata,
+      includeTokenTrendHealth: false,
+      tokenTrendHealthOmitted: true,
+    },
+    tokenTrendHealth: [],
+  }
+}
+
+export function parseUsageReportSort(searchParams) {
+  const rawSort = searchParams.get('sort') ?? 'period_end'
+  let sortKey = rawSort
+  let directionParam = searchParams.get('direction')
+  const dotIndex = rawSort.lastIndexOf('.')
+
+  if (dotIndex > 0) {
+    const maybeColumn = rawSort.slice(0, dotIndex)
+    const maybeDirection = rawSort.slice(dotIndex + 1).toLowerCase()
+    if (
+      sortColumns[maybeColumn] &&
+      (maybeDirection === 'asc' || maybeDirection === 'desc')
+    ) {
+      sortKey = maybeColumn
+      directionParam = maybeDirection
+    }
+  }
+
+  const sort = sortColumns[sortKey]
+  if (!sort) {
+    throw new Error(`Unsupported sort: ${rawSort}`)
+  }
+
+  const sortDirection =
+    directionParam?.toLowerCase() === 'asc' ? 'ASC' : 'DESC'
+
+  return { sort, sortDirection, sortKey: rawSort }
 }
 const startTimeDateRangeWhere = [
   "sh.start_time >= ($1::date::timestamp AT TIME ZONE 'America/New_York')",
@@ -9215,13 +9279,7 @@ export function buildUsageQuery(searchParams) {
   const from = parseDateParam(searchParams.get('from'), defaultFromDate)
   const to = parseDateParam(searchParams.get('to'), defaultToDate)
   const limit = parseLimit(searchParams.get('limit'))
-  const sort = sortColumns[searchParams.get('sort') ?? 'period_end']
-  if (!sort) {
-    throw new Error(`Unsupported sort: ${searchParams.get('sort')}`)
-  }
-
-  const sortDirection =
-    searchParams.get('direction')?.toLowerCase() === 'asc' ? 'ASC' : 'DESC'
+  const { sort, sortDirection } = parseUsageReportSort(searchParams)
 
   const values = [from, to]
   const whereParts = [...startTimeDateRangeWhere]
@@ -9944,6 +10002,7 @@ async function loadUsageSessionDiagnostics(searchParams) {
 }
 
 async function loadUsageTokenTrendSummary(searchParams) {
+  const includeTokenTrendHealth = shouldIncludeTokenTrendHealth(searchParams)
   const hoursQuery = buildTokenTrendHoursQuery(searchParams)
   const healthQuery = buildTokenTrendHealthQuery(searchParams)
   const scoreQuery = buildTokenTrendScoreQuery(searchParams)
@@ -9963,13 +10022,17 @@ async function loadUsageTokenTrendSummary(searchParams) {
           statementTimeoutMs: TOKEN_TREND_SUMMARY_STATEMENT_TIMEOUT_MS,
         }),
     },
-    {
-      subqueryKey: 'health',
-      task: () =>
-        queryReportDatabase(healthQuery.sql, healthQuery.values, {
-          statementTimeoutMs: TOKEN_TREND_SUMMARY_STATEMENT_TIMEOUT_MS,
-        }),
-    },
+    ...(includeTokenTrendHealth
+      ? [
+          {
+            subqueryKey: 'health',
+            task: () =>
+              queryReportDatabase(healthQuery.sql, healthQuery.values, {
+                statementTimeoutMs: TOKEN_TREND_SUMMARY_STATEMENT_TIMEOUT_MS,
+              }),
+          },
+        ]
+      : []),
     {
       subqueryKey: 'scores',
       task: () =>
@@ -10053,21 +10116,24 @@ async function loadUsageTokenTrendSummary(searchParams) {
   }
 
   if (timedOutSubqueries.length > 0 || skippedSubqueries.length > 0) {
-    return buildDegradedUsageTokenTrendSummaryReport(searchParams, {
-      skippedSubqueries,
-      unavailableSubqueries: skippedSubqueries,
-      tokenTrendSummaryRangeDays,
-      tokenTrendSummaryRawLaneMaxDays: TOKEN_TREND_SUMMARY_RAW_LANE_MAX_DAYS,
-      timedOutSubqueries,
-      tokenTrendHours: tokenTrendHoursRows,
-      tokenTrendHealth: tokenTrendHealthRows,
-      tokenTrendScores: tokenTrendScoresRows,
-      tokenTrendVersions: tokenTrendVersionsRows,
-      tokenTrendModelFirstSeen: tokenTrendModelFirstSeenRows,
-    })
+    return applyTokenTrendSummaryHealthInclusion(
+      searchParams,
+      buildDegradedUsageTokenTrendSummaryReport(searchParams, {
+        skippedSubqueries,
+        unavailableSubqueries: skippedSubqueries,
+        tokenTrendSummaryRangeDays,
+        tokenTrendSummaryRawLaneMaxDays: TOKEN_TREND_SUMMARY_RAW_LANE_MAX_DAYS,
+        timedOutSubqueries,
+        tokenTrendHours: tokenTrendHoursRows,
+        tokenTrendHealth: tokenTrendHealthRows,
+        tokenTrendScores: tokenTrendScoresRows,
+        tokenTrendVersions: tokenTrendVersionsRows,
+        tokenTrendModelFirstSeen: tokenTrendModelFirstSeenRows,
+      })
+    )
   }
 
-  return {
+  return applyTokenTrendSummaryHealthInclusion(searchParams, {
     metadata: buildUsageTokenTrendSummaryMetadata(searchParams, {
       tokenTrendSummaryRawLaneMaxDays:
         TOKEN_TREND_SUMMARY_RAW_LANE_MAX_DAYS,
@@ -10080,7 +10146,7 @@ async function loadUsageTokenTrendSummary(searchParams) {
     tokenTrendScores: tokenTrendScoresRows,
     tokenTrendVersions: tokenTrendVersionsRows,
     tokenTrendModelFirstSeen: tokenTrendModelFirstSeenRows,
-  }
+  })
 }
 
 async function loadUsageTokenTrendDay(searchParams) {

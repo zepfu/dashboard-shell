@@ -12,7 +12,18 @@ import {
   fetchUsageReportTokenTrendDay,
   fetchUsageReportTokenTrendSummary,
   fetchUsageReportToolActivity,
+  usageReportQuotasQueryOptions,
 } from './usage-report'
+
+test('test_usageReportQuotasQueryOptions_disables_background_polling', () => {
+  const options = usageReportQuotasQueryOptions({
+    from: '2026-05-20',
+    to: '2026-05-21',
+  })
+
+  expect(options.refetchInterval).toBe(60_000)
+  expect(options.refetchIntervalInBackground).toBe(false)
+})
 
 test('test_fetchUsageReportTokenTrendSummary_sends_filters', async () => {
   let requestedUrl: URL | null = null
@@ -42,6 +53,39 @@ test('test_fetchUsageReportTokenTrendSummary_sends_filters', async () => {
   expect(requestedUrl?.searchParams.get('from')).toBe('2026-05-20')
   expect(requestedUrl?.searchParams.get('to')).toBe('2026-05-21')
   expect(requestedUrl?.searchParams.get('model')).toBe('claude-sonnet-4')
+})
+
+test('test_fetchUsageReportTokenTrendSummary_sends_health_opt_in', async () => {
+  let requestedUrl: URL | null = null
+
+  server.use(
+    http.get('/api/shell/reports/usage/token-trend-summary', ({ request }) => {
+      requestedUrl = new URL(request.url)
+      return HttpResponse.json({
+        metadata: {
+          from: '2026-05-20',
+          to: '2026-05-21',
+          includeTokenTrendHealth: true,
+        },
+        tokenTrendHours: [],
+        tokenTrendHealth: [],
+        tokenTrendVersions: [],
+      })
+    })
+  )
+
+  await expect(
+    fetchUsageReportTokenTrendSummary({
+      from: '2026-05-20',
+      to: '2026-05-21',
+      includeHealth: true,
+    })
+  ).resolves.toMatchObject({
+    metadata: { includeTokenTrendHealth: true },
+    tokenTrendHealth: [],
+  })
+
+  expect(requestedUrl?.searchParams.get('include_health')).toBe('1')
 })
 
 test('test_fetchUsageReportTokenTrendSummary_preserves_degraded_metadata', async () => {

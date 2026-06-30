@@ -1,3 +1,4 @@
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import {
   createMemoryHistory,
   createRootRoute,
@@ -5,13 +6,35 @@ import {
   RouterProvider,
 } from '@tanstack/react-router'
 import { act, fireEvent, render, screen, within } from '@testing-library/react'
+import { http, HttpResponse } from 'msw'
+import { server } from '../../../test/setup'
 import type { DashboardAlertSummary } from '../hooks/use-alerts-from-anomalies'
 import { PhosphorSidebar } from './phosphor-sidebar'
+
+beforeEach(() => {
+  server.use(
+    http.get('/api/shell/reports/quotas', () =>
+      HttpResponse.json({
+        metadata: {
+          generatedAt: '2026-05-19T00:00:00Z',
+          latestRecordAt: null,
+          latestRecordAgeMinutes: null,
+          latestRecordStale: false,
+          staleRecordThresholdMinutes: 60,
+        },
+        quotas: [],
+      })
+    )
+  )
+})
 
 async function renderSidebar(
   initialPath = '/',
   dashboardAlerts?: DashboardAlertSummary
 ) {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  })
   const rootRoute = createRootRoute({
     component: () => <PhosphorSidebar dashboardAlerts={dashboardAlerts} />,
   })
@@ -21,7 +44,11 @@ async function renderSidebar(
   })
 
   await act(async () => {
-    render(<RouterProvider router={router} />)
+    render(
+      <QueryClientProvider client={queryClient}>
+        <RouterProvider router={router} />
+      </QueryClientProvider>
+    )
   })
 }
 

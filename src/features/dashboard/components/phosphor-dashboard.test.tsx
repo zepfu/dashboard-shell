@@ -23,6 +23,7 @@ import {
   within,
 } from '@testing-library/react'
 import { http, HttpResponse } from 'msw'
+import { vi } from 'vitest'
 import { server } from '../../../test/setup'
 import type {
   UsageReportQuotaEstimatorResponse,
@@ -5110,5 +5111,208 @@ describe('PhosphorDashboard — D1-417 / D1-422 provider credit lifecycle panel'
       name: /provider credit lifecycle/i,
     })
     expect(within(panel).getByText('not observed')).toBeInTheDocument()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// D1-436: Token trend hover/detail cleanup on visibility + scope changes
+// ---------------------------------------------------------------------------
+
+describe('PhosphorDashboard — D1-436: token trend hover/detail cleanup', () => {
+  let visibilityState: DocumentVisibilityState = 'visible'
+
+  beforeEach(() => {
+    visibilityState = 'visible'
+    Object.defineProperty(document, 'visibilityState', {
+      configurable: true,
+      get: () => visibilityState,
+    })
+  })
+
+  test('test_token_trend_day_detail_clears_on_document_hidden', async () => {
+    let dayDetailCallCount = 0
+
+    server.use(
+      http.get('/api/shell/reports/usage/token-trend-summary', () =>
+        HttpResponse.json({
+          metadata: {
+            from: '2026-05-20',
+            to: '2026-05-21',
+          },
+          tokenTrendHours: [
+            {
+              day: '2026-05-20',
+              hour: 8,
+              provider: 'openai',
+              traces: 1,
+              token_total: 100,
+              usd_cost: 0,
+            },
+          ],
+          tokenTrendVersions: [],
+        })
+      ),
+      http.get('/api/shell/reports/usage/token-trend-day', () => {
+        dayDetailCallCount += 1
+        return HttpResponse.json({
+          metadata: {
+            date: '2026-05-20',
+            from: '2026-05-20',
+            to: '2026-05-21',
+          },
+          date: '2026-05-20',
+          rows: [],
+        })
+      })
+    )
+
+    let container!: HTMLElement
+    await act(async () => {
+      const renderResult = render(
+        <Wrapper>
+          <PhosphorDashboard
+            from='2026-05-20'
+            to='2026-05-21'
+            report={MOCK_REPORT}
+            reportLoading={false}
+            showComparison={false}
+            quotas={[]}
+          />
+        </Wrapper>
+      )
+      container = renderResult.container
+    })
+
+    await waitFor(() => {
+      expect(
+        container.querySelector('.tt-day-hover-shell[data-day="2026-05-20"]')
+      ).not.toBeNull()
+    })
+
+    const dayHoverShell = container.querySelector(
+      '.tt-day-hover-shell[data-day="2026-05-20"]'
+    ) as HTMLElement
+    fireEvent.pointerEnter(dayHoverShell)
+
+    await waitFor(() => {
+      expect(dayDetailCallCount).toBe(1)
+    })
+
+    await act(async () => {
+      visibilityState = 'hidden'
+      document.dispatchEvent(new Event('visibilitychange'))
+      await new Promise((resolve) => setTimeout(resolve, 200))
+    })
+
+    // Hover/detail state is cleared while hidden; no extra day-detail fetch should
+    // fire until the user hovers again (cached responses may avoid a second HTTP call).
+    expect(dayDetailCallCount).toBe(1)
+
+    fireEvent.pointerEnter(dayHoverShell)
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 175))
+    })
+    expect(dayDetailCallCount).toBeGreaterThanOrEqual(1)
+    expect(dayDetailCallCount).toBeLessThanOrEqual(2)
+  })
+
+  test('test_token_trend_day_detail_does_not_refetch_on_scope_change_without_hover', async () => {
+    let dayDetailCallCount = 0
+
+    server.use(
+      http.get('/api/shell/reports/usage/token-trend-summary', () =>
+        HttpResponse.json({
+          metadata: {
+            from: '2026-05-20',
+            to: '2026-05-22',
+          },
+          tokenTrendHours: [
+            {
+              day: '2026-05-20',
+              hour: 8,
+              provider: 'openai',
+              traces: 1,
+              token_total: 100,
+              usd_cost: 0,
+            },
+          ],
+          tokenTrendVersions: [],
+        })
+      ),
+      http.get('/api/shell/reports/usage/token-trend-day', () => {
+        dayDetailCallCount += 1
+        return HttpResponse.json({
+          metadata: {
+            date: '2026-05-20',
+            from: '2026-05-20',
+            to: '2026-05-22',
+          },
+          date: '2026-05-20',
+          rows: [],
+        })
+      })
+    )
+
+    let container!: HTMLElement
+    let rerender!: (ui: React.ReactElement) => void
+    await act(async () => {
+      const renderResult = render(
+        <Wrapper>
+          <PhosphorDashboard
+            from='2026-05-20'
+            to='2026-05-22'
+            report={MOCK_REPORT}
+            reportLoading={false}
+            showComparison={false}
+            quotas={[]}
+          />
+        </Wrapper>
+      )
+      container = renderResult.container
+      rerender = renderResult.rerender
+    })
+
+    await waitFor(() => {
+      expect(
+        container.querySelector('.tt-day-hover-shell[data-day="2026-05-20"]')
+      ).not.toBeNull()
+    })
+
+    const dayHoverShell = container.querySelector(
+      '.tt-day-hover-shell[data-day="2026-05-20"]'
+    ) as HTMLElement
+    fireEvent.pointerEnter(dayHoverShell)
+
+    await waitFor(() => {
+      expect(dayDetailCallCount).toBe(1)
+    })
+
+    await act(async () => {
+      rerender(
+        <Wrapper>
+          <PhosphorDashboard
+            from='2026-05-21'
+            to='2026-05-22'
+            report={MOCK_REPORT}
+            reportLoading={false}
+            showComparison={false}
+            quotas={[]}
+            filters={{
+              providers: ['openai'],
+              repositories: [],
+              clients: [],
+              environments: [],
+              models: [],
+            }}
+          />
+        </Wrapper>
+      )
+    })
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 200))
+    })
+
+    expect(dayDetailCallCount).toBe(1)
   })
 })

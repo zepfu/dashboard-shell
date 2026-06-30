@@ -792,9 +792,10 @@ describe('test_usageReportQuotasKey_factory_used_in_both (S4-T5/S4-20)', () => {
     expect(Array.isArray(key)).toBe(true)
     // Key must start with a stable string identifier
     expect(key[0]).toBe('usage-report-quotas')
-    // Key must contain the from and to dates
-    expect(key).toContain('2026-05-14')
-    expect(key).toContain('2026-06-13')
+    // /quotas is live/global today, so normal dashboard and sidebar callers
+    // must share one cache entry instead of splitting by dashboard date range.
+    expect(key).not.toContain('2026-05-14')
+    expect(key).not.toContain('2026-06-13')
   })
 
   test('factory with cacheBust includes it in the key', () => {
@@ -1108,6 +1109,144 @@ describe('Dashboard — S4-21/S4-22: refresh handlers and cache key discipline',
         (k) => typeof k === 'string' && k !== '' && /^\d{13}$/.test(k)
       )
       expect(hasCacheBust).toBe(false)
+    }
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// D1-436: Heavy report query guardrails (no background interval polling)
+// ─────────────────────────────────────────────────────────────────────────────
+
+function getQueryObserverOptions(
+  client: QueryClient,
+  keyPrefix: string
+):
+  | {
+      refetchInterval: unknown
+      refetchIntervalInBackground: unknown
+    }
+  | undefined {
+  const query = client
+    .getQueryCache()
+    .getAll()
+    .find((q) => Array.isArray(q.queryKey) && q.queryKey[0] === keyPrefix)
+  const observers = (
+    query as
+      | { observers?: Array<{ options: Record<string, unknown> }> }
+      | undefined
+  )?.observers
+  const observer = observers?.[0]
+  if (observer === undefined) {
+    return undefined
+  }
+  return {
+    refetchInterval: observer.options.refetchInterval,
+    refetchIntervalInBackground: observer.options.refetchIntervalInBackground,
+  }
+}
+
+describe('Dashboard — D1-436: heavy query polling guardrails', () => {
+  test('test_heavy_report_queries_do_not_poll_in_background', async () => {
+    let quotasCallCount = 0
+    server.use(
+      http.get('/api/shell/reports/usage', () => HttpResponse.json(MOCK_REPORT))
+    )
+    server.use(
+      http.get('/api/shell/reports/quotas', () => {
+        quotasCallCount += 1
+        return HttpResponse.json({
+          metadata: {
+            generatedAt: '2026-05-19T00:00:00Z',
+            latestRecordAt: null,
+            latestRecordAgeMinutes: null,
+            latestRecordStale: false,
+            staleRecordThresholdMinutes: 60,
+          },
+          quotas: [],
+        })
+      })
+    )
+    registerTokenTrendSummaryHandler()
+    registerQuotaRangeHistoryHandler()
+
+    const Dashboard = await importDashboard()
+    const client = makeClient()
+    const rootRoute = createRootRoute({ component: Dashboard })
+    const router = createRouter({
+      routeTree: rootRoute,
+      history: createMemoryHistory({ initialEntries: ['/'] }),
+      context: { queryClient: client },
+    })
+
+    render(
+      <QueryClientProvider client={client}>
+        <DirectionProvider>
+          <SearchProvider>
+            <LayoutProvider>
+              <SidebarProvider>
+                <RouterProvider router={router} />
+              </SidebarProvider>
+            </LayoutProvider>
+          </SearchProvider>
+        </DirectionProvider>
+      </QueryClientProvider>
+    )
+
+    await waitFor(
+      () => {
+        expect(
+          getQueryObserverOptions(client, 'usage-report-phosphor')
+        ).toBeDefined()
+      },
+      { timeout: 5_000 }
+    )
+
+    const phosphorOptions = getQueryObserverOptions(
+      client,
+      'usage-report-phosphor'
+    )
+    expect(phosphorOptions?.refetchIntervalInBackground).toBe(false)
+
+    const queries = client.getQueryCache().getAll()
+    const normalQuotaQueries = queries.filter(
+      (q) =>
+        Array.isArray(q.queryKey) &&
+        q.queryKey.length === 1 &&
+        q.queryKey[0] === 'usage-report-quotas'
+    )
+    const sidebarQuotaQueries = queries.filter(
+      (q) =>
+        Array.isArray(q.queryKey) &&
+        q.queryKey[0] === 'shell-sidebar-quota-remaining'
+    )
+    expect(normalQuotaQueries).toHaveLength(1)
+    expect(sidebarQuotaQueries).toHaveLength(0)
+    expect(quotasCallCount).toBe(1)
+
+    const quotaRangeOptions = getQueryObserverOptions(
+      client,
+      'usage-report-quota-range-history'
+    )
+    if (quotaRangeOptions !== undefined) {
+      expect(quotaRangeOptions.refetchInterval).toBe(false)
+      expect(quotaRangeOptions.refetchIntervalInBackground).toBe(false)
+    }
+
+    const quotaHistoryOptions = getQueryObserverOptions(
+      client,
+      'usage-report-quota-history'
+    )
+    if (quotaHistoryOptions !== undefined) {
+      expect(quotaHistoryOptions.refetchInterval).toBe(false)
+      expect(quotaHistoryOptions.refetchIntervalInBackground).toBe(false)
+    }
+
+    const shellHealthOptions = getQueryObserverOptions(
+      client,
+      'shell-health-pgbouncer'
+    )
+    if (shellHealthOptions !== undefined) {
+      expect(shellHealthOptions.refetchIntervalInBackground).toBe(false)
     }
   })
 })
