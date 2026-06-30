@@ -206,7 +206,13 @@ const PROVIDER_SERIES: ProviderSeries[] = [
 // Types
 // ---------------------------------------------------------------------------
 
-export type ProviderSectionView = 'health' | 'quota' | 'weights' | 'diagnostics'
+export type ProviderSectionView =
+  | 'health'
+  | 'quota'
+  | 'provider-auth'
+  | 'alias-routing'
+  | 'weights'
+  | 'diagnostics'
 
 export interface PhosphorDashboardProps {
   /** ISO date string for the range start (YYYY-MM-DD). */
@@ -1241,7 +1247,7 @@ export default function PhosphorDashboard({
   const quotaHistoryMetadata =
     quotaHistoryMetadataProp ?? internalQuotaHistoryData?.metadata
   const statusDegraded =
-    providerSectionView === 'health' && quotaHistoryMetadata?.degraded === true
+    providerSectionView === 'quota' && quotaHistoryMetadata?.degraded === true
   const tokenTrendDegraded = tokenTrendSummaryData?.metadata.degraded === true
 
   return (
@@ -1273,6 +1279,8 @@ export default function PhosphorDashboard({
               options={[
                 { value: 'health', label: 'Health' },
                 { value: 'quota', label: 'Quota' },
+                { value: 'provider-auth', label: 'Provider Auth' },
+                { value: 'alias-routing', label: 'Alias Routing' },
                 { value: 'weights', label: 'Weights' },
                 { value: 'diagnostics', label: 'Diagnostics' },
               ]}
@@ -1303,7 +1311,10 @@ export default function PhosphorDashboard({
         >
           STATUS
         </SectionTitle>
-        {reportLoading && providerSectionView === 'health' ? (
+        {reportLoading &&
+        (providerSectionView === 'health' ||
+          providerSectionView === 'provider-auth' ||
+          providerSectionView === 'alias-routing') ? (
           <SectionSkeleton height={120} />
         ) : providerSectionView === 'health' ? (
           <>
@@ -1311,8 +1322,6 @@ export default function PhosphorDashboard({
               health={shellHealthData?.pgBouncerSidecars}
               loading={shellHealthFetching}
             />
-            <AawmAliasRoutingPanel routing={report?.providerAliasRouting} />
-            <ProviderAuthHealthPanel authHealth={report?.providerAuthHealth} />
             <ProviderCreditLifecyclePanel
               creditLifecycle={report?.providerCreditLifecycle}
             />
@@ -1409,6 +1418,10 @@ export default function PhosphorDashboard({
               )}
             </div>
           </>
+        ) : providerSectionView === 'provider-auth' ? (
+          <ProviderAuthHealthPanel authHealth={report?.providerAuthHealth} />
+        ) : providerSectionView === 'alias-routing' ? (
+          <AawmAliasRoutingPanel routing={report?.providerAliasRouting} />
         ) : providerSectionView === 'quota' ? (
           <div
             className={`provider-summary provider-quota-summary ${styles['provider-summary-grid']}`}

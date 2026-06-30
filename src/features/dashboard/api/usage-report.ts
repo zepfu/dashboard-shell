@@ -1426,6 +1426,9 @@ export interface UsageReportTokenTrendSummaryResponse {
     degraded?: boolean
     degradedReason?: string
     degradedMessage?: string
+    timeout?: boolean
+    timedOutSubquery?: string
+    timedOutSubqueries?: string[]
     tokenTrendSummaryStatementTimeoutMs?: number
     cacheBackend?: string
     cacheFreshUntil?: string | null

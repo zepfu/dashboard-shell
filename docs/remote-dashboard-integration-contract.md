@@ -202,6 +202,22 @@ Tailwind classes and imports `src/styles/theme.css` in standalone mode will
 inherit the same light and dark palettes in both standalone and shell-mounted
 modes.
 
+
+## General Dashboard STATUS Tabs (Shell-Owned)
+
+The root General dashboard `STATUS` section uses first-level section tabs:
+
+- `Health`: PgBouncer sidecar health, provider credit lifecycle, and Provider
+  Status health cards (including aggregate totals). Google/Antigravity provider
+  health cards remain omitted per product policy.
+- `Quota`: Range-aware quota history bars per provider.
+- `Provider Auth`: `providerAuthHealth` from the usage report payload.
+- `Alias Routing`: `providerAliasRouting` from the usage report payload.
+- `Weights` and `Diagnostics`: additive estimator and session diagnostics panels.
+
+Provider Auth and Alias Routing are not rendered inside the Health tab; each tab
+reuses the same report fetch as the rest of the General dashboard.
+
 ## Component And Lint Expectations
 
 Remote dashboards should use their vendored shadcn-compatible primitives for

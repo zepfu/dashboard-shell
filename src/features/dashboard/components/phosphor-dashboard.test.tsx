@@ -484,22 +484,7 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
     expect(screen.queryByText(/flash-lite · 24h/i)).toBeNull()
   })
 
-  test('test_status_health_shows_degraded_badge_for_quota_history_timeout', async () => {
-    server.use(
-      http.get('/api/shell/reports/usage/quota-history', () =>
-        HttpResponse.json({
-          metadata: {
-            generatedAt: '2026-05-19T00:00:00.000Z',
-            degraded: true,
-            degradedReason: 'database_timeout',
-            degradedMessage: 'Quota history exceeded the bounded timeout.',
-            quotaHistoryStatementTimeoutMs: 15000,
-          },
-          quotaHistory: [],
-        })
-      )
-    )
-
+  test('test_quota_history_degraded_badge_stays_out_of_health_tab', async () => {
     await act(async () => {
       render(
         <Wrapper>
@@ -510,10 +495,26 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
             reportLoading={false}
             showComparison={false}
             quotas={[]}
+            quotaHistory={[]}
+            quotaHistoryMetadata={{
+              generatedAt: '2026-05-19T00:00:00.000Z',
+              degraded: true,
+              degradedReason: 'database_timeout',
+              degradedMessage: 'Quota history exceeded the bounded timeout.',
+              quotaHistoryStatementTimeoutMs: 15000,
+            }}
           />
         </Wrapper>
       )
     })
+
+    expect(screen.getByRole('tab', { name: 'Health' })).toHaveAttribute(
+      'aria-selected',
+      'true'
+    )
+    expect(screen.queryByText('Degraded')).toBeNull()
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Quota' }))
 
     expect(await screen.findByText('Degraded')).toHaveClass(
       'section-degraded-badge'
@@ -1776,6 +1777,10 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
     expect(healthTab).toHaveAttribute('aria-selected', 'true')
     const quotaTab = screen.getByRole('tab', { name: 'Quota' })
     expect(quotaTab).toHaveAttribute('aria-selected', 'false')
+    const providerAuthTab = screen.getByRole('tab', { name: 'Provider Auth' })
+    expect(providerAuthTab).toHaveAttribute('aria-selected', 'false')
+    const aliasRoutingTab = screen.getByRole('tab', { name: 'Alias Routing' })
+    expect(aliasRoutingTab).toHaveAttribute('aria-selected', 'false')
     const weightsTab = screen.getByRole('tab', { name: 'Weights' })
     expect(weightsTab).toHaveAttribute('aria-selected', 'false')
 
@@ -1783,6 +1788,14 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
     fireEvent.click(quotaTab)
     expect(quotaTab).toHaveAttribute('aria-selected', 'true')
     expect(healthTab).toHaveAttribute('aria-selected', 'false')
+
+    fireEvent.click(providerAuthTab)
+    expect(providerAuthTab).toHaveAttribute('aria-selected', 'true')
+    expect(quotaTab).toHaveAttribute('aria-selected', 'false')
+
+    fireEvent.click(aliasRoutingTab)
+    expect(aliasRoutingTab).toHaveAttribute('aria-selected', 'true')
+    expect(providerAuthTab).toHaveAttribute('aria-selected', 'false')
 
     // LEDGER section: Model tab selected by default.
     const modelTab = screen.getByRole('tab', { name: 'Model' })
@@ -4493,8 +4506,86 @@ describe('S1-T6 — populated report render shows real ledger tokens', () => {
   })
 })
 
+describe('PhosphorDashboard — D1-428 STATUS tab split', () => {
+  test('test_health_tab_does_not_render_provider_auth_or_alias_routing_panels', async () => {
+    const future = new Date(Date.now() + 300_000).toISOString()
+    const report: UsageReportResponse = {
+      ...MOCK_REPORT,
+      providerAliasRouting: {
+        data_source: 'recent_observed_session_history',
+        freshness_label: 'Recent observed routing',
+        generated_at: '2026-05-19T00:00:00.000Z',
+        lookback_hours: 24,
+        families: [{ family: 'codex', observed: true }],
+        entries: [
+          {
+            family: 'codex',
+            alias_label: 'aawm-code',
+            provider: 'openai',
+            model: 'gpt-5',
+            route_family: 'codex_primary',
+            state_kind: 'affinity',
+            state_source: 'durable_cache',
+            observed_at: '2026-05-19T00:00:00.000Z',
+            expires_at: future,
+            remaining_seconds: 300,
+            is_active: true,
+            skipped_candidates: [],
+          },
+        ],
+      },
+      providerAuthHealth: {
+        data_source: 'provider_auth_current',
+        freshness_label: 'Current provider credential refresh state',
+        generated_at: '2026-05-19T00:00:00.000Z',
+        entries: [
+          {
+            observed_at: '2026-05-19T00:00:00.000Z',
+            environment: 'production',
+            provider: 'xai',
+            auth_family: 'grok_oidc',
+            status: 'refreshed',
+            attempted: true,
+            refreshed: true,
+            skipped: false,
+            auth_health_state: 'refreshed',
+            source_task: 'grok_oidc_refresh',
+          },
+        ],
+      },
+    }
+
+    await act(async () => {
+      render(
+        <Wrapper>
+          <PhosphorDashboard
+            from='2026-05-20'
+            to='2026-05-21'
+            report={report}
+            reportLoading={false}
+            showComparison={false}
+            quotas={[]}
+            quotaHistory={[]}
+          />
+        </Wrapper>
+      )
+    })
+
+    expect(screen.getByRole('tab', { name: 'Health' })).toHaveAttribute(
+      'aria-selected',
+      'true'
+    )
+    expect(
+      screen.queryByRole('region', { name: /provider auth health/i })
+    ).toBeNull()
+    expect(
+      screen.queryByRole('region', { name: /aawm alias routing health/i })
+    ).toBeNull()
+  })
+})
+
 describe('PhosphorDashboard — D1-323 alias routing health panel', () => {
-  test('test_health_tab_renders_alias_routing_affinity_and_cooldown_without_secret_sentinel', async () => {
+  test('test_alias_routing_tab_renders_affinity_and_cooldown_without_secret_sentinel', async () => {
     const future = new Date(Date.now() + 300_000).toISOString()
     const report: UsageReportResponse = {
       ...MOCK_REPORT,
@@ -4564,6 +4655,8 @@ describe('PhosphorDashboard — D1-323 alias routing health panel', () => {
       )
     })
 
+    fireEvent.click(screen.getByRole('tab', { name: 'Alias Routing' }))
+
     expect(
       screen.getByRole('region', { name: /aawm alias routing health/i })
     ).toBeInTheDocument()
@@ -4579,7 +4672,7 @@ describe('PhosphorDashboard — D1-323 alias routing health panel', () => {
 })
 
 describe('PhosphorDashboard — D1-338 provider auth health panel', () => {
-  test('test_health_tab_renders_grok_oidc_refreshed_failed_and_not_observed_without_secret_sentinel', async () => {
+  test('test_provider_auth_tab_renders_grok_oidc_refreshed_failed_and_not_observed_without_secret_sentinel', async () => {
     const future = new Date(Date.now() + 600_000).toISOString()
     const past = new Date(Date.now() - 60_000).toISOString()
     const report: UsageReportResponse = {
@@ -4643,6 +4736,8 @@ describe('PhosphorDashboard — D1-338 provider auth health panel', () => {
       )
     })
 
+    fireEvent.click(screen.getByRole('tab', { name: 'Provider Auth' }))
+
     const panel = screen.getByRole('region', { name: /provider auth health/i })
     expect(panel).toBeInTheDocument()
     expect(panel.textContent).toMatch(/grok_oidc/i)
@@ -4655,7 +4750,7 @@ describe('PhosphorDashboard — D1-338 provider auth health panel', () => {
     expect(screen.queryByText(/refresh_token/i)).toBeNull()
   })
 
-  test('test_health_tab_provider_auth_empty_renders_not_observed', async () => {
+  test('test_provider_auth_tab_empty_renders_not_observed', async () => {
     const report: UsageReportResponse = {
       ...MOCK_REPORT,
       providerAuthHealth: {
@@ -4681,6 +4776,8 @@ describe('PhosphorDashboard — D1-338 provider auth health panel', () => {
         </Wrapper>
       )
     })
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Provider Auth' }))
 
     const panel = screen.getByRole('region', { name: /provider auth health/i })
     expect(within(panel).getByText('not observed')).toBeInTheDocument()

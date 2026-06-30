@@ -352,6 +352,14 @@ const AGENT_SCORE_REASON_RECENT_ROW_LIMIT = positiveIntegerEnv(
   10_000,
   1_000
 )
+export const USAGE_TOKEN_TREND_SUMMARY_SUBQUERY_KEYS = [
+  'hours',
+  'health',
+  'scores',
+  'versions',
+  'modelFirstSeen',
+]
+
 const USAGE_REPORT_CACHE_SCOPES = new Set([
   'usage',
   'usage-token-trend-summary-v3',
@@ -2111,6 +2119,30 @@ async function runTasksWithConcurrency(tasks, concurrency) {
   const workerCount = Math.min(concurrency, tasks.length)
   await Promise.all(Array.from({ length: workerCount }, () => worker()))
   return results
+}
+
+function annotateTokenTrendSummarySubqueryTimeout(error, subqueryKey) {
+  if (!error || typeof error !== 'object') {
+    const wrapped = new Error(formatError(error))
+    wrapped.tokenTrendSummaryTimedOutSubquery = subqueryKey
+    return wrapped
+  }
+
+  error.tokenTrendSummaryTimedOutSubquery = subqueryKey
+  return error
+}
+
+async function runTokenTrendSummarySubqueries(labeledTasks) {
+  return runTasksWithConcurrency(
+    labeledTasks.map(({ subqueryKey, task }) => async () => {
+      try {
+        return await task()
+      } catch (error) {
+        throw annotateTokenTrendSummarySubqueryTimeout(error, subqueryKey)
+      }
+    }),
+    REPORT_SQL_FANOUT_CONCURRENCY
+  )
 }
 
 function formatError(error) {
@@ -5712,13 +5744,29 @@ function buildUsageTokenTrendSummaryMetadata(searchParams, extra = {}) {
   }
 }
 
-export function buildDegradedUsageTokenTrendSummaryReport(searchParams) {
+export function buildDegradedUsageTokenTrendSummaryReport(
+  searchParams,
+  { timedOutSubqueries = [] } = {}
+) {
+  const normalizedTimedOutSubqueries = Array.from(
+    new Set(
+      (timedOutSubqueries ?? []).filter((subqueryKey) =>
+        USAGE_TOKEN_TREND_SUMMARY_SUBQUERY_KEYS.includes(subqueryKey)
+      )
+    )
+  )
+  const timedOutSubquery = normalizedTimedOutSubqueries[0]
+
   return {
     metadata: buildUsageTokenTrendSummaryMetadata(searchParams, {
       degraded: true,
       degradedReason: 'database_timeout',
-      degradedMessage:
-        'Token trend summary exceeded the bounded database timeout; showing an empty degraded report.',
+      degradedMessage: timedOutSubquery
+        ? `Token trend summary subquery "${timedOutSubquery}" exceeded the bounded database timeout; showing an empty degraded report.`
+        : 'Token trend summary exceeded the bounded database timeout; showing an empty degraded report.',
+      timeout: true,
+      timedOutSubquery,
+      timedOutSubqueries: normalizedTimedOutSubqueries,
       tokenTrendSummaryStatementTimeoutMs:
         TOKEN_TREND_SUMMARY_STATEMENT_TIMEOUT_MS,
     }),
@@ -9360,25 +9408,38 @@ async function loadUsageTokenTrendSummary(searchParams) {
       scoreResult,
       versionsResult,
       modelFirstSeenResult,
-    ] = await runTasksWithConcurrency(
-      [
-        () =>
+    ] = await runTokenTrendSummarySubqueries([
+      {
+        subqueryKey: 'hours',
+        task: () =>
           queryReportDatabase(hoursQuery.sql, hoursQuery.values, {
             statementTimeoutMs: TOKEN_TREND_SUMMARY_STATEMENT_TIMEOUT_MS,
           }),
-        () =>
+      },
+      {
+        subqueryKey: 'health',
+        task: () =>
           queryReportDatabase(healthQuery.sql, healthQuery.values, {
             statementTimeoutMs: TOKEN_TREND_SUMMARY_STATEMENT_TIMEOUT_MS,
           }),
-        () =>
+      },
+      {
+        subqueryKey: 'scores',
+        task: () =>
           queryReportDatabase(scoreQuery.sql, scoreQuery.values, {
             statementTimeoutMs: TOKEN_TREND_SUMMARY_STATEMENT_TIMEOUT_MS,
           }),
-        () =>
+      },
+      {
+        subqueryKey: 'versions',
+        task: () =>
           queryReportDatabase(versionsQuery.sql, versionsQuery.values, {
             statementTimeoutMs: TOKEN_TREND_SUMMARY_STATEMENT_TIMEOUT_MS,
           }),
-        () =>
+      },
+      {
+        subqueryKey: 'modelFirstSeen',
+        task: () =>
           queryReportDatabase(
             modelFirstSeenQuery.sql,
             modelFirstSeenQuery.values,
@@ -9386,9 +9447,8 @@ async function loadUsageTokenTrendSummary(searchParams) {
               statementTimeoutMs: TOKEN_TREND_SUMMARY_STATEMENT_TIMEOUT_MS,
             }
           ),
-      ],
-      REPORT_SQL_FANOUT_CONCURRENCY
-    )
+      },
+    ])
 
     return {
       metadata: buildUsageTokenTrendSummaryMetadata(searchParams, {
@@ -9407,7 +9467,10 @@ async function loadUsageTokenTrendSummary(searchParams) {
     }
   } catch (error) {
     if (isDatabaseTimeoutError(error)) {
-      return buildDegradedUsageTokenTrendSummaryReport(searchParams)
+      const timedOutSubquery = error?.tokenTrendSummaryTimedOutSubquery
+      return buildDegradedUsageTokenTrendSummaryReport(searchParams, {
+        timedOutSubqueries: timedOutSubquery ? [timedOutSubquery] : [],
+      })
     }
     throw error
   }

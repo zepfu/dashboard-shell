@@ -39,6 +39,7 @@ import {
   buildDegradedUsageQuotaHistoryReport,
   buildDegradedQuotaReport,
   buildDegradedUsageTokenTrendSummaryReport,
+  USAGE_TOKEN_TREND_SUMMARY_SUBQUERY_KEYS,
   buildDegradedUsageToolActivityReport,
   buildReportQueryPressureQuery,
   buildSessionDiagnosticsQuery,
@@ -497,6 +498,107 @@ describe('D1-223/224/225 usage identity and billing contracts', () => {
     }
     expect(quotaQuery.sql).toContain('public.rate_limit_observations')
     expect(estimatorQuery.sql).toContain('public.rate_limit_observations')
+  })
+})
+
+
+// ---------------------------------------------------------------------------
+// D1-429 tenant_id authoritative repository dimension contract
+// ---------------------------------------------------------------------------
+
+describe('D1-429 tenant_id authoritative repository dimension contract', () => {
+  const tenantBackedRepositoryExpr = "COALESCE(sh.tenant_id, 'unknown')"
+
+  const forbiddenRepositoryInferencePatterns = [
+    /\bsh\.repository\b/,
+    /trace_user_id/,
+    /repository_tenant_fallback_skipped/,
+    /trace_user_tenant_fallback_skipped/,
+    /metadata->>'repository'/,
+  ] as const
+
+  function expectNoForbiddenRepositoryInferenceSources(sql: string) {
+    for (const pattern of forbiddenRepositoryInferencePatterns) {
+      expect(sql).not.toMatch(pattern)
+    }
+  }
+
+  test('buildUsageQuery_groups_repository_dimension_from_tenant_id_only', () => {
+    const query = buildUsageQuery(
+      new URLSearchParams({
+        from: '2026-05-01',
+        to: '2026-05-08',
+        grain: 'day',
+        group_by: 'repository,provider,model',
+        limit: '50000',
+      })
+    )
+
+    expect(query.metadata.groupBy).toContain('repository')
+    expect(query.sql).toContain(`${tenantBackedRepositoryExpr} AS repository`)
+    expect(query.sql).toContain(`${tenantBackedRepositoryExpr},`)
+    expectNoForbiddenRepositoryInferenceSources(query.sql)
+  })
+
+  test('buildUsageQuery_filters_repository_by_tenant_id_not_session_history_repository', () => {
+    const query = buildUsageQuery(
+      new URLSearchParams({
+        from: '2026-05-01',
+        to: '2026-05-08',
+        grain: 'day',
+        group_by: 'provider,model',
+        limit: '50000',
+        repository: 'tenant-a,tenant-b',
+      })
+    )
+
+    expect(query.values).toContainEqual(['tenant-a', 'tenant-b'])
+    expect(query.sql).toContain(`${tenantBackedRepositoryExpr} = ANY(`)
+    expectNoForbiddenRepositoryInferenceSources(query.sql)
+  })
+
+  test('buildSessionDiagnosticsQuery_projects_and_filters_repository_from_tenant_id', () => {
+    const query = buildSessionDiagnosticsQuery(
+      new URLSearchParams({
+        from: '2026-05-01',
+        to: '2026-05-08',
+        repository: 'tenant-repo-a',
+        limit: '100',
+      })
+    )
+
+    expect(query.values).toContainEqual(['tenant-repo-a'])
+    expect(query.sql).toContain(`${tenantBackedRepositoryExpr} AS repository`)
+    expect(query.sql).toContain(`${tenantBackedRepositoryExpr} = ANY(`)
+    expectNoForbiddenRepositoryInferenceSources(query.sql)
+  })
+
+  test('buildToolActivityQuery_applies_tenant_id_backed_repository_filter_on_joined_session_history', () => {
+    const query = buildToolActivityQuery(
+      new URLSearchParams({
+        from: '2026-05-01',
+        to: '2026-05-08',
+        repository: 'tenant-tool-activity',
+      })
+    )
+
+    expect(query.values).toContainEqual(['tenant-tool-activity'])
+    expect(query.sql).toContain(`${tenantBackedRepositoryExpr} = ANY(`)
+    expectNoForbiddenRepositoryInferenceSources(query.sql)
+  })
+
+  test('buildTokenTrendHoursQuery_applies_tenant_id_backed_repository_filter', () => {
+    const query = buildTokenTrendHoursQuery(
+      new URLSearchParams({
+        from: '2026-05-01',
+        to: '2026-05-08',
+        repository: 'tenant-trend-hours',
+      })
+    )
+
+    expect(query.values).toContainEqual(['tenant-trend-hours'])
+    expect(query.sql).toContain(`${tenantBackedRepositoryExpr} = ANY(`)
+    expectNoForbiddenRepositoryInferenceSources(query.sql)
   })
 })
 
@@ -1003,6 +1105,7 @@ describe('report-service query builders', () => {
         to: '2026-05-08',
         degraded: true,
         degradedReason: 'database_timeout',
+        timeout: true,
         tokenTrendSummaryStatementTimeoutMs: expect.any(Number),
       },
       tokenTrendHours: [],
@@ -1011,6 +1114,44 @@ describe('report-service query builders', () => {
       tokenTrendVersions: [],
       tokenTrendModelFirstSeen: [],
     })
+  })
+
+  test('test_buildDegradedUsageTokenTrendSummaryReport_identifies_timed_out_subquery', () => {
+    const params = new URLSearchParams({
+      from: '2026-05-01',
+      to: '2026-05-08',
+    })
+
+    expect(
+      buildDegradedUsageTokenTrendSummaryReport(params, {
+        timedOutSubqueries: ['health'],
+      })
+    ).toMatchObject({
+      metadata: {
+        degraded: true,
+        degradedReason: 'database_timeout',
+        degradedMessage: expect.stringContaining('subquery "health"'),
+        timeout: true,
+        timedOutSubquery: 'health',
+        timedOutSubqueries: ['health'],
+        tokenTrendSummaryStatementTimeoutMs: expect.any(Number),
+      },
+      tokenTrendHours: [],
+      tokenTrendHealth: [],
+      tokenTrendScores: [],
+      tokenTrendVersions: [],
+      tokenTrendModelFirstSeen: [],
+    })
+  })
+
+  test('test_usageTokenTrendSummarySubqueryKeys_match_loader_fanout_order', () => {
+    expect(USAGE_TOKEN_TREND_SUMMARY_SUBQUERY_KEYS).toEqual([
+      'hours',
+      'health',
+      'scores',
+      'versions',
+      'modelFirstSeen',
+    ])
   })
 
 
