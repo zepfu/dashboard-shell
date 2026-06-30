@@ -1279,6 +1279,40 @@ describe('report-service query builders', () => {
     })
   })
 
+  test('test_buildDegradedUsageTokenTrendSummaryReport_marks_bounded_raw_lane_policy_metadata', () => {
+    const params = new URLSearchParams({
+      from: '2026-05-01',
+      to: '2026-06-01',
+    })
+
+    expect(
+      buildDegradedUsageTokenTrendSummaryReport(params, {
+        skippedSubqueries: ['hours', 'scores', 'versions', 'modelFirstSeen'],
+        tokenTrendSummaryRangeDays: 30,
+        tokenTrendSummaryRawLaneMaxDays: 7,
+        tokenTrendHours: [],
+        tokenTrendHealth: [{ provider: 'openai', value: 1 }],
+        tokenTrendVersions: [],
+      })
+    ).toMatchObject({
+      metadata: {
+        degraded: true,
+        degradedReason: 'bounded_raw_lane_policy',
+        degradedMessage: expect.stringContaining('skipped'),
+        skippedSubqueries: ['hours', 'scores', 'versions', 'modelFirstSeen'],
+        unavailableSubqueries: ['hours', 'scores', 'versions', 'modelFirstSeen'],
+        tokenTrendSummaryRawLaneMaxDays: 7,
+        tokenTrendSummaryRangeDays: 30,
+        tokenTrendSummaryStatementTimeoutMs: expect.any(Number),
+      },
+      tokenTrendHours: [],
+      tokenTrendHealth: [{ provider: 'openai', value: 1 }],
+      tokenTrendScores: [],
+      tokenTrendVersions: [],
+      tokenTrendModelFirstSeen: [],
+    })
+  })
+
   test('test_buildDegradedUsageTokenTrendSummaryReport_preserves_partial_payload', () => {
     const params = new URLSearchParams({
       from: '2026-05-01',

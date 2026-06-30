@@ -564,6 +564,69 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
     )
   })
 
+  test('test_token_trend_shows_bounded_raw_lane_policy_tooltip', async () => {
+    server.use(
+      http.get('/api/shell/reports/usage/token-trend-summary', () =>
+        HttpResponse.json({
+          metadata: {
+            from: '2026-05-20',
+            to: '2026-06-01',
+            degraded: true,
+            degradedReason: 'bounded_raw_lane_policy',
+            degradedMessage:
+              'Token trend summary bounded raw-lane policy skipped lanes "hours", "scores", "versions", "modelFirstSeen" for a 31-day range; max allowed is 7 days.',
+            skippedSubqueries: [
+              'hours',
+              'scores',
+              'versions',
+              'modelFirstSeen',
+            ],
+            unavailableSubqueries: [
+              'hours',
+              'scores',
+              'versions',
+              'modelFirstSeen',
+            ],
+            tokenTrendSummaryRawLaneMaxDays: 7,
+            tokenTrendSummaryRangeDays: 31,
+          },
+          tokenTrendHours: [],
+          tokenTrendHealth: [],
+          tokenTrendScores: [],
+          tokenTrendVersions: [],
+          tokenTrendModelFirstSeen: [],
+        })
+      )
+    )
+
+    await act(async () => {
+      render(
+        <Wrapper>
+          <PhosphorDashboard
+            from='2026-05-20'
+            to='2026-06-01'
+            report={MOCK_REPORT}
+            reportLoading={false}
+            showComparison={false}
+            quotas={[]}
+            quotaHistory={[]}
+          />
+        </Wrapper>
+      )
+    })
+
+    const degradedBadge = await screen.findByText('Degraded')
+    expect(degradedBadge).toHaveClass('section-degraded-badge')
+    expect(degradedBadge).toHaveAttribute(
+      'title',
+      expect.stringContaining('bounded raw-lane policy')
+    )
+    expect(degradedBadge).toHaveAttribute(
+      'title',
+      expect.stringContaining('"hours"')
+    )
+  })
+
   test('test_health_tab_renders_pgbouncer_sidecar_health', async () => {
     server.use(
       http.get('/api/shell/health', () =>

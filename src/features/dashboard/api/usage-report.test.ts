@@ -138,6 +138,57 @@ test('test_fetchUsageReportTokenTrendSummary_supports_partial_degraded_payload',
   expect(requestedUrl?.searchParams.get('provider')).toBe('anthropic')
 })
 
+test('test_fetchUsageReportTokenTrendSummary_preserves_bounded_raw_lane_policy_metadata', async () => {
+  server.use(
+    http.get('/api/shell/reports/usage/token-trend-summary', () =>
+      HttpResponse.json({
+        metadata: {
+          from: '2026-05-01',
+          to: '2026-06-01',
+          degraded: true,
+          degradedReason: 'bounded_raw_lane_policy',
+          degradedMessage:
+            'Token trend summary bounded raw-lane policy skipped lanes for broad range.',
+          skippedSubqueries: ['hours', 'scores', 'versions', 'modelFirstSeen'],
+          unavailableSubqueries: [
+            'hours',
+            'scores',
+            'versions',
+            'modelFirstSeen',
+          ],
+          tokenTrendSummaryRawLaneMaxDays: 7,
+          tokenTrendSummaryRangeDays: 30,
+        },
+        tokenTrendHours: [],
+        tokenTrendHealth: [{ provider: 'openai', value: 1 }],
+        tokenTrendScores: [],
+        tokenTrendVersions: [],
+        tokenTrendModelFirstSeen: [],
+      })
+    )
+  )
+
+  const response = await fetchUsageReportTokenTrendSummary({
+    from: '2026-05-01',
+    to: '2026-06-01',
+  })
+
+  expect(response).toMatchObject({
+    metadata: {
+      degraded: true,
+      degradedReason: 'bounded_raw_lane_policy',
+      skippedSubqueries: ['hours', 'scores', 'versions', 'modelFirstSeen'],
+      unavailableSubqueries: ['hours', 'scores', 'versions', 'modelFirstSeen'],
+      tokenTrendSummaryRawLaneMaxDays: 7,
+      tokenTrendSummaryRangeDays: 30,
+    },
+    tokenTrendHours: [],
+    tokenTrendHealth: [{ provider: 'openai', value: 1 }],
+    tokenTrendVersions: [],
+    tokenTrendModelFirstSeen: [],
+  })
+})
+
 test('test_usageReportTokenTrendSummaryMetadataContract_allows_timeoutFields', () => {
   expectTypeOf<
     UsageReportTokenTrendSummaryResponse['metadata']
@@ -151,6 +202,10 @@ test('test_usageReportTokenTrendSummaryMetadataContract_allows_timeoutFields', (
     timeout?: boolean
     timedOutSubquery?: string
     timedOutSubqueries?: string[]
+    skippedSubqueries?: string[]
+    unavailableSubqueries?: string[]
+    tokenTrendSummaryRawLaneMaxDays?: number
+    tokenTrendSummaryRangeDays?: number
     tokenTrendSummaryStatementTimeoutMs?: number
     cacheBackend?: string
     cacheFreshUntil?: string | null

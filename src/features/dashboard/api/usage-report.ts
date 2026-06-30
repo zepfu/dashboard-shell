@@ -1439,6 +1439,10 @@ export interface UsageReportTokenTrendSummaryResponse {
     timeout?: boolean
     timedOutSubquery?: string
     timedOutSubqueries?: string[]
+    skippedSubqueries?: string[]
+    unavailableSubqueries?: string[]
+    tokenTrendSummaryRawLaneMaxDays?: number
+    tokenTrendSummaryRangeDays?: number
     tokenTrendSummaryStatementTimeoutMs?: number
     cacheBackend?: string
     cacheFreshUntil?: string | null

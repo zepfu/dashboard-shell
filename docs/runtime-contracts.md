@@ -71,8 +71,26 @@ page-load path. The `token-trend-summary`, `quota-history`, and
 `GET /api/shell/reports/quotas` uses the bounded report statement timeout; on
 database timeout they return
 `metadata.degraded=true`, a `database_timeout` reason, and a section-level
-`Degraded` badge in the dashboard. `quota-history` first attempts to return a
-partial degraded payload from base quota rows when enrichment times out, with
+`Degraded` badge in the dashboard.
+
+`token-trend-summary` also enforces a bounded raw-lane policy for broad
+date windows. For requests where `to - from` exceeds
+`SHELL_REPORT_TOKEN_TREND_SUMMARY_RAW_LANE_MAX_DAYS` (default `7`), the
+service intentionally skips the raw `session_history` lanes `hours`, `scores`,
+`versions`, and `modelFirstSeen`, while always attempting the `health` lane.
+When raw lanes are skipped, the payload is degraded with
+`degradedReason: 'bounded_raw_lane_policy'` and metadata fields:
+
+- `skippedSubqueries`
+- `unavailableSubqueries`
+- `tokenTrendSummaryRawLaneMaxDays`
+- `tokenTrendSummaryRangeDays`
+
+If a SQL timeout still occurs under the same request, `degradedReason` remains
+`database_timeout` and `timedOutSubqueries` names the unavailable timed-out
+lane set.
+
+`quota-history` first attempts to return a partial degraded payload from base quota rows when enrichment times out, with
 `metadata.timedOutSubqueries` naming the unavailable lane. `quota-range-history`
 uses the same base-row fallback for the range-aware Quota tab, preserving static
 quota bars with empty usage enrichment when the `session_history` join times

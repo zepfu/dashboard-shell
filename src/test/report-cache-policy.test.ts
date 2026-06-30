@@ -37,7 +37,7 @@ const MINUTE_MS = 60 * SECOND_MS
 describe('report cache policy', () => {
   test('keeps usage summary reports fresh for ten minutes by default', () => {
     expect(resolveReportCacheTtlMs('usage')).toBe(10 * MINUTE_MS)
-    expect(resolveReportCacheTtlMs('usage-token-trend-summary-v4')).toBe(
+    expect(resolveReportCacheTtlMs('usage-token-trend-summary-v5')).toBe(
       10 * MINUTE_MS
     )
     expect(resolveReportCacheTtlMs('usage-tool-activity')).toBe(10 * MINUTE_MS)

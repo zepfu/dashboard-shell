@@ -63,11 +63,19 @@ Operators can tune those bounds with
 `SHELL_REPORT_AGENT_SCORE_REASON_RECENT_ROW_LIMIT` and
 `SHELL_REPORT_TOOL_ACTIVITY_RECENT_ROW_LIMIT`, and can tune the route timeout
 with `SHELL_REPORT_TOOL_ACTIVITY_STATEMENT_TIMEOUT_MS`,
-`SHELL_REPORT_TOKEN_TREND_SUMMARY_STATEMENT_TIMEOUT_MS`, and
+`SHELL_REPORT_TOKEN_TREND_SUMMARY_STATEMENT_TIMEOUT_MS`,
+`SHELL_REPORT_TOKEN_TREND_SUMMARY_RAW_LANE_MAX_DAYS` (default `7`), and
 `SHELL_REPORT_QUOTA_HISTORY_STATEMENT_TIMEOUT_MS`. Provider Status p95 latency
 is displayed only when the report has a passive latency sample for the selected
 provider; an empty value means unmeasured in the current health window, not
 zero-millisecond latency.
+
+When `token-trend-summary` ranges exceed the configured raw-lane window, the
+service skips `hours`, `scores`, `versions`, and `modelFirstSeen` raw
+`session_history` lanes and keeps returning `health` as a partial payload so the
+`TREND` section remains visible. Degraded metadata includes
+`skippedSubqueries`, `unavailableSubqueries`,
+`tokenTrendSummaryRawLaneMaxDays`, and `tokenTrendSummaryRangeDays`.
 
 Session-level debugging lives behind the General dashboard `STATUS` section's
 `Diagnostics` tab and is served by

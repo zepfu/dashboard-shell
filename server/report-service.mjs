@@ -342,6 +342,11 @@ const TOKEN_TREND_SUMMARY_STATEMENT_TIMEOUT_MS = positiveIntegerEnv(
   Math.min(REPORT_DB_STATEMENT_TIMEOUT_MS, 15_000),
   1_000
 )
+const TOKEN_TREND_SUMMARY_RAW_LANE_MAX_DAYS = positiveIntegerEnv(
+  'SHELL_REPORT_TOKEN_TREND_SUMMARY_RAW_LANE_MAX_DAYS',
+  7,
+  1
+)
 const QUOTA_HISTORY_STATEMENT_TIMEOUT_MS = positiveIntegerEnv(
   'SHELL_REPORT_QUOTA_HISTORY_STATEMENT_TIMEOUT_MS',
   Math.min(REPORT_DB_STATEMENT_TIMEOUT_MS, 15_000),
@@ -386,7 +391,13 @@ export const USAGE_TOKEN_TREND_SUMMARY_SUBQUERY_KEYS = [
   'versions',
   'modelFirstSeen',
 ]
-const USAGE_TOKEN_TREND_SUMMARY_CACHE_SCOPE = 'usage-token-trend-summary-v4'
+const TOKEN_TREND_SUMMARY_RAW_SUBQUERY_KEYS = [
+  'hours',
+  'scores',
+  'versions',
+  'modelFirstSeen',
+]
+const USAGE_TOKEN_TREND_SUMMARY_CACHE_SCOPE = 'usage-token-trend-summary-v5'
 const USAGE_QUOTA_HISTORY_CACHE_SCOPE = 'usage-quota-history-v2'
 
 const USAGE_REPORT_CACHE_SCOPES = new Set([
@@ -2934,6 +2945,16 @@ function dashboardDateToUtcIso(value) {
 function parseSearchDateOnly(value, fallback) {
   if (!value) return fallback()
   return parseDateOnlyParam(value)
+}
+function calculateTokenTrendRangeDays(searchParams) {
+  const fromDate = parseSearchDateOnly(searchParams.get('from'), defaultFromDate)
+  const toDate = parseSearchDateOnly(searchParams.get('to'), defaultToDate)
+  const fromMs = new Date(`${fromDate}T00:00:00.000Z`).getTime()
+  const toMs = new Date(`${toDate}T00:00:00.000Z`).getTime()
+  if (!Number.isFinite(fromMs) || !Number.isFinite(toMs)) {
+    return 0
+  }
+  return Math.max(0, Math.floor((toMs - fromMs) / (24 * 60 * 60 * 1000)))
 }
 
 function defaultFromDate() {
@@ -6173,11 +6194,15 @@ export function buildDegradedUsageTokenTrendSummaryReport(
   searchParams,
   {
     timedOutSubqueries = [],
+    skippedSubqueries = [],
+    unavailableSubqueries = [],
     tokenTrendHours = [],
     tokenTrendHealth = [],
     tokenTrendScores = [],
     tokenTrendVersions = [],
     tokenTrendModelFirstSeen = [],
+    tokenTrendSummaryRangeDays,
+    tokenTrendSummaryRawLaneMaxDays,
   } = {}
 ) {
   const normalizedTimedOutSubqueries = Array.from(
@@ -6187,22 +6212,59 @@ export function buildDegradedUsageTokenTrendSummaryReport(
       )
     )
   )
+  const normalizedSkippedSubqueries = Array.from(
+    new Set(
+      (skippedSubqueries ?? []).filter((subqueryKey) =>
+        TOKEN_TREND_SUMMARY_RAW_SUBQUERY_KEYS.includes(subqueryKey)
+      )
+    )
+  )
+  const normalizedUnavailableSubqueries = Array.from(
+    new Set([
+      ...normalizedTimedOutSubqueries,
+      ...normalizedSkippedSubqueries,
+      ...unavailableSubqueries,
+    ])
+  )
   const timedOutSubquery = normalizedTimedOutSubqueries[0]
   const timedOutSubqueryMessage =
     normalizedTimedOutSubqueries.length === 1
       ? `subquery "${timedOutSubquery}"`
       : `subqueries ${normalizedTimedOutSubqueries.map((key) => `"${key}"`).join(', ')}`
+  const hasTimedOutSubqueries = normalizedTimedOutSubqueries.length > 0
+  const hasSkippedSubqueries = normalizedSkippedSubqueries.length > 0
+  const hasUnavailableSubqueries = normalizedUnavailableSubqueries.length > 0
+  const isLegacyTimeoutOnly =
+    !hasTimedOutSubqueries && !hasSkippedSubqueries && !hasUnavailableSubqueries
+  const skippedSubqueryMessage =
+    normalizedSkippedSubqueries.length > 0
+      ? `bounded raw-lane policy skipped ${normalizedSkippedSubqueries.map((key) => `"${key}"`).join(', ')} ${normalizedSkippedSubqueries.length > 1 ? 'lane queries' : 'lane query'} for a ${tokenTrendSummaryRangeDays ?? 'unknown'}-day range; max allowed is ${tokenTrendSummaryRawLaneMaxDays ?? 'unknown'} days`
+      : null
+  const degradedMessage =
+    hasTimedOutSubqueries && skippedSubqueryMessage
+      ? `Token trend summary ${timedOutSubqueryMessage} exceeded the bounded database timeout; ${skippedSubqueryMessage}; returning partial payload from successful subqueries.`
+      : hasTimedOutSubqueries
+        ? `Token trend summary ${timedOutSubqueryMessage} exceeded the bounded database timeout; returning partial payload from successful subqueries.`
+        : skippedSubqueryMessage
+          ? `Token trend summary ${skippedSubqueryMessage}; returning partial payload from successful subqueries.`
+          : `Token trend summary exceeded the bounded database timeout; returning partial payload from successful subqueries.`
 
   return {
     metadata: buildUsageTokenTrendSummaryMetadata(searchParams, {
       degraded: true,
-      degradedReason: 'database_timeout',
-      degradedMessage: timedOutSubquery
-        ? `Token trend summary ${timedOutSubqueryMessage} exceeded the bounded database timeout; returning partial payload from successful subqueries.`
-        : 'Token trend summary exceeded the bounded database timeout; returning partial payload from successful subqueries.',
-      timeout: true,
+      degradedReason: hasTimedOutSubqueries
+        ? 'database_timeout'
+        : hasSkippedSubqueries
+          ? 'bounded_raw_lane_policy'
+          : 'database_timeout',
+      degradedMessage,
+      timeout: hasTimedOutSubqueries || isLegacyTimeoutOnly ? true : undefined,
       timedOutSubquery,
       timedOutSubqueries: normalizedTimedOutSubqueries,
+      skippedSubqueries: normalizedSkippedSubqueries,
+      unavailableSubqueries: normalizedUnavailableSubqueries,
+      tokenTrendSummaryRangeDays,
+      tokenTrendSummaryRawLaneMaxDays,
       tokenTrendSummaryStatementTimeoutMs:
         TOKEN_TREND_SUMMARY_STATEMENT_TIMEOUT_MS,
     }),
@@ -9887,6 +9949,12 @@ async function loadUsageTokenTrendSummary(searchParams) {
   const scoreQuery = buildTokenTrendScoreQuery(searchParams)
   const versionsQuery = buildTokenTrendVersionIntervalsQuery(searchParams)
   const modelFirstSeenQuery = buildTokenTrendModelFirstSeenQuery(searchParams)
+  const tokenTrendSummaryRangeDays = calculateTokenTrendRangeDays(searchParams)
+  const skipRawLanes =
+    tokenTrendSummaryRangeDays > TOKEN_TREND_SUMMARY_RAW_LANE_MAX_DAYS
+  const skippedSubqueries = skipRawLanes
+    ? [...TOKEN_TREND_SUMMARY_RAW_SUBQUERY_KEYS]
+    : []
   const querySpecs = [
     {
       subqueryKey: 'hours',
@@ -9932,7 +10000,12 @@ async function loadUsageTokenTrendSummary(searchParams) {
         ]
       : querySpecs
 
-  const queryResults = await runTokenTrendSummarySubqueries(prioritizedQuerySpecs)
+  const runnableQuerySpecs = skippedSubqueries.length
+    ? prioritizedQuerySpecs.filter(
+        ({ subqueryKey }) => !TOKEN_TREND_SUMMARY_RAW_SUBQUERY_KEYS.includes(subqueryKey)
+      )
+    : prioritizedQuerySpecs
+  const queryResults = await runTokenTrendSummarySubqueries(runnableQuerySpecs)
 
   const tokenTrendHoursRows = []
   const tokenTrendHealthRows = []
@@ -9979,8 +10052,12 @@ async function loadUsageTokenTrendSummary(searchParams) {
     }
   }
 
-  if (timedOutSubqueries.length > 0) {
+  if (timedOutSubqueries.length > 0 || skippedSubqueries.length > 0) {
     return buildDegradedUsageTokenTrendSummaryReport(searchParams, {
+      skippedSubqueries,
+      unavailableSubqueries: skippedSubqueries,
+      tokenTrendSummaryRangeDays,
+      tokenTrendSummaryRawLaneMaxDays: TOKEN_TREND_SUMMARY_RAW_LANE_MAX_DAYS,
       timedOutSubqueries,
       tokenTrendHours: tokenTrendHoursRows,
       tokenTrendHealth: tokenTrendHealthRows,
@@ -9992,6 +10069,9 @@ async function loadUsageTokenTrendSummary(searchParams) {
 
   return {
     metadata: buildUsageTokenTrendSummaryMetadata(searchParams, {
+      tokenTrendSummaryRawLaneMaxDays:
+        TOKEN_TREND_SUMMARY_RAW_LANE_MAX_DAYS,
+      tokenTrendSummaryRangeDays,
       tokenTrendSummaryStatementTimeoutMs:
         TOKEN_TREND_SUMMARY_STATEMENT_TIMEOUT_MS,
     }),
