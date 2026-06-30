@@ -35,9 +35,11 @@ import {
   buildQuotaEstimatorUsageBucketQuery,
   buildQuotaHistoryQuery,
   buildQuotaHistoryFallbackQuery,
+  buildQuotaRangeHistoryFallbackQuery,
   buildQuotaQuery,
   buildQuotaRangeHistoryQuery,
   buildDegradedUsageQuotaHistoryReport,
+  buildDegradedUsageQuotaRangeHistoryReport,
   buildDegradedQuotaReport,
   buildDegradedUsageTokenTrendSummaryReport,
   USAGE_TOKEN_TREND_SUMMARY_SUBQUERY_KEYS,
@@ -198,6 +200,15 @@ describe('SQL parse-validation (pgsql-parser) (S4-8)', () => {
 
   test('test_buildQuotaRangeHistoryQuery_sql_is_syntactically_valid', async () => {
     const query = buildQuotaRangeHistoryQuery(
+      new URLSearchParams({ from: '2026-05-01', to: '2026-05-08' })
+    )
+    const tree = await parseSQL(query.sql)
+    expect(Array.isArray(tree)).toBe(true)
+    expect((tree as unknown[]).length).toBeGreaterThan(0)
+  })
+
+  test('test_buildQuotaRangeHistoryFallbackQuery_sql_is_syntactically_valid', async () => {
+    const query = buildQuotaRangeHistoryFallbackQuery(
       new URLSearchParams({ from: '2026-05-01', to: '2026-05-08' })
     )
     const tree = await parseSQL(query.sql)
@@ -1101,6 +1112,32 @@ describe('report-service query builders', () => {
     expect(query.sql).not.toContain('public.rate_limit_observations')
   })
 
+  test('test_buildQuotaRangeHistoryFallbackQuery_returns_range_base_rows_without_enrichment', () => {
+    const query = buildQuotaRangeHistoryFallbackQuery(
+      new URLSearchParams({ from: '2026-05-01', to: '2026-05-08' })
+    )
+
+    expect(query.values).toEqual(['2026-05-01', '2026-05-08'])
+    expect(query.sql).toContain(
+      "ri.fromDate < ($2::date::timestamp AT TIME ZONE 'America/New_York')"
+    )
+    expect(query.sql).toContain(
+      "ri.expected_reset_at >= ($1::date::timestamp AT TIME ZONE 'America/New_York')"
+    )
+    expect(query.sql).toContain("ri.quota_type IN ('short', 'short_special')")
+    expect(query.sql).toContain(
+      "lower(COALESCE(ri.provider, 'unknown')) IN ('openai', 'anthropic', 'claude')"
+    )
+    expect(query.sql).toContain('0::double precision AS velocity_sample_count')
+    expect(query.sql).toContain("'[]'::jsonb AS velocity_segments")
+    expect(query.sql).toContain("'[]'::jsonb AS velocity_scores")
+    expect(query.sql).toContain("0::double precision AS usage_tokens")
+    expect(query.sql).toContain("'[]'::json AS usage_breakdown")
+    expect(query.sql).toContain('public.rate_limit_intervals')
+    expect(query.sql).not.toContain('public.session_history')
+    expect(query.sql).not.toContain('public.rate_limit_observations')
+  })
+
   test('test_degraded_secondary_usage_reports_return_visible_empty_payloads', () => {
     const params = new URLSearchParams({
       from: '2026-05-01',
@@ -1159,6 +1196,58 @@ describe('report-service query builders', () => {
       tokenTrendScores: [],
       tokenTrendVersions: [],
       tokenTrendModelFirstSeen: [],
+    })
+  })
+
+  test('test_buildDegradedUsageQuotaRangeHistoryReport_marks_timeout_metadata', () => {
+    const params = new URLSearchParams({
+      from: '2026-05-01',
+      to: '2026-05-08',
+    })
+
+    expect(
+      buildDegradedUsageQuotaRangeHistoryReport()
+    ).toMatchObject({
+      metadata: {
+        degraded: true,
+        degradedReason: 'database_timeout',
+        timeout: true,
+        timedOutSubqueries: [],
+        quotaRangeHistoryStatementTimeoutMs: expect.any(Number),
+      },
+      quotaRangeHistory: [],
+    })
+
+    expect(
+      buildDegradedUsageQuotaRangeHistoryReport({
+        searchParams: params,
+        timedOutSubqueries: ['history_enrichment'],
+        quotaRangeHistory: [
+          {
+            provider: 'openai',
+            model: null,
+            quota_type: 'weekly',
+          },
+        ],
+      })
+    ).toMatchObject({
+      metadata: {
+        from: '2026-05-01',
+        to: '2026-05-08',
+        degraded: true,
+        degradedReason: 'database_timeout',
+        timeout: true,
+        timedOutSubquery: 'history_enrichment',
+        timedOutSubqueries: ['history_enrichment'],
+        degradedMessage: expect.stringContaining('history_enrichment'),
+      },
+      quotaRangeHistory: [
+        {
+          provider: 'openai',
+          model: null,
+          quota_type: 'weekly',
+        },
+      ],
     })
   })
 

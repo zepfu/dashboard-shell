@@ -449,12 +449,21 @@ export function isInformationalErrorMention(message) {
   return /\berror\b/.test(lower)
 }
 
+function isSuccessfulCacheWaitFallbackWarning(message) {
+  const lower = String(message ?? '').toLowerCase()
+  return (
+    lower.includes('warn: timed out waiting for redis cache refresh') &&
+    lower.includes('falling back to sql')
+  )
+}
+
 export function isActionableErrorLog(message) {
   const lower = message.toLowerCase()
   if (/health\/(?:liveliness|readiness)|"get \/health\b/.test(lower)) {
     return false
   }
   if (isIgnoredContainerLogNoise(lower)) return false
+  if (isSuccessfulCacheWaitFallbackWarning(lower)) return false
   if (hasHttpStatusSignal(message)) return true
   if (/\bconnection refused\b|\betimed out\b|\btimeout\b/.test(lower)) return true
   if (/\b(?:critical|fatal|exception|traceback)\b/.test(lower)) return true

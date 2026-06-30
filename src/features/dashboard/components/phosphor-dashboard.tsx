@@ -46,6 +46,7 @@ import {
   type UsageReportProviderErrorObservationRow,
   type UsageReportQuotaHistoryRow,
   type UsageReportQuotaHistoryResponse,
+  type UsageReportQuotaRangeHistoryResponse,
   type UsageReportQuotaRow,
   type UsageReportResponse,
   type UsageReportSummary,
@@ -299,6 +300,8 @@ export interface PhosphorDashboardProps {
   quotaHistoryFetching?: boolean
   /** Range-aware quota history rows for the Status / Quota tab. */
   quotaRangeHistory?: UsageReportQuotaHistoryRow[]
+  /** Metadata for the range-aware quota history response. */
+  quotaRangeHistoryMetadata?: UsageReportQuotaRangeHistoryResponse['metadata']
   /** True whenever the range-aware quota history query is fetching/refetching. */
   quotaRangeHistoryFetching?: boolean
   /** Force-refresh the main usage report query. */
@@ -359,6 +362,7 @@ export default function PhosphorDashboard({
   quotaHistoryMetadata: quotaHistoryMetadataProp,
   quotaHistoryFetching: quotaHistoryFetchingProp = false,
   quotaRangeHistory: quotaRangeHistoryProp,
+  quotaRangeHistoryMetadata,
   quotaRangeHistoryFetching = false,
   onRefreshReport,
   onRefreshQuotas,
@@ -1246,8 +1250,13 @@ export default function PhosphorDashboard({
   const comparisonUpdating = reportFetching || priorReportFetching
   const quotaHistoryMetadata =
     quotaHistoryMetadataProp ?? internalQuotaHistoryData?.metadata
+  const statusQuotaDegradedMetadata =
+    quotaRangeHistoryMetadata?.degraded === true
+      ? quotaRangeHistoryMetadata
+      : quotaHistoryMetadata
   const statusDegraded =
-    providerSectionView === 'quota' && quotaHistoryMetadata?.degraded === true
+    providerSectionView === 'quota' &&
+    statusQuotaDegradedMetadata?.degraded === true
   const tokenTrendDegraded = tokenTrendSummaryData?.metadata.degraded === true
 
   return (
@@ -1294,7 +1303,7 @@ export default function PhosphorDashboard({
                 <span
                   className='section-degraded-badge'
                   title={
-                    quotaHistoryMetadata?.degradedMessage ??
+                    statusQuotaDegradedMetadata?.degradedMessage ??
                     'Provider quota history is degraded.'
                   }
                 >

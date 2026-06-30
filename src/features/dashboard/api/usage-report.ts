@@ -1230,6 +1230,13 @@ export interface UsageReportQuotaRangeHistoryResponse {
     from: string
     to: string
     generatedAt?: string
+    degraded?: boolean
+    degradedReason?: string
+    degradedMessage?: string
+    timeout?: boolean
+    timedOutSubquery?: string
+    timedOutSubqueries?: string[]
+    quotaRangeHistoryStatementTimeoutMs?: number
     cacheBackend?: string
     cacheFreshUntil?: string | null
     cacheGeneratedAt?: string | null

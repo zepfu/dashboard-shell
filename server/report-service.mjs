@@ -347,6 +347,11 @@ const QUOTA_HISTORY_STATEMENT_TIMEOUT_MS = positiveIntegerEnv(
   Math.min(REPORT_DB_STATEMENT_TIMEOUT_MS, 15_000),
   1_000
 )
+const QUOTA_RANGE_HISTORY_STATEMENT_TIMEOUT_MS = positiveIntegerEnv(
+  'SHELL_REPORT_QUOTA_RANGE_HISTORY_STATEMENT_TIMEOUT_MS',
+  QUOTA_HISTORY_STATEMENT_TIMEOUT_MS,
+  1_000
+)
 // Wave 41-QuotaHistory-1:
 // Explicitly bound the quota-history query window to avoid unbounded scans in
 // `rate_limit_intervals` and `session_history` while still keeping enough bars for
@@ -5392,6 +5397,108 @@ ORDER BY provider ASC, expected_reset_at DESC, quota_type ASC;
   return { sql, values: [] }
 }
 
+export function buildQuotaRangeHistoryFallbackQuery(searchParams) {
+  const from = parseSearchDateOnly(searchParams.get('from'), defaultFromDate)
+  const to = parseSearchDateOnly(searchParams.get('to'), defaultToDate)
+
+  const sql = `
+WITH normalized AS (
+    SELECT
+        CASE
+            WHEN lower(COALESCE(ri.provider, 'unknown')) IN ('google', 'gemini') THEN 'google'
+            WHEN lower(COALESCE(ri.provider, 'unknown')) = 'antigravity' THEN 'antigravity'
+            WHEN lower(COALESCE(ri.provider, 'unknown')) IN ('claude', 'anthropic') THEN 'anthropic'
+            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'claude/%' THEN 'anthropic'
+            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'anthropic/%' THEN 'anthropic'
+            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'deepseek/%' THEN 'deepseek'
+            WHEN lower(COALESCE(ri.provider, 'unknown')) IN ('xai', 'x.ai') THEN 'xai'
+            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'xai/%' THEN 'xai'
+            WHEN lower(COALESCE(ri.provider, 'unknown')) = 'nvidia' THEN 'nvidia_nim'
+            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'nvidia_nim/%' THEN 'nvidia_nim'
+            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'nvidia/%' THEN 'nvidia_nim'
+            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'local/%' THEN 'local'
+            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'local_%' THEN 'local'
+            ELSE COALESCE(ri.provider, 'unknown')
+        END AS provider,
+        CASE
+            WHEN lower(COALESCE(ri.provider, 'unknown')) = 'antigravity'
+              AND ri.quota_key IN (
+                  'antigravity_code_assist:gemini_pool',
+                  'antigravity_code_assist:vertex_pool'
+              )
+            THEN ri.quota_key
+            WHEN ri.quota_type IN ('monthly', 'requests')
+              AND (
+                  lower(COALESCE(ri.provider, 'unknown')) LIKE 'xai/%'
+                  OR lower(COALESCE(ri.provider, 'unknown')) IN ('xai', 'x.ai')
+              )
+            THEN NULL
+            ELSE NULLIF(ri.model, '')
+        END AS model,
+        CASE
+            WHEN ri.quota_type = 'requests'
+              AND (
+                  lower(COALESCE(ri.provider, 'unknown')) LIKE 'xai/%'
+                  OR lower(COALESCE(ri.provider, 'unknown')) IN ('xai', 'x.ai')
+              )
+            THEN 'monthly'
+            WHEN ri.quota_type = 'weekly_special' THEN 'special'
+            WHEN ri.quota_type = 'short_special' THEN 'short_special'
+            WHEN ri.quota_type = 'requests' THEN 'short'
+            ELSE ri.quota_type
+        END AS quota_type,
+        ri.expected_reset_at,
+        ri.fromDate AS interval_start,
+        ri.toDate AS interval_end,
+        ri.remaining_pct
+    FROM public.rate_limit_intervals ri
+    WHERE ri.quota_type IN ('weekly', 'weekly_special', 'short', 'short_special', 'requests', 'monthly', 'wtus')
+      AND ri.expected_reset_at IS NOT NULL
+      AND ri.fromDate < ($2::date::timestamp AT TIME ZONE 'America/New_York')
+      AND ri.expected_reset_at >= ($1::date::timestamp AT TIME ZONE 'America/New_York')
+      AND NOT (
+          ri.quota_type IN ('short', 'short_special')
+          AND (
+              lower(COALESCE(ri.provider, 'unknown')) IN ('openai', 'anthropic', 'claude')
+              OR lower(COALESCE(ri.provider, 'unknown')) LIKE 'claude/%'
+              OR lower(COALESCE(ri.provider, 'unknown')) LIKE 'anthropic/%'
+          )
+      )
+),
+window_bounds AS (
+    SELECT
+        provider,
+        model,
+        quota_type,
+        expected_reset_at,
+        MIN(interval_start) AS interval_start,
+        MAX(interval_end) AS interval_end,
+        MIN(remaining_pct)::double precision AS min_remaining_pct,
+        MAX(remaining_pct)::double precision AS max_remaining_pct
+    FROM normalized
+    GROUP BY provider, model, quota_type, expected_reset_at
+)
+SELECT
+    provider,
+    model,
+    quota_type,
+    expected_reset_at,
+    interval_start,
+    interval_end,
+    min_remaining_pct,
+    max_remaining_pct,
+    0::double precision AS velocity_sample_count,
+    '[]'::jsonb AS velocity_segments,
+    '[]'::jsonb AS velocity_scores,
+    0::double precision AS usage_tokens,
+    '[]'::json AS usage_breakdown
+FROM window_bounds
+ORDER BY provider ASC, expected_reset_at DESC, quota_type ASC;
+`
+
+  return { sql, values: [from, to] }
+}
+
 export function buildQuotaRangeHistoryQuery(searchParams) {
   const from = parseSearchDateOnly(searchParams.get('from'), defaultFromDate)
   const to = parseSearchDateOnly(searchParams.get('to'), defaultToDate)
@@ -5953,6 +6060,52 @@ function buildUsageQuotaHistoryMetadata(extra = {}) {
   return {
     generatedAt: new Date().toISOString(),
     ...extra,
+  }
+}
+
+function buildUsageQuotaRangeHistoryMetadata(searchParams, extra = {}) {
+  return {
+    from: parseDateParam(searchParams.get('from'), defaultFromDate),
+    to: parseDateParam(searchParams.get('to'), defaultToDate),
+    generatedAt: new Date().toISOString(),
+    ...extra,
+  }
+}
+
+export function buildDegradedUsageQuotaRangeHistoryReport({
+  searchParams = new URLSearchParams(),
+  timedOutSubqueries = [],
+  quotaRangeHistory = [],
+  degradedMessage,
+} = {}) {
+  const normalizedTimedOutSubqueries = Array.from(
+    new Set(
+      (timedOutSubqueries ?? []).filter(
+        (subqueryKey) => typeof subqueryKey === 'string' && subqueryKey !== ''
+      )
+    )
+  )
+  const timedOutSubquery = normalizedTimedOutSubqueries[0]
+  const timedOutSubqueryMessage = timedOutSubquery
+    ? `subquery "${timedOutSubquery}"`
+    : null
+
+  return {
+    metadata: buildUsageQuotaRangeHistoryMetadata(searchParams, {
+      degraded: true,
+      degradedReason: 'database_timeout',
+      degradedMessage:
+        degradedMessage ??
+        (timedOutSubquery
+          ? `Quota range history ${timedOutSubqueryMessage} exceeded the bounded database timeout; returning partial payload from base rows.`
+          : 'Quota range history exceeded the bounded database timeout; returning partial payload from base rows.'),
+      timeout: true,
+      timedOutSubquery,
+      timedOutSubqueries: normalizedTimedOutSubqueries,
+      quotaRangeHistoryStatementTimeoutMs:
+        QUOTA_RANGE_HISTORY_STATEMENT_TIMEOUT_MS,
+    }),
+    quotaRangeHistory,
   }
 }
 
@@ -9634,14 +9787,44 @@ async function loadUsageQuotaHistory(searchParams) {
 
 async function loadUsageQuotaRangeHistory(searchParams) {
   const query = buildQuotaRangeHistoryQuery(searchParams)
-  const result = await queryReportDatabase(query.sql, query.values)
-  return {
-    metadata: {
-      from: parseSearchDateOnly(searchParams.get('from'), defaultFromDate),
-      to: parseSearchDateOnly(searchParams.get('to'), defaultToDate),
-      generatedAt: new Date().toISOString(),
-    },
-    quotaRangeHistory: result.rows.map(normalizeQuotaHistoryRow),
+  try {
+    const result = await queryReportDatabase(query.sql, query.values, {
+      statementTimeoutMs: QUOTA_RANGE_HISTORY_STATEMENT_TIMEOUT_MS,
+    })
+    return {
+      metadata: buildUsageQuotaRangeHistoryMetadata(searchParams, {
+        quotaRangeHistoryStatementTimeoutMs:
+          QUOTA_RANGE_HISTORY_STATEMENT_TIMEOUT_MS,
+      }),
+      quotaRangeHistory: result.rows.map(normalizeQuotaHistoryRow),
+    }
+  } catch (error) {
+    if (isDatabaseTimeoutError(error)) {
+      const fallbackQuery = buildQuotaRangeHistoryFallbackQuery(searchParams)
+      try {
+        const fallbackResult = await queryReportDatabase(
+          fallbackQuery.sql,
+          fallbackQuery.values,
+          {
+            statementTimeoutMs: QUOTA_RANGE_HISTORY_STATEMENT_TIMEOUT_MS,
+          }
+        )
+        return buildDegradedUsageQuotaRangeHistoryReport({
+          searchParams,
+          timedOutSubqueries: ['history_enrichment'],
+          quotaRangeHistory: fallbackResult.rows.map(normalizeQuotaHistoryRow),
+        })
+      } catch (fallbackError) {
+        if (isDatabaseTimeoutError(fallbackError)) {
+          return buildDegradedUsageQuotaRangeHistoryReport({
+            searchParams,
+            timedOutSubqueries: ['history_base', 'history_enrichment'],
+          })
+        }
+        throw fallbackError
+      }
+    }
+    throw error
   }
 }
 

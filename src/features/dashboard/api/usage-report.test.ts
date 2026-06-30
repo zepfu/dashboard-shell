@@ -555,6 +555,67 @@ test('test_fetchUsageReportQuotaHistory_preserves_partial_payload', async () => 
   expect(report.quotaHistory?.[0]?.provider).toBe('openai')
 })
 
+test('test_fetchUsageReportQuotaRangeHistory_preserves_partial_payload', async () => {
+  server.use(
+    http.get('/api/shell/reports/usage/quota-range-history', ({ request }) => {
+      const url = new URL(request.url)
+      return HttpResponse.json({
+        metadata: {
+          from: url.searchParams.get('from') ?? '2026-06-01',
+          to: url.searchParams.get('to') ?? '2026-06-08',
+          generatedAt: '2026-06-01T00:00:00.000Z',
+          degraded: true,
+          degradedReason: 'database_timeout',
+          degradedMessage:
+            'Quota range history subquery "history_enrichment" exceeded the bounded database timeout; returning partial payload from base rows.',
+          timeout: true,
+          timedOutSubquery: 'history_enrichment',
+          timedOutSubqueries: ['history_enrichment'],
+          quotaRangeHistoryStatementTimeoutMs: 15000,
+        },
+        quotaRangeHistory: [
+          {
+            provider: 'openai',
+            model: null,
+            quota_type: 'weekly',
+            expected_reset_at: '2026-06-08T00:00:00.000Z',
+            interval_start: '2026-06-01T00:00:00.000Z',
+            interval_end: '2026-06-08T00:00:00.000Z',
+            min_remaining_pct: 10,
+            max_remaining_pct: 100,
+            velocity_segments: [],
+            velocity_scores: [],
+            velocity_sample_count: 0,
+            usage_tokens: 0,
+            usage_breakdown: [],
+          },
+        ],
+      })
+    })
+  )
+
+  const report = await fetchUsageReportQuotaRangeHistory({
+    from: '2026-06-01',
+    to: '2026-06-08',
+    cacheBust: 'manual-1',
+  })
+
+  expect(report).toMatchObject({
+    metadata: {
+      from: '2026-06-01',
+      to: '2026-06-08',
+      degraded: true,
+      degradedReason: 'database_timeout',
+      timeout: true,
+      timedOutSubquery: 'history_enrichment',
+      timedOutSubqueries: ['history_enrichment'],
+      quotaRangeHistoryStatementTimeoutMs: 15000,
+    },
+  })
+  expect(report.quotaRangeHistory).toHaveLength(1)
+  expect(report.quotaRangeHistory[0]?.usage_tokens).toBe(0)
+})
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Wave 5 / S4-1, S4-5: Boundary-validation and malformed-payload tests
 // ─────────────────────────────────────────────────────────────────────────────

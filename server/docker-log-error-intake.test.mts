@@ -74,6 +74,18 @@ describe('docker-log-error-intake', () => {
     expect(inferLogLevel(msg)).toBe('error')
   })
 
+  test('redis cache wait fallback warning is not an actionable error', () => {
+    const msg =
+      '[report-service] WARN: timed out waiting for Redis cache refresh for usage-quota-range-history:abc123; falling back to SQL.'
+    expect(isActionableErrorLog(msg)).toBe(false)
+    expect(
+      buildDockerLogErrorRow(
+        { time: '2026-06-30T02:42:03.000Z', stream: 'stderr', log: msg },
+        'dashboard-shell-reports-dev'
+      )
+    ).toBeNull()
+  })
+
 
   test('status extraction ignores decimal timestamps package counts and bare port numbers', () => {
     const falsePositives = [
