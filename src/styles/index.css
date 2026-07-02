@@ -2035,6 +2035,10 @@
 }
 
 .section-tabs button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
   min-width: 68px;
   padding: 4px 9px;
   border: 1px solid transparent;
@@ -2045,6 +2049,57 @@
   font-weight: 700;
   letter-spacing: 0;
   cursor: pointer;
+}
+
+.section-tab-label {
+  min-width: 0;
+}
+
+.section-tab-indicator {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+}
+
+.section-tab-indicator-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  flex: 0 0 auto;
+}
+
+.section-tab-indicator.is-red .section-tab-indicator-dot {
+  background: var(--accent-hot);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--accent-hot) 50%, black 50%),
+    0 0 8px color-mix(in srgb, var(--accent-hot) 70%, transparent);
+}
+
+.section-tab-indicator.is-green .section-tab-indicator-dot {
+  background: var(--accent-teal);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--accent-teal) 55%, black 45%),
+    0 0 7px color-mix(in srgb, var(--accent-teal) 55%, transparent);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .section-tab-indicator.is-flashing .section-tab-indicator-dot {
+    animation: section-tab-indicator-flash 1.4s ease-in-out infinite;
+  }
+}
+
+@keyframes section-tab-indicator-flash {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+
+  50% {
+    opacity: 0.35;
+    transform: scale(0.78);
+  }
 }
 
 .section-title-main .section-tabs button {

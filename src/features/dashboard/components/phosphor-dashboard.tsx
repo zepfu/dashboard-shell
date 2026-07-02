@@ -43,6 +43,8 @@ import {
   fetchUsageReportToolActivity,
   fetchUsageReportTokenTrendDay,
   fetchUsageReportTokenTrendSummary,
+  type ShellPgBouncerHealth,
+  type UsageReportProviderCreditLifecycle,
   type UsageReportProviderErrorObservationRow,
   type UsageReportQuotaHistoryRow,
   type UsageReportQuotaHistoryResponse,
@@ -220,12 +222,37 @@ function shouldShowTokenTrendDegradedBadge(
   )
 }
 
+function hasPgBouncerIssue(health?: ShellPgBouncerHealth): boolean {
+  if (health === undefined) return false
+  if (health.error !== undefined && health.error.length > 0) return true
+  if (health.sidecars.length === 0) return false
+  if (health.status !== 'green') return true
+  return health.sidecars.some((sidecar) => sidecar.status !== 'green')
+}
+
+function hasProviderCreditsAvailable(
+  creditLifecycle?: UsageReportProviderCreditLifecycle
+): boolean {
+  if (
+    (creditLifecycle?.summaries ?? []).some(
+      (summary) => summary.available_count > 0
+    )
+  ) {
+    return true
+  }
+  return (creditLifecycle?.entries ?? []).some(
+    (entry) => entry.available_count > 0 || entry.status === 'available'
+  )
+}
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
 export type ProviderSectionView =
   | 'health'
+  | 'pgbouncer'
+  | 'provider-credits'
   | 'quota'
   | 'provider-auth'
   | 'alias-routing'
@@ -519,7 +546,8 @@ export default function PhosphorDashboard({
   } = useQuery({
     queryKey: ['shell-health-pgbouncer'],
     queryFn: ({ signal }) => fetchShellHealth(signal),
-    enabled: providerSectionView === 'health',
+    enabled:
+      providerSectionView === 'health' || providerSectionView === 'pgbouncer',
     staleTime: 15_000,
     refetchInterval: LIVE_DASHBOARD_LIGHTWEIGHT_REFETCH_INTERVAL_MS,
     refetchIntervalInBackground: false,
@@ -1231,6 +1259,14 @@ export default function PhosphorDashboard({
   }, [refetchSessionDiagnostics])
 
   const refreshStatusSection = useCallback(async (): Promise<void> => {
+    if (providerSectionView === 'pgbouncer') {
+      await refetchShellHealth()
+      return
+    }
+    if (providerSectionView === 'provider-credits') {
+      await refreshReport()
+      return
+    }
     if (providerSectionView === 'quota') {
       await Promise.all([refreshQuotas(), refreshQuotaRangeHistory()])
       return
@@ -1285,16 +1321,20 @@ export default function PhosphorDashboard({
   }, [refreshReport, refetchToolActivity])
 
   const statusUpdating =
-    providerSectionView === 'quota'
-      ? quotasFetching || quotaRangeHistoryFetching
-      : providerSectionView === 'weights'
-        ? quotaEstimatorFetching
-        : providerSectionView === 'diagnostics'
-          ? sessionDiagnosticsFetching
-          : reportFetching ||
-            quotasFetching ||
-            quotaHistoryFetching ||
-            shellHealthFetching
+    providerSectionView === 'pgbouncer'
+      ? shellHealthFetching
+      : providerSectionView === 'provider-credits'
+        ? reportFetching
+        : providerSectionView === 'quota'
+          ? quotasFetching || quotaRangeHistoryFetching
+          : providerSectionView === 'weights'
+            ? quotaEstimatorFetching
+            : providerSectionView === 'diagnostics'
+              ? sessionDiagnosticsFetching
+              : reportFetching ||
+                quotasFetching ||
+                quotaHistoryFetching ||
+                shellHealthFetching
   const reportUpdating = reportFetching || toolActivityFetching
   const tokenTrendUpdating =
     reportFetching ||
@@ -1312,6 +1352,10 @@ export default function PhosphorDashboard({
     statusQuotaDegradedMetadata?.degraded === true
   const tokenTrendDegraded = shouldShowTokenTrendDegradedBadge(
     tokenTrendSummaryData?.metadata
+  )
+  const pgBouncerIssue = hasPgBouncerIssue(shellHealthData?.pgBouncerSidecars)
+  const providerCreditsAvailable = hasProviderCreditsAvailable(
+    report?.providerCreditLifecycle
   )
 
   return (
@@ -1342,6 +1386,28 @@ export default function PhosphorDashboard({
               value={providerSectionView}
               options={[
                 { value: 'health', label: 'Health' },
+                {
+                  value: 'pgbouncer',
+                  label: 'PgBouncer',
+                  indicator: pgBouncerIssue
+                    ? {
+                        label: 'PgBouncer has issues',
+                        title: 'PgBouncer has issues',
+                        className: 'is-red is-flashing',
+                      }
+                    : undefined,
+                },
+                {
+                  value: 'provider-credits',
+                  label: 'Provider Credits',
+                  indicator: providerCreditsAvailable
+                    ? {
+                        label: 'Provider credits available',
+                        title: 'Provider credits available',
+                        className: 'is-green',
+                      }
+                    : undefined,
+                },
                 { value: 'quota', label: 'Quota' },
                 { value: 'provider-auth', label: 'Provider Auth' },
                 { value: 'alias-routing', label: 'Alias Routing' },
@@ -1377,18 +1443,21 @@ export default function PhosphorDashboard({
         </SectionTitle>
         {reportLoading &&
         (providerSectionView === 'health' ||
+          providerSectionView === 'provider-credits' ||
           providerSectionView === 'provider-auth' ||
           providerSectionView === 'alias-routing') ? (
           <SectionSkeleton height={120} />
+        ) : providerSectionView === 'pgbouncer' ? (
+          <PgBouncerHealthPanel
+            health={shellHealthData?.pgBouncerSidecars}
+            loading={shellHealthFetching}
+          />
+        ) : providerSectionView === 'provider-credits' ? (
+          <ProviderCreditLifecyclePanel
+            creditLifecycle={report?.providerCreditLifecycle}
+          />
         ) : providerSectionView === 'health' ? (
           <>
-            <PgBouncerHealthPanel
-              health={shellHealthData?.pgBouncerSidecars}
-              loading={shellHealthFetching}
-            />
-            <ProviderCreditLifecyclePanel
-              creditLifecycle={report?.providerCreditLifecycle}
-            />
             <div
               className={`provider-health-summary ${styles['provider-health-summary-masonry']}`}
             >

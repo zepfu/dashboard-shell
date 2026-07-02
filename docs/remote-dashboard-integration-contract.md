@@ -207,9 +207,13 @@ modes.
 
 The root General dashboard `STATUS` section uses first-level section tabs:
 
-- `Health`: PgBouncer sidecar health, provider credit lifecycle, and Provider
-  Status health cards (including aggregate totals). Google/Antigravity provider
-  health cards remain omitted per product policy.
+- `Health`: Provider Status health cards, including aggregate totals.
+  Google/Antigravity provider health cards remain omitted per product policy.
+- `PgBouncer`: PgBouncer sidecar health. The tab shows a flashing red circle
+  indicator when shell health reports an error, degraded PgBouncer status, or a
+  non-green sidecar.
+- `Provider Credits`: `providerCreditLifecycle` from the usage report payload.
+  The tab shows a steady green circle indicator when credits are available.
 - `Quota`: Range-aware quota history bars per provider. Broad ranges may return
   degraded base rows with empty usage enrichment when quota-range history
   enrichment exceeds the bounded report timeout.
@@ -217,8 +221,9 @@ The root General dashboard `STATUS` section uses first-level section tabs:
 - `Alias Routing`: `providerAliasRouting` from the usage report payload.
 - `Weights` and `Diagnostics`: additive estimator and session diagnostics panels.
 
-Provider Auth and Alias Routing are not rendered inside the Health tab; each tab
-reuses the same report fetch as the rest of the General dashboard.
+PgBouncer, Provider Credits, Provider Auth, and Alias Routing are not rendered
+inside the Health tab. Each report-backed tab reuses the same report fetch as
+the rest of the General dashboard.
 
 ## Component And Lint Expectations
 

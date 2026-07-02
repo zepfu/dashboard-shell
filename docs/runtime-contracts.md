@@ -65,6 +65,12 @@ providers in the STATUS Health and Quota tabs). Token Trend, Ledger, and raw
 provider attribution continue to preserve `google` and `antigravity` as distinct
 source providers.
 
+PgBouncer sidecar health is rendered in the independent **STATUS > PgBouncer**
+tab, not inside the Health tab. When shell health reports a PgBouncer error,
+degraded aggregate status, or a non-green sidecar, the PgBouncer tab shows a
+flashing red circle indicator. An unknown shell-health response with no sidecars
+is neutral and should not flash.
+
 Secondary General dashboard reports must fail visibly instead of hanging the
 page-load path. The `token-trend-summary`, `quota-history`, and
 `quota-range-history` routes use endpoint-specific statement timeouts, and
@@ -188,8 +194,8 @@ Redaction rules (server normalization and SQL projection):
   past (`skipped_expired`).
 - Error messages are sanitized for token-like strings and filesystem paths.
 
-UI placement: General dashboard **Health** tab, after PgBouncer and AAWM alias
-routing panels and before provider health cards.
+UI placement: General dashboard **STATUS > Provider Auth** tab. Provider auth
+health is not rendered inside the Health tab.
 
 
 ## Provider Health — Provider Credit Lifecycle (D1-417 / D1-422)
@@ -240,8 +246,10 @@ Redaction rules (server normalization and SQL projection):
   unfiltered `metadata`, `SELECT *`, or raw JSON blobs.
 - `source_url` must be http/https with credentials, query, and hash removed.
 
-UI placement: General dashboard **Health** tab (STATUS > Health), immediately
-after Provider auth health and before provider health cards.
+UI placement: General dashboard **STATUS > Provider Credits** tab. The Provider
+Credits tab shows a steady green circle indicator when any summary or entry has
+available credits. Provider credit lifecycle is not rendered inside the Health
+tab.
 
 ## CSP And Asset Loading
 

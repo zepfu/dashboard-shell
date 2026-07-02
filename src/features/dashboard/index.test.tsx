@@ -355,6 +355,12 @@ describe('Dashboard — TCG-2: cold-load render path', () => {
       within(statusTabs).getByRole('tab', { name: 'Health' })
     ).toHaveAttribute('aria-selected', 'true')
     expect(
+      within(statusTabs).getByRole('tab', { name: 'PgBouncer' })
+    ).toBeInTheDocument()
+    expect(
+      within(statusTabs).getByRole('tab', { name: 'Provider Credits' })
+    ).toBeInTheDocument()
+    expect(
       within(statusTabs).getByRole('tab', { name: 'Diagnostics' })
     ).toBeInTheDocument()
 

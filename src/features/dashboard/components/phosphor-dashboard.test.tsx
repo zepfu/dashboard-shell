@@ -684,7 +684,7 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
     )
   })
 
-  test('test_health_tab_renders_pgbouncer_sidecar_health', async () => {
+  test('test_pgbouncer_tab_renders_pgbouncer_sidecar_health', async () => {
     server.use(
       http.get('/api/shell/health', () =>
         HttpResponse.json({
@@ -848,6 +848,17 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
         </Wrapper>
       )
     })
+
+    expect(
+      screen.queryByRole('region', { name: /pgbouncer health/i })
+    ).toBeNull()
+    const pgBouncerTab = screen.getByRole('tab', { name: /PgBouncer/ })
+    await waitFor(() => {
+      expect(
+        pgBouncerTab.querySelector('.section-tab-indicator.is-red.is-flashing')
+      ).not.toBeNull()
+    })
+    fireEvent.click(pgBouncerTab)
 
     const aawmCard = (await screen.findByText('AAWM PgBouncer')).closest(
       'article'
@@ -1897,6 +1908,12 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
     expect(healthTab).toHaveAttribute('aria-selected', 'true')
     const quotaTab = screen.getByRole('tab', { name: 'Quota' })
     expect(quotaTab).toHaveAttribute('aria-selected', 'false')
+    const pgBouncerTab = screen.getByRole('tab', { name: 'PgBouncer' })
+    expect(pgBouncerTab).toHaveAttribute('aria-selected', 'false')
+    const providerCreditsTab = screen.getByRole('tab', {
+      name: 'Provider Credits',
+    })
+    expect(providerCreditsTab).toHaveAttribute('aria-selected', 'false')
     const providerAuthTab = screen.getByRole('tab', { name: 'Provider Auth' })
     expect(providerAuthTab).toHaveAttribute('aria-selected', 'false')
     const aliasRoutingTab = screen.getByRole('tab', { name: 'Alias Routing' })
@@ -1909,9 +1926,17 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
     expect(quotaTab).toHaveAttribute('aria-selected', 'true')
     expect(healthTab).toHaveAttribute('aria-selected', 'false')
 
+    fireEvent.click(pgBouncerTab)
+    expect(pgBouncerTab).toHaveAttribute('aria-selected', 'true')
+    expect(quotaTab).toHaveAttribute('aria-selected', 'false')
+
+    fireEvent.click(providerCreditsTab)
+    expect(providerCreditsTab).toHaveAttribute('aria-selected', 'true')
+    expect(pgBouncerTab).toHaveAttribute('aria-selected', 'false')
+
     fireEvent.click(providerAuthTab)
     expect(providerAuthTab).toHaveAttribute('aria-selected', 'true')
-    expect(quotaTab).toHaveAttribute('aria-selected', 'false')
+    expect(providerCreditsTab).toHaveAttribute('aria-selected', 'false')
 
     fireEvent.click(aliasRoutingTab)
     expect(aliasRoutingTab).toHaveAttribute('aria-selected', 'true')
@@ -4905,7 +4930,7 @@ describe('PhosphorDashboard — D1-338 provider auth health panel', () => {
 })
 
 describe('PhosphorDashboard — D1-417 / D1-422 provider credit lifecycle panel', () => {
-  test('test_health_tab_renders_codex_summary_rows_and_status_distinction_without_secrets', async () => {
+  test('test_provider_credits_tab_renders_codex_summary_rows_and_status_distinction_without_secrets', async () => {
     const report: UsageReportResponse = {
       ...MOCK_REPORT,
       providerCreditLifecycle: {
@@ -4982,6 +5007,20 @@ describe('PhosphorDashboard — D1-417 / D1-422 provider credit lifecycle panel'
       )
     })
 
+    expect(
+      screen.queryByRole('region', { name: /provider credit lifecycle/i })
+    ).toBeNull()
+    const providerCreditsTab = screen.getByRole('tab', {
+      name: /Provider Credits/,
+    })
+    expect(
+      providerCreditsTab.querySelector('.section-tab-indicator.is-green')
+    ).not.toBeNull()
+    expect(
+      providerCreditsTab.querySelector('.section-tab-indicator.is-flashing')
+    ).toBeNull()
+    fireEvent.click(providerCreditsTab)
+
     const panel = screen.getByRole('region', {
       name: /provider credit lifecycle/i,
     })
@@ -5017,7 +5056,7 @@ describe('PhosphorDashboard — D1-417 / D1-422 provider credit lifecycle panel'
     ).toBeNull()
   })
 
-  test('test_health_tab_provider_credit_multiple_summaries_aggregate_headline', async () => {
+  test('test_provider_credits_tab_multiple_summaries_aggregate_headline', async () => {
     const report: UsageReportResponse = {
       ...MOCK_REPORT,
       providerCreditLifecycle: {
@@ -5066,6 +5105,8 @@ describe('PhosphorDashboard — D1-417 / D1-422 provider credit lifecycle panel'
       )
     })
 
+    fireEvent.click(screen.getByRole('tab', { name: /Provider Credits/ }))
+
     const panel = screen.getByRole('region', {
       name: /provider credit lifecycle/i,
     })
@@ -5079,7 +5120,7 @@ describe('PhosphorDashboard — D1-417 / D1-422 provider credit lifecycle panel'
     expect(within(panel).getByText('not observed')).toBeInTheDocument()
   })
 
-  test('test_health_tab_provider_credit_empty_renders_not_observed', async () => {
+  test('test_provider_credits_tab_empty_renders_not_observed', async () => {
     const report: UsageReportResponse = {
       ...MOCK_REPORT,
       providerCreditLifecycle: {
@@ -5106,6 +5147,14 @@ describe('PhosphorDashboard — D1-417 / D1-422 provider credit lifecycle panel'
         </Wrapper>
       )
     })
+
+    const providerCreditsTab = screen.getByRole('tab', {
+      name: 'Provider Credits',
+    })
+    expect(
+      providerCreditsTab.querySelector('.section-tab-indicator')
+    ).toBeNull()
+    fireEvent.click(providerCreditsTab)
 
     const panel = screen.getByRole('region', {
       name: /provider credit lifecycle/i,
