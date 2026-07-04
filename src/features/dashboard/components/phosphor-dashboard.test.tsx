@@ -2884,6 +2884,11 @@ describe('Wave 40 — quotaTypeToPeriodType', () => {
     expect(quotaTypeToPeriodType('monthly')).toBe('monthly')
   })
 
+  test('test_quota_type_weekly_overage_included_maps_to_weekly_overage_included', () => {
+    expect(quotaTypeToPeriodType('weekly_overage_included')).toBe(
+      'weekly_overage_included'
+    )
+  })
   test('test_quota_type_unknown_defaults_to_weekly', () => {
     expect(quotaTypeToPeriodType('requests')).toBe('weekly')
   })
@@ -3110,6 +3115,13 @@ describe('Wave 41 — buildProviderLanes', () => {
       monthly_active: false,
       monthly_usage_tokens: 0,
       monthly_usage_breakdown: [],
+      weekly_overage_included_remaining_pct: null,
+      weekly_overage_included_reset_at: null,
+      weekly_overage_included_interval_start: null,
+      weekly_overage_included_interval_end: null,
+      weekly_overage_included_active: false,
+      weekly_overage_included_usage_tokens: 0,
+      weekly_overage_included_usage_breakdown: [],
       ...overrides,
     }
   }
@@ -3132,23 +3144,97 @@ describe('Wave 41 — buildProviderLanes', () => {
     }
   }
 
-  test('test_anthropic_has_3_lanes', () => {
+  test('test_anthropic_has_3_lanes_without_weekly_overage_source_rows', () => {
     const quotaRows = [makeAnthropicQuotaRow()]
     const lanes = buildProviderLanes('anthropic', quotaRows, [])
-    // Lanes that have a current bar or prior bars: all 3 have current bars.
     expect(lanes.length).toBe(3)
     const keys = lanes.map((l) => l.laneKey)
     expect(keys).toContain('anthropic/short')
-    expect(keys).toContain('anthropic/special')
     expect(keys).toContain('anthropic/weekly')
+    expect(keys).not.toContain('anthropic/weekly_overage_included')
+    expect(keys).toContain('anthropic/special')
   })
 
-  test('test_anthropic_lane_order_short_special_weekly', () => {
+  test('test_anthropic_lane_order_short_weekly_special_without_overage', () => {
     const quotaRows = [makeAnthropicQuotaRow()]
     const lanes = buildProviderLanes('anthropic', quotaRows, [])
     expect(lanes[0].laneKey).toBe('anthropic/short')
-    expect(lanes[1].laneKey).toBe('anthropic/special')
-    expect(lanes[2].laneKey).toBe('anthropic/weekly')
+    expect(lanes[1].laneKey).toBe('anthropic/weekly')
+    expect(lanes[2].laneKey).toBe('anthropic/special')
+  })
+
+  test('test_anthropic_has_4_lanes_when_weekly_overage_active', () => {
+    const quotaRows = [
+      makeAnthropicQuotaRow({
+        weekly_overage_included_remaining_pct: 90,
+        weekly_overage_included_reset_at: '2026-07-09T15:00:00Z',
+        weekly_overage_included_interval_start: '2026-07-02T15:00:00Z',
+        weekly_overage_included_interval_end: '2026-07-09T15:00:00Z',
+        weekly_overage_included_active: true,
+      }),
+    ]
+    const lanes = buildProviderLanes('anthropic', quotaRows, [])
+    expect(lanes.map((lane) => lane.laneKey)).toEqual([
+      'anthropic/short',
+      'anthropic/weekly',
+      'anthropic/weekly_overage_included',
+      'anthropic/special',
+    ])
+  })
+
+  test('test_anthropic_weekly_overage_lane_does_not_fallback_to_weekly_or_sonnet', () => {
+    const quotaRows = [
+      makeAnthropicQuotaRow({
+        weekly_overage_included_remaining_pct: 90,
+        weekly_overage_included_reset_at: '2026-07-09T15:00:00Z',
+        weekly_overage_included_interval_start: '2026-07-02T15:00:00Z',
+        weekly_overage_included_interval_end: '2026-07-09T15:00:00Z',
+        weekly_overage_included_active: true,
+        weekly_overage_included_usage_tokens: 120,
+        weekly_overage_included_usage_breakdown: [],
+      }),
+    ]
+    const lanes = buildProviderLanes('anthropic', quotaRows, [])
+    const overageLane = lanes.find(
+      (lane) => lane.laneKey === 'anthropic/weekly_overage_included'
+    )
+    expect(overageLane).toBeDefined()
+    expect(overageLane!.currentBar).not.toBeNull()
+    expect(overageLane!.currentBar!.remainingPct).toBe(90)
+    expect(overageLane!.laneLabel).toMatch(/Fable/i)
+  })
+
+  test('test_anthropic_history_rows_keep_weekly_overage_separate_from_weekly_and_special', () => {
+    const quotaRows = [makeAnthropicQuotaRow()]
+    const historyRows = [
+      makeHistoryRow({
+        quota_type: 'weekly',
+        expected_reset_at: '2026-05-14T15:00:00Z',
+        min_remaining_pct: 40,
+      }),
+      makeHistoryRow({
+        quota_type: 'weekly_overage_included',
+        expected_reset_at: '2026-05-21T15:00:00Z',
+        min_remaining_pct: 55,
+      }),
+      makeHistoryRow({
+        quota_type: 'special',
+        expected_reset_at: '2026-05-28T15:00:00Z',
+        min_remaining_pct: 70,
+      }),
+    ]
+    const lanes = buildProviderLanes('anthropic', quotaRows, historyRows)
+    const weeklyLane = lanes.find((lane) => lane.laneKey === 'anthropic/weekly')
+    const overageLane = lanes.find(
+      (lane) => lane.laneKey === 'anthropic/weekly_overage_included'
+    )
+    const specialLane = lanes.find(
+      (lane) => lane.laneKey === 'anthropic/special'
+    )
+    expect(weeklyLane?.priorBars).toHaveLength(1)
+    expect(overageLane?.priorBars).toHaveLength(1)
+    expect(specialLane?.priorBars).toHaveLength(1)
+    expect(overageLane?.priorBars[0].remainingPct).toBe(55)
   })
 
   test('test_anthropic_short_lane_has_current_bar', () => {

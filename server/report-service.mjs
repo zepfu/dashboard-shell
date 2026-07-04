@@ -4414,7 +4414,7 @@ WITH normalized AS (
             ELSE false
         END AS active
     FROM public.rate_limit_intervals ri
-    WHERE ri.quota_type IN ('weekly', 'short', 'weekly_special', 'short_special', 'requests', 'monthly', 'wtus')
+    WHERE ri.quota_type IN ('weekly', 'weekly_overage_included', 'short', 'weekly_special', 'short_special', 'requests', 'monthly', 'wtus')
 ),
 ranked AS (
     SELECT
@@ -4554,6 +4554,26 @@ SELECT
     MAX(billing.quota_unit) FILTER (WHERE s.quota_type = 'weekly') AS weekly_quota_unit,
     (ARRAY_AGG(billing.raw_provider_fields) FILTER (WHERE s.quota_type = 'weekly'))[1] AS weekly_raw_provider_fields,
     (ARRAY_AGG(billing.evidence) FILTER (WHERE s.quota_type = 'weekly'))[1] AS weekly_evidence,
+
+    MAX(s.remaining_pct) FILTER (WHERE s.quota_type = 'weekly_overage_included')::double precision AS weekly_overage_included_remaining_pct,
+    MAX(s.expected_reset_at) FILTER (WHERE s.quota_type = 'weekly_overage_included') AS weekly_overage_included_reset_at,
+    MAX(s.interval_start) FILTER (WHERE s.quota_type = 'weekly_overage_included') AS weekly_overage_included_interval_start,
+    MAX(s.interval_end) FILTER (WHERE s.quota_type = 'weekly_overage_included') AS weekly_overage_included_interval_end,
+    MAX(s.active::int) FILTER (WHERE s.quota_type = 'weekly_overage_included')::double precision AS weekly_overage_included_active,
+    MAX(usage.usage_tokens) FILTER (WHERE s.quota_type = 'weekly_overage_included')::double precision AS weekly_overage_included_usage_tokens,
+    (ARRAY_AGG(usage.usage_breakdown) FILTER (WHERE s.quota_type = 'weekly_overage_included'))[1] AS weekly_overage_included_usage_breakdown,
+    MAX(billing.quota_limit) FILTER (WHERE s.quota_type = 'weekly_overage_included')::double precision AS weekly_overage_included_quota_limit,
+    MAX(billing.quota_used) FILTER (WHERE s.quota_type = 'weekly_overage_included')::double precision AS weekly_overage_included_quota_used,
+    MAX(billing.quota_remaining) FILTER (WHERE s.quota_type = 'weekly_overage_included')::double precision AS weekly_overage_included_quota_remaining,
+    MAX(billing.billing_observed_at) FILTER (WHERE s.quota_type = 'weekly_overage_included') AS weekly_overage_included_billing_observed_at,
+    MAX(billing.billing_period_start_at) FILTER (WHERE s.quota_type = 'weekly_overage_included') AS weekly_overage_included_billing_period_start_at,
+    MAX(billing.billing_period_end_at) FILTER (WHERE s.quota_type = 'weekly_overage_included') AS weekly_overage_included_billing_period_end_at,
+    MAX(billing.quota_key) FILTER (WHERE s.quota_type = 'weekly_overage_included') AS weekly_overage_included_quota_key,
+    MAX(billing.source) FILTER (WHERE s.quota_type = 'weekly_overage_included') AS weekly_overage_included_source,
+    MAX(billing.client) FILTER (WHERE s.quota_type = 'weekly_overage_included') AS weekly_overage_included_client,
+    MAX(billing.quota_unit) FILTER (WHERE s.quota_type = 'weekly_overage_included') AS weekly_overage_included_quota_unit,
+    (ARRAY_AGG(billing.raw_provider_fields) FILTER (WHERE s.quota_type = 'weekly_overage_included'))[1] AS weekly_overage_included_raw_provider_fields,
+    (ARRAY_AGG(billing.evidence) FILTER (WHERE s.quota_type = 'weekly_overage_included'))[1] AS weekly_overage_included_evidence,
     MAX(s.remaining_pct) FILTER (WHERE s.quota_type = 'short')::double precision AS short_remaining_pct,
     MAX(s.expected_reset_at) FILTER (WHERE s.quota_type = 'short') AS short_reset_at,
     MAX(s.interval_start) FILTER (WHERE s.quota_type = 'short') AS short_interval_start,
@@ -4684,7 +4704,7 @@ quota_key_gaps AS (
     FROM (
         SELECT DISTINCT provider, quota_key, quota_type, expected_reset_at
         FROM public.rate_limit_intervals
-        WHERE quota_type IN ('weekly', 'weekly_special', 'short', 'short_special', 'requests', 'monthly', 'wtus')
+        WHERE quota_type IN ('weekly', 'weekly_overage_included', 'weekly_special', 'short', 'short_special', 'requests', 'monthly', 'wtus')
           AND expected_reset_at IS NOT NULL
           AND quota_key IS NOT NULL
     ) distinct_resets
@@ -4732,7 +4752,7 @@ normalized AS (
             ELSE false
         END AS active
     FROM public.rate_limit_intervals ri
-    WHERE ri.quota_type IN ('weekly', 'short', 'weekly_special', 'short_special', 'requests', 'monthly', 'wtus')
+    WHERE ri.quota_type IN ('weekly', 'weekly_overage_included', 'short', 'weekly_special', 'short_special', 'requests', 'monthly', 'wtus')
 ),
 ranked AS (
     SELECT
@@ -4812,7 +4832,7 @@ selected_with_duration AS (
                 WHEN s.provider = 'antigravity' AND s.raw_quota_type = 'wtus' THEN 5.0
                 WHEN s.quota_type = 'monthly' THEN 720.0
                 WHEN s.quota_type IN ('short', 'short_special') THEN 5.0
-                WHEN s.quota_type IN ('weekly', 'special') THEN 168.0
+                WHEN s.quota_type IN ('weekly', 'weekly_overage_included', 'special') THEN 168.0
                 ELSE 168.0
             END
         ) AS interval_hours
@@ -4959,7 +4979,7 @@ quota_key_gaps AS (
     FROM (
         SELECT DISTINCT provider, quota_key, quota_type, expected_reset_at
         FROM public.rate_limit_intervals
-        WHERE quota_type IN ('weekly', 'weekly_special', 'short', 'short_special', 'requests', 'monthly', 'wtus')
+        WHERE quota_type IN ('weekly', 'weekly_overage_included', 'weekly_special', 'short', 'short_special', 'requests', 'monthly', 'wtus')
           AND expected_reset_at IS NOT NULL
     ) distinct_resets
 ),
@@ -5037,7 +5057,7 @@ normalized AS (
                         THEN 24.0
                         WHEN ri.quota_type = 'wtus' THEN 5.0
                         WHEN ri.quota_type IN ('short', 'short_special') THEN 5.0
-                        WHEN ri.quota_type IN ('weekly', 'weekly_special') THEN 168.0
+                        WHEN ri.quota_type IN ('weekly', 'weekly_overage_included', 'weekly_special') THEN 168.0
                         WHEN ri.quota_type = 'requests'
                           AND (
                               lower(COALESCE(ri.provider, 'unknown')) LIKE 'xai/%'
@@ -5056,7 +5076,7 @@ normalized AS (
     LEFT JOIN quota_key_interval_hours kh
            ON kh.provider  = ri.provider
           AND kh.quota_key = ri.quota_key
-    WHERE ri.quota_type IN ('weekly', 'weekly_special', 'short', 'short_special', 'requests', 'monthly', 'wtus')
+    WHERE ri.quota_type IN ('weekly', 'weekly_overage_included', 'weekly_special', 'short', 'short_special', 'requests', 'monthly', 'wtus')
       AND ri.expected_reset_at IS NOT NULL
 ),
 scoped_normalized AS (
@@ -5378,7 +5398,7 @@ quota_key_gaps AS (
     FROM (
         SELECT DISTINCT provider, quota_key, quota_type, expected_reset_at
         FROM public.rate_limit_intervals
-        WHERE quota_type IN ('weekly', 'weekly_special', 'short', 'short_special', 'requests', 'monthly', 'wtus')
+        WHERE quota_type IN ('weekly', 'weekly_overage_included', 'weekly_special', 'short', 'short_special', 'requests', 'monthly', 'wtus')
           AND expected_reset_at IS NOT NULL
     ) distinct_resets
 ),
@@ -5439,7 +5459,7 @@ normalized AS (
                         THEN 24.0
                         WHEN ri.quota_type = 'wtus' THEN 5.0
                         WHEN ri.quota_type IN ('short', 'short_special') THEN 5.0
-                        WHEN ri.quota_type IN ('weekly', 'weekly_special') THEN 168.0
+                        WHEN ri.quota_type IN ('weekly', 'weekly_overage_included', 'weekly_special') THEN 168.0
                         WHEN ri.quota_type = 'requests'
                           AND (
                               lower(COALESCE(ri.provider, 'unknown')) LIKE 'xai/%'
@@ -5465,7 +5485,7 @@ normalized AS (
     LEFT JOIN quota_key_interval_hours kh
            ON kh.provider  = ri.provider
           AND kh.quota_key = ri.quota_key
-    WHERE ri.quota_type IN ('weekly', 'weekly_special', 'short', 'short_special', 'requests', 'monthly', 'wtus')
+    WHERE ri.quota_type IN ('weekly', 'weekly_overage_included', 'weekly_special', 'short', 'short_special', 'requests', 'monthly', 'wtus')
       AND ri.expected_reset_at IS NOT NULL
       AND ri.expected_reset_at >= now() - (
             LEAST(
@@ -5479,7 +5499,7 @@ normalized AS (
                             THEN 24.0
                             WHEN ri.quota_type = 'wtus' THEN 5.0
                             WHEN ri.quota_type IN ('short', 'short_special') THEN 5.0
-                            WHEN ri.quota_type IN ('weekly', 'weekly_special') THEN 168.0
+                            WHEN ri.quota_type IN ('weekly', 'weekly_overage_included', 'weekly_special') THEN 168.0
                             WHEN ri.quota_type = 'requests'
                               AND (
                                   lower(COALESCE(ri.provider, 'unknown')) LIKE 'xai/%'
@@ -5508,7 +5528,7 @@ normalized AS (
                                 THEN 24.0
                                 WHEN ri.quota_type = 'wtus' THEN 5.0
                                 WHEN ri.quota_type IN ('short', 'short_special') THEN 5.0
-                                WHEN ri.quota_type IN ('weekly', 'weekly_special') THEN 168.0
+                                WHEN ri.quota_type IN ('weekly', 'weekly_overage_included', 'weekly_special') THEN 168.0
                                 WHEN ri.quota_type = 'requests'
                                   AND (
                                       lower(COALESCE(ri.provider, 'unknown')) LIKE 'xai/%'
@@ -5655,7 +5675,7 @@ WITH normalized AS (
         ri.toDate AS interval_end,
         ri.remaining_pct
     FROM public.rate_limit_intervals ri
-    WHERE ri.quota_type IN ('weekly', 'weekly_special', 'short', 'short_special', 'requests', 'monthly', 'wtus')
+    WHERE ri.quota_type IN ('weekly', 'weekly_overage_included', 'weekly_special', 'short', 'short_special', 'requests', 'monthly', 'wtus')
       AND ri.expected_reset_at IS NOT NULL
       AND ri.fromDate < ($2::date::timestamp AT TIME ZONE 'America/New_York')
       AND ri.expected_reset_at >= ($1::date::timestamp AT TIME ZONE 'America/New_York')
@@ -5774,7 +5794,7 @@ WITH normalized AS (
         ri.toDate AS interval_end,
         ri.remaining_pct
     FROM public.rate_limit_intervals ri
-    WHERE ri.quota_type IN ('weekly', 'weekly_special', 'short', 'short_special', 'requests', 'monthly', 'wtus')
+    WHERE ri.quota_type IN ('weekly', 'weekly_overage_included', 'weekly_special', 'short', 'short_special', 'requests', 'monthly', 'wtus')
       AND ri.expected_reset_at IS NOT NULL
       AND ri.fromDate < ($2::date::timestamp AT TIME ZONE 'America/New_York')
       AND ri.expected_reset_at >= ($1::date::timestamp AT TIME ZONE 'America/New_York')
@@ -8373,6 +8393,7 @@ function normalizeQuotaBillingDetails(row) {
   const details = {}
   for (const quotaType of [
     'weekly',
+    'weekly_overage_included',
     'short',
     'special',
     'short_special',
@@ -8424,6 +8445,7 @@ function attachQuotaVelocityRows(row, quotaVelocityRowsByLane) {
   const merged = { ...row }
   for (const quotaType of [
     'weekly',
+    'weekly_overage_included',
     'short',
     'special',
     'short_special',
@@ -8464,6 +8486,24 @@ function normalizeQuotaRow(row) {
     ),
     weekly_velocity_sample_count:
       normalizeNumber(row.weekly_velocity_sample_count) ?? 0,
+
+    weekly_overage_included_remaining_pct: normalizeNumber(row.weekly_overage_included_remaining_pct),
+    weekly_overage_included_reset_at: row.weekly_overage_included_reset_at ?? null,
+    weekly_overage_included_interval_start: row.weekly_overage_included_interval_start ?? null,
+    weekly_overage_included_interval_end: row.weekly_overage_included_interval_end ?? null,
+    weekly_overage_included_active: Boolean(normalizeNumber(row.weekly_overage_included_active)),
+    weekly_overage_included_usage_tokens: normalizeNumber(row.weekly_overage_included_usage_tokens) ?? 0,
+    weekly_overage_included_usage_breakdown: normalizeUsageBreakdown(
+      row.weekly_overage_included_usage_breakdown
+    ),
+    weekly_overage_included_velocity_segments: normalizeQuotaVelocitySegments(
+      row.weekly_overage_included_velocity_segments
+    ),
+    weekly_overage_included_velocity_scores: normalizeQuotaVelocityScores(
+      row.weekly_overage_included_velocity_scores
+    ),
+    weekly_overage_included_velocity_sample_count:
+      normalizeNumber(row.weekly_overage_included_velocity_sample_count) ?? 0,
     short_remaining_pct: normalizeNumber(row.short_remaining_pct),
     short_reset_at: row.short_reset_at ?? null,
     short_interval_start: row.short_interval_start ?? null,

@@ -785,6 +785,7 @@ export interface UsageReportProviderStatusUsageRow extends UsageReportLatencyFie
 
 export type UsageReportQuotaBillingLane =
   | 'weekly'
+  | 'weekly_overage_included'
   | 'short'
   | 'special'
   | 'short_special'
@@ -822,6 +823,17 @@ export interface UsageReportQuotaRow {
   weekly_velocity_segments?: boolean[]
   weekly_velocity_scores?: number[]
   weekly_velocity_sample_count?: number
+
+  weekly_overage_included_remaining_pct: number | null
+  weekly_overage_included_reset_at: string | null
+  weekly_overage_included_interval_start: string | null
+  weekly_overage_included_interval_end: string | null
+  weekly_overage_included_active: boolean
+  weekly_overage_included_usage_tokens: number
+  weekly_overage_included_usage_breakdown: UsageReportQuotaUsageBreakdown[]
+  weekly_overage_included_velocity_segments?: boolean[]
+  weekly_overage_included_velocity_scores?: number[]
+  weekly_overage_included_velocity_sample_count?: number
   short_remaining_pct: number | null
   short_reset_at: string | null
   short_interval_start: string | null
@@ -903,7 +915,7 @@ export interface UsageReportQuotaHistoryRow {
   quota_unit?: string | null
   /**
    * Quota type after normalisation: 'weekly' | 'special' | 'short' |
-   * 'short_special' | 'monthly' | 'wtus'
+   * 'weekly_overage_included' | 'short_special' | 'monthly' | 'wtus'
    */
   quota_type: string
   /** ISO timestamp of the reset point that ended this window. */

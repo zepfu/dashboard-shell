@@ -20,15 +20,21 @@ const ANTHROPIC_LANE_DEFS: LaneDef[] = [
     googleClass: null,
   },
   {
-    laneKey: 'anthropic/special',
-    laneLabel: 'Sonnet · 7d',
-    quotaType: 'special',
-    googleClass: null,
-  },
-  {
     laneKey: 'anthropic/weekly',
     laneLabel: 'All Models · 7d',
     quotaType: 'weekly',
+    googleClass: null,
+  },
+  {
+    laneKey: 'anthropic/weekly_overage_included',
+    laneLabel: 'Fable · 7d overage-included',
+    quotaType: 'weekly_overage_included',
+    googleClass: null,
+  },
+  {
+    laneKey: 'anthropic/special',
+    laneLabel: 'Retired Sonnet · 7d',
+    quotaType: 'special',
     googleClass: null,
   },
 ]

@@ -80,7 +80,12 @@ export interface QuotaBarGroup {
   tipModels?: QuotaTipModel[]
   tipRequestTotal?: number
   tipRecentRequestTotal90m?: number
-  periodType?: '5hr' | 'weekly' | 'special' | 'monthly'
+  periodType?:
+    | '5hr'
+    | 'weekly'
+    | 'weekly_overage_included'
+    | 'special'
+    | 'monthly'
   /**
    * Time-ago label for prior-reset history bars, e.g. '2d ago', '3h ago'.
    * When absent on a prior bar, reset cell renders '—' (S2-17).

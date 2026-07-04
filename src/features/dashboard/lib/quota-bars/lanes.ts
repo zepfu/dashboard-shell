@@ -91,9 +91,17 @@ export function buildPriorBarFromHistory(
     tipModels = tipModelsFromBreakdownGoogleAggregated(h.usage_breakdown)
   } else if (
     providerLower === 'anthropic' &&
-    (quotaTypeLower === 'weekly' || quotaTypeLower === 'special')
+    quotaTypeLower === 'weekly_overage_included'
   ) {
-    tipModels = tipModelsFromBreakdownSingleLabel(h.usage_breakdown, 'sonnet')
+    tipModels = tipModelsFromBreakdownSingleLabel(
+      h.usage_breakdown,
+      'fable-7d-oi'
+    )
+  } else if (providerLower === 'anthropic' && quotaTypeLower === 'special') {
+    tipModels = tipModelsFromBreakdownSingleLabel(
+      h.usage_breakdown,
+      'retired-sonnet'
+    )
   } else if (
     providerLower === 'openai' &&
     (quotaTypeLower === 'weekly' || quotaTypeLower === 'special')
@@ -232,6 +240,8 @@ export function buildProviderLanes(
               return 'short'
             case 'weekly':
               return 'weekly'
+            case 'weekly_overage_included':
+              return 'weekly_overage_included'
             case 'special':
               return 'special'
             case 'short_special':

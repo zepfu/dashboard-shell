@@ -68,6 +68,21 @@ aggregated across period or unit:
   `100 - creditUsagePercent` when usage percent is present).
 - `xai_grok_build_monthly_requests:requests` → monthly **requests** remaining.
 
+
+
+Anthropic Fable weekly overage-included (`7d_oi`) is a distinct quota family from
+baseline unified weekly (`7d`) and retired Sonnet weekly (`weekly_special` →
+internal `special`):
+
+- `anthropic_unified_7d:7d` → `quota_type=weekly` (baseline All Models · 7d).
+- `anthropic_unified_7d_oi:7d_oi` → `quota_type=weekly_overage_included`
+  (Fable · 7d overage-included lane).
+- `anthropic_unified_7d_sonnet:7d_sonnet` → `quota_type=weekly_special`, normalized
+  to internal `special` for **Retired Sonnet · 7d** history only.
+
+Provider Status, quota history, and sidebar quota visuals must not treat missing
+`7d_oi` source rows as Sonnet or baseline weekly fallbacks.
+
 Provider Status and Quota history render these as separate lanes. History rows
 and current quota tooltips surface the best available per-lane `quota_key`,
 `source`, and `client` from interval JSON first, then matching billing

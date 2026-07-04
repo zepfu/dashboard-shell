@@ -451,12 +451,14 @@ function ProviderCardLegacyQuotas({
   const LEGACY_LANE_ORDER: ReadonlyArray<QuotaBarGroup['periodType']> = [
     '5hr',
     'weekly',
+    'weekly_overage_included',
     'special',
     'monthly',
   ]
   const LEGACY_LANE_LABEL: Readonly<Record<string, string>> = {
     '5hr': '5hr resets',
     weekly: 'weekly resets',
+    weekly_overage_included: 'weekly OI resets',
     special: 'special resets',
     monthly: 'monthly resets',
   }

@@ -1323,12 +1323,33 @@ describe('report-service query builders', () => {
     )
   })
 
+  test('test_buildQuotaQuery_includes_weekly_overage_included_quota_type', () => {
+    const query = buildQuotaQuery()
+
+    expect(query.sql).toContain("'weekly_overage_included'")
+    expect(query.sql).toContain(
+      "FILTER (WHERE s.quota_type = 'weekly_overage_included')"
+    )
+    expect(query.sql).toContain(
+      "AS weekly_overage_included_remaining_pct"
+    )
+  })
+
+  test('test_buildQuotaHistoryQuery_includes_weekly_overage_included_quota_type', () => {
+    const query = buildQuotaHistoryQuery(new URLSearchParams())
+
+    expect(query.sql).toContain("'weekly_overage_included'")
+    expect(query.sql).not.toContain(
+      "WHEN ri.quota_type = 'weekly_overage_included' THEN 'special'"
+    )
+  })
+
   test('test_buildQuotaQuery_stays_on_rate_limit_tables_and_wtus_lanes', () => {
     const query = buildQuotaQuery()
 
     expect(query.values).toEqual([])
     expect(query.sql).toContain(
-      "ri.quota_type IN ('weekly', 'short', 'weekly_special', " +
+      "ri.quota_type IN ('weekly', 'weekly_overage_included', 'short', 'weekly_special', " +
         "'short_special', 'requests', 'monthly', 'wtus')"
     )
     expect(query.sql).toContain(
