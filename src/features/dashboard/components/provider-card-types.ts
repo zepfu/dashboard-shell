@@ -75,6 +75,8 @@ export interface QuotaBarGroup {
   segments: QuotaRowConfig[]
   tipWindow?: string
   tipVelocity?: string
+  /** Exact quota identity fields shown in quota-bar tooltips when available. */
+  tipIdentity?: string[]
   tipModels?: QuotaTipModel[]
   tipRequestTotal?: number
   tipRecentRequestTotal90m?: number

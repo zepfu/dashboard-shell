@@ -3,6 +3,7 @@
  * Wave 11: extracted from phosphor-dashboard.testkit.ts
  */
 import type {
+  UsageReportQuotaBillingDetail,
   UsageReportQuotaRow,
   UsageReportQuotaUsageBreakdown,
   UsageReportProviderLatencyHealthRow,
@@ -251,6 +252,42 @@ function quotaDurationHours(
   if (interval === 'wtus') return 5
   if (interval === 'short' || interval === 'short_special') return 5
   return 168
+}
+
+function quotaUnitFromKey(quotaKey: string | null | undefined): string | null {
+  if (quotaKey === undefined || quotaKey === null) return null
+  if (quotaKey.endsWith(':credits')) return 'credits'
+  if (quotaKey.endsWith(':requests')) return 'requests'
+  return null
+}
+
+function quotaBillingIdentityBits(
+  detail: UsageReportQuotaBillingDetail | undefined,
+  fallbackQuotaKey: string | null
+): string[] | undefined {
+  const quotaKey = detail?.quota_key ?? fallbackQuotaKey
+  const quotaUnit = detail?.quota_unit ?? quotaUnitFromKey(quotaKey)
+  const bits = [quotaKey, detail?.source, detail?.client, quotaUnit].filter(
+    (bit): bit is string => typeof bit === 'string' && bit.trim().length > 0
+  )
+  return bits.length > 0 ? bits : undefined
+}
+
+function quotaIdentityForInterval(
+  row: UsageReportQuotaRow,
+  interval: QuotaIntervalKind
+): string[] | undefined {
+  const provider = row.provider.toLowerCase()
+  const fallbackQuotaKey =
+    provider === 'xai' &&
+    typeof row.model === 'string' &&
+    row.model.startsWith('xai_grok_build_')
+      ? row.model
+      : null
+  return quotaBillingIdentityBits(
+    row.billing_details?.[interval],
+    fallbackQuotaKey
+  )
 }
 
 function resetWindowStartIso(
@@ -678,6 +715,7 @@ export function makeQuotaBarGroup(
       iv.resetAt ?? null,
       durationHours
     ),
+    tipIdentity: quotaIdentityForInterval(row, interval),
     tipModels: tipModelsFromBreakdown(breakdown),
     tipRequestTotal: tipRequestTotalFromBreakdown(breakdown),
     tipRecentRequestTotal90m: tipRecentRequestTotal90mFromBreakdown(breakdown),
@@ -756,6 +794,7 @@ export function makeQuotaBarGroupAlways(
       null,
       durationHours
     ),
+    tipIdentity: quotaIdentityForInterval(row, interval),
     tipModels: tipModelsFromBreakdown(breakdown),
     tipRequestTotal: tipRequestTotalFromBreakdown(breakdown),
     tipRecentRequestTotal90m: tipRecentRequestTotal90mFromBreakdown(breakdown),

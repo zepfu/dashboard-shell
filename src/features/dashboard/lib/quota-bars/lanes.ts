@@ -41,6 +41,15 @@ function shouldSuppressProviderLanePriorBars(
   )
 }
 
+function quotaHistoryIdentityBits(
+  row: UsageReportQuotaHistoryRow
+): string[] | undefined {
+  const bits = [row.quota_key, row.source, row.client, row.quota_unit].filter(
+    (bit): bit is string => typeof bit === 'string' && bit.trim().length > 0
+  )
+  return bits.length > 0 ? bits : undefined
+}
+
 export function buildPriorBarFromHistory(
   h: UsageReportQuotaHistoryRow,
   provider: string
@@ -61,6 +70,7 @@ export function buildPriorBarFromHistory(
       resetAt: h.expected_reset_at ?? undefined,
       segments: buildQuotaSegments(100, h.velocity_segments, h.velocity_scores),
       tipWindow: fmtIntervalCompact(h.interval_start, h.interval_end),
+      tipIdentity: quotaHistoryIdentityBits(h),
       tipModels: undefined,
       tipRequestTotal: tipRequestTotalFromBreakdown(h.usage_breakdown),
       tipRecentRequestTotal90m: tipRecentRequestTotal90mFromBreakdown(
@@ -112,6 +122,7 @@ export function buildPriorBarFromHistory(
       h.velocity_scores
     ),
     tipWindow: fmtIntervalCompact(h.interval_start, h.interval_end),
+    tipIdentity: quotaHistoryIdentityBits(h),
     tipModels,
     tipRequestTotal: tipRequestTotalFromBreakdown(h.usage_breakdown),
     tipRecentRequestTotal90m: tipRecentRequestTotal90mFromBreakdown(
@@ -200,14 +211,16 @@ export function buildProviderLanes(
       if (row !== undefined) {
         currentBar = makeQuotaBarGroup(def.laneLabel, row, 'wtus')
       }
-    } else if (laneProvider === 'xai') {
-      // xAI: aggregate all rows under monthly.
-      for (const row of laneQuotas) {
-        const g = makeQuotaBarGroup(def.laneLabel, row, 'monthly')
-        if (g !== null) {
-          currentBar = g
-          break
-        }
+    } else if (laneProvider === 'xai' && def.quotaKey !== undefined) {
+      const row = laneQuotas.find((quota) => quota.model === def.quotaKey)
+      if (row !== undefined) {
+        const interval =
+          def.quotaType === 'weekly'
+            ? 'weekly'
+            : def.quotaType === 'monthly'
+              ? 'monthly'
+              : 'monthly'
+        currentBar = makeQuotaBarGroup(def.laneLabel, row, interval)
       }
     } else {
       // Anthropic / OpenAI: all quota data lives in the model=null row.
@@ -257,6 +270,9 @@ export function buildProviderLanes(
           }
           if (laneProvider === 'antigravity' && def.quotaKey !== undefined) {
             return h.model === def.quotaKey
+          }
+          if (laneProvider === 'xai' && def.quotaKey !== undefined) {
+            return h.model === def.quotaKey || h.quota_key === def.quotaKey
           }
           return true
         })

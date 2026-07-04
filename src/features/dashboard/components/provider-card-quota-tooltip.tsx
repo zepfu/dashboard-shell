@@ -60,6 +60,11 @@ export function buildQuotaTooltip(quotaBar: QuotaBarGroup): ReactElement {
       {tipVelocity !== undefined && (
         <div className='v9-tip-sub'>{tipVelocity}</div>
       )}
+      {quotaBar.tipIdentity?.map((identity) => (
+        <div key={identity} className='v9-tip-sub quota-tip-identity'>
+          {identity}
+        </div>
+      ))}
       {renderQuotaRequestTotals(quotaBar)}
       {tipModelRows.map((tm) => (
         <div key={tm.model} className='v9-tip-row'>

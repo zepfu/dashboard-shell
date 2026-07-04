@@ -59,7 +59,24 @@ health chips may make one provider card taller than its neighbors, but sparse
 provider cards should keep compact heights and later cards should pack upward
 inside their column instead of reserving a row sized to the tallest provider
 card. The aggregate totals card is the trailing Health card and belongs in the
-trailing responsive column. Provider Status and Provider Health omit Google and Antigravity
+trailing responsive column.
+xAI Grok **Build** billing quotas use explicit `quota_key` lanes and must not be
+aggregated across period or unit:
+
+- `xai_grok_build_weekly_credits:credits` → weekly **credits** remaining (from
+  stored `remaining_pct` on `rate_limit_intervals`, sourced from LiteLLM
+  `100 - creditUsagePercent` when usage percent is present).
+- `xai_grok_build_monthly_requests:requests` → monthly **requests** remaining.
+
+Provider Status and Quota history render these as separate lanes. History rows
+and current quota tooltips surface the best available per-lane `quota_key`,
+`source`, and `client` from interval JSON first, then matching billing
+observations; `rate_limit_intervals` may not always include `source` / `client`
+columns, so missing values are shown as absent rather than defaulted. These
+identity fields describe the rendered logical lane, not every raw observation in
+the reset window.
+
+Provider Status and Provider Health omit Google and Antigravity
 entirely (no provider cards, quota buckets, lanes, or health rows for those
 providers in the STATUS Health and Quota tabs). Token Trend, Ledger, and raw
 provider attribution continue to preserve `google` and `antigravity` as distinct

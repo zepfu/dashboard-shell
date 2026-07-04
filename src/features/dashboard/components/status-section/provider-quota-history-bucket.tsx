@@ -91,7 +91,21 @@ export function ProviderQuotaHistoryBucket({
           selectedRows.map((row, rowIndex) => {
             const consumedPct = quotaHistoryConsumedPct(row)
             const requests = quotaHistoryRequests(row)
-            const modelLabel = row.model ?? 'all models'
+            const modelLabel =
+              row.quota_key !== undefined && row.quota_key !== null
+                ? row.quota_key
+                : (row.model ?? 'all models')
+            const unitLabel =
+              row.quota_unit === 'credits'
+                ? 'credits'
+                : row.quota_unit === 'requests'
+                  ? 'requests'
+                  : null
+            const identityBits = [
+              row.quota_key ?? null,
+              row.source ?? null,
+              row.client ?? null,
+            ].filter((bit): bit is string => Boolean(bit && bit.length > 0))
             const rangeLabel = fmtIntervalCompact(
               row.interval_start,
               row.interval_end
@@ -129,8 +143,14 @@ export function ProviderQuotaHistoryBucket({
                   <span>
                     {formatCompactQuantity(row.usage_tokens)} tok ·{' '}
                     {formatCompactQuantity(requests)} req
+                    {unitLabel !== null ? ` · ${unitLabel}` : ''}
                   </span>
                 </div>
+                {identityBits.length > 0 ? (
+                  <div className='provider-quota-history-identity'>
+                    {identityBits.join(' · ')}
+                  </div>
+                ) : null}
               </div>
             )
           })

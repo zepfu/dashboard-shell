@@ -1033,7 +1033,27 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
         }),
         quotaHistoryRow({
           provider: 'xai',
+          model: 'xai_grok_build_weekly_credits:credits',
+          quota_type: 'weekly',
+          quota_key: 'xai_grok_build_weekly_credits:credits',
+          quota_unit: 'credits',
+          source: 'grok_billing',
+          client: 'grok-build',
+          expected_reset_at: '2026-06-15T00:00:00.000Z',
+          interval_start: '2026-06-08T00:00:00.000Z',
+          interval_end: '2026-06-15T00:00:00.000Z',
+          min_remaining_pct: 98,
+          usage_tokens: 120,
+          usage_breakdown: [],
+        }),
+        quotaHistoryRow({
+          provider: 'xai',
+          model: 'xai_grok_build_monthly_requests:requests',
           quota_type: 'monthly',
+          quota_key: 'xai_grok_build_monthly_requests:requests',
+          quota_unit: 'requests',
+          source: 'grok_billing',
+          client: 'grok-build',
           expected_reset_at: '2026-06-15T00:00:00.000Z',
           interval_start: '2026-05-16T00:00:00.000Z',
           interval_end: '2026-06-15T00:00:00.000Z',
@@ -1124,11 +1144,28 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
       .closest('article')
     expect(xaiBucket).not.toBeNull()
     const xai = within(xaiBucket as HTMLElement)
-    expect(xai.getByRole('tab', { name: /all models · 30d/i })).toHaveAttribute(
-      'aria-selected',
-      'true'
+    expect(
+      xai.getByRole('tab', { name: /grok build · weekly credits/i })
+    ).toBeInTheDocument()
+    expect(
+      xai.getByRole('tab', { name: /grok build · monthly requests/i })
+    ).toBeInTheDocument()
+    expect(xai.getByText(/120 tok · 0 req · credits/i)).toBeInTheDocument()
+    expect(
+      xai.getByText(
+        /xai_grok_build_weekly_credits:credits · grok_billing · grok-build/i
+      )
+    ).toBeInTheDocument()
+
+    fireEvent.click(
+      xai.getByRole('tab', { name: /grok build · monthly requests/i })
     )
-    expect(xai.getByText(/321 tok · 4 req/i)).toBeInTheDocument()
+    expect(xai.getByText(/321 tok · 4 req · requests/i)).toBeInTheDocument()
+    expect(
+      xai.getByText(
+        /xai_grok_build_monthly_requests:requests · grok_billing · grok-build/i
+      )
+    ).toBeInTheDocument()
   })
 
   test('test_status_quota_tab_shows_provider_range_empty_state', async () => {
@@ -3373,6 +3410,96 @@ describe('Wave 41 — buildProviderLanes', () => {
     expect(lanes[1].priorBars).toHaveLength(1)
   })
 
+  test('test_xai_grok_build_lanes_use_distinct_weekly_credits_and_monthly_requests', () => {
+    const makeXaiRow = (
+      quotaKey: string,
+      quotaType: 'weekly' | 'monthly',
+      remainingPct: number
+    ): UsageReportQuotaRow => ({
+      ...makeAnthropicQuotaRow(),
+      provider: 'xai',
+      model: quotaKey,
+      weekly_remaining_pct: quotaType === 'weekly' ? remainingPct : null,
+      weekly_active: quotaType === 'weekly',
+      weekly_usage_tokens: 0,
+      weekly_usage_breakdown: [],
+      monthly_remaining_pct: quotaType === 'monthly' ? remainingPct : null,
+      monthly_active: quotaType === 'monthly',
+      monthly_usage_tokens: 0,
+      monthly_usage_breakdown: [],
+      short_active: false,
+      special_active: false,
+      short_special_active: false,
+    })
+
+    const lanes = buildProviderLanes(
+      'xai',
+      [
+        makeXaiRow('xai_grok_build_weekly_credits:credits', 'weekly', 99),
+        makeXaiRow('xai_grok_build_monthly_requests:requests', 'monthly', 98),
+      ],
+      []
+    )
+
+    expect(lanes).toHaveLength(2)
+    expect(lanes.map((lane) => lane.laneKey)).toEqual([
+      'xai/grok-build-weekly-credits',
+      'xai/grok-build-monthly-requests',
+    ])
+    expect(lanes[0].currentBar?.remainingPct).toBe(99)
+    expect(lanes[1].currentBar?.remainingPct).toBe(98)
+  })
+
+  test('test_xai_grok_build_history_tabs_keep_weekly_credits_and_monthly_requests_split', () => {
+    const tabs = buildProviderQuotaHistoryTabs('xai', [
+      makeHistoryRow({
+        provider: 'xai',
+        model: 'xai_grok_build_weekly_credits:credits',
+        quota_type: 'weekly',
+        quota_key: 'xai_grok_build_weekly_credits:credits',
+        source: 'grok_billing',
+        client: 'grok-build',
+        quota_unit: 'credits',
+        expected_reset_at: '2026-07-01T00:00:00Z',
+        interval_start: '2026-06-24T00:00:00Z',
+        interval_end: '2026-07-01T00:00:00Z',
+        usage_tokens: 10,
+      }),
+      makeHistoryRow({
+        provider: 'xai',
+        model: 'xai_grok_build_monthly_requests:requests',
+        quota_type: 'monthly',
+        quota_key: 'xai_grok_build_monthly_requests:requests',
+        source: 'grok_billing',
+        client: 'grok-build',
+        quota_unit: 'requests',
+        expected_reset_at: '2026-07-01T00:00:00Z',
+        interval_start: '2026-06-01T00:00:00Z',
+        interval_end: '2026-07-01T00:00:00Z',
+        usage_tokens: 20,
+      }),
+    ])
+
+    expect(tabs.map((tab) => tab.tabKey)).toEqual([
+      'xai/grok-build-weekly-credits',
+      'xai/grok-build-monthly-requests',
+    ])
+    expect(tabs[0].label).toBe('Grok Build · Weekly credits')
+    expect(tabs[0].rows).toHaveLength(1)
+    expect(tabs[0].rows[0].quota_key).toBe(
+      'xai_grok_build_weekly_credits:credits'
+    )
+    expect(tabs[0].rows[0].source).toBe('grok_billing')
+    expect(tabs[0].rows[0].client).toBe('grok-build')
+    expect(tabs[0].rows[0].quota_unit).toBe('credits')
+    expect(tabs[1].label).toBe('Grok Build · Monthly requests')
+    expect(tabs[1].rows).toHaveLength(1)
+    expect(tabs[1].rows[0].quota_key).toBe(
+      'xai_grok_build_monthly_requests:requests'
+    )
+    expect(tabs[1].rows[0].quota_unit).toBe('requests')
+  })
+
   test('test_google_lanes_include_antigravity_wtus_detail', () => {
     const makeAntigravityRow = (
       quotaKey: string,
@@ -3479,7 +3606,7 @@ describe('Wave 41 — buildProviderLanes', () => {
     ).toHaveLength(1)
   })
 
-  test('test_xai_has_1_monthly_lane', () => {
+  test('test_xai_generic_monthly_row_does_not_render_grok_build_lane', () => {
     const xaiRow: UsageReportQuotaRow = {
       ...makeAnthropicQuotaRow(),
       provider: 'xai',
@@ -3498,9 +3625,7 @@ describe('Wave 41 — buildProviderLanes', () => {
       special_active: false,
     }
     const lanes = buildProviderLanes('xai', [xaiRow], [])
-    expect(lanes.length).toBe(1)
-    expect(lanes[0].laneKey).toBe('xai/monthly')
-    expect(lanes[0].laneLabel).toBe('All Models · 30d')
+    expect(lanes).toEqual([])
   })
 
   test('test_openrouter_has_daily_request_lane_with_prior_bars', () => {

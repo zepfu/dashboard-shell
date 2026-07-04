@@ -792,6 +792,10 @@ export type UsageReportQuotaBillingLane =
   | 'wtus'
 
 export interface UsageReportQuotaBillingDetail {
+  quota_key?: string | null
+  source?: string | null
+  client?: string | null
+  quota_unit?: string | null
   quota_limit?: number | null
   quota_used?: number | null
   quota_remaining?: number | null
@@ -889,6 +893,14 @@ export interface UsageReportQuotaUsageBreakdown {
 export interface UsageReportQuotaHistoryRow {
   provider: string
   model: string | null
+  /** Exact telemetry key when the lane is keyed by quota_key (e.g. Grok Build). */
+  quota_key?: string | null
+  /** Billing/source surface when present on rate_limit_intervals or observations. */
+  source?: string | null
+  /** Client identity when present on ingested quota rows. */
+  client?: string | null
+  /** Unit hint: credits vs requests for Build and similar keys. */
+  quota_unit?: string | null
   /**
    * Quota type after normalisation: 'weekly' | 'special' | 'short' |
    * 'short_special' | 'monthly' | 'wtus'

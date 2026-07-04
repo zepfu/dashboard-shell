@@ -1305,6 +1305,24 @@ describe('report-service query builders', () => {
     })
   })
 
+
+  test('test_buildQuotaQuery_preserves_xai_grok_build_quota_keys_as_distinct_lanes', () => {
+    const query = buildQuotaQuery()
+
+    expect(query.sql).toContain("xai_grok_build_weekly_credits:credits")
+    expect(query.sql).toContain("xai_grok_build_monthly_requests:requests")
+    expect(query.sql).toContain('MAX(billing.quota_key)')
+    expect(query.sql).toContain('MAX(billing.source)')
+    expect(query.sql).toContain('MAX(billing.client)')
+    expect(query.sql).toContain('MAX(billing.quota_unit)')
+    expect(query.sql).toContain(
+      "WHEN ri.quota_key = 'xai_grok_build_weekly_credits:credits' THEN 'weekly'"
+    )
+    expect(query.sql).toContain(
+      "WHEN ri.quota_key = 'xai_grok_build_monthly_requests:requests' THEN 'monthly'"
+    )
+  })
+
   test('test_buildQuotaQuery_stays_on_rate_limit_tables_and_wtus_lanes', () => {
     const query = buildQuotaQuery()
 
@@ -1322,6 +1340,42 @@ describe('report-service query builders', () => {
     expect(query.sql).not.toContain('COALESCE(sh.start_time, sh.created_at)')
   })
 
+
+  test('test_buildQuotaHistoryQuery_emits_quota_identity_metadata_columns', () => {
+    const query = buildQuotaHistoryQuery(new URLSearchParams())
+
+    expect(query.sql).toContain(
+      "PARTITION BY n.provider, COALESCE(n.model, ''), n.quota_type, COALESCE(n.normalized_quota_key, '')"
+    )
+    expect(query.sql).toContain('observation_identity AS')
+    expect(query.sql).toContain('AND o.provider = n.raw_provider')
+    expect(query.sql).toContain('COALESCE(MAX(n.source), MAX(oi.source)) AS source')
+    expect(query.sql).toContain('COALESCE(MAX(n.client), MAX(oi.client)) AS client')
+    expect(query.sql).toContain('AS quota_key')
+    expect(query.sql).toContain('AS source')
+    expect(query.sql).toContain('AS client')
+    expect(query.sql).toContain('AS quota_unit')
+    expect(query.sql).toContain('xai_grok_build_weekly_credits:credits')
+    expect(query.sql).toContain('xai_grok_build_monthly_requests:requests')
+  })
+
+  test('test_buildQuotaRangeHistoryQuery_emits_observation_backed_quota_identity_metadata_columns', () => {
+    const query = buildQuotaRangeHistoryQuery(
+      new URLSearchParams({ from: '2026-07-01', to: '2026-07-04' })
+    )
+
+    expect(query.values).toEqual(['2026-07-01', '2026-07-04'])
+    expect(query.sql).toContain('ri.provider AS raw_provider')
+    expect(query.sql).toContain('observation_identity AS')
+    expect(query.sql).toContain('AND o.provider = n.raw_provider')
+    expect(query.sql).toContain('wb.quota_key')
+    expect(query.sql).toContain('wb.source')
+    expect(query.sql).toContain('wb.client')
+    expect(query.sql).toContain('wb.quota_unit')
+    expect(query.sql).toContain('xai_grok_build_weekly_credits:credits')
+    expect(query.sql).toContain('xai_grok_build_monthly_requests:requests')
+  })
+
   test('test_buildQuotaHistoryQuery_precomputes_recent_trace_counts', () => {
     const query = buildQuotaHistoryQuery(new URLSearchParams())
 
@@ -1333,12 +1387,17 @@ describe('report-service query builders', () => {
     expect(query.sql).not.toContain('SELECT COUNT(*)::double precision\n            FROM public.session_history sh_recent')
   })
 
-  test('test_buildQuotaHistoryFallbackQuery_returns_bounded_base_rows_without_enrichment', () => {
+  test('test_buildQuotaHistoryFallbackQuery_returns_bounded_base_rows_without_usage_enrichment', () => {
     const query = buildQuotaHistoryFallbackQuery(new URLSearchParams())
 
     expect(query.values).toEqual([])
     expect(query.sql).toContain('ROW_NUMBER() OVER')
     expect(query.sql).toContain('interval_rank <=')
+    expect(query.sql).toContain('observation_identity AS')
+    expect(query.sql).toContain(
+      "n.normalized_quota_key IN (\n          'xai_grok_build_weekly_credits:credits',"
+    )
+    expect(query.sql).toContain('AND o.provider = n.raw_provider')
     expect(query.sql).toContain('0::double precision AS velocity_sample_count')
     expect(query.sql).toContain("'[]'::jsonb AS velocity_segments")
     expect(query.sql).toContain("'[]'::jsonb AS velocity_scores")
@@ -1346,10 +1405,9 @@ describe('report-service query builders', () => {
     expect(query.sql).toContain("'[]'::json AS usage_breakdown")
     expect(query.sql).toContain('public.rate_limit_intervals')
     expect(query.sql).not.toContain('public.session_history')
-    expect(query.sql).not.toContain('public.rate_limit_observations')
   })
 
-  test('test_buildQuotaRangeHistoryFallbackQuery_returns_range_base_rows_without_enrichment', () => {
+  test('test_buildQuotaRangeHistoryFallbackQuery_returns_range_base_rows_without_usage_enrichment', () => {
     const query = buildQuotaRangeHistoryFallbackQuery(
       new URLSearchParams({ from: '2026-05-01', to: '2026-05-08' })
     )
@@ -1365,6 +1423,11 @@ describe('report-service query builders', () => {
     expect(query.sql).toContain(
       "lower(COALESCE(ri.provider, 'unknown')) IN ('openai', 'anthropic', 'claude')"
     )
+    expect(query.sql).toContain('observation_identity AS')
+    expect(query.sql).toContain(
+      "n.normalized_quota_key IN (\n          'xai_grok_build_weekly_credits:credits',"
+    )
+    expect(query.sql).toContain('AND o.provider = n.raw_provider')
     expect(query.sql).toContain('0::double precision AS velocity_sample_count')
     expect(query.sql).toContain("'[]'::jsonb AS velocity_segments")
     expect(query.sql).toContain("'[]'::jsonb AS velocity_scores")
@@ -1372,7 +1435,6 @@ describe('report-service query builders', () => {
     expect(query.sql).toContain("'[]'::json AS usage_breakdown")
     expect(query.sql).toContain('public.rate_limit_intervals')
     expect(query.sql).not.toContain('public.session_history')
-    expect(query.sql).not.toContain('public.rate_limit_observations')
   })
 
   test('test_degraded_secondary_usage_reports_return_visible_empty_payloads', () => {

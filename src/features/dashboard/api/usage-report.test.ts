@@ -13,6 +13,7 @@ import {
   fetchUsageReportTokenTrendSummary,
   fetchUsageReportToolActivity,
   usageReportQuotasQueryOptions,
+  type UsageReportQuotaHistoryRow,
 } from './usage-report'
 
 test('test_usageReportQuotasQueryOptions_disables_background_polling', () => {
@@ -1393,6 +1394,10 @@ describe('D1-223/224/225 usage identity and billing contracts', () => {
   ] as const
 
   const billingDetailFields = [
+    'quota_key',
+    'source',
+    'client',
+    'quota_unit',
     'quota_limit',
     'quota_used',
     'quota_remaining',
@@ -1566,5 +1571,26 @@ describe('D1-223/224/225 usage identity and billing contracts', () => {
     }
     expect(source).toContain('raw_provider_fields?: Record<string, unknown>')
     expect(source).toContain('evidence?: Record<string, unknown>')
+  })
+
+  test('test_usage_report_quota_history_row_accepts_grok_build_identity_fields', () => {
+    const row: UsageReportQuotaHistoryRow = {
+      provider: 'xai',
+      model: 'xai_grok_build_weekly_credits:credits',
+      quota_type: 'weekly',
+      quota_key: 'xai_grok_build_weekly_credits:credits',
+      source: 'grok-build',
+      client: 'grok-build',
+      quota_unit: 'credits',
+      expected_reset_at: '2026-07-01T00:00:00.000Z',
+      interval_start: '2026-06-24T00:00:00.000Z',
+      interval_end: '2026-07-01T00:00:00.000Z',
+      min_remaining_pct: 98,
+      max_remaining_pct: 100,
+      usage_tokens: 0,
+      usage_breakdown: [],
+    }
+    expect(row.quota_key).toBe('xai_grok_build_weekly_credits:credits')
+    expect(row.quota_unit).toBe('credits')
   })
 })

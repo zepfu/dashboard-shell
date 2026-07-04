@@ -96,6 +96,10 @@ function quotaHistoryRowMatchesLane(
     return row.model === def.quotaKey
   }
 
+  if (laneProvider === 'xai' && def.quotaKey !== undefined) {
+    return row.model === def.quotaKey || row.quota_key === def.quotaKey
+  }
+
   if (laneProvider === 'google' && def.googleClass !== null) {
     if (row.model === null) return false
     return classifyGeminiModel(row.model) === def.googleClass
@@ -224,8 +228,9 @@ function aggregateQuotaHistoryRowsByReset(
     const resetKey = quotaHistoryResetGroupKey(row)
     const groupKey = [
       row.provider,
-      modelLabel ?? row.model ?? 'all',
+      modelLabel ?? row.model ?? row.quota_key ?? 'all',
       row.quota_type,
+      row.quota_key ?? '',
       resetKey,
     ].join('|')
     const group = grouped.get(groupKey) ?? []
@@ -248,6 +253,10 @@ function aggregateQuotaHistoryRowsByReset(
         provider: first.provider,
         model: modelLabel ?? first.model,
         quota_type: first.quota_type,
+        quota_key: first.quota_key ?? null,
+        source: first.source ?? null,
+        client: first.client ?? null,
+        quota_unit: first.quota_unit ?? null,
         expected_reset_at: resetAt,
         interval_start: minIso(group.map((row) => row.interval_start)),
         interval_end: resetAt ?? maxIso(group.map((row) => row.interval_end)),

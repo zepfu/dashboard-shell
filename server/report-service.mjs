@@ -4339,6 +4339,47 @@ LIMIT $${values.length};
   return { sql, values }
 }
 
+const XAI_GROK_BUILD_WEEKLY_CREDITS_KEY = 'xai_grok_build_weekly_credits:credits'
+const XAI_GROK_BUILD_MONTHLY_REQUESTS_KEY = 'xai_grok_build_monthly_requests:requests'
+
+const RATE_LIMIT_NORMALIZED_MODEL_CASE = `
+        CASE
+            WHEN lower(COALESCE(ri.provider, 'unknown')) = 'antigravity'
+              AND ri.quota_key IN (
+                  'antigravity_code_assist:gemini_pool',
+                  'antigravity_code_assist:vertex_pool'
+              )
+            THEN ri.quota_key
+            WHEN ri.quota_key IN (
+                  '${XAI_GROK_BUILD_WEEKLY_CREDITS_KEY}',
+                  '${XAI_GROK_BUILD_MONTHLY_REQUESTS_KEY}'
+              )
+            THEN ri.quota_key
+            WHEN ri.quota_type IN ('monthly', 'requests')
+              AND (
+                  lower(COALESCE(ri.provider, 'unknown')) LIKE 'xai/%'
+                  OR lower(COALESCE(ri.provider, 'unknown')) IN ('xai', 'x.ai')
+              )
+            THEN NULL
+            ELSE NULLIF(ri.model, '')
+        END`
+
+const RATE_LIMIT_NORMALIZED_QUOTA_TYPE_CASE = `
+        CASE
+            WHEN ri.quota_key = '${XAI_GROK_BUILD_WEEKLY_CREDITS_KEY}' THEN 'weekly'
+            WHEN ri.quota_key = '${XAI_GROK_BUILD_MONTHLY_REQUESTS_KEY}' THEN 'monthly'
+            WHEN ri.quota_type = 'requests'
+              AND (
+                  lower(COALESCE(ri.provider, 'unknown')) LIKE 'xai/%'
+                  OR lower(COALESCE(ri.provider, 'unknown')) IN ('xai', 'x.ai')
+              )
+            THEN 'monthly'
+            WHEN ri.quota_type = 'weekly_special' THEN 'special'
+            WHEN ri.quota_type = 'short_special' THEN 'short_special'
+            WHEN ri.quota_type = 'requests' THEN 'short'
+            ELSE ri.quota_type
+        END`
+
 export function buildQuotaQuery() {
   const sql = `
 WITH normalized AS (
@@ -4362,33 +4403,8 @@ WITH normalized AS (
             WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'local_%' THEN 'local'
             ELSE COALESCE(ri.provider, 'unknown')
         END AS provider,
-        CASE
-            WHEN lower(COALESCE(ri.provider, 'unknown')) = 'antigravity'
-              AND ri.quota_key IN (
-                  'antigravity_code_assist:gemini_pool',
-                  'antigravity_code_assist:vertex_pool'
-              )
-            THEN ri.quota_key
-            WHEN ri.quota_type IN ('monthly', 'requests')
-              AND (
-                  lower(COALESCE(ri.provider, 'unknown')) LIKE 'xai/%'
-                  OR lower(COALESCE(ri.provider, 'unknown')) IN ('xai', 'x.ai')
-              )
-            THEN NULL
-            ELSE NULLIF(ri.model, '')
-        END AS model,
-        CASE
-            WHEN ri.quota_type = 'requests'
-              AND (
-                  lower(COALESCE(ri.provider, 'unknown')) LIKE 'xai/%'
-                  OR lower(COALESCE(ri.provider, 'unknown')) IN ('xai', 'x.ai')
-              )
-            THEN 'monthly'
-            WHEN ri.quota_type = 'weekly_special' THEN 'special'
-            WHEN ri.quota_type = 'short_special' THEN 'short_special'
-            WHEN ri.quota_type = 'requests' THEN 'short'
-            ELSE ri.quota_type
-        END AS quota_type,
+        ${RATE_LIMIT_NORMALIZED_MODEL_CASE} AS model,
+        ${RATE_LIMIT_NORMALIZED_QUOTA_TYPE_CASE} AS quota_type,
         ri.expected_reset_at,
         ri.remaining_pct,
         ri.fromDate AS interval_start,
@@ -4482,6 +4498,16 @@ billing_by_type AS (
         s.provider,
         s.model,
         s.quota_type,
+        s.quota_key,
+        NULLIF(TRIM(BOTH FROM COALESCE(to_jsonb(o)->>'source', '')), '') AS source,
+        NULLIF(TRIM(BOTH FROM COALESCE(to_jsonb(o)->>'client', '')), '') AS client,
+        CASE
+            WHEN s.quota_key = '${XAI_GROK_BUILD_WEEKLY_CREDITS_KEY}' THEN 'credits'
+            WHEN s.quota_key = '${XAI_GROK_BUILD_MONTHLY_REQUESTS_KEY}' THEN 'requests'
+            WHEN s.quota_key LIKE '%:credits' THEN 'credits'
+            WHEN s.quota_key LIKE '%:requests' THEN 'requests'
+            ELSE NULL
+        END AS quota_unit,
         o.observed_at AS billing_observed_at,
         NULLIF(to_jsonb(o)->>'quota_limit', '')::double precision AS quota_limit,
         NULLIF(to_jsonb(o)->>'quota_used', '')::double precision AS quota_used,
@@ -4522,6 +4548,10 @@ SELECT
     MAX(billing.billing_observed_at) FILTER (WHERE s.quota_type = 'weekly') AS weekly_billing_observed_at,
     MAX(billing.billing_period_start_at) FILTER (WHERE s.quota_type = 'weekly') AS weekly_billing_period_start_at,
     MAX(billing.billing_period_end_at) FILTER (WHERE s.quota_type = 'weekly') AS weekly_billing_period_end_at,
+    MAX(billing.quota_key) FILTER (WHERE s.quota_type = 'weekly') AS weekly_quota_key,
+    MAX(billing.source) FILTER (WHERE s.quota_type = 'weekly') AS weekly_source,
+    MAX(billing.client) FILTER (WHERE s.quota_type = 'weekly') AS weekly_client,
+    MAX(billing.quota_unit) FILTER (WHERE s.quota_type = 'weekly') AS weekly_quota_unit,
     (ARRAY_AGG(billing.raw_provider_fields) FILTER (WHERE s.quota_type = 'weekly'))[1] AS weekly_raw_provider_fields,
     (ARRAY_AGG(billing.evidence) FILTER (WHERE s.quota_type = 'weekly'))[1] AS weekly_evidence,
     MAX(s.remaining_pct) FILTER (WHERE s.quota_type = 'short')::double precision AS short_remaining_pct,
@@ -4537,6 +4567,10 @@ SELECT
     MAX(billing.billing_observed_at) FILTER (WHERE s.quota_type = 'short') AS short_billing_observed_at,
     MAX(billing.billing_period_start_at) FILTER (WHERE s.quota_type = 'short') AS short_billing_period_start_at,
     MAX(billing.billing_period_end_at) FILTER (WHERE s.quota_type = 'short') AS short_billing_period_end_at,
+    MAX(billing.quota_key) FILTER (WHERE s.quota_type = 'short') AS short_quota_key,
+    MAX(billing.source) FILTER (WHERE s.quota_type = 'short') AS short_source,
+    MAX(billing.client) FILTER (WHERE s.quota_type = 'short') AS short_client,
+    MAX(billing.quota_unit) FILTER (WHERE s.quota_type = 'short') AS short_quota_unit,
     (ARRAY_AGG(billing.raw_provider_fields) FILTER (WHERE s.quota_type = 'short'))[1] AS short_raw_provider_fields,
     (ARRAY_AGG(billing.evidence) FILTER (WHERE s.quota_type = 'short'))[1] AS short_evidence,
     MAX(s.remaining_pct) FILTER (WHERE s.quota_type = 'special')::double precision AS special_remaining_pct,
@@ -4552,6 +4586,10 @@ SELECT
     MAX(billing.billing_observed_at) FILTER (WHERE s.quota_type = 'special') AS special_billing_observed_at,
     MAX(billing.billing_period_start_at) FILTER (WHERE s.quota_type = 'special') AS special_billing_period_start_at,
     MAX(billing.billing_period_end_at) FILTER (WHERE s.quota_type = 'special') AS special_billing_period_end_at,
+    MAX(billing.quota_key) FILTER (WHERE s.quota_type = 'special') AS special_quota_key,
+    MAX(billing.source) FILTER (WHERE s.quota_type = 'special') AS special_source,
+    MAX(billing.client) FILTER (WHERE s.quota_type = 'special') AS special_client,
+    MAX(billing.quota_unit) FILTER (WHERE s.quota_type = 'special') AS special_quota_unit,
     (ARRAY_AGG(billing.raw_provider_fields) FILTER (WHERE s.quota_type = 'special'))[1] AS special_raw_provider_fields,
     (ARRAY_AGG(billing.evidence) FILTER (WHERE s.quota_type = 'special'))[1] AS special_evidence,
     MAX(s.remaining_pct) FILTER (WHERE s.quota_type = 'short_special')::double precision AS short_special_remaining_pct,
@@ -4567,6 +4605,10 @@ SELECT
     MAX(billing.billing_observed_at) FILTER (WHERE s.quota_type = 'short_special') AS short_special_billing_observed_at,
     MAX(billing.billing_period_start_at) FILTER (WHERE s.quota_type = 'short_special') AS short_special_billing_period_start_at,
     MAX(billing.billing_period_end_at) FILTER (WHERE s.quota_type = 'short_special') AS short_special_billing_period_end_at,
+    MAX(billing.quota_key) FILTER (WHERE s.quota_type = 'short_special') AS short_special_quota_key,
+    MAX(billing.source) FILTER (WHERE s.quota_type = 'short_special') AS short_special_source,
+    MAX(billing.client) FILTER (WHERE s.quota_type = 'short_special') AS short_special_client,
+    MAX(billing.quota_unit) FILTER (WHERE s.quota_type = 'short_special') AS short_special_quota_unit,
     (ARRAY_AGG(billing.raw_provider_fields) FILTER (WHERE s.quota_type = 'short_special'))[1] AS short_special_raw_provider_fields,
     (ARRAY_AGG(billing.evidence) FILTER (WHERE s.quota_type = 'short_special'))[1] AS short_special_evidence,
     MAX(s.remaining_pct) FILTER (WHERE s.quota_type = 'monthly')::double precision AS monthly_remaining_pct,
@@ -4582,6 +4624,10 @@ SELECT
     MAX(billing.billing_observed_at) FILTER (WHERE s.quota_type = 'monthly') AS monthly_billing_observed_at,
     MAX(billing.billing_period_start_at) FILTER (WHERE s.quota_type = 'monthly') AS monthly_billing_period_start_at,
     MAX(billing.billing_period_end_at) FILTER (WHERE s.quota_type = 'monthly') AS monthly_billing_period_end_at,
+    MAX(billing.quota_key) FILTER (WHERE s.quota_type = 'monthly') AS monthly_quota_key,
+    MAX(billing.source) FILTER (WHERE s.quota_type = 'monthly') AS monthly_source,
+    MAX(billing.client) FILTER (WHERE s.quota_type = 'monthly') AS monthly_client,
+    MAX(billing.quota_unit) FILTER (WHERE s.quota_type = 'monthly') AS monthly_quota_unit,
     (ARRAY_AGG(billing.raw_provider_fields) FILTER (WHERE s.quota_type = 'monthly'))[1] AS monthly_raw_provider_fields,
     (ARRAY_AGG(billing.evidence) FILTER (WHERE s.quota_type = 'monthly'))[1] AS monthly_evidence,
     MAX(s.remaining_pct) FILTER (WHERE s.quota_type = 'wtus')::double precision AS wtus_remaining_pct,
@@ -4597,6 +4643,10 @@ SELECT
     MAX(billing.billing_observed_at) FILTER (WHERE s.quota_type = 'wtus') AS wtus_billing_observed_at,
     MAX(billing.billing_period_start_at) FILTER (WHERE s.quota_type = 'wtus') AS wtus_billing_period_start_at,
     MAX(billing.billing_period_end_at) FILTER (WHERE s.quota_type = 'wtus') AS wtus_billing_period_end_at,
+    MAX(billing.quota_key) FILTER (WHERE s.quota_type = 'wtus') AS wtus_quota_key,
+    MAX(billing.source) FILTER (WHERE s.quota_type = 'wtus') AS wtus_source,
+    MAX(billing.client) FILTER (WHERE s.quota_type = 'wtus') AS wtus_client,
+    MAX(billing.quota_unit) FILTER (WHERE s.quota_type = 'wtus') AS wtus_quota_unit,
     (ARRAY_AGG(billing.raw_provider_fields) FILTER (WHERE s.quota_type = 'wtus'))[1] AS wtus_raw_provider_fields,
     (ARRAY_AGG(billing.evidence) FILTER (WHERE s.quota_type = 'wtus'))[1] AS wtus_evidence
 FROM selected_with_fallbacks s
@@ -4669,33 +4719,8 @@ normalized AS (
             WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'local_%' THEN 'local'
             ELSE COALESCE(ri.provider, 'unknown')
         END AS provider,
-        CASE
-            WHEN lower(COALESCE(ri.provider, 'unknown')) = 'antigravity'
-              AND ri.quota_key IN (
-                  'antigravity_code_assist:gemini_pool',
-                  'antigravity_code_assist:vertex_pool'
-              )
-            THEN ri.quota_key
-            WHEN ri.quota_type IN ('monthly', 'requests')
-              AND (
-                  lower(COALESCE(ri.provider, 'unknown')) LIKE 'xai/%'
-                  OR lower(COALESCE(ri.provider, 'unknown')) IN ('xai', 'x.ai')
-              )
-            THEN NULL
-            ELSE NULLIF(ri.model, '')
-        END AS model,
-        CASE
-            WHEN ri.quota_type = 'requests'
-              AND (
-                  lower(COALESCE(ri.provider, 'unknown')) LIKE 'xai/%'
-                  OR lower(COALESCE(ri.provider, 'unknown')) IN ('xai', 'x.ai')
-              )
-            THEN 'monthly'
-            WHEN ri.quota_type = 'weekly_special' THEN 'special'
-            WHEN ri.quota_type = 'short_special' THEN 'short_special'
-            WHEN ri.quota_type = 'requests' THEN 'short'
-            ELSE ri.quota_type
-        END AS quota_type,
+        ${RATE_LIMIT_NORMALIZED_MODEL_CASE} AS model,
+        ${RATE_LIMIT_NORMALIZED_QUOTA_TYPE_CASE} AS quota_type,
         ri.quota_type AS raw_quota_type,
         ri.quota_key,
         ri.expected_reset_at,
@@ -4975,33 +5000,18 @@ normalized AS (
             WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'local_%' THEN 'local'
             ELSE COALESCE(ri.provider, 'unknown')
         END AS provider,
+        ${RATE_LIMIT_NORMALIZED_MODEL_CASE} AS model,
+        ${RATE_LIMIT_NORMALIZED_QUOTA_TYPE_CASE} AS quota_type,
+        ri.quota_key AS normalized_quota_key,
+        NULLIF(TRIM(BOTH FROM COALESCE(to_jsonb(ri)->>'source', '')), '') AS source,
+        NULLIF(TRIM(BOTH FROM COALESCE(to_jsonb(ri)->>'client', '')), '') AS client,
         CASE
-            WHEN lower(COALESCE(ri.provider, 'unknown')) = 'antigravity'
-              AND ri.quota_key IN (
-                  'antigravity_code_assist:gemini_pool',
-                  'antigravity_code_assist:vertex_pool'
-              )
-            THEN ri.quota_key
-            WHEN ri.quota_type IN ('monthly', 'requests')
-              AND (
-                  lower(COALESCE(ri.provider, 'unknown')) LIKE 'xai/%'
-                  OR lower(COALESCE(ri.provider, 'unknown')) IN ('xai', 'x.ai')
-              )
-            THEN NULL
-            ELSE NULLIF(ri.model, '')
-        END AS model,
-        CASE
-            WHEN ri.quota_type = 'requests'
-              AND (
-                  lower(COALESCE(ri.provider, 'unknown')) LIKE 'xai/%'
-                  OR lower(COALESCE(ri.provider, 'unknown')) IN ('xai', 'x.ai')
-              )
-            THEN 'monthly'
-            WHEN ri.quota_type = 'weekly_special' THEN 'special'
-            WHEN ri.quota_type = 'short_special' THEN 'short_special'
-            WHEN ri.quota_type = 'requests' THEN 'short'
-            ELSE ri.quota_type
-        END AS quota_type,
+            WHEN ri.quota_key = '${XAI_GROK_BUILD_WEEKLY_CREDITS_KEY}' THEN 'credits'
+            WHEN ri.quota_key = '${XAI_GROK_BUILD_MONTHLY_REQUESTS_KEY}' THEN 'requests'
+            WHEN ri.quota_key LIKE '%:credits' THEN 'credits'
+            WHEN ri.quota_key LIKE '%:requests' THEN 'requests'
+            ELSE NULL
+        END AS quota_unit,
         ri.expected_reset_at,
         ri.remaining_pct,
         ri.fromDate AS interval_start,
@@ -5081,10 +5091,28 @@ bounded_normalized AS (
     SELECT
         n.*,
         ROW_NUMBER() OVER (
-            PARTITION BY n.provider, COALESCE(n.model, ''), n.quota_type
+            PARTITION BY n.provider, COALESCE(n.model, ''), n.quota_type, COALESCE(n.normalized_quota_key, '')
             ORDER BY n.expected_reset_at DESC
         ) AS interval_rank
     FROM scoped_normalized n
+),
+observation_identity AS (
+    SELECT DISTINCT ON (n.raw_provider, n.quota_key, n.expected_reset_at)
+        n.raw_provider,
+        n.quota_key,
+        n.expected_reset_at,
+        NULLIF(TRIM(BOTH FROM COALESCE(to_jsonb(o)->>'source', '')), '') AS source,
+        NULLIF(TRIM(BOTH FROM COALESCE(to_jsonb(o)->>'client', '')), '') AS client
+    FROM bounded_normalized n
+    JOIN public.rate_limit_observations o
+      ON n.quota_key IS NOT NULL
+     AND n.expected_reset_at IS NOT NULL
+     AND o.provider = n.raw_provider
+     AND o.quota_key = n.quota_key
+     AND o.expected_reset_at IS NOT DISTINCT FROM n.expected_reset_at
+     AND o.observed_at IS NOT NULL
+    WHERE n.interval_rank <= ${QUOTA_HISTORY_MAX_INTERVALS_PER_LANE}
+    ORDER BY n.raw_provider, n.quota_key, n.expected_reset_at, o.observed_at DESC
 ),
 history_observations AS (
     SELECT
@@ -5186,16 +5214,24 @@ history_velocity_arrays AS (
 ),
 window_bounds AS (
     SELECT
-        provider,
-        model,
-        quota_type,
-        expected_reset_at,
-        MIN(interval_start) AS interval_start,
-        MIN(remaining_pct)::double precision AS min_remaining_pct,
-        MAX(remaining_pct)::double precision AS max_remaining_pct
-    FROM bounded_normalized
-   WHERE interval_rank <= ${QUOTA_HISTORY_MAX_INTERVALS_PER_LANE}
-    GROUP BY provider, model, quota_type, expected_reset_at
+        n.provider,
+        n.model,
+        n.quota_type,
+        MAX(n.normalized_quota_key) AS quota_key,
+        COALESCE(MAX(n.source), MAX(oi.source)) AS source,
+        COALESCE(MAX(n.client), MAX(oi.client)) AS client,
+        MAX(n.quota_unit) AS quota_unit,
+        n.expected_reset_at,
+        MIN(n.interval_start) AS interval_start,
+        MIN(n.remaining_pct)::double precision AS min_remaining_pct,
+        MAX(n.remaining_pct)::double precision AS max_remaining_pct
+    FROM bounded_normalized n
+    LEFT JOIN observation_identity oi
+           ON oi.raw_provider = n.raw_provider
+          AND oi.quota_key = n.quota_key
+          AND oi.expected_reset_at IS NOT DISTINCT FROM n.expected_reset_at
+   WHERE n.interval_rank <= ${QUOTA_HISTORY_MAX_INTERVALS_PER_LANE}
+    GROUP BY n.provider, n.model, n.quota_type, n.expected_reset_at
 ),
 recent_traces_90m AS (
     SELECT
@@ -5266,6 +5302,10 @@ SELECT
     wb.provider,
     wb.model,
     wb.quota_type,
+    wb.quota_key,
+    wb.source,
+    wb.client,
+    wb.quota_unit,
     wb.expected_reset_at,
     wb.interval_start,
     wb.expected_reset_at AS interval_end,
@@ -5303,6 +5343,10 @@ GROUP BY
     wb.provider,
     wb.model,
     wb.quota_type,
+    wb.quota_key,
+    wb.source,
+    wb.client,
+    wb.quota_unit,
     wb.expected_reset_at,
     wb.interval_start,
     wb.min_remaining_pct,
@@ -5370,33 +5414,18 @@ normalized AS (
             WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'local_%' THEN 'local'
             ELSE COALESCE(ri.provider, 'unknown')
         END AS provider,
+        ${RATE_LIMIT_NORMALIZED_MODEL_CASE} AS model,
+        ${RATE_LIMIT_NORMALIZED_QUOTA_TYPE_CASE} AS quota_type,
+        ri.quota_key AS normalized_quota_key,
+        NULLIF(TRIM(BOTH FROM COALESCE(to_jsonb(ri)->>'source', '')), '') AS source,
+        NULLIF(TRIM(BOTH FROM COALESCE(to_jsonb(ri)->>'client', '')), '') AS client,
         CASE
-            WHEN lower(COALESCE(ri.provider, 'unknown')) = 'antigravity'
-              AND ri.quota_key IN (
-                  'antigravity_code_assist:gemini_pool',
-                  'antigravity_code_assist:vertex_pool'
-              )
-            THEN ri.quota_key
-            WHEN ri.quota_type IN ('monthly', 'requests')
-              AND (
-                  lower(COALESCE(ri.provider, 'unknown')) LIKE 'xai/%'
-                  OR lower(COALESCE(ri.provider, 'unknown')) IN ('xai', 'x.ai')
-              )
-            THEN NULL
-            ELSE NULLIF(ri.model, '')
-        END AS model,
-        CASE
-            WHEN ri.quota_type = 'requests'
-              AND (
-                  lower(COALESCE(ri.provider, 'unknown')) LIKE 'xai/%'
-                  OR lower(COALESCE(ri.provider, 'unknown')) IN ('xai', 'x.ai')
-              )
-            THEN 'monthly'
-            WHEN ri.quota_type = 'weekly_special' THEN 'special'
-            WHEN ri.quota_type = 'short_special' THEN 'short_special'
-            WHEN ri.quota_type = 'requests' THEN 'short'
-            ELSE ri.quota_type
-        END AS quota_type,
+            WHEN ri.quota_key = '${XAI_GROK_BUILD_WEEKLY_CREDITS_KEY}' THEN 'credits'
+            WHEN ri.quota_key = '${XAI_GROK_BUILD_MONTHLY_REQUESTS_KEY}' THEN 'requests'
+            WHEN ri.quota_key LIKE '%:credits' THEN 'credits'
+            WHEN ri.quota_key LIKE '%:requests' THEN 'requests'
+            ELSE NULL
+        END AS quota_unit,
         ri.expected_reset_at,
         ri.fromDate AS interval_start,
         LEAST(
@@ -5500,36 +5529,74 @@ normalized AS (
 ),
 scoped_intervals AS (
     SELECT
+        raw_provider,
         provider,
         model,
         quota_type,
+        normalized_quota_key,
+        source,
+        client,
+        quota_unit,
         expected_reset_at,
         interval_start,
         remaining_pct,
         interval_hours,
         ROW_NUMBER() OVER (
-            PARTITION BY provider, COALESCE(model, ''), quota_type
+            PARTITION BY provider, COALESCE(model, ''), quota_type, COALESCE(normalized_quota_key, '')
             ORDER BY expected_reset_at DESC
-        ) AS interval_rank
+    ) AS interval_rank
     FROM normalized
+),
+observation_identity AS (
+    SELECT DISTINCT ON (n.raw_provider, n.normalized_quota_key, n.expected_reset_at)
+        n.raw_provider,
+        n.normalized_quota_key,
+        n.expected_reset_at,
+        NULLIF(TRIM(BOTH FROM COALESCE(to_jsonb(o)->>'source', '')), '') AS source,
+        NULLIF(TRIM(BOTH FROM COALESCE(to_jsonb(o)->>'client', '')), '') AS client
+    FROM scoped_intervals n
+    JOIN public.rate_limit_observations o
+      ON n.normalized_quota_key IN (
+          '${XAI_GROK_BUILD_WEEKLY_CREDITS_KEY}',
+          '${XAI_GROK_BUILD_MONTHLY_REQUESTS_KEY}'
+      )
+     AND n.expected_reset_at IS NOT NULL
+     AND o.provider = n.raw_provider
+     AND o.quota_key = n.normalized_quota_key
+     AND o.expected_reset_at IS NOT DISTINCT FROM n.expected_reset_at
+     AND o.observed_at IS NOT NULL
+    WHERE n.interval_rank <= ${QUOTA_HISTORY_MAX_INTERVALS_PER_LANE}
+    ORDER BY n.raw_provider, n.normalized_quota_key, n.expected_reset_at, o.observed_at DESC
 ),
 bounded_intervals AS (
     SELECT
-        provider,
-        model,
-        quota_type,
-        expected_reset_at,
-        MIN(interval_start) AS interval_start,
-        MIN(remaining_pct)::double precision AS min_remaining_pct,
-        MAX(remaining_pct)::double precision AS max_remaining_pct
-    FROM scoped_intervals
-    WHERE interval_rank <= ${QUOTA_HISTORY_MAX_INTERVALS_PER_LANE}
-    GROUP BY provider, model, quota_type, expected_reset_at
+        n.provider,
+        n.model,
+        n.quota_type,
+        MAX(n.normalized_quota_key) AS quota_key,
+        COALESCE(MAX(n.source), MAX(oi.source)) AS source,
+        COALESCE(MAX(n.client), MAX(oi.client)) AS client,
+        MAX(n.quota_unit) AS quota_unit,
+        n.expected_reset_at,
+        MIN(n.interval_start) AS interval_start,
+        MIN(n.remaining_pct)::double precision AS min_remaining_pct,
+        MAX(n.remaining_pct)::double precision AS max_remaining_pct
+    FROM scoped_intervals n
+    LEFT JOIN observation_identity oi
+           ON oi.raw_provider = n.raw_provider
+          AND oi.normalized_quota_key = n.normalized_quota_key
+          AND oi.expected_reset_at IS NOT DISTINCT FROM n.expected_reset_at
+    WHERE n.interval_rank <= ${QUOTA_HISTORY_MAX_INTERVALS_PER_LANE}
+    GROUP BY n.provider, n.model, n.quota_type, n.expected_reset_at
 )
 SELECT
     provider,
     model,
     quota_type,
+    quota_key,
+    source,
+    client,
+    quota_unit,
     expected_reset_at,
     interval_start,
     expected_reset_at AS interval_end,
@@ -5554,6 +5621,7 @@ export function buildQuotaRangeHistoryFallbackQuery(searchParams) {
   const sql = `
 WITH normalized AS (
     SELECT
+        ri.provider AS raw_provider,
         CASE
             WHEN lower(COALESCE(ri.provider, 'unknown')) IN ('google', 'gemini') THEN 'google'
             WHEN lower(COALESCE(ri.provider, 'unknown')) = 'antigravity' THEN 'antigravity'
@@ -5570,33 +5638,18 @@ WITH normalized AS (
             WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'local_%' THEN 'local'
             ELSE COALESCE(ri.provider, 'unknown')
         END AS provider,
+        ${RATE_LIMIT_NORMALIZED_MODEL_CASE} AS model,
+        ${RATE_LIMIT_NORMALIZED_QUOTA_TYPE_CASE} AS quota_type,
+        ri.quota_key AS normalized_quota_key,
+        NULLIF(TRIM(BOTH FROM COALESCE(to_jsonb(ri)->>'source', '')), '') AS source,
+        NULLIF(TRIM(BOTH FROM COALESCE(to_jsonb(ri)->>'client', '')), '') AS client,
         CASE
-            WHEN lower(COALESCE(ri.provider, 'unknown')) = 'antigravity'
-              AND ri.quota_key IN (
-                  'antigravity_code_assist:gemini_pool',
-                  'antigravity_code_assist:vertex_pool'
-              )
-            THEN ri.quota_key
-            WHEN ri.quota_type IN ('monthly', 'requests')
-              AND (
-                  lower(COALESCE(ri.provider, 'unknown')) LIKE 'xai/%'
-                  OR lower(COALESCE(ri.provider, 'unknown')) IN ('xai', 'x.ai')
-              )
-            THEN NULL
-            ELSE NULLIF(ri.model, '')
-        END AS model,
-        CASE
-            WHEN ri.quota_type = 'requests'
-              AND (
-                  lower(COALESCE(ri.provider, 'unknown')) LIKE 'xai/%'
-                  OR lower(COALESCE(ri.provider, 'unknown')) IN ('xai', 'x.ai')
-              )
-            THEN 'monthly'
-            WHEN ri.quota_type = 'weekly_special' THEN 'special'
-            WHEN ri.quota_type = 'short_special' THEN 'short_special'
-            WHEN ri.quota_type = 'requests' THEN 'short'
-            ELSE ri.quota_type
-        END AS quota_type,
+            WHEN ri.quota_key = '${XAI_GROK_BUILD_WEEKLY_CREDITS_KEY}' THEN 'credits'
+            WHEN ri.quota_key = '${XAI_GROK_BUILD_MONTHLY_REQUESTS_KEY}' THEN 'requests'
+            WHEN ri.quota_key LIKE '%:credits' THEN 'credits'
+            WHEN ri.quota_key LIKE '%:requests' THEN 'requests'
+            ELSE NULL
+        END AS quota_unit,
         ri.expected_reset_at,
         ri.fromDate AS interval_start,
         ri.toDate AS interval_end,
@@ -5615,23 +5668,55 @@ WITH normalized AS (
           )
       )
 ),
+observation_identity AS (
+    SELECT DISTINCT ON (n.raw_provider, n.normalized_quota_key, n.expected_reset_at)
+        n.raw_provider,
+        n.normalized_quota_key,
+        n.expected_reset_at,
+        NULLIF(TRIM(BOTH FROM COALESCE(to_jsonb(o)->>'source', '')), '') AS source,
+        NULLIF(TRIM(BOTH FROM COALESCE(to_jsonb(o)->>'client', '')), '') AS client
+    FROM normalized n
+    JOIN public.rate_limit_observations o
+      ON n.normalized_quota_key IN (
+          '${XAI_GROK_BUILD_WEEKLY_CREDITS_KEY}',
+          '${XAI_GROK_BUILD_MONTHLY_REQUESTS_KEY}'
+      )
+     AND n.expected_reset_at IS NOT NULL
+     AND o.provider = n.raw_provider
+     AND o.quota_key = n.normalized_quota_key
+     AND o.expected_reset_at IS NOT DISTINCT FROM n.expected_reset_at
+     AND o.observed_at IS NOT NULL
+    ORDER BY n.raw_provider, n.normalized_quota_key, n.expected_reset_at, o.observed_at DESC
+),
 window_bounds AS (
     SELECT
-        provider,
-        model,
-        quota_type,
-        expected_reset_at,
-        MIN(interval_start) AS interval_start,
-        MAX(interval_end) AS interval_end,
-        MIN(remaining_pct)::double precision AS min_remaining_pct,
-        MAX(remaining_pct)::double precision AS max_remaining_pct
-    FROM normalized
-    GROUP BY provider, model, quota_type, expected_reset_at
+        n.provider,
+        n.model,
+        n.quota_type,
+        MAX(n.normalized_quota_key) AS quota_key,
+        COALESCE(MAX(n.source), MAX(oi.source)) AS source,
+        COALESCE(MAX(n.client), MAX(oi.client)) AS client,
+        MAX(n.quota_unit) AS quota_unit,
+        n.expected_reset_at,
+        MIN(n.interval_start) AS interval_start,
+        MAX(n.interval_end) AS interval_end,
+        MIN(n.remaining_pct)::double precision AS min_remaining_pct,
+        MAX(n.remaining_pct)::double precision AS max_remaining_pct
+    FROM normalized n
+    LEFT JOIN observation_identity oi
+           ON oi.raw_provider = n.raw_provider
+          AND oi.normalized_quota_key = n.normalized_quota_key
+          AND oi.expected_reset_at IS NOT DISTINCT FROM n.expected_reset_at
+    GROUP BY n.provider, n.model, n.quota_type, n.expected_reset_at
 )
 SELECT
     provider,
     model,
     quota_type,
+    quota_key,
+    source,
+    client,
+    quota_unit,
     expected_reset_at,
     interval_start,
     interval_end,
@@ -5656,6 +5741,7 @@ export function buildQuotaRangeHistoryQuery(searchParams) {
   const sql = `
 WITH normalized AS (
     SELECT
+        ri.provider AS raw_provider,
         CASE
             WHEN lower(COALESCE(ri.provider, 'unknown')) IN ('google', 'gemini') THEN 'google'
             WHEN lower(COALESCE(ri.provider, 'unknown')) IN ('claude', 'anthropic') THEN 'anthropic'
@@ -5671,33 +5757,18 @@ WITH normalized AS (
             WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'local_%' THEN 'local'
             ELSE COALESCE(ri.provider, 'unknown')
         END AS provider,
+        ${RATE_LIMIT_NORMALIZED_MODEL_CASE} AS model,
+        ${RATE_LIMIT_NORMALIZED_QUOTA_TYPE_CASE} AS quota_type,
+        ri.quota_key AS normalized_quota_key,
+        NULLIF(TRIM(BOTH FROM COALESCE(to_jsonb(ri)->>'source', '')), '') AS source,
+        NULLIF(TRIM(BOTH FROM COALESCE(to_jsonb(ri)->>'client', '')), '') AS client,
         CASE
-            WHEN lower(COALESCE(ri.provider, 'unknown')) = 'antigravity'
-              AND ri.quota_key IN (
-                  'antigravity_code_assist:gemini_pool',
-                  'antigravity_code_assist:vertex_pool'
-              )
-            THEN ri.quota_key
-            WHEN ri.quota_type IN ('monthly', 'requests')
-              AND (
-                  lower(COALESCE(ri.provider, 'unknown')) LIKE 'xai/%'
-                  OR lower(COALESCE(ri.provider, 'unknown')) IN ('xai', 'x.ai')
-              )
-            THEN NULL
-            ELSE NULLIF(ri.model, '')
-        END AS model,
-        CASE
-            WHEN ri.quota_type = 'requests'
-              AND (
-                  lower(COALESCE(ri.provider, 'unknown')) LIKE 'xai/%'
-                  OR lower(COALESCE(ri.provider, 'unknown')) IN ('xai', 'x.ai')
-              )
-            THEN 'monthly'
-            WHEN ri.quota_type = 'weekly_special' THEN 'special'
-            WHEN ri.quota_type = 'short_special' THEN 'short_special'
-            WHEN ri.quota_type = 'requests' THEN 'short'
-            ELSE ri.quota_type
-        END AS quota_type,
+            WHEN ri.quota_key = '${XAI_GROK_BUILD_WEEKLY_CREDITS_KEY}' THEN 'credits'
+            WHEN ri.quota_key = '${XAI_GROK_BUILD_MONTHLY_REQUESTS_KEY}' THEN 'requests'
+            WHEN ri.quota_key LIKE '%:credits' THEN 'credits'
+            WHEN ri.quota_key LIKE '%:requests' THEN 'requests'
+            ELSE NULL
+        END AS quota_unit,
         ri.expected_reset_at,
         ri.fromDate AS interval_start,
         ri.toDate AS interval_end,
@@ -5720,18 +5791,43 @@ WITH normalized AS (
           )
       )
 ),
+observation_identity AS (
+    SELECT DISTINCT ON (n.raw_provider, n.normalized_quota_key, n.expected_reset_at)
+        n.raw_provider,
+        n.normalized_quota_key,
+        n.expected_reset_at,
+        NULLIF(TRIM(BOTH FROM COALESCE(to_jsonb(o)->>'source', '')), '') AS source,
+        NULLIF(TRIM(BOTH FROM COALESCE(to_jsonb(o)->>'client', '')), '') AS client
+    FROM normalized n
+    JOIN public.rate_limit_observations o
+      ON n.normalized_quota_key IS NOT NULL
+     AND n.expected_reset_at IS NOT NULL
+     AND o.provider = n.raw_provider
+     AND o.quota_key = n.normalized_quota_key
+     AND o.expected_reset_at IS NOT DISTINCT FROM n.expected_reset_at
+     AND o.observed_at IS NOT NULL
+    ORDER BY n.raw_provider, n.normalized_quota_key, n.expected_reset_at, o.observed_at DESC
+),
 window_bounds AS (
     SELECT
-        provider,
-        model,
-        quota_type,
-        expected_reset_at,
-        MIN(interval_start) AS interval_start,
-        MAX(interval_end) AS interval_end,
-        MIN(remaining_pct)::double precision AS min_remaining_pct,
-        MAX(remaining_pct)::double precision AS max_remaining_pct
-    FROM normalized
-    GROUP BY provider, model, quota_type, expected_reset_at
+        n.provider,
+        n.model,
+        n.quota_type,
+        MAX(n.normalized_quota_key) AS quota_key,
+        COALESCE(MAX(n.source), MAX(oi.source)) AS source,
+        COALESCE(MAX(n.client), MAX(oi.client)) AS client,
+        MAX(n.quota_unit) AS quota_unit,
+        n.expected_reset_at,
+        MIN(n.interval_start) AS interval_start,
+        MAX(n.interval_end) AS interval_end,
+        MIN(n.remaining_pct)::double precision AS min_remaining_pct,
+        MAX(n.remaining_pct)::double precision AS max_remaining_pct
+    FROM normalized n
+    LEFT JOIN observation_identity oi
+           ON oi.raw_provider = n.raw_provider
+          AND oi.normalized_quota_key = n.normalized_quota_key
+          AND oi.expected_reset_at IS NOT DISTINCT FROM n.expected_reset_at
+    GROUP BY n.provider, n.model, n.quota_type, n.expected_reset_at
 ),
 per_model_usage AS (
     SELECT
@@ -5764,6 +5860,10 @@ SELECT
     wb.provider,
     wb.model,
     wb.quota_type,
+    wb.quota_key,
+    wb.source,
+    wb.client,
+    wb.quota_unit,
     wb.expected_reset_at,
     wb.interval_start,
     wb.expected_reset_at AS interval_end,
@@ -5796,6 +5896,10 @@ GROUP BY
     wb.provider,
     wb.model,
     wb.quota_type,
+    wb.quota_key,
+    wb.source,
+    wb.client,
+    wb.quota_unit,
     wb.expected_reset_at,
     wb.interval_start,
     wb.interval_end,
@@ -8235,6 +8339,10 @@ function normalizeQuotaBillingDetail(row, prefix) {
   )
   const evidence = normalizeJsonRecord(row[`${prefix}_evidence`])
   const detail = {
+    quota_key: row[`${prefix}_quota_key`] ?? null,
+    source: row[`${prefix}_source`] ?? null,
+    client: row[`${prefix}_client`] ?? null,
+    quota_unit: row[`${prefix}_quota_unit`] ?? null,
     quota_limit: normalizeNumber(row[`${prefix}_quota_limit`]),
     quota_used: normalizeNumber(row[`${prefix}_quota_used`]),
     quota_remaining: normalizeNumber(row[`${prefix}_quota_remaining`]),
@@ -8245,6 +8353,10 @@ function normalizeQuotaBillingDetail(row, prefix) {
     evidence,
   }
   const hasBillingValue =
+    detail.quota_key !== null ||
+    detail.source !== null ||
+    detail.client !== null ||
+    detail.quota_unit !== null ||
     detail.quota_limit !== null ||
     detail.quota_used !== null ||
     detail.quota_remaining !== null ||
@@ -8444,6 +8556,10 @@ function normalizeQuotaHistoryRow(row) {
     provider: row.provider ?? 'unknown',
     model: row.model ?? null,
     quota_type: row.quota_type ?? 'unknown',
+    quota_key: row.quota_key ?? null,
+    source: row.source ?? null,
+    client: row.client ?? null,
+    quota_unit: row.quota_unit ?? null,
     expected_reset_at: row.expected_reset_at ?? null,
     interval_start: row.interval_start ?? null,
     interval_end: row.interval_end ?? null,

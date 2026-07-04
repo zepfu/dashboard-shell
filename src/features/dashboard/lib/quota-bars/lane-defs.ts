@@ -115,12 +115,25 @@ const GOOGLE_LANE_DEFS: LaneDef[] = [
   },
 ]
 
+export const XAI_GROK_BUILD_WEEKLY_CREDITS_KEY =
+  'xai_grok_build_weekly_credits:credits' as const
+export const XAI_GROK_BUILD_MONTHLY_REQUESTS_KEY =
+  'xai_grok_build_monthly_requests:requests' as const
+
 const XAI_LANE_DEFS: LaneDef[] = [
   {
-    laneKey: 'xai/monthly',
-    laneLabel: 'All Models · 30d',
+    laneKey: 'xai/grok-build-weekly-credits',
+    laneLabel: 'Grok Build · Weekly credits',
+    quotaType: 'weekly',
+    googleClass: null,
+    quotaKey: XAI_GROK_BUILD_WEEKLY_CREDITS_KEY,
+  },
+  {
+    laneKey: 'xai/grok-build-monthly-requests',
+    laneLabel: 'Grok Build · Monthly requests',
     quotaType: 'monthly',
     googleClass: null,
+    quotaKey: XAI_GROK_BUILD_MONTHLY_REQUESTS_KEY,
   },
 ]
 
