@@ -296,7 +296,8 @@ export function filterDockerLogErrorsForCentralizedIntake(
   return list.filter((row) => {
     const container = normalizeDockerContainerName(row?.container)
     if (!container) return false
-    if (externalSet.has(container)) return true
+    // External containers stay in dockerLogErrors for dashboard alerts only.
+    if (externalSet.has(container)) return false
     return !isRepoOwnedDockerLogContainerName(container, repoOwned)
   })
 }

@@ -545,7 +545,7 @@ describe('docker-log-error-intake', () => {
     expect(isRepoOwnedDockerLogContainerName('otherproj-aawm-dashboard-1')).toBe(false)
   })
 
-  test('repo-owned container rows are excluded from centralized report-service intake', () => {
+  test('repo-owned and external container rows are excluded from centralized report-service intake', () => {
     const rows = [
       {
         container: 'dashboard-shell-reports-dev',
@@ -568,6 +568,11 @@ describe('docker-log-error-intake', () => {
         fingerprint: 'ext-1',
       },
       {
+        container: 'litellm-dev',
+        message: 'ERROR: external dev',
+        fingerprint: 'ext-2',
+      },
+      {
         container: 'other-thing',
         message: 'ERROR: other',
         fingerprint: 'oth-1',
@@ -576,9 +581,59 @@ describe('docker-log-error-intake', () => {
     const filtered = filterDockerLogErrorsForCentralizedIntake(rows, {
       env: { SHELL_REPORT_DOCKER_LOG_EXTERNAL_CONTAINERS: 'aawm-litellm,litellm-dev' },
     })
-    expect(filtered.map((r) => r.container)).toEqual(['aawm-litellm', 'other-thing'])
+    expect(filtered.map((r) => r.container)).toEqual(['other-thing'])
     expect(isRepoOwnedDockerLogContainerName('dashboard-shell-redis')).toBe(true)
     expect(isRepoOwnedDockerLogContainerName('aawm-litellm')).toBe(false)
+  })
+
+  test('external container rows remain eligible for dashboard payload but not JSONL intake', async () => {
+    const intakeDir = await mkdtemp(path.join(os.tmpdir(), 'd1-443-external-'))
+    tmpDirs.push(intakeDir)
+    const externalRow = {
+      observed_at: '2026-06-28T18:41:00.000Z',
+      container: 'aawm-litellm',
+      stream: 'stderr',
+      provider: 'openai',
+      status_code: 500,
+      level: 'error',
+      message: 'upstream provider failure',
+      source_identity: 'docker-json-log',
+      source_path: '/host/docker/containers/abc/abc-json.log',
+      fingerprint: 'ext-alert-only',
+    }
+    const unknownRow = {
+      observed_at: '2026-06-28T18:42:00.000Z',
+      container: 'mystery-service',
+      stream: 'stderr',
+      provider: 'unknown',
+      status_code: 502,
+      level: 'error',
+      message: 'unknown container failure',
+      source_identity: 'docker-json-log',
+      source_path: '/host/docker/containers/def/def-json.log',
+      fingerprint: 'unknown-intake',
+    }
+    const sorted = [externalRow, unknownRow].sort((a, b) =>
+      String(b.observed_at).localeCompare(String(a.observed_at))
+    )
+    const split = splitDockerLogErrorsForDashboardAndIntake(sorted, 10)
+    expect(split.forDashboard.map((r) => r.container)).toEqual(['mystery-service', 'aawm-litellm'])
+    const forIntake = filterDockerLogErrorsForCentralizedIntake(split.forIntake, {
+      env: { SHELL_REPORT_DOCKER_LOG_EXTERNAL_CONTAINERS: 'aawm-litellm,litellm-dev' },
+    })
+    expect(forIntake.map((r) => r.container)).toEqual(['mystery-service'])
+
+    const seen = new Set()
+    const result = await appendDockerLogErrorsToIntake({
+      intakeDir,
+      rows: selectNewDockerLogErrors(forIntake, seen),
+      seenFingerprints: seen,
+    })
+    expect(result.appended).toBe(1)
+    await expect(readdir(intakeDir)).resolves.toEqual(['mystery-service-error.jsonl'])
+    await expect(
+      readFile(path.join(intakeDir, 'aawm-litellm-error.jsonl'), 'utf8')
+    ).rejects.toMatchObject({ code: 'ENOENT' })
   })
 
 })

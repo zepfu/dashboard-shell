@@ -352,19 +352,24 @@ Durable intake layout:
 - Path pattern: `.analysis/<safe-container-name>-error.jsonl`
 - Repo-owned writer: per-container `container-error-intake.sh`
   (`source_identity`: `container-self-log`, `source_path`: `null`)
-- External fallback writer: `server/report-service.mjs` via
-  `server/docker-log-error-intake.mjs` for configured external containers only
-  (default `SHELL_REPORT_DOCKER_LOG_EXTERNAL_CONTAINERS=aawm-litellm,litellm-dev`)
+- Centralized report-service writer: `server/report-service.mjs` via
+  `server/docker-log-error-intake.mjs` for **non-repo-owned, non-external**
+  containers discovered in Docker JSON logs (unknown upstream containers only)
+- External containers (default `SHELL_REPORT_DOCKER_LOG_EXTERNAL_CONTAINERS=aawm-litellm,litellm-dev`)
+  are **alert-only**: their rows appear in `dockerLogErrors` for dashboard
+  correlation but must **not** create or append
+  `.analysis/<external-container>-error.jsonl` in `dashboard-shell`
 - Intake directory: `SHELL_CONTAINER_ERROR_INTAKE_DIR` and
   `SHELL_REPORT_ERROR_INTAKE_DIR` (compose default `/dashboard-shell-analysis`,
   bind-mounted to repo-local `./.analysis`)
 
 Each JSONL record includes normalized fields such as `observed_at`, `container`,
 `stream`, `level`, `status_code`, `provider`, compact `message`,
-`source_identity`, `source_path` (host log path when report-service tails external
-containers), `fingerprint`, and `ingested_at`. Real failures (errors, exceptions,
-tracebacks, 5xx, connection refused, timeouts) are classified at `error` or
-`critical`, not downgraded to `warning`.
+`source_identity`, `source_path` (host log path when report-service writes an
+unknown non-repo, non-external Docker JSON log row), `fingerprint`, and
+`ingested_at`. Real failures (errors, exceptions, tracebacks, 5xx, connection
+refused, timeouts) are classified at `error` or `critical`, not downgraded to
+`warning`.
 
 Informational or debug lines that only mention the word `error` in a
 non-failure context (for example report-service `INFO: appended N docker log error
@@ -382,10 +387,11 @@ through `SHELL_REPORT_DOCKER_LOG_EXTERNAL_CONTAINERS` (default
 `aawm-litellm,litellm-dev`). Setting `SHELL_REPORT_DOCKER_LOG_CONTAINERS`
 replaces the default scope entirely for operator overrides.
 
-Report-service JSONL append skips repo-owned container names (see
-`filterDockerLogErrorsForCentralizedIntake` in `server/docker-log-error-intake.mjs`)
-so per-container writers and centralized external intake do not double-append the
-same repo-owned rows.
+Report-service JSONL append skips repo-owned container names and configured
+external container names (see `filterDockerLogErrorsForCentralizedIntake` in
+`server/docker-log-error-intake.mjs`) so per-container writers own repo-owned
+rows and external LiteLLM incidents stay in the owning repo rather than
+dashboard-shell `.analysis` intake files.
 
 Per `AGENTS.md`, new intake rows should be evaluated alongside handoffs and may
 open or update TODO items before unrelated feature work continues.
