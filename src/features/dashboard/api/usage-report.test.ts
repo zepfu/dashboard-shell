@@ -1171,6 +1171,7 @@ describe('D1-212/215/213/178/221/222 session diagnostics API contracts', () => {
     'transcript_attribution',
     'tool_definitions',
     'alias_route_events',
+    'anthropic_context_window',
   ] as const
 
   test('test_usage_report_types_expose_session_diagnostics_response_and_row_shapes', async () => {
@@ -1226,6 +1227,9 @@ describe('D1-212/215/213/178/221/222 session diagnostics API contracts', () => {
     expect(source).toContain('session_history_transcript_attribution?:')
     expect(source).toContain('tool_definition_snapshot?:')
     expect(source).toContain('alias_route_events?:')
+    expect(source).toContain('UsageReportAnthropicContextWindowDiagnostics')
+    expect(source).toContain('anthropic_context_window?:')
+    expect(source).toContain('mode?:')
   })
 
   test('test_fetchUsageReportSessionDiagnostics_forwards_filters_and_returns_diagnostic_rows', async () => {
@@ -1300,6 +1304,13 @@ describe('D1-212/215/213/178/221/222 session diagnostics API contracts', () => {
                     redispatch_required: false,
                   },
                 ],
+                anthropic_context_window: {
+                  mode: 'extended_1m',
+                  requested_tokens: 1000000,
+                  source: 'model_suffix_1m',
+                  beta: 'context-1m-2025-08-07',
+                  classification: { label: 'extended_1m', evidence: 'suffix' },
+                },
               },
             ],
           })
@@ -1353,6 +1364,13 @@ describe('D1-212/215/213/178/221/222 session diagnostics API contracts', () => {
           event_type: 'candidate_selected',
         },
       ],
+      anthropic_context_window: {
+        mode: 'extended_1m',
+        requested_tokens: 1000000,
+        source: 'model_suffix_1m',
+        beta: 'context-1m-2025-08-07',
+        classification: { label: 'extended_1m', evidence: 'suffix' },
+      },
     })
   })
 })

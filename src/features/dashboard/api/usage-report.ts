@@ -939,6 +939,14 @@ export interface UsageReportToolActivityRow {
   calls: number
 }
 
+export interface UsageReportAnthropicContextWindowDiagnostics {
+  mode?: string | null
+  requested_tokens?: number | null
+  source?: string | null
+  beta?: string | null
+  classification?: unknown
+}
+
 export interface UsageReportAliasRouteEvent {
   observed_at?: string | null
   session_id?: string | null
@@ -1050,6 +1058,7 @@ export interface UsageReportSessionDiagnosticsRow {
     tool_definition_snapshot?: unknown
   } | null
   alias_route_events?: UsageReportAliasRouteEvent[]
+  anthropic_context_window?: UsageReportAnthropicContextWindowDiagnostics | null
 }
 
 export type UsageReportProviderAliasRoutingStateSource =

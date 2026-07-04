@@ -122,6 +122,9 @@ const MAX_LIMIT = 50000
 // rows are a small aggregate (6 columns per pair).
 const MAX_CLIENT_ROWS = 5000
 const MAX_SESSION_DIAGNOSTICS_ROWS = 500
+const MAX_SESSION_DIAGNOSTICS_CANDIDATE_ROWS = 50000
+const MIN_SESSION_DIAGNOSTICS_CANDIDATE_ROWS = 5000
+const SESSION_DIAGNOSTICS_CANDIDATE_MULTIPLIER = 5000
 // Provider health strips are fixed 24-hour surfaces: 288 buckets × 5 minutes.
 // Report date filters can span days/months, but the status bars should stay a
 // bounded rolling window ending at "now" for live ranges, or the selected `to`
@@ -3123,6 +3126,16 @@ function parseSessionDiagnosticsLimit(value) {
   return Math.min(Math.floor(parsed), MAX_SESSION_DIAGNOSTICS_ROWS)
 }
 
+function sessionDiagnosticsCandidateLimit(limit) {
+  return Math.min(
+    Math.max(
+      limit * SESSION_DIAGNOSTICS_CANDIDATE_MULTIPLIER,
+      MIN_SESSION_DIAGNOSTICS_CANDIDATE_ROWS
+    ),
+    MAX_SESSION_DIAGNOSTICS_CANDIDATE_ROWS
+  )
+}
+
 function parseGroupBy(value) {
   const requested = parseCsv(value)
   const groupBy = requested.length ? requested : DEFAULT_GROUP_BY
@@ -3479,6 +3492,40 @@ function appendGrokSideChannelDiagnosticsFilters(searchParams, whereParts, value
   }
 }
 
+function sessionDiagnosticsMetadataPresentClause(columnPrefix = '') {
+  const p = columnPrefix
+  return `(
+    ${p}metadata->>'credential_family' IS NOT NULL
+    OR ${p}metadata->>'grok_native_oauth_managed' IS NOT NULL
+    OR ${p}metadata->>'grok_native_entrypoint' IS NOT NULL
+    OR ${p}metadata->>'usage_output_contract_required_final_phrase' IS NOT NULL
+    OR ${p}metadata->>'usage_output_contract_required_final_phrase_present' IS NOT NULL
+    OR ${p}metadata->>'usage_output_contract_failure_class' IS NOT NULL
+    OR ${p}metadata->>'usage_output_contract_setup_only_detected' IS NOT NULL
+    OR ${p}metadata->>'aawm_tool_definition_capture_version' IS NOT NULL
+    OR ${p}metadata->>'aawm_tool_definition_snapshot_hash' IS NOT NULL
+    OR ${p}metadata->>'aawm_tool_definition_snapshot' IS NOT NULL
+    OR ${p}metadata->>'xai_responses_request_sanitized' IS NOT NULL
+    OR ${p}metadata->>'xai_responses_sanitized_removed_params' IS NOT NULL
+    OR ${p}metadata->>'xai_responses_sanitized_tool_count' IS NOT NULL
+    OR ${p}metadata->>'xai_responses_sanitized_tool_types' IS NOT NULL
+    OR ${p}metadata->>'xai_tool_choice_without_tools_removed' IS NOT NULL
+    OR ${p}metadata->>'xai_tool_choice_without_tools_removed_reason' IS NOT NULL
+    OR ${p}metadata->>'session_history_transcript_attribution_status' IS NOT NULL
+    OR ${p}metadata->>'session_history_transcript_attribution_source' IS NOT NULL
+    OR ${p}metadata->>'session_history_transcript_attribution' IS NOT NULL
+    OR ${p}metadata->>'aawm_alias_routing_audit_events' IS NOT NULL
+    OR ${p}metadata->>'codex_auto_agent_audit_events' IS NOT NULL
+    OR ${p}metadata->>'anthropic_auto_agent_audit_events' IS NOT NULL
+    OR ${p}metadata->>'anthropic_context_window_mode' IS NOT NULL
+    OR ${p}metadata->>'anthropic_context_window_requested_tokens' IS NOT NULL
+    OR ${p}metadata->>'anthropic_context_window_source' IS NOT NULL
+    OR ${p}metadata->>'anthropic_context_window_beta' IS NOT NULL
+    OR ${p}metadata->>'anthropic_context_window_classification' IS NOT NULL
+    OR ${grokSideChannelMetadataPresentClause(p)}
+  )`
+}
+
 function buildSessionDiagnosticsWhere(searchParams) {
   const from = parseDateParam(searchParams.get('from'), defaultFromDate)
   const to = parseDateParam(searchParams.get('to'), defaultToDate)
@@ -3504,42 +3551,6 @@ function buildSessionDiagnosticsWhere(searchParams) {
   }
 
   appendGrokSideChannelDiagnosticsFilters(searchParams, whereParts, values)
-
-  whereParts.push(`(
-    sh.metadata->>'credential_family' IS NOT NULL
-    OR sh.metadata->>'grok_native_oauth_managed' IS NOT NULL
-    OR sh.metadata->>'grok_native_entrypoint' IS NOT NULL
-    OR sh.metadata->>'usage_output_contract_required_final_phrase' IS NOT NULL
-    OR sh.metadata->>'usage_output_contract_required_final_phrase_present' IS NOT NULL
-    OR sh.metadata->>'usage_output_contract_failure_class' IS NOT NULL
-    OR sh.metadata->>'usage_output_contract_setup_only_detected' IS NOT NULL
-    OR sh.metadata->>'aawm_tool_definition_capture_version' IS NOT NULL
-    OR sh.metadata->>'aawm_tool_definition_snapshot_hash' IS NOT NULL
-    OR sh.metadata->>'aawm_tool_definition_snapshot' IS NOT NULL
-    OR sh.metadata->>'xai_responses_request_sanitized' IS NOT NULL
-    OR sh.metadata->>'xai_responses_sanitized_removed_params' IS NOT NULL
-    OR sh.metadata->>'xai_responses_sanitized_tool_count' IS NOT NULL
-    OR sh.metadata->>'xai_responses_sanitized_tool_types' IS NOT NULL
-    OR sh.metadata->>'xai_tool_choice_without_tools_removed' IS NOT NULL
-    OR sh.metadata->>'xai_tool_choice_without_tools_removed_reason' IS NOT NULL
-    OR sh.metadata->>'session_history_transcript_attribution_status' IS NOT NULL
-    OR sh.metadata->>'session_history_transcript_attribution_source' IS NOT NULL
-    OR sh.metadata->>'session_history_transcript_attribution' IS NOT NULL
-    OR sh.metadata->>'aawm_alias_routing_audit_events' IS NOT NULL
-    OR sh.metadata->>'codex_auto_agent_audit_events' IS NOT NULL
-    OR sh.metadata->>'anthropic_auto_agent_audit_events' IS NOT NULL
-    OR ${grokSideChannelMetadataPresentClause('sh.')}
-    OR EXISTS (
-      SELECT 1
-      FROM public.aawm_alias_routing_audit aa_probe
-      WHERE (
-        aa_probe.litellm_call_id::text IS NOT DISTINCT FROM sh.litellm_call_id::text
-        OR aa_probe.session_id::text IS NOT DISTINCT FROM sh.session_id::text
-        OR aa_probe.trace_id::text IS NOT DISTINCT FROM NULLIF(to_jsonb(sh)->>'trace_id', '')
-      )
-      LIMIT 1
-    )
-  )`)
 
   return { from, to, values, whereParts }
 }
@@ -7397,11 +7408,14 @@ export function buildSessionDiagnosticsQuery(searchParams) {
   const { from, to, values, whereParts } =
     buildSessionDiagnosticsWhere(searchParams)
   const limit = parseSessionDiagnosticsLimit(searchParams.get('limit'))
+  const candidateLimit = sessionDiagnosticsCandidateLimit(limit)
+  values.push(candidateLimit)
+  const candidateLimitPlaceholder = `$${values.length.toString()}`
   values.push(limit)
   const limitPlaceholder = `$${values.length.toString()}`
 
   const sql = `
-WITH recent_sessions AS MATERIALIZED (
+WITH candidate_sessions AS MATERIALIZED (
     SELECT
         sh.created_at,
         sh.start_time,
@@ -7424,6 +7438,13 @@ WITH recent_sessions AS MATERIALIZED (
     FROM public.session_history sh
     WHERE ${whereParts.join('\n      AND ')}
     ORDER BY sh.created_at DESC
+    LIMIT ${candidateLimitPlaceholder}
+),
+recent_sessions AS MATERIALIZED (
+    SELECT *
+    FROM candidate_sessions
+    WHERE ${sessionDiagnosticsMetadataPresentClause()}
+    ORDER BY created_at DESC
     LIMIT ${limitPlaceholder}
 ),
 diagnostic_rows AS (
@@ -7460,10 +7481,27 @@ diagnostic_rows AS (
             ) AS alias_route_events
         FROM public.aawm_alias_routing_audit aa
         WHERE (
-            NULLIF(to_jsonb(aa)->>'litellm_call_id', '') IS NOT DISTINCT FROM rs.litellm_call_id
-            OR NULLIF(to_jsonb(aa)->>'session_id', '') IS NOT DISTINCT FROM rs.session_id
-            OR NULLIF(to_jsonb(aa)->>'trace_id', '') IS NOT DISTINCT FROM rs.trace_id
+            rs.metadata->>'aawm_alias_routing_audit_events' IS NOT NULL
+            OR rs.metadata->>'codex_auto_agent_audit_events' IS NOT NULL
+            OR rs.metadata->>'anthropic_auto_agent_audit_events' IS NOT NULL
         )
+          AND (
+              (
+                  NULLIF(aa.litellm_call_id, '') IS NOT NULL
+                  AND rs.litellm_call_id IS NOT NULL
+                  AND NULLIF(aa.litellm_call_id, '') = rs.litellm_call_id
+              )
+              OR (
+                  NULLIF(aa.session_id, '') IS NOT NULL
+                  AND rs.session_id IS NOT NULL
+                  AND NULLIF(aa.session_id, '') = rs.session_id
+              )
+              OR (
+                  NULLIF(aa.trace_id, '') IS NOT NULL
+                  AND rs.trace_id IS NOT NULL
+                  AND NULLIF(aa.trace_id, '') = rs.trace_id
+              )
+          )
     ) alias_audit ON TRUE
     LEFT JOIN LATERAL (
         SELECT
@@ -7482,10 +7520,16 @@ diagnostic_rows AS (
                 ORDER BY COALESCE(to_jsonb(td)->>'created_at', to_jsonb(td)->>'updated_at') DESC NULLS LAST
             ) AS tool_definition_snapshot
         FROM public.session_history_tool_definition_snapshots td
-        WHERE NULLIF(to_jsonb(td)->>'session_id', '') IS NOT DISTINCT FROM rs.session_id
+        WHERE (
+            rs.metadata->>'aawm_tool_definition_capture_version' IS NOT NULL
+            OR rs.metadata->>'aawm_tool_definition_snapshot_hash' IS NOT NULL
+            OR rs.metadata->>'aawm_tool_definition_snapshot' IS NOT NULL
+        )
+          AND rs.session_id IS NOT NULL
+          AND NULLIF(td.session_id, '') = rs.session_id
           AND (
               NULLIF(rs.metadata->>'aawm_tool_definition_snapshot_hash', '') IS NULL
-              OR NULLIF(to_jsonb(td)->>'snapshot_hash', '') = rs.metadata->>'aawm_tool_definition_snapshot_hash'
+              OR NULLIF(td.snapshot_hash, '') = rs.metadata->>'aawm_tool_definition_snapshot_hash'
           )
     ) tool_snapshots ON TRUE
 )
@@ -7538,7 +7582,13 @@ SELECT
              OR metadata->>'grok_side_channel_endpoint_type' IS NOT NULL
              OR metadata->>'grok_side_channel_endpoint_path_template' IS NOT NULL
              OR metadata->>'grok_side_channel_request_body_sha256' IS NOT NULL
-             THEN 'grok_side_channel'::text END
+             THEN 'grok_side_channel'::text END,
+        CASE WHEN metadata->>'anthropic_context_window_mode' IS NOT NULL
+             OR metadata->>'anthropic_context_window_requested_tokens' IS NOT NULL
+             OR metadata->>'anthropic_context_window_source' IS NOT NULL
+             OR metadata->>'anthropic_context_window_beta' IS NOT NULL
+             OR metadata->>'anthropic_context_window_classification' IS NOT NULL
+             THEN 'anthropic_context_window'::text END
     ], NULL) AS diagnostic_flags,
     ARRAY_REMOVE(ARRAY[
         CASE WHEN metadata->>'credential_family' IS NOT NULL
@@ -7562,7 +7612,13 @@ SELECT
              OR metadata->>'grok_side_channel_request_body_sha256' IS NOT NULL
              THEN 'request_shape'::text END,
         CASE WHEN metadata->>'session_history_transcript_attribution_status' IS NOT NULL
-             THEN 'model_attribution'::text END
+             THEN 'model_attribution'::text END,
+        CASE WHEN metadata->>'anthropic_context_window_mode' IS NOT NULL
+             OR metadata->>'anthropic_context_window_requested_tokens' IS NOT NULL
+             OR metadata->>'anthropic_context_window_source' IS NOT NULL
+             OR metadata->>'anthropic_context_window_beta' IS NOT NULL
+             OR metadata->>'anthropic_context_window_classification' IS NOT NULL
+             THEN 'context_window'::text END
     ], NULL) AS diagnostic_categories,
     jsonb_strip_nulls(jsonb_build_object(
         'credential_family', NULLIF(metadata->>'credential_family', ''),
@@ -7671,6 +7727,19 @@ SELECT
         'aawm_tool_definition_snapshot_storage_key', NULLIF(metadata->>'aawm_tool_definition_snapshot_storage_key', ''),
         'tool_definition_snapshot', COALESCE(tool_definition_snapshot, metadata->'aawm_tool_definition_snapshot')
     )) AS tool_definitions,
+    jsonb_strip_nulls(jsonb_build_object(
+        'mode', NULLIF(metadata->>'anthropic_context_window_mode', ''),
+        'requested_tokens',
+            CASE WHEN COALESCE(metadata->>'anthropic_context_window_requested_tokens', '') ~ '^-?[0-9]+$'
+                 THEN (metadata->>'anthropic_context_window_requested_tokens')::bigint
+            END,
+        'source', NULLIF(metadata->>'anthropic_context_window_source', ''),
+        'beta', NULLIF(metadata->>'anthropic_context_window_beta', ''),
+        'classification', COALESCE(
+            metadata->'anthropic_context_window_classification',
+            to_jsonb(NULLIF(metadata->>'anthropic_context_window_classification', ''))
+        )
+    )) AS anthropic_context_window,
     COALESCE(
         alias_route_events,
         metadata->'aawm_alias_routing_audit_events',
@@ -7682,7 +7751,45 @@ FROM diagnostic_rows
 ORDER BY created_at DESC;
 `
 
-  return { sql, values, metadata: { from, to, limit } }
+  return { sql, values, metadata: { from, to, limit, candidateLimit } }
+}
+
+
+function normalizeAnthropicContextWindow(value) {
+  const record = normalizeJsonRecord(value)
+  const mode =
+    typeof record.mode === 'string' && record.mode.trim() !== ''
+      ? record.mode.trim()
+      : null
+  const source =
+    typeof record.source === 'string' && record.source.trim() !== ''
+      ? record.source.trim()
+      : null
+  const beta =
+    typeof record.beta === 'string' && record.beta.trim() !== ''
+      ? record.beta.trim()
+      : null
+  const requestedTokens = normalizeNumber(record.requested_tokens)
+  const classification =
+    record.classification === undefined || record.classification === null
+      ? null
+      : record.classification
+  if (
+    mode == null &&
+    source == null &&
+    beta == null &&
+    requestedTokens == null &&
+    classification == null
+  ) {
+    return null
+  }
+  return {
+    mode,
+    requested_tokens: requestedTokens,
+    source,
+    beta,
+    classification,
+  }
 }
 
 function normalizeSessionDiagnosticsRow(row) {
@@ -7711,6 +7818,9 @@ function normalizeSessionDiagnosticsRow(row) {
     xai_sanitizer: normalizeJsonRecord(row.xai_sanitizer),
     transcript_attribution: normalizeJsonRecord(row.transcript_attribution),
     tool_definitions: normalizeJsonRecord(row.tool_definitions),
+    anthropic_context_window: normalizeAnthropicContextWindow(
+      row.anthropic_context_window
+    ),
     alias_route_events: Array.isArray(row.alias_route_events)
       ? row.alias_route_events
       : [],

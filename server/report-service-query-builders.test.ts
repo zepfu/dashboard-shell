@@ -577,6 +577,40 @@ describe('D1-429 tenant_id authoritative repository dimension contract', () => {
     expectNoForbiddenRepositoryInferenceSources(query.sql)
   })
 
+  test('buildUsageQuery_tokenTrendHours_and_quotaQuery_do_not_consume_context_window_diagnostics', () => {
+    const diagnosticOnlyKeys = [
+      'anthropic_context_window_mode',
+      'anthropic_context_window_requested_tokens',
+      'anthropic_context_window_source',
+      'anthropic_context_window_beta',
+      'anthropic_context_window_classification',
+    ] as const
+    const aggregateQueries = [
+      buildUsageQuery(
+        new URLSearchParams({
+          from: '2026-05-01',
+          to: '2026-05-08',
+          grain: 'day',
+          group_by: 'provider,model',
+          limit: '50000',
+        })
+      ).sql,
+      buildTokenTrendHoursQuery(
+        new URLSearchParams({
+          from: '2026-05-01',
+          to: '2026-05-08',
+        })
+      ).sql,
+      buildQuotaQuery().sql,
+    ]
+
+    for (const sql of aggregateQueries) {
+      for (const key of diagnosticOnlyKeys) {
+        expect(sql).not.toContain(key)
+      }
+    }
+  })
+
   test('buildSessionDiagnosticsQuery_projects_and_filters_repository_from_tenant_id', () => {
     const query = buildSessionDiagnosticsQuery(
       new URLSearchParams({
@@ -648,6 +682,11 @@ describe('D1-212/215/213/178/221/222 session diagnostics contracts', () => {
     'aawm_tool_definition_snapshot_hash',
     'aawm_tool_definition_snapshot',
     'aawm_alias_routing_audit_events',
+    'anthropic_context_window_mode',
+    'anthropic_context_window_requested_tokens',
+    'anthropic_context_window_source',
+    'anthropic_context_window_beta',
+    'anthropic_context_window_classification',
   ] as const
 
   test('test_buildSessionDiagnosticsQuery_selects_exact_metadata_keys_and_filters', () => {
@@ -667,6 +706,7 @@ describe('D1-212/215/213/178/221/222 session diagnostics contracts', () => {
       from: '2026-05-01',
       to: '2026-05-08',
       limit: 250,
+      candidateLimit: 50000,
     })
     expect(query.values).toEqual([
       '2026-05-01',
@@ -675,15 +715,19 @@ describe('D1-212/215/213/178/221/222 session diagnostics contracts', () => {
       ['grok-composer-2.5-fast', 'claude-opus-4-8'],
       ['dashboard-shell'],
       ['grok-build', 'codex-tui'],
+      50000,
       250,
     ])
     expect(query.sql).toContain('FROM public.session_history sh')
+    expect(query.sql).toContain('WITH candidate_sessions AS MATERIALIZED')
+    expect(query.sql).toContain('recent_sessions AS MATERIALIZED')
     expect(query.sql).toContain('ORDER BY sh.created_at DESC')
     expect(query.sql).toContain('LIMIT $7')
+    expect(query.sql).toContain('LIMIT $8')
     expect(query.sql).not.toMatch(/metadata::text/i)
 
     for (const key of exactMetadataKeys) {
-      expect(query.sql).toContain(`sh.metadata->>'${key}'`)
+      expect(query.sql).toContain(`metadata->>'${key}'`)
     }
 
     expect(query.sql).toContain('AS diagnostic_flags')
@@ -712,6 +756,7 @@ describe('D1-212/215/213/178/221/222 session diagnostics contracts', () => {
       '2026-05-01',
       '2026-05-08',
       ['register', 'replicas_update'],
+      50000,
       50,
     ])
     expect(query.sql).toContain("metadata->>'grok_side_channel'")
@@ -764,7 +809,91 @@ describe('D1-212/215/213/178/221/222 session diagnostics contracts', () => {
     expect(query.sql).toContain('usage_output_contract_setup_only_detected')
     expect(query.sql).toContain('grok_native_oauth_managed')
     expect(query.sql).toContain('grok_native_entrypoint')
+    expect(query.sql).not.toContain(
+      'IS NOT DISTINCT FROM sh.litellm_call_id'
+    )
+    expect(query.sql).not.toContain('IS NOT DISTINCT FROM sh.session_id')
+    expect(query.sql).not.toContain(
+      "IS NOT DISTINCT FROM NULLIF(to_jsonb(sh)->>'trace_id', '')"
+    )
+    expect(query.sql).not.toContain('aa_probe')
   })
+
+  test('test_buildSessionDiagnosticsQuery_keeps_alias_audit_matching_after_limited_rows', () => {
+    const query = buildSessionDiagnosticsQuery(
+      new URLSearchParams({
+        from: '2026-05-01',
+        to: '2026-05-08',
+        limit: '5',
+      })
+    )
+
+    expect(query.sql).toContain('FROM recent_sessions rs')
+    expect(query.sql).toContain('LEFT JOIN LATERAL')
+    expect(query.sql).toContain('FROM public.aawm_alias_routing_audit aa')
+    expect(query.sql).toContain(
+      "rs.metadata->>'aawm_alias_routing_audit_events' IS NOT NULL"
+    )
+    expect(query.sql).toContain(
+      "rs.metadata->>'codex_auto_agent_audit_events' IS NOT NULL"
+    )
+    expect(query.sql).toContain(
+      "rs.metadata->>'anthropic_auto_agent_audit_events' IS NOT NULL"
+    )
+    expect(query.sql).toContain(
+      "NULLIF(aa.litellm_call_id, '') IS NOT NULL"
+    )
+    expect(query.sql).toContain('rs.litellm_call_id IS NOT NULL')
+    expect(query.sql).toContain(
+      "NULLIF(aa.litellm_call_id, '') = rs.litellm_call_id"
+    )
+    expect(query.sql).toContain("NULLIF(aa.session_id, '') IS NOT NULL")
+    expect(query.sql).toContain('rs.session_id IS NOT NULL')
+    expect(query.sql).toContain(
+      "NULLIF(aa.session_id, '') = rs.session_id"
+    )
+    expect(query.sql).toContain("NULLIF(aa.trace_id, '') IS NOT NULL")
+    expect(query.sql).toContain('rs.trace_id IS NOT NULL')
+    expect(query.sql).toContain("NULLIF(aa.trace_id, '') = rs.trace_id")
+    expect(query.sql).toContain(
+      "rs.metadata->>'aawm_tool_definition_capture_version' IS NOT NULL"
+    )
+    expect(query.sql).toContain(
+      "rs.metadata->>'aawm_tool_definition_snapshot_hash' IS NOT NULL"
+    )
+    expect(query.sql).toContain(
+      "rs.metadata->>'aawm_tool_definition_snapshot' IS NOT NULL"
+    )
+    expect(query.sql).toContain('rs.session_id IS NOT NULL')
+    expect(query.sql).toContain("NULLIF(td.session_id, '') = rs.session_id")
+    expect(query.sql).toContain(
+      "NULLIF(td.snapshot_hash, '') = rs.metadata->>'aawm_tool_definition_snapshot_hash'"
+    )
+  })
+
+  test('test_buildSessionDiagnosticsQuery_projects_anthropic_context_window_metadata', () => {
+    const query = buildSessionDiagnosticsQuery(
+      new URLSearchParams({
+        from: '2026-05-01',
+        to: '2026-05-08',
+        limit: '25',
+      })
+    )
+
+    expect(query.sql).toContain("metadata->>'anthropic_context_window_mode'")
+    expect(query.sql).toContain(
+      "metadata->>'anthropic_context_window_requested_tokens'"
+    )
+    expect(query.sql).toContain("metadata->>'anthropic_context_window_source'")
+    expect(query.sql).toContain("metadata->>'anthropic_context_window_beta'")
+    expect(query.sql).toContain(
+      "metadata->'anthropic_context_window_classification'"
+    )
+    expect(query.sql).toContain('AS anthropic_context_window')
+    expect(query.sql).toContain("'anthropic_context_window'::text")
+    expect(query.sql).toContain("'context_window'::text")
+  })
+
 })
 
 describe('report-service query builders', () => {

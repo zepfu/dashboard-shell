@@ -331,6 +331,33 @@ Side-channel diagnostic rows are included in session diagnostics when shape
 metadata is present; they remain excluded from billable usage aggregation via
 existing `no_usage` / reportable-session rules on usage totals.
 
+## Session Diagnostics (Anthropic Context Window)
+
+`/api/shell/reports/usage/session-diagnostics` exposes LiteLLM-persisted
+Anthropic requested context-window classification as read-only diagnostic
+metadata. These fields describe the requested/classified context window, not
+actual prompt size, token volume, quota consumption, repository attribution, or
+tenant attribution.
+
+Projected metadata keys (when present on `session_history.metadata`):
+
+- `anthropic_context_window_mode` as `mode`
+  (`extended_1m`, `default_200k`, or `unknown`)
+- `anthropic_context_window_requested_tokens` as `requested_tokens`
+- `anthropic_context_window_source` as `source`
+- `anthropic_context_window_beta` as `beta`
+- `anthropic_context_window_classification` as `classification`
+
+The diagnostics UI renders `extended_1m` as `1M extended`, `default_200k` as
+`200k default`, and other or unknown modes as `unknown`. The source, beta, and
+classification payload remain diagnostic breadcrumbs only. They are not consumed
+by quota cards, token-trend charts, usage totals, or repository/tenant
+inference.
+
+Session diagnostics applies diagnostic metadata filters inside a bounded recent
+`session_history` candidate scan; response metadata includes `candidateLimit`
+for operators reviewing query scope.
+
 ## Container Error Intake (`.analysis/*-error.jsonl`)
 
 Every dashboard-shell-owned compose container runs

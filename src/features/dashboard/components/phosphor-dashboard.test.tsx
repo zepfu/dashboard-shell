@@ -1544,6 +1544,16 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
                     updated_at: '2026-05-20T12:05:00.000Z',
                   },
                 },
+                anthropic_context_window: {
+                  mode: 'extended_1m',
+                  requested_tokens: 1000000,
+                  source: 'model_suffix_1m',
+                  beta: 'context-1m-2025-08-07',
+                  classification: {
+                    label: 'extended_1m',
+                    evidence: 'model_suffix',
+                  },
+                },
               },
             ],
           } satisfies UsageReportSessionDiagnosticsResponse)
@@ -1609,6 +1619,18 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
     expect(
       within(diagnosticsCard).getByText('unrecoverable')
     ).toBeInTheDocument()
+
+    expect(
+      within(diagnosticsCard).getByText('Requested context window')
+    ).toBeInTheDocument()
+    expect(within(diagnosticsCard).getByText('1M extended')).toBeInTheDocument()
+    expect(
+      within(diagnosticsCard).getByText('model_suffix_1m')
+    ).toBeInTheDocument()
+    expect(
+      within(diagnosticsCard).getByText('context-1m-2025-08-07')
+    ).toBeInTheDocument()
+    expect(within(diagnosticsCard).getByText('1000000')).toBeInTheDocument()
 
     expect(
       within(diagnosticsCard).getByText('aawm_tool_definition_captured_count')

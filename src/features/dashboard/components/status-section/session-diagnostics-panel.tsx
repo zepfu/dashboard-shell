@@ -31,6 +31,46 @@ function recordString(value: JsonRecord | null, key: string): string | null {
   return null
 }
 
+function formatAnthropicContextWindowModeLabel(
+  mode: string | null | undefined
+): string {
+  switch (mode) {
+    case 'extended_1m':
+      return '1M extended'
+    case 'default_200k':
+      return '200k default'
+    default:
+      return 'unknown'
+  }
+}
+
+function anthropicContextWindowSummary(
+  value: UsageReportSessionDiagnosticsRow['anthropic_context_window']
+): Record<string, unknown> | null {
+  if (value === null || value === undefined) return null
+  const hasRawValue =
+    value.mode != null ||
+    value.requested_tokens != null ||
+    value.source != null ||
+    value.beta != null ||
+    value.classification != null
+  if (!hasRawValue) return null
+  const entries: Record<string, unknown> = {
+    classified_mode: formatAnthropicContextWindowModeLabel(value.mode),
+    mode: value.mode ?? null,
+    requested_tokens: value.requested_tokens ?? null,
+    source: value.source ?? null,
+    beta: value.beta ?? null,
+  }
+  if (value.classification !== undefined && value.classification !== null) {
+    entries.classification = value.classification
+  }
+  const hasValue = Object.values(entries).some(
+    (field) => field !== null && field !== undefined && field !== ''
+  )
+  return hasValue ? entries : null
+}
+
 function formatDiagnosticValue(value: unknown): ReactNode {
   if (value === null || value === undefined || value === '') return '—'
   if (typeof value === 'boolean') return value ? 'true' : 'false'
@@ -203,6 +243,9 @@ function SessionDiagnosticsCard({
       row.transcript_attribution?.updated_at ??
       recordString(transcriptDetail, 'updated_at'),
   }
+  const anthropicContextWindow = anthropicContextWindowSummary(
+    row.anthropic_context_window
+  )
   const hasGrokSideChannel =
     diagnosticEntries(row.grok_side_channel, [
       'endpoint_type',
@@ -250,6 +293,26 @@ function SessionDiagnosticsCard({
           ]}
         />
       </div>
+
+      {anthropicContextWindow ? (
+        <div className='status-estimator-block'>
+          <strong>Requested context window</strong>
+          <DiagnosticKeyValues
+            value={anthropicContextWindow}
+            keys={[
+              'classified_mode',
+              'mode',
+              'requested_tokens',
+              'source',
+              'beta',
+            ]}
+          />
+          <DiagnosticDetails
+            label='classification evidence'
+            value={row.anthropic_context_window?.classification}
+          />
+        </div>
+      ) : null}
 
       {hasGrokSideChannel ? (
         <div className='status-estimator-block'>
