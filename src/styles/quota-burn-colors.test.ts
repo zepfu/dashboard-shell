@@ -39,10 +39,9 @@ function readBackgroundHex(ruleBody: string): string | null {
 
 /**
  * Assert that a CSS custom property is DEFINED (not just referenced) somewhere
- * in the CSS source. Looks for `--quota-burn-X: value;` pattern.
+ * in the CSS source. Looks for `--quota-burn-X: value;` anywhere in index.css.
  */
 function assertBurnVarDefined(cssVariable: string): void {
-  // Match `--quota-burn-x: #hex;` at top level (not inside a selector rule body)
   const defined = new RegExp(
     `${cssVariable.replace(/[-]/g, '\\-')}\\s*:\\s*[^;]+;`
   ).test(css)

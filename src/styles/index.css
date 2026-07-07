@@ -106,12 +106,15 @@
 
 /* Velocity shimmer is now a masked bar-level overlay with one stepped sweep. */
 
-:root {
-  --quota-burn-slow: #64748b;
-  --quota-burn-steady: #22c55e;
-  --quota-burn-fast: #8b5cf6;
-  --quota-burn-hot: #d946ef;
-  --quota-burn-peak: #f43f5e;
+@layer components {
+  /* I-4: Quota velocity burn tiers — legend swatches + quota-row-bar share these vars. */
+  :root {
+    --quota-burn-slow: #64748b;
+    --quota-burn-steady: #22c55e;
+    --quota-burn-fast: #8b5cf6;
+    --quota-burn-hot: #d946ef;
+    --quota-burn-peak: #f43f5e;
+  }
 }
 
 .section-title-row {
@@ -181,7 +184,7 @@
   color: var(--accent-hot);
   font-family: var(--font-mono);
   font-size: 9px;
-  font-weight: 700;
+  font-weight: 600;
   line-height: 1;
   text-transform: uppercase;
   white-space: nowrap;
@@ -277,7 +280,7 @@
   height: 6px;
   border-radius: 1px;
   border: 1px solid rgba(226, 232, 240, 0.22);
-  background: rgba(58, 130, 243, 0.84);
+  background: color-mix(in srgb, var(--accent-cool) 84%, transparent);
 }
 
 .status-legend-swatch.health-ok {
@@ -293,7 +296,7 @@
 }
 
 .status-legend-swatch.health-no-data {
-  background: rgba(58, 130, 243, 0.84);
+  background: color-mix(in srgb, var(--accent-cool) 84%, transparent);
 }
 
 .status-legend-swatch.health-miss {
@@ -303,7 +306,7 @@
       rgba(255, 255, 255, 0.5) 0 1px,
       transparent 1px 3px
     ),
-    rgba(58, 130, 243, 0.84);
+    color-mix(in srgb, var(--accent-cool) 84%, transparent);
 }
 
 .status-legend-swatch.quota-0-5 {
@@ -385,11 +388,11 @@
   }
 }
 
-/* Provider summary grid responsive breakpoints */
+/* G-1: provider-summary column ladder lives in phosphor-dashboard.module.css */
 .provider-summary {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 4px;
+  grid-auto-rows: 1fr;
+  justify-items: stretch;
+  margin-top: 12px;
 }
 
 .pgbouncer-health-panel {
@@ -410,7 +413,7 @@
   color: var(--fg);
   font-family: var(--font-mono);
   font-size: 11px;
-  font-weight: 700;
+  font-weight: 600;
   line-height: 1;
   text-transform: uppercase;
 }
@@ -605,7 +608,7 @@
   color: var(--fg);
   font-family: var(--font-mono);
   font-size: 11px;
-  font-weight: 700;
+  font-weight: 600;
   line-height: 1.2;
   text-transform: uppercase;
 }
@@ -628,7 +631,7 @@
   color: var(--fg-muted);
   font-family: var(--font-mono);
   font-size: 10px;
-  font-weight: 700;
+  font-weight: 600;
   text-transform: uppercase;
 }
 
@@ -936,19 +939,6 @@
   font-style: italic;
 }
 
-@media (min-width: 1600px) {
-  .provider-summary {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-    grid-auto-rows: 1fr;
-  }
-}
-
-@media (min-width: 2100px) {
-  .provider-summary {
-    grid-template-columns: repeat(8, minmax(0, 1fr));
-  }
-}
-
 @media (max-width: 900px) {
   .pgbouncer-grid {
     grid-template-columns: minmax(0, 1fr);
@@ -1015,9 +1005,6 @@
 }
 
 @media (min-width: 3840px) {
-  .provider-summary {
-    grid-template-columns: repeat(8, minmax(0, 1fr));
-  }
   .provider-card {
     max-width: none !important;
     display: grid !important;
@@ -1132,27 +1119,7 @@
   }
 }
 
-/* Wave 41 spectral animation scoping fix:
-   Prior (history) bars carry class .is-prior on their .quota-row-bar wrapper.
-   Current and prior bars may both animate, but the glow MUST NOT bleed
-   across provider card boundaries.
-
-   Root causes of the original bleed:
-   1. Layer A used overflow:visible on .quota-interval.high-velocity, allowing
-      ::after glow to paint beyond the segment boundary and above sibling elements
-      via z-index stacking.
-   2. .quota-row-bar lacked overflow:hidden, so animated overlays could paint
-      off-canvas in a shared stacking context and overlap adjacent provider card
-      quota rows.
-
-   Fixes applied:
-   • .quota-row-bar now carries overflow:hidden (set via inline style in JSX)
-     AND isolation:isolate (set via CSS below) to create a local stacking context.
-   • The moving glow is now a single masked `.quota-row-velocity-overlay` per
-     bar, clipped by that local stacking context.
-   • Fast/hot/peak segments keep static velocity colors so tier intensity
-     remains visible without per-cell animation.
-*/
+/* Quota velocity overlay: clip glow per bar via isolation on .quota-row-bar. */
 
 /* Stacking context isolation — prevents ::after glow escaping across cards. */
 .quota-row-bar {
@@ -1440,7 +1407,7 @@
 }
 
 /* ============================================================
-   Wave 14-F — tables: .number / .gutter-* / client-section
+   Wave 14-F — tables: .number
    ============================================================ */
 
 /* 14-F.1: Numeric cell class — cool blue, tabular-nums, right-aligned, 500 weight */
@@ -1461,30 +1428,6 @@
 
 /* 14-F.1: First-cell severity gutter classes — applied to td:first-child */
 /* td:first-child base rule (border-left 4px solid; padding-left 6px) is handled inline */
-.gutter-hot {
-  border-left-color: var(--accent-hot) !important;
-}
-
-.gutter-warm {
-  border-left-color: var(--accent-warm) !important;
-}
-
-.gutter-teal {
-  border-left-color: var(--accent-teal) !important;
-}
-
-.gutter-cool {
-  border-left-color: var(--accent-cool) !important;
-}
-
-/* 14-F.4: Client section grid — 120px 1fr at ≥1600px (default 140px 1fr set inline) */
-@media (min-width: 1600px) {
-  .client-section {
-    grid-template-columns: 120px 1fr;
-    margin-bottom: 0;
-  }
-}
-
 /* 14-F.5: Token Trend Chart — CSS hover for .trend-bar (audit §12 deviation 2) */
 /* replaces JS onMouseEnter/onMouseLeave so the transition 50ms property applies */
 .trend-bar {
@@ -1581,14 +1524,6 @@
   z-index: 1;
 }
 
-.qbar-fill.over-velocity {
-  background-image: repeating-linear-gradient(
-    135deg,
-    rgba(239, 68, 68, 0.22) 0 4px,
-    rgba(239, 68, 68, 0.06) 4px 8px
-  );
-}
-
 .qbar-projection {
   position: absolute;
   top: -1px;
@@ -1665,7 +1600,7 @@
   pointer-events: none;
   min-width: 120px;
   font-size: 10px;
-  color: var(--fg, #e2e8f0);
+  color: var(--fg);
 }
 
 .v9-tip.hidden {
@@ -1693,7 +1628,7 @@
 
 .v9-tip .v9-tip-head {
   display: block;
-  color: var(--accent-warm, #f59e0b);
+  color: var(--accent-warm);
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.04em;
@@ -1707,7 +1642,7 @@
   grid-template-columns: 38px minmax(0, 1fr) 70px auto;
   column-gap: 5px;
   font-size: 9px;
-  color: var(--fg, #e2e8f0);
+  color: var(--fg);
   padding: 1px 0;
   line-height: 1.6;
 }
@@ -1715,7 +1650,7 @@
 .v9-tip .v9-tip-foot {
   display: block;
   font-size: 9px;
-  color: var(--fg-muted, #94a3b8);
+  color: var(--fg-muted);
   font-style: italic;
   margin-top: 3px;
   padding-top: 3px;
@@ -1724,7 +1659,7 @@
 
 .v9-tip.tip-quota .v9-tip-sub {
   font-size: 9px;
-  color: var(--fg-muted, #94a3b8);
+  color: var(--fg-muted);
   margin-bottom: 3px;
 }
 
@@ -1743,7 +1678,7 @@
 
 /* v9-tip subclass helpers */
 .v9-tip .t-time {
-  color: var(--fg-muted, #94a3b8);
+  color: var(--fg-muted);
 }
 
 .v9-tip .t-model {
@@ -1758,7 +1693,7 @@
 
 .v9-tip .t-count {
   text-align: right;
-  color: var(--fg-muted, #94a3b8);
+  color: var(--fg-muted);
 }
 /* End Wave 14-G */
 
@@ -1779,7 +1714,7 @@
   color: var(--fg-muted);
   font-family: var(--font-mono);
   font-size: 10px;
-  font-weight: 700;
+  font-weight: 600;
   letter-spacing: 0;
   cursor: pointer;
 }
@@ -1824,7 +1759,7 @@
   color: var(--fg-muted);
   font-family: var(--font-mono);
   font-size: 10px;
-  font-weight: 700;
+  font-weight: 600;
   letter-spacing: 0;
   cursor: pointer;
 }
@@ -1891,10 +1826,6 @@
   color: var(--fg-muted);
 }
 
-.tt-multiselect-option.depth-2 {
-  padding-left: 18px;
-}
-
 .tt-multiselect-option input {
   width: 12px;
   height: 12px;
@@ -1925,7 +1856,7 @@
   color: var(--fg-muted);
   font-family: var(--font-mono);
   font-size: 9px;
-  font-weight: 700;
+  font-weight: 600;
   letter-spacing: 0;
 }
 
@@ -2046,7 +1977,7 @@
   color: var(--fg-muted);
   font-family: var(--font-mono);
   font-size: 10px;
-  font-weight: 700;
+  font-weight: 600;
   letter-spacing: 0;
   cursor: pointer;
 }
@@ -2380,7 +2311,7 @@
   color: var(--fg-muted);
   font-family: var(--font-mono);
   font-size: 8px;
-  font-weight: 700;
+  font-weight: 600;
   letter-spacing: 0;
   line-height: 1;
   padding: 3px 5px;
@@ -2687,37 +2618,6 @@
   border-color: var(--accent-chrome);
 }
 
-/* 14-B.5: attribution legend swatch colors per mockup lines 1982-1986 */
-.attribution-legend .legend-swatch {
-  display: inline-block;
-  width: 10px;
-  height: 5px;
-  border-radius: 1px;
-  background: rgba(58, 130, 243, 0.82);
-}
-
-.attribution-legend .legend-cat.cat-norm .legend-swatch {
-  background: rgba(58, 130, 243, 0.82);
-}
-.attribution-legend .legend-cat.cat-papi .legend-swatch {
-  background: rgba(245, 158, 11, 0.62);
-}
-.attribution-legend .legend-cat.cat-wkld .legend-swatch {
-  background: rgba(239, 68, 68, 0.74);
-}
-.attribution-legend .legend-cat.cat-ctrl .legend-swatch {
-  background: rgba(126, 87, 194, 0.7);
-}
-.attribution-legend .legend-cat.cat-miss .legend-swatch {
-  background:
-    repeating-linear-gradient(
-      135deg,
-      rgba(255, 255, 255, 0.5) 0 1px,
-      transparent 1px 3px
-    ),
-    rgba(58, 130, 243, 0.84);
-}
-
 /* ─────────────────────────────────────────────────────────────────────────── */
 /* Wave 14-C: provider card content rewrite                                    */
 /* ─────────────────────────────────────────────────────────────────────────── */
@@ -2832,27 +2732,6 @@
   color: var(--accent-warm);
 }
 
-/* 14-E.3: quota anomaly subtitle per mockup lines 425-436                    */
-/*   Spans all 3 grid columns below the label/pct/reset row.                  */
-.quota-anomaly-sub {
-  grid-column: 1 / 4;
-  font-family: var(--font-mono);
-  font-size: 8px;
-  color: var(--fg-muted);
-  letter-spacing: 0.02em;
-  margin: -1px 0 2px 0;
-  line-height: 1.2;
-  opacity: 0.85;
-}
-.anomaly-glyph-reset {
-  color: #a3e635;
-  margin-right: 3px;
-}
-.anomaly-glyph-cache {
-  color: var(--accent-warm);
-  margin-right: 3px;
-}
-
 /* ─────────────────────────────────────────────────────────────────────────── */
 /*  Wave 14-H — LOW-severity catch-up (final pixel-polish pass)               */
 /*  Closes all remaining LOW/MEDIUM deviations from wave14-principal-          */
@@ -2875,18 +2754,17 @@
   background: var(--fg-muted);
 }
 
-/* ── 14-H.4: Sort indicators per mockup lines 2234-2255 ─────────────────── */
-/* Unsorted sortable columns get a faint ⇅ via pseudo-element */
-[data-sortable]::after {
+/* G-6: sort indicators scoped to dashboard root */
+.phosphor-dashboard [data-sortable]::after {
   content: ' ⇅';
   opacity: 0.35;
 }
-[data-sortable][data-sort-dir='asc']::after {
+.phosphor-dashboard [data-sortable][data-sort-dir='asc']::after {
   content: ' ↑';
   opacity: 1;
   color: var(--accent-chrome);
 }
-[data-sortable][data-sort-dir='desc']::after {
+.phosphor-dashboard [data-sortable][data-sort-dir='desc']::after {
   content: ' ↓';
   opacity: 1;
   color: var(--accent-chrome);
@@ -2938,36 +2816,6 @@
   }
 }
 
-/* ── §7 #1: grid-auto-rows: 1fr at 1280+ per mockup lines 987,994 ─────────  */
-/* max-width: 1599px cap prevents this 2-col rule from overriding the 4-col   */
-/* rule defined at (min-width: 1600px) in L194 — cascade regression fix.      */
-@media (min-width: 1280px) and (max-width: 1599px) {
-  .provider-summary {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    grid-auto-rows: 1fr;
-  }
-}
-
-/* ── §7 #2: justify-items: stretch at 2100+ per mockup lines 1012,1023 ───── */
-@media (min-width: 2100px) {
-  .provider-summary {
-    justify-items: stretch;
-  }
-}
-
-/* ── §7 #3: margin-top: 12px on .provider-summary per mockup line 955 ──────  */
-.provider-summary {
-  margin-top: 12px;
-}
-
-/* ── §7 #5: 1920px explicit breakpoint per mockup lines 998-1003 ────────── */
-@media (min-width: 1920px) {
-  .provider-summary {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-    grid-auto-rows: 1fr;
-  }
-}
-
 /* ── §10 #6: quota-row-bar gap: 2px instead of border-right ─────────────── */
 /* Removes the 1px border-right separator and uses a transparent gap instead  */
 /* per mockup line 2124. Selector corrected from .quota-intervals (dead) to   */
@@ -2975,10 +2823,6 @@
 .quota-row-bar {
   gap: 2px;
 }
-
-/* ── §10 #8: quota anomaly icon colors via class only (remove inline dup) ── */
-/* Class rules already in Wave 14-E; inline styles removed in component.       */
-/* No CSS needed here — handled by provider-card.tsx edit removing inline.     */
 
 /* ── §11 #3,4,5: vbar-label spec-correct styling per mockup lines 1989-2007  */
 .vbar-label {
@@ -3015,9 +2859,8 @@
   margin-top: 2px;
 }
 
-/* ── §11 #7: health-strip-cell clamp height to 0.8-1.8px in vertical mode ── */
-/* Per mockup line 1944 `.health-strip-cell { height: clamp(0.8px, 100%, 1.8px); }` */
-.health-strip-cell {
+/* G-5: vertical health-strip cell height under dashboard root */
+.phosphor-dashboard .health-strip-cell {
   height: clamp(0.8px, 100%, 1.8px);
 }
 
@@ -3030,7 +2873,7 @@
       rgba(255, 255, 255, 0.5) 0 1px,
       transparent 1px 3px
     ),
-    rgba(58, 130, 243, 0.84);
+    color-mix(in srgb, var(--accent-cool) 84%, transparent);
   opacity: 1;
 }
 
@@ -3234,7 +3077,7 @@ tbody tr {
   font-size: 8px;
   font-family: var(--font-mono);
   padding: 0 3px;
-  font-weight: 700;
+  font-weight: 600;
 }
 
 .slicer-caret {
@@ -3496,27 +3339,6 @@ tbody tr {
   .col-5k-only {
     display: table-cell !important;
   }
-}
-
-/* Wave 18-CSS — 2275 #8: .repo-table tbody tr hover background
-   Mockup L1427: .repo-table tbody tr:hover { background: var(--card-2); }
-   Not previously implemented in live. */
-.repo-table tbody tr:hover {
-  background: var(--card-2);
-}
-
-/* Wave 18-CSS — 2275 #11: hide fleet-pulse 24h/now axis labels (not in mockup)
-   Audit §1.34a: mockup fleet-pulse-wrapper has no axis labels. Live
-   HealthStrip orientation='horizontal' always appends a .health-strip-axis
-   div (health-strip.tsx L239-242) with "-24h" and "now" text spans.
-   The element is a sibling of .health-strip-wrapper inside .fleet-pulse-wrapper.
-   Exact selector: .fleet-pulse-wrapper .health-strip-axis
-   Defensive additional selectors retained as fallback for any future refactor. */
-.fleet-pulse-wrapper .health-strip-axis,
-.fleet-pulse-axis,
-.fleet-pulse + .axis-labels,
-.fleet-pulse-strip ~ .axis-labels {
-  display: none !important;
 }
 
 /* Wave 18-CSS — 2275 #1: .provider-card.aggregate .provider-name color
