@@ -34,7 +34,7 @@ describe('remote dashboard doc contracts (preserved)', () => {
 
     expect(integration).toContain('Use the vendor-and-sync model')
     expect(integration).toContain('`accentColor`')
-    expect(integration).toContain('The shell toggles `.dark`')
+    expect(integration).toContain('load-bearing `.dark`')
     expect(integration).toContain(
       'tabs, tables, buttons, dialogs, forms, cards'
     )
