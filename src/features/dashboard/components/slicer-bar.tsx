@@ -156,6 +156,15 @@ const DimensionDropdown = memo(function DimensionDropdown({
     triggerRef.current?.focus()
   }, [])
 
+  const clearStaleValue = useCallback((value: string): void => {
+    setStaleChips((prev) => {
+      if (!prev.has(value)) return prev
+      const next = new Set(prev)
+      next.delete(value)
+      return next
+    })
+  }, [])
+
   const handleTriggerKeyDown = useCallback(
     (e: KeyboardEvent<HTMLButtonElement>): void => {
       if (e.key === 'Escape') {
@@ -202,8 +211,8 @@ const DimensionDropdown = memo(function DimensionDropdown({
       if (e.key === 'Enter' || e.key === ' ') {
         e.preventDefault()
         skipClickForOptionRef.current = opt
+        clearStaleValue(opt)
         onToggle(opt)
-        setOpen(false)
         return
       }
       handleListboxArrowKey(
@@ -214,7 +223,14 @@ const DimensionDropdown = memo(function DimensionDropdown({
         focusOption
       )
     },
-    [rovingOptionIndex, closeDropdown, focusOption, onToggle, options.length]
+    [
+      rovingOptionIndex,
+      closeDropdown,
+      focusOption,
+      onToggle,
+      options.length,
+      clearStaleValue,
+    ]
   )
 
   const hasSelections = selected.length > 0
@@ -270,12 +286,8 @@ const DimensionDropdown = memo(function DimensionDropdown({
               key={v}
               className={[
                 'slicer-chip',
-                staleChips.has(v) && !selected.includes(v)
-                  ? 'slicer-chip--stale'
-                  : '',
-                staleChips.has(v) && !selected.includes(v)
-                  ? 'slicer-chip--muted'
-                  : '',
+                staleChips.has(v) ? 'slicer-chip--stale' : '',
+                staleChips.has(v) ? 'slicer-chip--muted' : '',
               ]
                 .filter(Boolean)
                 .join(' ')}
@@ -348,6 +360,7 @@ const DimensionDropdown = memo(function DimensionDropdown({
                         skipClickForOptionRef.current = null
                         return
                       }
+                      clearStaleValue(opt)
                       onToggle(opt)
                       setOpen(false)
                     }}
