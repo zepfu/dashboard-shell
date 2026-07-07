@@ -11,6 +11,15 @@ Credential-injecting upstream proxy routes (`/api/aawm*`, `/api/aawm-tap*`, `/ap
 
 Local compose and dev defaults use `SHELL_REPORT_PROXY_SHARED_SECRET=dashboard-shell-local-proxy-secret`. Override the same variable on the shell container, report-service container, and Vite dev environment for any non-local deployment.
 
+
+## Nginx and Public Surface Contract
+
+- `/index.html` is served with the production CSP string `default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; frame-src 'self'; object-src 'none'; base-uri 'self'`.
+- Fonts avoid external origins: `index.html` keeps only same-origin/system fallback fonts; all Google Fonts links were removed to avoid external font dependencies while preserving local typography fallback.
+- The bootstrap watchdog must live in `public/bootstrap-watchdog.js` and be loaded from `/bootstrap-watchdog.js` so CSP blocks no inline script execution in production.
+- API/hook prefixes use `^~` route matches (`/api/aawm-tap/`, `/api/aawm-observe/`, `/api/aawm/`, `/api/aegis/`, `/api/sluice/`, `/api/shell/`, `/hook-api/`) so regex static handlers do not shadow proxy routes.
+- `/`-scoped static assets are served with gzip compression enabled for JS/CSS/SVG/font/media text types; caching behavior for immutable fingerprinted assets remains unchanged.
+
 ## Report cache identity
 
 `server/report-cache-identity.mjs` is the canonical owner of report Redis cache
