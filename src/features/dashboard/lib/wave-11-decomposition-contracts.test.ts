@@ -314,83 +314,29 @@ describe('formatter consolidation (S5-18)', () => {
 // ---------------------------------------------------------------------------
 
 describe('ReportCacheMetadata (S4-4)', () => {
-  test('test_report_cache_metadata_all_8_fields_present', () => {
-    /**
-     * Verify the 8 wire fields produced by server-side `maybeDecorateCacheMetadata`.
-     * If the W11 extraction renames/drops a field, TypeScript catches it at compile
-     * time AND this assertion acts as a runtime net.
-     *
-     * GREEN: shape-stability guard.
-     */
-    const syntheticMetadata: {
-      cacheBackend?: string
-      cacheFreshUntil?: string | null
-      cacheGeneratedAt?: string | null
-      cacheKeyHash?: string
-      cacheScope?: string
-      cacheStaleUntil?: string | null
-      cacheStatus?: string
-      cacheRefreshing?: boolean
-    } = {
-      cacheBackend: 'redis',
-      cacheFreshUntil: new Date(Date.now() + 600_000).toISOString(),
-      cacheGeneratedAt: new Date().toISOString(),
-      cacheKeyHash: 'abc123',
-      cacheScope: 'usage',
-      cacheStaleUntil: new Date(Date.now() + 1_200_000).toISOString(),
-      cacheStatus: 'fresh',
-      cacheRefreshing: false,
-    }
+  const EXPECTED_REPORT_CACHE_METADATA_FIELDS = [
+    'cacheBackend',
+    'cacheFreshUntil',
+    'cacheGeneratedAt',
+    'cacheKeyHash',
+    'cacheScope',
+    'cacheStaleUntil',
+    'cacheStatus',
+    'cacheRefreshing',
+  ] as const
 
-    expect(Object.keys(syntheticMetadata)).toHaveLength(8)
-    expect(syntheticMetadata.cacheBackend).toBe('redis')
-    expect(syntheticMetadata.cacheStatus).toBe('fresh')
-    expect(syntheticMetadata.cacheRefreshing).toBe(false)
-    expect(syntheticMetadata.cacheKeyHash).toBe('abc123')
-    expect(syntheticMetadata.cacheScope).toBe('usage')
-  })
+  test('test_report_cache_metadata_fields_from_real_module', async () => {
+    const apiModule = await import('../api/usage-report')
 
-  test('test_report_cache_metadata_nullable_fields_accept_null', () => {
-    /**
-     * `cacheFreshUntil`, `cacheGeneratedAt`, `cacheStaleUntil` are `string | null`.
-     * GREEN: compile-time + runtime shape guard.
-     */
-    const nullableMetadata: {
-      cacheBackend?: string
-      cacheFreshUntil?: string | null
-      cacheGeneratedAt?: string | null
-      cacheKeyHash?: string
-      cacheScope?: string
-      cacheStaleUntil?: string | null
-      cacheStatus?: string
-      cacheRefreshing?: boolean
-    } = {
-      cacheBackend: 'sql-fallback',
-      cacheFreshUntil: null,
-      cacheGeneratedAt: null,
-      cacheKeyHash: 'xyz789',
-      cacheScope: 'quotas',
-      cacheStaleUntil: null,
-      cacheStatus: 'miss',
-      cacheRefreshing: true,
-    }
+    expect(apiModule).toHaveProperty('REPORT_CACHE_METADATA_FIELDS')
 
-    expect(nullableMetadata.cacheFreshUntil).toBeNull()
-    expect(nullableMetadata.cacheGeneratedAt).toBeNull()
-    expect(nullableMetadata.cacheStaleUntil).toBeNull()
-    expect(nullableMetadata.cacheRefreshing).toBe(true)
-  })
+    const fields = (
+      apiModule as {
+        REPORT_CACHE_METADATA_FIELDS: readonly string[]
+      }
+    ).REPORT_CACHE_METADATA_FIELDS
 
-  test('test_report_cache_metadata_refreshing_boolean_type', () => {
-    /**
-     * `cacheRefreshing` is boolean — not string.  This is the field that
-     * discriminates a stale-while-revalidating response.
-     *
-     * GREEN: type-system guard.
-     */
-    const m: { cacheRefreshing?: boolean } = { cacheRefreshing: true }
-    expect(m.cacheRefreshing).toBe(true)
-    expect(typeof m.cacheRefreshing).toBe('boolean')
+    expect([...fields]).toEqual([...EXPECTED_REPORT_CACHE_METADATA_FIELDS])
   })
 
   test('test_usage_report_api_module_has_report_cache_metadata_runtime_companion', async () => {
@@ -401,7 +347,6 @@ describe('ReportCacheMetadata (S4-4)', () => {
      *
      * This ensures a single place in the codebase defines these 8 field names.
      *
-     * RED: currently no such export exists in usage-report.ts.
      */
     const apiModule = await import('../api/usage-report')
 

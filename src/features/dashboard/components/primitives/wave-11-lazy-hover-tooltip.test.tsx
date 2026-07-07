@@ -44,7 +44,6 @@ import { HoverTooltip } from './hover-tooltip'
 
 // ---------------------------------------------------------------------------
 // Lazy content contract tests (S3-26 / #91)
-// RED until Engineer C implements the render-prop lazy content contract.
 // ---------------------------------------------------------------------------
 
 describe('lazy hover-tooltip content contract (S3-26 / #91)', () => {
@@ -68,8 +67,6 @@ describe('lazy hover-tooltip content contract (S3-26 / #91)', () => {
       </HoverTooltip>
     )
 
-    // RED: currently the content IS in the DOM (always-mounted model).
-    // After W11: content must be absent until hover/focus activates the tooltip.
     const contentEl = document.body.querySelector(
       `[data-testid="hover-tooltip-content"]`
     )
@@ -189,8 +186,6 @@ describe('lazy hover-tooltip content contract (S3-26 / #91)', () => {
       </HoverTooltip>
     )
 
-    // RED: currently the render prop is evaluated eagerly (0 calls expected but
-    // current impl calls it immediately as a ReactNode child).
     expect(callCount).toBe(0)
 
     // After hover: at least one call.
@@ -248,7 +243,6 @@ test('test_lazy_tooltip_not_in_dom_until_hover', () => {
    * `test_lazy_tooltip_content_not_in_dom_before_hover` above as the named
    * smoke sentinel.
    *
-   * RED until Engineer C implements the lazy render-prop contract.
    */
   const sentinelText = 'smoke-lazy-tooltip-sentinel'
 

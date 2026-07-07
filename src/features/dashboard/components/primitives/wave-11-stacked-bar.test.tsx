@@ -1,8 +1,6 @@
 /**
  * Wave 11 — StackedBar primitive structural-parity test (S3-12).
  *
- * ENGINEER: C
- *
  * The W11 decomposition extracts the stacked-bar rendering pattern (currently
  * inline in `token-trend-chart.tsx` ~lines 2585-2636) into a standalone
  * `primitives/stacked-bar.tsx` component.
@@ -25,7 +23,7 @@
  * The StackedBar primitive must reproduce this structure exactly so that existing
  * CSS rules (`.tt-slice`, `.trend-bar`, `.tt-anthropic`, etc.) continue to apply.
  *
- * RED until Engineer C creates `primitives/stacked-bar.tsx`.
+ * StackedBar is wired in token-trend-chart; CSS class parity is live.
  */
 import { render } from '@testing-library/react'
 import { describe, expect, test } from 'vitest'

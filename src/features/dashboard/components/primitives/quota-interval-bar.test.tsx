@@ -1,11 +1,5 @@
 /**
- * Wave 3 — QuotaIntervalBar red-phase tests.
- *
- * Component path: src/features/dashboard/components/primitives/quota-interval-bar.tsx
- * Expected export: QuotaIntervalBar (named)
- * Props: { intervals: { widthPct: number; severityClass: string; highVelocity: boolean }[]; projectionPct?: number; tooltipContent?: ReactNode }
- *
- * All tests expected to FAIL (red) — source file does not exist yet.
+ * QuotaIntervalBar — interval merge, projection tick, velocity overlay.
  */
 import { render } from '@testing-library/react'
 import {
@@ -528,4 +522,65 @@ test('test_quota_projection_clamped_when_over_100', () => {
   const leftStyle = tick?.style.left ?? ''
   const leftNum = parseFloat(leftStyle)
   expect(leftNum).toBeLessThanOrEqual(100)
+})
+
+test('test_over_quota_tick_is_visible', () => {
+  const intervals: QuotaInterval[] = [
+    { widthPct: 100, severityClass: 'iv-50-p', highVelocity: false },
+  ]
+
+  const { container } = render(
+    <QuotaIntervalBar intervals={intervals} projectionPct={115} />
+  )
+
+  const bar = container.querySelector('.quota-row-bar') as HTMLElement | null
+  const tick = container.querySelector(
+    '.qbar-projection.over'
+  ) as HTMLElement | null
+  expect(bar).not.toBeNull()
+  expect(tick).not.toBeNull()
+
+  const left = tick!.style.left
+  const right = tick!.style.right
+  const usesVisibleAnchor =
+    left === 'calc(100% - 2px)' || right === '0' || right === '0px'
+  expect(usesVisibleAnchor).toBe(true)
+
+  const barRect = bar!.getBoundingClientRect()
+  const tickRect = tick!.getBoundingClientRect()
+  expect(tickRect.width).toBeGreaterThan(0)
+  expect(tickRect.right).toBeLessThanOrEqual(barRect.right + 0.5)
+  expect(tickRect.left).toBeGreaterThanOrEqual(barRect.left - 0.5)
+})
+
+test('test_merged_runs_do_not_lose_newest_interval_to_px_gap', () => {
+  const intervals: QuotaInterval[] = Array.from({ length: 12 }, (_, i) => ({
+    widthPct: 100 / 12,
+    severityClass: `iv-tier-${i}`,
+    highVelocity: false,
+  }))
+
+  const { container } = render(<QuotaIntervalBar intervals={intervals} />)
+
+  const bar = container.querySelector('.quota-row-bar') as HTMLElement | null
+  expect(bar).not.toBeNull()
+
+  const segments = Array.from(
+    container.querySelectorAll('.quota-interval')
+  ) as HTMLElement[]
+  expect(segments.length).toBe(12)
+
+  const barRect = bar!.getBoundingClientRect()
+  const lastSegment = segments[segments.length - 1]!
+  const lastRect = lastSegment.getBoundingClientRect()
+
+  expect(lastRect.right).toBeLessThanOrEqual(barRect.right + 0.5)
+  expect(lastRect.width).toBeGreaterThan(0)
+
+  const gapPx = parseFloat(bar!.style.gap) || 2
+  const totalSegmentWidth = segments.reduce((sum, el) => {
+    return sum + el.getBoundingClientRect().width
+  }, 0)
+  const totalGaps = (segments.length - 1) * gapPx
+  expect(totalSegmentWidth + totalGaps).toBeLessThanOrEqual(barRect.width + 0.5)
 })

@@ -1,12 +1,5 @@
 /**
- * Wave 3 — Sparkline red-phase tests.
- *
- * Component path: src/features/dashboard/components/primitives/sparkline.tsx
- * Expected export: Sparkline (named)
- * Props: { data: number[]; color: string; width?: number; height?: number }
- * Renders inline SVG <polyline>.
- *
- * All tests expected to FAIL (red) — source file does not exist yet.
+ * Sparkline — inline SVG polyline primitive.
  */
 import { render } from '@testing-library/react'
 import { Sparkline } from '../primitives/sparkline'
@@ -35,13 +28,11 @@ test('test_sparkline_normalizes_to_viewbox', () => {
   expect(polyline).not.toBeNull()
 
   const points = polyline!.getAttribute('points')!
-  // Points format: "x,y x,y x,y"
   const yValues = points
     .trim()
     .split(/\s+/)
     .map((pair) => parseFloat(pair.split(',')[1]))
 
-  // Every y must be within [2, 18] for a height-20 SVG (±2 padding)
   for (const y of yValues) {
     expect(y).toBeGreaterThanOrEqual(2)
     expect(y).toBeLessThanOrEqual(18)
@@ -52,39 +43,22 @@ test('test_sparkline_empty_data_renders_nothing_or_placeholder', () => {
   const { container } = render(<Sparkline data={[]} color='#3b82f6' />)
 
   const polyline = container.querySelector('polyline')
-  // Either no polyline, or a degenerate one with empty/no points
   if (polyline !== null) {
     const points = polyline.getAttribute('points') ?? ''
     expect(points.trim()).toBe('')
   }
-  // If polyline is null, that's also a valid response (renders nothing)
 })
 
-// ---------------------------------------------------------------------------
-// Wave 3 (adversarial-review-20260612) — FAILING tests, W3 engineer to fix
-// ---------------------------------------------------------------------------
-
-/**
- * S3-27 — Non-finite values (NaN / Infinity) must not kill the sparkline.
- *
- * One NaN or Infinity in `data` propagates through `Math.min/max` and `range`,
- * producing `points="...,NaN ..."` — the SVG drops the polyline silently.
- *
- * After fix: `data.filter(Number.isFinite)` before computing min/max.
- */
 test('test_sparkline_filters_non_finite', () => {
-  // NaN in the middle of otherwise valid data.
   const { container: nanContainer } = render(
     <Sparkline data={[10, NaN, 20, 30]} color='#3b82f6' />
   )
   const nanPolyline = nanContainer.querySelector('polyline')
-  // After fix: polyline exists with valid points (no NaN in points string).
   expect(nanPolyline).not.toBeNull()
   const nanPoints = nanPolyline?.getAttribute('points') ?? ''
   expect(nanPoints).not.toMatch(/NaN/)
   expect(nanPoints.trim().length).toBeGreaterThan(0)
 
-  // Infinity also handled.
   const { container: infContainer } = render(
     <Sparkline data={[5, Infinity, 15]} color='#ef4444' />
   )
@@ -94,11 +68,9 @@ test('test_sparkline_filters_non_finite', () => {
   expect(infPoints).not.toMatch(/Infinity/)
   expect(infPoints.trim().length).toBeGreaterThan(0)
 
-  // All-NaN: should render nothing (null return or empty).
   const { container: allNanContainer } = render(
     <Sparkline data={[NaN, NaN, NaN]} color='#10b981' />
   )
-  // Either no SVG at all, or an SVG with no polyline, or a polyline with no points.
   const allNanPolyline = allNanContainer.querySelector('polyline')
   if (allNanPolyline !== null) {
     const pts = allNanPolyline.getAttribute('points') ?? ''
@@ -106,14 +78,6 @@ test('test_sparkline_filters_non_finite', () => {
   }
 })
 
-/**
- * S3-28 — Flat series must be centered; single-point must render a dot.
- *
- * Flat series (max === min): the fallback `range = 1` places y at
- * `height - 2` (floor). A 100%-success series reads as "low". Fix: center it.
- *
- * Single point: a `<polyline>` with one point paints nothing. Fix: `<circle>`.
- */
 test('test_sparkline_flat_series_centered', () => {
   const height = 20
   const { container } = render(
@@ -128,23 +92,47 @@ test('test_sparkline_flat_series_centered', () => {
     .split(/\s+/)
     .map((pair) => parseFloat(pair.split(',')[1] ?? 'NaN'))
 
-  // After fix: flat series is centered at height/2 = 10.
-  // Before fix: y = height - 2 = 18 (floor — reads as "low").
   const expectedCenter = height / 2
   for (const y of yValues) {
-    expect(Math.abs(y - expectedCenter)).toBeLessThan(3) // within 3px of center
+    expect(Math.abs(y - expectedCenter)).toBeLessThan(3)
   }
 })
 
 test('test_sparkline_single_point_renders_dot', () => {
   const { container } = render(<Sparkline data={[42]} color='#f59e0b' />)
-  // After fix: single-point renders a <circle>, not an invisible polyline.
-  // Before fix: <polyline> with one vertex paints nothing.
   const circle = container.querySelector('circle')
-  const polyline = container.querySelector('polyline')
+  expect(circle).not.toBeNull()
+})
 
-  // Either a circle OR no polyline is acceptable for single-point.
-  // But a circle is preferred: a one-vertex polyline paints nothing.
-  void polyline // checked: current impl renders a degenerate polyline (no segment, not visible)
-  expect(circle).not.toBeNull() // FAILS before fix (currently renders a degenerate polyline)
+test('test_endpoint_strokes_not_clipped', () => {
+  const width = 60
+  const { container } = render(
+    <Sparkline data={[0, 100]} color='#3b82f6' width={width} height={20} />
+  )
+  const polyline = container.querySelector('polyline')
+  expect(polyline).not.toBeNull()
+
+  const points = polyline!.getAttribute('points')!.trim().split(/\s+/)
+  const firstX = parseFloat(points[0]!.split(',')[0]!)
+  const lastX = parseFloat(points[points.length - 1]!.split(',')[0]!)
+
+  // Documented 2px padding on all sides — x must be inset like y (C4).
+  expect(firstX).toBe(2)
+  expect(lastX).toBe(width - 2)
+})
+
+test('test_sparkline_nan_gap_compresses_x_axis', () => {
+  const width = 60
+  const { container } = render(
+    <Sparkline data={[10, NaN, 30]} color='#3b82f6' width={width} />
+  )
+  const polyline = container.querySelector('polyline')
+  expect(polyline).not.toBeNull()
+
+  const points = polyline!.getAttribute('points')!.trim().split(/\s+/)
+  // Non-finite values filtered — only two finite points, spanning full x width.
+  expect(points.length).toBe(2)
+  const xs = points.map((p) => parseFloat(p.split(',')[0]!))
+  expect(xs[0]).toBe(0)
+  expect(xs[1]).toBe(width)
 })

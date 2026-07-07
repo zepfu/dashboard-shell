@@ -28,14 +28,8 @@ function openHealthStripTooltip(container: HTMLElement): void {
     '[aria-hidden="true"]'
   ) as HTMLElement | null
   const hoverZone = shell?.firstElementChild as HTMLElement | null
-  const wrapper = container.querySelector(
-    '.health-strip-wrapper'
-  ) as HTMLElement | null
   const target =
-    (hoverZone?.firstElementChild as HTMLElement | null) ??
-    hoverZone ??
-    wrapper ??
-    shell
+    (hoverZone?.firstElementChild as HTMLElement | null) ?? hoverZone ?? shell
   if (target instanceof HTMLElement) {
     fireEvent.pointerEnter(target)
   }
@@ -112,7 +106,7 @@ test('test_health_strip_vertical_merges_identical_visual_runs', () => {
   expect((cellEls[0] as HTMLElement).style.flexBasis).toBe('0px')
 })
 
-test('test_health_strip_vertical_preserves_run_boundaries_and_padding_span', () => {
+test('test_vertical_array_mode_orders_oldest_top', () => {
   const cells = [{ color: '#f00' }, { color: '#0f0' }]
   const { container } = render(
     <HealthStrip cells={cells} orientation='vertical' />
@@ -123,7 +117,7 @@ test('test_health_strip_vertical_preserves_run_boundaries_and_padding_span', () 
   ) as HTMLElement[]
 
   expect(cellEls.length).toBe(3)
-  expect(cellEls.map((el) => el.style.flexGrow)).toEqual(['1', '1', '286'])
+  expect(cellEls.map((el) => el.style.flexGrow)).toEqual(['286', '1', '1'])
   expect(cellEls.map((el) => el.style.flexBasis)).toEqual(['0px', '0px', '0px'])
 })
 
@@ -150,167 +144,75 @@ test('test_health_strip_vertical_preserves_miss_hatch_run_without_inline_bg', ()
 })
 
 // ---------------------------------------------------------------------------
-// Wave 20 — category/intensity color mapping
+// Wave 20 / 26 — category and intensity color mapping
 // ---------------------------------------------------------------------------
 
-// ---------------------------------------------------------------------------
-// Wave 26 — canonical 4-state category names
-// ---------------------------------------------------------------------------
+const PADDED_CELLS = (first: CellDef) => [
+  first,
+  ...Array.from({ length: 287 }, () => ({ color: 'var(--card-2)' })),
+]
 
-test('test_health_strip_blue_category_applies_blue_rgba', () => {
-  // 'blue' category (Wave 26 canonical) = no data → rgba(58,130,243,...)
-  const cells = [
-    { color: 'var(--card-2)', category: 'blue' as const, intensity: 0.5 },
-    ...Array.from({ length: 287 }, () => ({ color: 'var(--card-2)' })),
-  ]
-  const { container } = render(<HealthStrip cells={cells} />)
-  const firstCell = container.querySelectorAll(
-    '.health-strip-cell'
-  )[0] as HTMLElement
-  const bg = firstCell.style.background || firstCell.style.backgroundColor
-  expect(bg).toMatch(/rgba?\(58,\s*130,\s*243/)
-})
+const CATEGORY_RGBA_CASES = [
+  ['blue', 'blue', /rgba?\(58,\s*130,\s*243/],
+  ['green', 'green', /rgba?\(16,\s*185,\s*129/],
+  ['orange', 'orange', /rgba?\(245,\s*158,\s*11/],
+  ['red', 'red', /rgba?\(239,\s*68,\s*68/],
+  ['normal', 'normal', /rgba?\(58,\s*130,\s*243/],
+  ['teal', 'teal', /rgba?\(16,\s*185,\s*129/],
+  ['warning', 'warning', /rgba?\(245,\s*158,\s*11/],
+] as const
 
-test('test_health_strip_green_category_applies_green_rgba', () => {
-  // 'green' category (Wave 26 canonical) = good → rgba(16,185,129,...)
-  const cells = [
-    { color: 'var(--card-2)', category: 'green' as const, intensity: 0.5 },
-    ...Array.from({ length: 287 }, () => ({ color: 'var(--card-2)' })),
-  ]
-  const { container } = render(<HealthStrip cells={cells} />)
-  const firstCell = container.querySelectorAll(
-    '.health-strip-cell'
-  )[0] as HTMLElement
-  const bg = firstCell.style.background || firstCell.style.backgroundColor
-  expect(bg).toMatch(/rgba?\(16,\s*185,\s*129/)
-})
-
-test('test_health_strip_orange_category_applies_amber_rgba', () => {
-  // 'orange' category (Wave 26 canonical) = intermittent → rgba(245,158,11,...)
-  const cells = [
-    { color: 'var(--card-2)', category: 'orange' as const, intensity: 0.5 },
-    ...Array.from({ length: 287 }, () => ({ color: 'var(--card-2)' })),
-  ]
-  const { container } = render(<HealthStrip cells={cells} />)
-  const firstCell = container.querySelectorAll(
-    '.health-strip-cell'
-  )[0] as HTMLElement
-  const bg = firstCell.style.background || firstCell.style.backgroundColor
-  expect(bg).toMatch(/rgba?\(245,\s*158,\s*11/)
-})
-
-test('test_health_strip_red_category_applies_red_rgba', () => {
-  // 'red' category (Wave 26 canonical) = service down → rgba(239,68,68,...)
-  const cells = [
-    { color: 'var(--card-2)', category: 'red' as const, intensity: 0.5 },
-    ...Array.from({ length: 287 }, () => ({ color: 'var(--card-2)' })),
-  ]
-  const { container } = render(<HealthStrip cells={cells} />)
-  const firstCell = container.querySelectorAll(
-    '.health-strip-cell'
-  )[0] as HTMLElement
-  const bg = firstCell.style.background || firstCell.style.backgroundColor
-  expect(bg).toMatch(/rgba?\(239,\s*68,\s*68/)
-})
-
-// ---------------------------------------------------------------------------
-// Wave 20 legacy alias categories (backward compat)
-// ---------------------------------------------------------------------------
-
-test('test_health_strip_normal_category_applies_blue_rgba', () => {
-  // 'normal' legacy alias → blue family rgba(58,130,243,...)
-  const cells = [
-    {
-      color: 'var(--accent-cool)',
-      category: 'normal' as const,
+test.each(CATEGORY_RGBA_CASES)(
+  'test_health_strip_%s_category_applies_expected_rgba',
+  (_label, category, pattern) => {
+    const cells = PADDED_CELLS({
+      color: 'var(--card-2)',
+      category,
       intensity: 0.5,
-    },
-    ...Array.from({ length: 287 }, () => ({ color: 'var(--card-2)' })),
-  ]
-  const { container } = render(<HealthStrip cells={cells} />)
-
-  const cellEls = container.querySelectorAll('.health-strip-cell')
-  const firstCell = cellEls[0] as HTMLElement
-  const bg = firstCell.style.background || firstCell.style.backgroundColor
-
-  // Blue family: rgb(58, 130, 243) at some alpha
-  expect(bg).toMatch(/rgba?\(58,\s*130,\s*243/)
-})
-
-test('test_health_strip_teal_category_applies_green_rgba', () => {
-  // 'teal' legacy alias → green family rgba(16,185,129,...) in Wave 26
-  const cells = [
-    { color: 'var(--card-2)', category: 'teal' as const, intensity: 0.5 },
-    ...Array.from({ length: 287 }, () => ({ color: 'var(--card-2)' })),
-  ]
-  const { container } = render(<HealthStrip cells={cells} />)
-
-  const cellEls = container.querySelectorAll('.health-strip-cell')
-  const firstCell = cellEls[0] as HTMLElement
-  const bg = firstCell.style.background || firstCell.style.backgroundColor
-
-  // Green family (Wave 26 teal alias): rgb(16, 185, 129) at some alpha
-  expect(bg).toMatch(/rgba?\(16,\s*185,\s*129/)
-})
-
-test('test_health_strip_warning_category_applies_amber_rgba', () => {
-  // 'warning' legacy alias → orange/amber rgba(245,158,11,...) — unchanged
-  const cells = [
-    { color: 'var(--card-2)', category: 'warning' as const, intensity: 0.5 },
-    ...Array.from({ length: 287 }, () => ({ color: 'var(--card-2)' })),
-  ]
-  const { container } = render(<HealthStrip cells={cells} />)
-
-  const cellEls = container.querySelectorAll('.health-strip-cell')
-  const firstCell = cellEls[0] as HTMLElement
-  const bg = firstCell.style.background || firstCell.style.backgroundColor
-
-  // Amber family: rgb(245, 158, 11) at some alpha
-  expect(bg).toMatch(/rgba?\(245,\s*158,\s*11/)
-})
+    })
+    const { container } = render(<HealthStrip cells={cells} />)
+    const firstCell = container.querySelectorAll(
+      '.health-strip-cell'
+    )[0] as HTMLElement
+    const bg = firstCell.style.background || firstCell.style.backgroundColor
+    expect(bg).toMatch(pattern)
+  }
+)
 
 test('test_health_strip_miss_category_applies_cat_miss_class_no_inline_bg', () => {
-  // 'miss' category should add class 'cat-miss' and NOT set inline background
-  const cells = [
-    { color: 'var(--card-2)', category: 'miss' as const },
-    ...Array.from({ length: 287 }, () => ({ color: 'var(--card-2)' })),
-  ]
+  const cells = PADDED_CELLS({
+    color: 'var(--card-2)',
+    category: 'miss' as const,
+  })
   const { container } = render(<HealthStrip cells={cells} />)
-
   const missCells = container.querySelectorAll('.health-strip-cell.cat-miss')
   expect(missCells.length).toBeGreaterThanOrEqual(1)
-
   const firstMiss = missCells[0] as HTMLElement
   const bg = firstMiss.style.background || firstMiss.style.backgroundColor
-  // No inline background color — CSS class owns it
   expect(bg === '' || bg === 'transparent').toBe(true)
 })
 
 test('test_health_strip_intensity_affects_alpha', () => {
-  // Higher intensity should produce a higher alpha value
-  const lowCell = [
-    { color: 'var(--card-2)', category: 'normal' as const, intensity: 0 },
-    ...Array.from({ length: 287 }, () => ({ color: 'var(--card-2)' })),
-  ]
-  const highCell = [
-    { color: 'var(--card-2)', category: 'normal' as const, intensity: 1 },
-    ...Array.from({ length: 287 }, () => ({ color: 'var(--card-2)' })),
-  ]
-
+  const lowCell = PADDED_CELLS({
+    color: 'var(--card-2)',
+    category: 'normal' as const,
+    intensity: 0,
+  })
+  const highCell = PADDED_CELLS({
+    color: 'var(--card-2)',
+    category: 'normal' as const,
+    intensity: 1,
+  })
   const { container: lowContainer } = render(<HealthStrip cells={lowCell} />)
   const { container: highContainer } = render(<HealthStrip cells={highCell} />)
-
   const lowBg = (
     lowContainer.querySelectorAll('.health-strip-cell')[0] as HTMLElement
   ).style.background
   const highBg = (
     highContainer.querySelectorAll('.health-strip-cell')[0] as HTMLElement
   ).style.background
-
-  // Both should be blue family
   expect(lowBg).toMatch(/rgba?\(58,\s*130,\s*243/)
   expect(highBg).toMatch(/rgba?\(58,\s*130,\s*243/)
-  // They should differ (different alpha)
   expect(lowBg).not.toBe(highBg)
 })
 
@@ -417,23 +319,23 @@ test('test_health_strip_raw_metrics_no_errors_has_data_is_green', () => {
   expect(bg).toMatch(/rgba?\(16,\s*185,\s*129/)
 })
 
+const P90_ORANGE_LATENCY_FIXTURE = [
+  { color: 'var(--card-2)', rawP95Ms: 5000, rawErrorCount: 0 },
+  { color: 'var(--card-2)', rawP95Ms: 100, rawErrorCount: 0 },
+  { color: 'var(--card-2)', rawP95Ms: 200, rawErrorCount: 0 },
+  { color: 'var(--card-2)', rawP95Ms: 300, rawErrorCount: 0 },
+  { color: 'var(--card-2)', rawP95Ms: 400, rawErrorCount: 0 },
+  { color: 'var(--card-2)', rawP95Ms: 500, rawErrorCount: 0 },
+  { color: 'var(--card-2)', rawP95Ms: 600, rawErrorCount: 0 },
+  { color: 'var(--card-2)', rawP95Ms: 700, rawErrorCount: 0 },
+  { color: 'var(--card-2)', rawP95Ms: 800, rawErrorCount: 0 },
+  { color: 'var(--card-2)', rawP95Ms: 900, rawErrorCount: 0 },
+  { color: 'var(--card-2)', rawP95Ms: 3000, rawErrorCount: 0 },
+  ...Array.from({ length: 277 }, () => ({ color: 'var(--card-2)' })),
+] as CellDef[]
+
 test('test_health_strip_raw_metrics_high_latency_no_errors_is_orange', () => {
-  // Secondary latency path: p95 exceeds strip p90 with no errors → orange.
-  // 11 non-padding cells; p90 = sorted[9] = 3000ms. First cell at 5000ms > 3000ms.
-  const cells = [
-    { color: 'var(--card-2)', rawP95Ms: 5000, rawErrorCount: 0 }, // >> p90(3000) → orange
-    { color: 'var(--card-2)', rawP95Ms: 100, rawErrorCount: 0 },
-    { color: 'var(--card-2)', rawP95Ms: 200, rawErrorCount: 0 },
-    { color: 'var(--card-2)', rawP95Ms: 300, rawErrorCount: 0 },
-    { color: 'var(--card-2)', rawP95Ms: 400, rawErrorCount: 0 },
-    { color: 'var(--card-2)', rawP95Ms: 500, rawErrorCount: 0 },
-    { color: 'var(--card-2)', rawP95Ms: 600, rawErrorCount: 0 },
-    { color: 'var(--card-2)', rawP95Ms: 700, rawErrorCount: 0 },
-    { color: 'var(--card-2)', rawP95Ms: 800, rawErrorCount: 0 },
-    { color: 'var(--card-2)', rawP95Ms: 900, rawErrorCount: 0 },
-    { color: 'var(--card-2)', rawP95Ms: 3000, rawErrorCount: 0 }, // p90 anchor
-    ...Array.from({ length: 277 }, () => ({ color: 'var(--card-2)' })),
-  ]
+  const cells = P90_ORANGE_LATENCY_FIXTURE
 
   const { container } = render(<HealthStrip cells={cells} />)
   const cellEls = container.querySelectorAll('.health-strip-cell')
@@ -985,7 +887,7 @@ test('test_health_strip_pad_clip_direction', () => {
   const lastBg = lastCell.style.background || lastCell.style.backgroundColor
   const secondLastBg =
     secondLastCell.style.background || secondLastCell.style.backgroundColor
-  expect(lastBg === sparseColor || lastBg === 'rgb(239, 68, 68)').toBe(true) // FAILS before fix (currently data is at FRONT)
+  expect(lastBg === sparseColor || lastBg === 'rgb(239, 68, 68)').toBe(true)
   expect(
     secondLastBg === sparseColor || secondLastBg === 'rgb(239, 68, 68)'
   ).toBe(true)
@@ -1014,7 +916,7 @@ test('test_health_strip_pad_clip_direction', () => {
     oversizedEls[0]!.style.background || oversizedEls[0]!.style.backgroundColor
   expect(
     firstRenderedBg === sentinel || firstRenderedBg === 'rgb(16, 185, 129)'
-  ).toBe(true) // FAILS before fix (currently slice(0,288) keeps the 2 black cells)
+  ).toBe(true)
 })
 
 /**
@@ -1075,7 +977,6 @@ test('test_health_strip_time_axis_indexed_by_wallclock', () => {
   // sparseCells.length === 264
 
   // Render with  prop (engineer adds this for wall-clock indexing, S3-20).
-  // @ts-expect-error --  prop added by engineer; absent until fix lands.
   const { container } = render(
     <HealthStrip cells={sparseCells} orientation='horizontal' now={now} />
   )
@@ -1218,65 +1119,4 @@ test('test_health_strip_event_count_sums_occurrences', () => {
   // After fix: overflow row must say "+2 more events" (not "earlier").
   // (16 events − 14 cap = 2 overflow)
   expect(tipText).toMatch(/\+2\s*more\s*events?/i)
-})
-
-// ---------------------------------------------------------------------------
-// Wave 7 — S3-14: p90 memoisation guard (p50 path deleted)
-// ---------------------------------------------------------------------------
-
-/**
- * test_health_strip_p90_only_one_sort (S3-14)
- *
- * After the Wave 7 engineer change:
- *   - `computeP50Threshold` is DELETED from health-strip.tsx.
- *   - `computeP90Threshold` remains and is the sole latency threshold.
- *
- * This test is a behaviour-preserving regression guard asserting:
- *   1. The p90 threshold correctly classifies a cell above the p90 as orange.
- *   2. The p90 threshold correctly classifies a cell at or below p90 as green.
- *   3. The output colours are unchanged from the pre-deletion behaviour.
- *
- * It does NOT import or call computeP50Threshold (the engineer will delete it).
- * Any existing test that asserts the p50 path or imports computeP50Threshold
- * is noted in the Wave 7 report and must be removed by the engineer.
- *
- * The p50 path was previously called in deriveCellStyle with `void p50Threshold`
- * (no-op) — so deleting computeP50Threshold and the p50 call is
- * behaviour-preserving. This guard validates that promise.
- */
-test('test_health_strip_p90_only_one_sort', () => {
-  // 11 non-padding cells so p90 index = floor(11 * 0.9) = 9 → sorted[9] = 3000ms.
-  // Cell at index 0 has rawP95Ms = 5000ms > p90 (3000ms) → orange (high latency).
-  // Cell at index 1 has rawP95Ms = 100ms ≤ p90 (3000ms), no errors → green.
-  const cells = [
-    { color: 'var(--card-2)', rawP95Ms: 5000, rawErrorCount: 0 }, // > p90 → orange
-    { color: 'var(--card-2)', rawP95Ms: 100, rawErrorCount: 0 }, // ≤ p90 → green
-    { color: 'var(--card-2)', rawP95Ms: 200, rawErrorCount: 0 },
-    { color: 'var(--card-2)', rawP95Ms: 300, rawErrorCount: 0 },
-    { color: 'var(--card-2)', rawP95Ms: 400, rawErrorCount: 0 },
-    { color: 'var(--card-2)', rawP95Ms: 500, rawErrorCount: 0 },
-    { color: 'var(--card-2)', rawP95Ms: 600, rawErrorCount: 0 },
-    { color: 'var(--card-2)', rawP95Ms: 700, rawErrorCount: 0 },
-    { color: 'var(--card-2)', rawP95Ms: 800, rawErrorCount: 0 },
-    { color: 'var(--card-2)', rawP95Ms: 900, rawErrorCount: 0 },
-    { color: 'var(--card-2)', rawP95Ms: 3000, rawErrorCount: 0 }, // p90 anchor
-    ...Array.from({ length: 277 }, () => ({ color: 'var(--card-2)' })),
-  ]
-
-  const { container } = render(<HealthStrip cells={cells} />)
-  const cellEls = container.querySelectorAll('.health-strip-cell')
-
-  // Cell 0: 5000ms > p90 (3000ms) → orange (high latency).
-  const firstCell = cellEls[0] as HTMLElement
-  const firstBg = firstCell.style.background || firstCell.style.backgroundColor
-  expect(firstBg).toMatch(/rgba?\(245,\s*158,\s*11/)
-
-  // Cell 1: 100ms ≤ p90 (3000ms), no errors → green (healthy).
-  const secondCell = cellEls[1] as HTMLElement
-  const secondBg =
-    secondCell.style.background || secondCell.style.backgroundColor
-  expect(secondBg).toMatch(/rgba?\(16,\s*185,\s*129/)
-
-  // Behavioural invariant: orange and green are distinct (the threshold matters).
-  expect(firstBg).not.toBe(secondBg)
 })
