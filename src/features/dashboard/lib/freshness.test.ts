@@ -151,4 +151,22 @@ describe('freshness — S4-T8 additional coverage', () => {
   test('test_maxIsoTimestamp_all_null_returns_null', () => {
     expect(maxIsoTimestamp([null, null, undefined])).toBeNull()
   })
+
+  test('test_formatDashboardFreshness_invalid_latestRecordAt_returns_safe_placeholder (C6)', () => {
+    expect(() =>
+      formatDashboardFreshness(
+        'not-a-valid-date',
+        Date.parse('2026-06-13T12:00:00.000Z'),
+        new Date('2026-06-13T12:10:00.000Z')
+      )
+    ).not.toThrow()
+
+    const result = formatDashboardFreshness(
+      'not-a-valid-date',
+      Date.parse('2026-06-13T12:00:00.000Z'),
+      new Date('2026-06-13T12:10:00.000Z')
+    )
+    expect(result).not.toContain('Invalid')
+    expect(result).toMatch(/^(FETCHED|--|Loading)/)
+  })
 })
