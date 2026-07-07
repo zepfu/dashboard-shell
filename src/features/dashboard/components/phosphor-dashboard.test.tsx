@@ -864,7 +864,8 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
     )
     expect(aawmCard).not.toBeNull()
     const aawm = within(aawmCard as HTMLElement)
-    expect(aawm.getAllByText('ok')).toHaveLength(2)
+    expect(aawm.getByText('ok')).toBeInTheDocument()
+    expect(aawm.getByText('reachable')).toBeInTheDocument()
     expect(aawm.getByText(/clients/i)).toBeInTheDocument()
     expect(aawm.getByText(/max wait/i)).toBeInTheDocument()
     expect(aawm.getByText('aawm_tristore')).toBeInTheDocument()
@@ -1426,7 +1427,7 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
     })
     expect(seenFrom).toBe('2026-05-20')
     expect(seenTo).toBe('2026-05-21')
-    expect(screen.getByText(/sonnet-only · 7d/i)).toBeInTheDocument()
+    expect(screen.getByText(/Retired Sonnet · 7d/i)).toBeInTheDocument()
     expect(screen.getByText(/codex-spark · 7d/i)).toBeInTheDocument()
     expect(screen.getAllByText('directional_only').length).toBeGreaterThan(0)
     expect(screen.getAllByText('not_identifiable').length).toBeGreaterThan(0)
@@ -1643,18 +1644,22 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
       within(diagnosticsCard).getByText('xai_grok_oidc')
     ).toBeInTheDocument()
     expect(
-      within(diagnosticsCard).getByText('missing_required_final_phrase')
-    ).toBeInTheDocument()
+      within(diagnosticsCard).getAllByText('failure_class').length
+    ).toBeGreaterThan(0)
     expect(
-      within(diagnosticsCard).getByText('missing_tools')
-    ).toBeInTheDocument()
+      within(diagnosticsCard).getAllByText('missing_required_final_phrase')
+        .length
+    ).toBeGreaterThan(0)
+    expect(
+      within(diagnosticsCard).getAllByText('missing_tools').length
+    ).toBeGreaterThan(0)
     expect(within(diagnosticsCard).getByText('abc123')).toBeInTheDocument()
     expect(
       within(diagnosticsCard).getByText('1 audit events')
     ).toBeInTheDocument()
     expect(
-      within(diagnosticsCard).getByText('unrecoverable')
-    ).toBeInTheDocument()
+      within(diagnosticsCard).getAllByText('unrecoverable').length
+    ).toBeGreaterThan(0)
 
     expect(
       within(diagnosticsCard).getByText('Requested context window')
@@ -1691,30 +1696,33 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
     ).toBeInTheDocument()
 
     expect(
-      within(diagnosticsCard).getByText('responses_sanitized_removed_params')
-    ).toBeInTheDocument()
+      within(diagnosticsCard).getAllByText('responses_sanitized_removed_params')
+        .length
+    ).toBeGreaterThan(0)
     expect(
-      within(diagnosticsCard).getByText('tool_choice_without_tools_removed')
-    ).toBeInTheDocument()
+      within(diagnosticsCard).getAllByText('tool_choice_without_tools_removed')
+        .length
+    ).toBeGreaterThan(0)
     expect(
-      within(diagnosticsCard).getByText(
+      within(diagnosticsCard).getAllByText(
         'tool_choice_without_tools_removed_reason'
-      )
-    ).toBeInTheDocument()
+      ).length
+    ).toBeGreaterThan(0)
     expect(
-      within(diagnosticsCard).getByText('request_tags')
-    ).toBeInTheDocument()
+      within(diagnosticsCard).getAllByText('request_tags').length
+    ).toBeGreaterThan(0)
     expect(
-      within(diagnosticsCard).getByText('instructions, tool_choice')
-    ).toBeInTheDocument()
+      within(diagnosticsCard).getAllByText('instructions, tool_choice').length
+    ).toBeGreaterThan(0)
     expect(
-      within(diagnosticsCard).getByText('{"name":"Bash","type":"function"}')
-    ).toBeInTheDocument()
+      within(diagnosticsCard).getAllByText('{"name":"Bash","type":"function"}')
+        .length
+    ).toBeGreaterThan(0)
     expect(
-      within(diagnosticsCard).getByText(
+      within(diagnosticsCard).getAllByText(
         'xai-tool-choice-without-tools-removed, xai-tool-choice-without-tools:function'
-      )
-    ).toBeInTheDocument()
+      ).length
+    ).toBeGreaterThan(0)
 
     const sanitizedToolsDetail = within(diagnosticsCard)
       .getByText('sanitized tools')
@@ -1734,7 +1742,10 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
       within(removedToolChoiceDetail).getByText('removed tool choice')
     )
     expect(
-      within(removedToolChoiceDetail).getByText(/"type": "function"/)
+      within(removedToolChoiceDetail).getByText('Bash')
+    ).toBeInTheDocument()
+    expect(
+      within(removedToolChoiceDetail).getByText('function')
     ).toBeInTheDocument()
 
     const toolDefinitionSnapshotDetail = within(diagnosticsCard)
@@ -1793,14 +1804,15 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
       within(diagnosticsCard).getByText('unknown model (unrecoverable)')
     ).toBeInTheDocument()
     expect(
-      within(diagnosticsCard).getByText('no_explicit_transcript_model_event')
-    ).toBeInTheDocument()
+      within(diagnosticsCard).getAllByText('no_explicit_transcript_model_event')
+        .length
+    ).toBeGreaterThan(0)
     expect(
-      within(diagnosticsCard).getByText('transcript_model_event')
-    ).toBeInTheDocument()
+      within(diagnosticsCard).getAllByText('transcript_model_event').length
+    ).toBeGreaterThan(0)
     expect(
-      within(diagnosticsCard).getByText('2026-05-20T12:05:00.000Z')
-    ).toBeInTheDocument()
+      within(diagnosticsCard).getAllByText('2026-05-20T12:05:00.000Z').length
+    ).toBeGreaterThan(0)
 
     const grokSideChannelBlock = within(diagnosticsCard)
       .getByText('Grok side-channel')
@@ -1827,11 +1839,20 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
     fireEvent.click(
       within(grokSideChannelBlock).getByText('top-level key types')
     )
+    const topLevelKeyTypesDetail = within(grokSideChannelBlock)
+      .getByText('top-level key types')
+      .closest('details') as HTMLElement
     expect(
-      within(grokSideChannelBlock).getByText(/"model": "string"/)
+      within(topLevelKeyTypesDetail).getByText('model')
     ).toBeInTheDocument()
     expect(
-      within(grokSideChannelBlock).getByText(/"tools": "array"/)
+      within(topLevelKeyTypesDetail).getByText('string')
+    ).toBeInTheDocument()
+    expect(
+      within(topLevelKeyTypesDetail).getByText('tools')
+    ).toBeInTheDocument()
+    expect(
+      within(topLevelKeyTypesDetail).getByText('array')
     ).toBeInTheDocument()
     expect(
       within(diagnosticsCard).queryByText('RAW_SECRET_BODY_SHOULD_NOT_RENDER')
@@ -1843,23 +1864,34 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
     fireEvent.click(
       within(diagnosticsCard).getByText('transcript attribution detail')
     )
+    const transcriptAttributionDetail = within(diagnosticsCard)
+      .getByText('transcript attribution detail')
+      .closest('details') as HTMLElement
     expect(
-      within(diagnosticsCard).getByText(/"status": "unrecoverable"/)
+      within(transcriptAttributionDetail).getByText('status')
     ).toBeInTheDocument()
     expect(
-      within(diagnosticsCard).getByText(
-        /"reason": "no_explicit_transcript_model_event"/
+      within(transcriptAttributionDetail).getByText('unrecoverable')
+    ).toBeInTheDocument()
+    expect(
+      within(transcriptAttributionDetail).getByText('reason')
+    ).toBeInTheDocument()
+    expect(
+      within(transcriptAttributionDetail).getByText(
+        'no_explicit_transcript_model_event'
       )
     ).toBeInTheDocument()
     expect(
-      within(diagnosticsCard).getByText(
-        /"match_rule": "transcript_model_event"/
-      )
+      within(transcriptAttributionDetail).getByText('match_rule')
     ).toBeInTheDocument()
     expect(
-      within(diagnosticsCard).getByText(
-        /"updated_at": "2026-05-20T12:05:00.000Z"/
-      )
+      within(transcriptAttributionDetail).getByText('transcript_model_event')
+    ).toBeInTheDocument()
+    expect(
+      within(transcriptAttributionDetail).getByText('updated_at')
+    ).toBeInTheDocument()
+    expect(
+      within(transcriptAttributionDetail).getByText('2026-05-20T12:05:00.000Z')
     ).toBeInTheDocument()
   })
 

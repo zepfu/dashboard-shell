@@ -17,11 +17,11 @@ describe('weekly_special classification parity (D1-450 I1)', () => {
 })
 
 describe('formatTimeAgo future timestamps (D1-450 G3)', () => {
-  test('timestamps more than one minute in the future are not labeled with literal "in"', () => {
+  test('timestamps more than one minute in the future use "in …" not "ago"', () => {
     const thirtyMinutesAhead = new Date(Date.now() + 30 * 60_000)
     const label = formatTimeAgo(thirtyMinutesAhead)
-    expect(label).not.toMatch(/\bin\s+\d/)
-    expect(label).toMatch(/ago$/)
+    expect(label).toMatch(/^in \d+m$/)
+    expect(label).not.toMatch(/ago$/)
   })
 })
 

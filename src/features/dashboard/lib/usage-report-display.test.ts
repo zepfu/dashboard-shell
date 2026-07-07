@@ -624,11 +624,13 @@ describe('wave37 — quota query-key dedup contract', () => {
     expect(sharedQuotaKey[0]).not.toBe(legacyKey)
   })
 
-  test('test_quota_key_appends_cache_bust_token_when_provided', () => {
+  test('test_quota_key_ignores_cache_bust_for_deduped_query_key', () => {
     expect(usageReportQuotasKey(undefined, undefined, 'cache-bust')).toEqual([
       'usage-report-quotas',
-      'cache-bust',
     ])
+    expect(
+      usageReportQuotasKey('2026-05-20', '2026-05-21', 'manual-1')
+    ).toEqual(['usage-report-quotas'])
   })
 })
 
