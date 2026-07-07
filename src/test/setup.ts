@@ -65,11 +65,18 @@ function parseCalcPercentMinusPx(
   return Math.max(0, (pct / 100) * parentWidth - px)
 }
 
+function flexBasisFromShorthand(flex: string): string {
+  const t = flex.trim()
+  const calcIdx = t.indexOf('calc(')
+  if (calcIdx >= 0) return t.slice(calcIdx)
+  const parts = t.split(/\s+/)
+  return parts[parts.length - 1] ?? ''
+}
+
 function layoutWidthFromStyle(el: HTMLElement, parentWidth: number): number {
   const flex = el.style.flex
   if (flex) {
-    const parts = flex.split(/\s+/)
-    const basis = parts[parts.length - 1] ?? ''
+    const basis = flexBasisFromShorthand(flex)
     const fromCalc = parseCalcPercentMinusPx(basis, parentWidth)
     if (fromCalc != null) return fromCalc
     const fromBasisPct = parsePercentWidth(basis, parentWidth)
@@ -84,6 +91,20 @@ function layoutWidthFromStyle(el: HTMLElement, parentWidth: number): number {
   return ow > 0 ? ow : 0
 }
 
+function resolveQuotaBarWidthPx(barEl: HTMLElement): number {
+  const w = barEl.style.width?.trim()
+  if (w === '100%') {
+    const parent = barEl.parentElement
+    if (parent != null && parent.clientWidth > 0) return parent.clientWidth
+    return JSdom_LAYOUT_WIDTH
+  }
+  const px = parseCssPx(w)
+  if (px != null && px > 0) return px
+  const parent = barEl.parentElement
+  if (parent != null && parent.clientWidth > 0) return parent.clientWidth
+  return JSdom_LAYOUT_WIDTH
+}
+
 function installQuotaBarLayoutPolyfill(): void {
   if (typeof HTMLElement === 'undefined') return
   const proto = HTMLElement.prototype
@@ -95,25 +116,22 @@ function installQuotaBarLayoutPolyfill(): void {
   const native = proto.getBoundingClientRect
   proto.getBoundingClientRect = function (this: HTMLElement): DOMRect {
     const rect = native.call(this)
-    if (rect.width > 0 && rect.height > 0) return rect
 
     const isQuotaBar = this.classList.contains('quota-row-bar')
     const isQuotaInterval = this.classList.contains('quota-interval')
     const isProjection = this.classList.contains('qbar-projection')
 
-    if (!isQuotaBar && !isQuotaInterval && !isProjection) return rect
+    if (!isQuotaBar && !isQuotaInterval && !isProjection) {
+      if (rect.width > 0 && rect.height > 0) return rect
+      return rect
+    }
 
     const barEl = isQuotaBar
       ? this
       : (this.closest('.quota-row-bar') as HTMLElement | null)
 
     const barWidth =
-      barEl != null
-        ? (parseCssPx(barEl.style.width) ??
-          (barEl.parentElement && barEl.parentElement.clientWidth > 0
-            ? barEl.parentElement.clientWidth
-            : JSdom_LAYOUT_WIDTH))
-        : JSdom_LAYOUT_WIDTH
+      barEl != null ? resolveQuotaBarWidthPx(barEl) : JSdom_LAYOUT_WIDTH
 
     const heightPx =
       parseCssPx(this.style.height) ??
