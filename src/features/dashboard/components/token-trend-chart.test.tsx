@@ -2337,7 +2337,7 @@ test('D1-451_A2_day_tooltip_uses_shared_TipRow_helper', () => {
 
 test('D1-451_A3_metric_scale_labels_use_stylesheet_not_inline_duplication', () => {
   const chartPath = path.join(import.meta.dirname, 'token-trend-chart.tsx')
-  const cssPath = path.join(import.meta.dirname, '../styles/index.css')
+  const cssPath = path.resolve(process.cwd(), 'src/styles/index.css')
   const chartSource = readFileSync(chartPath, 'utf8')
   const cssSource = readFileSync(cssPath, 'utf8')
   expect(chartSource).not.toMatch(
