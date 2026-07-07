@@ -1,15 +1,37 @@
 /**
- * Provider name aliases — maps a canonical provider key to the set of strings
- * that may appear in the `providerLatencyHealth` materialized view.
- *
- * Wave 15-B (15-B.2): The DB materialised view `provider_latency_health_5m`
- * stores Google rows under the key `'gemini'`, while the dashboard's canonical
- * provider list and the `rows` collection both use `'google'` (because
- * report-service.mjs CASE-maps them on the rows/trend side but NOT on the
- * health side). This map lets callers expand a canonical key to all its DB
- * aliases before filtering health rows.
+ * Shared dashboard display helpers. Canonical provider identity helpers remain in
+ * provider-identity.ts and are re-exported here for compatibility.
  */
-export const DASHBOARD_TIME_ZONE = 'America/New_York'
+const DASHBOARD_TIME_ZONE = 'America/New_York'
+
+const DATE_PARTS_FORMATTER_OPTIONS = {
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit',
+  hourCycle: 'h23',
+} as const
+
+const DASHBOARD_DATE_PARTS_FORMATTER = new Intl.DateTimeFormat('en-US', {
+  timeZone: DASHBOARD_TIME_ZONE,
+  ...DATE_PARTS_FORMATTER_OPTIONS,
+})
+
+const DATE_PARTS_FORMATTER_CACHE = new Map<string, Intl.DateTimeFormat>([
+  [DASHBOARD_TIME_ZONE, DASHBOARD_DATE_PARTS_FORMATTER],
+])
+
+const DASHBOARD_TIME_FORMATTER = new Intl.DateTimeFormat('en-US', {
+  timeZone: DASHBOARD_TIME_ZONE,
+  hour: 'numeric',
+  minute: '2-digit',
+})
+
+const PERCENT_FORMATTER = new Intl.NumberFormat('en-US', {
+  maximumFractionDigits: 1,
+})
 
 function datePartsInTimeZone(
   date: Date,
@@ -22,16 +44,17 @@ function datePartsInTimeZone(
   minute: number
   second: number
 } {
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hourCycle: 'h23',
-  }).formatToParts(date)
+  const formatter =
+    DATE_PARTS_FORMATTER_CACHE.get(timeZone) ??
+    (() => {
+      const created = new Intl.DateTimeFormat('en-US', {
+        ...DATE_PARTS_FORMATTER_OPTIONS,
+        timeZone,
+      })
+      DATE_PARTS_FORMATTER_CACHE.set(timeZone, created)
+      return created
+    })()
+  const parts = formatter.formatToParts(date)
   const byType = new Map(parts.map((part) => [part.type, part.value]))
   return {
     year: Number(byType.get('year')),
@@ -63,18 +86,28 @@ export function addDaysToDateString(value: string, days: number): string {
   return date.toISOString().slice(0, 10)
 }
 
-/**
- * Signed fractional delta (current − prior) / prior; null when prior is zero.
- */
-export function signedDelta(current: number, prior: number): number | null {
-  if (prior === 0) return null
-  if (!Number.isFinite(current) || !Number.isFinite(prior)) return null
-  return (current - prior) / prior
-}
-
 export function dashboardDateToUtcMs(value: string): number {
-  const [year, month, day] = value.split('-').map(Number)
+  const dateParts = value.split('-')
+  if (dateParts.length !== 3) return NaN
+  const [yearText, monthText, dayText] = dateParts
+  if (
+    yearText === undefined ||
+    monthText === undefined ||
+    dayText === undefined
+  )
+    return NaN
+  if (
+    !/^\d+$/.test(yearText) ||
+    !/^\d+$/.test(monthText) ||
+    !/^\d+$/.test(dayText)
+  ) {
+    return NaN
+  }
+
+  const [year, month, day] = [yearText, monthText, dayText].map(Number)
+  if (![year, month, day].every(Number.isFinite)) return NaN
   const targetAsUtc = Date.UTC(year, month - 1, day, 0, 0, 0)
+  if (!Number.isFinite(targetAsUtc)) return NaN
   let candidate = targetAsUtc
   for (let i = 0; i < 4; i += 1) {
     const parts = datePartsInTimeZone(new Date(candidate), DASHBOARD_TIME_ZONE)
@@ -96,11 +129,7 @@ export function dashboardDateToUtcMs(value: string): number {
 export function formatDashboardTime(value: string | Date): string {
   const date = value instanceof Date ? value : new Date(value)
   if (Number.isNaN(date.getTime())) return '--'
-  return new Intl.DateTimeFormat('en-US', {
-    timeZone: DASHBOARD_TIME_ZONE,
-    hour: 'numeric',
-    minute: '2-digit',
-  }).format(date)
+  return DASHBOARD_TIME_FORMATTER.format(date)
 }
 
 export function formatDashboardIntervalCompact(start: Date, end: Date): string {
@@ -113,14 +142,8 @@ export function formatDashboardIntervalCompact(start: Date, end: Date): string {
   return `${format(start)} → ${format(end)}`
 }
 
-// PROVIDER_ALIASES moved to lib/provider-identity.ts (Wave 11 single-owner).
-// The re-exports of canonicalProvider/providerAliases below delegate there.
-// (The constant definition itself is removed to avoid unused-variable noise.)
-
-// Re-export canonicalProvider and providerAliases from the single-owner
-// provider-identity module (Wave 11). This preserves the existing import
-// paths for callers in master-ledger-table.tsx and provider-card.tsx
-// (Engineer B's files) without requiring edits to those files.
+// Canonical provider identity is owned by provider-identity.ts.
+// Re-export here so existing import sites can continue using usage-report-display.
 export { canonicalProvider, providerAliases } from './provider-identity'
 
 const providerColorsByKey: Record<string, string> = {
@@ -138,14 +161,7 @@ const providerColorsByKey: Record<string, string> = {
   chatgpt: '#475569',
 }
 
-/**
- * Reference brand-identity hex palette for provider name/label coloring.
- *
- * Wave 12 Fix 1: introduced to replace the legacy `providerColorsByKey` palette
- * at call sites that need to match the v9.7 reference (Model Ledger Provider
- * column, ProviderCard header). The legacy palette is intentionally kept for
- * severity/gutter coloring (MasterLedger gutter) that has different semantics.
- */
+/** Reference brand-identity colors for provider labels and headers. */
 export const PROVIDER_BRAND_HEX: Record<string, string> = {
   openai: '#10a37f',
   anthropic: '#d97757',
@@ -157,13 +173,7 @@ export const PROVIDER_BRAND_HEX: Record<string, string> = {
   local: '#64748b',
 }
 
-/**
- * Returns the reference brand-identity hex for a provider, falling back to
- * `'var(--fg)'` for unknown providers.
- *
- * Wave 12 Fix 1: use this at any call site where the v9.7 reference shows
- * provider-branded text colors (card headers, ledger Provider cells).
- */
+/** Returns brand color for a provider, falling back to `'var(--fg)'`. */
 export function providerBrandHex(provider: string): string {
   const key = providerColorKey(provider)
   return (
@@ -173,32 +183,7 @@ export function providerBrandHex(provider: string): string {
   )
 }
 
-/**
- * Infers a canonical provider key from a model name.
- *
- * Wave 27 (W26 follow-up): consumers like ProviderCard's quota-hover .t-model
- * row pass *model* names (e.g.
- * `claude-opus-4-7`, `gpt-5.5`) into {@link providerBrandHex}. That helper's
- * lookup table (PROVIDER_BRAND_HEX) is keyed by provider names only
- * (`anthropic`, `openai`, ...), so model-name inputs fell through to the
- * `var(--fg)` fallback and rendered un-branded. This helper bridges that gap
- * by pattern-matching the model prefix back to its provider key.
- *
- * Patterns covered:
- *   claude-*, claude_*, anthropic*               -> 'anthropic'
- *   gpt-*, o1-*, o3-*, o4-*, chatgpt*, codex*,
- *     text-embedding*, text-davinci*             -> 'openai'
- *   gemini*, embeddinggemma*                     -> 'google'
- *   grok*, xai/*, oa_xai/*                      -> 'xai'
- *   nvidia*, nemo*, nim-*                        -> 'nvidia_nim'
- *   strings containing '/' (vendor/model paths)  -> 'openrouter'
- *   llama*, mistral*, mixtral*, qwen*, phi*,
- *     deepseek*, nomic-embed*, gte-*, e5-*       -> 'local'
- *
- * Unrecognised inputs fall through to the raw lowercased string so that
- * {@link providerBrandHex} can attempt its own match (and otherwise return
- * the `var(--fg)` fallback).
- */
+/** Infer a provider key from a model name for brand-color lookup. */
 function modelToProviderKey(model: string): string {
   const m = model.trim().toLowerCase()
   if (m === '') return ''
@@ -261,14 +246,7 @@ function modelToProviderKey(model: string): string {
   return m
 }
 
-/**
- * Convenience wrapper: returns the reference brand-identity hex for a model
- * name, inferring the provider via {@link modelToProviderKey}.
- *
- * Wave 27: use this at call sites where the input is a *model* name (e.g.
- * `claude-opus-4-7`, `gpt-5.5`) rather than a provider key. Falls back to
- * `var(--fg)` for unknown models.
- */
+/** Returns brand color for a model name through provider-key inference. */
 export function modelBrandHex(model: string): string {
   const key = modelToProviderKey(model)
   return providerBrandHex(key)
@@ -356,18 +334,6 @@ const providerColors = [
   '#475569',
 ]
 
-const clientColors = [
-  '#2563eb',
-  '#7c3aed',
-  '#0891b2',
-  '#4f46e5',
-  '#c026d3',
-  '#0369a1',
-  '#6d28d9',
-  '#475569',
-  '#0e7490',
-]
-
 export type GoogleQuotaClass = 'flash' | 'flash-lite' | 'pro'
 
 export const googleQuotaClasses: Array<{
@@ -396,6 +362,10 @@ export function googleQuotaClass(
   return null
 }
 
+/**
+ * Shared exported color helper for caller-owned provider visual styling.
+ * Kept exported for dashboard and sidebar consumers that rely on this contract.
+ */
 export function providerColorFor(provider: string) {
   const colorKey = providerColorKey(provider)
   return (
@@ -420,10 +390,6 @@ function providerColorKey(provider: string) {
   if (normalized === 'open-router') return 'openrouter'
   if (normalized === 'local' || normalized.startsWith('local_')) return 'local'
   return normalized
-}
-
-export function clientColorFor(client: string) {
-  return clientColors[colorHash(client.toLowerCase(), clientColors.length)]
 }
 
 function colorHash(value: string, modulo: number) {
@@ -457,21 +423,11 @@ export function colorWithAlpha(color: string, alpha: number) {
 
 export function formatPercent(value: number | null | undefined) {
   if (value === null || value === undefined) return 'n/a'
-  const formatted = new Intl.NumberFormat('en-US', {
-    maximumFractionDigits: 1,
-  }).format(value)
+  const formatted = PERCENT_FORMATTER.format(value)
   return `${formatted}%`
 }
 
-/**
- * Formats a millisecond latency value for display.
- *
- * Wave 12 Fix 4: resolves the regression where real P95 values (e.g. 13201ms)
- * rendered as `13201.163149995ms` with full-precision floats.
- *   ≥1000ms → `13.2s`
- *   <1000ms → `247ms` (rounded to integer)
- *   null/undefined → `—`
- */
+/** Formats latency in milliseconds as either rounded ms or fixed-second output. */
 export function formatLatency(ms: number | null | undefined): string {
   if (ms == null) return '—'
   if (ms >= 1000) return `${(ms / 1000).toFixed(1)}s`
@@ -481,10 +437,6 @@ export function formatLatency(ms: number | null | undefined): string {
 /**
  * Formats a USD cost value with comma-separated thousands and exactly 2
  * decimal places.
- *
- * Wave 12 Fix 4: resolves the regression where real cost values (e.g. 1560.10)
- * rendered as `$1560.1038` with 4 decimals and no comma separator.
- *   null/undefined → `—`
  */
 export function formatUsd(usd: number | null | undefined): string {
   if (usd == null) return '—'
@@ -525,18 +477,7 @@ export function computeFleetErrors(
   }).length
 }
 
-/**
- * Computes fleet-wide P95 latency (ms) from all provider latency health rows.
- *
- * Uses a requests-weighted average so that low-sample tail buckets (e.g. a
- * single anthropic/claude-opus-4-7 bucket with 3 requests and 282 s latency)
- * do not dominate the headline KPI. Mirrors the `computeFleetP95` helper in
- * `index.tsx` but lives here so both index.tsx and phosphor-dashboard.tsx can
- * share the same implementation without duplicating logic.
- *
- * Wave 37 SF-4: extracted to lib so phosphor-dashboard.tsx can compute the
- * prior-window P95 and pass it back to index.tsx via `onPriorHealthReady`.
- */
+/** Computes fleet-wide weighted P95 latency in milliseconds from provider health rows. */
 export function computeFleetP95(
   healthRows: {
     upstream_p95_ms: number | null
@@ -555,14 +496,7 @@ export function computeFleetP95(
   return totalRequests > 0 ? weightedSum / totalRequests : 0
 }
 
-/**
- * Formats an ISO reset-at timestamp as a short relative distance string.
- *
- * Wave 12 Fix 4: resolves the regression where the full ISO string
- * `2026-05-21T15:00:00.000Z` was rendered verbatim in the quota reset cell.
- * Output example: `in 3d 1h` (via date-fns formatDistanceToNow).
- *   null/undefined/empty → `—`
- */
+/** Formats an ISO timestamp as relative reset distance (for example, `in 3d 1h`). */
 export function formatResetDistance(iso: string | null | undefined): string {
   if (!iso) return '—'
   try {

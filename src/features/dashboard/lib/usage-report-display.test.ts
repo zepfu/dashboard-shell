@@ -1,11 +1,11 @@
 /**
  * Tests for usage-report-display helpers.
  *
- * Covers the wave34 KPI correctness fixes:
+ * Covers KPI correctness and formatting regressions:
  *   B2 — computeFleetErrors date-window filter (✘-2)
  *   B3 — computeFleetP95 requests-weighted average (✘-3)
  *
- * Wave 35 cycle-2 additions (⚠-11):
+ * Formatting/helper coverage:
  *   formatLatency — ms → human-readable latency string
  *   formatUsd     — number → formatted USD string
  *   formatResetDistance — ISO → relative distance string
@@ -14,17 +14,19 @@
 import {
   addDaysToDateString,
   canonicalProvider,
+  dashboardDateToUtcMs,
   colorWithAlpha,
   computeFleetErrors,
   computeFleetP95,
   formatDashboardDate,
+  formatDashboardIntervalCompact,
+  formatDashboardTime,
   formatLatency,
   formatModelDisplayName,
   formatResetDistance,
   formatUsd,
   modelBrandHex,
   providerAliases,
-  signedDelta,
 } from './usage-report-display'
 
 // ---------------------------------------------------------------------------
@@ -95,19 +97,55 @@ describe('computeFleetErrors', () => {
 })
 
 describe('dashboard timezone helpers', () => {
+  test('formatters are reused across repeated dashboard-date formatting calls', () => {
+    const dateTimeFormatSpy = vi.spyOn(Intl, 'DateTimeFormat')
+    dateTimeFormatSpy.mockClear()
+
+    const sample = new Date('2026-06-01T12:00:00.000Z')
+    const expectedDate = formatDashboardDate(sample)
+    const expectedInterval = formatDashboardIntervalCompact(
+      sample,
+      new Date(sample)
+    )
+    const expectedTime = formatDashboardTime(sample)
+
+    for (let i = 0; i < 5; i += 1) {
+      expect(formatDashboardDate(sample)).toBe(expectedDate)
+      expect(formatDashboardIntervalCompact(sample, new Date(sample))).toBe(
+        expectedInterval
+      )
+      expect(formatDashboardTime(sample)).toBe(expectedTime)
+    }
+
+    expect(dateTimeFormatSpy).not.toHaveBeenCalled()
+    dateTimeFormatSpy.mockRestore()
+  })
+
   test('test_formatDashboardDate_uses_eastern_calendar_day', () => {
     expect(formatDashboardDate(new Date('2026-05-23T03:30:00.000Z'))).toBe(
       '2026-05-22'
     )
+  })
+
+  test('dashboardDateToUtcMs returns NaN for malformed date strings', () => {
+    expect(Number.isNaN(dashboardDateToUtcMs('bad-date'))).toBe(true)
+    expect(Number.isNaN(dashboardDateToUtcMs('2026-06'))).toBe(true)
+    expect(Number.isNaN(dashboardDateToUtcMs('2026-06-31-01'))).toBe(true)
+    expect(Number.isNaN(dashboardDateToUtcMs('2026--31'))).toBe(true)
+    expect(Number.isNaN(dashboardDateToUtcMs('2026-xx-01'))).toBe(true)
+  })
+
+  test('dashboardDateToUtcMs handles valid dates', () => {
+    const value = dashboardDateToUtcMs('2026-05-22')
+    expect(Number.isFinite(value)).toBe(true)
   })
 })
 
 // ---------------------------------------------------------------------------
 // computeFleetP95 (weighted average)
 //
-// Wave 37 SF-4: computeFleetP95 is now exported from usage-report-display.ts
-// (previously module-private in index.tsx). Tests below import the function
-// directly instead of reproducing the algorithm inline.
+// computeFleetP95 is exported from usage-report-display.ts and imported directly
+// here so tests assert the production algorithm used by callers.
 // ---------------------------------------------------------------------------
 
 describe('computeFleetP95 weighted-average semantics', () => {
@@ -563,7 +601,7 @@ describe('formatModelDisplayName', () => {
 })
 
 // ---------------------------------------------------------------------------
-// Wave 37 SF-1 / SF-4: quota dedup query key + KPI p95/errors delta helpers
+// Quota-query cache key contract used by dashboard pages
 // ---------------------------------------------------------------------------
 
 describe('wave37 — quota query-key dedup contract', () => {
@@ -595,78 +633,16 @@ describe('wave37 — quota query-key dedup contract', () => {
   })
 })
 
-describe('wave37 — computeFleetP95 + computeFleetErrors prior-window delta', () => {
-  /**
-   * SF-4: The KPI deltas for p95_ms and errors are now computed in index.tsx
-   * using priorP95 / priorErrors from PhosphorDashboard's onPriorHealthReady
-   * callback. This describe block verifies the signed-fractional delta formula
-   * independently: delta = (current - prior) / prior.
-   */
-  function signedDelta(current: number, prior: number): number | null {
-    if (prior === 0) return null
-    return (current - prior) / prior
-  }
-
-  test('test_p95_delta_positive_when_current_exceeds_prior', () => {
-    const currentP95 = computeFleetP95([
-      { upstream_p95_ms: 1500, requests: 100 },
-    ])
-    const priorP95 = computeFleetP95([{ upstream_p95_ms: 1000, requests: 100 }])
-    const delta = signedDelta(currentP95, priorP95)
-    // (1500 - 1000) / 1000 = 0.5
-    expect(delta).toBeCloseTo(0.5, 6)
-  })
-
-  test('test_p95_delta_negative_when_current_below_prior', () => {
-    const currentP95 = computeFleetP95([{ upstream_p95_ms: 800, requests: 50 }])
-    const priorP95 = computeFleetP95([{ upstream_p95_ms: 1000, requests: 50 }])
-    const delta = signedDelta(currentP95, priorP95)
-    // (800 - 1000) / 1000 = -0.2
-    expect(delta).toBeCloseTo(-0.2, 6)
-  })
-
-  test('test_errors_delta_positive_when_current_exceeds_prior', () => {
-    const from = '2026-05-01'
-    const to = '2026-05-20'
-    const observations = [
-      { observed_at: '2026-05-10T10:00:00Z' },
-      { observed_at: '2026-05-15T12:00:00Z' },
-    ]
-    const priorObs = [{ observed_at: '2026-05-10T10:00:00Z' }]
-    const currentErrors = computeFleetErrors(observations, from, to)
-    const priorErrors = computeFleetErrors(priorObs, from, to)
-    const delta = signedDelta(currentErrors, priorErrors)
-    // (2 - 1) / 1 = 1.0
-    expect(delta).toBeCloseTo(1.0, 6)
-  })
-
-  test('test_p95_delta_null_when_prior_is_zero', () => {
-    // prior=0 → division by zero → null (no delta shown in KPI tile)
-    const delta = signedDelta(1500, 0)
-    expect(delta).toBeNull()
-  })
-
-  test('test_errors_delta_null_when_prior_errors_zero', () => {
-    // 0 prior errors → division by zero → no delta
-    const delta = signedDelta(5, 0)
-    expect(delta).toBeNull()
-  })
-})
-
 // ─────────────────────────────────────────────────────────────────────────────
-// Wave 5 / S4-14: addDaysToDateString — malformed input
+// Regression coverage: S4-14 — addDaysToDateString malformed input
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * S4-14: When `addDaysToDateString` receives a value that is not a valid
- * ISO-8601 date string (e.g. "not-a-date"), the current implementation calls
- * `value.split('-').map(Number)` which produces [NaN, NaN, NaN] and then
- * `Date.UTC(NaN, …)` → `NaN` → `.toISOString()` throws. The engineer must
- * add a `Number.isFinite` guard and return the original string unchanged.
- *
- * This is RED until the guard is added.
+ * Current regression coverage (S4-14): malformed `addDaysToDateString` input.
+ * The function now keeps non-`YYYY-MM-DD` values unchanged instead of throwing,
+ * including malformed values and non-numeric segments.
  */
-describe('addDaysToDateString — malformed input (S4-14)', () => {
+describe('addDaysToDateString malformed input (S4-14)', () => {
   test('test_addDaysToDateString_malformed_returns_input_not_throw', () => {
     // Must return the original string, not throw
     expect(addDaysToDateString('not-a-date', 1)).toBe('not-a-date')
@@ -690,18 +666,15 @@ describe('addDaysToDateString — malformed input (S4-14)', () => {
 })
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Wave 5 / S4-15: colorWithAlpha — 3-digit hex support
+// Regression coverage: S4-15 — colorWithAlpha 3-digit hex support
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * S4-15: `colorWithAlpha` currently matches only `#RRGGBB` (6-digit hex).
- * Passing a 3-digit shorthand like `#f80` fails the regex and returns the
- * original string unchanged instead of parsing it as `#ff8800`. The engineer
- * must expand the regex to handle `#RGB` → expand to `#RRGGBB`.
- *
- * This is RED until the 3-digit path is added.
+ * Current regression coverage (S4-15): `colorWithAlpha` shorthand `#RGB` support.
+ * Regression guard for `#RGB` parsing (`#RGB` should normalize to `#RRGGBB`
+ * before blending with alpha).
  */
-describe('colorWithAlpha — 3-digit hex support (S4-15)', () => {
+describe('colorWithAlpha 3-digit hex support (S4-15)', () => {
   test('test_colorWithAlpha_supports_3digit_hex', () => {
     // #f80 == #ff8800 → rgb(255 136 0 / 0.5)
     const result = colorWithAlpha('#f80', 0.5)
@@ -721,33 +694,5 @@ describe('colorWithAlpha — 3-digit hex support (S4-15)', () => {
   test('test_colorWithAlpha_6digit_still_works', () => {
     // Regression guard — 6-digit must keep working
     expect(colorWithAlpha('#ff8800', 0.5)).toBe('rgb(255 136 0 / 0.5)')
-  })
-})
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Wave 5 / S4-T6: signedDelta exported from usage-report-display (net-new)
-// ─────────────────────────────────────────────────────────────────────────────
-
-/**
- * S4-T6: The engineer must extract `signedDelta` from the inline copy in
- * `index.tsx` and export it from `usage-report-display.ts`. This import will
- * be RED (ModuleNotFoundError on the named export) until the engineer creates
- * the export.
- */
-describe('test_signedDelta_real_helper (S4-T6)', () => {
-  test('positive delta when current exceeds prior', () => {
-    expect(signedDelta(1500, 1000)).toBeCloseTo(0.5, 6)
-  })
-
-  test('negative delta when current is below prior', () => {
-    expect(signedDelta(800, 1000)).toBeCloseTo(-0.2, 6)
-  })
-
-  test('null when prior is zero to avoid division by zero', () => {
-    expect(signedDelta(500, 0)).toBeNull()
-  })
-
-  test('zero delta when current equals prior', () => {
-    expect(signedDelta(1000, 1000)).toBeCloseTo(0, 6)
   })
 })
