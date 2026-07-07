@@ -8,66 +8,163 @@ const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   '..'
 )
+const KNOWN_FLAGS = new Set([
+  'moduleId',
+  'name',
+  'basePath',
+  'apiBase',
+  'accentColor',
+  'description',
+  'help',
+])
 
-const args = parseArgs(process.argv.slice(2))
-
-if (args.help || !args._[0]) {
-  printUsage()
-  process.exit(args.help ? 0 : 1)
+if (isDirectRun()) {
+  try {
+    const result = main(process.argv.slice(2), { cwd: process.cwd() })
+    if (typeof result === 'number') {
+      process.exit(result)
+    }
+  } catch (error) {
+    process.stderr.write(`${error.message}\n`)
+    process.exit(1)
+  }
 }
 
-const targetDir = path.resolve(process.cwd(), args._[0])
-const moduleId = normalizeId(args.moduleId ?? path.basename(targetDir))
-const displayName = args.name ?? moduleId
-const moduleTitle = toTitle(displayName)
-const basePath = ensureLeadingSlash(
-  args.basePath ?? `/${moduleId.replace(/-dashboard$/, '')}`
-)
-const apiBase = args.apiBase ?? `/api${basePath}`
-const accentColor = args.accentColor ?? 'hsl(220 70% 50%)'
-const description =
-  args.description ?? `Operator dashboard for ${displayName}`
+export function main(argv = process.argv.slice(2), options = {}) {
+  const { cwd = process.cwd() } = options
+  const args = parseArgs(argv)
 
-if (fs.existsSync(targetDir) && fs.readdirSync(targetDir).length > 0) {
-  throw new Error(
-    `Refusing to scaffold into non-empty directory: ${targetDir}`
+  if (args.help || !args._[0]) {
+    printUsage()
+    return args.help ? 0 : 1
+  }
+
+  const config = buildScaffoldConfig({ ...args, cwd })
+  return scaffoldDashboard(config)
+}
+
+function buildScaffoldConfig(parsedArgs) {
+  const targetDir = path.resolve(parsedArgs.cwd, parsedArgs._[0])
+  const moduleId = normalizeId(
+    parsedArgs.moduleId ?? path.basename(targetDir)
   )
+  const displayName = parsedArgs.name ?? moduleId
+  const moduleTitle = toTitle(displayName)
+  const basePath = ensureLeadingSlash(
+    parsedArgs.basePath ?? `/${moduleId.replace(/-dashboard$/, '')}`
+  )
+  const apiBase = parsedArgs.apiBase ?? `/api${basePath}`
+  const accentColor = parsedArgs.accentColor ?? 'hsl(220 70% 50%)'
+  const description =
+    parsedArgs.description ?? `Operator dashboard for ${displayName}`
+
+  return {
+    targetDir,
+    moduleId,
+    displayName,
+    moduleTitle,
+    basePath,
+    apiBase,
+    accentColor,
+    description,
+  }
 }
 
-fs.mkdirSync(targetDir, { recursive: true })
-fs.mkdirSync(path.join(targetDir, 'src/pages'), { recursive: true })
-fs.mkdirSync(path.join(targetDir, 'src/styles'), { recursive: true })
+function scaffoldDashboard(config) {
+  const {
+    targetDir,
+    moduleId,
+    displayName,
+    moduleTitle,
+    basePath,
+    apiBase,
+    accentColor,
+    description,
+  } = config
 
-copyFromShell('src/components/ui', 'src/components/ui')
-copyFromShell('src/lib/utils.ts', 'src/lib/utils.ts')
-copyFromShell('src/styles/theme.css', 'src/styles/theme.css')
-copyFromShell('components.json', 'components.json')
+  if (fs.existsSync(targetDir) && fs.readdirSync(targetDir).length > 0) {
+    throw new Error(
+      `Refusing to scaffold into non-empty directory: ${targetDir}`
+    )
+  }
 
-writeFile('package.json', JSON.stringify(buildPackageJson(), null, 2))
-writeFile('index.html', buildIndexHtml())
-writeFile('vite.config.ts', buildViteConfig())
-writeFile('eslint.config.js', buildEslintConfig())
-writeFile('src/main.tsx', buildMainTsx())
-writeFile('src/module.ts', buildModuleTs())
-writeFile('src/pages/Overview.tsx', buildOverviewTsx())
-writeFile('src/styles/index.css', buildIndexCss())
-writeFile('README.md', buildReadme())
+  fs.mkdirSync(targetDir, { recursive: true })
+  fs.mkdirSync(path.join(targetDir, 'src/pages'), { recursive: true })
+  fs.mkdirSync(path.join(targetDir, 'src/styles'), { recursive: true })
 
-process.stdout.write(`Created remote dashboard starter at ${targetDir}\n`)
+  copyFromShell(
+    path.join(repoRoot, 'src/components/ui'),
+    path.join(targetDir, 'src/components/ui')
+  )
+  copyFromShell(
+    path.join(repoRoot, 'src/lib/utils.ts'),
+    path.join(targetDir, 'src/lib/utils.ts')
+  )
+  copyFromShell(
+    path.join(repoRoot, 'src/styles/theme.css'),
+    path.join(targetDir, 'src/styles/theme.css')
+  )
+  copyFromShell(
+    path.join(repoRoot, 'components.json'),
+    path.join(targetDir, 'components.json')
+  )
 
-function parseArgs(argv) {
+  writeFile(
+    path.join(targetDir, 'package.json'),
+    JSON.stringify(buildPackageJson({ moduleId }), null, 2)
+  )
+  writeFile(path.join(targetDir, 'index.html'), buildIndexHtml({ moduleTitle }))
+  writeFile(path.join(targetDir, 'vite.config.ts'), buildViteConfig({ moduleId }))
+  writeFile(path.join(targetDir, 'eslint.config.js'), buildEslintConfig())
+  writeFile(path.join(targetDir, 'src/main.tsx'), buildMainTsx())
+  writeFile(path.join(targetDir, 'src/module.ts'), buildModuleTs({ moduleId, displayName, moduleTitle, basePath, apiBase, accentColor, description }))
+  writeFile(path.join(targetDir, 'src/pages/Overview.tsx'), buildOverviewTsx({ moduleTitle }))
+  writeFile(path.join(targetDir, 'src/styles/index.css'), buildIndexCss())
+  writeFile(path.join(targetDir, 'README.md'), buildReadme({ moduleTitle, moduleId }))
+
+  process.stdout.write(`Created remote dashboard starter at ${targetDir}\n`)
+  return 0
+}
+
+export function parseArgs(argv) {
   const parsed = { _: [] }
 
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index]
+
+    if (arg === '--') {
+      parsed._.push(...argv.slice(index + 1))
+      break
+    }
 
     if (!arg.startsWith('--')) {
       parsed._.push(arg)
       continue
     }
 
-    const [rawKey, rawValue] = arg.slice(2).split('=')
+    if (arg === '--help') {
+      parsed.help = true
+      continue
+    }
+
+    const token = arg.slice(2)
+    const separatorIndex = token.indexOf('=')
+    const rawKey = separatorIndex === -1 ? token : token.slice(0, separatorIndex)
+    const rawValue =
+      separatorIndex === -1 ? undefined : token.slice(separatorIndex + 1)
     const key = rawKey.replace(/-([a-z])/g, (_, char) => char.toUpperCase())
+
+    if (!KNOWN_FLAGS.has(key)) {
+      throw new Error(`Unsupported argument: ${arg}`)
+    }
+
+    if (key === 'help') {
+      if (rawValue !== undefined) {
+        throw new Error(`Unsupported value for --help`)
+      }
+      parsed.help = true
+      continue
+    }
 
     if (rawValue !== undefined) {
       parsed[key] = rawValue
@@ -78,9 +175,10 @@ function parseArgs(argv) {
     if (next && !next.startsWith('--')) {
       parsed[key] = next
       index += 1
-    } else {
-      parsed[key] = true
+      continue
     }
+
+    throw new Error(`Missing value for ${arg}`)
   }
 
   return parsed
@@ -100,20 +198,21 @@ Options:
 `)
 }
 
-function copyFromShell(from, to) {
-  const source = path.join(repoRoot, from)
-  const destination = path.join(targetDir, to)
+function isDirectRun() {
+  return process.argv[1] === fileURLToPath(import.meta.url)
+}
+
+function copyFromShell(source, destination) {
   fs.mkdirSync(path.dirname(destination), { recursive: true })
   fs.cpSync(source, destination, { recursive: true })
 }
 
-function writeFile(relativePath, content) {
-  const destination = path.join(targetDir, relativePath)
+function writeFile(destination, content) {
   fs.mkdirSync(path.dirname(destination), { recursive: true })
   fs.writeFileSync(destination, `${content.trimEnd()}\n`)
 }
 
-function buildPackageJson() {
+function buildPackageJson({ moduleId }) {
   const shellPackage = JSON.parse(
     fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8')
   )
@@ -174,7 +273,7 @@ function buildPackageJson() {
   }
 }
 
-function buildIndexHtml() {
+function buildIndexHtml({ moduleTitle }) {
   return `<!doctype html>
 <html lang="en">
   <head>
@@ -189,7 +288,7 @@ function buildIndexHtml() {
 </html>`
 }
 
-function buildViteConfig() {
+function buildViteConfig({ moduleId }) {
   return `import path from 'path'
 import { federation } from '@module-federation/vite'
 import tailwindcss from '@tailwindcss/vite'
@@ -304,7 +403,15 @@ createRoot(document.getElementById('root')!).render(
 )`
 }
 
-function buildModuleTs() {
+function buildModuleTs({
+  moduleId,
+  displayName,
+  moduleTitle,
+  basePath,
+  apiBase,
+  accentColor,
+  description,
+}) {
   return `import { lazy } from 'react'
 import { LayoutDashboard as LayoutDashboardIcon } from 'lucide-react'
 
@@ -326,7 +433,7 @@ export default {
 }`
 }
 
-function buildOverviewTsx() {
+function buildOverviewTsx({ moduleTitle }) {
   return `import {
   Card,
   CardContent,
@@ -385,7 +492,7 @@ function buildIndexCss() {
 }`
 }
 
-function buildReadme() {
+function buildReadme({ moduleTitle, moduleId }) {
   return `# ${moduleTitle}
 
 Module Federation remote for the dashboard shell.
