@@ -170,6 +170,11 @@ export function remoteDashboardHref(
   return `${config.basePath}${normalizedRoutePath}`
 }
 
+/**
+ * Normalizes a remote route path for matching and nav active state.
+ * Query strings and hashes are stripped before matching — remotes should not
+ * rely on `?` or `#` segments for route identity inside the shell.
+ */
 export function normalizeRemoteRoutePath(routePath: string | undefined) {
   if (routePath === undefined || routePath.trim() === '') return '/'
   const routeOnly = routePath.split('?')[0]?.split('#')[0] ?? ''

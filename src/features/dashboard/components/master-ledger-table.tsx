@@ -741,7 +741,6 @@ function MasterLedgerTableInner({
                                     display: 'grid',
                                     gridTemplateColumns: `minmax(0, ${leftColumnCount.toString()}fr) minmax(0, ${shellColumnCount.toString()}fr)`,
                                     columnGap: `${TOOL_HOVER_GROUP_GAP_PX.toString()}px`,
-                                    minWidth: 0,
                                     width: '100%',
                                     maxWidth: 'calc(100vw - 16px)',
                                     minWidth: `min(${tooltipWidthPx.toString()}px, calc(100vw - 16px))`,

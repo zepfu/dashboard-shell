@@ -68,9 +68,9 @@ Current shell defaults in `src/main.tsx`:
 
 - `staleTime`: `10_000` ms for normal queries.
 - `refetchOnWindowFocus`: enabled in production and disabled in development.
-- `retry`: disabled in development. In production, retry non-auth Axios errors
-  until the shell retry predicate returns false at `failureCount > 3`; never
-  retry Axios `401` or `403`.
+- `retry`: disabled in development (`shouldRetryQuery` in `src/main.tsx`). In
+  production, do not retry HTTP `401`, `403`, or `404`; retry `408`, `429`, and
+  `5xx` until `failureCount > 3`. Other status codes are not retried.
 - `gcTime` / cache time: use TanStack Query defaults unless a route or component
   query overrides them.
 

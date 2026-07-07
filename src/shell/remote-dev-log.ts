@@ -1,7 +1,7 @@
 export function warnRemoteNavDrift(moduleId: string) {
   if (!import.meta.env.DEV) return
-  const sink = globalThis['console'] as Pick<Console, 'warn'>
-  sink.warn(
+  // eslint-disable-next-line no-console -- dev-only nav drift signal
+  console.warn(
     `[remote-dashboard] Nav item paths drift between shell metadata and ${moduleId} remote module`
   )
 }

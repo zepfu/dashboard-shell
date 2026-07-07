@@ -7,7 +7,10 @@ import {
 } from '@tanstack/react-query'
 import { RouterProvider, createRouter } from '@tanstack/react-router'
 import { handleServerError } from '@/lib/handle-server-error'
-import { errorText, reloadForStaleAsset } from '@/lib/stale-asset-reload'
+import {
+  isStaleAssetError,
+  reloadForStaleAsset,
+} from '@/lib/stale-asset-reload'
 import { DirectionProvider } from './context/direction-provider'
 import { FontProvider } from './context/font-provider'
 import { ThemeProvider } from './context/theme-provider'
@@ -16,25 +19,8 @@ import { routeTree } from './routeTree.gen'
 // Styles
 import './styles/index.css'
 
-const chunkLoadFailurePatterns = [
-  /failed to fetch dynamically imported module/i,
-  /importing a module script failed/i,
-  /error loading dynamically imported module/i,
-  /chunkloaderror/i,
-  /loading chunk .+ failed/i,
-]
-
-function isChunkLoadFailure(value: unknown): boolean {
-  if (value instanceof Error && value.name === 'ChunkLoadError') {
-    return true
-  }
-
-  const text = errorText(value)
-  return chunkLoadFailurePatterns.some((pattern) => pattern.test(text))
-}
-
-function reloadOnChunkLoadFailure(value: unknown): boolean {
-  if (!isChunkLoadFailure(value)) {
+function reloadOnStaleAssetFailure(value: unknown): boolean {
+  if (!isStaleAssetError(value)) {
     return false
   }
 
@@ -47,23 +33,51 @@ window.addEventListener('vite:preloadError', (event) => {
 })
 
 window.addEventListener('error', (event) => {
-  reloadOnChunkLoadFailure(event.error ?? event.message)
+  reloadOnStaleAssetFailure(event.error ?? event.message)
 })
 
 window.addEventListener('unhandledrejection', (event) => {
-  if (reloadOnChunkLoadFailure(event.reason)) {
+  if (reloadOnStaleAssetFailure(event.reason)) {
     event.preventDefault()
   }
 })
 
+function readHttpStatus(error: unknown): number | undefined {
+  if (error && typeof error === 'object' && 'status' in error) {
+    const status = (error as { status: unknown }).status
+    if (typeof status === 'number') return status
+  }
+  return undefined
+}
+
+function isShellQueryRetryDevMode(): boolean {
+  // Bracket access avoids Vite compile-time replacement so tests can patch env.DEV.
+  const env = import.meta.env as ImportMetaEnv & { DEV?: boolean }
+  return env['DEV' as keyof ImportMetaEnv] === true
+}
+
+/** Shell QueryClient default retry predicate (exported for tests). */
+export function shouldRetryQuery(
+  failureCount: number,
+  error: unknown
+): boolean {
+  if (isShellQueryRetryDevMode()) return false
+  if (failureCount > 3) return false
+
+  const status = readHttpStatus(error)
+  if (status === undefined) return true
+
+  if (status === 401 || status === 403 || status === 404) return false
+  if (status === 408 || status === 429) return true
+  if (status >= 500 && status < 600) return true
+
+  return false
+}
+
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
-      retry: (failureCount) => {
-        if (failureCount >= 0 && import.meta.env.DEV) return false
-        if (failureCount > 3 && import.meta.env.PROD) return false
-        return true
-      },
+      retry: (failureCount, error) => shouldRetryQuery(failureCount, error),
       refetchOnWindowFocus: import.meta.env.PROD,
       staleTime: 10 * 1000, // 10s
       gcTime: 5 * 60 * 1000,
