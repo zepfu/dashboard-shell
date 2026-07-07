@@ -66,8 +66,8 @@ export interface HealthStripProps {
   now?: Date
 }
 
-const TOTAL_CELLS = 288
-const BUCKET_MS = 5 * 60 * 1000
+export const TOTAL_CELLS = 288
+export const BUCKET_MS = 5 * 60 * 1000
 const PADDING_COLOR = 'var(--card-2)'
 const EVENT_LOG_LIMIT = 14
 

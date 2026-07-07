@@ -1235,7 +1235,6 @@ export type UsageReportProviderCreditLifecycleStatus =
   | 'available'
   | 'used'
   | 'expired'
-  | string
 
 export interface UsageReportProviderCreditLifecycleEntry {
   observed_at: string

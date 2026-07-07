@@ -18,7 +18,7 @@ import {
   formatDashboardIntervalCompact,
 } from '../usage-report-display'
 
-function ivClassForConsumed(consumedPct: number): string {
+export function ivClassForConsumed(consumedPct: number): string {
   if (consumedPct >= 50) return 'iv-50-p'
   if (consumedPct >= 25) return 'iv-25-50'
   if (consumedPct >= 10) return 'iv-10-25'
