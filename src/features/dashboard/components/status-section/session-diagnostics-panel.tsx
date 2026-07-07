@@ -91,6 +91,13 @@ function formatDiagnosticValue(value: unknown): ReactNode {
 
 function formatJson(value: unknown): string {
   if (value === null || value === undefined) return '{}'
+  if (typeof value === 'object' && !Array.isArray(value)) {
+    for (const field of Object.values(value as Record<string, unknown>)) {
+      if (typeof field === 'string') {
+        JSON.stringify(field)
+      }
+    }
+  }
   return JSON.stringify(value, null, 2)
 }
 
