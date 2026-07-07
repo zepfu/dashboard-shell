@@ -185,7 +185,7 @@ function RemoteLazyModuleLoader({
   loadGeneration: number
 }) {
   const LazyView = useMemo(
-    () => lazy(() => remoteModuleImporters[moduleKey]()),
+    () => lazy(() => remoteModuleImporters[moduleKey].load()),
     // loadGeneration forces a fresh React.lazy after boundary Retry (H1).
     // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional retry epoch
     [moduleKey, loadGeneration]
@@ -211,7 +211,10 @@ export function RemoteDashboardRoute({
       config={config}
       routePath={routePath}
       lazyEpoch={lazyEpoch}
-      onRetry={() => setLazyEpoch((epoch) => epoch + 1)}
+      onRetry={() => {
+        remoteModuleImporters[moduleKey].reset()
+        setLazyEpoch((epoch) => epoch + 1)
+      }}
     >
       <Suspense
         fallback={
