@@ -4,11 +4,13 @@
  * `formatTipVelocity` derives a reset-window-aware average burn-rate label from
  * consumedPct, resetAt, and quota duration. It is exported for testing via the
  * `_formatTipVelocityForTest` alias.
+ *
+ * I4 placement: lives beside phosphor-dashboard helpers (component-adjacent) because
+ * the test alias is re-exported from `phosphor-dashboard.helpers.ts`; the implementation
+ * is in `lib/quota-bars/fields.ts`.
  */
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { _formatTipVelocityForTest } from './phosphor-dashboard.helpers'
-
-const { describe, it, expect, beforeEach, afterEach, vi } =
-  await import('vitest')
 
 describe('formatTipVelocity', () => {
   beforeEach(() => {

@@ -31,21 +31,13 @@ import {
 } from '@testing-library/react'
 import { http, HttpResponse } from 'msw'
 // ─────────────────────────────────────────────────────────────────────────────
-// Wave 5 / S4-19: Dashboard default range follows daily ET tick
+// Wave 5 / S4-19: ET date helpers advance across midnight (helper-only; E5)
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * S4-19: `defaultDateRange()` calls `formatDashboardDate(new Date())` which
- * reads the system clock at component mount time. If it is called once at
- * module level (or if the component memoises incorrectly), the range does not
- * advance after a midnight ET rollover.
- *
- * This test simulates a midnight ET rollover using fake timers and asserts
- * that a freshly computed default range reflects the new calendar day.
- *
- * RED until the engineer ensures the default range derives from a live clock
- * (e.g. inside `useMemo(() => defaultDateRange(), [])` re-evaluated on tick,
- * or via a daily interval effect).
+ * S4-19 (helper-only): `formatDashboardDate` / `addDaysToDateString` must
+ * advance across an Eastern midnight rollover. Mount-level default-range sync is
+ * covered by `test_default_owned_date_range_advances_after_eastern_day_change`.
  */
 import { vi } from 'vitest'
 import { SidebarProvider } from '../../components/ui/sidebar'
@@ -1109,8 +1101,8 @@ describe('Dashboard — TCG-2: cold-load render path', () => {
   })
 })
 
-describe('Dashboard — S4-19: default range follows daily ET tick', () => {
-  test('test_dashboard_default_range_follows_daily_tick', () => {
+describe('Dashboard — S4-19: ET date helpers advance across midnight (helper-only)', () => {
+  test('test_et_date_helpers_advance_across_midnight_rollover', () => {
     // 2026-06-14 03:59:00 UTC → 2026-06-13 23:59 ET (still June 13 in ET)
     const beforeMidnight = new Date('2026-06-14T03:59:00Z')
     // 2026-06-14 04:01:00 UTC → 2026-06-14 00:01 ET (June 14 in ET)
@@ -1176,116 +1168,108 @@ describe('test_usageReportQuotasKey_factory_used_in_both (S4-T5/S4-20)', () => {
 /**
  * S4-T9: `kpiDeltas` divides `computeDeltaPct` output by 100 so that KpiStrip's
  * `renderDelta` (which multiplies by 100) displays the correct percentage.
- * This test flips the matchMedia mock to `matches: true` (≥3840px viewport)
- * and asserts the stored delta value is in the fractional form (e.g. 0.5 for
- * +50%) not the percent form (e.g. 50).
- *
- * RED until: (a) the test infrastructure supports the wide viewport, and
- * (b) the engineer wires `kpiDeltas` correctly (confirmed by value assertion).
  */
 describe('Dashboard — S4-T9: kpiDeltas /100 handshake at wide viewport', () => {
   test('test_kpiDeltas_path_stores_fractional_not_percent', async () => {
-    // Override matchMedia to simulate ≥3840px
-    Object.defineProperty(window, 'matchMedia', {
-      writable: true,
-      configurable: true,
-      value: (query: string) => ({
-        matches: query.includes('3840'), // true for the wide viewport query
-        media: query,
-        onchange: null,
-        addListener: () => undefined,
-        removeListener: () => undefined,
-        addEventListener: () => undefined,
-        removeEventListener: () => undefined,
-        dispatchEvent: () => false,
-      }),
-    })
+    const restoreMatchMedia = window.matchMedia
+    try {
+      Object.defineProperty(window, 'matchMedia', {
+        writable: true,
+        configurable: true,
+        value: (query: string) => ({
+          matches: query.includes('3840'),
+          media: query,
+          onchange: null,
+          addListener: () => undefined,
+          removeListener: () => undefined,
+          addEventListener: () => undefined,
+          removeEventListener: () => undefined,
+          dispatchEvent: () => false,
+        }),
+      })
 
-    const priorSummary = {
-      traces: 100, // prior requests
-      token_in: 1_000,
-      token_out: 500,
-      usd_cost: 1.0,
-    }
+      const priorSummary = {
+        traces: 100,
+        token_in: 1_000,
+        token_out: 500,
+        usd_cost: 1.0,
+      }
 
-    const currentSummary = {
-      traces: 150, // 50% increase → delta = 0.5 (fractional, not 50)
-      token_in: 1_200,
-      token_out: 600,
-      usd_cost: 1.2,
-    }
+      const currentSummary = {
+        traces: 150,
+        token_in: 1_200,
+        token_out: 600,
+        usd_cost: 1.2,
+      }
 
-    // Register a mock usage report with the prior data available
-    let _priorRequestCount = 0
-    server.use(
-      http.get('/api/shell/reports/usage', ({ request }) => {
-        const url = new URL(request.url)
-        const from = url.searchParams.get('from')
-        _priorRequestCount += 1
-        if (from !== null && from < '2026-04-19') {
-          // Prior period request
+      let priorRequestCount = 0
+      server.use(
+        http.get('/api/shell/reports/usage', ({ request }) => {
+          const url = new URL(request.url)
+          const from = url.searchParams.get('from')
+          priorRequestCount += 1
+          if (from !== null && from < '2026-04-19') {
+            return HttpResponse.json({
+              ...MOCK_REPORT,
+              summary: { ...MOCK_REPORT.summary, ...priorSummary },
+            })
+          }
           return HttpResponse.json({
             ...MOCK_REPORT,
-            summary: { ...MOCK_REPORT.summary, ...priorSummary },
+            summary: { ...MOCK_REPORT.summary, ...currentSummary },
           })
-        }
-        return HttpResponse.json({
-          ...MOCK_REPORT,
-          summary: { ...MOCK_REPORT.summary, ...currentSummary },
         })
+      )
+      server.use(
+        http.get('/api/shell/reports/quotas', () =>
+          HttpResponse.json({
+            metadata: {
+              generatedAt: '2026-05-19T00:00:00Z',
+              latestRecordAt: null,
+              latestRecordAgeMinutes: null,
+              latestRecordStale: false,
+              staleRecordThresholdMinutes: 60,
+            },
+            quotas: [],
+          })
+        )
+      )
+
+      registerTokenTrendSummaryHandler()
+      registerQuotaRangeHistoryHandler()
+
+      const Dashboard = await importDashboard()
+      renderWithProviders(Dashboard)
+
+      await waitFor(
+        () => {
+          expect(
+            screen.getByRole('heading', { name: 'STATUS' })
+          ).toBeInTheDocument()
+        },
+        { timeout: 5_000 }
+      )
+
+      await waitFor(
+        () => {
+          expect(priorRequestCount).toBeGreaterThanOrEqual(2)
+        },
+        { timeout: 5_000 }
+      )
+
+      await waitFor(
+        () => {
+          expect(screen.getByText(/↑ 50\.0%/)).toBeInTheDocument()
+        },
+        { timeout: 5_000 }
+      )
+    } finally {
+      Object.defineProperty(window, 'matchMedia', {
+        writable: true,
+        configurable: true,
+        value: restoreMatchMedia,
       })
-    )
-
-    registerTokenTrendSummaryHandler()
-    registerQuotaRangeHistoryHandler()
-
-    const Dashboard = await importDashboard()
-    const { container } = renderWithProviders(Dashboard)
-
-    // Wait for the dashboard to render with data
-    await waitFor(
-      () => {
-        expect(container.querySelector('.phosphor-dashboard')).not.toBeNull()
-      },
-      { timeout: 5_000 }
-    )
-
-    // At wide viewport, the comparison panel fires. kpiDeltas.requests should be
-    // fractional (0.5) not percent (50). We validate this through the KpiStrip
-    // aria-label or data attribute that PhosphorDashboard exposes.
-    // If the engineer wires it as 50 instead of 0.5, the rendered percentage
-    // would show "5000%" instead of "50%".
-    //
-    // Look for a delta indicator that shows a sane percentage (10%–500% range).
-    // An incorrect /100 would produce a wildly large percentage.
-    const deltaIndicators = container.querySelectorAll('[data-delta]')
-    for (const indicator of deltaIndicators) {
-      const raw = indicator.getAttribute('data-delta')
-      if (raw !== null) {
-        const value = Number(raw)
-        if (Number.isFinite(value)) {
-          // A sane fractional delta (0.5 = +50%) must NOT be ≥ 10 (which
-          // would indicate the /100 division is missing and we stored 50).
-          expect(Math.abs(value)).toBeLessThan(10)
-        }
-      }
     }
-
-    // Restore matchMedia mock for other tests
-    Object.defineProperty(window, 'matchMedia', {
-      writable: true,
-      configurable: true,
-      value: (_query: string) => ({
-        matches: false,
-        media: _query,
-        onchange: null,
-        addListener: () => undefined,
-        removeListener: () => undefined,
-        addEventListener: () => undefined,
-        removeEventListener: () => undefined,
-        dispatchEvent: () => false,
-      }),
-    })
   })
 })
 
@@ -1696,30 +1680,38 @@ describe('Dashboard — D1-436: heavy query polling guardrails', () => {
     expect(sidebarQuotaQueries).toHaveLength(0)
     expect(quotasCallCount).toBe(1)
 
+    fireEvent.click(screen.getByRole('tab', { name: /quota history/i }))
+
+    await waitFor(
+      () => {
+        expect(
+          getQueryObserverOptions(client, 'usage-report-quota-range-history')
+        ).toBeDefined()
+      },
+      { timeout: 3_000 }
+    )
+
     const quotaRangeOptions = getQueryObserverOptions(
       client,
       'usage-report-quota-range-history'
     )
-    if (quotaRangeOptions !== undefined) {
-      expect(quotaRangeOptions.refetchInterval).toBe(false)
-      expect(quotaRangeOptions.refetchIntervalInBackground).toBe(false)
-    }
+    expect(quotaRangeOptions).toBeDefined()
+    expect(quotaRangeOptions!.refetchInterval).toBe(false)
+    expect(quotaRangeOptions!.refetchIntervalInBackground).toBe(false)
 
     const quotaHistoryOptions = getQueryObserverOptions(
       client,
       'usage-report-quota-history'
     )
-    if (quotaHistoryOptions !== undefined) {
-      expect(quotaHistoryOptions.refetchInterval).toBe(false)
-      expect(quotaHistoryOptions.refetchIntervalInBackground).toBe(false)
-    }
+    expect(quotaHistoryOptions).toBeDefined()
+    expect(quotaHistoryOptions!.refetchInterval).toBe(false)
+    expect(quotaHistoryOptions!.refetchIntervalInBackground).toBe(false)
 
     const shellHealthOptions = getQueryObserverOptions(
       client,
       'shell-health-pgbouncer'
     )
-    if (shellHealthOptions !== undefined) {
-      expect(shellHealthOptions.refetchIntervalInBackground).toBe(false)
-    }
+    expect(shellHealthOptions).toBeDefined()
+    expect(shellHealthOptions!.refetchIntervalInBackground).toBe(false)
   })
 })

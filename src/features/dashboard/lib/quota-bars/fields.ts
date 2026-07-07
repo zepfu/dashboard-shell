@@ -602,16 +602,15 @@ export function formatTimeAgo(roundedDate: Date): string {
   // absolute distance so the label is sensible rather than "now".
   const absDiffMs = Math.abs(diffMs)
   if (diffMs < -60_000) {
-    // More than a minute in the future — use absolute distance with "ago" label
-    // so rounding artefacts still produce readable output (e.g. "30m ago").
+    // More than a minute in the future — absolute distance with "in" copy (E9).
     const totalMins = Math.floor(absDiffMs / 60_000)
     const hours = Math.floor(totalMins / 60)
     const days = Math.floor(hours / 24)
     const weeks = Math.floor(days / 7)
-    if (totalMins < 60) return `${totalMins.toString()}m ago`
-    if (hours < 24) return `${hours.toString()}h ago`
-    if (days < 14) return `${days.toString()}d ago`
-    return `${weeks.toString()}w ago`
+    if (totalMins < 60) return `in ${totalMins.toString()}m`
+    if (hours < 24) return `in ${hours.toString()}h`
+    if (days < 14) return `in ${days.toString()}d`
+    return `in ${weeks.toString()}w`
   }
   if (diffMs < 0) return 'just now' // within 1 minute in future — truly at boundary
   const totalMins = Math.floor(diffMs / 60_000)
