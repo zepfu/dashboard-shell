@@ -588,30 +588,34 @@ export function tipModelsFromBreakdownSingleLabel(
  * in the bar label. Falls back to '—' when input is null or unparseable.
  *
  * Output format (compact, one unit of precision):
- *   < 1h  → "45m ago"
- *   < 24h → "3h ago"
- *   < 14d → "2d ago"
- *   ≥ 14d → "2w ago"
+ *   past:  < 1h  → "45m ago", < 24h → "3h ago", …
+ *   future (>1 min ahead): "in 30m", "in 2h", … (G3 — not misleading "… ago")
+ *   within 1 min in the future → "just now"
  */
-function formatTimeAgoFromAbsMs(absDiffMs: number): string {
+function formatRelativeTimeFromAbsMs(
+  absDiffMs: number,
+  future: boolean
+): string {
   const totalMins = Math.floor(absDiffMs / 60_000)
   const hours = Math.floor(totalMins / 60)
   const days = Math.floor(hours / 24)
   const weeks = Math.floor(days / 7)
-  if (totalMins < 60) return `${totalMins.toString()}m ago`
-  if (hours < 24) return `${hours.toString()}h ago`
-  if (days < 14) return `${days.toString()}d ago`
-  return `${weeks.toString()}w ago`
+  let core: string
+  if (totalMins < 60) core = `${totalMins.toString()}m`
+  else if (hours < 24) core = `${hours.toString()}h`
+  else if (days < 14) core = `${days.toString()}d`
+  else core = `${weeks.toString()}w`
+  return future ? `in ${core}` : `${core} ago`
 }
 
 export function formatTimeAgo(roundedDate: Date): string {
   const diffMs = Date.now() - roundedDate.getTime()
   const absDiffMs = Math.abs(diffMs)
   if (diffMs < -60_000) {
-    return formatTimeAgoFromAbsMs(absDiffMs)
+    return formatRelativeTimeFromAbsMs(absDiffMs, true)
   }
   if (diffMs < 0) return 'just now'
-  return formatTimeAgoFromAbsMs(absDiffMs)
+  return formatRelativeTimeFromAbsMs(absDiffMs, false)
 }
 
 /**
