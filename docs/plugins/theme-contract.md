@@ -7,30 +7,50 @@ overrides to their own route without affecting the rest of the shell.
 
 ## 1. Global Phosphor tokens
 
-All base design tokens are defined in `src/styles/theme.css` as CSS custom
-properties on `:root`. These tokens form the **stable public API** that
-plugins may reference or override.
+The shell’s **base palette** is defined in `src/styles/theme.css` as CSS custom
+properties on a single `:root` block (dark-only fork — there is no `.dark`
+palette fork in `theme.css`). **Component tokens** such as `--quota-burn-*` live
+in `src/styles/index.css` inside `@layer components { :root { … } }` (see
+§1.2). Together, these form what plugins may reference or override.
 
-### Stable API tokens (Phosphor base set)
+### 1.1 Stable API tokens (Phosphor base set)
 
-| Token             | Default value | Purpose                                   |
-| ----------------- | ------------- | ----------------------------------------- |
-| `--accent-chrome` | `#3b82f6`     | Primary brand accent (nav, active states) |
-| `--accent-hot`    | `#ef4444`     | Error / critical severity                 |
-| `--accent-warm`   | `#f97316`     | Warning / degraded severity               |
-| `--accent-cool`   | `#06b6d4`     | Informational / sparkline colour          |
-| `--fg`            | `#e2e8f0`     | Primary foreground text                   |
-| `--fg-muted`      | `#94a3b8`     | Secondary / label text                    |
-| `--bg`            | `#0f172a`     | Page background                           |
-| `--card`          | `#1e293b`     | Card / panel surface                      |
-| `--card-2`        | `#334155`     | Secondary card / alternate row            |
-| `--border`        | `#334155`     | Divider and border                        |
+These token **names** are the stable public API for plugin overrides. **Do not
+depend on documented default hex values** — palette values may change between
+minor Phosphor updates. Read current values from `theme.css` `:root` when you
+need to harmonize visually.
 
-### Internal tokens (do NOT override)
+| Token             | Purpose                                   |
+| ----------------- | ----------------------------------------- |
+| `--accent-chrome` | Primary brand accent (nav, active states) |
+| `--accent-hot`    | Error / critical severity                 |
+| `--accent-warm`   | Warning / degraded severity               |
+| `--accent-cool`   | Informational / sparkline colour          |
+| `--fg`            | Primary foreground text                   |
+| `--fg-muted`      | Secondary / label text                    |
+| `--bg`            | Page background                           |
+| `--card`          | Card / panel surface                      |
+| `--card-2`        | Secondary card / alternate row            |
+| `--border`        | Divider and border                        |
 
-Tokens prefixed with `--card-2`, `--iv-`, or any undocumented token are
-internal and subject to change between minor versions. Overriding them
-from a plugin is unsupported and may break with future Phosphor updates.
+### 1.2 Internal tokens (do NOT override)
+
+The following are **shell-internal** and may change without notice. Overriding
+them from a plugin is unsupported.
+
+- `--card-3` — skeleton shimmer midpoint (`theme.css`)
+- `--quota-burn-slow`, `--quota-burn-steady`, `--quota-burn-fast`,
+  `--quota-burn-hot`, `--quota-burn-peak` — quota velocity burn tiers
+  (`index.css` `@layer components`, not `theme.css`)
+- `--font-inter`, `--font-manrope`, `--font-mono`, `--font-sans`, `--font-serif`
+  — font stack tokens (`theme.css` `@theme inline`)
+- Any other undocumented custom property (including shadcn semantic aliases such
+  as `--primary`, `--muted-foreground`, etc., unless this contract explicitly
+  lists them as stable)
+
+Note: `iv-*` names in the stylesheet (for example `.quota-interval.iv-5-10`) are
+**CSS class names**, not `--iv-*` custom properties. There are no `--iv-*`
+tokens in the repo.
 
 ---
 
@@ -69,7 +89,7 @@ your token overrides:
 }
 ```
 
-Override only the stable API tokens listed in §1. Multiple token overrides
+Override only the stable API tokens listed in §1.1. Multiple token overrides
 may appear in a single rule block.
 
 ### Step 3 — Import the CSS module as a side-effect
