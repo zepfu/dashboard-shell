@@ -1,6 +1,5 @@
 import {
   memo,
-  useMemo,
   type CSSProperties,
   type ReactElement,
   type ReactNode,
@@ -54,7 +53,16 @@ export interface CellDef {
 export interface HealthStripProps {
   cells: CellDef[]
   orientation?: 'horizontal' | 'vertical'
+  /**
+   * Custom tooltip body for vertical strips only; ignored when orientation is
+   * horizontal.
+   */
   tooltipContent?: ReactNode
+  /**
+   * Reference instant for wall-clock bucket indexing and tooltip relative-time
+   * labels (vertical only). Optional — defaults to `new Date()` at render when
+   * omitted; pass from the data layer for stable snapshots.
+   */
   now?: Date
 }
 
@@ -401,7 +409,8 @@ function wallClockIndexCells(cells: readonly CellDef[], now: Date): CellDef[] {
   const windowStartMs = now.getTime() - TOTAL_CELLS * BUCKET_MS
   const indexed = Array.from<CellDef>({ length: TOTAL_CELLS }).fill({
     color: PADDING_COLOR,
-    category: 'blue',
+    category: 'miss',
+    intensity: 0.5,
   })
 
   for (const cell of cells) {
@@ -496,29 +505,21 @@ function buildHealthVisualRuns(
   return runs
 }
 
-export function HealthStrip({
+export const HealthStrip = memo(function HealthStrip({
   cells,
   orientation = 'horizontal',
   tooltipContent,
-  now = new Date(),
+  now: nowProp,
 }: HealthStripProps): ReactElement {
   const isVertical = orientation === 'vertical'
-  const { normalized, wallClockIndexed } = normalizeCells(cells, now)
-  const p90Threshold = useMemo(
-    () => computeP90Threshold(normalized),
-    [normalized]
-  )
+  const now = nowProp ?? new Date()
+  const { normalized } = normalizeCells(cells, now)
+  const p90Threshold = computeP90Threshold(cells)
 
   if (isVertical) {
-    const renderCells = wallClockIndexed
-      ? normalized
-      : [...normalized].reverse()
+    const renderCells = normalized
     const visualRuns = buildHealthVisualRuns(renderCells, p90Threshold)
-    const resolvedTooltip = resolveTooltipContent(
-      tooltipContent,
-      cells.length > 0 ? cells : normalized,
-      now
-    )
+    const tooltipSourceCells = cells.length > 0 ? cells : normalized
 
     const stripInner = (
       <>
@@ -575,60 +576,32 @@ export function HealthStrip({
       maxWidth: 'min(560px, calc(100vw - 16px))',
     }
 
-    if (resolvedTooltip !== undefined) {
-      if (tooltipContent !== undefined) {
-        return (
-          <div aria-hidden='true' style={shellStyle}>
-            <div style={{ pointerEvents: 'auto', height: '100%' }}>
-              <HoverTooltip
-                content={() => resolvedTooltip}
-                variant='health'
-                panelStyle={tooltipPanelStyle}
-              >
-                {stripContent}
-              </HoverTooltip>
-            </div>
-          </div>
-        )
-      }
-
-      return (
-        <div aria-hidden='true' style={shellStyle}>
-          <div style={{ pointerEvents: 'auto', height: '100%' }}>
-            <HoverTooltip
-              content={() => resolvedTooltip}
-              variant='health'
-              panelStyle={tooltipPanelStyle}
-            >
-              {stripContent}
-            </HoverTooltip>
-          </div>
-        </div>
-      )
-    }
-
     return (
-      <div
-        aria-hidden='true'
-        className='health-strip-wrapper'
-        style={{
-          position: 'absolute',
-          top: '6px',
-          right: '6px',
-          bottom: '6px',
-          width: '12px',
-          display: 'flex',
-          flexDirection: 'column',
-          borderLeft: '1px solid rgba(245,158,11,0.25)',
-          borderRight: '1px solid var(--border)',
-          overflow: 'visible',
-        }}
-      >
-        {stripInner}
+      <div aria-hidden='true' style={shellStyle}>
+        <div style={{ pointerEvents: 'auto', height: '100%' }}>
+          <HoverTooltip
+            content={() =>
+              tooltipContent !== undefined
+                ? tooltipContent
+                : resolveTooltipContent(
+                    undefined,
+                    tooltipSourceCells,
+                    nowProp ?? new Date()
+                  )
+            }
+            variant='health'
+            panelStyle={tooltipPanelStyle}
+          >
+            {stripContent}
+          </HoverTooltip>
+        </div>
       </div>
     )
   }
 
+  // Horizontal path renders one DOM node per bucket (288); unused in production
+  // (provider-card uses vertical + wall-clock buckets only). Vertical run-merge
+  // keeps node count low — P2 moot unless horizontal is adopted.
   return (
     <div className='health-strip-root'>
       <div
@@ -669,4 +642,4 @@ export function HealthStrip({
       </div>
     </div>
   )
-}
+})

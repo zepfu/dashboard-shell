@@ -1,5 +1,5 @@
 /**
- * Sortable ledger header cell — keyboard pattern aligned with PhosphorTable (W11).
+ * Sortable ledger header cell — keyboard sort pattern for the master ledger.
  */
 import { type KeyboardEvent, type ReactElement, type ReactNode } from 'react'
 
