@@ -701,15 +701,10 @@ export function Dashboard(): ReactElement {
       const tokenTrendSummaryQueryKey = [
         'usage-report-token-trend-summary',
         tokenTrendScopeKey,
-        from,
-        to,
-        slicerFilters.providers,
-        slicerFilters.repositories,
-        slicerFilters.clients,
-        slicerFilters.environments,
-        slicerFilters.models,
         cacheBust,
       ] as const
+      // P6: scope serialized in tokenTrendScopeKey
+      // eslint-disable-next-line @tanstack/query/exhaustive-deps -- fetchQuery options
       const refreshedTokenTrendSummary = await queryClient.fetchQuery({
         queryKey: tokenTrendSummaryQueryKey,
         queryFn: ({ signal }) =>
@@ -1069,6 +1064,7 @@ export function Dashboard(): ReactElement {
             reportLoading={summaryLoading}
             showComparison={showComparison}
             reportRefreshKey={reportCacheBust}
+            quotasRefreshKey={quotaCacheBust}
             quotas={quotasData?.quotas}
             reportFetching={summaryFetching}
             quotasFetching={quotasFetching}

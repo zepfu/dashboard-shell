@@ -1998,7 +1998,7 @@ test('test_token_trend_hour_hover_cleared_on_mouse_leave', () => {
  *
  * The Wave 7 engineer hoists `Intl.NumberFormat` instances to module-level
  * constants in token-trend-chart.tsx (formatCompactNumber) and
- * usage-report-display.ts / phosphor-dashboard.testkit.ts (formatCompactQuantity).
+ * usage-report-display.ts / phosphor-dashboard.helpers.ts (formatCompactQuantity).
  *
  * This is a behaviour-preserving guard. The formatted output MUST be identical
  * before and after the hoist. We test the output contract by asserting specific
@@ -2010,7 +2010,7 @@ test('test_token_trend_hour_hover_cleared_on_mouse_leave', () => {
  */
 test('test_format_compact_number_hoist_behavior_preserving', async () => {
   const { formatCompactQuantity } =
-    await import('../components/phosphor-dashboard.testkit')
+    await import('../components/phosphor-dashboard.helpers')
 
   // These assertions pin the exact Intl output after the hoist.
   // The engineer must not change the formatter options when hoisting.

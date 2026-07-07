@@ -84,7 +84,7 @@ describe('test_flat_path_deleted_no_callers', () => {
     const src = await readFile(
       join(
         dirname(fileURLToPath(import.meta.url)),
-        '../components/phosphor-dashboard.testkit.ts'
+        '../components/phosphor-dashboard.helpers.ts'
       ),
       'utf8'
     )
@@ -102,7 +102,7 @@ describe('test_flat_path_deleted_no_callers', () => {
     const src = await readFile(
       join(
         dirname(fileURLToPath(import.meta.url)),
-        '../components/phosphor-dashboard.testkit.ts'
+        '../components/phosphor-dashboard.helpers.ts'
       ),
       'utf8'
     )
@@ -120,7 +120,7 @@ describe('test_flat_path_deleted_no_callers', () => {
      * GREEN: buildProviderLanes already exists.  Regression guard.
      */
     const { buildProviderLanes } =
-      await import('../components/phosphor-dashboard.testkit')
+      await import('../components/phosphor-dashboard.helpers')
 
     expect(typeof buildProviderLanes).toBe('function')
 
@@ -153,7 +153,7 @@ describe('test_flat_path_deleted_no_callers', () => {
 
   test('test_provider_identity_inline_copies_removed_from_testkit', async () => {
     /**
-     * The old inline CANONICAL_PROVIDERS in phosphor-dashboard.testkit.ts must
+     * The old inline CANONICAL_PROVIDERS in phosphor-dashboard.helpers.ts must
      * be replaced by an import from `lib/provider-identity.ts`.
      *
      * RED: until Engineer A removes the inline copy.
@@ -165,7 +165,7 @@ describe('test_flat_path_deleted_no_callers', () => {
     const src = await readFile(
       join(
         dirname(fileURLToPath(import.meta.url)),
-        '../components/phosphor-dashboard.testkit.ts'
+        '../components/phosphor-dashboard.helpers.ts'
       ),
       'utf8'
     )

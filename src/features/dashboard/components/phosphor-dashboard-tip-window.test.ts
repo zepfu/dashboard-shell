@@ -13,7 +13,7 @@
  * These tests drive {@link _formatTipWindowForTest} — the test-only re-export
  * of the internal `formatTipWindow` function.
  */
-import { _formatTipWindowForTest } from './phosphor-dashboard.testkit'
+import { _formatTipWindowForTest } from './phosphor-dashboard.helpers'
 
 const { describe, it, expect, beforeEach, afterEach, vi } =
   await import('vitest')
