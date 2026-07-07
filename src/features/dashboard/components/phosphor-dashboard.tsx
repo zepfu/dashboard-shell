@@ -25,6 +25,7 @@
  * flags come from useAnomalyDetection.
  */
 import {
+  memo,
   useCallback,
   useEffect,
   useMemo,
@@ -78,7 +79,6 @@ import {
 } from './comparison-panel'
 import type { LedgerView } from './master-ledger-aggregation'
 import { MasterLedgerTable } from './master-ledger-table'
-import styles from './phosphor-dashboard.module.css'
 import {
   buildAggregateHealthCells,
   buildAggregateMetrics,
@@ -89,7 +89,8 @@ import {
   deriveProviders,
   padHealthCells,
   localFallbackRange,
-} from './phosphor-dashboard.testkit'
+} from './phosphor-dashboard.helpers'
+import styles from './phosphor-dashboard.module.css'
 import { ProviderCard, type ProviderCardConfig } from './provider-card'
 import { type SlicerFilters, type SlicerOptions } from './slicer-bar'
 import { AawmAliasRoutingPanel } from './status-section/aawm-alias-routing-panel'
@@ -116,9 +117,15 @@ import {
 // Constants
 // ---------------------------------------------------------------------------
 
+/** Masonry column breakpoints — keep in sync with `phosphor-dashboard.module.css`. */
+const PROVIDER_HEALTH_MASONRY_BREAKPOINTS = {
+  cols8: 2100,
+  cols4: 1600,
+} as const
+
 function resolveProviderHealthColumnCount(viewportWidth: number): number {
-  if (viewportWidth >= 2100) return 8
-  if (viewportWidth >= 1600) return 4
+  if (viewportWidth >= PROVIDER_HEALTH_MASONRY_BREAKPOINTS.cols8) return 8
+  if (viewportWidth >= PROVIDER_HEALTH_MASONRY_BREAKPOINTS.cols4) return 4
   return 2
 }
 
@@ -223,8 +230,8 @@ function shouldShowTokenTrendDegradedBadge(
 function hasPgBouncerIssue(health?: ShellPgBouncerHealth): boolean {
   if (health === undefined) return false
   if (health.error !== undefined && health.error.length > 0) return true
-  if (health.sidecars.length === 0) return false
   if (health.status !== 'green') return true
+  if (health.sidecars.length === 0) return false
   return health.sidecars.some((sidecar) => sidecar.status !== 'green')
 }
 
@@ -242,6 +249,76 @@ function hasProviderCreditsAvailable(
     (entry) => entry.available_count > 0 || entry.status === 'available'
   )
 }
+
+type ProviderHealthCardRow = {
+  provider: string
+  config: ProviderCardConfig
+  metrics: ReturnType<typeof buildProviderMetrics>
+  cells: ReturnType<typeof padHealthCells>
+  lanes: ReturnType<typeof buildProviderLanes> | undefined
+  topModels: ReturnType<typeof buildTopModels>
+  localHealthItems: UsageReportResponse['localHealth']
+}
+
+const ProviderHealthMasonry = memo(function ProviderHealthMasonry({
+  columns,
+  columnCount,
+  aggregateConfig,
+  aggregateMetrics,
+  aggregateHealthCells,
+  fleetActivity,
+  anomalies,
+  masonryClassName,
+  columnClassName,
+}: {
+  columns: ProviderHealthCardRow[][]
+  columnCount: number
+  aggregateConfig: ProviderCardConfig
+  aggregateMetrics: ReturnType<typeof buildAggregateMetrics>
+  aggregateHealthCells: ReturnType<typeof buildAggregateHealthCells>
+  fleetActivity: {
+    toolCalls: number
+    gitCommits: number
+    gitPushes: number
+    invalidToolCalls: number
+  }
+  anomalies: ReturnType<typeof useAnomalyDetection>
+  masonryClassName: string
+  columnClassName: string
+}): ReactElement {
+  return (
+    <div className={`provider-health-summary ${masonryClassName}`}>
+      {columns.map((cards, columnIndex) => (
+        <div
+          key={`provider-health-column-${columnIndex.toString()}`}
+          className={`provider-health-summary-column ${columnClassName}`}
+        >
+          {cards.map((card) => (
+            <ProviderCard
+              key={`provider-health-card-${card.provider}`}
+              config={card.config}
+              data={card.metrics}
+              healthCells={card.cells}
+              lanes={card.lanes}
+              anomalies={anomalies}
+              topModels={card.topModels}
+              localHealthItems={card.localHealthItems}
+            />
+          ))}
+          {columnIndex === columnCount - 1 ? (
+            <AggregateCard
+              config={aggregateConfig}
+              data={aggregateMetrics}
+              healthCells={aggregateHealthCells}
+              fleetActivity={fleetActivity}
+              anomalies={anomalies}
+            />
+          ) : null}
+        </div>
+      ))}
+    </div>
+  )
+})
 
 // ---------------------------------------------------------------------------
 // Types
@@ -317,6 +394,11 @@ export interface PhosphorDashboardProps {
   reportFetching?: boolean
   /** Cache-bust key from the shell Force Refresh action. */
   reportRefreshKey?: string
+  /**
+   * Quota cache-bust key from the parent (index `quotaCacheBust`). When set,
+   * aligns the child standalone quotas query with the parent dedup key (C7).
+   */
+  quotasRefreshKey?: string
   /**
    * Wave 36 Fix 4: Whether the ComparisonPanel is visible (viewport ≥3840px).
    * Controls the `enabled` flag on the priorReport useQuery so that the prior-
@@ -396,6 +478,7 @@ export default function PhosphorDashboard({
   reportLoading: reportLoadingProp = false,
   reportFetching: reportFetchingProp = false,
   reportRefreshKey,
+  quotasRefreshKey,
   showComparison = false,
   quotas: quotasProp,
   quotasFetching: quotasFetchingProp = false,
@@ -420,6 +503,7 @@ export default function PhosphorDashboard({
   const resolvedFrom = from ?? defaults.from
   const resolvedTo = to ?? defaults.to
   const resolvedGrain: UsageReportGrain = grain ?? 'day'
+  const quotasCacheBust = quotasRefreshKey
   const [providerSectionView, setProviderSectionView] =
     useControllableState<ProviderSectionView>(
       providerSectionViewProp,
@@ -509,7 +593,7 @@ export default function PhosphorDashboard({
     ...usageReportQuotasQueryOptions({
       from: resolvedFrom,
       to: resolvedTo,
-      cacheBust: reportRefreshKey,
+      cacheBust: quotasCacheBust,
     }),
     // Skip when the parent has already provided quota rows.
     enabled: internalQuotasEnabled,
@@ -560,11 +644,6 @@ export default function PhosphorDashboard({
       'usage-report-quota-estimator',
       resolvedFrom,
       resolvedTo,
-      filters?.providers,
-      filters?.repositories,
-      filters?.clients,
-      filters?.environments,
-      filters?.models,
       reportRefreshKey,
     ],
     queryFn: ({ signal }) =>
@@ -660,17 +739,12 @@ export default function PhosphorDashboard({
     data: tokenTrendSummaryData,
     isFetching: tokenTrendSummaryFetching,
     refetch: refetchTokenTrendSummary,
+    // P6: scope serialized in tokenTrendScopeKey (from/to/filters).
+    // eslint-disable-next-line @tanstack/query/exhaustive-deps
   } = useQuery({
     queryKey: [
       'usage-report-token-trend-summary',
       tokenTrendScopeKey,
-      resolvedFrom,
-      resolvedTo,
-      filters?.providers,
-      filters?.repositories,
-      filters?.clients,
-      filters?.environments,
-      filters?.models,
       reportRefreshKey,
     ],
     queryFn: ({ signal }) =>
@@ -836,18 +910,12 @@ export default function PhosphorDashboard({
     data: tokenTrendDayDetailData,
     isFetching: tokenTrendDayDetailFetching,
     refetch: refetchTokenTrendDayDetail,
+    // eslint-disable-next-line @tanstack/query/exhaustive-deps -- P6: scope serialized in tokenTrendScopeKey
   } = useQuery({
     queryKey: [
       'usage-report-token-trend-day',
       tokenTrendScopeKey,
       tokenTrendDetailRequest,
-      resolvedFrom,
-      resolvedTo,
-      filters?.providers,
-      filters?.repositories,
-      filters?.clients,
-      filters?.environments,
-      filters?.models,
     ],
     queryFn: ({ signal }) => {
       if (tokenTrendDetailRequest === null) {
@@ -1186,6 +1254,16 @@ export default function PhosphorDashboard({
     [healthRows, providerErrorObservations]
   )
 
+  const fleetActivity = useMemo(
+    () => ({
+      toolCalls: summary?.tool_calls ?? 0,
+      gitCommits: summary?.git_commit ?? 0,
+      gitPushes: summary?.git_push ?? 0,
+      invalidToolCalls: 0,
+    }),
+    [summary?.tool_calls, summary?.git_commit, summary?.git_push]
+  )
+
   const periodDays = useMemo(
     () =>
       Math.max(
@@ -1225,19 +1303,23 @@ export default function PhosphorDashboard({
       filters?.clients,
       filters?.environments,
       filters?.models,
+      showComparison,
     ],
-    queryFn: () =>
-      fetchUsageReport({
-        from: priorFrom,
-        to: priorTo,
-        grain: resolvedGrain,
-        groupBy: ['provider', 'model', 'repository'],
-        provider: filters?.providers,
-        repository: filters?.repositories,
-        client: filters?.clients,
-        environment: filters?.environments,
-        model: filters?.models,
-      }),
+    queryFn: ({ signal }) =>
+      fetchUsageReport(
+        {
+          from: priorFrom,
+          to: priorTo,
+          grain: resolvedGrain,
+          groupBy: ['provider', 'model', 'repository'],
+          provider: filters?.providers,
+          repository: filters?.repositories,
+          client: filters?.clients,
+          environment: filters?.environments,
+          model: filters?.models,
+        },
+        signal
+      ),
     // Only fire once the current report is available AND the ComparisonPanel is
     // visible (viewport ≥3840px). At 2275 and 5120 the panel is hidden so the
     // prior-window DB query is skipped entirely, saving a sequential waterfall
@@ -1301,16 +1383,26 @@ export default function PhosphorDashboard({
       await onRefreshQuotas()
       return
     }
+    if (!internalQuotasEnabled) {
+      return
+    }
     await refetchInternalQuotas()
-  }, [onRefreshQuotas, refetchInternalQuotas])
+  }, [internalQuotasEnabled, onRefreshQuotas, refetchInternalQuotas])
 
   const refreshQuotaHistory = useCallback(async (): Promise<void> => {
     if (onRefreshQuotaHistory !== undefined) {
       await onRefreshQuotaHistory()
       return
     }
+    if (!internalQuotaHistoryEnabled) {
+      return
+    }
     await refetchInternalQuotaHistory()
-  }, [onRefreshQuotaHistory, refetchInternalQuotaHistory])
+  }, [
+    internalQuotaHistoryEnabled,
+    onRefreshQuotaHistory,
+    refetchInternalQuotaHistory,
+  ])
 
   const refreshQuotaRangeHistory = useCallback(async (): Promise<void> => {
     if (onRefreshQuotaRangeHistory !== undefined) {
@@ -1328,43 +1420,92 @@ export default function PhosphorDashboard({
     await refetchSessionDiagnostics()
   }, [refetchSessionDiagnostics])
 
+  const statusSectionActivity = useMemo(
+    (): Record<
+      ProviderSectionView,
+      { updating: boolean; refresh: () => Promise<void> }
+    > => ({
+      health: {
+        updating:
+          reportFetching ||
+          quotasFetching ||
+          quotaHistoryFetching ||
+          shellHealthFetching,
+        refresh: async () => {
+          await Promise.all([
+            refreshReport(),
+            refreshQuotas(),
+            refreshQuotaHistory(),
+            refetchShellHealth(),
+          ])
+        },
+      },
+      pgbouncer: {
+        updating: shellHealthFetching,
+        refresh: async () => {
+          await refetchShellHealth()
+        },
+      },
+      'provider-credits': {
+        updating: reportFetching,
+        refresh: async () => {
+          await refreshReport()
+        },
+      },
+      quota: {
+        updating: quotasFetching || quotaRangeHistoryFetching,
+        refresh: async () => {
+          await Promise.all([refreshQuotas(), refreshQuotaRangeHistory()])
+        },
+      },
+      'provider-auth': {
+        updating: reportFetching,
+        refresh: async () => {
+          await refreshReport()
+        },
+      },
+      'alias-routing': {
+        updating: reportFetching,
+        refresh: async () => {
+          await refreshReport()
+        },
+      },
+      weights: {
+        updating: quotaEstimatorFetching,
+        refresh: async () => {
+          await refreshQuotaEstimator()
+        },
+      },
+      diagnostics: {
+        updating: sessionDiagnosticsFetching,
+        refresh: async () => {
+          await refreshSessionDiagnostics()
+        },
+      },
+    }),
+    [
+      quotaEstimatorFetching,
+      quotaHistoryFetching,
+      quotaRangeHistoryFetching,
+      quotasFetching,
+      refetchShellHealth,
+      refreshQuotaEstimator,
+      refreshQuotaHistory,
+      refreshQuotaRangeHistory,
+      refreshQuotas,
+      refreshReport,
+      refreshSessionDiagnostics,
+      reportFetching,
+      sessionDiagnosticsFetching,
+      shellHealthFetching,
+    ]
+  )
+
+  const statusUpdating = statusSectionActivity[providerSectionView].updating
+
   const refreshStatusSection = useCallback(async (): Promise<void> => {
-    if (providerSectionView === 'pgbouncer') {
-      await refetchShellHealth()
-      return
-    }
-    if (providerSectionView === 'provider-credits') {
-      await refreshReport()
-      return
-    }
-    if (providerSectionView === 'quota') {
-      await Promise.all([refreshQuotas(), refreshQuotaRangeHistory()])
-      return
-    }
-    if (providerSectionView === 'weights') {
-      await refreshQuotaEstimator()
-      return
-    }
-    if (providerSectionView === 'diagnostics') {
-      await refreshSessionDiagnostics()
-      return
-    }
-    await Promise.all([
-      refreshReport(),
-      refreshQuotas(),
-      refreshQuotaHistory(),
-      refetchShellHealth(),
-    ])
-  }, [
-    providerSectionView,
-    refetchShellHealth,
-    refreshQuotaEstimator,
-    refreshQuotaHistory,
-    refreshQuotaRangeHistory,
-    refreshQuotas,
-    refreshReport,
-    refreshSessionDiagnostics,
-  ])
+    await statusSectionActivity[providerSectionView].refresh()
+  }, [providerSectionView, statusSectionActivity])
 
   const refreshTokenSection = useCallback(async (): Promise<void> => {
     const refreshes: Promise<unknown>[] = [
@@ -1390,21 +1531,6 @@ export default function PhosphorDashboard({
     await Promise.all([refreshReport(), refetchToolActivity()])
   }, [refreshReport, refetchToolActivity])
 
-  const statusUpdating =
-    providerSectionView === 'pgbouncer'
-      ? shellHealthFetching
-      : providerSectionView === 'provider-credits'
-        ? reportFetching
-        : providerSectionView === 'quota'
-          ? quotasFetching || quotaRangeHistoryFetching
-          : providerSectionView === 'weights'
-            ? quotaEstimatorFetching
-            : providerSectionView === 'diagnostics'
-              ? sessionDiagnosticsFetching
-              : reportFetching ||
-                quotasFetching ||
-                quotaHistoryFetching ||
-                shellHealthFetching
   const reportUpdating = reportFetching || toolActivityFetching
   const tokenTrendUpdating =
     reportFetching ||
@@ -1527,46 +1653,17 @@ export default function PhosphorDashboard({
             creditLifecycle={report?.providerCreditLifecycle}
           />
         ) : providerSectionView === 'health' ? (
-          <>
-            <div
-              className={`provider-health-summary ${styles['provider-health-summary-masonry']}`}
-            >
-              {providerHealthCardColumns.map((cards, columnIndex) => (
-                <div
-                  key={`provider-health-column-${columnIndex.toString()}`}
-                  className={`provider-health-summary-column ${styles['provider-health-summary-column']}`}
-                >
-                  {cards.map((card) => (
-                    <ProviderCard
-                      key={`provider-health-card-${card.provider}`}
-                      config={card.config}
-                      data={card.metrics}
-                      healthCells={card.cells}
-                      quotas={[]}
-                      lanes={card.lanes}
-                      anomalies={anomalies}
-                      topModels={card.topModels}
-                      localHealthItems={card.localHealthItems}
-                    />
-                  ))}
-                  {columnIndex === providerHealthColumnCount - 1 && (
-                    <AggregateCard
-                      config={aggregateConfig}
-                      data={aggregateMetrics}
-                      healthCells={aggregateHealthCells}
-                      fleetActivity={{
-                        toolCalls: summary?.tool_calls ?? 0,
-                        gitCommits: summary?.git_commit ?? 0,
-                        gitPushes: summary?.git_push ?? 0,
-                        invalidToolCalls: 0,
-                      }}
-                      anomalies={anomalies}
-                    />
-                  )}
-                </div>
-              ))}
-            </div>
-          </>
+          <ProviderHealthMasonry
+            columns={providerHealthCardColumns}
+            columnCount={providerHealthColumnCount}
+            aggregateConfig={aggregateConfig}
+            aggregateMetrics={aggregateMetrics}
+            aggregateHealthCells={aggregateHealthCells}
+            fleetActivity={fleetActivity}
+            anomalies={anomalies}
+            masonryClassName={styles['provider-health-summary-masonry']}
+            columnClassName={styles['provider-health-summary-column']}
+          />
         ) : providerSectionView === 'provider-auth' ? (
           <ProviderAuthHealthPanel authHealth={report?.providerAuthHealth} />
         ) : providerSectionView === 'alias-routing' ? (
@@ -1699,33 +1796,34 @@ export default function PhosphorDashboard({
       </section>
 
       {/* ── COMPARISON (4K+ only) ─────────────────────────────────────── */}
-      {/* D19: hidden by default; CSS module shows at ≥3840px */}
-      <section
-        id='comparison'
-        data-tab='comparison'
-        aria-labelledby='section-comparison-heading'
-        className={styles['comparison-section']}
-      >
-        <SectionTitle
-          id='section-comparison-heading'
-          accessory={
-            <SectionRefreshButton
-              label='Refresh Provider Comparison data'
-              updating={comparisonUpdating}
-              onRefresh={refreshComparisonSection}
-            />
-          }
+      {showComparison ? (
+        <section
+          id='comparison'
+          data-tab='comparison'
+          aria-labelledby='section-comparison-heading'
+          className={styles['comparison-section']}
         >
-          Provider Comparison
-        </SectionTitle>
-        <ComparisonPanel
-          providers={providers}
-          modelRows={modelRows}
-          trendBuckets={trendData}
-          periodDays={periodDays}
-          priorStats={priorStats}
-        />
-      </section>
+          <SectionTitle
+            id='section-comparison-heading'
+            accessory={
+              <SectionRefreshButton
+                label='Refresh Provider Comparison data'
+                updating={comparisonUpdating}
+                onRefresh={refreshComparisonSection}
+              />
+            }
+          >
+            Provider Comparison
+          </SectionTitle>
+          <ComparisonPanel
+            providers={providers}
+            modelRows={modelRows}
+            trendBuckets={trendData}
+            periodDays={periodDays}
+            priorStats={priorStats}
+          />
+        </section>
+      ) : null}
     </div>
   )
 }

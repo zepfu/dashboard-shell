@@ -50,7 +50,7 @@ import {
   buildPriorBarFromHistory,
   buildTopModels,
   buildProviderQuotaHistoryTabs,
-} from './phosphor-dashboard.testkit'
+} from './phosphor-dashboard.helpers'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -76,6 +76,9 @@ function Wrapper({ children }: { readonly children: ReactNode }): ReactNode {
 }
 
 beforeEach(() => {
+  server.use(
+    http.get('/api/shell/reports/usage', () => HttpResponse.json(MOCK_REPORT))
+  )
   server.use(
     http.get('/api/shell/health', () =>
       HttpResponse.json({
@@ -5636,16 +5639,17 @@ describe('PhosphorDashboard — Wave 1 fork-review remediation (RED)', () => {
 
     let container!: HTMLElement
     let rerender!: (ui: React.ReactElement) => void
+    const queryClient = makeClient()
 
     await act(async () => {
       const renderResult = render(
-        <Wrapper>
+        <QueryClientProvider client={queryClient}>
           <PhosphorDashboard
             from='2026-04-19'
             to='2026-05-19'
             showComparison={true}
           />
-        </Wrapper>
+        </QueryClientProvider>
       )
       container = renderResult.container
       rerender = renderResult.rerender
@@ -5662,13 +5666,13 @@ describe('PhosphorDashboard — Wave 1 fork-review remediation (RED)', () => {
 
     await act(async () => {
       rerender(
-        <Wrapper>
+        <QueryClientProvider client={queryClient}>
           <PhosphorDashboard
             from='2026-04-19'
             to='2026-05-19'
             showComparison={false}
           />
-        </Wrapper>
+        </QueryClientProvider>
       )
     })
 

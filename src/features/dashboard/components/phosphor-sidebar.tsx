@@ -5,7 +5,7 @@
  * Phosphor visual sidebar treatment, while dashboard module entries come from
  * the shared remote-dashboard metadata so they stay aligned with shell routing.
  */
-import type { ReactElement } from 'react'
+import { useState, type ReactElement } from 'react'
 import { Link, useLocation } from '@tanstack/react-router'
 import {
   remoteDashboardHref,
@@ -15,19 +15,6 @@ import { SidebarProvider } from '@/components/ui/sidebar'
 import { SidebarQuotaRemaining } from '@/components/layout/sidebar-quota-remaining'
 import type { DashboardAlertSummary } from '../hooks/use-alerts-from-anomalies'
 import { HoverTooltip } from './primitives/hover-tooltip'
-
-if (typeof window !== 'undefined' && typeof window.matchMedia !== 'function') {
-  window.matchMedia = (query: string) => ({
-    matches: false,
-    media: query,
-    onchange: null,
-    addListener: () => undefined,
-    removeListener: () => undefined,
-    addEventListener: () => undefined,
-    removeEventListener: () => undefined,
-    dispatchEvent: () => false,
-  })
-}
 
 interface NavItem {
   readonly label: string
@@ -137,6 +124,8 @@ function SidebarAlertDot({
 }: {
   alerts: DashboardAlertSummary
 }): ReactElement {
+  const [issuesExpanded, setIssuesExpanded] = useState(false)
+
   const tooltipContent = (
     <div className='sidebar-alert-tip'>
       <div className='v9-tip-head'>
@@ -187,14 +176,40 @@ function SidebarAlertDot({
         />
       </HoverTooltip>
       {issueCount > 0 ? (
-        <button
-          type='button'
-          className='sidebar-alert-issues-disclosure'
-          aria-label={`${issueCount.toString()} alert issues — expand for details`}
-          aria-expanded={false}
-        >
-          {issueCount.toString()}
-        </button>
+        <>
+          <button
+            type='button'
+            className='sidebar-alert-issues-disclosure'
+            aria-label={`${issueCount.toString()} alert issues — expand for details`}
+            aria-expanded={issuesExpanded}
+            aria-controls='sidebar-alert-issues-panel'
+            onClick={() => {
+              setIssuesExpanded((open) => !open)
+            }}
+          >
+            {issueCount.toString()}
+          </button>
+          {issuesExpanded ? (
+            <div
+              id='sidebar-alert-issues-panel'
+              role='region'
+              aria-label='Alert issue details'
+              className='sidebar-alert-issues-panel'
+            >
+              {alerts.issues.map((issue, index) => (
+                <div
+                  key={`${issue.severity}-${issue.head}-${index.toString()}`}
+                  className={`sidebar-alert-tip-row ${issue.severity}`}
+                >
+                  <div className='sidebar-alert-tip-row-head'>{issue.head}</div>
+                  {issue.sub !== undefined ? (
+                    <div className='sidebar-alert-tip-row-sub'>{issue.sub}</div>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+          ) : null}
+        </>
       ) : null}
     </>
   )

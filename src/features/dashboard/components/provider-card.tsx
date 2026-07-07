@@ -37,7 +37,7 @@ export interface ProviderCardProps {
   data: ProviderMetrics
   healthCells: { color: string }[]
   /** Wave 11 PR3 (11-i): each entry is one quota-type bar with 100 segments. */
-  quotas: QuotaBarGroup[]
+  quotas?: QuotaBarGroup[]
   /**
    * Wave 41 multi-reset redesign: structured lane data for the quota section.
    * When provided, `lanes` takes precedence over `quotas` for rendering.
@@ -65,7 +65,7 @@ function ProviderCardInner({
   config,
   data,
   healthCells,
-  quotas,
+  quotas = [],
   lanes,
   anomalies,
   topModels = [],
