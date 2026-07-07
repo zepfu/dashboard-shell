@@ -11,6 +11,18 @@ Credential-injecting upstream proxy routes (`/api/aawm*`, `/api/aawm-tap*`, `/ap
 
 Local compose and dev defaults use `SHELL_REPORT_PROXY_SHARED_SECRET=dashboard-shell-local-proxy-secret`. Override the same variable on the shell container, report-service container, and Vite dev environment for any non-local deployment.
 
+## Report cache identity
+
+`server/report-cache-identity.mjs` is the canonical owner of report Redis cache
+semantics: default TTL, usage-report TTL, stale TTL, key prefix, cache entry
+version, `cache_bust` exclusion from canonical params/hash, usage-scope TTL
+classification, cache key/lock construction, and the Redis prewarm lock key.
+`server/report-service.mjs` imports these values and helpers; it must not
+duplicate prefix/version defaults.
+
+Default key shape: `dashboard-shell:reports:v14:<scope>:<hash>`. Prewarm lock:
+`dashboard-shell:reports:v14:prewarm:lock`.
+
 ## QueryClient
 
 The shell owns the federated-mode `QueryClientProvider`. Remote dashboards should

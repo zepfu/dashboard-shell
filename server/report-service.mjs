@@ -1,7 +1,9 @@
 import {
   buildReportCacheEntry,
   buildReportCacheIdentity,
+  buildReportCachePrewarmLockKey,
   canonicalizeSearchParams,
+  REPORT_CACHE_VERSION,
   resolveReportCacheTtlMs,
 } from './report-cache-identity.mjs'
 import crypto from 'node:crypto'
@@ -438,9 +440,6 @@ const PROVIDER_HEALTH_MV_STALE_AFTER_MS = boundedIntegerEnv(
   { minimum: 60_000, maximum: Number.POSITIVE_INFINITY }
 )
 const REPORT_CACHE_REDIS_URL = process.env.SHELL_REPORT_REDIS_URL
-const REPORT_CACHE_PREFIX =
-  process.env.SHELL_REPORT_CACHE_PREFIX ?? 'dashboard-shell:reports'
-const REPORT_CACHE_VERSION = process.env.SHELL_REPORT_CACHE_VERSION ?? 'v14'
 const REPORT_CACHE_LOCK_TTL_MS = boundedIntegerEnv(
   'SHELL_REPORT_CACHE_LOCK_TTL_MS',
   30 * 60 * 1000,
@@ -10955,7 +10954,7 @@ function startReportCachePrewarm() {
 async function prewarmReportCaches() {
   if (!redisClient?.isReady || reportServiceShuttingDown) return
 
-  const lockKey = `${REPORT_CACHE_PREFIX}:${REPORT_CACHE_VERSION}:prewarm:lock`
+  const lockKey = buildReportCachePrewarmLockKey()
   const lockToken = await acquireRedisNamedLock(
     lockKey,
     REPORT_CACHE_PREWARM_LOCK_TTL_MS,
@@ -11399,7 +11398,11 @@ export const __envTestHelpers = {
 export {
   buildReportCacheEntry,
   buildReportCacheIdentity,
+  buildReportCachePrewarmLockKey,
   canonicalizeSearchParams,
+  REPORT_CACHE_PREFIX,
+  REPORT_CACHE_VERSION,
+  resolveReportCacheConfig,
   resolveReportCacheTtlMs,
 } from './report-cache-identity.mjs'
 export {
