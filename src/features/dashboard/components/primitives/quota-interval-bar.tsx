@@ -87,11 +87,24 @@ function mergeQuotaIntervalsForDisplay(
   return runs
 }
 
+/** Clamps display percentages to [0, 100]; widths summing above 100% are a caller bug. */
 function formatPercent(value: number): string {
   const clamped = Math.min(100, Math.max(0, value))
   return Number.isInteger(clamped)
     ? `${clamped}%`
     : `${Number(clamped.toFixed(4))}%`
+}
+
+function segmentFlexValue(
+  widthPct: number,
+  segmentCount: number,
+  gapPx: number
+): string {
+  if (segmentCount <= 1 || gapPx <= 0) {
+    return `0 0 ${widthPct}%`
+  }
+  const gapShare = (gapPx * (segmentCount - 1)) / segmentCount
+  return `0 1 calc(${widthPct}% - ${gapShare}px)`
 }
 
 function buildVelocityOverlayMask(
@@ -194,11 +207,13 @@ export function QuotaIntervalBar({
 
   const displayIntervals = mergeQuotaIntervalsForDisplay(intervals)
   const segmentCount = displayIntervals.length
-  const barGap = segmentCount > 50 ? 0 : '2px'
+  const gapPx = segmentCount > 50 ? 0 : 2
+  const barGap = gapPx === 0 ? 0 : `${gapPx}px`
   const clampedProjectionPct =
     projectionPct === undefined
       ? undefined
       : Math.min(100, Math.max(0, projectionPct))
+  const projectionOverQuota = projectionPct !== undefined && projectionPct > 100
   const velocityMask = buildVelocityOverlayMask(displayIntervals)
   const velocityOverlayStyle: CSSProperties | undefined =
     velocityMask === undefined
@@ -240,7 +255,7 @@ export function QuotaIntervalBar({
               .join(' ')}
             style={{
               width: `${interval.widthPct}%`,
-              flex: `0 0 ${interval.widthPct}%`,
+              flex: segmentFlexValue(interval.widthPct, segmentCount, gapPx),
               height: '100%',
               minWidth: 0,
               boxSizing: 'border-box',
@@ -259,12 +274,16 @@ export function QuotaIntervalBar({
         {clampedProjectionPct !== undefined && (
           <div
             className={projectionTickClasses(
-              projectionPct ?? clampedProjectionPct,
+              projectionPct !== undefined
+                ? projectionPct
+                : clampedProjectionPct,
               projectionTier
             )}
             style={{
               position: 'absolute',
-              left: `${clampedProjectionPct}%`,
+              ...(projectionOverQuota
+                ? { left: '100%', right: 0 }
+                : { left: `${clampedProjectionPct}%` }),
               top: 0,
               bottom: 0,
               width: '2px',

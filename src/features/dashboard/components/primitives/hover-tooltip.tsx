@@ -219,11 +219,6 @@ export function HoverTooltip({
   const wrapperRef = useRef<HTMLDivElement>(null)
   const panelRef = useRef<HTMLDivElement>(null)
   const tooltipId = useId()
-  const isPinnedRef = useRef(false)
-
-  useEffect(() => {
-    isPinnedRef.current = isPinned
-  }, [isPinned])
 
   const extraClass = variantClass(variant)
 
@@ -397,9 +392,11 @@ export function HoverTooltip({
   const canPortal = typeof document !== 'undefined' && document.body != null
 
   const describedByChild = isValidElement(children)
-    ? cloneElement(children, {
-        'aria-describedby': tooltipId,
-      } as { 'aria-describedby': string })
+    ? isOpen
+      ? cloneElement(children, {
+          'aria-describedby': tooltipId,
+        } as { 'aria-describedby': string })
+      : children
     : children
 
   const panel = isOpen ? (
@@ -421,7 +418,9 @@ export function HoverTooltip({
     <div
       ref={wrapperRef}
       className={className}
-      aria-describedby={isValidElement(children) ? undefined : tooltipId}
+      aria-describedby={
+        isValidElement(children) ? undefined : isOpen ? tooltipId : undefined
+      }
       style={{
         position: 'relative',
         // quota variant wraps a full-width trend bar inside a flex container
@@ -462,9 +461,6 @@ export function HoverTooltip({
           : {}),
       }}
       onPointerEnter={() => {
-        if (!isPinnedRef.current) {
-          setIsPinned(false)
-        }
         setIsOpen(true)
       }}
       onPointerLeave={() => {

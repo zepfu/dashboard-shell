@@ -95,7 +95,7 @@ export interface ReportCacheMetadata {
   cacheRefreshing?: boolean
 }
 
-const REPORT_CACHE_METADATA_FIELDS = [
+export const REPORT_CACHE_METADATA_FIELDS = [
   'cacheBackend',
   'cacheFreshUntil',
   'cacheGeneratedAt',

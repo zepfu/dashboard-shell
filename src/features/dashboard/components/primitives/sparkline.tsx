@@ -2,8 +2,11 @@
  * Sparkline — inline SVG trend line for Phosphor Atlas data cells.
  *
  * Normalises an arbitrary numeric series into the viewBox dimensions with
- * 2 px padding on all sides. Returns null for empty data arrays so call
- * sites need not guard against rendering an invisible SVG.
+ * 2 px padding on all sides (x and y for the polyline). Non-finite values
+ * (NaN, ±Infinity) are dropped before plotting; remaining points are
+ * spaced evenly in x, so a NaN gap in the input compresses into a continuous
+ * segment rather than a visual break. Returns null for empty data arrays so
+ * call sites need not guard against rendering an invisible SVG.
  */
 import type { ReactElement } from 'react'
 
@@ -51,9 +54,15 @@ export function Sparkline({
   const max = Math.max(...finite)
   const range = max - min
 
+  const xPad = 2
+  const xSpan = width - 2 * xPad
+  const compressXAxis = finite.length !== data.length
+
   const points = finite
     .map((value, i) => {
-      const x = (i / (finite.length - 1)) * width
+      const x = compressXAxis
+        ? (i / (finite.length - 1)) * width
+        : xPad + (i / (finite.length - 1)) * xSpan
       // S3-28: flat series (range === 0) renders centered, not at the floor
       const y =
         range === 0
