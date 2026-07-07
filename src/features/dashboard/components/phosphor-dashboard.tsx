@@ -3,7 +3,7 @@
  *
  * Composes the full set of Phosphor Atlas components into primary report
  * sections that match the AnchorBar shortcuts:
- *   status → tokens → models → repos
+ *   status → tokens → models
  *
  * Wave 9 changes:
  * - Section label inversion fix: id="models" now contains ProviderCards;
@@ -18,8 +18,7 @@
  * - Provider cards move from id="models" → id="status" (title: "Provider Health Summary").
  * - MasterLedgerTable moves from id="health" → id="models" (title: "Model Ledger").
  * - Standalone id="health" section removed; anchor `h` resolves in PR7.
- * - Section order: status → tokens → [models+repos row].
- * - models+repos wrapped in .ledger-repo-row: side-by-side 8fr/4fr at ≥1600px.
+ * - Section order: status → tokens → models.
  * - Section titles: Models→Model Ledger, Repos→Repository Breakdown.
  *
  * Data is fetched via fetchUsageReport + fetchUsageReportQuotas; anomaly
@@ -382,8 +381,7 @@ export interface PhosphorDashboardProps {
  * v9.7 reference (data-tab="models" renders ledger + providers in reference).
  *
  * Wave 11 PR1: Section restructure — provider cards under #status, Model Ledger
- * under #models, standalone #health removed, side-by-side ledger+repo row at
- * ≥1600px via .ledger-repo-row CSS module class.
+ * under #models, standalone #health removed.
  */
 export default function PhosphorDashboard({
   from,
@@ -622,12 +620,14 @@ export default function PhosphorDashboard({
     refetchIntervalInBackground: false,
   })
 
-  const anomalies = useAnomalyDetection(
-    (report?.providerLatencyHealth ?? []).filter(
-      (r): r is typeof r & { bucket_start: string } => r.bucket_start !== null
-    ),
-    report?.metadata
+  const anomalyLatencyRows = useMemo(
+    () =>
+      (report?.providerLatencyHealth ?? []).filter(
+        (r): r is typeof r & { bucket_start: string } => r.bucket_start !== null
+      ),
+    [report?.providerLatencyHealth]
   )
+  const anomalies = useAnomalyDetection(anomalyLatencyRows, report?.metadata)
 
   const trendData = useMemo(
     () => normalizeTrendData(report?.trend ?? []),
@@ -885,6 +885,21 @@ export default function PhosphorDashboard({
     ? tokenTrendDayDetailFetching
     : false
 
+  const providerErrorObservations = useMemo(
+    (): UsageReportProviderErrorObservationRow[] =>
+      report?.providerErrorObservations ?? [],
+    [report?.providerErrorObservations]
+  )
+  const summary = report?.summary
+  const healthRows = useMemo(
+    () => report?.providerLatencyHealth ?? [],
+    [report?.providerLatencyHealth]
+  )
+  const providerStatusUsage = useMemo(
+    () => report?.providerStatusUsage ?? [],
+    [report?.providerStatusUsage]
+  )
+
   const {
     data: toolActivityData,
     isFetching: toolActivityFetching,
@@ -928,6 +943,7 @@ export default function PhosphorDashboard({
       ),
     [providers]
   )
+
   const [providerHealthColumnCount, setProviderHealthColumnCount] = useState(
     () => getProviderHealthColumnCount()
   )
@@ -967,6 +983,77 @@ export default function PhosphorDashboard({
     ]
   )
 
+  const providerHealthCardRows = useMemo(
+    () =>
+      providerHealthCardProviders.map((provider) => {
+        const config: ProviderCardConfig = {
+          provider,
+          // Wave 12 Fix 1: use reference brand hex for card header name color
+          color: providerBrandHex(provider),
+        }
+        const aliases = providerAliases(provider)
+        const metrics = buildProviderMetrics(
+          provider,
+          healthRows,
+          report?.rows ?? [],
+          undefined,
+          aliases
+        )
+        const cells = padHealthCells(
+          healthRows,
+          provider,
+          providerErrorObservations,
+          aliases
+        )
+        // Wave 41: build structured QuotaLane[] for providers with lane
+        // definitions. Each lane groups
+        // the current bar + prior bars for a single quota type side-by-side.
+        // Providers without lane defs (nvidia_nim, local) are not
+        // rendered in the status grid (no lane defs = no quota bars).
+        const lanes = buildProviderLanes(provider, quotaRows, quotaHistoryRows)
+        const topModels = buildTopModels(
+          providerStatusUsage,
+          provider,
+          healthRows,
+          aliases
+        )
+        return {
+          provider,
+          config,
+          metrics,
+          cells,
+          lanes: lanes.length > 0 ? lanes : undefined,
+          topModels,
+          localHealthItems:
+            provider === 'local' ? (report?.localHealth ?? []) : [],
+        }
+      }),
+    [
+      providerHealthCardProviders,
+      healthRows,
+      providerErrorObservations,
+      quotaRows,
+      quotaHistoryRows,
+      providerStatusUsage,
+      report?.localHealth,
+      report?.rows,
+    ]
+  )
+
+  const providerHealthCardColumns = useMemo(() => {
+    const columns = Array.from(
+      { length: providerHealthColumnCount },
+      () => [] as typeof providerHealthCardRows
+    )
+    providerHealthCardRows.forEach((row, index) => {
+      const columnIndex = index % providerHealthColumnCount
+      if (columnIndex >= 0 && columnIndex < columns.length) {
+        columns[columnIndex].push(row)
+      }
+    })
+    return columns
+  }, [providerHealthCardRows, providerHealthColumnCount])
+
   const quotaRangeHistoryByProvider = useMemo(() => {
     const map = new Map<string, UsageReportQuotaHistoryRow[]>()
     for (const row of quotaRangeHistoryProp ??
@@ -991,16 +1078,16 @@ export default function PhosphorDashboard({
   const modelRows = useMemo(
     () =>
       buildModelRows(
-        report?.providerStatusUsage ?? [],
-        report?.providerLatencyHealth ?? [],
+        providerStatusUsage,
+        healthRows,
         report?.rows ?? [], // 15-B.3: real token_in/token_out
         quotaRows, // 15-B.5: quota_pct from quota rows
         report?.trend ?? [], // Wave 30 Track 4: real 24h sparkline data
         toolActivityData?.toolActivity ?? report?.toolActivity ?? [] // W33: tool activity for TOOL cell hover
       ),
     [
-      report?.providerStatusUsage,
-      report?.providerLatencyHealth,
+      providerStatusUsage,
+      healthRows,
       report?.rows,
       quotaRows,
       report?.trend,
@@ -1076,17 +1163,6 @@ export default function PhosphorDashboard({
     [modelRows, lowerSearch]
   )
 
-  const providerErrorObservations = useMemo(
-    (): UsageReportProviderErrorObservationRow[] =>
-      report?.providerErrorObservations ?? [],
-    [report?.providerErrorObservations]
-  )
-  const summary = report?.summary
-  const healthRows = useMemo(
-    () => report?.providerLatencyHealth ?? [],
-    [report?.providerLatencyHealth]
-  )
-
   // Aggregate card data (fleet-wide totals from report.summary)
   // Wave 16-D: restored to summary-based aggregation to fix the row-cap
   // undercount (report.rows is server-capped at 500; summary covers all rows).
@@ -1108,11 +1184,6 @@ export default function PhosphorDashboard({
   const aggregateHealthCells = useMemo(
     () => buildAggregateHealthCells(healthRows, providerErrorObservations),
     [healthRows, providerErrorObservations]
-  )
-
-  const providerStatusUsage = useMemo(
-    () => report?.providerStatusUsage ?? [],
-    [report?.providerStatusUsage]
   )
 
   const periodDays = useMemo(
@@ -1460,94 +1531,40 @@ export default function PhosphorDashboard({
             <div
               className={`provider-health-summary ${styles['provider-health-summary-masonry']}`}
             >
-              {Array.from(
-                { length: providerHealthColumnCount },
-                (_, columnIndex) => (
-                  <div
-                    key={`provider-health-column-${columnIndex.toString()}`}
-                    className={`provider-health-summary-column ${styles['provider-health-summary-column']}`}
-                  >
-                    {providerHealthCardProviders.map(
-                      (provider, providerIndex) => {
-                        if (
-                          providerIndex % providerHealthColumnCount !==
-                          columnIndex
-                        ) {
-                          return null
-                        }
-
-                        const config: ProviderCardConfig = {
-                          provider,
-                          // Wave 12 Fix 1: use reference brand hex for card header name color
-                          color: providerBrandHex(provider),
-                        }
-                        const aliases = providerAliases(provider)
-                        const metrics = buildProviderMetrics(
-                          provider,
-                          healthRows,
-                          report?.rows ?? [],
-                          undefined,
-                          aliases
-                        )
-                        const cells = padHealthCells(
-                          healthRows,
-                          provider,
-                          providerErrorObservations,
-                          aliases
-                        )
-                        // Wave 41: build structured QuotaLane[] for providers with lane
-                        // definitions. Each lane groups
-                        // the current bar + prior bars for a single quota type side-by-side.
-                        // Providers without lane defs (nvidia_nim, local) are not
-                        // rendered in the status grid (no lane defs = no quota bars).
-                        const lanes = buildProviderLanes(
-                          provider,
-                          quotaRows,
-                          quotaHistoryRows
-                        )
-                        const topModels = buildTopModels(
-                          providerStatusUsage,
-                          provider,
-                          healthRows,
-                          aliases
-                        )
-
-                        return (
-                          <ProviderCard
-                            key={provider}
-                            config={config}
-                            data={metrics}
-                            healthCells={cells}
-                            quotas={[]}
-                            lanes={lanes.length > 0 ? lanes : undefined}
-                            anomalies={anomalies}
-                            topModels={topModels}
-                            localHealthItems={
-                              provider === 'local'
-                                ? (report?.localHealth ?? [])
-                                : []
-                            }
-                          />
-                        )
-                      }
-                    )}
-                    {columnIndex === providerHealthColumnCount - 1 && (
-                      <AggregateCard
-                        config={aggregateConfig}
-                        data={aggregateMetrics}
-                        healthCells={aggregateHealthCells}
-                        fleetActivity={{
-                          toolCalls: summary?.tool_calls ?? 0,
-                          gitCommits: summary?.git_commit ?? 0,
-                          gitPushes: summary?.git_push ?? 0,
-                          invalidToolCalls: 0,
-                        }}
-                        anomalies={anomalies}
-                      />
-                    )}
-                  </div>
-                )
-              )}
+              {providerHealthCardColumns.map((cards, columnIndex) => (
+                <div
+                  key={`provider-health-column-${columnIndex.toString()}`}
+                  className={`provider-health-summary-column ${styles['provider-health-summary-column']}`}
+                >
+                  {cards.map((card) => (
+                    <ProviderCard
+                      key={`provider-health-card-${card.provider}`}
+                      config={card.config}
+                      data={card.metrics}
+                      healthCells={card.cells}
+                      quotas={[]}
+                      lanes={card.lanes}
+                      anomalies={anomalies}
+                      topModels={card.topModels}
+                      localHealthItems={card.localHealthItems}
+                    />
+                  ))}
+                  {columnIndex === providerHealthColumnCount - 1 && (
+                    <AggregateCard
+                      config={aggregateConfig}
+                      data={aggregateMetrics}
+                      healthCells={aggregateHealthCells}
+                      fleetActivity={{
+                        toolCalls: summary?.tool_calls ?? 0,
+                        gitCommits: summary?.git_commit ?? 0,
+                        gitPushes: summary?.git_push ?? 0,
+                        invalidToolCalls: 0,
+                      }}
+                      anomalies={anomalies}
+                    />
+                  )}
+                </div>
+              ))}
             </div>
           </>
         ) : providerSectionView === 'provider-auth' ? (

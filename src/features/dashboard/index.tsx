@@ -18,6 +18,8 @@ import {
   useEffect,
   useMemo,
   useState,
+  type Dispatch,
+  type SetStateAction,
   type ReactElement,
 } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
@@ -30,15 +32,17 @@ import {
   fetchUsageReport,
   fetchUsageReportQuotaHistory,
   fetchUsageReportQuotaRangeHistory,
+  fetchUsageReportTokenTrendSummary,
   LIVE_DASHBOARD_HEAVY_REFETCH_INTERVAL_MS,
   LIVE_DASHBOARD_HEAVY_REPORT_GC_TIME_MS,
   LIVE_DASHBOARD_QUOTAS_REFETCH_INTERVAL_MS,
-  usageReportQuotasKey,
   usageReportQuotasQueryOptions,
   type UsageReportGrain,
   type UsageReportProviderLatencyHealthRow,
   type UsageReportQuotaRow,
   type UsageReportSummary,
+  type UsageReportQuotaHistoryResponse,
+  type UsageReportQuotaRangeHistoryResponse,
 } from './api/usage-report'
 import AnchorBar from './components/anchor-bar'
 import { computeDeltaPct } from './components/comparison-panel'
@@ -84,6 +88,85 @@ function defaultDateRange(): { from: string; to: string } {
     // day so today's data is included.
     to: addDaysToDateString(today, 1),
   }
+}
+
+interface DashboardDateRange {
+  from: string
+  to: string
+}
+
+const EMPTY_QUOTA_HISTORY: UsageReportQuotaHistoryResponse['quotaHistory'] = []
+const EMPTY_QUOTA_RANGE_HISTORY: UsageReportQuotaRangeHistoryResponse['quotaRangeHistory'] =
+  []
+
+type CacheBustStateSetter = Dispatch<SetStateAction<string | undefined>>
+
+async function runWithOneShotCacheBust<T>(
+  stateSetter: CacheBustStateSetter,
+  cacheBust: string,
+  runner: () => Promise<T>
+): Promise<T> {
+  stateSetter(cacheBust)
+  try {
+    return await runner()
+  } finally {
+    stateSetter((current) => (current === cacheBust ? undefined : current))
+  }
+}
+
+function buildUsageReportQueryKey(
+  from: string,
+  to: string,
+  grain: UsageReportGrain,
+  slicerFilters: SlicerFilters,
+  cacheBust?: string
+): readonly unknown[] {
+  const key: unknown[] = [
+    'usage-report-phosphor',
+    from,
+    to,
+    grain,
+    slicerFilters.providers,
+    slicerFilters.repositories,
+    slicerFilters.clients,
+    slicerFilters.environments,
+    slicerFilters.models,
+  ]
+  if (cacheBust !== undefined) {
+    key.push(cacheBust)
+  }
+  return key
+}
+
+function buildUsageReportQueryFn({
+  from,
+  to,
+  grain,
+  slicerFilters,
+  cacheBust,
+}: {
+  from: string
+  to: string
+  grain: UsageReportGrain
+  slicerFilters: SlicerFilters
+  cacheBust?: string
+}) {
+  return ({ signal }: { signal: AbortSignal }) =>
+    fetchUsageReport(
+      {
+        from,
+        to,
+        grain,
+        groupBy: ['provider', 'model', 'repository'],
+        provider: slicerFilters.providers,
+        repository: slicerFilters.repositories,
+        client: slicerFilters.clients,
+        environment: slicerFilters.environments,
+        model: slicerFilters.models,
+        cacheBust,
+      },
+      signal
+    )
 }
 
 interface RecencyBreakoutItem {
@@ -177,8 +260,10 @@ export function Dashboard(): ReactElement {
     useState<LowerLaneMode>('tui')
   const [ledgerView, setLedgerView] = useState<LedgerView>('model')
 
-  const [from, setFrom] = useState(() => defaultDateRange().from)
-  const [to, setTo] = useState(() => defaultDateRange().to)
+  const [dateRange, setDateRange] = useState<DashboardDateRange>(() =>
+    defaultDateRange()
+  )
+  const { from, to } = dateRange
   // Wave 16-V: grain hardcoded to 'day'; per-visual grain logic in PhosphorDashboard untouched
   const grain: UsageReportGrain = 'day'
   // 15-C.4: controlled search input state for client-side row filtering
@@ -212,9 +297,29 @@ export function Dashboard(): ReactElement {
 
   useEffect(() => {
     const syncRangeToEasternDay = (): void => {
-      const { from: nextFrom, to: nextTo } = defaultDateRange()
-      setFrom((prev) => (prev === nextFrom ? prev : nextFrom))
-      setTo((prev) => (prev === nextTo ? prev : nextTo))
+      const nextDefaultRange = defaultDateRange()
+      // Auto-sync only while the user still has the default range in play.
+      // If the range is still the previous-day default window, advance it forward.
+      setDateRange((prev) => {
+        const previousDefaultRange = {
+          from: addDaysToDateString(nextDefaultRange.from, -1),
+          to: addDaysToDateString(nextDefaultRange.to, -1),
+        }
+        const wasDefaultRange =
+          prev.from === nextDefaultRange.from && prev.to === nextDefaultRange.to
+        const wasPreviousDefaultRange =
+          prev.from === previousDefaultRange.from &&
+          prev.to === previousDefaultRange.to
+
+        if (wasDefaultRange) {
+          return prev
+        }
+        if (wasPreviousDefaultRange) {
+          return { from: nextDefaultRange.from, to: nextDefaultRange.to }
+        }
+
+        return prev
+      })
     }
     syncRangeToEasternDay()
     const id = setInterval(syncRangeToEasternDay, 60_000)
@@ -240,9 +345,47 @@ export function Dashboard(): ReactElement {
   )
 
   const handleRangeChange = (nextFrom: string, nextTo: string): void => {
-    setFrom(nextFrom)
-    setTo(nextTo)
+    setDateRange({ from: nextFrom, to: nextTo })
   }
+
+  const usageReportQueryKey = buildUsageReportQueryKey(
+    from,
+    to,
+    grain,
+    slicerFilters,
+    reportCacheBust
+  )
+  const usageReportBaseQueryKey = useMemo(
+    () =>
+      buildUsageReportQueryKey(
+        from,
+        to,
+        grain,
+        slicerFilters
+      ) as readonly unknown[],
+    [from, to, grain, slicerFilters]
+  )
+  const tokenTrendScopeKey = useMemo(
+    () =>
+      JSON.stringify({
+        from,
+        to,
+        providers: slicerFilters.providers,
+        repositories: slicerFilters.repositories,
+        clients: slicerFilters.clients,
+        environments: slicerFilters.environments,
+        models: slicerFilters.models,
+      }),
+    [
+      from,
+      to,
+      slicerFilters.clients,
+      slicerFilters.environments,
+      slicerFilters.models,
+      slicerFilters.providers,
+      slicerFilters.repositories,
+    ]
+  )
 
   // Wave 36 Fix 1: queryKey now matches PhosphorDashboard's key shape exactly
   // (includes filter arrays) so React Query deduplicates both subscribers into a
@@ -254,34 +397,14 @@ export function Dashboard(): ReactElement {
     refetch: refetchSummaryReport,
     dataUpdatedAt,
   } = useQuery({
-    queryKey: [
-      'usage-report-phosphor',
+    queryKey: usageReportQueryKey,
+    queryFn: buildUsageReportQueryFn({
       from,
       to,
       grain,
-      slicerFilters.providers,
-      slicerFilters.repositories,
-      slicerFilters.clients,
-      slicerFilters.environments,
-      slicerFilters.models,
-      reportCacheBust,
-    ],
-    queryFn: ({ signal }) =>
-      fetchUsageReport(
-        {
-          from,
-          to,
-          grain,
-          groupBy: ['provider', 'model', 'repository'],
-          provider: slicerFilters.providers,
-          repository: slicerFilters.repositories,
-          client: slicerFilters.clients,
-          environment: slicerFilters.environments,
-          model: slicerFilters.models,
-          cacheBust: reportCacheBust,
-        },
-        signal
-      ),
+      slicerFilters,
+      cacheBust: reportCacheBust,
+    }),
     // Keep React Query freshness aligned with the report-service default TTL.
     // The dashboard polls every minute, so new session rows should be eligible
     // for display on the next scheduled refresh.
@@ -469,7 +592,15 @@ export function Dashboard(): ReactElement {
     }),
     refetchIntervalInBackground: false,
   })
+  const quotaQueryBase = usageReportQuotasQueryOptions({
+    from,
+    to,
+  })
 
+  const quotaRangeHistoryBaseQueryKey = useMemo(
+    () => ['usage-report-quota-range-history', from, to],
+    [from, to]
+  )
   const { data: quotaRangeHistoryData, isFetching: quotaRangeHistoryFetching } =
     useQuery({
       queryKey: [
@@ -493,6 +624,10 @@ export function Dashboard(): ReactElement {
       refetchIntervalInBackground: false,
     })
 
+  const quotaHistoryBaseQueryKey = useMemo(
+    () => ['usage-report-quota-history'],
+    []
+  )
   const { data: quotaHistoryData, isFetching: quotaHistoryFetching } = useQuery(
     {
       queryKey: ['usage-report-quota-history', quotaHistoryCacheBust],
@@ -542,44 +677,118 @@ export function Dashboard(): ReactElement {
     summaryReport?.providerLatencyHealth,
   ])
 
-  const handleForceFreshnessRefresh = useCallback((): void => {
-    setReportCacheBust(Date.now().toString())
-  }, [])
-
-  const handleQuotaRangeHistoryRefresh =
-    useCallback(async (): Promise<void> => {
-      const cacheBust = Date.now().toString()
-      setQuotaRangeHistoryCacheBust(cacheBust)
-      await queryClient.fetchQuery({
-        queryKey: ['usage-report-quota-range-history', from, to, cacheBust],
+  const handleForceFreshnessRefresh = useCallback(async (): Promise<void> => {
+    const cacheBust = Date.now().toString()
+    await runWithOneShotCacheBust(setReportCacheBust, cacheBust, async () => {
+      const refreshedSummary = await queryClient.fetchQuery({
+        queryKey: buildUsageReportQueryKey(
+          from,
+          to,
+          grain,
+          slicerFilters,
+          cacheBust
+        ),
+        queryFn: buildUsageReportQueryFn({
+          from,
+          to,
+          grain,
+          slicerFilters,
+          cacheBust,
+        }),
+        staleTime: LIVE_DASHBOARD_HEAVY_REFETCH_INTERVAL_MS,
+      })
+      queryClient.setQueryData(usageReportBaseQueryKey, refreshedSummary)
+      const tokenTrendSummaryQueryKey = [
+        'usage-report-token-trend-summary',
+        tokenTrendScopeKey,
+        from,
+        to,
+        slicerFilters.providers,
+        slicerFilters.repositories,
+        slicerFilters.clients,
+        slicerFilters.environments,
+        slicerFilters.models,
+        cacheBust,
+      ] as const
+      const refreshedTokenTrendSummary = await queryClient.fetchQuery({
+        queryKey: tokenTrendSummaryQueryKey,
         queryFn: ({ signal }) =>
-          fetchUsageReportQuotaRangeHistory(
+          fetchUsageReportTokenTrendSummary(
             {
               from,
               to,
+              provider: slicerFilters.providers,
+              repository: slicerFilters.repositories,
+              client: slicerFilters.clients,
+              environment: slicerFilters.environments,
+              model: slicerFilters.models,
               cacheBust,
             },
             signal
           ),
         staleTime: LIVE_DASHBOARD_HEAVY_REFETCH_INTERVAL_MS,
       })
-    }, [from, queryClient, to])
+      queryClient.setQueryData(
+        tokenTrendSummaryQueryKey,
+        refreshedTokenTrendSummary
+      )
+    })
+  }, [
+    from,
+    grain,
+    queryClient,
+    slicerFilters,
+    to,
+    tokenTrendScopeKey,
+    usageReportBaseQueryKey,
+  ])
+
+  const handleQuotaRangeHistoryRefresh =
+    useCallback(async (): Promise<void> => {
+      const cacheBust = Date.now().toString()
+      await runWithOneShotCacheBust(
+        setQuotaRangeHistoryCacheBust,
+        cacheBust,
+        async () => {
+          const refreshed = await queryClient.fetchQuery({
+            queryKey: ['usage-report-quota-range-history', from, to, cacheBust],
+            queryFn: ({ signal }) =>
+              fetchUsageReportQuotaRangeHistory(
+                {
+                  from,
+                  to,
+                  cacheBust,
+                },
+                signal
+              ),
+            staleTime: LIVE_DASHBOARD_HEAVY_REFETCH_INTERVAL_MS,
+          })
+          queryClient.setQueryData(quotaRangeHistoryBaseQueryKey, refreshed)
+        }
+      )
+    }, [from, queryClient, quotaRangeHistoryBaseQueryKey, to])
 
   const handleQuotaHistoryRefresh = useCallback(async (): Promise<void> => {
     const cacheBust = Date.now().toString()
-    setQuotaHistoryCacheBust(cacheBust)
-    await queryClient.fetchQuery({
-      queryKey: ['usage-report-quota-history', cacheBust],
-      queryFn: ({ signal }) =>
-        fetchUsageReportQuotaHistory(
-          {
-            cacheBust,
-          },
-          signal
-        ),
-      staleTime: LIVE_DASHBOARD_HEAVY_REFETCH_INTERVAL_MS,
-    })
-  }, [queryClient])
+    await runWithOneShotCacheBust(
+      setQuotaHistoryCacheBust,
+      cacheBust,
+      async () => {
+        const refreshed = await queryClient.fetchQuery({
+          queryKey: ['usage-report-quota-history', cacheBust],
+          queryFn: ({ signal }) =>
+            fetchUsageReportQuotaHistory(
+              {
+                cacheBust,
+              },
+              signal
+            ),
+          staleTime: LIVE_DASHBOARD_HEAVY_REFETCH_INTERVAL_MS,
+        })
+        queryClient.setQueryData(quotaHistoryBaseQueryKey, refreshed)
+      }
+    )
+  }, [queryClient, quotaHistoryBaseQueryKey])
 
   const handleShortcutActivate = useCallback((shortcut: string): void => {
     setActiveSection(shortcut)
@@ -641,11 +850,17 @@ export function Dashboard(): ReactElement {
 
   const handleQuotaRefresh = useCallback(async (): Promise<void> => {
     const bust = Date.now().toString()
-    setQuotaCacheBust(bust)
-    await queryClient.refetchQueries({
-      queryKey: usageReportQuotasKey(from, to, bust),
+    await runWithOneShotCacheBust(setQuotaCacheBust, bust, async () => {
+      const refreshed = await queryClient.fetchQuery(
+        usageReportQuotasQueryOptions({
+          from,
+          to,
+          cacheBust: bust,
+        })
+      )
+      queryClient.setQueryData(quotaQueryBase.queryKey, refreshed)
     })
-  }, [from, queryClient, to])
+  }, [from, queryClient, quotaQueryBase.queryKey, to])
 
   const dashboardAlerts = useDashboardAlertSummary(
     anomalies,
@@ -857,10 +1072,13 @@ export function Dashboard(): ReactElement {
             quotas={quotasData?.quotas}
             reportFetching={summaryFetching}
             quotasFetching={quotasFetching}
-            quotaHistory={quotaHistoryData?.quotaHistory ?? []}
+            quotaHistory={quotaHistoryData?.quotaHistory ?? EMPTY_QUOTA_HISTORY}
             quotaHistoryMetadata={quotaHistoryData?.metadata}
             quotaHistoryFetching={quotaHistoryFetching}
-            quotaRangeHistory={quotaRangeHistoryData?.quotaRangeHistory ?? []}
+            quotaRangeHistory={
+              quotaRangeHistoryData?.quotaRangeHistory ??
+              EMPTY_QUOTA_RANGE_HISTORY
+            }
             quotaRangeHistoryMetadata={quotaRangeHistoryData?.metadata}
             quotaRangeHistoryFetching={quotaRangeHistoryFetching}
             onRefreshReport={handleReportRefresh}

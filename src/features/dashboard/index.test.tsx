@@ -55,8 +55,10 @@ import { SearchProvider } from '../../context/search-provider'
 import { server } from '../../test/setup'
 import {
   usageReportQuotasKey,
+  usageReportQuotasQueryOptions,
   type UsageReportResponse,
 } from './api/usage-report'
+import { DateControls } from './components/date-controls'
 // ─────────────────────────────────────────────────────────────────────────────
 // Wave 5 / S4-T5 / S4-20: usageReportQuotasKey factory used in both index + phosphor
 // ─────────────────────────────────────────────────────────────────────────────
@@ -204,8 +206,17 @@ function registerTokenTrendSummaryHandler(
 ): void {
   server.use(
     http.get('/api/shell/reports/usage/token-trend-summary', ({ request }) => {
-      onRequest?.(request.url)
-      return HttpResponse.json({ tokenTrendHours: [], tokenTrendVersions: [] })
+      const parsedUrl = new URL(request.url)
+      onRequest?.(parsedUrl.toString())
+      return HttpResponse.json({
+        metadata: {
+          from: parsedUrl.searchParams.get('from') ?? '2026-04-19',
+          to: parsedUrl.searchParams.get('to') ?? '2026-05-19',
+          generatedAt: '2026-05-19T00:00:00.000Z',
+        },
+        tokenTrendHours: [],
+        tokenTrendVersions: [],
+      })
     })
   )
 }
@@ -260,6 +271,32 @@ function renderWithProviders(
   Component: React.ComponentType
 ): ReturnType<typeof render> {
   const client = makeClient()
+  const rootRoute = createRootRoute({ component: Component })
+  const router = createRouter({
+    routeTree: rootRoute,
+    history: createMemoryHistory({ initialEntries: ['/'] }),
+    context: { queryClient: client },
+  })
+
+  return render(
+    <QueryClientProvider client={client}>
+      <DirectionProvider>
+        <SearchProvider>
+          <LayoutProvider>
+            <SidebarProvider>
+              <RouterProvider router={router} />
+            </SidebarProvider>
+          </LayoutProvider>
+        </SearchProvider>
+      </DirectionProvider>
+    </QueryClientProvider>
+  )
+}
+
+function renderWithClient(
+  Component: React.ComponentType,
+  client: QueryClient
+): ReturnType<typeof render> {
   const rootRoute = createRootRoute({ component: Component })
   const router = createRouter({
     routeTree: rootRoute,
@@ -487,8 +524,23 @@ describe('Dashboard — TCG-2: cold-load render path', () => {
     })
     server.use(
       http.get('/api/shell/reports/usage', ({ request }) => {
-        usageUrls.push(request.url)
-        return HttpResponse.json(MOCK_REPORT)
+        const parsedUrl = new URL(request.url)
+        const hasCacheBust = parsedUrl.searchParams.has('cache_bust')
+        const usageGeneratedAt = hasCacheBust
+          ? '2026-05-19T00:00:10.000Z'
+          : '2026-05-19T00:00:00.000Z'
+        usageUrls.push(parsedUrl.toString())
+        return HttpResponse.json({
+          ...MOCK_REPORT,
+          metadata: {
+            ...MOCK_REPORT.metadata,
+            generatedAt: usageGeneratedAt,
+          },
+          summary: {
+            ...MOCK_REPORT.summary,
+            token_total: hasCacheBust ? 3_200 : 1_500,
+          },
+        })
       })
     )
     server.use(
@@ -506,8 +558,9 @@ describe('Dashboard — TCG-2: cold-load render path', () => {
       )
     )
 
+    const client = makeClient()
     const Dashboard = await importDashboard()
-    renderWithProviders(Dashboard)
+    renderWithClient(Dashboard, client)
 
     await waitFor(
       () => {
@@ -524,6 +577,29 @@ describe('Dashboard — TCG-2: cold-load render path', () => {
       { timeout: 3000 }
     )
     const quotaHistoryRequestsBeforeRefresh = quotaHistoryUrls.length
+    const usageBaseQueryKey = client
+      .getQueryCache()
+      .getAll()
+      .find(
+        (query) =>
+          Array.isArray(query.queryKey) &&
+          query.queryKey[0] === 'usage-report-phosphor'
+      )?.queryKey
+    expect(usageBaseQueryKey).toBeDefined()
+    await waitFor(
+      () => {
+        expect(
+          (
+            client.getQueryData(
+              usageBaseQueryKey as
+                | (string | number | boolean | undefined | null)[]
+                | undefined
+            ) as { metadata?: { generatedAt?: string } } | undefined
+          )?.metadata?.generatedAt
+        ).toBe('2026-05-19T00:00:00.000Z')
+      },
+      { timeout: 5000 }
+    )
 
     fireEvent.click(screen.getByLabelText('Force refresh dashboard data'))
 
@@ -545,6 +621,10 @@ describe('Dashboard — TCG-2: cold-load render path', () => {
       },
       { timeout: 3000 }
     )
+    const cacheBust = usageUrls
+      .map((url) => new URL(url).searchParams.get('cache_bust'))
+      .find((value): value is string => value !== null)
+    expect(cacheBust).toBeDefined()
     expect(quotaRangeUrls).toHaveLength(0)
     expect(quotaHistoryUrls).toHaveLength(quotaHistoryRequestsBeforeRefresh)
     expect(
@@ -552,6 +632,270 @@ describe('Dashboard — TCG-2: cold-load render path', () => {
         new URL(url).searchParams.has('cache_bust')
       )
     ).toBe(false)
+    await waitFor(
+      () => {
+        const refreshedUsage = usageBaseQueryKey
+          ? (client.getQueryData(
+              usageBaseQueryKey as
+                | (string | number | boolean | undefined | null)[]
+                | undefined
+            ) as
+              | {
+                  metadata?: { generatedAt?: string }
+                  summary?: { token_total?: number }
+                }
+              | undefined)
+          : undefined
+        expect(refreshedUsage?.metadata?.generatedAt).toBe(
+          '2026-05-19T00:00:10.000Z'
+        )
+        expect(refreshedUsage?.summary?.token_total).toBe(3_200)
+      },
+      { timeout: 5000 }
+    )
+    const tokenTrendRefreshedQueries = client
+      .getQueryCache()
+      .getAll()
+      .filter(
+        (query) =>
+          Array.isArray(query.queryKey) &&
+          query.queryKey[0] === 'usage-report-token-trend-summary' &&
+          cacheBust !== undefined &&
+          query.queryKey.includes(cacheBust) &&
+          query.state.data !== undefined
+      )
+    expect(tokenTrendRefreshedQueries).toHaveLength(1)
+  })
+
+  test('test_custom_date_range_not_overwritten_by_default_range_interval', async () => {
+    const usageUrls: string[] = []
+    registerTokenTrendSummaryHandler()
+    const intervalHandlers: Array<() => void> = []
+    server.use(
+      http.get('/api/shell/reports/usage', ({ request }) => {
+        usageUrls.push(request.url)
+        return HttpResponse.json(MOCK_REPORT)
+      })
+    )
+    server.use(
+      http.get('/api/shell/reports/quotas', () =>
+        HttpResponse.json({
+          metadata: {
+            generatedAt: '2026-05-19T00:00:00.000Z',
+            latestRecordAt: null,
+            latestRecordAgeMinutes: null,
+            latestRecordStale: false,
+            staleRecordThresholdMinutes: 60,
+          },
+          quotas: [],
+        })
+      )
+    )
+
+    const Dashboard = await importDashboard()
+    const originalSetInterval = window.setInterval
+    const setIntervalSpy = vi.spyOn(window, 'setInterval')
+    setIntervalSpy.mockImplementation(
+      (callback: TimerHandler, timeout?: number, ...args: unknown[]) => {
+        if (timeout === 60_000) {
+          intervalHandlers.push(callback as () => void)
+        }
+        return originalSetInterval(
+          callback,
+          timeout ?? 0,
+          ...args
+        ) as unknown as ReturnType<typeof window.setInterval>
+      }
+    )
+
+    try {
+      renderWithProviders(Dashboard)
+
+      await waitFor(
+        () => {
+          expect(
+            screen.getByRole('heading', { name: 'STATUS' })
+          ).toBeInTheDocument()
+        },
+        { timeout: 5000 }
+      )
+
+      fireEvent.change(screen.getByLabelText(/from/i), {
+        target: { value: '2025-02-01' },
+      })
+      fireEvent.change(screen.getByLabelText(/^to$/i), {
+        target: { value: '2025-02-07' },
+      })
+      fireEvent.click(screen.getByRole('button', { name: /apply/i }))
+
+      await waitFor(
+        () => {
+          const lastUsageUrl = usageUrls[usageUrls.length - 1]
+          expect(lastUsageUrl).toBeDefined()
+          const parsed = new URL(lastUsageUrl)
+          expect(parsed.searchParams.get('from')).toBe('2025-02-01')
+          expect(parsed.searchParams.get('to')).toBe('2025-02-07')
+        },
+        { timeout: 3000 }
+      )
+
+      const callsBeforeSync = usageUrls.length
+      const lastUsageUrlBeforeSync = usageUrls[usageUrls.length - 1]
+
+      await act(async () => {
+        intervalHandlers.forEach((handler) => handler())
+      })
+
+      expect(usageUrls).toHaveLength(callsBeforeSync)
+      expect(usageUrls[usageUrls.length - 1]).toBe(lastUsageUrlBeforeSync)
+    } finally {
+      setIntervalSpy.mockRestore()
+    }
+  })
+
+  test('test_default_owned_date_range_advances_after_eastern_day_change', async () => {
+    const usageUrls: string[] = []
+    registerTokenTrendSummaryHandler()
+    const intervalHandlers: Array<() => void> = []
+    server.use(
+      http.get('/api/shell/reports/usage', ({ request }) => {
+        usageUrls.push(request.url)
+        return HttpResponse.json(MOCK_REPORT)
+      })
+    )
+    server.use(
+      http.get('/api/shell/reports/quotas', () =>
+        HttpResponse.json({
+          metadata: {
+            generatedAt: '2026-05-19T00:00:00.000Z',
+            latestRecordAt: null,
+            latestRecordAgeMinutes: null,
+            latestRecordStale: false,
+            staleRecordThresholdMinutes: 60,
+          },
+          quotas: [],
+        })
+      )
+    )
+
+    const Dashboard = await importDashboard()
+    const originalSetInterval = window.setInterval
+    const setIntervalSpy = vi.spyOn(window, 'setInterval')
+    const originalDate = Date
+    const setDateNow = (value: Date): (() => void) => {
+      const nextMs = value.getTime()
+      class MockDate extends originalDate {
+        constructor(...args: unknown[]) {
+          if (args.length === 0) {
+            return new originalDate(nextMs) as Date
+          }
+          return new originalDate(
+            ...(args as Parameters<typeof originalDate>)
+          ) as Date
+        }
+      }
+
+      const mockedDate = MockDate as unknown as typeof Date
+      mockedDate.now = () => nextMs
+      globalThis.Date = mockedDate
+      return () => {
+        globalThis.Date = originalDate
+      }
+    }
+    const beforeMidnight = new Date('2026-06-14T03:59:00Z')
+    const afterMidnight = new Date('2026-06-14T04:01:00Z')
+    const beforeDefaultRange = {
+      from: addDaysToDateString(formatDashboardDate(beforeMidnight), -30),
+      to: addDaysToDateString(formatDashboardDate(beforeMidnight), 1),
+    }
+    const afterDefaultRange = {
+      from: addDaysToDateString(formatDashboardDate(afterMidnight), -30),
+      to: addDaysToDateString(formatDashboardDate(afterMidnight), 1),
+    }
+    let restoreDate = setDateNow(beforeMidnight)
+
+    setIntervalSpy.mockImplementation(
+      (callback: TimerHandler, timeout?: number, ...args: unknown[]) => {
+        if (timeout === 60_000) {
+          intervalHandlers.push(callback as () => void)
+        }
+        return originalSetInterval(
+          callback,
+          timeout ?? 0,
+          ...args
+        ) as unknown as ReturnType<typeof window.setInterval>
+      }
+    )
+    try {
+      renderWithProviders(Dashboard)
+
+      await act(async () => {
+        await Promise.resolve()
+      })
+
+      await waitFor(
+        () => {
+          const lastUsageUrl = usageUrls[usageUrls.length - 1]
+          expect(lastUsageUrl).toBeDefined()
+          const parsed = new URL(lastUsageUrl)
+          expect(parsed.searchParams.get('from')).toBe(beforeDefaultRange!.from)
+          expect(parsed.searchParams.get('to')).toBe(beforeDefaultRange!.to)
+        },
+        { timeout: 3000 }
+      )
+
+      const callsBeforeAdvance = usageUrls.length
+      restoreDate()
+      restoreDate = setDateNow(afterMidnight)
+      act(() => {
+        intervalHandlers.forEach((handler) => handler())
+      })
+
+      await waitFor(
+        () => {
+          const lastUsageUrl = usageUrls[usageUrls.length - 1]
+          const parsed = new URL(lastUsageUrl)
+          expect(usageUrls).toHaveLength(callsBeforeAdvance + 1)
+          expect(parsed.searchParams.get('from')).toBe(afterDefaultRange.from)
+          expect(parsed.searchParams.get('to')).toBe(afterDefaultRange.to)
+        },
+        { timeout: 3000 }
+      )
+    } finally {
+      setIntervalSpy.mockRestore()
+      restoreDate()
+    }
+  })
+
+  test('test_date_controls_syncs_local_inputs_when_parent_initial_props_change', () => {
+    const onRangeChange = vi.fn()
+    const { rerender } = render(
+      <DateControls
+        initialFrom='2026-01-01'
+        initialTo='2026-01-15'
+        onRangeChange={onRangeChange}
+      />
+    )
+
+    const fromInput = screen.getByLabelText(/from/i) as HTMLInputElement
+    const toInput = screen.getByLabelText(/to/i) as HTMLInputElement
+
+    expect(fromInput).toHaveValue('2026-01-01')
+    expect(toInput).toHaveValue('2026-01-15')
+
+    rerender(
+      <DateControls
+        initialFrom='2026-02-01'
+        initialTo='2026-02-10'
+        onRangeChange={onRangeChange}
+      />
+    )
+
+    const nextFromInput = screen.getByLabelText(/from/i) as HTMLInputElement
+    const nextToInput = screen.getByLabelText(/to/i) as HTMLInputElement
+
+    expect(nextFromInput).toHaveValue('2026-02-01')
+    expect(nextToInput).toHaveValue('2026-02-10')
   })
 
   test('test_dashboard_shortcut_keys_switch_tabs_and_focus_controls', async () => {
@@ -1023,6 +1367,112 @@ describe('Dashboard — S4-21/S4-22: refresh handlers and cache key discipline',
 
     // Must NOT have triggered more than 1 fetch per click (double-trigger bug)
     expect(quotaFetchUrls.length).toBe(1)
+  })
+
+  test('test_quota_refresh_fetches_cache_bust_payload_and_writes_base_cache', async () => {
+    const quotaUrls: string[] = []
+    let quotaFetchCount = 0
+
+    server.use(
+      http.get('/api/shell/reports/usage', () => HttpResponse.json(MOCK_REPORT))
+    )
+    server.use(
+      http.get('/api/shell/reports/quotas', ({ request }) => {
+        const parsedUrl = new URL(request.url)
+        quotaFetchCount += 1
+        quotaUrls.push(parsedUrl.toString())
+        return HttpResponse.json({
+          metadata: {
+            generatedAt:
+              quotaFetchCount === 1
+                ? '2026-05-19T00:00:00.000Z'
+                : '2026-05-19T00:00:10.000Z',
+            latestRecordAt: null,
+            latestRecordAgeMinutes: null,
+            latestRecordStale: false,
+            staleRecordThresholdMinutes: 60,
+          },
+          quotas: [],
+        })
+      })
+    )
+    registerTokenTrendSummaryHandler()
+
+    const baseQuotaQueryKey = usageReportQuotasQueryOptions({}).queryKey
+    const Dashboard = await importDashboard()
+    const client = makeClient()
+    renderWithClient(Dashboard, client)
+
+    await waitFor(
+      () => {
+        const cached = client.getQueryData(baseQuotaQueryKey)
+        const metadata = (
+          cached as { metadata?: { generatedAt?: string } } | undefined
+        )?.metadata
+        expect(metadata?.generatedAt).toBe('2026-05-19T00:00:00.000Z')
+      },
+      { timeout: 5_000 }
+    )
+
+    await waitFor(
+      () => {
+        expect(
+          screen.getByRole('button', { name: /refresh provider data/i })
+        ).not.toBeDisabled()
+      },
+      { timeout: 5_000 }
+    )
+
+    quotaUrls.length = 0
+    fireEvent.click(
+      screen.getByRole('button', { name: /refresh provider data/i })
+    )
+
+    await waitFor(
+      () => {
+        expect(quotaUrls).toHaveLength(1)
+      },
+      { timeout: 3_000 }
+    )
+
+    const refreshBust = quotaUrls.find((url) =>
+      new URL(url).searchParams.get('cache_bust')
+    )
+    const refreshBustValue = refreshBust
+      ? new URL(refreshBust).searchParams.get('cache_bust')
+      : null
+    expect(refreshBustValue).toBeTruthy()
+
+    await waitFor(
+      () => {
+        expect(
+          (
+            client.getQueryData(baseQuotaQueryKey) as {
+              metadata?: { generatedAt?: string }
+            }
+          )?.metadata?.generatedAt
+        ).toBe('2026-05-19T00:00:10.000Z')
+      },
+      { timeout: 3_000 }
+    )
+
+    const quotaQueries = client
+      .getQueryCache()
+      .getAll()
+      .filter(
+        (query) =>
+          Array.isArray(query.queryKey) &&
+          query.queryKey[0] === 'usage-report-quotas' &&
+          query.state.data !== undefined
+      )
+    expect(quotaQueries).toHaveLength(1)
+
+    if (refreshBustValue !== null) {
+      const hasCacheBustQuery = quotaQueries.some((query) =>
+        (query.queryKey as unknown[]).includes(refreshBustValue)
+      )
+      expect(hasCacheBustQuery).toBe(false)
+    }
   })
 
   test('test_cacheBust_not_in_quotas_query_key_on_regular_refetch', async () => {

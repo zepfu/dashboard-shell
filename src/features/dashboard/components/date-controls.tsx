@@ -11,7 +11,7 @@
  *
  * Apply is disabled until both inputs match YYYY-MM-DD format.
  */
-import { useState, type ReactElement, type ChangeEvent } from 'react'
+import { useState, type ChangeEvent, type ReactElement } from 'react'
 
 interface DateControlsProps {
   initialFrom?: string
@@ -32,11 +32,15 @@ function isValidDateOnly(value: string): boolean {
 /**
  * DateControls renders From/To date inputs with an Apply button.
  */
-export function DateControls({
+function DateControlsState({
   initialFrom = '',
   initialTo = '',
   onRangeChange,
-}: DateControlsProps): ReactElement {
+}: {
+  initialFrom: string
+  initialTo: string
+  onRangeChange: (from: string, to: string) => void
+}): ReactElement {
   const [from, setFrom] = useState(initialFrom)
   const [to, setTo] = useState(initialTo)
 
@@ -117,5 +121,22 @@ export function DateControls({
         </span>
       )}
     </div>
+  )
+}
+
+export function DateControls({
+  initialFrom = '',
+  initialTo = '',
+  onRangeChange,
+}: DateControlsProps): ReactElement {
+  const rangeKey = JSON.stringify([initialFrom, initialTo])
+
+  return (
+    <DateControlsState
+      key={rangeKey}
+      initialFrom={initialFrom}
+      initialTo={initialTo}
+      onRangeChange={onRangeChange}
+    />
   )
 }
