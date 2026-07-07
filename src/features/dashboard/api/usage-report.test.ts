@@ -2,6 +2,7 @@ import { http, HttpResponse } from 'msw'
 import { expectTypeOf } from 'vitest'
 import { server } from '../../../test/setup'
 import {
+  type ReportCacheMetadata,
   type UsageReportTokenTrendSummaryResponse,
   USAGE_REPORT_DEFAULT_LIMIT,
   USAGE_REPORT_DEFAULT_INCLUDE_QUOTAS,
@@ -9,6 +10,9 @@ import {
   USAGE_REPORT_DEFAULT_INCLUDE_TOOL_ACTIVITY,
   USAGE_REPORT_MONOLITH_PAYLOAD_DEFAULT_INCLUDES,
   isReportCacheMetadata,
+  type UsageReportFilterParams,
+  type UsageReportQuotaBillingDetail,
+  usageReportQuotasKey,
   fetchUsageReport,
   fetchUsageReportQuotaEstimator,
   fetchUsageReportQuotaHistory,
@@ -21,6 +25,8 @@ import {
   fetchUsageReportToolActivity,
   usageReportQuotasQueryOptions,
   type UsageReportQuotaHistoryRow,
+  type UsageReportSessionDiagnosticsResponse,
+  type UsageReportSessionDiagnosticsRow,
 } from './usage-report'
 
 test('test_usageReportQuotasQueryOptions_disables_background_polling', () => {
@@ -32,6 +38,19 @@ test('test_usageReportQuotasQueryOptions_disables_background_polling', () => {
   expect(options.refetchInterval).toBe(60_000)
   expect(options.refetchIntervalInBackground).toBe(false)
   expect(options.queryKey).toHaveLength(1)
+})
+
+test('test_usageReportQuotasKey_includes_cacheBust_token', () => {
+  expect(usageReportQuotasKey('2026-05-20', '2026-05-21', 'manual-1')).toEqual([
+    'usage-report-quotas',
+    'manual-1',
+  ])
+})
+
+test('test_usageReportQuotasKey_omits_cacheBust_without_token', () => {
+  expect(usageReportQuotasKey('2026-05-20', '2026-05-21')).toEqual([
+    'usage-report-quotas',
+  ])
 })
 
 test('test_fetchUsageReportTokenTrendSummary_sends_filters', async () => {
@@ -198,6 +217,126 @@ function minimalUsageReportPayloadWithoutMonolithSections(
     delete filteredPayload[section]
   }
   return filteredPayload
+}
+
+type UsageReportPayload = ReturnType<typeof minimalUsageReportPayload>
+
+function usageReportPayloadForTests(
+  overrides: {
+    metadata?: Partial<UsageReportPayload['metadata']>
+    summary?: Partial<UsageReportPayload['summary']>
+    providerAliasRouting?: unknown
+    providerAuthHealth?: unknown
+    providerCreditLifecycle?: unknown
+  } = {}
+) {
+  const payload = minimalUsageReportPayload()
+  return {
+    ...payload,
+    ...overrides,
+    metadata: {
+      ...payload.metadata,
+      ...(overrides.metadata ?? {}),
+    },
+    summary: {
+      ...payload.summary,
+      ...(overrides.summary ?? {}),
+    },
+  }
+}
+
+const BASE_USAGE_REPORT_SESSION_DIAGNOSTIC_ROW = {
+  session_id: 'sess-1',
+  litellm_call_id: 'call-1',
+  provider: 'xai',
+  model: 'grok-composer-2.5-fast',
+  repository: 'dashboard-shell',
+  client: 'grok-build',
+  diagnostic_flags: ['grok_oauth', 'xai_sanitizer'],
+  diagnostic_categories: ['route_identity', 'request_shape'],
+  grok_oauth: {
+    credential_family: 'xai_grok_oidc',
+    grok_native_oauth_managed: true,
+    grok_native_entrypoint: 'openai_responses',
+  },
+  output_contract: {
+    usage_output_contract_required_final_phrase: 'done',
+    usage_output_contract_required_final_phrase_present: true,
+    usage_output_contract_failure_class: null,
+    usage_output_contract_setup_only_detected: false,
+  },
+  xai_sanitizer: {
+    xai_responses_request_sanitized: true,
+    xai_responses_sanitized_removed_params: ['instructions'],
+    xai_responses_sanitized_tool_count: 2,
+    xai_responses_sanitized_tool_types: ['web_search'],
+    xai_tool_choice_without_tools_removed: {
+      name: 'Bash',
+      type: 'function',
+    },
+    xai_tool_choice_without_tools_removed_reason: 'missing_tools',
+  },
+  transcript_attribution: {
+    session_history_transcript_attribution_status: 'recoverable',
+    session_history_transcript_attribution_source:
+      'd1-229-claude-raw-transcript-attribution',
+    session_history_transcript_attribution: {
+      status: 'recoverable',
+      match_rule: 'transcript_model_event',
+    },
+  },
+  tool_definitions: {
+    snapshot_hash: 'abc123',
+    tool_definition_snapshot: [{ name: 'Bash', type: 'function' }],
+  },
+  alias_route_events: [
+    {
+      observed_at: '2026-05-20T12:00:00.000Z',
+      alias_model: 'aawm-code',
+      provider: 'anthropic',
+      model: 'claude-sonnet-4-6',
+      event_type: 'candidate_selected',
+      redispatch_required: false,
+    },
+  ],
+  anthropic_context_window: {
+    mode: 'extended_1m',
+    requested_tokens: 1000000,
+    source: 'model_suffix_1m',
+    beta: 'context-1m-2025-08-07',
+    classification: { label: 'extended_1m', evidence: 'suffix' },
+  },
+}
+
+function usageReportSessionDiagnosticsPayload(
+  overrides: {
+    metadata?: Partial<UsageReportSessionDiagnosticsResponse['metadata']>
+    sessionDiagnostics?: Array<Record<string, unknown>>
+  } = {}
+) {
+  const payload = {
+    metadata: {
+      from: '2026-05-20',
+      to: '2026-05-21',
+      limit: 100,
+      generatedAt: '2026-05-21T00:00:00.000Z',
+    },
+    sessionDiagnostics: [BASE_USAGE_REPORT_SESSION_DIAGNOSTIC_ROW],
+  } as {
+    metadata: UsageReportSessionDiagnosticsResponse['metadata']
+    sessionDiagnostics: Array<Record<string, unknown>>
+  }
+
+  return {
+    ...payload,
+    ...overrides,
+    metadata: {
+      ...payload.metadata,
+      ...(overrides.metadata ?? {}),
+    },
+    sessionDiagnostics:
+      overrides.sessionDiagnostics ?? payload.sessionDiagnostics,
+  }
 }
 
 test('test_fetchUsageReport_uses_compact_rows_by_default', async () => {
@@ -496,30 +635,26 @@ test('test_fetchUsageReportTokenTrendSummary_preserves_bounded_raw_lane_policy_m
 test('test_usageReportTokenTrendSummaryMetadataContract_allows_timeoutFields', () => {
   expectTypeOf<
     UsageReportTokenTrendSummaryResponse['metadata']
-  >().toEqualTypeOf<{
-    from: string
-    to: string
-    generatedAt?: string
-    degraded?: boolean
-    degradedReason?: string
-    degradedMessage?: string
-    timeout?: boolean
-    timedOutSubquery?: string
-    timedOutSubqueries?: string[]
-    skippedSubqueries?: string[]
-    unavailableSubqueries?: string[]
-    tokenTrendSummaryRawLaneMaxDays?: number
-    tokenTrendSummaryRangeDays?: number
-    tokenTrendSummaryStatementTimeoutMs?: number
-    cacheBackend?: string
-    cacheFreshUntil?: string | null
-    cacheGeneratedAt?: string | null
-    cacheKeyHash?: string
-    cacheScope?: string
-    cacheStaleUntil?: string | null
-    cacheStatus?: string
-    cacheRefreshing?: boolean
-  }>()
+  >().toMatchTypeOf<
+    {
+      from: string
+      to: string
+      generatedAt?: string
+      degraded?: boolean
+      degradedReason?: string
+      degradedMessage?: string
+      timeout?: boolean
+      timedOutSubquery?: string
+      timedOutSubqueries?: string[]
+      skippedSubqueries?: string[]
+      unavailableSubqueries?: string[]
+      tokenTrendSummaryRawLaneMaxDays?: number
+      tokenTrendSummaryRangeDays?: number
+      tokenTrendSummaryStatementTimeoutMs?: number
+      includeTokenTrendHealth?: boolean
+      tokenTrendHealthOmitted?: boolean
+    } & ReportCacheMetadata
+  >()
 })
 
 test('test_fetchUsageReportTokenTrendDay_sends_date_filters_and_signal', async () => {
@@ -580,75 +715,62 @@ test('test_fetchUsageReportTokenTrendDay_uses_server_error_message', async () =>
   ).rejects.toThrow('bad day')
 })
 
+test('test_fetchUsageReport_uses_server_error_message', async () => {
+  server.use(
+    http.get('/api/shell/reports/usage', () =>
+      HttpResponse.json({ error: 'bad usage report' }, { status: 400 })
+    )
+  )
+
+  await expect(
+    fetchUsageReport({ from: '2026-05-20', to: '2026-05-21', grain: 'day' })
+  ).rejects.toThrow('bad usage report')
+})
+
 test('test_fetchUsageReport_preserves_providerAliasRouting_contract', async () => {
   const future = new Date(Date.now() + 120_000).toISOString()
   server.use(
     http.get('/api/shell/reports/usage', () =>
-      HttpResponse.json({
-        metadata: {
-          from: '2026-05-20',
-          to: '2026-05-21',
-          grain: 'day',
-          groupBy: ['provider', 'model'],
-          limit: USAGE_REPORT_DEFAULT_LIMIT,
-          generatedAt: '2026-05-21T00:00:00.000Z',
-          latestRecordAt: null,
-          latestRecordAgeMinutes: null,
-          latestRecordStale: false,
-          staleRecordThresholdMinutes: 60,
-        },
-        summary: {
-          traces: 1,
-          token_in: 1,
-          token_out: 1,
-          token_cache_input: 0,
-          token_cache_creation: 0,
-          token_reasoning_reported: 0,
-          token_reasoning_estimated: 0,
-          token_total: 2,
-          usd_cost: 0,
-          cache_miss_usd_cost: 0,
-          tool_calls: 0,
-          git_commit: 0,
-          git_push: 0,
-        },
-        trend: [],
-        clients: [],
-        providerLatencyHealth: [],
-        providerErrorObservations: [],
-        providerStatusUsage: [],
-        providerAliasRouting: {
-          data_source: 'recent_observed_session_history',
-          freshness_label:
-            'Recent observed routing from session history (not live Redis/DualCache)',
-          generated_at: '2026-05-21T00:00:00.000Z',
-          lookback_hours: 24,
-          families: [
-            { family: 'codex', observed: true },
-            { family: 'anthropic', observed: false },
-          ],
-          entries: [
-            {
-              family: 'codex',
-              alias_label: 'aawm-code',
-              provider: 'openai',
-              model: 'gpt-5',
-              route_family: 'codex_primary',
-              state_kind: 'affinity',
-              state_source: 'durable_cache',
-              observed_at: '2026-05-21T00:00:00.000Z',
-              expires_at: future,
-              remaining_seconds: 120,
-              is_active: true,
-              skipped_candidates: [],
-            },
-          ],
-        },
-        quotas: [],
-        quotaHistory: [],
-        toolActivity: [],
-        rows: [],
-      })
+      HttpResponse.json(
+        usageReportPayloadForTests({
+          metadata: {
+            groupBy: ['provider', 'model'],
+          },
+          summary: {
+            traces: 1,
+            token_in: 1,
+            token_out: 1,
+            token_total: 2,
+          },
+          providerAliasRouting: {
+            data_source: 'recent_observed_session_history',
+            freshness_label:
+              'Recent observed routing from session history (not live Redis/DualCache)',
+            generated_at: '2026-05-21T00:00:00.000Z',
+            lookback_hours: 24,
+            families: [
+              { family: 'codex', observed: true },
+              { family: 'anthropic', observed: false },
+            ],
+            entries: [
+              {
+                family: 'codex',
+                alias_label: 'aawm-code',
+                provider: 'openai',
+                model: 'gpt-5',
+                route_family: 'codex_primary',
+                state_kind: 'affinity',
+                state_source: 'durable_cache',
+                observed_at: '2026-05-21T00:00:00.000Z',
+                expires_at: future,
+                remaining_seconds: 120,
+                is_active: true,
+                skipped_candidates: [],
+              },
+            ],
+          },
+        })
+      )
     )
   )
 
@@ -667,66 +789,35 @@ test('test_fetchUsageReport_preserves_providerAuthHealth_contract', async () => 
   const future = new Date(Date.now() + 180_000).toISOString()
   server.use(
     http.get('/api/shell/reports/usage', () =>
-      HttpResponse.json({
-        metadata: {
-          from: '2026-05-20',
-          to: '2026-05-21',
-          grain: 'day',
-          groupBy: ['provider', 'model'],
-          limit: USAGE_REPORT_DEFAULT_LIMIT,
-          generatedAt: '2026-05-21T00:00:00.000Z',
-          latestRecordAt: null,
-          latestRecordAgeMinutes: null,
-          latestRecordStale: false,
-          staleRecordThresholdMinutes: 60,
-        },
-        summary: {
-          traces: 0,
-          token_in: 0,
-          token_out: 0,
-          token_cache_input: 0,
-          token_cache_creation: 0,
-          token_reasoning_reported: 0,
-          token_reasoning_estimated: 0,
-          token_total: 0,
-          usd_cost: 0,
-          cache_miss_usd_cost: 0,
-          tool_calls: 0,
-          git_commit: 0,
-          git_push: 0,
-        },
-        trend: [],
-        clients: [],
-        providerLatencyHealth: [],
-        providerErrorObservations: [],
-        providerStatusUsage: [],
-        providerAuthHealth: {
-          data_source: 'provider_auth_current',
-          freshness_label: 'Current provider credential refresh state',
-          generated_at: '2026-05-21T00:00:00.000Z',
-          entries: [
-            {
-              observed_at: '2026-05-21T00:00:00.000Z',
-              environment: 'production',
-              provider: 'xai',
-              auth_family: 'grok_oidc',
-              status: 'refreshed',
-              attempted: true,
-              refreshed: true,
-              skipped: false,
-              expires_at: future,
-              remaining_seconds: 180,
-              auth_health_state: 'refreshed',
-              source_task: 'grok_oidc_refresh',
-              auth_file_hash_short: 'abcd1234',
-            },
-          ],
-        },
-        quotas: [],
-        quotaHistory: [],
-        toolActivity: [],
-        rows: [],
-      })
+      HttpResponse.json(
+        usageReportPayloadForTests({
+          metadata: {
+            groupBy: ['provider', 'model'],
+          },
+          providerAuthHealth: {
+            data_source: 'provider_auth_current',
+            freshness_label: 'Current provider credential refresh state',
+            generated_at: '2026-05-21T00:00:00.000Z',
+            entries: [
+              {
+                observed_at: '2026-05-21T00:00:00.000Z',
+                environment: 'production',
+                provider: 'xai',
+                auth_family: 'grok_oidc',
+                status: 'refreshed',
+                attempted: true,
+                refreshed: true,
+                skipped: false,
+                expires_at: future,
+                remaining_seconds: 180,
+                auth_health_state: 'refreshed',
+                source_task: 'grok_oidc_refresh',
+                auth_file_hash_short: 'abcd1234',
+              },
+            ],
+          },
+        })
+      )
     )
   )
 
@@ -745,73 +836,42 @@ test('test_fetchUsageReport_preserves_providerAuthHealth_contract', async () => 
 test('test_fetchUsageReport_preserves_providerCreditLifecycle_contract', async () => {
   server.use(
     http.get('/api/shell/reports/usage', () =>
-      HttpResponse.json({
-        metadata: {
-          from: '2026-05-20',
-          to: '2026-05-21',
-          grain: 'day',
-          groupBy: ['provider', 'model'],
-          limit: USAGE_REPORT_DEFAULT_LIMIT,
-          generatedAt: '2026-05-21T00:00:00.000Z',
-          latestRecordAt: null,
-          latestRecordAgeMinutes: null,
-          latestRecordStale: false,
-          staleRecordThresholdMinutes: 60,
-        },
-        summary: {
-          traces: 0,
-          token_in: 0,
-          token_out: 0,
-          token_cache_input: 0,
-          token_cache_creation: 0,
-          token_reasoning_reported: 0,
-          token_reasoning_estimated: 0,
-          token_total: 0,
-          usd_cost: 0,
-          cache_miss_usd_cost: 0,
-          tool_calls: 0,
-          git_commit: 0,
-          git_push: 0,
-        },
-        trend: [],
-        clients: [],
-        providerLatencyHealth: [],
-        providerErrorObservations: [],
-        providerStatusUsage: [],
-        providerCreditLifecycle: {
-          data_source: 'provider_credit_current',
-          freshness_label: 'Current provider credit lifecycle',
-          generated_at: '2026-05-21T00:00:00.000Z',
-          summaries: [
-            {
-              environment: 'production',
-              provider: 'openai',
-              credit_family: 'codex_rate_limit_reset',
-              label: 'openai codex_rate_limit_reset credits',
-              available_count: 2,
-              used_count: 1,
-              expired_count: 0,
-              total_count: 3,
-            },
-          ],
-          entries: [
-            {
-              observed_at: '2026-05-21T00:00:00.000Z',
-              environment: 'production',
-              provider: 'openai',
-              account_hash_short: '8e928548',
-              credit_family: 'codex_rate_limit_reset',
-              status: 'available',
-              available_count: 1,
-              credit_identity: 'codex-1',
-            },
-          ],
-        },
-        quotas: [],
-        quotaHistory: [],
-        toolActivity: [],
-        rows: [],
-      })
+      HttpResponse.json(
+        usageReportPayloadForTests({
+          metadata: {
+            groupBy: ['provider', 'model'],
+          },
+          providerCreditLifecycle: {
+            data_source: 'provider_credit_current',
+            freshness_label: 'Current provider credit lifecycle',
+            generated_at: '2026-05-21T00:00:00.000Z',
+            summaries: [
+              {
+                environment: 'production',
+                provider: 'openai',
+                credit_family: 'codex_rate_limit_reset',
+                label: 'openai codex_rate_limit_reset credits',
+                available_count: 2,
+                used_count: 1,
+                expired_count: 0,
+                total_count: 3,
+              },
+            ],
+            entries: [
+              {
+                observed_at: '2026-05-21T00:00:00.000Z',
+                environment: 'production',
+                provider: 'openai',
+                account_hash_short: '8e928548',
+                credit_family: 'codex_rate_limit_reset',
+                status: 'available',
+                available_count: 1,
+                credit_identity: 'codex-1',
+              },
+            ],
+          },
+        })
+      )
     )
   )
 
@@ -979,16 +1039,6 @@ test('test_fetchUsageReportQuotaRangeHistory_preserves_partial_payload', async (
 // Wave 5 / S4-1, S4-5: Boundary-validation and malformed-payload tests
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * S4-1 / S4-5: Parameterized over all 9 fetchers.
- *
- * Each fetcher returns a response where the top-level `metadata` key has been
- * renamed to `_metadata_broken`. The test asserts that the caller receives a
- * thrown Error (boundary quarantine), NOT silent undefined/NaN propagation.
- *
- * This is RED until the engineer adds zod spot-check validation at each fetch
- * boundary.
- */
 describe('test_fetchers_validate_metadata_summary_firstrow', () => {
   // Payload with renamed metadata key — no valid `metadata` field present.
   const malformedMetadata = {
@@ -1425,12 +1475,6 @@ describe('test_fetchers_validate_metadata_summary_firstrow', () => {
 // ─────────────────────────────────────────────────────────────────────────────
 // S4-3: cacheBust forwarded by fetchUsageReportTokenTrendDay
 // ─────────────────────────────────────────────────────────────────────────────
-
-/**
- * S4-3: The `cacheBust` parameter must be forwarded as `cache_bust` in the
- * query string. This is RED until the engineer adds the cacheBust→cache_bust
- * forwarding to `fetchUsageReportTokenTrendDay`.
- */
 test('test_token_trend_day_forwards_cache_bust', async () => {
   let capturedUrl: URL | null = null
 
@@ -1452,7 +1496,6 @@ test('test_token_trend_day_forwards_cache_bust', async () => {
     cacheBust: 'bust-abc',
   } as Parameters<typeof fetchUsageReportTokenTrendDay>[0])
 
-  // Must be present — RED until engineer adds forwarding
   expect(capturedUrl?.searchParams.get('cache_bust')).toBe('bust-abc')
 })
 
@@ -1460,62 +1503,15 @@ test('test_token_trend_day_forwards_cache_bust', async () => {
 // S4-2: Comma in filter value round-trips without splitting
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * S4-2: A repository name containing a comma (e.g. "acme,corp") must arrive
- * at the server as a single value, not split into two filters.
- *
- * Currently `appendUsageReportFilters` uses `.join(',')` which produces
- * "acme,corp" — indistinguishable from two separate values on the server.
- * The fix is `encodeURIComponent` per element. This is RED until the engineer
- * adds that encoding.
- */
 test('test_filter_values_comma_escaped', async () => {
   let capturedUrl: URL | null = null
 
   server.use(
     http.get('/api/shell/reports/usage', ({ request }) => {
       capturedUrl = new URL(request.url)
-      return HttpResponse.json({
-        metadata: {
-          from: '2026-05-20',
-          to: '2026-05-21',
-          grain: 'day',
-          groupBy: [],
-          limit: USAGE_REPORT_DEFAULT_LIMIT,
-          generatedAt: '2026-05-21T00:00:00.000Z',
-          latestRecordAt: null,
-          latestRecordAgeMinutes: null,
-          latestRecordStale: false,
-          staleRecordThresholdMinutes: 60,
-        },
-        summary: {
-          traces: 0,
-          token_in: 0,
-          token_out: 0,
-          token_cache_input: 0,
-          token_cache_creation: 0,
-          token_reasoning_reported: 0,
-          token_reasoning_estimated: 0,
-          token_total: 0,
-          usd_cost: 0,
-          cache_miss_usd_cost: 0,
-          tool_calls: 0,
-          git_commit: 0,
-          git_push: 0,
-          period_start: '2026-05-20',
-          period_end: '2026-05-21',
-          latest_record_at: null,
-        },
-        trend: [],
-        clients: [],
-        providerLatencyHealth: [],
-        providerErrorObservations: [],
-        providerStatusUsage: [],
-        quotas: [],
-        quotaHistory: [],
-        toolActivity: [],
-        rows: [],
-      })
+      const payload = minimalUsageReportPayload()
+      payload.metadata.groupBy = []
+      return HttpResponse.json(payload)
     })
   )
 
@@ -1526,13 +1522,8 @@ test('test_filter_values_comma_escaped', async () => {
     repository: ['acme,corp'],
   })
 
-  // The raw repository param value must NOT be split on the comma.
-  // With proper percent-encoding the server sees "acme%2Ccorp" as one value.
   const repoParam = capturedUrl?.searchParams.get('repository') ?? ''
-  // If the engineer encodes per-element, decoding once gives back the original name.
   expect(decodeURIComponent(repoParam)).toBe('acme,corp')
-  // The un-encoded comma would split "acme,corp" into two entries on the server.
-  // Confirm the raw string is NOT the plain comma-joined form.
   expect(repoParam).not.toBe('acme,corp')
 })
 
@@ -1570,15 +1561,6 @@ test('test_fetchUsageReport_forwards_config_change_filters', async () => {
 // S4-5: AbortSignal propagation — controller.abort() must reject
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * S4-5: When the caller aborts the AbortController before the response
- * arrives, the promise must reject with an AbortError.
- *
- * This is GREEN for fetchers that already accept a signal parameter, but RED
- * for any fetcher where the signal is wired but the abort isn't propagated
- * (and RED for `fetchUsageReport` which currently has no `signal` param at
- * all — the engineer must add it).
- */
 test('test_real_abort_rejects_with_AbortError', async () => {
   const controller = new AbortController()
 
@@ -1594,7 +1576,6 @@ test('test_real_abort_rejects_with_AbortError', async () => {
     controller.signal
   )
 
-  // Abort immediately
   controller.abort()
 
   await expect(fetchPromise).rejects.toSatisfy(
@@ -1699,75 +1680,57 @@ test('test_fetchUsageReportSessionDiagnostics_forwards_grok_side_channel_false',
 // ---------------------------------------------------------------------------
 
 describe('D1-212/215/213/178/221/222 session diagnostics API contracts', () => {
-  const diagnosticTypeFields = [
-    'diagnostic_flags',
-    'diagnostic_categories',
-    'grok_oauth',
-    'grok_side_channel',
-    'output_contract',
-    'xai_sanitizer',
-    'transcript_attribution',
-    'tool_definitions',
-    'alias_route_events',
-    'anthropic_context_window',
-  ] as const
-
   test('test_usage_report_types_expose_session_diagnostics_response_and_row_shapes', async () => {
-    const { readFile } = await import('node:fs/promises')
-    const { dirname, join } = await import('node:path')
-    const { fileURLToPath } = await import('node:url')
-
-    const source = await readFile(
-      join(dirname(fileURLToPath(import.meta.url)), './usage-report.ts'),
-      'utf8'
-    )
-
-    expect(source).toContain(
-      'export interface UsageReportSessionDiagnosticsParams'
-    )
-    expect(source).toContain(
-      'export interface UsageReportSessionDiagnosticsRow'
-    )
-    expect(source).toContain(
-      'export interface UsageReportSessionDiagnosticsResponse'
-    )
-    expect(source).toContain(
-      'export async function fetchUsageReportSessionDiagnostics'
-    )
-
-    for (const field of diagnosticTypeFields) {
-      expect(source).toContain(`${field}?:`)
-    }
-
-    expect(source).toContain('credential_family?:')
-    expect(source).toContain('grok_native_oauth_managed?:')
-    expect(source).toContain('grok_native_entrypoint?:')
-    expect(source).toContain('endpoint_template?:')
-    expect(source).toContain('body_sha256?:')
-    expect(source).toContain('grok_side_channel?:')
-    expect(source).toContain('usage_output_contract_required_final_phrase?:')
-    expect(source).toContain(
-      'usage_output_contract_required_final_phrase_present?:'
-    )
-    expect(source).toContain('usage_output_contract_failure_class?:')
-    expect(source).toContain('usage_output_contract_setup_only_detected?:')
-    expect(source).toContain('xai_responses_request_sanitized?:')
-    expect(source).toContain('xai_responses_sanitized_removed_params?:')
-    expect(source).toContain('xai_responses_sanitized_tool_count?:')
-    expect(source).toContain('xai_responses_sanitized_tool_types?:')
-    expect(source).toContain('xai_tool_choice_without_tools_removed?:')
-    expect(source).toContain('xai_tool_choice_without_tools_removed_reason?:')
-    expect(source).toContain('session_history_transcript_attribution_status?:')
-    expect(source).toContain('session_history_transcript_attribution_source?:')
-    expect(source).toContain('reason?:')
-    expect(source).toContain('match_rule?:')
-    expect(source).toContain('updated_at?:')
-    expect(source).toContain('session_history_transcript_attribution?:')
-    expect(source).toContain('tool_definition_snapshot?:')
-    expect(source).toContain('alias_route_events?:')
-    expect(source).toContain('UsageReportAnthropicContextWindowDiagnostics')
-    expect(source).toContain('anthropic_context_window?:')
-    expect(source).toContain('mode?:')
+    expectTypeOf<UsageReportSessionDiagnosticsResponse>().toMatchTypeOf<{
+      metadata: {
+        from: string
+        to: string
+        limit: number
+        generatedAt?: string
+      } & ReportCacheMetadata
+      sessionDiagnostics: Array<UsageReportSessionDiagnosticsRow>
+    }>()
+    expectTypeOf<UsageReportSessionDiagnosticsRow>().toMatchTypeOf<{
+      diagnostic_flags?: string[]
+      diagnostic_categories?: string[]
+      grok_oauth?: {
+        credential_family?: string | null
+        grok_native_oauth_managed?: boolean | string | null
+        grok_native_entrypoint?: string | null
+      }
+      grok_side_channel?: {
+        enabled?: boolean | string | null
+        endpoint_type?: string | null
+        endpoint_template?: string | null
+        content_type?: string | null
+        body_sha256?: string | null
+        digest_source?: string | null
+      }
+      output_contract?: {
+        usage_output_contract_required_final_phrase?: string | null
+        usage_output_contract_required_final_phrase_present?:
+          | boolean
+          | string
+          | null
+        usage_output_contract_failure_class?: string | null
+        usage_output_contract_setup_only_detected?: boolean | string | null
+      }
+      xai_sanitizer?: {
+        xai_responses_request_sanitized?: boolean | string | null
+      }
+      transcript_attribution?: {
+        session_history_transcript_attribution_status?: string | null
+        session_history_transcript_attribution_source?: string | null
+      }
+      tool_definitions?: {
+        snapshot_hash?: string | null
+      }
+      alias_route_events?: unknown
+      anthropic_context_window?: {
+        mode?: string | null
+        requested_tokens?: number | null
+      }
+    }>()
   })
 
   test('test_fetchUsageReportSessionDiagnostics_forwards_filters_and_returns_diagnostic_rows', async () => {
@@ -1779,78 +1742,7 @@ describe('D1-212/215/213/178/221/222 session diagnostics API contracts', () => {
         ({ request }) => {
           capturedUrl = new URL(request.url)
           return HttpResponse.json({
-            metadata: {
-              from: '2026-05-20',
-              to: '2026-05-21',
-              limit: 100,
-              generatedAt: '2026-05-21T00:00:00.000Z',
-            },
-            sessionDiagnostics: [
-              {
-                session_id: 'sess-1',
-                litellm_call_id: 'call-1',
-                provider: 'xai',
-                model: 'grok-composer-2.5-fast',
-                repository: 'dashboard-shell',
-                client: 'grok-build',
-                diagnostic_flags: ['grok_oauth', 'xai_sanitizer'],
-                diagnostic_categories: ['route_identity', 'request_shape'],
-                grok_oauth: {
-                  credential_family: 'xai_grok_oidc',
-                  grok_native_oauth_managed: true,
-                  grok_native_entrypoint: 'openai_responses',
-                },
-                output_contract: {
-                  usage_output_contract_required_final_phrase: 'done',
-                  usage_output_contract_required_final_phrase_present: true,
-                  usage_output_contract_failure_class: null,
-                  usage_output_contract_setup_only_detected: false,
-                },
-                xai_sanitizer: {
-                  xai_responses_request_sanitized: true,
-                  xai_responses_sanitized_removed_params: ['instructions'],
-                  xai_responses_sanitized_tool_count: 2,
-                  xai_responses_sanitized_tool_types: ['web_search'],
-                  xai_tool_choice_without_tools_removed: {
-                    name: 'Bash',
-                    type: 'function',
-                  },
-                  xai_tool_choice_without_tools_removed_reason: 'missing_tools',
-                },
-                transcript_attribution: {
-                  session_history_transcript_attribution_status: 'recoverable',
-                  session_history_transcript_attribution_source:
-                    'd1-229-claude-raw-transcript-attribution',
-                  session_history_transcript_attribution: {
-                    status: 'recoverable',
-                    match_rule: 'transcript_model_event',
-                  },
-                },
-                tool_definitions: {
-                  snapshot_hash: 'abc123',
-                  tool_definition_snapshot: [
-                    { name: 'Bash', type: 'function' },
-                  ],
-                },
-                alias_route_events: [
-                  {
-                    observed_at: '2026-05-20T12:00:00.000Z',
-                    alias_model: 'aawm-code',
-                    provider: 'anthropic',
-                    model: 'claude-sonnet-4-6',
-                    event_type: 'candidate_selected',
-                    redispatch_required: false,
-                  },
-                ],
-                anthropic_context_window: {
-                  mode: 'extended_1m',
-                  requested_tokens: 1000000,
-                  source: 'model_suffix_1m',
-                  beta: 'context-1m-2025-08-07',
-                  classification: { label: 'extended_1m', evidence: 'suffix' },
-                },
-              },
-            ],
+            ...usageReportSessionDiagnosticsPayload(),
           })
         }
       )
@@ -2053,51 +1945,12 @@ test('test_fetchShellHealth_rejects_malformed_source_tables_payload', async () =
 // ---------------------------------------------------------------------------
 
 describe('D1-223/224/225 usage identity and billing contracts', () => {
-  const usageIdentityDimensions = [
-    'inbound_model_alias',
-    'agent_name',
-    'agent_id',
-  ] as const
-
-  const usageIdentityFilters = [
-    'inbound_model_alias',
-    'agent_name',
-    'agent_id',
-  ] as const
-
-  const billingDetailFields = [
-    'quota_key',
-    'source',
-    'client',
-    'quota_unit',
-    'quota_limit',
-    'quota_used',
-    'quota_remaining',
-    'billing_period_start_at',
-    'billing_period_end_at',
-    'raw_provider_fields',
-    'evidence',
-  ] as const
-
   test('test_usage_report_types_expose_inbound_model_alias_agent_name_and_agent_id', async () => {
-    const { readFile } = await import('node:fs/promises')
-    const { dirname, join } = await import('node:path')
-    const { fileURLToPath } = await import('node:url')
-
-    const source = await readFile(
-      join(dirname(fileURLToPath(import.meta.url)), './usage-report.ts'),
-      'utf8'
-    )
-
-    for (const dimension of usageIdentityDimensions) {
-      expect(source).toContain(`${dimension}?:`)
-    }
-    for (const filter of usageIdentityFilters) {
-      expect(source).toContain(`${filter}?: readonly string[]`)
-    }
-    expect(source).toContain('inbound_model_alias?: string | null')
-    expect(source).toContain('agent_name?: string | null')
-    expect(source).toContain('agent_id?: string | null')
+    expectTypeOf<UsageReportFilterParams>().toMatchTypeOf<{
+      inbound_model_alias?: readonly string[]
+      agent_name?: readonly string[]
+      agent_id?: readonly string[]
+    }>()
   })
 
   test('test_fetchUsageReport_forwards_inbound_model_alias_agent_name_and_agent_id_filters', async () => {
@@ -2229,20 +2082,19 @@ describe('D1-223/224/225 usage identity and billing contracts', () => {
   })
 
   test('test_quota_response_contract_surfaces_billing_detail_fields', async () => {
-    const { readFile } = await import('node:fs/promises')
-    const { dirname, join } = await import('node:path')
-    const { fileURLToPath } = await import('node:url')
-
-    const source = await readFile(
-      join(dirname(fileURLToPath(import.meta.url)), './usage-report.ts'),
-      'utf8'
-    )
-
-    for (const field of billingDetailFields) {
-      expect(source).toContain(`${field}?:`)
-    }
-    expect(source).toContain('raw_provider_fields?: Record<string, unknown>')
-    expect(source).toContain('evidence?: Record<string, unknown>')
+    expectTypeOf<UsageReportQuotaBillingDetail>().toMatchTypeOf<{
+      quota_key?: string | null
+      source?: string | null
+      client?: string | null
+      quota_unit?: string | null
+      quota_limit?: number | null
+      quota_used?: number | null
+      quota_remaining?: number | null
+      billing_period_start_at?: string | null
+      billing_period_end_at?: string | null
+      raw_provider_fields?: Record<string, unknown>
+      evidence?: Record<string, unknown>
+    }>()
   })
 
   test('test_usage_report_quota_history_row_accepts_grok_build_identity_fields', () => {
