@@ -16,8 +16,17 @@
  */
 import { render, screen, fireEvent } from '@testing-library/react'
 import { vi } from 'vitest'
-import { type UsageReportToolActivityRow } from '../api/usage-report'
+import {
+  type UsageReportProviderLatencyHealthRow,
+  type UsageReportProviderStatusUsageRow,
+  type UsageReportQuotaRow,
+  type UsageReportRow,
+  type UsageReportToolActivityRow,
+  type UsageReportTrendRow,
+} from '../api/usage-report'
+import { buildModelRows } from '../lib/ledger-rows'
 import { providerBrandHex } from '../lib/usage-report-display'
+import { aggregateRows } from './master-ledger-aggregation'
 import {
   formatLedgerModelDisplayName,
   modelFamilyForRow,
@@ -2871,4 +2880,313 @@ test('test_master_ledger_table_memo_no_rerender_on_stable_props', () => {
   // DOM must be identical (no re-render side-effects, no row reorder, no flicker).
   const afterHTML = container.querySelector('tbody')?.innerHTML ?? ''
   expect(afterHTML).toBe(initialHTML)
+})
+
+// ---------------------------------------------------------------------------
+// Wave 2 D1-449 fork-review remediation (2-a) — production-path RED tests
+// ---------------------------------------------------------------------------
+
+const PERIOD_START = '2026-06-01T00:00:00Z'
+const PERIOD_END = '2026-06-04T00:00:00Z'
+
+function minimalStatusRow(
+  model: string,
+  overrides: Partial<UsageReportProviderStatusUsageRow> = {}
+): UsageReportProviderStatusUsageRow {
+  return {
+    provider: 'anthropic',
+    model,
+    traces: 10,
+    token_total: 1000,
+    usd_cost: 1,
+    period_start: PERIOD_START,
+    period_end: PERIOD_END,
+    upstream_p50_ms: null,
+    upstream_p95_ms: null,
+    upstream_p99_ms: null,
+    total_p95_ms: null,
+    proxy_processing_p95_ms: null,
+    missing_upstream_latency: 0,
+    provider_error_events: 0,
+    rate_limit_events: 0,
+    capacity_events: 0,
+    provider_5xx_events: 0,
+    provider_timeout_events: 0,
+    network_error_events: 0,
+    auth_failed_events: 0,
+    adapter_error_events: 0,
+    ...overrides,
+  }
+}
+
+function minimalUsageRow(
+  model: string,
+  repository: string,
+  overrides: Partial<UsageReportRow> = {}
+): UsageReportRow {
+  return {
+    bucket: PERIOD_START,
+    provider: 'anthropic',
+    model,
+    repository,
+    token_in: 600,
+    token_out: 400,
+    token_total: 1000,
+    token_cache_input: 0,
+    token_cache_creation: 0,
+    token_reasoning_reported: 0,
+    token_reasoning_estimated: 0,
+    usd_cost: 1,
+    traces: 10,
+    weekly_reset_first: null,
+    weekly_reset_last: null,
+    min_weekly_pct: null,
+    max_weekly_pct: null,
+    short_reset_first: null,
+    short_reset_last: null,
+    min_short_pct: null,
+    max_short_pct: null,
+    weekly_reset_special_first: null,
+    weekly_reset_special_last: null,
+    min_weekly_pct_special: null,
+    max_weekly_pct_special: null,
+    short_reset_special_first: null,
+    short_reset_special_last: null,
+    min_short_pct_special: null,
+    max_short_pct_special: null,
+    tool_calls: null,
+    git_commit: null,
+    git_push: null,
+    litellm_processing_total_ms: null,
+    litellm_processing_average_ms: null,
+    llm_upstream_elapsed_total_ms: null,
+    llm_upstream_elapsed_average_ms: null,
+    cache_miss_usd_cost: null,
+    ...overrides,
+  }
+}
+
+function minimalTrendRow(
+  bucket: string,
+  model: string,
+  repository: string,
+  tokenTotal: number
+): UsageReportTrendRow {
+  return {
+    bucket,
+    provider: 'anthropic',
+    model,
+    repository,
+    traces: 1,
+    token_total: tokenTotal,
+    usd_cost: 0.1,
+  }
+}
+
+function errPctColumnIndex(container: HTMLElement): number {
+  const headers = Array.from(container.querySelectorAll('thead th'))
+  const index = headers.findIndex((th) =>
+    /^err%$/i.test((th.textContent ?? '').trim())
+  )
+  expect(index).toBeGreaterThanOrEqual(0)
+  return index
+}
+
+test('test_buildModelRows_populates_sparkBuckets_aligned_to_trend_buckets', () => {
+  const model = 'claude-opus-4-7'
+  const trendRows: UsageReportTrendRow[] = [
+    minimalTrendRow('2026-06-01', model, 'dashboard-shell', 100),
+    minimalTrendRow('2026-06-02', model, 'dashboard-shell', 200),
+  ]
+
+  const built = buildModelRows(
+    [minimalStatusRow(model)],
+    [] as UsageReportProviderLatencyHealthRow[],
+    [minimalUsageRow(model, 'dashboard-shell')],
+    [] as UsageReportQuotaRow[],
+    trendRows
+  )
+
+  expect(built).toHaveLength(1)
+  const row = built[0]
+  expect(row.spark).toEqual([100, 200])
+  expect(row.sparkBuckets).toBeDefined()
+  expect(row.sparkBuckets).toEqual(['2026-06-01', '2026-06-02'])
+  expect(row.sparkBuckets).toHaveLength(row.spark?.length ?? 0)
+})
+
+test('test_buildModelRows_model_spark_sums_per_bucket_not_per_repository', () => {
+  const model = 'claude-opus-4-7'
+  const bucket = '2026-06-02'
+  const trendRows: UsageReportTrendRow[] = [
+    minimalTrendRow(bucket, model, 'dashboard-shell', 40),
+    minimalTrendRow(bucket, model, 'aawm-tap', 60),
+  ]
+
+  const built = buildModelRows(
+    [minimalStatusRow(model)],
+    [] as UsageReportProviderLatencyHealthRow[],
+    [
+      minimalUsageRow(model, 'dashboard-shell'),
+      minimalUsageRow(model, 'aawm-tap'),
+    ],
+    [] as UsageReportQuotaRow[],
+    trendRows
+  )
+
+  expect(built[0].spark).toEqual([100])
+  expect(built[0].spark).toHaveLength(1)
+})
+
+test('test_aggregate_sparkline_bucket_aligned_end_to_end_from_buildModelRows', () => {
+  const opus = 'claude-opus-4-7'
+  const sonnet = 'claude-sonnet-4-5'
+  const trendRows: UsageReportTrendRow[] = [
+    minimalTrendRow('2026-06-01', sonnet, 'dashboard-shell', 100),
+    minimalTrendRow('2026-06-02', opus, 'dashboard-shell', 200),
+    minimalTrendRow('2026-06-02', sonnet, 'dashboard-shell', 50),
+    minimalTrendRow('2026-06-03', opus, 'dashboard-shell', 300),
+    minimalTrendRow('2026-06-03', sonnet, 'dashboard-shell', 75),
+  ]
+
+  const modelRows = buildModelRows(
+    [minimalStatusRow(opus), minimalStatusRow(sonnet)],
+    [] as UsageReportProviderLatencyHealthRow[],
+    [
+      minimalUsageRow(opus, 'dashboard-shell'),
+      minimalUsageRow(sonnet, 'dashboard-shell'),
+    ],
+    [] as UsageReportQuotaRow[],
+    trendRows
+  )
+
+  const providerAggregate = aggregateRows(modelRows, {
+    ledgerLevel: 'provider',
+    ledgerId: 'provider:anthropic',
+    ledgerLabel: 'Anthropic',
+    providerKey: 'anthropic',
+    childCount: modelRows.length,
+    exactModelCount: modelRows.length,
+    isExpandable: true,
+  })
+
+  expect(providerAggregate.spark).toEqual([100, 250, 375])
+})
+
+test('test_repository_view_renders_no_data_for_errors_not_zero_pct', () => {
+  const model = 'claude-opus-4-7'
+  const built = buildModelRows(
+    [minimalStatusRow(model)],
+    [] as UsageReportProviderLatencyHealthRow[],
+    [
+      minimalUsageRow(model, 'dashboard-shell'),
+      minimalUsageRow(model, 'aawm-tap'),
+    ],
+    [] as UsageReportQuotaRow[],
+    []
+  )
+
+  const { container } = render(
+    <MasterLedgerTable rows={built} ledgerView='repository' />
+  )
+
+  const errIndex = errPctColumnIndex(container)
+  const repositoryRootRow = Array.from(
+    container.querySelectorAll('tbody tr')
+  ).find((row) =>
+    (row as HTMLElement).querySelector('[data-ledger-level="repository"]')
+  )
+  expect(repositoryRootRow).toBeDefined()
+
+  const errCell = repositoryRootRow!.querySelectorAll('td')[errIndex] as
+    | HTMLElement
+    | undefined
+  expect(errCell).toBeDefined()
+  expect(errCell!.textContent?.trim()).toBe('—')
+  expect(errCell!.textContent).not.toContain('0.0%')
+})
+
+test('test_family_reset_order_curated_opus_sonnet_haiku', () => {
+  const rows = [
+    {
+      ...mockRows[0],
+      model: 'claude-haiku-4-5',
+      provider: 'anthropic',
+    },
+    {
+      ...mockRows[0],
+      model: 'claude-opus-4-7',
+      provider: 'anthropic',
+    },
+    {
+      ...mockRows[0],
+      model: 'claude-sonnet-4-5',
+      provider: 'anthropic',
+    },
+  ]
+
+  render(<MasterLedgerTable rows={rows} />)
+  expandLedger('Anthropic', 'provider')
+
+  const familyLabels = Array.from(document.querySelectorAll('tbody tr'))
+    .filter((row) =>
+      (row as HTMLElement).querySelector('[data-ledger-level="family"]')
+    )
+    .map((row) => {
+      const btn = (row as HTMLElement).querySelector(
+        'button[aria-label*="family rows"]'
+      )
+      const aria = btn?.getAttribute('aria-label') ?? ''
+      const match = /(?:Expand|Collapse)\s+(.+?)\s+family\s+rows/i.exec(aria)
+      return match?.[1] ?? ''
+    })
+
+  expect(familyLabels).toEqual(['Opus', 'Sonnet', 'Haiku'])
+})
+
+test('test_errpct_tooltip_does_not_claim_repo_scoping_on_repo_view_model_row', () => {
+  const model = 'claude-opus-4-7'
+  const observations: ProviderErrorObservation[] = [
+    makeErrorObs(
+      'anthropic',
+      model,
+      '2026-06-12T10:00:00.000Z',
+      529,
+      'capacity_exhausted',
+      'unknown'
+    ),
+  ]
+
+  const { container } = render(
+    <MasterLedgerTable
+      rows={[
+        {
+          ...mockRows[0],
+          model,
+          provider: 'anthropic',
+          error_pct: 12,
+          requests: 100,
+          repositoryChildren: [
+            {
+              ...mockRows[0],
+              model: 'dashboard-shell',
+              provider: 'anthropic',
+              error_pct: 12,
+              requests: 40,
+            },
+          ],
+        },
+      ]}
+      ledgerView='repository'
+      errorObservations={observations}
+    />
+  )
+
+  expandLedger('dashboard-shell', 'repository')
+  expandLedger('Anthropic', 'provider')
+  expandLedger('Opus', 'family')
+
+  openLazyHoverTooltipsIn(container)
+  expect(screen.getByText(/most recent error/i)).toBeInTheDocument()
+  expect(screen.queryByText('(scoped to: dashboard-shell)')).toBeNull()
 })
