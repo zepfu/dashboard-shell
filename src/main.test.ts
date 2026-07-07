@@ -38,23 +38,27 @@ describe('QueryClient retry predicate (Wave 2 M1)', () => {
     const makeError = (status: number) =>
       Object.assign(new Error(`HTTP ${status}`), { status })
 
-    expect(shouldRetryQuery!(0, makeError(401))).toBe(false)
-    expect(shouldRetryQuery!(0, makeError(403))).toBe(false)
-    expect(shouldRetryQuery!(0, makeError(404))).toBe(false)
-
-    expect(shouldRetryQuery!(0, makeError(408))).toBe(true)
-    expect(shouldRetryQuery!(0, makeError(429))).toBe(true)
-    expect(shouldRetryQuery!(0, makeError(500))).toBe(true)
-    expect(shouldRetryQuery!(2, makeError(503))).toBe(true)
-    expect(shouldRetryQuery!(3, makeError(502))).toBe(true)
-    expect(shouldRetryQuery!(4, makeError(500))).toBe(false)
-
     const originalDev = import.meta.env.DEV
+    const originalProd = import.meta.env.PROD
     try {
+      ;(import.meta.env as { DEV: boolean }).DEV = false
+      ;(import.meta.env as { PROD: boolean }).PROD = true
+
+      expect(shouldRetryQuery!(0, makeError(401))).toBe(false)
+      expect(shouldRetryQuery!(0, makeError(403))).toBe(false)
+      expect(shouldRetryQuery!(0, makeError(404))).toBe(false)
+
+      expect(shouldRetryQuery!(0, makeError(408))).toBe(true)
+      expect(shouldRetryQuery!(0, makeError(429))).toBe(true)
+      expect(shouldRetryQuery!(0, makeError(500))).toBe(true)
+      expect(shouldRetryQuery!(2, makeError(503))).toBe(true)
+      expect(shouldRetryQuery!(3, makeError(502))).toBe(true)
+      expect(shouldRetryQuery!(4, makeError(500))).toBe(false)
       ;(import.meta.env as { DEV: boolean }).DEV = true
       expect(shouldRetryQuery!(0, makeError(500))).toBe(false)
     } finally {
       ;(import.meta.env as { DEV: boolean }).DEV = originalDev
+      ;(import.meta.env as { PROD: boolean }).PROD = originalProd
     }
   })
 })
