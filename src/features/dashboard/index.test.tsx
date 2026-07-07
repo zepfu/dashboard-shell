@@ -193,6 +193,41 @@ function makeClient(): QueryClient {
   })
 }
 
+/** Mirrors `defaultDateRange()` + PhosphorDashboard prior-window math for MSW. */
+function expectedUsageReportWindows(now = new Date()): {
+  priorFrom: string
+  priorTo: string
+} {
+  const today = formatDashboardDate(now)
+  const currentFrom = addDaysToDateString(today, -30)
+  const currentTo = addDaysToDateString(today, 1)
+  const periodDays = Math.max(
+    1,
+    Math.round(
+      (new Date(currentTo).getTime() - new Date(currentFrom).getTime()) /
+        86_400_000
+    )
+  )
+  const priorTo = currentFrom
+  const priorFrom = new Date(
+    new Date(currentFrom).getTime() - periodDays * 86_400_000
+  )
+    .toISOString()
+    .slice(0, 10)
+  return { priorFrom, priorTo }
+}
+
+function isPriorUsageReportRequest(
+  from: string | null,
+  to: string | null
+): boolean {
+  if (from === null || to === null) {
+    return false
+  }
+  const { priorFrom, priorTo } = expectedUsageReportWindows()
+  return from === priorFrom && to === priorTo
+}
+
 function registerTokenTrendSummaryHandler(
   onRequest?: (url: string) => void
 ): void {
@@ -1207,8 +1242,9 @@ describe('Dashboard — S4-T9: kpiDeltas /100 handshake at wide viewport', () =>
         http.get('/api/shell/reports/usage', ({ request }) => {
           const url = new URL(request.url)
           const from = url.searchParams.get('from')
+          const to = url.searchParams.get('to')
           priorRequestCount += 1
-          if (from !== null && from < '2026-04-19') {
+          if (isPriorUsageReportRequest(from, to)) {
             return HttpResponse.json({
               ...MOCK_REPORT,
               summary: { ...MOCK_REPORT.summary, ...priorSummary },
@@ -1680,7 +1716,8 @@ describe('Dashboard — D1-436: heavy query polling guardrails', () => {
     expect(sidebarQuotaQueries).toHaveLength(0)
     expect(quotasCallCount).toBe(1)
 
-    fireEvent.click(screen.getByRole('tab', { name: /quota history/i }))
+    const statusTabs = screen.getByRole('tablist', { name: 'Status view' })
+    fireEvent.click(within(statusTabs).getByRole('tab', { name: 'Quota' }))
 
     await waitFor(
       () => {
