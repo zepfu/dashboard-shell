@@ -11,6 +11,7 @@
  *   formatResetDistance — ISO → relative distance string
  *   modelBrandHex — model name → brand hex via modelToProviderKey
  */
+import { usageReportQuotasKey } from '../api/usage-report'
 import {
   addDaysToDateString,
   canonicalProvider,
@@ -606,30 +607,28 @@ describe('formatModelDisplayName', () => {
 
 describe('wave37 — quota query-key dedup contract', () => {
   /**
-   * Regression guard: the query key used by index.tsx must exactly match the
-   * key used by PhosphorDashboard's internal query so React Query can
-   * deduplicate both subscribers into a single cache entry.
+   * Regression guard: production query-key contract for quota lookups.
    *
-   * SF-1 / W37-1: index.tsx and PhosphorDashboard previously disagreed on
-   * the quota key shape. D1-436 aligns Dashboard, PhosphorDashboard, and the
-   * shell sidebar on the live global `['usage-report-quotas']` key.
+   * SF-1 / W37-1: these keys must remain stable as
+   * `['usage-report-quotas']` so all consumers coalesce onto a single cache key.
    */
-  const PHOSPHOR_KEY_PREFIX = 'usage-report-quotas'
-
-  test('test_quota_key_prefix_is_usage_report_quotas', () => {
-    // The shared key prefix ('usage-report-quotas') must match the string that
-    // PhosphorDashboard's internal query uses. This guards against renaming one
-    // side without updating the other.
-    const indexTsxKey = [PHOSPHOR_KEY_PREFIX]
-    const phosphorKey = [PHOSPHOR_KEY_PREFIX]
-    expect(indexTsxKey).toEqual(phosphorKey)
+  test('test_quota_key_contract_is_usage_report_quotas', () => {
+    expect(usageReportQuotasKey()).toEqual(['usage-report-quotas'])
   })
 
   test('test_quota_key_must_not_use_legacy_shell_suffix', () => {
     // The old key 'usage-report-quotas-shell' is NOT the live shared key and
     // must not be used by sidebar or dashboard callers.
     const legacyKey = 'usage-report-quotas-shell'
-    expect(legacyKey).not.toBe(PHOSPHOR_KEY_PREFIX)
+    const sharedQuotaKey = usageReportQuotasKey()
+    expect(sharedQuotaKey[0]).not.toBe(legacyKey)
+  })
+
+  test('test_quota_key_appends_cache_bust_token_when_provided', () => {
+    expect(usageReportQuotasKey(undefined, undefined, 'cache-bust')).toEqual([
+      'usage-report-quotas',
+      'cache-bust',
+    ])
   })
 })
 
