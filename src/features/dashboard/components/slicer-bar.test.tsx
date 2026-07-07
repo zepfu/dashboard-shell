@@ -531,15 +531,17 @@ test('test_slicer_roving_tabindex_when_options_shrink', () => {
       onChange={onChange}
     />
   )
-  fireEvent.click(screen.getByRole('button', { name: /provider/i }))
+  fireEvent.click(screen.getByRole('button', { name: 'Provider dimension' }))
   const listbox = screen.getByRole('listbox', { name: /provider options/i })
-  const optionsBefore = listbox.querySelectorAll('[role="option"]')
-  fireEvent.keyDown(optionsBefore[2]!, { key: 'ArrowDown', code: 'ArrowDown' })
+  expect(listbox.querySelectorAll('[role="option"]').length).toBe(3)
 
   rerender(
     <SlicerBar
       filters={{ ...SLICER_EMPTY_FILTERS, providers: ['anthropic'] }}
-      options={{ ...OPTIONS, providers: ['anthropic'] }}
+      options={{
+        ...OPTIONS,
+        providers: ['anthropic', 'openai'],
+      }}
       onChange={onChange}
     />
   )

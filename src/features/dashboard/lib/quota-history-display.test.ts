@@ -36,11 +36,10 @@ describe('D1-451 C1 — quotaHistoryFillColor aligns with iv-* / legend scale', 
     const fill = quotaHistoryFillColor(consumed)
     const ivHex = ivHexForConsumed(consumed)
     const warmAccent = 'var(--accent-warm)'
-    const hotAccent = 'var(--accent-hot)'
 
     expect(quotaHistoryConsumedPct({ min_remaining_pct: 40 } as never)).toBe(60)
     expect(fill).not.toBe(warmAccent)
-    expect(fill).toBe(hotAccent)
+    expect(fill.toLowerCase()).toBe(ivHex.toLowerCase())
     expect(ivHex).toBe('#cc3838')
   })
 

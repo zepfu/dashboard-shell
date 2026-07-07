@@ -236,7 +236,9 @@ test('test_aggregate_card_invalid_tool_calls_hot_path_reachable', () => {
       fleetActivity={{ ...baseFleetActivity, invalidToolCalls: 4 }}
     />
   )
-  expect(container.querySelector('.fleet-activity-row.invalid')).not.toBeNull()
+  const invalidRow = container.querySelector('.fleet-activity-row.invalid')
+  expect(invalidRow).not.toBeNull()
   expect(container.querySelector('.pulse-dot')).not.toBeNull()
-  expect(screen.getByText('4', { exact: false })).toBeInTheDocument()
+  const invalidValue = invalidRow?.querySelector('dd.value')
+  expect(invalidValue?.textContent).toBe('4')
 })
