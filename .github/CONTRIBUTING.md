@@ -61,8 +61,11 @@ Thank you for considering contributing to **shadcn-admin**! Every contribution i
 > **Tips!** Before submitting your changes, run the following commands:
 
 ```bash
-pnpm lint && pnpm format && pnpm knip && pnpm build
+pnpm lint && pnpm format && pnpm build
 ```
+
+`pnpm knip` is a manual-only check for additional drift-signal cleanup and is not
+required as part of routine CI-equivalent validation.
 
 ---
 

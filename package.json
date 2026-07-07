@@ -7,7 +7,8 @@
   "scripts": {
     "dev": "vite",
     "dev:reports": "node --env-file-if-exists=.env server/report-service.mjs",
-    "dev:with-aawm": "AAWM_TAP_REMOTE_ENTRY=http://localhost:5173/remoteEntry.js AAWM_TAP_REMOTE_ENTRY_TYPE=module vite --host 0.0.0.0 --port 3006 --strictPort",
+    "dev:with-tap": "AAWM_TAP_REMOTE_ENTRY=http://localhost:5173/remoteEntry.js AAWM_TAP_REMOTE_ENTRY_TYPE=module vite --host 0.0.0.0 --port 3006 --strictPort",
+    "dev:with-aawm": "pnpm dev:with-tap",
     "build": "tsc -b && vite build",
     "typecheck:tests": "tsc -p tsconfig.test.json --noEmit --pretty false",
     "lint": "eslint .",
@@ -19,7 +20,7 @@
     "docker:down": "docker compose down",
     "probe:ingestion": "node scripts/probe-ingestion-durability.mjs",
     "scaffold:dashboard": "node scripts/scaffold-tap.mjs",
-    "scaffold:tap": "node scripts/scaffold-tap.mjs",
+    "scaffold:tap": "pnpm scaffold:dashboard",
     "format:check": "prettier --check .",
     "format": "prettier --write .",
     "knip": "knip",

@@ -132,8 +132,10 @@ cd ../dashboard-shell
 pnpm dev:reports
 
 cd ../dashboard-shell
-pnpm dev:with-aawm
+pnpm dev:with-tap
 ```
+
+`pnpm dev:with-tap` is the canonical remote TAP dev entrypoint. `pnpm dev:with-aawm` is retained as a compatibility alias.
 
 Run the container stack:
 
@@ -193,6 +195,8 @@ To scaffold a new remote dashboard with that baseline:
 ```bash
 pnpm scaffold:dashboard ../example-dashboard --module-id example-dashboard --name "Example" --base-path /example
 ```
+
+`pnpm scaffold:dashboard` is the canonical command. `pnpm scaffold:tap` remains as a compatibility alias.
 
 # Shadcn Admin Dashboard
 

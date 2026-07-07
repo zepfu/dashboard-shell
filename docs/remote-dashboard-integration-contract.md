@@ -265,7 +265,8 @@ pnpm dev
 
 Then point the shell at the generated `remoteEntry.js` while developing.
 
-The older `pnpm scaffold:tap` command remains as a compatibility alias.
+`pnpm scaffold:dashboard` is the canonical command; `pnpm scaffold:tap` remains
+only as a compatibility alias.
 
 ## Shell Registration Checklist
 
