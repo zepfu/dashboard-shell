@@ -432,6 +432,9 @@ export function useDashboardAlertSummary(
   const stableDockerErrors = stableDocker(dockerLogErrors)
   const stableLatencyHealth = stableLatency(providerLatencyHealth)
 
+  const nowMinuteMs =
+    now === undefined ? undefined : Math.floor(now.getTime() / 60_000) * 60_000
+
   return useMemo(
     () =>
       buildDashboardAlertSummary({
@@ -441,7 +444,7 @@ export function useDashboardAlertSummary(
         providerErrorObservations: stableProviderErrors,
         dockerLogErrors: stableDockerErrors,
         providerLatencyHealth: stableLatencyHealth,
-        now,
+        now: nowMinuteMs === undefined ? undefined : new Date(nowMinuteMs),
       }),
     [
       anomalies,
@@ -450,7 +453,7 @@ export function useDashboardAlertSummary(
       stableProviderErrors,
       stableDockerErrors,
       stableLatencyHealth,
-      now,
+      nowMinuteMs,
     ]
   )
 }
