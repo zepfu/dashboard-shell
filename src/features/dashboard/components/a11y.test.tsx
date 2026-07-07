@@ -1,19 +1,7 @@
 /**
- * Wave 7 — Accessibility (a11y) red-phase tests.
+ * Accessibility contracts — D1-451 Wave 2 W-3 (AlertsRail live region) + HealthStrip (S5-40).
  *
- * Tests ARIA attributes across Wave 2-6 components.
- * These tests fail in red phase because source files don't exist yet.
- * When Waves 2-6 implementations land, only Wave 7 tests should remain red
- * until the ARIA attributes are implemented.
- *
- * All tests expected to FAIL (red) — source components do not exist yet.
- *
- * Wave 8 (S5-40) — INVERSION of enshrined-defect test:
- *   `test_health_strip_has_aria_hidden` previously PINNED the defect by asserting
- *   the HealthStrip IS blanket aria-hidden=true. This wave inverts that test to
- *   assert the CORRECT behavior: the strip is NOT blanket aria-hidden and its
- *   tooltips are reachable by assistive technology.
- *
+ * AlertsRail a11y is covered here while W-1 disposition is delete-or-wire (not in production layout).
  */
 import { render, screen, fireEvent } from '@testing-library/react'
 import { AlertsRail } from './alerts-rail'
@@ -66,6 +54,7 @@ test('test_alerts_rail_has_aria_live', () => {
   const rail = container.firstChild as HTMLElement
   expect(rail).not.toBeNull()
   expect(rail.getAttribute('aria-live')).toBe('polite')
+  expect(rail.getAttribute('role')).toBe('log')
 })
 
 test('test_master_ledger_has_aria_label', () => {
@@ -91,9 +80,6 @@ test('test_master_ledger_has_aria_label', () => {
  * itself must be reachable by AT so that HoverTooltip content (accessible
  * issue counts, event details) can be announced when focused.
  *
- * EXPECTED FAIL (red phase): current implementation still has
- * `<div aria-hidden='true'>` as the outermost wrapper — this test correctly
- * fails until the W8 engineer removes the blanket aria-hidden.
  */
 test('test_health_strip_not_blanket_aria_hidden', () => {
   const { container } = render(<HealthStrip cells={healthCells} />)
@@ -101,8 +87,6 @@ test('test_health_strip_not_blanket_aria_hidden', () => {
   const strip = container.firstChild as HTMLElement
   expect(strip).not.toBeNull()
 
-  // EXPECTED FAIL: outermost wrapper currently has aria-hidden='true' (defect #93)
-  // After fix: the outermost element must NOT be blanket aria-hidden
   expect(strip.getAttribute('aria-hidden')).not.toBe('true')
 })
 
@@ -117,7 +101,6 @@ test('test_health_strip_not_blanket_aria_hidden', () => {
  * Specifically: the HealthStrip wrapper must not carry aria-hidden='true' even
  * when rendered with real cell data that includes tooltip content.
  *
- * EXPECTED FAIL: same root cause as above — blanket aria-hidden is still present.
  */
 test('test_health_strip_tooltip_container_reachable', () => {
   const cellsWithEvents = Array.from({ length: 288 }, (_, i) => ({
@@ -142,8 +125,6 @@ test('test_health_strip_tooltip_container_reachable', () => {
   const strip = container.firstChild as HTMLElement
   expect(strip).not.toBeNull()
 
-  // Container must NOT carry blanket aria-hidden so tooltip panels are reachable
-  // EXPECTED FAIL: current implementation has aria-hidden='true' on the wrapper
   expect(strip.getAttribute('aria-hidden')).not.toBe('true')
 })
 

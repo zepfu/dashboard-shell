@@ -1,5 +1,5 @@
 /**
- * Wave 15-D — SlicerBar interaction tests.
+ * D1-451 Wave 2 — SlicerBar (C-1, C-2, G-1, G-4, P-2).
  *
  * Component path: src/features/dashboard/components/slicer-bar.tsx
  * Exports: SlicerBar (named), SlicerFilters, SlicerOptions, SLICER_EMPTY_FILTERS
@@ -27,6 +27,7 @@ import {
   type SlicerFilters,
   type SlicerOptions,
 } from './slicer-bar'
+import { handleListboxArrowKey } from './slicer-bar-keyboard'
 
 const OPTIONS: SlicerOptions = {
   providers: ['anthropic', 'openai', 'google'],
@@ -202,14 +203,7 @@ test('test_slicer_bar_empty_options_shows_no_options_message', () => {
  * AND click on the same `<li>`. With proper `e.preventDefault()` in
  * `handleOptionKeyDown`, the click must be suppressed.
  *
- * EXPECTED FAIL: simulating keyDown(Enter) + click on the same option with
- * no intermediate state update results in onChange being called twice —
- * once to add, once to remove. The test asserts onChange is called exactly
- * once and that the result still contains the value.
- *
- * Current implementation: `handleOptionKeyDown` calls `e.preventDefault()`
- * for Enter, which in JSDOM does NOT prevent the subsequent manual click —
- * both events fire independently, so both calls go through.
+ * C-2 contract: Enter + synthetic click on the same option must net one toggle.
  */
 test('test_slicer_no_double_toggle_on_enter', () => {
   const onChange = vi.fn()
@@ -505,4 +499,156 @@ test('test_slicer_stale_chip_muted_style', () => {
     // This is the expected failure path: chip disappears without muted style.
     expect(chipAfter).not.toBeNull() // intentional fail — stale chip must exist
   }
+})
+
+// ---------------------------------------------------------------------------
+// D1-451 Wave 2 — C-1, C-2, G-1, G-4, P-2
+// ---------------------------------------------------------------------------
+
+/** C-2 — keyboard Enter must not arm click suppression that discards the next mouse click. */
+test('test_slicer_click_after_keyboard_enter_not_swallowed', () => {
+  const onChange = vi.fn()
+  renderBar({ ...SLICER_EMPTY_FILTERS }, OPTIONS, onChange)
+
+  fireEvent.click(screen.getByRole('button', { name: /provider/i }))
+  const openaiOption = screen.getByText('openai').closest('li')!
+  fireEvent.keyDown(openaiOption, { key: 'Enter', code: 'Enter' })
+  expect(onChange).toHaveBeenCalledTimes(1)
+
+  fireEvent.click(screen.getByText('google').closest('li')!)
+  expect(onChange).toHaveBeenCalledTimes(2)
+  const last = onChange.mock.calls[1]![0] as SlicerFilters
+  expect(last.providers).toContain('google')
+})
+
+/** G-1 — when options shrink, exactly one option keeps tabIndex=0 (roving tabindex). */
+test('test_slicer_roving_tabindex_when_options_shrink', () => {
+  const onChange = vi.fn()
+  const { rerender } = render(
+    <SlicerBar
+      filters={{ ...SLICER_EMPTY_FILTERS, providers: ['anthropic'] }}
+      options={OPTIONS}
+      onChange={onChange}
+    />
+  )
+  fireEvent.click(screen.getByRole('button', { name: /provider/i }))
+  const listbox = screen.getByRole('listbox', { name: /provider options/i })
+  const optionsBefore = listbox.querySelectorAll('[role="option"]')
+  fireEvent.keyDown(optionsBefore[2]!, { key: 'ArrowDown', code: 'ArrowDown' })
+
+  rerender(
+    <SlicerBar
+      filters={{ ...SLICER_EMPTY_FILTERS, providers: ['anthropic'] }}
+      options={{ ...OPTIONS, providers: ['anthropic'] }}
+      onChange={onChange}
+    />
+  )
+  const optionsAfter = screen
+    .getByRole('listbox', { name: /provider options/i })
+    .querySelectorAll('[role="option"]')
+  const tabZero = Array.from(optionsAfter).filter(
+    (el) => (el as HTMLElement).tabIndex === 0
+  )
+  expect(tabZero.length).toBe(1)
+})
+
+/** C-1 — re-selecting a value after removal must not keep stale/muted chip styling. */
+test('test_slicer_stale_chip_cleared_on_reselect', () => {
+  let filters: SlicerFilters = {
+    ...SLICER_EMPTY_FILTERS,
+    providers: ['anthropic'],
+  }
+  const onChange = vi.fn((next: SlicerFilters) => {
+    filters = next
+  })
+  const { rerender } = render(
+    <SlicerBar filters={filters} options={OPTIONS} onChange={onChange} />
+  )
+  fireEvent.click(
+    screen.getByRole('button', {
+      name: /remove anthropic from provider filter/i,
+    })
+  )
+  rerender(
+    <SlicerBar filters={filters} options={OPTIONS} onChange={onChange} />
+  )
+  fireEvent.click(screen.getByRole('button', { name: /provider/i }))
+  fireEvent.click(screen.getByText('anthropic'))
+  rerender(
+    <SlicerBar filters={filters} options={OPTIONS} onChange={onChange} />
+  )
+  const chip = screen
+    .getByRole('button', { name: /remove anthropic from provider filter/i })
+    .closest('.slicer-chip')
+  expect(chip?.classList.contains('slicer-chip--stale')).toBe(false)
+  expect(chip?.classList.contains('slicer-chip--muted')).toBe(false)
+})
+
+/** P-2 — handleToggle must not list `filters` in deps (functional onChange update). */
+test('test_slicer_dimension_handlers_stable_across_unrelated_filter_change', async () => {
+  const fs = await import('node:fs')
+  const path = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const dir = path.dirname(fileURLToPath(import.meta.url))
+  const src = fs.readFileSync(path.join(dir, 'slicer-bar.tsx'), 'utf8')
+  const handleToggleBlock = src.match(
+    /const handleToggle = useCallback\([\s\S]*?\n {2}\)/
+  )?.[0]
+  expect(handleToggleBlock).toBeTruthy()
+  const dependsOnFilters = /\[\s*filters\s*,\s*onChange\s*\]/.test(
+    handleToggleBlock ?? ''
+  )
+  const usesFunctionalFiltersUpdate =
+    /onChange\s*\(\s*\{[^}]*\.\.\.\s*filters/.test(handleToggleBlock ?? '') ===
+      false && /onChange\s*\(\s*prev/.test(src)
+  expect(dependsOnFilters && !usesFunctionalFiltersUpdate).toBe(false)
+})
+
+/** G-4 — ArrowDown on last option and ArrowUp on first: symmetric wrap policy. */
+test('test_slicer_keyboard_arrow_down_up_wrap_symmetric', () => {
+  const focusLog: number[] = []
+  const optionCount = 3
+  let active = 0
+  const focusOption = (index: number) => {
+    active = index
+    focusLog.push(index)
+  }
+  const makeKeyEvent = (key: string) =>
+    ({
+      key,
+      preventDefault: vi.fn(),
+    }) as unknown as import('react').KeyboardEvent<HTMLElement>
+
+  handleListboxArrowKey(
+    makeKeyEvent('ArrowDown'),
+    optionCount,
+    2,
+    (i) => {
+      active = i
+    },
+    focusOption
+  )
+  expect(active).toBe(0)
+
+  handleListboxArrowKey(
+    makeKeyEvent('ArrowUp'),
+    optionCount,
+    0,
+    (i) => {
+      active = i
+    },
+    focusOption
+  )
+  expect(active).toBe(2)
+
+  handleListboxArrowKey(
+    makeKeyEvent('ArrowDown'),
+    optionCount,
+    0,
+    (i) => {
+      active = i
+    },
+    focusOption
+  )
+  expect(active).toBe(1)
 })

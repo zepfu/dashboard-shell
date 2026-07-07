@@ -1,12 +1,7 @@
 /**
- * AggregateCard tests.
+ * AggregateCard — D1-451 Wave 2 (I-1, I-3, W-2, E-1).
  *
- * Component path: src/features/dashboard/components/aggregate-card.tsx
- * Expected export: AggregateCard (named)
- * Extends ProviderCard with fleetActivity prop.
- *
- * Wave 32 (⚠12): AggregateCard no longer accepts a `quotas` prop — the
- * aggregate card is intentionally quota-less. Tests updated to match.
+ * Extends ProviderCard with fleetActivity. Quota-less by design (Wave 32 ⚠12).
  */
 import { render, screen } from '@testing-library/react'
 import { AggregateCard } from './aggregate-card'
@@ -211,4 +206,37 @@ test('test_aggregate_card_pulse_dot_aria', () => {
   if (tabIndex !== null) {
     expect(parseInt(tabIndex, 10)).toBeLessThan(0)
   }
+})
+
+/** I-1 — FLEET ACTIVITY header reuses exported PcSubTitle chrome (not a divergent h4 copy). */
+test('test_aggregate_card_fleet_activity_reuses_pc_sub_title', () => {
+  const { container } = render(
+    <AggregateCard
+      config={aggregateConfig}
+      data={mockData}
+      healthCells={mockHealthCells}
+      fleetActivity={baseFleetActivity}
+    />
+  )
+  const titles = container.querySelectorAll('.pc-sub-title')
+  const fleetTitle = Array.from(titles).find((el) =>
+    el.textContent?.includes('FLEET ACTIVITY')
+  )
+  expect(fleetTitle).toBeDefined()
+  expect(fleetTitle?.tagName).toBe('DIV')
+})
+
+/** W-2 — invalid-tool hot path must be reachable when fleetActivity.invalidToolCalls > 0 (not hardcoded 0 at callsite). */
+test('test_aggregate_card_invalid_tool_calls_hot_path_reachable', () => {
+  const { container } = render(
+    <AggregateCard
+      config={aggregateConfig}
+      data={mockData}
+      healthCells={mockHealthCells}
+      fleetActivity={{ ...baseFleetActivity, invalidToolCalls: 4 }}
+    />
+  )
+  expect(container.querySelector('.fleet-activity-row.invalid')).not.toBeNull()
+  expect(container.querySelector('.pulse-dot')).not.toBeNull()
+  expect(screen.getByText('4', { exact: false })).toBeInTheDocument()
 })
