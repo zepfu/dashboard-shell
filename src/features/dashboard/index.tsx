@@ -95,6 +95,20 @@ interface DashboardDateRange {
   to: string
 }
 
+function isRollingDefaultOwnedRange(
+  range: DashboardDateRange,
+  nextDefault: DashboardDateRange
+): boolean {
+  const previousDefault = {
+    from: addDaysToDateString(nextDefault.from, -1),
+    to: addDaysToDateString(nextDefault.to, -1),
+  }
+  return (
+    (range.from === nextDefault.from && range.to === nextDefault.to) ||
+    (range.from === previousDefault.from && range.to === previousDefault.to)
+  )
+}
+
 const EMPTY_QUOTA_HISTORY: UsageReportQuotaHistoryResponse['quotaHistory'] = []
 const EMPTY_QUOTA_RANGE_HISTORY: UsageReportQuotaRangeHistoryResponse['quotaRangeHistory'] =
   []
@@ -275,6 +289,7 @@ export function Dashboard(): ReactElement {
   const [dateRange, setDateRange] = useState<DashboardDateRange>(() =>
     defaultDateRange()
   )
+  const [userAdjustedDateRange, setUserAdjustedDateRange] = useState(false)
   const { from, to } = dateRange
   // Wave 16-V: grain hardcoded to 'day'; per-visual grain logic in PhosphorDashboard untouched
   const grain: UsageReportGrain = 'day'
@@ -309,27 +324,27 @@ export function Dashboard(): ReactElement {
 
   useEffect(() => {
     const syncRangeToEasternDay = (): void => {
+      if (userAdjustedDateRange) return
       const nextDefaultRange = defaultDateRange()
-      // Auto-sync only while the user still has the default range in play.
-      // If the range is still the previous-day default window, advance it forward.
       setDateRange((prev) => {
+        if (!isRollingDefaultOwnedRange(prev, nextDefaultRange)) {
+          return prev
+        }
         const previousDefaultRange = {
           from: addDaysToDateString(nextDefaultRange.from, -1),
           to: addDaysToDateString(nextDefaultRange.to, -1),
         }
         const wasDefaultRange =
           prev.from === nextDefaultRange.from && prev.to === nextDefaultRange.to
-        const wasPreviousDefaultRange =
-          prev.from === previousDefaultRange.from &&
-          prev.to === previousDefaultRange.to
-
         if (wasDefaultRange) {
           return prev
         }
-        if (wasPreviousDefaultRange) {
+        if (
+          prev.from === previousDefaultRange.from &&
+          prev.to === previousDefaultRange.to
+        ) {
           return { from: nextDefaultRange.from, to: nextDefaultRange.to }
         }
-
         return prev
       })
     }
@@ -338,7 +353,7 @@ export function Dashboard(): ReactElement {
     return () => {
       clearInterval(id)
     }
-  }, [])
+  }, [userAdjustedDateRange])
 
   // 15-D.3: slicer options derived from PhosphorDashboard's loaded data
   const [slicerOptions, setSlicerOptions] = useState<SlicerOptions>({
@@ -357,6 +372,7 @@ export function Dashboard(): ReactElement {
   )
 
   const handleRangeChange = (nextFrom: string, nextTo: string): void => {
+    setUserAdjustedDateRange(true)
     setDateRange({ from: nextFrom, to: nextTo })
   }
 

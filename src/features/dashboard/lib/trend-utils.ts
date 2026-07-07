@@ -128,6 +128,42 @@ export function formatBucketLabel(rawLabel: string): string {
   return `${month}/${day}`
 }
 
+/**
+ * Parses API bucket timestamps into a calendar day and optional hour (0–23).
+ * Offset/Z timestamps use UTC day+hour; plain date-only strings return hour null.
+ */
+export function parseTrendDayHour(value: string | null | undefined): {
+  day: string
+  hour: number | null
+} | null {
+  if (value == null || value.trim() === '') return null
+
+  const hasOffset = /[T\s]\d{2}:\d{2}(:\d{2})?([+-]\d{2}:\d{2}|Z)$/.test(
+    value.trim()
+  )
+  if (hasOffset) {
+    const parsed = new Date(value)
+    if (Number.isNaN(parsed.getTime())) return null
+    const utcDay = parsed.toISOString().slice(0, 10)
+    return { day: utcDay, hour: parsed.getUTCHours() }
+  }
+
+  const dayMatch = value.match(/^(\d{4}-\d{2}-\d{2})/)
+  if (dayMatch === null) return null
+
+  const localHourMatch = value.match(/^\d{4}-\d{2}-\d{2}[T\s](\d{2})/)
+  if (localHourMatch !== null) {
+    const hour = Number.parseInt(localHourMatch[1], 10)
+    if (hour < 0 || hour > 23) return null
+    return { day: dayMatch[1], hour }
+  }
+
+  const hasTime = value.includes('T') || /\d{2}:\d{2}/.test(value)
+  if (!hasTime) return { day: dayMatch[1], hour: null }
+
+  return { day: dayMatch[1], hour: null }
+}
+
 // ---------------------------------------------------------------------------
 // Hourly day envelopes for Token Trend
 // ---------------------------------------------------------------------------

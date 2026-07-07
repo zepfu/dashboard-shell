@@ -5,6 +5,10 @@
  * Status/Health/Quota, Trend/Version/Request/Tool, Ledger/Model/Repository, plus
  * the first filter and date controls. Tab/focus actions are delegated to the
  * route through `onActivate`; standalone renders fall back to section scrolling.
+ *
+ * G-3: Bare single-letter shortcuts on `document` are deliberate TUI-style navigation.
+ * `shouldSuppressListboxShortcutKey` (shared with the slicer) must list every
+ * typeable/focusable surface; modifier keys (Shift/Ctrl/Meta/Alt) are ignored.
  */
 import { useCallback, useEffect, useRef, type ReactElement } from 'react'
 import { shouldSuppressListboxShortcutKey } from './slicer-bar-keyboard'

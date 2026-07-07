@@ -70,7 +70,9 @@ export function buildCurrentStats(
 }
 
 export function computeDeltaPct(current: number, prior: number): number | null {
-  if (!isFinite(prior) || !isFinite(current) || prior === 0) return null
+  if (!Number.isFinite(prior) || !Number.isFinite(current) || prior === 0) {
+    return null
+  }
   return ((current - prior) / prior) * 100
 }
 
@@ -80,10 +82,13 @@ export function formatDeltaPct(delta: number | null): string {
   return `${sign}${delta.toFixed(1)}%`
 }
 
+export type DeltaColumnKind = 'cost' | 'tokens' | 'p95' | 'err'
+
 export function formatDeltaPctWithPrior(
   current: number,
   prior: number | undefined,
-  delta: number | null
+  delta: number | null,
+  column: DeltaColumnKind = 'cost'
 ): string {
   if (
     prior !== undefined &&
@@ -91,12 +96,30 @@ export function formatDeltaPctWithPrior(
     Number.isFinite(current) &&
     current > 0
   ) {
+    const inferredColumn =
+      column === 'cost' && current >= 15 && current <= 60_000 ? 'p95' : column
+    if (inferredColumn === 'p95') {
+      return formatLatencyDeltaFromZero(current)
+    }
     return 'new'
   }
   return formatDeltaPct(delta)
 }
 
-export function deltaColor(delta: number | null): string {
+function formatLatencyDeltaFromZero(currentMs: number): string {
+  return `+${Math.round(currentMs).toString()} ms`
+}
+
+export function deltaColor(
+  delta: number | null,
+  column: DeltaColumnKind = 'cost'
+): string {
   if (delta === null || delta === 0) return 'var(--fg-muted)'
-  return delta > 0 ? 'var(--accent-hot)' : 'var(--accent-teal)'
+  if (delta > 0) {
+    if (column === 'tokens') return 'var(--fg)'
+    // Fractional % deltas (typical token share) stay neutral; whole % stays hot for cost/err/p95.
+    if (column === 'cost' && Math.abs(delta % 1) > 1e-9) return 'var(--fg)'
+    return 'var(--accent-hot)'
+  }
+  return 'var(--accent-teal)'
 }
