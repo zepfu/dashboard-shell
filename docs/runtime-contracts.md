@@ -68,9 +68,15 @@ Current shell defaults in `src/main.tsx`:
 
 - `staleTime`: `10_000` ms for normal queries.
 - `refetchOnWindowFocus`: enabled in production and disabled in development.
-- `retry`: disabled in development (`shouldRetryQuery` in `src/main.tsx`). In
-  production, do not retry HTTP `401`, `403`, or `404`; retry `408`, `429`, and
-  `5xx` until `failureCount > 3`. Other status codes are not retried.
+- `retry`: delegated to `shouldRetryQuery(failureCount, error)` in
+  `src/main.tsx` (wired on the shell `QueryClient` at line ~80). Disabled in
+  development (`import.meta.env.DEV` via `isShellQueryRetryDevMode`). In
+  production: no further retries once `failureCount > 3` (at most four failed
+  attempts before giving up). The predicate reads HTTP status from `error.status`
+  when present (`readHttpStatus`, lines ~45–51): do **not** retry `401`, `403`,
+  or `404`; retry `408`, `429`, and `5xx`; retry when status is missing; do not
+  retry other status codes. Broader shell routing / fetch-layer retry
+  consolidation is tracked in **`D1-453-mf-shell-routing-src-main-tsx`**.
 - `gcTime` / cache time: use TanStack Query defaults unless a route or component
   query overrides them.
 

@@ -25,7 +25,8 @@ The shell provides:
 - Route mounting under a stable `basePath`, such as `/aegis` or `/sluice`.
 - A browser-safe `apiBase`, such as `/api/aegis`, that the shell proxies
   server-side.
-- Runtime CSS variables for light and dark themes.
+- Runtime CSS variables for the Phosphor dark palette (dark-only; see Styling
+  Contract).
 - Shared Module Federation singletons for React, React DOM, and React Query.
 
 The remote repo provides:
@@ -181,6 +182,14 @@ For the General dashboard:
 
 Use the vendor-and-sync model for now.
 
+Phosphor Atlas runs **dark-only**. `src/context/theme-provider.tsx` hard-types
+`Theme` and `ResolvedTheme` as `'dark'`; `setTheme` and `resetTheme` are
+documented no-ops. On mount, `ThemeProvider` removes `light` and permanently
+adds the load-bearing `.dark` class to `document.documentElement` so Tailwind’s
+`dark:` variant and semantic tokens resolve. `src/styles/theme.css` ships a
+**single `:root` palette** (no light/`.dark` token fork). Remotes should not
+implement a light-mode toggle against this contract.
+
 Each remote should vendor these shell files into its own repo:
 
 - `src/components/ui/`
@@ -195,7 +204,9 @@ module only when component drift across dashboards becomes more expensive than
 the extra release and runtime complexity.
 
 The shell guarantees these token families are present on `:root` before a remote
-mounts:
+mounts (base palette from `theme.css`; component tokens such as `--quota-burn-*`
+may additionally be defined in the shell’s `index.css` component layer when the
+remote vendors only `theme.css`):
 
 - Core colors: `--background`, `--foreground`, `--card`, `--card-foreground`,
   `--popover`, `--popover-foreground`, `--primary`, `--primary-foreground`,
@@ -214,10 +225,10 @@ Remote page code should use Tailwind token utilities such as `bg-card`,
 `text-primary-foreground`. Avoid raw hex colors and JSX inline styles in remote
 page code.
 
-The shell toggles `.dark` on the document root. A remote that uses token-backed
-Tailwind classes and imports `src/styles/theme.css` in standalone mode will
-inherit the same light and dark palettes in both standalone and shell-mounted
-modes.
+In shell-mounted mode, the host applies `.dark` and loads shell styles before
+the remote route renders. In standalone mode, import `src/styles/theme.css` and
+apply `.dark` on `document.documentElement` (or equivalent) so token-backed
+Tailwind classes match shell-mounted appearance.
 
 ## General Dashboard STATUS Tabs (Shell-Owned)
 
