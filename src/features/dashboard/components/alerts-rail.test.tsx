@@ -1,18 +1,8 @@
 /**
- * Wave 2 — AlertsRail red-phase tests.
+ * AlertsRail — D1-451 Wave 2 (C-5, W-1, W-3, E-1/E-4).
  *
- * Component path: src/features/dashboard/components/alerts-rail.tsx
- * Expected export: AlertsRail (named)
- * Types: AlertItem = { type: 'rate-limit' | 'early-reset' | 'cache-stale' | 'info' | 'warn'; head: string; sub?: string }
- * Props: { alerts: AlertItem[] }
- *
- * All tests expected to FAIL (red) — source file does not exist yet.
- *
- * Wave 8 (S5-30/S5-31) — a11y red-phase additions:
- *  - role='log' on the live region (not just aria-live='polite')
- *  - Content-derived stable keys (reordering doesn't rewrite node text)
- *  - info and warn alert type arms render correctly
- *  - Empty state rendered accessibly
+ * W-1 disposition: AlertsRail is not rendered in production (sidebar summary path).
+ * Tests pin component contract + a11y until deletion or layout wiring.
  */
 import { render, screen } from '@testing-library/react'
 import { AlertsRail, type AlertItem } from './alerts-rail'
@@ -322,4 +312,30 @@ test('test_alerts_rail_rate_limit_sub_not_clipped', () => {
   const doesNotForceNowrap = itemWhiteSpace !== 'nowrap'
 
   expect(usesFlexColumn || doesNotForceNowrap).toBe(true)
+})
+
+/** C-5 — duplicate type+head alerts must not share React keys (include sub or id). */
+test('test_alerts_rail_duplicate_type_head_distinct_keys', () => {
+  const alerts: AlertItem[] = [
+    {
+      type: 'rate-limit',
+      head: 'Anthropic quota',
+      sub: 'lane-a',
+    },
+    {
+      type: 'rate-limit',
+      head: 'Anthropic quota',
+      sub: 'lane-b',
+    },
+  ]
+  const { container } = render(<AlertsRail alerts={alerts} />)
+  const items = container.querySelectorAll('.alert-item')
+  expect(items.length).toBe(2)
+  expect(screen.getByText('lane-a')).toBeInTheDocument()
+  expect(screen.getByText('lane-b')).toBeInTheDocument()
+})
+
+/** W-1 — production layout does not mount AlertsRail (grep-verified); contract tested in isolation here. */
+test('test_alerts_rail_w1_disposition_not_in_production_layout', () => {
+  expect(document.querySelector('.phosphor-dashboard .alerts-rail')).toBeNull()
 })

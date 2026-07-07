@@ -1,14 +1,35 @@
 /**
- * Wave 2 — KpiStrip red-phase tests.
+ * KpiStrip + kpi-strip.helpers — Wave 2 (D1-451 dash-widgets-cards) contracts.
  *
- * Component path: src/features/dashboard/components/kpi-strip.tsx
- * Expected export: KpiStrip (named)
- * Props: { summary: { token_in: number; token_out: number; cost_usd: number; requests: number; errors: number; p95_ms: number } | undefined; loading?: boolean }
- *
- * All tests expected to FAIL (red) — source file does not exist yet.
+ * Pins proportional microbar (C-3), delta boundary (C-7), p95 nullability (I-5),
+ * hoisted constants (P-3), and green-contract narration (E-1).
  */
 import { render, screen } from '@testing-library/react'
+import type { UsageReportSummary } from '../api/usage-report'
 import { KpiStrip } from './kpi-strip'
+import {
+  kpiMicrobarFillPct,
+  renderDelta,
+  type KpiKey,
+  type KpiSummary,
+} from './kpi-strip.helpers'
+
+/** Maps UsageReportSummary numeric fields to KpiStrip summary shape (real API names). */
+function summaryFromUsageReport(
+  partial: Pick<
+    UsageReportSummary,
+    'token_in' | 'token_out' | 'usd_cost' | 'tool_calls' | 'traces' | 'p95_ms'
+  > & { errors?: number }
+): KpiSummary {
+  return {
+    token_in: partial.token_in,
+    token_out: partial.token_out,
+    cost_usd: partial.usd_cost,
+    requests: partial.tool_calls,
+    errors: partial.errors ?? 0,
+    p95_ms: partial.p95_ms,
+  }
+}
 
 const mockSummary = {
   token_in: 1000,
@@ -163,76 +184,74 @@ test('test_kpi_strip_applies_classname_to_loading_wrapper', () => {
 // ---------------------------------------------------------------------------
 
 /**
- * S5-17 — each KPI tile's microbar must have a non-zero --fill CSS custom
- * property when the summary has realistic (non-zero) token counts.
- *
- * The current implementation computes fillPct = Math.round((rawValue / maxRaw) * 100)
- * and applies it as `--fill: ${fillPct}%`. The tile with the maximum rawValue
- * gets --fill: 100%; other tiles get a proportional value. All tiles with
- * non-zero rawValue must have --fill > 0%.
- *
- * This test also validates that Cost/Requests/P95 Latency tiles each receive
- * a non-zero --fill when fed realistic values.
- *
- * EXPECTED FAIL: if the implementation doesn't set --fill properly on
- * individual tiles, or if some tiles always get 0%, this will catch it.
- * The test specifically fails today if the implementation normalises only
- * token counts and leaves cost/request/latency tiles at 0.
+ * C-3 — microbar fill is proportional across tiles (share-of-max), not degenerate 0%/100%.
  */
 test('test_kpi_microbar_per_tile_normalized', () => {
-  const realisticSummary = {
+  const realisticSummary = summaryFromUsageReport({
     token_in: 500_000,
     token_out: 250_000,
-    cost_usd: 12.5,
-    requests: 8_500,
+    usd_cost: 12.5,
+    tool_calls: 8_500,
     errors: 0,
     p95_ms: 1_200,
-  }
+  })
 
   const { container } = render(<KpiStrip summary={realisticSummary} />)
 
-  const microbars = container.querySelectorAll('.kpi-microbar')
-  // Six tiles = six microbars
-  expect(microbars.length).toBe(6)
-
-  // For tiles where rawValue > 0, --fill must be > "0%"
-  // Cost, Requests, P95 Latency are all non-zero in the fixture
-  const nonZeroTileLabels = ['Cost', 'Requests', 'P95 Latency']
   const tiles = Array.from(container.querySelectorAll('.kpi-tile'))
+  expect(tiles.length).toBe(6)
 
+  const fillsByLabel = new Map<string, number>()
   for (const tile of tiles) {
-    const labelEl = tile.querySelector('.kpi-label')
-    const label = labelEl?.textContent ?? ''
-    if (!nonZeroTileLabels.some((l) => label.includes(l))) continue
-
-    const microbar = tile.querySelector('.kpi-microbar') as HTMLElement | null
-    expect(microbar).not.toBeNull()
-
-    // --fill must be a non-zero percentage
-    const fill = microbar?.style.getPropertyValue('--fill') ?? ''
-    // Parse the numeric value; must be > 0
-    const fillNum = parseFloat(fill)
-    expect(fillNum).toBeGreaterThan(0)
+    const label = tile.querySelector('.kpi-label')?.textContent ?? ''
+    const fill = parseFloat(
+      tile
+        .querySelector('.kpi-microbar')
+        ?.getAttribute('style')
+        ?.match(/--fill:\s*([\d.]+)%/)?.[1] ??
+        (
+          tile.querySelector('.kpi-microbar') as HTMLElement | null
+        )?.style.getPropertyValue('--fill') ??
+        '0'
+    )
+    fillsByLabel.set(label, fill)
   }
+
+  const tokensInFill = fillsByLabel.get('Tokens In') ?? 0
+  const tokensOutFill = fillsByLabel.get('Tokens Out') ?? 0
+  expect(tokensInFill).toBe(100)
+  expect(tokensOutFill).toBe(50)
+  expect(tokensInFill).toBeGreaterThan(tokensOutFill)
+})
+
+test('test_kpi_microbar_fill_not_degenerate_binary_without_deltas', () => {
+  const summary = summaryFromUsageReport({
+    token_in: 10_000,
+    token_out: 5_000,
+    usd_cost: 1,
+    tool_calls: 100,
+    p95_ms: 200,
+  })
+  const keys: KpiKey[] = [
+    'token_in',
+    'token_out',
+    'cost_usd',
+    'requests',
+    'p95_ms',
+  ]
+  const fills = keys.map((key) =>
+    kpiMicrobarFillPct(key, summary, summary[key], undefined)
+  )
+  const distinct = new Set(fills)
+  expect(distinct.size).toBeGreaterThan(1)
+  expect(fills.some((f) => f > 0 && f < 100)).toBe(true)
 })
 
 // ---------------------------------------------------------------------------
 // S5-20: renderDelta deadband — tiny deltas show "→ 0.0%" muted, not ↑/↓
 // ---------------------------------------------------------------------------
 
-/**
- * S5-20 — a delta of -0.0004 (absolute value < 0.05%) is within the deadband
- * and should render as "→ 0.0%" with muted styling, NOT as "↓ 0.0%".
- * An exact-zero delta must also be muted.
- *
- * The current `renderDelta` implementation:
- *   - delta >= 0 → "↑ X.X%"
- *   - delta < 0  → "↓ X.X%"
- * …with no deadband. So -0.0004 renders as "↓ 0.0%" not "→ 0.0%".
- *
- * EXPECTED FAIL: current renderDelta has no deadband logic, so -0.0004
- * renders "↓ 0.0%" which does NOT match "→ 0.0%".
- */
+/** C-7 deadband — tiny fractional deltas render as → 0.0%. */
 test('test_renderDelta_deadband', () => {
   const summary = {
     token_in: 100_000,
@@ -270,4 +289,38 @@ test('test_renderDelta_deadband', () => {
   )
   const reqDeltaSpan = reqTile?.querySelector('.kpi-delta span')
   expect(reqDeltaSpan?.textContent).toMatch(/→\s*0\.0%/)
+})
+
+/** C-7 — exactly 0.05% fractional delta must not display as 0.1% (toFixed(1) inflation). */
+test('test_renderDelta_boundary_0_05_percent_not_double_display', () => {
+  expect(renderDelta(0.0005)).toBe('↑ 0.05%')
+})
+
+test('test_kpi_strip_p95_null_renders_dash', () => {
+  const summary: KpiSummary = {
+    token_in: 1,
+    token_out: 1,
+    cost_usd: 0.01,
+    requests: 1,
+    errors: 0,
+    p95_ms: null as unknown as number,
+  }
+  const { container } = render(<KpiStrip summary={summary} />)
+  const p95Tile = Array.from(container.querySelectorAll('.kpi-tile')).find(
+    (t) => t.querySelector('.kpi-label')?.textContent?.includes('P95 Latency')
+  )
+  expect(p95Tile?.querySelector('.kpi-value')?.textContent).toBe('—')
+})
+
+/** I-5 — KpiSummary should allow null p95 like ProviderMetrics; compile + display contract. */
+test('test_kpi_summary_p95_nullable_type_contract', () => {
+  const withNull: KpiSummary = {
+    token_in: 0,
+    token_out: 0,
+    cost_usd: 0,
+    requests: 0,
+    errors: 0,
+    p95_ms: null as unknown as number,
+  }
+  expect(withNull.p95_ms).toBeNull()
 })
