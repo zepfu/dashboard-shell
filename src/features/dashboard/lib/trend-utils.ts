@@ -76,14 +76,14 @@ export function normalizeTrendData(rows: UsageReportTrendRow[]): TrendBucket[] {
       ? dataBuckets.slice(dataBuckets.length - TREND_BUCKET_COUNT)
       : dataBuckets
 
-  // Pad the beginning with empty buckets so the total is always exactly 24
+  // Pad the beginning with empty buckets so the total is always exactly 24.
+  // Use a reserved prefix so pad labels cannot collide with real bucket keys
+  // like "3h" from the API (G2).
   const padCount = TREND_BUCKET_COUNT - trimmed.length
   const padBuckets: TrendBucket[] = Array.from(
     { length: padCount },
     (_, i) => ({
-      // Label counts back from the oldest real bucket so that the x-axis
-      // reads as "Xh ago" for context (e.g. "23h", "22h", …).
-      label: `${padCount - i + trimmed.length - 1}h`,
+      label: `pad:${padCount - i + trimmed.length - 1}h`,
       totals: {},
     })
   )
@@ -265,10 +265,24 @@ function createEmptyEnvelope(day: string): TokenTrendDayEnvelope {
   }
 }
 
+const MAX_TOKEN_TREND_RANGE_FILL_DAYS = 400
+
 function nextIsoDay(day: string): string {
   const parsed = new Date(`${day}T00:00:00.000Z`)
   parsed.setUTCDate(parsed.getUTCDate() + 1)
   return parsed.toISOString().slice(0, 10)
+}
+
+function countIsoDaysInclusive(startDay: string, endDay: string): number {
+  let count = 0
+  for (
+    let day = startDay;
+    day <= endDay && count < MAX_TOKEN_TREND_RANGE_FILL_DAYS + 1;
+    day = nextIsoDay(day)
+  ) {
+    count += 1
+  }
+  return count
 }
 
 export function buildTokenTrendDayEnvelopes(
@@ -320,10 +334,21 @@ export function buildTokenTrendDayEnvelopes(
   if (isIsoDay(rangeFrom) && isIsoDay(rangeTo)) {
     const startDay = rangeFrom <= rangeTo ? rangeFrom : rangeTo
     const endDay = rangeFrom <= rangeTo ? rangeTo : rangeFrom
-    for (let day = startDay; day <= endDay; day = nextIsoDay(day)) {
+    const spanDays = countIsoDaysInclusive(startDay, endDay)
+    const fillDays =
+      spanDays <= MAX_TOKEN_TREND_RANGE_FILL_DAYS
+        ? spanDays
+        : MAX_TOKEN_TREND_RANGE_FILL_DAYS
+    for (
+      let day = startDay, filled = 0;
+      filled < fillDays;
+      day = nextIsoDay(day)
+    ) {
       if (!dayMap.has(day)) {
         dayMap.set(day, createEmptyEnvelope(day))
       }
+      filled += 1
+      if (day >= endDay) break
     }
   }
 
@@ -341,11 +366,27 @@ export function buildTokenTrendDayEnvelopes(
 function versionHourIndex(
   dayIndexByDay: ReadonlyMap<string, number>,
   day: string | null,
-  hour: number | null
+  hour: number | null,
+  clampToEnvelope = false
 ): number | null {
   if (day === null || hour === null || hour < 0 || hour > 23) return null
-  const dayIndex = dayIndexByDay.get(day)
-  if (dayIndex === undefined) return null
+  let dayIndex = dayIndexByDay.get(day)
+  if (dayIndex === undefined) {
+    if (!clampToEnvelope || dayIndexByDay.size === 0) return null
+    const sortedDays = [...dayIndexByDay.keys()].sort()
+    const first = sortedDays[0]
+    const last = sortedDays[sortedDays.length - 1]
+    if (first === undefined || last === undefined) return null
+    if (day < first) {
+      dayIndex = 0
+      hour = 0
+    } else if (day > last) {
+      dayIndex = dayIndexByDay.size - 1
+      hour = 23
+    } else {
+      return null
+    }
+  }
   return dayIndex * 24 + hour
 }
 
@@ -482,12 +523,14 @@ export function deriveTokenTrendActiveVersionLanes(
     const firstGlobalHour = versionHourIndex(
       dayIndexByDay,
       interval.first_seen_day,
-      firstSeenHour
+      firstSeenHour,
+      true
     )
     const lastGlobalHour = versionHourIndex(
       dayIndexByDay,
       interval.last_seen_day,
-      lastSeenHour
+      lastSeenHour,
+      true
     )
     if (firstGlobalHour === null || lastGlobalHour === null) continue
 

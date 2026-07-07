@@ -505,28 +505,30 @@ function combineFamily(
   summaries: readonly AgentQualitySummary[],
   family: AgentQualityFamilyKey
 ): AgentQualityFamilySummary {
-  let scoreNumerator = 0
-  let scoreDenominator = 0
   let evaluated = 0
   let possible = 0
   let issueCount = 0
-
   let scoredEvaluated = 0
+
+  const scoreInputs: { score: number | null; evaluated: number }[] = []
 
   for (const summary of summaries) {
     const item = summary[family]
+    const weight =
+      item.scoredEvaluated ??
+      (item.score !== null && item.evaluated > 0 ? item.evaluated : 0)
     evaluated += item.evaluated
     possible += item.possible
     issueCount += item.issueCount
-    scoredEvaluated += item.scoredEvaluated
-    if (item.score !== null && item.evaluated > 0) {
-      scoreNumerator += item.score * item.evaluated
-      scoreDenominator += item.evaluated
-    }
+    scoredEvaluated += weight
+    scoreInputs.push({
+      score: item.score,
+      evaluated: weight,
+    })
   }
 
   return {
-    score: scoreDenominator > 0 ? scoreNumerator / scoreDenominator : null,
+    score: weightedNullableScore(scoreInputs),
     evaluated,
     scoredEvaluated,
     possible,

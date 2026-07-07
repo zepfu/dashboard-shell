@@ -62,6 +62,9 @@ export function formatDashboardFreshness(
     sessionFreshnessAt !== null
       ? new Date(sessionFreshnessAt)
       : new Date(dataUpdatedAt)
+  if (Number.isNaN(displayDate.getTime())) {
+    return 'FETCHED -- UTC · -- ago'
+  }
   const timeUTC = displayDate.toUTCString().split(' ')[4] ?? ''
   const distance = formatDistance(displayDate, now, { addSuffix: false })
   return `FETCHED ${timeUTC} UTC · ${distance} ago`

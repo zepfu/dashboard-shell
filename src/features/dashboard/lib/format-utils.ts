@@ -30,6 +30,8 @@
  */
 export function fmtCompact(n: number): string {
   if (!Number.isFinite(n)) return '—'
+  // C9: negatives intentionally bypass B/M/K tiers (pinned by test).
+  if (n < 0) return String(n)
   if (n >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(1)}B`
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`
