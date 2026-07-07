@@ -54,6 +54,7 @@ services:
       AAWM_TAP_API_TARGET: "${AAWM_TAP_API_TARGET:-http://host.docker.internal:8010}"
       AEGIS_ACCESS_TOKEN: "${AEGIS_ACCESS_TOKEN:-}"
       AEGIS_API_TARGET: "${AEGIS_API_TARGET:-http://aegis-api:8001/api/v1}"
+      # D1-446 local-only default. Override AEGIS_DB_PASSWORD for non-local operators.
       AEGIS_DB_PASSWORD: "${AEGIS_DB_PASSWORD:-aegis_dev_password}"
       SLUICE_ACCESS_TOKEN: "${SLUICE_ACCESS_TOKEN:-}"
       SLUICE_API_TARGET: "${SLUICE_API_TARGET:-http://host.docker.internal:8002/api/v1}"

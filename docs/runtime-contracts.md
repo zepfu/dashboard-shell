@@ -11,6 +11,14 @@ Credential-injecting upstream proxy routes (`/api/aawm*`, `/api/aawm-tap*`, `/ap
 
 Local compose and dev defaults use `SHELL_REPORT_PROXY_SHARED_SECRET=dashboard-shell-local-proxy-secret`. Override the same variable on the shell container, report-service container, and Vite dev environment for any non-local deployment.
 
+## Report Service Env Surface and Dev-Port Boundary (D1-446)
+
+- The report-service env surface is intentionally mirrored between
+  `docker-compose.yml` and `docker-compose.dev.yml` (same variable names and
+  local defaults) for drift visibility, not YAML factoring.
+- Redis dependency/runtime follow-up work is owned by server-package/report-service TODOs.
+- Dev compose ports are intentionally loopback-bound by default (`127.0.0.1`), with an intentional override path (`DASHBOARD_DEV_BIND_HOST`) for LAN operator sessions.
+
 
 ## Nginx and Public Surface Contract
 

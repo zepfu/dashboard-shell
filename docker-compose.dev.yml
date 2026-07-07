@@ -38,7 +38,7 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
-      - "${DASHBOARD_SHELL_DEV_PORT:-3006}:${DASHBOARD_SHELL_DEV_PORT:-3006}"
+      - "${DASHBOARD_DEV_BIND_HOST:-127.0.0.1}:${DASHBOARD_SHELL_DEV_PORT:-3006}:${DASHBOARD_SHELL_DEV_PORT:-3006}"
     networks:
       - aawm_tap
     volumes:
@@ -93,6 +93,7 @@ services:
       AAWM_TAP_API_TARGET: "${AAWM_TAP_API_TARGET:-http://host.docker.internal:8010}"
       AEGIS_ACCESS_TOKEN: "${AEGIS_ACCESS_TOKEN:-}"
       AEGIS_API_TARGET: "${AEGIS_API_TARGET:-http://aegis-api:8001/api/v1}"
+      # D1-446 local-only default. Override AEGIS_DB_PASSWORD for non-local operators.
       AEGIS_DB_PASSWORD: "${AEGIS_DB_PASSWORD:-aegis_dev_password}"
       SLUICE_ACCESS_TOKEN: "${SLUICE_ACCESS_TOKEN:-}"
       SLUICE_API_TARGET: "${SLUICE_API_TARGET:-http://host.docker.internal:8002/api/v1}"
@@ -217,7 +218,7 @@ services:
       CHOKIDAR_USEPOLLING: "${CHOKIDAR_USEPOLLING:-true}"
       WATCHPACK_POLLING: "${WATCHPACK_POLLING:-true}"
     ports:
-      - "${AAWM_DASHBOARD_REMOTE_DEV_PORT:-5176}:${AAWM_DASHBOARD_REMOTE_DEV_PORT:-5176}"
+      - "${DASHBOARD_DEV_BIND_HOST:-127.0.0.1}:${AAWM_DASHBOARD_REMOTE_DEV_PORT:-5176}:${AAWM_DASHBOARD_REMOTE_DEV_PORT:-5176}"
     networks:
       - aawm_tap
     volumes:
@@ -256,7 +257,7 @@ services:
       CHOKIDAR_USEPOLLING: "${CHOKIDAR_USEPOLLING:-true}"
       WATCHPACK_POLLING: "${WATCHPACK_POLLING:-true}"
     ports:
-      - "${AAWM_OBSERVE_REMOTE_DEV_PORT:-5177}:${AAWM_OBSERVE_REMOTE_DEV_PORT:-5177}"
+      - "${DASHBOARD_DEV_BIND_HOST:-127.0.0.1}:${AAWM_OBSERVE_REMOTE_DEV_PORT:-5177}:${AAWM_OBSERVE_REMOTE_DEV_PORT:-5177}"
     networks:
       - aawm_tap
     volumes:
@@ -299,7 +300,7 @@ services:
       VITE_TAP_API_KEY: ""
       WATCHPACK_POLLING: "${WATCHPACK_POLLING:-true}"
     ports:
-      - "${AAWM_TAP_REMOTE_DEV_PORT:-5173}:${AAWM_TAP_REMOTE_DEV_PORT:-5173}"
+      - "${DASHBOARD_DEV_BIND_HOST:-127.0.0.1}:${AAWM_TAP_REMOTE_DEV_PORT:-5173}:${AAWM_TAP_REMOTE_DEV_PORT:-5173}"
     networks:
       - aawm_tap
     volumes:
@@ -338,7 +339,7 @@ services:
       CHOKIDAR_USEPOLLING: "${CHOKIDAR_USEPOLLING:-true}"
       WATCHPACK_POLLING: "${WATCHPACK_POLLING:-true}"
     ports:
-      - "${AEGIS_REMOTE_DEV_PORT:-5174}:${AEGIS_REMOTE_DEV_PORT:-5174}"
+      - "${DASHBOARD_DEV_BIND_HOST:-127.0.0.1}:${AEGIS_REMOTE_DEV_PORT:-5174}:${AEGIS_REMOTE_DEV_PORT:-5174}"
     networks:
       - aawm_tap
     volumes:
@@ -377,7 +378,7 @@ services:
       SLUICE_REMOTE_DEV_PORT: "${SLUICE_REMOTE_DEV_PORT:-5175}"
       WATCHPACK_POLLING: "${WATCHPACK_POLLING:-true}"
     ports:
-      - "${SLUICE_REMOTE_DEV_PORT:-5175}:${SLUICE_REMOTE_DEV_PORT:-5175}"
+      - "${DASHBOARD_DEV_BIND_HOST:-127.0.0.1}:${SLUICE_REMOTE_DEV_PORT:-5175}:${SLUICE_REMOTE_DEV_PORT:-5175}"
     networks:
       - aawm_tap
     volumes:

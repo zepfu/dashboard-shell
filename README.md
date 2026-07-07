@@ -29,6 +29,11 @@ Then open the shell-mounted routes:
 - `http://localhost:3006/aegis`
 - `http://localhost:3006/sluice/overview`
 
+In `docker-compose.dev.yml`, all dev stack publish entries default to
+`127.0.0.1` loopback via `DASHBOARD_DEV_BIND_HOST`. If you need intentional LAN
+access, set `DASHBOARD_DEV_BIND_HOST=0.0.0.0` for the shell and remote dev
+services before running `pnpm docker:dev`.
+
 This stack runs Vite servers in containers with bind-mounted source from this
 repo and the sibling dashboard repos, so changes in any checkout are served live
 without a Docker image rebuild. The shell dev server proxies `/api/aawm-tap/*`,
@@ -165,6 +170,8 @@ which `nginx.conf` proxies to the sibling static containers. For local Vite
 development, the dev compose file sets browser-accessible localhost remote
 entries such as `AAWM_DASHBOARD_REMOTE_ENTRY`, `AAWM_TAP_REMOTE_ENTRY`,
 `AAWM_OBSERVE_REMOTE_ENTRY`, `AEGIS_REMOTE_ENTRY`, and `SLUICE_REMOTE_ENTRY`.
+`AEGIS_DB_PASSWORD` in `.env.example` remains the local-dev default only; treat it as non-production and
+override it for non-local operators before starting either compose stack.
 
 ## Remote Dashboard Contract
 
