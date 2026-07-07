@@ -25,6 +25,7 @@ import {
   act,
   fireEvent,
   render,
+  renderHook,
   screen,
   waitFor,
   within,
@@ -51,6 +52,8 @@ import {
   type UsageReportResponse,
 } from './api/usage-report'
 import { DateControls } from './components/date-controls'
+import { useDashboardAlertSummary } from './hooks/use-alerts-from-anomalies'
+import type { AnomalyFlags } from './hooks/use-anomaly-detection'
 // ─────────────────────────────────────────────────────────────────────────────
 // Wave 5 / S4-T5 / S4-20: usageReportQuotasKey factory used in both index + phosphor
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1750,5 +1753,42 @@ describe('Dashboard — D1-436: heavy query polling guardrails', () => {
     )
     expect(shellHealthOptions).toBeDefined()
     expect(shellHealthOptions!.refetchIntervalInBackground).toBe(false)
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// D1-450 P4: alert summary memo should not invalidate every 10s recency tick
+// ─────────────────────────────────────────────────────────────────────────────
+
+const emptyAnomaliesForP4: AnomalyFlags = {
+  earlyReset: new Map(),
+  cacheStale: false,
+}
+
+describe('Dashboard — D1-450 P4 alert summary memo quantization', () => {
+  test('useDashboardAlertSummary treats recency ticks within the same minute as stable now', () => {
+    const t0 = new Date('2026-06-13T12:00:05.000Z')
+    const t1 = new Date('2026-06-13T12:00:15.000Z')
+    const t2 = new Date('2026-06-13T12:01:05.000Z')
+
+    const { result, rerender } = renderHook(
+      ({ now }: { now: Date }) =>
+        useDashboardAlertSummary(
+          emptyAnomaliesForP4,
+          undefined,
+          undefined,
+          [],
+          [],
+          [],
+          now
+        ),
+      { initialProps: { now: t0 } }
+    )
+    const atT0 = result.current
+    rerender({ now: t1 })
+    expect(result.current).toBe(atT0)
+
+    rerender({ now: t2 })
+    expect(result.current).not.toBe(atT0)
   })
 })

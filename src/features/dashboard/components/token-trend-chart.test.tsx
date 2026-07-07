@@ -11,11 +11,14 @@
  * (which also renders provider names) does not cause false failures.
  */
 import { render, fireEvent, within } from '@testing-library/react'
+import { readFileSync } from 'node:fs'
+import path from 'node:path'
 import { vi } from 'vitest'
 import type {
   UsageReportProviderLatencyHealthRow,
   UsageReportTokenTrendScoreRow,
 } from '../api/usage-report'
+import * as trendUtils from '../lib/trend-utils'
 import {
   buildTokenTrendDayEnvelopes,
   deriveTokenTrendActiveVersionLanes,
@@ -2009,8 +2012,7 @@ test('test_token_trend_hour_hover_cleared_on_mouse_leave', () => {
  * agent instructions) and assert the exact formatted strings remain unchanged.
  */
 test('test_format_compact_number_hoist_behavior_preserving', async () => {
-  const { formatCompactQuantity } =
-    await import('../components/phosphor-dashboard.helpers')
+  const { formatCompactQuantity } = await import('./phosphor-dashboard.helpers')
 
   // These assertions pin the exact Intl output after the hoist.
   // The engineer must not change the formatter options when hoisting.
@@ -2029,4 +2031,71 @@ test('test_format_compact_number_hoist_behavior_preserving', async () => {
 
   // Negative values must format correctly (no sign stripping).
   expect(formatCompactQuantity(-1000)).toBe('-1K')
+})
+
+// ---------------------------------------------------------------------------
+// D1-450 Wave 1 — P2 memoization + I5 useControllableState (guard / behavioral)
+// ---------------------------------------------------------------------------
+
+/**
+ * P2: `deriveTokenTrendActiveVersionLanes` must be memoized inside envelope mode.
+ * Until `useMemo` wraps the derivation, a rerender with identical props re-invokes
+ * the pure function (this test fails).
+ */
+test('D1-450_P2_deriveTokenTrendActiveVersionLanes_not_recomputed_on_identical_rerender', () => {
+  const spy = vi.spyOn(trendUtils, 'deriveTokenTrendActiveVersionLanes')
+  const rows = [
+    {
+      day: '2026-05-20',
+      hour: 8,
+      provider: 'anthropic',
+      traces: 1,
+      token_total: 100,
+      usd_cost: 0,
+    },
+  ]
+  const dayEnvelopes = buildTokenTrendDayEnvelopes(rows)
+  const versionIntervals = [
+    {
+      provider: 'anthropic',
+      client_name: 'codex-tui',
+      client_version: '0.120.0',
+      first_seen_at: '2026-05-20T12:00:00.000Z',
+      last_seen_at: '2026-05-20T13:00:00.000Z',
+      first_seen_day: '2026-05-20',
+      first_seen_hour: 8,
+      last_seen_day: '2026-05-20',
+      last_seen_hour: 8,
+      traces: 1,
+      token_total: 100,
+      usd_cost: 0,
+    },
+  ]
+  const props = {
+    dayEnvelopes,
+    series,
+    versionIntervals,
+  }
+
+  const { rerender } = render(<TokenTrendChart {...props} />)
+  const callsAfterMount = spy.mock.calls.length
+  expect(callsAfterMount).toBeGreaterThan(0)
+
+  rerender(<TokenTrendChart {...props} />)
+  expect(spy.mock.calls.length).toBe(callsAfterMount)
+
+  spy.mockRestore()
+})
+
+/**
+ * I5: `lowerLaneMode` should use shared `useControllableState` instead of hand-rolled
+ * controlled/uncontrolled state. Guard pins the refactor contract on source wiring.
+ */
+test('D1-450_I5_lowerLaneMode_uses_useControllableState', () => {
+  const chartPath = path.join(import.meta.dirname, 'token-trend-chart.tsx')
+  const source = readFileSync(chartPath, 'utf8')
+  expect(source).toContain('useControllableState')
+  expect(source).not.toMatch(
+    /const \[internalLowerLaneMode, setInternalLowerLaneMode\]/
+  )
 })

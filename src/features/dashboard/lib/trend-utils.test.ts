@@ -1,3 +1,4 @@
+import { parseTrendDayHour } from '../components/token-trend-chart'
 import {
   buildTokenTrendDayEnvelopes,
   classifyTokenTrendActiveVersionFamily,
@@ -6,9 +7,6 @@ import {
   formatBucketLabel,
   normalizeTrendData,
   normalizeTokenTrendClientVersionForLane,
-  // parseTrendDayHour is currently module-private; engineer must export it.
-  // The import is commented out until the export is added; the test body uses
-  // a dynamic import so it fails at runtime rather than at parse time.
 } from './trend-utils'
 
 test('test_buildTokenTrendDayEnvelopes_groups_hours_by_day_and_provider', () => {
@@ -426,21 +424,9 @@ test('test_deriveTokenTrendModelFirstSeenGroups_maps_supported_provider_models_t
  * A timestamp `2026-06-12T23:30:00-04:00` must yield day AND hour from the
  * SAME clock — not day from the local prefix and hour from UTC.
  *
- * EXPORTS NEEDED from token-trend-chart.tsx:
- *   - `parseTrendDayHour(value: string | null | undefined): { day: string; hour: number | null } | null`
- *
- * These tests FAIL until the function is exported.
+ * `parseTrendDayHour` is exported from token-trend-chart.tsx for shared parsing.
  */
-test('test_parseTrendDayHour_offset_timestamp_day_hour_consistent', async () => {
-  // parseTrendDayHour is module-private. The engineer must export it.
-  // Dynamic import catches the missing export at runtime → test FAILS.
-  const mod = await import('../components/token-trend-chart')
-  const { parseTrendDayHour } = mod as unknown as {
-    parseTrendDayHour: (
-      v: string | null | undefined
-    ) => { day: string; hour: number | null } | null
-  }
-
+test('test_parseTrendDayHour_offset_timestamp_day_hour_consistent', () => {
   expect(parseTrendDayHour).toBeDefined()
 
   // Offset timestamp: 2026-06-12T23:30:00-04:00 is UTC 2026-06-13T03:30:00Z.
@@ -464,14 +450,7 @@ test('test_parseTrendDayHour_offset_timestamp_day_hour_consistent', async () => 
   }
 })
 
-test('test_parseTrendDayHour_invalid_hour_rejected', async () => {
-  const mod = await import('../components/token-trend-chart')
-  const { parseTrendDayHour } = mod as unknown as {
-    parseTrendDayHour: (
-      v: string | null | undefined
-    ) => { day: string; hour: number | null } | null
-  }
-
+test('test_parseTrendDayHour_invalid_hour_rejected', () => {
   expect(parseTrendDayHour).toBeDefined()
 
   // Hour 99 must be rejected — currently the regex captures it and silent data drop occurs.
@@ -498,23 +477,10 @@ test('test_parseTrendDayHour_invalid_hour_rejected', async () => {
  * This test pins that `parseTrendDayHour` returns null or `hour: null` for
  * out-of-range hours, so no phantom signal cell is created.
  *
- * EXPORTS NEEDED from token-trend-chart.tsx:
- *   - `parseTrendDayHour(v: string | null | undefined): { day: string; hour: number | null } | null`
- *
- * Until the export is added, the dynamic import returns undefined → FAILS.
- *
  * Also verifies: NaN hour row in `buildTokenTrendDayEnvelopes` does not inflate
  * the total (the array[NaN]=undefined guard already works; this documents it).
  */
-test('test_trend_utils_nan_hour_no_phantom_envelope', async () => {
-  // Sub-test A: parseTrendDayHour must not return hour=99.
-  // (If the export is absent, this test FAILS on the toBeDefined assertion.)
-  const mod = await import('../components/token-trend-chart')
-  const { parseTrendDayHour } = mod as unknown as {
-    parseTrendDayHour: (
-      v: string | null | undefined
-    ) => { day: string; hour: number | null } | null
-  }
+test('test_trend_utils_nan_hour_no_phantom_envelope', () => {
   expect(parseTrendDayHour).toBeDefined()
 
   const result99 = parseTrendDayHour('2026-05-20 99:00:00')
@@ -809,4 +775,97 @@ test('test_formatBucketLabel_passes_through_relative_labels', () => {
   expect(formatBucketLabel('5h')).toBe('5h')
   // Non-ISO non-relative labels also pass through unchanged
   expect(formatBucketLabel('custom-label')).toBe('custom-label')
+})
+
+// ---------------------------------------------------------------------------
+// D1-450 trend-utils (C4, G1, G2, W3)
+// ---------------------------------------------------------------------------
+
+test('deriveTokenTrendActiveVersionLanes_clamps_interval_starting_before_envelope (C4)', () => {
+  const envelopes = buildTokenTrendDayEnvelopes(
+    [
+      {
+        day: '2026-06-10',
+        hour: 8,
+        provider: 'anthropic',
+        traces: 1,
+        token_total: 100,
+        usd_cost: 0,
+      },
+    ],
+    'tokens',
+    { from: '2026-06-10', to: '2026-06-10' }
+  )
+  const lanes = deriveTokenTrendActiveVersionLanes(envelopes, [
+    {
+      provider: 'anthropic',
+      client_name: 'claude-code',
+      client_version: '2.0.0',
+      first_seen_at: '2026-06-01T08:00:00.000Z',
+      last_seen_at: '2026-06-10T10:00:00.000Z',
+      first_seen_day: '2026-06-01',
+      last_seen_day: '2026-06-10',
+      first_seen_hour: 8,
+      last_seen_hour: 10,
+      traces: 5,
+      token_total: 500,
+      usd_cost: 0,
+    },
+  ])
+  const claude = lanes.find((l) => l.key === 'claude')
+  expect(claude?.segments.length).toBeGreaterThan(0)
+})
+
+test('buildTokenTrendDayEnvelopes_range_fill_capped_at_400_days (G1)', () => {
+  const envelopes = buildTokenTrendDayEnvelopes([], 'tokens', {
+    from: '2020-01-01',
+    to: '2022-06-01',
+  })
+  expect(envelopes.length).toBeLessThanOrEqual(400)
+  expect(envelopes.length).toBeGreaterThan(0)
+})
+
+test('normalizeTrendData_pad_label_does_not_collide_with_real_3h_bucket (G2)', () => {
+  const rows = [
+    {
+      bucket: '3h',
+      provider: 'anthropic',
+      model: 'm',
+      repository: '',
+      traces: 1,
+      token_total: 10,
+      usd_cost: 0,
+    },
+    {
+      bucket: '2026-05-20',
+      provider: 'openai',
+      model: 'm',
+      repository: '',
+      traces: 1,
+      token_total: 20,
+      usd_cost: 0,
+    },
+  ]
+  const result = normalizeTrendData(rows)
+  const threeHourBuckets = result.filter((b) => b.label === '3h')
+  expect(threeHourBuckets).toHaveLength(1)
+  expect(threeHourBuckets[0]?.totals.anthropic).toBe(10)
+})
+
+test('buildTokenTrendDayEnvelopes_range_options_contract_used_or_trimmed (W3)', () => {
+  const withRange = buildTokenTrendDayEnvelopes(
+    [
+      {
+        day: '2026-05-20',
+        hour: 8,
+        provider: 'anthropic',
+        traces: 1,
+        token_total: 1,
+        usd_cost: 0,
+      },
+    ],
+    'tokens',
+    { from: '2026-05-20', to: '2026-05-21' }
+  )
+  expect(withRange.map((e) => e.day)).toContain('2026-05-21')
 })

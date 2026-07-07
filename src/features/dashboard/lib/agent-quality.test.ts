@@ -265,8 +265,8 @@ test('combine_agent_quality_summaries_sums_compact_source_counts', () => {
  * The engineer must add a `scoredEvaluated` field to `AgentQualityFamilySummary`
  * that counts only observations that actually produced a score (score !== null).
  *
- * This is RED until the engineer adds the `scoredEvaluated` field to the
- * interface + `familyFromFlat` / `combineFamily`.
+ * Regression contract: `scoredEvaluated` on `AgentQualityFamilySummary` counts
+ * only rows with a non-null score (`familyFromFlat` / `combineFamily`).
  */
 
 describe('agent-quality scoredEvaluated honest denominator (S4-13)', () => {
@@ -358,9 +358,8 @@ describe('agent-quality scoredEvaluated honest denominator (S4-13)', () => {
  * from `handoffIssueCount` eliminates the double-count and makes the sort value
  * correctly proportional: discovery/terminal issues → ×50; behavioral incidents → ×50.
  *
- * This test ASSERTS THE INTENDED (FIXED) VALUE and will FAIL against the current
- * source until the engineer removes the two discovery/terminal terms from
- * `handoffIssueCount` in `agentQualityIssueSortValue`.
+ * Regression contract: discovery/terminal issues contribute ×50 via
+ * `discoveryIssueCount` only; behavioral policy incidents use `handoffIssueCount`.
  *
  * Concrete example:
  *   worstPassScore = 0.8  → (1 - 0.8) * 100 = 20
@@ -447,9 +446,96 @@ test('test_agentQualityIssueSortValue_discovery_terminal_not_double_counted', ()
   // riskScore-penalty = 0.3 * 100 = 30
   // INTENDED total = 20 + 30 + 300 + 0 + 0 = 350
   //
-  // CURRENT (buggy) total = 20 + 30 + 300 + (2+1)*50 + 0 = 500
-  // This test FAILS against the current source (returns 500, not 350).
   expect(sortValue).toBe(350)
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// D1-450 C3: combineFamily weights combined score by scoredEvaluated
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('combine_agent_quality_summaries_weights_family_score_by_scoredEvaluated_not_evaluated', () => {
+  const family = (
+    score: number | null,
+    evaluated: number,
+    scoredEvaluated: number
+  ) => ({
+    score,
+    evaluated,
+    scoredEvaluated,
+    possible: evaluated,
+    issueCount: 0,
+  })
+
+  const lowCoverage = {
+    totalRows: 10,
+    quality: family(1, 10, 2),
+    instruction: family(1, 1, 1),
+    tool: family(1, 1, 1),
+    contract: family(1, 1, 1),
+    progress: family(1, 1, 1),
+    risk: family(0, 1, 1),
+    discoveryInventoryCoverage: family(null, 0, 0),
+    discoveryInventoryMissingCount: 0,
+    terminalCompletion: family(null, 0, 0),
+    emptyCompletionFailures: 0,
+    invalidToolCallErrors: 0,
+    destructiveCheckoutFailures: 0,
+    largePayloadRisks: 0,
+    readOnlyPolicyViolations: 0,
+    ignoredPathTracking: {
+      score: null,
+      evaluated: 0,
+      possible: 0,
+      violationCount: 0,
+    },
+    baselineDeflection: {
+      attemptedScore: null,
+      attemptedEvaluated: 0,
+      attemptedIncidents: 0,
+      incidentScore: null,
+      incidentEvaluated: 0,
+      incidentIncidents: 0,
+      attemptCount: 0,
+      toolCallCount: 0,
+      inputTokens: 0,
+      elapsedMs: 0,
+      qualityGateTriggerCount: 0,
+      qualityGateFixAttemptCount: 0,
+      qualityGateRerunCount: 0,
+    },
+    sleepWellnessInterruption: {
+      attemptedScore: null,
+      attemptedEvaluated: 0,
+      attemptedIncidents: 0,
+      incidentScore: null,
+      incidentEvaluated: 0,
+      incidentIncidents: 0,
+      interruptionCount: 0,
+      outputTokens: 0,
+      inputTokens: 0,
+      elapsedMs: 0,
+      afterUserPushbackCount: 0,
+      repeatedCount: 0,
+    },
+    reasons: [],
+  }
+
+  const highWeightSession = {
+    ...lowCoverage,
+    totalRows: 4,
+    quality: family(0, 4, 4),
+  }
+
+  const combined = combineAgentQualitySummaries([
+    lowCoverage,
+    highWeightSession,
+  ])
+
+  // Honest weighting (scoredEvaluated): (1*2 + 0*4) / (2+4) = 2/6 ≈ 0.333
+  // Buggy weighting (evaluated):       (1*10 + 0*4) / (10+4) = 10/14 ≈ 0.714
+  expect(combined?.quality.score).toBeCloseTo(2 / 6, 5)
+  expect(combined?.quality.scoredEvaluated).toBe(6)
+  expect(combined?.quality.evaluated).toBe(14)
 })
 
 test('test_agentQualityIssueSortValue_undefined_returns_minus_one', () => {

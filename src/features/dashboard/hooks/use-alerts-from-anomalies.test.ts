@@ -1,14 +1,16 @@
 import { renderHook } from '@testing-library/react'
-import { expect, test } from 'vitest'
+import { describe, expect, test } from 'vitest'
 import type {
   UsageReportDockerLogErrorRow,
   UsageReportProviderErrorObservationRow,
   UsageReportProviderLatencyHealthRow,
   UsageReportQuotaRow,
 } from '../api/usage-report'
+import { CANONICAL_PROVIDERS } from '../lib/provider-identity'
 import {
   buildDashboardAlertSummary,
   useAlertsFromAnomalies,
+  useDashboardAlertSummary,
 } from './use-alerts-from-anomalies'
 import type { AnomalyFlags } from './use-anomaly-detection'
 
@@ -264,250 +266,225 @@ test('buildDashboardAlertSummary deduplicates quota warnings per display lane', 
   expect(summary.issues[0]?.head).toBe('Google Flash 24h requests exhausted')
 })
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Wave 5 / S4-T1 / bugs #46, #48, #49, S4-T10, S4-T11, S4-T12
-// ─────────────────────────────────────────────────────────────────────────────
+function makeLatencyHealthRow(
+  overrides: Partial<UsageReportProviderLatencyHealthRow> & {
+    bucket_start: string
+    provider: string
+    model: string
+  }
+): UsageReportProviderLatencyHealthRow {
+  return {
+    environment: 'prod',
+    requests: 0,
+    passive_latency_sample_status: 'none',
+    upstream_p50_ms: null,
+    upstream_p95_ms: null,
+    upstream_p99_ms: null,
+    total_p95_ms: null,
+    proxy_processing_p95_ms: null,
+    missing_upstream_latency: 0,
+    provider_error_events: 0,
+    rate_limit_events: 0,
+    capacity_events: 0,
+    provider_5xx_events: 0,
+    provider_timeout_events: 0,
+    network_error_events: 0,
+    auth_failed_events: 0,
+    adapter_error_events: 0,
+    status_probe_count: 0,
+    status_probe_success_pct: null,
+    status_probe_p95_ms: null,
+    provider_ping_avg_ms: null,
+    provider_ping_packet_loss_pct: null,
+    control_ping_avg_ms: null,
+    control_packet_loss_pct: null,
+    control_probe_success_pct: null,
+    provider_ping_minus_control_ms: null,
+    probed_endpoints: null,
+    status_error_classes: null,
+    min_remaining_pct: null,
+    max_remaining_pct: null,
+    next_expected_reset_at: null,
+    quota_keys: null,
+    request_period_start: null,
+    request_period_end: null,
+    icmp_failures: 0,
+    dns_failures: 0,
+    tcp_failures: 0,
+    tls_failures: 0,
+    ...overrides,
+  }
+}
 
-// ── Bug #46: NVIDIA should NOT appear as "healthy" when it has an early reset ─
+describe('D1-450 live dashboard alert summary exports (W2)', () => {
+  test('buildDashboardAlertSummary and useDashboardAlertSummary remain wired for production', () => {
+    expect(typeof buildDashboardAlertSummary).toBe('function')
+    expect(typeof useDashboardAlertSummary).toBe('function')
+    expect(CANONICAL_PROVIDERS.length).toBeGreaterThan(0)
+  })
 
-/**
- * Bug #46: When nvidia_nim has an early-reset anomaly, the always-on healthy
- * alerts loop still emits "NVIDIA: healthy" because it compares
- * `anomalouProviders` using `.toLowerCase()` and the key stored in
- * `earlyReset` may use different casing than 'nvidia' (e.g. 'NVIDIA').
- *
- * The engineer must normalise the earlyReset key lookup.
- *
- * RED until fixed.
- */
+  test('useDashboardAlertSummary memoizes when now is unchanged across rerenders', () => {
+    const fixedNow = new Date('2026-06-13T12:00:00.000Z')
+    const { result, rerender } = renderHook(
+      ({ now }: { now: Date }) =>
+        useDashboardAlertSummary(
+          emptyAnomalies,
+          undefined,
+          undefined,
+          [],
+          [],
+          [],
+          now
+        ),
+      { initialProps: { now: fixedNow } }
+    )
+    const first = result.current
+    rerender({ now: fixedNow })
+    expect(result.current).toBe(first)
+  })
+})
+
+describe('D1-450 C8 success_pct guard', () => {
+  test('buildDashboardAlertSummary clamps status_probe_success_pct above 100', () => {
+    const now = new Date('2026-06-13T12:00:00Z')
+    const summary = buildDashboardAlertSummary({
+      anomalies: emptyAnomalies,
+      providerLatencyHealth: [
+        makeLatencyHealthRow({
+          bucket_start: '2026-06-13T11:45:00Z',
+          provider: 'anthropic',
+          model: 'claude',
+          status_probe_count: 10,
+          status_probe_success_pct: 150,
+        }),
+      ],
+      now,
+    })
+    const pingIssue = summary.issues.find((i) => i.head.includes('failed ping'))
+    expect(pingIssue).toBeDefined()
+    const count = Number(pingIssue?.head.match(/^(\d+)/)?.[1] ?? -1)
+    expect(count).toBeGreaterThanOrEqual(0)
+    expect(count).not.toBeLessThan(0)
+  })
+})
+
 test('test_useAlertsFromAnomalies_nvidia_not_healthy_when_anomalous (#46)', () => {
-  const anomalies: typeof emptyAnomalies = {
+  const anomalies: AnomalyFlags = {
     earlyReset: new Map([
       [
-        'nvidia_nim', // canonical key
-        {
-          prior: '2026-06-13T00:00:00Z',
-          current: '2026-06-12T22:00:00Z',
-        },
+        'nvidia_nim',
+        { prior: '2026-06-13T00:00:00Z', current: '2026-06-12T22:00:00Z' },
       ],
     ]),
     cacheStale: false,
   }
-
   const { result } = renderHook(() => useAlertsFromAnomalies(anomalies))
-
-  const alerts = result.current
-  // Must NOT contain "NVIDIA: healthy" when nvidia_nim has an anomaly
-  const healthyNvidiaAlerts = alerts.filter((a) => a.head === 'NVIDIA: healthy')
-  expect(healthyNvidiaAlerts).toHaveLength(0)
-
-  // MUST contain the early-reset alert
-  const earlyResetAlerts = alerts.filter((a) => a.type === 'early-reset')
-  expect(earlyResetAlerts.length).toBeGreaterThan(0)
+  expect(
+    result.current.filter((a) => a.head === 'NVIDIA: healthy')
+  ).toHaveLength(0)
+  expect(
+    result.current.filter((a) => a.type === 'early-reset').length
+  ).toBeGreaterThan(0)
 })
 
-// ── Bug #48: duplicate "healthy" alerts when same provider key appears twice ─
+test('test_useAlertsFromAnomalies_nvidia_healthy_regression_canonical_head (#46)', () => {
+  const { result } = renderHook(() => useAlertsFromAnomalies(emptyAnomalies))
+  const healthyNvidia = result.current.filter((a) =>
+    a.head.toLowerCase().includes('nvidia')
+  )
+  const hasHealthy = healthyNvidia.some((a) => a.head.endsWith(': healthy'))
+  expect(hasHealthy).toBe(true)
+  expect(healthyNvidia.some((a) => a.head === 'NVIDIA: healthy')).toBe(false)
+})
 
-/**
- * Bug #48: The always-on healthy loop iterates CANONICAL_PROVIDERS. If a
- * provider name appears in CANONICAL_PROVIDERS more than once (or if the
- * anomalouProviders Set misses a variant), duplicate healthy alerts appear.
- *
- * This test asserts each canonical provider name appears at most once as a
- * healthy alert.
- *
- * RED until dedup is enforced.
- */
 test('test_dedup_healthy_alerts_no_duplicates (#48)', () => {
   const { result } = renderHook(() => useAlertsFromAnomalies(emptyAnomalies))
-
-  const alerts = result.current
-  const healthyAlerts = alerts.filter(
+  const healthyAlerts = result.current.filter(
     (a) => typeof a.head === 'string' && a.head.endsWith(': healthy')
   )
-
   const providerNames = healthyAlerts.map((a) => a.head)
-  const uniqueNames = new Set(providerNames)
-
-  // Each healthy alert must be unique
-  expect(providerNames).toHaveLength(uniqueNames.size)
+  expect(providerNames).toHaveLength(new Set(providerNames).size)
 })
 
-// ── Bug #49: no always-on "Sync on schedule" filler when there are real alerts ─
-
-/**
- * Bug #49: `useAlertsFromAnomalies` always appends a "Sync on schedule" info
- * alert, even when the alerts list already has substantive content (early-reset,
- * cache-stale, etc.). This constant filler makes every alert list read as
- * non-empty and can mask a missing-alert bug.
- *
- * The engineer must either: (a) drop the always-on filler, or (b) suppress it
- * when there are real alerts. This test asserts option (a): "Sync on schedule"
- * must NOT appear when the anomaly flag is empty AND no summary/quotas.
- *
- * RED until the filler is removed.
- */
 test('test_no_always_on_filler_sync_on_schedule (#49)', () => {
   const { result } = renderHook(() => useAlertsFromAnomalies(emptyAnomalies))
-
-  const alerts = result.current
-  const fillerAlerts = alerts.filter((a) => a.head === 'Sync on schedule')
-
-  // Must not produce a constant filler alert
-  expect(fillerAlerts).toHaveLength(0)
+  expect(
+    result.current.filter((a) => a.head === 'Sync on schedule')
+  ).toHaveLength(0)
 })
 
-// ── S4-T10: probe-failure sums DNS/TCP/TLS failures when status probes ran ─
-
-/**
- * S4-T10: `buildDashboardAlertSummary` currently sums `icmp_failures +
- * dns_failures + tcp_failures + tls_failures` only when `status_probe_count ===
- * 0`. But when status probes DID run and some failed (count > 0, success_pct <
- * 100), the DNS/TCP failures in the same bucket should ALSO be counted.
- *
- * RED until the logic is corrected.
- */
 test('test_probe_failure_sums_dns_tcp_when_status_probes_ran (S4-T10)', () => {
   const now = new Date('2026-06-13T12:00:00Z')
-  const recentBucket = '2026-06-13T11:30:00Z' // within 90 min
-
-  const providerLatencyHealth: UsageReportProviderLatencyHealthRow[] = [
-    {
-      provider: 'anthropic',
-      model: null,
-      bucket_start: recentBucket,
-      // Status probes ran — 5 total, 3 succeeded → 2 failures from status
-      status_probe_count: 5,
-      status_probe_success_pct: 60, // 3/5 success → 2 failures
-      status_probe_p95_ms: null,
-      upstream_p95_ms: null,
-      total_p95_ms: null,
-      total_requests: null,
-      error_pct: null,
-      control_probe_success_pct: null,
-      probed_endpoints: null,
-      // DNS and TCP also failed in this bucket
-      icmp_failures: 0,
-      dns_failures: 3,
-      tcp_failures: 1,
-      tls_failures: 0,
-    },
-  ]
-
   const summary = buildDashboardAlertSummary({
     anomalies: emptyAnomalies,
-    providerLatencyHealth,
+    providerLatencyHealth: [
+      makeLatencyHealthRow({
+        bucket_start: '2026-06-13T11:30:00Z',
+        provider: 'anthropic',
+        model: 'claude-sonnet-4',
+        status_probe_count: 5,
+        status_probe_success_pct: 60,
+        dns_failures: 3,
+        tcp_failures: 1,
+      }),
+    ],
     now,
   })
-
-  // Should flag probe failures; the count includes DNS+TCP when status probes ran
-  const pingIssue = summary.issues.find(
-    (i) =>
-      i.head.toLowerCase().includes('ping') ||
-      i.head.toLowerCase().includes('probe') ||
-      i.head.toLowerCase().includes('failed')
-  )
+  const pingIssue = summary.issues.find((i) => i.head.includes('failed ping'))
   expect(pingIssue).toBeDefined()
-
-  // The failure count must be > the status-probe failures alone (2)
-  // because DNS (3) + TCP (1) contribute when status probes ran
-  const countMatch = pingIssue?.head.match(/^(\d+)/)
-  const count =
-    countMatch !== null && countMatch !== undefined ? Number(countMatch[1]) : 0
-  expect(count).toBeGreaterThan(2)
+  expect(Number(pingIssue?.head.match(/^(\d+)/)?.[1] ?? 0)).toBeGreaterThan(2)
 })
 
-// ── S4-T11: same-day reset includes time in sub text ─
-
-/**
- * S4-T11: When an early-reset anomaly spans two timestamps on the same
- * calendar date, the alert sub-text currently shows "2026-06-13 -> 2026-06-13"
- * which is uninformative. The engineer must include the time component when
- * the dates are the same day.
- *
- * RED until the time-inclusion logic is added.
- */
 test('test_same_day_reset_includes_time_in_sub (S4-T11)', () => {
-  const anomalies: typeof emptyAnomalies = {
-    earlyReset: new Map([
-      [
-        'anthropic',
-        {
-          prior: '2026-06-13T10:00:00Z',
-          current: '2026-06-13T05:00:00Z', // same date, earlier time
-        },
-      ],
-    ]),
-    cacheStale: false,
-  }
-
   const summary = buildDashboardAlertSummary({
-    anomalies,
+    anomalies: {
+      earlyReset: new Map([
+        [
+          'anthropic',
+          {
+            prior: '2026-06-13T10:00:00Z',
+            current: '2026-06-13T05:00:00Z',
+          },
+        ],
+      ]),
+      cacheStale: false,
+    },
     now: new Date('2026-06-13T12:00:00Z'),
   })
-
-  const resetIssue = summary.issues.find(
-    (i) =>
-      i.head.toLowerCase().includes('reset') ||
-      i.head.toLowerCase().includes('early')
+  const resetIssue = summary.issues.find((i) =>
+    i.head.toLowerCase().includes('early reset')
   )
-  expect(resetIssue).toBeDefined()
-
-  // The sub text must NOT be just "2026-06-13 -> 2026-06-13" (same day with no time)
-  // It must include time information to be useful
-  const sub = resetIssue?.sub ?? ''
-  // Should contain a time indicator (T, colon, or UTC offset)
-  expect(sub).toMatch(/T\d{2}:\d{2}|:\d{2}Z|\d{2}:\d{2}/)
+  expect(resetIssue?.sub ?? '').toMatch(/T\d{2}:\d{2}|:\d{2}Z|\d{2}:\d{2}/)
 })
 
-// ── S4-T12: 90-min cutoff recomputes on clock tick ─
-
-/**
- * S4-T12: `buildDashboardAlertSummary` accepts a `now` parameter and computes
- * `cutoff = now - 90min`. Two calls with different `now` values must produce
- * different alert sets when observations straddle the boundary.
- *
- * This test confirms the cutoff is not cached/frozen but re-evaluated per
- * call. It's a pure-function test — GREEN for `buildDashboardAlertSummary`
- * today (it already takes `now`), but documents the contract and will go RED
- * if someone removes the `now` parameter.
- */
 test('test_90min_cutoff_recomputes_on_clock_tick (S4-T12)', () => {
-  const observationAt = '2026-06-13T10:00:00Z'
-  const justWithin90 = new Date('2026-06-13T11:29:59Z') // 89 min 59s later
-  const justOutside90 = new Date('2026-06-13T11:31:00Z') // 91 min later
-
   const obs: UsageReportProviderErrorObservationRow[] = [
     {
+      observed_at: '2026-06-13T10:00:00Z',
+      environment: 'prod',
       provider: 'anthropic',
-      model: null,
-      observed_at: observationAt,
+      model: 'claude',
+      model_group: 'sonnet',
+      route_family: 'llm',
       status_code: 429,
-      error_code: null,
-      error_class: null,
+      error_type: 'rate_limit',
+      error_code: 'rate_limit',
+      error_class: 'rate_limit',
       error_message: 'rate limited',
-      request_count: 1,
+      retry_after_seconds: null,
+      expected_reset_at: null,
     },
   ]
-
-  const summaryWithin = buildDashboardAlertSummary({
+  const within = buildDashboardAlertSummary({
     anomalies: emptyAnomalies,
     providerErrorObservations: obs,
-    now: justWithin90,
+    now: new Date('2026-06-13T11:29:59Z'),
   })
-
-  const summaryOutside = buildDashboardAlertSummary({
+  const outside = buildDashboardAlertSummary({
     anomalies: emptyAnomalies,
     providerErrorObservations: obs,
-    now: justOutside90,
+    now: new Date('2026-06-13T11:31:00Z'),
   })
-
-  // Within 90 min → error issue should appear
-  expect(summaryWithin.severity).toBe('error')
-  expect(summaryWithin.issues.some((i) => i.severity === 'error')).toBe(true)
-
-  // Outside 90 min → observation is stale, no error issue
-  expect(
-    summaryOutside.issues.filter((i) => i.severity === 'error')
-  ).toHaveLength(0)
+  expect(within.severity).toBe('error')
+  expect(outside.issues.filter((i) => i.severity === 'error')).toHaveLength(0)
 })

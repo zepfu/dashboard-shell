@@ -41,6 +41,11 @@ describe('fmtCompact', () => {
     expect(fmtCompact(999_999)).toBe('1000.0K')
   })
 
+  it('test_fmtCompact_negative_large_bypasses_compact_tiers (C9)', () => {
+    // Documented intentional: negatives do not use B/M/K tiers.
+    expect(fmtCompact(-1_234_567)).toBe('-1234567')
+  })
+
   // 1M–1B: M suffix
   it('test_fmtCompact_exact_1m', () => {
     expect(fmtCompact(1_000_000)).toBe('1.0M')
@@ -112,18 +117,8 @@ describe('numFmt', () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * S4-16: `numFmt` currently calls `n.toLocaleString(undefined, …)` which
- * uses the Node/V8 runtime locale, producing different separators in different
- * CI environments (e.g. "1.234.567" in de-DE vs "1,234,567" in en-US).
- * The fix is to pin `'en-US'`.
- *
- * These tests are RED in any environment that resolves `undefined` to a
- * non-en-US locale, and will be GREEN once the engineer pins `'en-US'`.
- *
- * In the vitest worktree environment the locale is likely en-US already, so
- * the primary red signal comes from verifying the *separator character* is
- * exactly a comma (not a period or other) — plus explicit documentation that
- * this must hold across environments.
+ * S4-16 / locale contract: `numFmt` pins `'en-US'` so thousand separators stay
+ * stable across CI locales (comma grouping, dot decimals).
  */
 describe('numFmt locale-independence (S4-16)', () => {
   it('test_numFmt_pins_en_US_thousand_separator_is_comma', () => {
@@ -159,8 +154,7 @@ describe('numFmt locale-independence (S4-16)', () => {
 /**
  * S4-T7: `fmtCompact` and `numFmt` have no guard for NaN or negative values.
  * The engineer must decide: either guard or document. These tests pin the
- * expected post-fix behavior (guarded / returning a sentinel) and will be RED
- * until the engineer adds the guard or explicit handling.
+ * Regression contract: guarded NaN/negative handling (sentinel or stable string).
  */
 describe('fmtCompact negative and NaN inputs (S4-T7)', () => {
   it('test_fmtCompact_negative_does_not_produce_NaN_string', () => {
