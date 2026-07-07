@@ -233,7 +233,10 @@ describe('lazy hover-tooltip content contract (S3-26 / #91)', () => {
 
 // ---------------------------------------------------------------------------
 // Smoke test alias (per plan Smoke Test Procedure §)
-// Activates the .todo stub in plan_adversarial_review_20260612.test.tsx.
+// Durable smoke contract ownership for the adversarial-review rename is now
+// documented in docs/implemented/2026-06-plan-adversarial-review-20260612.md
+// and exercised via the maintained smoke file at
+// `src/test/smoke/dashboard-mount.smoke.test.tsx`.
 // ---------------------------------------------------------------------------
 
 test('test_lazy_tooltip_not_in_dom_until_hover', () => {
