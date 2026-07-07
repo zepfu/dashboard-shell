@@ -9,24 +9,30 @@
 // Real pgsql-parser returns a ParseResult: { version: number, stmts: [...] }.
 // We return the stmts array so the assertions pass while still exercising the
 // real parser (syntax errors will throw from the underlying parse call).
-// This keeps the test file untouched (per engineer constraints) and provides
-// actual SQL parse-validation via the real dependency.
 //
 // We use an absolute file: URL (via require.resolve) to import the real package
 // so that Vite/Vitest's 'pgsql-parser' alias (pointing back at this shim) does
 // not cause infinite recursion.
 
 import { createRequire } from 'node:module'
+import { pathToFileURL } from 'node:url'
 
 const require = createRequire(import.meta.url)
+
+/**
+ * @param {string} realEntry Absolute filesystem path to the real parser entry.
+ * @returns {string} file: URL href suitable for dynamic import().
+ */
+export function toRealParserUrl(realEntry) {
+  return pathToFileURL(realEntry).href
+}
+
 const realEntry = require.resolve('pgsql-parser')
-const realUrl = 'file://' + realEntry
+const realUrl = toRealParserUrl(realEntry)
 
 const { parse: realParse } = await import(realUrl)
 
 export async function parse(sql) {
   const result = await realParse(sql)
-  // Return the statements array so Array.isArray + length checks succeed.
-  // A successful parse with a non-empty stmts list is the validation signal.
   return result?.stmts ?? []
 }
