@@ -2,14 +2,21 @@ import {
   Component,
   lazy,
   Suspense,
+  useEffect,
+  useMemo,
+  useState,
   type ComponentType,
-  type LazyExoticComponent,
   type ReactNode,
 } from 'react'
 import { AlertTriangle, Loader2 } from 'lucide-react'
 import { getAccentStyle } from '@/lib/accent-color'
+import {
+  isStaleAssetError,
+  reloadForStaleAsset,
+} from '@/lib/stale-asset-reload'
 import { cn } from '@/lib/utils'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
+import { Button } from '@/components/ui/button'
 import { ConfigDrawer } from '@/components/config-drawer'
 import { Header } from '@/components/layout/header'
 import { Main } from '@/components/layout/main'
@@ -69,6 +76,8 @@ type BoundaryProps = {
   children: ReactNode
   config: RemoteDashboardRegistryEntry
   routePath: string
+  lazyEpoch: number
+  onRetry: () => void
 }
 
 type BoundaryState = {
@@ -79,7 +88,21 @@ class RemoteModuleBoundary extends Component<BoundaryProps, BoundaryState> {
   state: BoundaryState = { error: null }
 
   static getDerivedStateFromError(error: unknown): BoundaryState {
+    if (isStaleAssetError(error)) {
+      reloadForStaleAsset()
+    }
     return { error }
+  }
+
+  componentDidUpdate(prevProps: BoundaryProps) {
+    if (
+      prevProps.routePath !== this.props.routePath ||
+      prevProps.lazyEpoch !== this.props.lazyEpoch
+    ) {
+      if (this.state.error !== null) {
+        this.setState({ error: null })
+      }
+    }
   }
 
   render() {
@@ -108,6 +131,16 @@ class RemoteModuleBoundary extends Component<BoundaryProps, BoundaryState> {
                     ? `The ${this.props.config.moduleId} remote loaded but its default export does not match the shell ProjectModule contract.`
                     : `Check that the ${this.props.config.moduleId} remote is running and that remoteEntry.js is reachable from the shell.`}
                 </AlertDescription>
+                {!isContractViolation ? (
+                  <Button
+                    type='button'
+                    variant='outline'
+                    className='mt-3'
+                    onClick={() => this.props.onRetry()}
+                  >
+                    Retry
+                  </Button>
+                ) : null}
               </Alert>
             </Main>
           }
@@ -119,38 +152,67 @@ class RemoteModuleBoundary extends Component<BoundaryProps, BoundaryState> {
   }
 }
 
-const remoteModuleViews = Object.fromEntries(
+const remoteModuleImporters = Object.fromEntries(
   Object.values(remoteDashboardConfigByKey).map((config) => [
     config.key,
-    lazy(() => {
-      const load = createRetryableImporter(async () => {
-        publishRemoteRuntimeConfig(config)
-        const remote = await config.importModule()
-        assertProjectModule(remote.default)
-        publishRemoteRuntimeConfig(config)
+    createRetryableImporter(async () => {
+      publishRemoteRuntimeConfig(config)
+      const remote = await config.importModule()
+      assertProjectModule(remote.default)
+      publishRemoteRuntimeConfig(config)
 
-        return {
-          default: createRemoteModuleView(config, remote.default),
-        }
-      })
-      return load()
+      return {
+        default: createRemoteModuleView(config, remote.default),
+      }
     }),
   ])
 ) as Record<
   RemoteDashboardKey,
-  LazyExoticComponent<ComponentType<RemoteModuleViewProps>>
+  ReturnType<
+    typeof createRetryableImporter<{
+      default: ComponentType<RemoteModuleViewProps>
+    }>
+  >
 >
+
+function RemoteLazyModuleLoader({
+  moduleKey,
+  routePath,
+  loadGeneration,
+}: {
+  moduleKey: RemoteDashboardKey
+  routePath: string
+  loadGeneration: number
+}) {
+  const LazyView = useMemo(
+    () => lazy(() => remoteModuleImporters[moduleKey]()),
+    // loadGeneration forces a fresh React.lazy after boundary Retry (H1).
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional retry epoch
+    [moduleKey, loadGeneration]
+  )
+
+  return <LazyView routePath={routePath} />
+}
 
 export function RemoteDashboardRoute({
   moduleKey,
   routePath,
 }: RemoteDashboardRouteProps) {
   const config = remoteDashboardConfigByKey[moduleKey]
-  const RemoteModuleView = remoteModuleViews[moduleKey]
-  publishRemoteRuntimeConfig(config)
+  const [lazyEpoch, setLazyEpoch] = useState(0)
+
+  useEffect(() => {
+    publishRemoteRuntimeConfig(config)
+  }, [config])
 
   return (
-    <RemoteModuleBoundary config={config} routePath={routePath}>
+    <RemoteModuleBoundary
+      key={routePath}
+      config={config}
+      routePath={routePath}
+      lazyEpoch={lazyEpoch}
+      onRetry={() => setLazyEpoch((epoch) => epoch + 1)}
+    >
       <Suspense
         fallback={
           <RemoteDashboardFrame
@@ -161,7 +223,11 @@ export function RemoteDashboardRoute({
           />
         }
       >
-        <RemoteModuleView routePath={routePath} />
+        <RemoteLazyModuleLoader
+          moduleKey={moduleKey}
+          routePath={routePath}
+          loadGeneration={lazyEpoch}
+        />
       </Suspense>
     </RemoteModuleBoundary>
   )
@@ -206,7 +272,7 @@ function createRemoteModuleView(
     return (
       <RemoteDashboardFrame
         module={module}
-        routePath={routeMatch.route.path}
+        routePath={resolvedRoutePath}
         configKey={config.key}
         main={
           <Main fluid className='min-h-[calc(100svh-4rem)]'>
@@ -254,6 +320,17 @@ function findRemoteRouteMatch(routes: RemoteRouteConfig[], routePath: string) {
   return undefined
 }
 
+function remoteNavPathsEqual(
+  shellPaths: string[],
+  modulePaths: string[]
+): boolean {
+  if (shellPaths.length !== modulePaths.length) return false
+  for (let index = 0; index < shellPaths.length; index += 1) {
+    if (shellPaths[index] !== modulePaths[index]) return false
+  }
+  return true
+}
+
 function RemoteHeader({
   module,
   routePath,
@@ -279,8 +356,10 @@ function RemoteHeader({
     shellConfig &&
     module.navItems.length > 0 &&
     shellConfig.navItems.length > 0 &&
-    JSON.stringify(module.navItems.map((n) => n.path)) !==
-      JSON.stringify(shellConfig.navItems.map((n) => n.path))
+    !remoteNavPathsEqual(
+      shellConfig.navItems.map((n) => n.path),
+      module.navItems.map((n) => n.path)
+    )
   ) {
     warnRemoteNavDrift(shellConfig.moduleId)
   }
@@ -363,7 +442,7 @@ function RemoteRouteNotFound({
   return (
     <RemoteDashboardFrame
       module={module}
-      routePath=''
+      routePath={routePath}
       configKey={undefined}
       main={
         <Main>

@@ -32,6 +32,10 @@ export function errorText(value: unknown): string {
 }
 
 export function isStaleAssetError(value: unknown) {
+  if (value instanceof Error && value.name === 'ChunkLoadError') {
+    return true
+  }
+
   const text = errorText(value)
   return staleAssetErrorPatterns.some((pattern) => pattern.test(text))
 }

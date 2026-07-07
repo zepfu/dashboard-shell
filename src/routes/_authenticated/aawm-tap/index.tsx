@@ -1,7 +1,16 @@
-import { createFileRoute, Navigate } from '@tanstack/react-router'
+import { createFileRoute, redirect } from '@tanstack/react-router'
+import { remoteDashboardConfigByKey } from '@/shell/remote-dashboard-registry'
+
+const defaultSplat = remoteDashboardConfigByKey[
+  'aawm-tap'
+].defaultRoutePath.replace(/^\//, '')
 
 export const Route = createFileRoute('/_authenticated/aawm-tap/')({
-  component: () => (
-    <Navigate to='/aawm-tap/$' params={{ _splat: 'overview' }} replace />
-  ),
+  beforeLoad: () => {
+    throw redirect({
+      to: '/aawm-tap/$',
+      params: { _splat: defaultSplat },
+      replace: true,
+    })
+  },
 })

@@ -117,7 +117,10 @@ the consuming work.
 ## Route Contract
 
 Remote route paths are matched inside the shell after stripping the shell
-`basePath`.
+`basePath`. The shell normalizes paths with `normalizeRemoteRoutePath`, which
+strips query strings and hash fragments before matching (L5). Remotes should not
+rely on `?search` or `#hash` segments for route resolution inside the federated
+shell mount.
 
 Supported route patterns:
 

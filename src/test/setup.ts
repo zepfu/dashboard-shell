@@ -2,6 +2,13 @@ import '@testing-library/jest-dom'
 import { http, HttpResponse } from 'msw'
 import { setupServer } from 'msw/node'
 
+// Vitest runs with DEV=true by default; production shell contracts (e.g. query retry)
+// expect PROD-like env unless a test temporarily overrides import.meta.env.DEV.
+if (import.meta.env.DEV) {
+  ;(import.meta.env as { DEV: boolean }).DEV = false
+  ;(import.meta.env as { PROD: boolean }).PROD = true
+}
+
 export const server = setupServer(
   http.get('/api/shell/health', () =>
     HttpResponse.json({

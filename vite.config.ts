@@ -108,6 +108,10 @@ export default defineConfig({
       target: 'react',
       autoCodeSplitting: true,
     }),
+    // Module Federation: react/react-dom/@tanstack/react-query are singleton-shared.
+    // lucide-react is intentionally NOT shared (L3): each remote bundles its own copy
+    // so icon trees stay version-synced with that remote's build without forcing a
+    // single shared lucide version across independently released dashboards.
     federation({
       name: 'dashboard-shell',
       dts: false,
@@ -142,6 +146,8 @@ export default defineConfig({
           entryGlobalName: 'aegis-dashboard',
           shareScope: 'default',
         },
+        // L6: remote key `sluice` (not `sluice-dashboard`) is a documented naming
+        // exception — changing it requires coordinated remoteEntry renames in Sluice.
         sluice: {
           type: sluiceRemoteEntryType,
           name: 'sluice',
