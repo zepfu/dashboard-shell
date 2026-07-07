@@ -309,6 +309,8 @@ let dockerLogJsonSourcesCache = null
 
 /** @type {{ sortedRows: unknown[], forDashboard: unknown[], cachedAt: number } | null} */
 let dockerLogErrorsScanCache = null
+/** @type {Map<string, { size: number, mtimeMs: number, tailBytes: number, rows: unknown[] }>} */
+let dockerLogScanSourceCache = new Map()
 let dockerLogTailReadCountForTests = 0
 const LOCAL_HEALTH_TIMEOUT_MS = boundedIntegerEnv(
   'SHELL_REPORT_LOCAL_HEALTH_TIMEOUT_MS',
@@ -9880,7 +9882,19 @@ function isDockerLogScanCacheFresh(cachedAt, ttlMs = DOCKER_LOG_SCAN_CACHE_TTL_M
 function resetDockerLogScanCachesForTests() {
   dockerLogJsonSourcesCache = null
   dockerLogErrorsScanCache = null
+  dockerLogScanSourceCache = new Map()
   dockerLogTailReadCountForTests = 0
+}
+
+function computeDockerLogSourceCacheKey(source = {}) {
+  return `${source.container ?? ''}|${source.logPath ?? ''}`
+}
+
+function filterDockerLogRowsByCutoff(rows, cutoffMs) {
+  return (Array.isArray(rows) ? rows : []).filter((row) => {
+    const observedAt = Date.parse(row?.observed_at ?? '')
+    return Number.isFinite(observedAt) && observedAt >= cutoffMs
+  })
 }
 
 async function findDockerJsonLogSources() {
@@ -9932,16 +9946,25 @@ async function findDockerJsonLogSources() {
   return sources
 }
 
-async function readFileTail(filePath, maxBytes) {
+async function readFileTail(filePath, maxBytes, stats) {
   dockerLogTailReadCountForTests += 1
   const handle = await open(filePath, 'r')
   try {
-    const stats = await handle.stat()
-    const length = Math.min(stats.size, maxBytes)
-    const offset = Math.max(0, stats.size - length)
+    const fileStats = stats ?? (await handle.stat())
+    const length = Math.min(fileStats.size, maxBytes)
+    const offset = Math.max(0, fileStats.size - length)
     const buffer = Buffer.alloc(length)
     await handle.read(buffer, 0, length, offset)
     return { text: buffer.toString('utf8'), truncated: offset > 0 }
+  } finally {
+    await handle.close()
+  }
+}
+
+async function readDockerLogFileStats(filePath) {
+  const handle = await open(filePath, 'r')
+  try {
+    return await handle.stat()
   } finally {
     await handle.close()
   }
@@ -9975,12 +9998,41 @@ async function scanDockerLogErrorsFromSources(sources) {
   const cutoffMs = Date.now() - 90 * 60 * 1000
   const rows = []
   const scanSources = capDockerJsonLogSourcesForScan(sources)
+  const nextSourceCache = new Map()
+
   for (const source of scanSources) {
+    const sourceCacheKey = computeDockerLogSourceCacheKey(source)
+    const tailBytes = source.tailBytes ?? DOCKER_LOG_TAIL_BYTES
+
+    let stats
+    try {
+      stats = await readDockerLogFileStats(source.logPath)
+    } catch (error) {
+      process.stderr.write(
+        `[report-service] WARN: unable to read Docker log metadata ${source.container}: ${formatError(error)}\n`
+      )
+      continue
+    }
+
+    const cached = dockerLogScanSourceCache.get(sourceCacheKey)
+    const unchanged =
+      cached &&
+      cached.tailBytes === tailBytes &&
+      cached.size === stats.size &&
+      cached.mtimeMs === stats.mtimeMs
+
+    if (unchanged) {
+      rows.push(...filterDockerLogRowsByCutoff(cached.rows, cutoffMs))
+      nextSourceCache.set(sourceCacheKey, cached)
+      continue
+    }
+
     let tail
     try {
       tail = await readFileTail(
         source.logPath,
-        source.tailBytes ?? DOCKER_LOG_TAIL_BYTES
+        tailBytes,
+        stats
       )
     } catch (error) {
       process.stderr.write(
@@ -10000,7 +10052,15 @@ async function scanDockerLogErrorsFromSources(sources) {
       },
     })
     rows.push(...extracted)
+    nextSourceCache.set(sourceCacheKey, {
+      rows: extracted,
+      size: stats.size,
+      mtimeMs: stats.mtimeMs,
+      tailBytes,
+    })
   }
+
+  dockerLogScanSourceCache = nextSourceCache
 
   return rows.sort((a, b) =>
     String(b.observed_at).localeCompare(String(a.observed_at))

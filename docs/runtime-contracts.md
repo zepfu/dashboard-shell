@@ -460,6 +460,21 @@ Durable intake layout:
     large files are not fully reread for every scan. A duplicate older than that
     bounded window can be appended again; this is accepted to keep each scan
     bounded and should be handled by cleanup/triage instead of unbounded rereads.
+- Docker JSON scan budgets are bounded in-process and bounded by env:
+  - `SHELL_REPORT_DOCKER_LOG_SCAN_MAX_SOURCES` (`1` to `128`, default `24`) caps
+    sources considered per scan.
+  - `SHELL_REPORT_DOCKER_LOG_SCAN_MAX_TOTAL_BYTES` (`256KiB` to `128MiB`,
+    default `16MiB`) caps total tailed bytes across selected sources.
+  - `SHELL_REPORT_DOCKER_LOG_TAIL_BYTES` (`64KiB` to `32MiB`, default `4MiB`)
+    is the per-source byte cap before the shared total is exhausted.
+  - `SHELL_REPORT_DOCKER_LOG_SCAN_CACHE_TTL_MS` (`0` to `600s`, default
+    `45_000ms`) controls scan result cache freshness.
+  - `SHELL_REPORT_DOCKER_LOG_INTAKE_FINGERPRINT_MAX` (`256` to `65_536`,
+    default `8192`) bounds seen fingerprint retention for centralized intake
+    dedupe.
+  - After TTL expiry, unchanged Docker JSON sources reuse per-source cached rows when
+    file `size` and `mtimeMs` match the last scan checkpoint, so unchanged files
+    are not reread or reparsed.
 - Compose-project marker matching is not hard-coded to `/projects/dashboard-shell`:
   if needed, set `SHELL_REPORT_DOCKER_COMPOSE_PROJECT_MARKERS` to one or more
   comma-separated path fragments so renamed checkouts can still match with
