@@ -33,9 +33,12 @@ import path from 'node:path'
 
 let injectedStyleEl: HTMLStyleElement | null = null
 let rawCss = ''
+const indexCssPath = path.resolve('src/styles/index.css')
+let indexCss = ''
 
 beforeAll(() => {
   rawCss = fs.readFileSync(path.resolve('src/styles/theme.css'), 'utf8')
+  indexCss = fs.readFileSync(indexCssPath, 'utf8')
 
   injectedStyleEl = document.createElement('style')
   injectedStyleEl.textContent = rawCss
@@ -100,6 +103,26 @@ function getCssVar(name: string): string {
 function assertVarDefined(name: string): void {
   const defined = rawCss.includes(`${name}:`) || rawCss.includes(`${name} :`)
   expect(defined).toBe(true)
+}
+
+/** Rule bodies where `font-family` references monospace token and weight is 700. */
+function monoContextRulesWithFauxBold700(css: string): string[] {
+  const ruleRegex = /([^{}]+)\{([^}]*)\}/gs
+  const hits: string[] = []
+  let match: RegExpExecArray | null
+  while ((match = ruleRegex.exec(css)) !== null) {
+    const selector = match[1].trim()
+    const body = match[2]
+    const isMonoContext =
+      /font-family:\s*var\(--font-mono\)/.test(body) ||
+      /IBM Plex Mono/.test(body) ||
+      /--font-mono/.test(selector)
+    if (!isMonoContext) continue
+    if (/font-weight:\s*700\b/.test(body)) {
+      hits.push(`${selector} { … font-weight: 700 … }`)
+    }
+  }
+  return hits
 }
 
 // ---------------------------------------------------------------------------
@@ -197,4 +220,64 @@ test('test_phosphor_key_tokens_all_defined', () => {
     // Assert with a descriptive message pattern (vitest shows the expect call)
     expect({ token, isDefined }).toMatchObject({ token, isDefined: true })
   }
+})
+
+test('test_font_generic_families_not_quoted', () => {
+  /**
+   * I-5: CSS generic families (sans-serif) must not be quoted in @theme font
+   * stacks — e.g. `--font-inter: 'Inter', sans-serif` not `'sans-serif'`.
+   */
+  const fontInterLine = rawCss.match(/--font-inter:\s*[^;]+;/)?.[0] ?? ''
+  const fontManropeLine = rawCss.match(/--font-manrope:\s*[^;]+;/)?.[0] ?? ''
+
+  expect(fontInterLine, '--font-inter declaration').not.toMatch(/'sans-serif'/)
+  expect(fontManropeLine, '--font-manrope declaration').not.toMatch(
+    /'sans-serif'/
+  )
+})
+
+test('test_no_vestigial_dark_block_machinery', () => {
+  /**
+   * C-6: token-layer tests must not fake cascade via injected `.dark` or
+   * `.dark { }` parsing inside getCssVar — read plain source tokens only.
+   */
+  const selfSource = fs.readFileSync(
+    path.resolve('src/styles/token-layer.test.ts'),
+    'utf8'
+  )
+
+  expect(selfSource).not.toMatch(
+    /document\.documentElement\.classList\.add\(['"]dark['"]\)/
+  )
+  expect(selfSource).not.toMatch(/\.dark\s*\\\{/)
+  expect(selfSource).not.toMatch(/Prefer the value from the \.dark/)
+})
+
+test('test_labeled_assertions_use_message_arg', () => {
+  /**
+   * E-1: token presence loop must use labeled expect(isDefined, token).toBe(true)
+   * instead of roundabout toMatchObject on { token, isDefined }.
+   */
+  const selfSource = fs.readFileSync(
+    path.resolve('src/styles/token-layer.test.ts'),
+    'utf8'
+  )
+
+  expect(selfSource).not.toMatch(
+    /expect\(\{\s*token,\s*isDefined\s*\}\)\.toMatchObject/
+  )
+})
+
+test('test_no_faux_bold_mono_weight', () => {
+  /**
+   * I-6 / SD-3: IBM Plex Mono webfont is not loaded from index.html (system
+   * monospace fallback), so font-weight: 700 in mono contexts is faux-bold.
+   * Emphasis in mono UI must standardize on 600 — assert zero 700 rules in
+   * mono-context selectors in index.css (CSS rule text tripwire).
+   */
+  const fauxBoldRules = monoContextRulesWithFauxBold700(indexCss)
+  expect(
+    fauxBoldRules,
+    `mono contexts must not use font-weight: 700 (faux-bold without loaded Plex Mono): ${fauxBoldRules.join('; ')}`
+  ).toHaveLength(0)
 })
