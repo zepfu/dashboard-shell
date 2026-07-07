@@ -1,10 +1,23 @@
 import crypto from 'node:crypto'
-import { appendFile, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import {
+  appendFile,
+  mkdir,
+  open,
+  readFile,
+  rename,
+  rm,
+  stat,
+  writeFile,
+} from 'node:fs/promises'
 import path from 'node:path'
 
 export const DEFAULT_INTAKE_LOCK_MAX_WAIT_MS = 5_000
 const DEFAULT_INTAKE_LOCK_STALE_MS = 120_000
 const DEFAULT_INTAKE_LOCK_POLL_MS = 25
+const DEFAULT_INTAKE_FINGERPRINT_MAX_BYTES = 128 * 1024
+const DEFAULT_INTAKE_FINGERPRINT_MAX_LINES = 1_000
+const SHELL_REPORT_DOCKER_COMPOSE_PROJECT_MARKERS_ENV_VAR =
+  'SHELL_REPORT_DOCKER_COMPOSE_PROJECT_MARKERS'
 
 /** Per intake file: serialize lock acquisition within one process. */
 const intakeFileLockChains = new Map()
@@ -13,44 +26,212 @@ export function dockerLogErrorIntakeLockDir(filePath) {
   return `${filePath}.intake.lock`
 }
 
+function splitList(value) {
+  if (!value || !String(value).trim()) return []
+  return String(value)
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean)
+}
+
+function unique(value) {
+  return [...new Set(value.map((item) => String(item).trim()).filter(Boolean))]
+}
+
+function normalizedRepoPath(env = process.env) {
+  return String(env.PWD ?? process.cwd()).replace(/\\+/g, '/').toLowerCase()
+}
+
+function normalizeForComposeMatch(value) {
+  return String(value ?? '').replace(/\\+/g, '/').toLowerCase()
+}
+
+function markerBoundaryBefore(value, index) {
+  if (index <= 0) return true
+  return /[\n/:=,;]/.test(value[index - 1])
+}
+
+function markerBoundaryAfter(value, index) {
+  if (index >= value.length) return true
+  return /[\n/.:=,;]/.test(value[index])
+}
+
+function composeMarkerMatches(haystack, marker) {
+  const normalizedMarker = normalizeForComposeMatch(marker).trim()
+  if (!normalizedMarker) return false
+
+  let index = haystack.indexOf(normalizedMarker)
+  while (index !== -1) {
+    const afterIndex = index + normalizedMarker.length
+    if (
+      markerBoundaryBefore(haystack, index) &&
+      markerBoundaryAfter(haystack, afterIndex)
+    ) {
+      return true
+    }
+    index = haystack.indexOf(normalizedMarker, index + 1)
+  }
+  return false
+}
+
+function currentComposeProjectMarkers(env = process.env) {
+  const cwdMarker = normalizedRepoPath(env)
+  const cwdMarkers = cwdMarker.includes('dashboard-shell')
+    ? [cwdMarker, `${cwdMarker}/docker-compose`]
+    : []
+  return unique([
+    ...DEFAULT_REPO_COMPOSE_PROJECT_MARKERS,
+    ...cwdMarkers,
+  ]).filter(Boolean)
+}
+
+export function resolveRepoComposeProjectMarkers(env = process.env) {
+  const configured = splitList(env[SHELL_REPORT_DOCKER_COMPOSE_PROJECT_MARKERS_ENV_VAR])
+  if (configured.length) return configured
+  return currentComposeProjectMarkers(env)
+}
+
+function readFileTailText(filePath, maxBytes, { statFn, openFn, readFileFn } = {}) {
+  const resolvedStatFn = statFn ?? stat
+  const resolvedOpenFn = openFn ?? open
+  const resolvedReadFileFn = readFileFn ?? readFile
+
+  return (async () => {
+    const fileInfo = await resolvedStatFn(filePath)
+    const fileSize = Number(fileInfo.size)
+    const limit = Number.isFinite(fileSize) ? fileSize : 0
+    if (!Number.isFinite(fileSize) || limit <= maxBytes) {
+      return { text: await resolvedReadFileFn(filePath, 'utf8'), start: 0 }
+    }
+
+    const offset = Math.max(0, fileSize - maxBytes)
+    const previousOffset = Math.max(0, offset - 1)
+    const previousByteBuffer = Buffer.alloc(1)
+    const readLength = Math.min(fileSize, maxBytes)
+    const handle = await resolvedOpenFn(filePath, 'r')
+    try {
+      let startsAtLineBoundary = true
+      if (offset > 0) {
+        const { bytesRead } = await handle.read(previousByteBuffer, 0, 1, previousOffset)
+        if (bytesRead === 1) {
+          startsAtLineBoundary = previousByteBuffer[0] === 10
+        }
+      }
+      const buffer = Buffer.alloc(readLength)
+      const { bytesRead } = await handle.read(buffer, 0, readLength, offset)
+      return {
+        text: buffer.slice(0, bytesRead).toString('utf8'),
+        start: Math.max(0, fileSize - maxBytes),
+        startsAtLineBoundary,
+      }
+    } finally {
+      await handle.close()
+    }
+  })()
+}
+
+function fingerprintFromPersistedRow(parsed) {
+  if (!parsed || typeof parsed !== 'object') return null
+  if (parsed.fingerprint != null) return String(parsed.fingerprint)
+  if (parsed.message == null) return null
+  return buildDockerLogErrorFingerprint({
+    container: parsed.container,
+    stream: parsed.stream,
+    observed_at: parsed.observed_at,
+    level: parsed.level,
+    status_code: parsed.status_code,
+    message: parsed.message,
+  })
+}
+
+function dockerLogErrorFingerprint(row) {
+  return row?.fingerprint != null ? String(row.fingerprint) : buildDockerLogErrorFingerprint(row)
+}
+
+function sameLockStat(left, right) {
+  if (!left || !right) return false
+  if (left.dev != null && right.dev != null && left.dev !== right.dev) return false
+  if (left.ino != null && right.ino != null && left.ino !== right.ino) return false
+  if (left.mtimeMs !== right.mtimeMs) return false
+  if (left.ctimeMs != null && right.ctimeMs != null && left.ctimeMs !== right.ctimeMs) {
+    return false
+  }
+  return true
+}
+
 /**
  * Read fingerprints already stored in an intake JSONL file (cross-process / post-restart dedupe).
  */
 export async function loadPersistedDockerLogErrorFingerprintsFromJsonl(
   filePath,
-  readFileFn = readFile
+  readFileFnOrOptions = readFile,
+  options = {}
 ) {
+  const readFileFn =
+    typeof readFileFnOrOptions === 'function'
+      ? readFileFnOrOptions
+      : readFileFnOrOptions.readFileFn ?? readFile
+  const loadOptions =
+    typeof readFileFnOrOptions === 'function' ? options : readFileFnOrOptions
+  const maxBytes = Number(loadOptions?.maxBytes ?? DEFAULT_INTAKE_FINGERPRINT_MAX_BYTES)
+  const maxLines = Number(loadOptions?.maxLines ?? DEFAULT_INTAKE_FINGERPRINT_MAX_LINES)
+  const boundedBytes = Number.isFinite(maxBytes) && maxBytes > 0 ? Math.floor(maxBytes) : 0
+  const boundedLines = Number.isFinite(maxLines) && maxLines > 0 ? Math.floor(maxLines) : 0
+  const statFn = loadOptions?.statFn ?? stat
+  const openFn = loadOptions?.openFn ?? open
   const persisted = new Set()
   let text
+  let readStart = 0
+  let startsAtLineBoundary = true
   try {
-    text = await readFileFn(filePath, 'utf8')
+    if (boundedBytes <= 0) {
+      const full = await readFileFn(filePath, 'utf8')
+      text = full
+      readStart = 0
+      startsAtLineBoundary = true
+    } else {
+      const tail = await readFileTailText(filePath, boundedBytes, {
+        statFn,
+        openFn,
+        readFileFn,
+      })
+      text = tail.text
+      readStart = tail.start
+      startsAtLineBoundary = tail.startsAtLineBoundary
+    }
   } catch (error) {
     if (error?.code === 'ENOENT') return persisted
     throw error
   }
-  for (const line of text.split('\n')) {
-    const trimmed = line.trim()
-    if (!trimmed) continue
+
+  let normalizedText = text ?? ''
+  if (readStart > 0 && !startsAtLineBoundary) {
+    const firstBoundary = normalizedText.indexOf('\n')
+    if (firstBoundary === -1) {
+      normalizedText = ''
+    } else {
+      normalizedText = normalizedText.slice(firstBoundary + 1)
+    }
+  }
+
+  const lines = normalizedText
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+
+  const rows = boundedLines > 0 ? lines.slice(-boundedLines) : lines
+
+  for (const line of rows) {
     let parsed
     try {
-      parsed = JSON.parse(trimmed)
+      parsed = JSON.parse(line)
     } catch {
       continue
     }
-    const fp =
-      parsed?.fingerprint ??
-      (parsed?.message != null
-        ? buildDockerLogErrorFingerprint({
-            container: parsed.container,
-            stream: parsed.stream,
-            observed_at: parsed.observed_at,
-            level: parsed.level,
-            status_code: parsed.status_code,
-            message: parsed.message,
-          })
-        : null)
+    const fp = fingerprintFromPersistedRow(parsed)
     if (fp) persisted.add(fp)
   }
+
   return persisted
 }
 
@@ -65,7 +246,10 @@ export async function acquireIntakeFileLock(filePath, options = {}) {
   const mkdirFn = options.mkdirFn ?? mkdir
   const statFn = options.statFn ?? stat
   const rmFn = options.rmFn ?? rm
+  const renameFn = options.renameFn ?? rename
   const deadline = Date.now() + maxWaitMs
+  const makeStalePath = () =>
+    `${lockDir}.stale.${Date.now()}.${crypto.randomUUID?.() ?? Math.random()}`
 
   while (true) {
     try {
@@ -85,7 +269,16 @@ export async function acquireIntakeFileLock(filePath, options = {}) {
       try {
         const st = await statFn(lockDir)
         if (Date.now() - st.mtimeMs > staleMs) {
-          await rmFn(lockDir, { recursive: true, force: true })
+          const current = await statFn(lockDir)
+          if (!sameLockStat(st, current)) continue
+          const staleLockDir = makeStalePath()
+          try {
+            await renameFn(lockDir, staleLockDir)
+          } catch (renameErr) {
+            if (renameErr?.code === 'ENOENT') continue
+            throw renameErr
+          }
+          await rmFn(staleLockDir, { recursive: true, force: true })
         }
       } catch (statErr) {
         if (statErr?.code === 'ENOENT') continue
@@ -152,7 +345,6 @@ export const REPO_OWNED_COMPOSE_SERVICE_NAMES = [
 /** Default path markers that tie a compose project to this repo (case-insensitive substring match). */
 export const DEFAULT_REPO_COMPOSE_PROJECT_MARKERS = [
   'dashboard-shell/docker-compose',
-  '/projects/dashboard-shell',
 ]
 
 export function normalizeDockerContainerName(name) {
@@ -163,12 +355,15 @@ export function readDockerComposeLabels(config) {
   return config?.Config?.Labels ?? config?.Labels ?? {}
 }
 
-export function isDashboardShellComposeProject(labels, markers = DEFAULT_REPO_COMPOSE_PROJECT_MARKERS) {
+export function isDashboardShellComposeProject(labels, markers = resolveRepoComposeProjectMarkers()) {
   const project = String(labels['com.docker.compose.project'] ?? '')
   const workingDir = String(labels['com.docker.compose.project.working_dir'] ?? '')
   const configFiles = String(labels['com.docker.compose.project.config_files'] ?? '')
-  const haystack = `${project}\n${workingDir}\n${configFiles}`.toLowerCase()
-  return markers.some((marker) => haystack.includes(String(marker).toLowerCase()))
+  const haystack = normalizeForComposeMatch(`${project}\n${workingDir}\n${configFiles}`)
+  const resolvedMarkers = markers?.length
+    ? unique(markers.map(normalizeForComposeMatch))
+    : resolveRepoComposeProjectMarkers()
+  return resolvedMarkers.some((marker) => composeMarkerMatches(haystack, marker))
 }
 
 /**
@@ -199,7 +394,7 @@ export function matchDockerJsonLogContainer(config, wantedContainerNames, option
     return { matched: false, container: null, matchKind: null }
   }
 
-  const markers = options.repoComposeProjectMarkers ?? DEFAULT_REPO_COMPOSE_PROJECT_MARKERS
+  const markers = options.repoComposeProjectMarkers ?? resolveRepoComposeProjectMarkers(options.env)
   if (!isDashboardShellComposeProject(labels, markers)) {
     return { matched: false, container: null, matchKind: null }
   }
@@ -230,13 +425,7 @@ export function discoverDockerJsonLogSourcesFromConfigs(entries, wantedContainer
 
 
 export function parseDockerLogContainerNames(value, fallback = DEFAULT_REPO_OWNED_DOCKER_LOG_CONTAINERS) {
-  if (!value || !String(value).trim()) {
-    return [...fallback]
-  }
-  return String(value)
-    .split(',')
-    .map((item) => item.trim())
-    .filter(Boolean)
+  return unique(splitList(value).length ? splitList(value) : fallback)
 }
 
 
@@ -246,13 +435,7 @@ export function parseDockerLogExternalContainerNames(
   value,
   fallback = ['aawm-litellm', 'litellm-dev']
 ) {
-  if (!value || !String(value).trim()) {
-    return [...fallback]
-  }
-  return String(value)
-    .split(',')
-    .map((item) => item.trim())
-    .filter(Boolean)
+  return unique(splitList(value).length ? splitList(value) : fallback)
 }
 
 export function resolveDockerLogExternalContainerNames(env = process.env) {
@@ -326,13 +509,16 @@ export function compactLogMessage(value) {
 
 export function inferLogProvider(message) {
   const lower = message.toLowerCase()
-  if (lower.includes('anthropic') || lower.includes('claude')) return 'anthropic'
-  if (lower.includes('openrouter')) return 'openrouter'
-  if (lower.includes('openai') || lower.includes('gpt-')) return 'openai'
-  if (lower.includes('google') || lower.includes('gemini')) return 'google'
-  if (lower.includes('xai') || lower.includes('grok')) return 'xai'
-  if (lower.includes('nvidia') || lower.includes('nim')) return 'nvidia_nim'
-  if (lower.includes('local')) return 'local'
+  const hasWord = (token) => new RegExp(`(^|[^a-z0-9_])${token}([^a-z0-9_]|$)`).test(lower)
+  const hasOpenAiPrefix = /\bgpt-[a-z0-9]/i.test(message) || /\bgpt_?[0-9]/i.test(message)
+
+  if (hasWord('anthropic') || hasWord('claude')) return 'anthropic'
+  if (hasWord('openrouter')) return 'openrouter'
+  if (hasWord('openai') || hasOpenAiPrefix) return 'openai'
+  if (hasWord('google') || hasWord('gemini')) return 'google'
+  if (hasWord('xai') || hasWord('grok')) return 'xai'
+  if (hasWord('nvidia') || hasWord('nim')) return 'nvidia_nim'
+  if (hasWord('local')) return 'local'
   return 'unknown'
 }
 
@@ -526,7 +712,7 @@ export function buildDockerLogErrorRow(parsed, container, source = {}) {
     stream: String(parsed?.stream ?? 'unknown'),
     provider: inferLogProvider(message),
     status_code: inferLogStatusCode(message),
-    level: level === 'warning' && isActionableErrorLog(message) ? 'error' : level,
+    level,
     message,
     source_identity: source.sourceIdentity ?? null,
     source_path: source.sourcePath ?? null,
@@ -567,21 +753,16 @@ export function extractDockerLogErrorsFromTail({
 export function selectNewDockerLogErrors(rows, seenFingerprints) {
   const fresh = []
   for (const row of rows) {
-    const key = row.fingerprint ?? buildDockerLogErrorFingerprint(row)
+    const key = dockerLogErrorFingerprint(row)
     if (seenFingerprints.has(key)) continue
     fresh.push(row)
   }
   return fresh
 }
 
-/** @deprecated Use selectNewDockerLogErrors; this no longer mutates seenFingerprints. */
-export function filterNewDockerLogErrors(rows, seenFingerprints) {
-  return selectNewDockerLogErrors(rows, seenFingerprints)
-}
-
 export function commitDockerLogErrorFingerprints(rows, seenFingerprints) {
   for (const row of rows) {
-    const key = row.fingerprint ?? buildDockerLogErrorFingerprint(row)
+    const key = dockerLogErrorFingerprint(row)
     seenFingerprints.add(key)
   }
 }

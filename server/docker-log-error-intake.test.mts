@@ -3,11 +3,12 @@ import { appendFile, mkdtemp, readFile, readdir, rm } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
-import { afterEach, describe, expect, test } from 'vitest'
+import { afterEach, describe, expect, test, vi } from 'vitest'
 import {
   appendDockerLogErrorsToIntake,
   loadPersistedDockerLogErrorFingerprintsFromJsonl,
   discoverDockerJsonLogSourcesFromConfigs,
+  acquireIntakeFileLock,
   matchDockerJsonLogContainer,
   shouldDiscoverDockerJsonLogSources,
   splitDockerLogErrorsForDashboardAndIntake,
@@ -22,6 +23,8 @@ import {
   safeContainerErrorIntakeBasename,
   filterDockerLogErrorsForCentralizedIntake,
   isRepoOwnedDockerLogContainerName,
+  inferLogProvider,
+  resolveRepoComposeProjectMarkers,
 } from './docker-log-error-intake.mjs'
 
 const execFileAsync = promisify(execFile)
@@ -111,6 +114,19 @@ describe('docker-log-error-intake', () => {
         'dashboard-shell-reports-dev'
       )
     ).toBeNull()
+  })
+
+  test('inferLogProvider avoids substring false positives and keeps expected provider hits', () => {
+    expect(inferLogProvider('OpenAI GPT-4 request failed')).toBe('openai')
+    expect(inferLogProvider('Anthropic Claude fallback for tool')).toBe('anthropic')
+    expect(inferLogProvider('OpenRouter model route')).toBe('openrouter')
+    expect(inferLogProvider('Google Gemini returned code')).toBe('google')
+    expect(inferLogProvider('xAI/Grok quota exceeded')).toBe('xai')
+    expect(inferLogProvider('NVIDIA NIM service returned error')).toBe('nvidia_nim')
+    expect(inferLogProvider('local model serving failure')).toBe('local')
+    expect(inferLogProvider('local model failed at http://localhost:11434/v1')).toBe('local')
+    expect(inferLogProvider('minimum latency threshold reached')).toBe('unknown')
+    expect(inferLogProvider('http://localhost:11434/v1')).toBe('unknown')
   })
 
   test('container wrapper skips redis cache wait fallback warning', async () => {
@@ -267,6 +283,116 @@ describe('docker-log-error-intake', () => {
     expect(rows).toHaveLength(1)
     const parsedRows = rows.map((row) => JSON.parse(row))
     expect(parsedRows[0].message).toContain(msg)
+  })
+
+  test('acquireIntakeFileLock uses stale-lock rename cleanup instead of removing lock path', async () => {
+    const filePath = '/tmp/d1-445-stale-lock.jsonl'
+    const lockDir = `${filePath}.intake.lock`
+    let lockExists = true
+    let staleTarget = null
+    let staleExists = false
+    const mkdirCalls = []
+    const rmCalls = []
+    const renameCalls = []
+
+    const mkdirFn = vi.fn(async (dir) => {
+      mkdirCalls.push(dir)
+      if (dir !== lockDir) return
+      if (!lockExists) {
+        lockExists = true
+        return
+      }
+      const error = new Error('lock exists')
+      error.code = 'EEXIST'
+      throw error
+    })
+
+    const statFn = vi.fn(async () => ({ mtimeMs: 1 }))
+
+    const renameFn = vi.fn(async (source, target) => {
+      renameCalls.push([source, target])
+      if (!lockExists || source !== lockDir) {
+        const error = new Error('missing lock')
+        error.code = 'ENOENT'
+        throw error
+      }
+      lockExists = false
+      staleTarget = target
+      staleExists = true
+    })
+
+    const rmFn = vi.fn(async (target) => {
+      rmCalls.push(target)
+      if (target === staleTarget && staleExists) {
+        staleExists = false
+        return
+      }
+      if (target === lockDir && lockExists) {
+        const error = new Error('fresh lock removed during cleanup')
+        error.code = 'EWOULDBLOCK'
+        throw error
+      }
+    })
+
+    const { release } = await acquireIntakeFileLock(filePath, {
+      maxWaitMs: 1_000,
+      pollMs: 1,
+      staleLockMs: 0,
+      mkdirFn,
+      statFn,
+      renameFn,
+      rmFn,
+    })
+
+    await release()
+
+    expect(renameCalls).toHaveLength(1)
+    expect(rmCalls[0]).toBe(staleTarget)
+    expect(rmCalls).toContain(lockDir)
+    expect(staleTarget).not.toBeNull()
+    expect(staleTarget).toContain('.stale.')
+    expect(mkdirCalls).toContain(lockDir)
+    expect(rmCalls.filter((target) => target.startsWith(`${lockDir}.stale.`)).length).toBe(1)
+  })
+
+  test('acquireIntakeFileLock does not rename a fresh lock after stale stat changes', async () => {
+    const filePath = '/tmp/d1-445-fresh-lock.jsonl'
+    const lockDir = `${filePath}.intake.lock`
+    let mkdirAttempts = 0
+    const oldStat = { mtimeMs: 1, ctimeMs: 1, dev: 1, ino: 10 }
+    const freshStat = { mtimeMs: Date.now(), ctimeMs: Date.now(), dev: 1, ino: 11 }
+    const renameFn = vi.fn()
+    const rmFn = vi.fn()
+    const statFn = vi
+      .fn()
+      .mockResolvedValueOnce(oldStat)
+      .mockResolvedValueOnce(freshStat)
+
+    const mkdirFn = vi.fn(async (dir) => {
+      expect(dir).toBe(lockDir)
+      mkdirAttempts += 1
+      if (mkdirAttempts === 1) {
+        const error = new Error('lock exists')
+        error.code = 'EEXIST'
+        throw error
+      }
+    })
+
+    const { release } = await acquireIntakeFileLock(filePath, {
+      maxWaitMs: 1_000,
+      pollMs: 1,
+      staleLockMs: 0,
+      mkdirFn,
+      statFn,
+      renameFn,
+      rmFn,
+    })
+
+    await release()
+
+    expect(statFn).toHaveBeenCalledTimes(2)
+    expect(renameFn).not.toHaveBeenCalled()
+    expect(rmFn).toHaveBeenCalledWith(lockDir, { recursive: true, force: true })
   })
 
 
@@ -449,6 +575,37 @@ describe('docker-log-error-intake', () => {
     expect(result.container).toBe('dashboard-shell-dashboard-shell-reports-1')
   })
 
+  test('compose project matching supports override markers for renamed checkouts', () => {
+    const config = {
+      Name: '/dashboard-shell-aawm-dashboard-1',
+      Config: {
+        Labels: {
+          'com.docker.compose.service': 'aawm-dashboard',
+          'com.docker.compose.project': 'renamed-dashboard-shell',
+          'com.docker.compose.project.working_dir': '/srv/renamed-dashboard-shell',
+          'com.docker.compose.project.config_files': '/srv/renamed-dashboard-shell/docker-compose.yml',
+        },
+      },
+    }
+    const defaultMatch = matchDockerJsonLogContainer(config, ['aawm-dashboard'], {
+      repoComposeProjectMarkers: resolveRepoComposeProjectMarkers({
+        SHELL_REPORT_DOCKER_COMPOSE_PROJECT_MARKERS: 'dashboard-shell/docker-compose',
+      }),
+    })
+    expect(defaultMatch).toEqual({ matched: false, container: null, matchKind: null })
+
+    const overrideMatch = matchDockerJsonLogContainer(config, ['aawm-dashboard'], {
+      repoComposeProjectMarkers: resolveRepoComposeProjectMarkers({
+        SHELL_REPORT_DOCKER_COMPOSE_PROJECT_MARKERS: '/srv/renamed-dashboard-shell',
+      }),
+    })
+    expect(overrideMatch).toMatchObject({
+      matched: true,
+      matchKind: 'compose',
+      container: 'dashboard-shell-aawm-dashboard-1',
+    })
+  })
+
   test('rejects same compose service from a different project path', () => {
     const config = {
       Name: '/otherproj-dashboard-shell-reports-1',
@@ -515,7 +672,7 @@ describe('docker-log-error-intake', () => {
     tmpDirs.push(intakeDir)
     const row = {
       observed_at: '2026-06-28T18:41:00.000Z',
-      container: 'aawm-litellm',
+      container: 'unknown-upstream',
       stream: 'stderr',
       provider: 'openai',
       status_code: 500,
@@ -552,7 +709,7 @@ describe('docker-log-error-intake', () => {
     tmpDirs.push(intakeDir)
     const existing = {
       observed_at: '2026-06-28T18:41:00.000Z',
-      container: 'litellm-dev',
+      container: 'unknown-upstream',
       stream: 'stderr',
       provider: 'openai',
       status_code: 502,
@@ -565,7 +722,7 @@ describe('docker-log-error-intake', () => {
 
     const fresh = {
       observed_at: '2026-06-28T18:42:00.000Z',
-      container: 'litellm-dev',
+      container: 'unknown-upstream',
       stream: 'stderr',
       provider: 'openai',
       status_code: 503,
@@ -605,14 +762,80 @@ describe('docker-log-error-intake', () => {
   test('loadPersistedDockerLogErrorFingerprintsFromJsonl reads stored fingerprints', async () => {
     const intakeDir = await mkdtemp(path.join(os.tmpdir(), 'd1-424-load-'))
     tmpDirs.push(intakeDir)
-    const filePath = path.join(intakeDir, 'litellm-dev-error.jsonl')
+    const filePath = path.join(intakeDir, 'unknown-upstream-error.jsonl')
     await appendFile(
       filePath,
-      `${JSON.stringify({ fingerprint: 'stored-fp-1', message: 'x', container: 'litellm-dev' })}\n`,
+      `${JSON.stringify({
+        fingerprint: 'stored-fp-1',
+        message: 'x',
+        container: 'unknown-upstream',
+      })}\n`,
       'utf8'
     )
     const set = await loadPersistedDockerLogErrorFingerprintsFromJsonl(filePath)
     expect(set.has('stored-fp-1')).toBe(true)
+  })
+
+  test('loadPersistedDockerLogErrorFingerprintsFromJsonl uses tail-size and line caps', async () => {
+    const intakeDir = await mkdtemp(path.join(os.tmpdir(), 'd1-445-load-bounded-'))
+    tmpDirs.push(intakeDir)
+    const filePath = path.join(intakeDir, 'unknown-upstream-error.jsonl')
+
+    const old = {
+      observed_at: '2026-06-28T18:00:00.000Z',
+      container: 'unknown-upstream',
+      stream: 'stderr',
+      level: 'error',
+      status_code: 500,
+      provider: 'openai',
+      message: `legacy-${'x'.repeat(1_200)}`,
+    }
+    const firstRecent = {
+      observed_at: '2026-06-28T18:01:00.000Z',
+      container: 'unknown-upstream',
+      stream: 'stderr',
+      level: 'error',
+      status_code: 502,
+      provider: 'openai',
+      message: 'recent-a',
+    }
+    const secondRecent = {
+      observed_at: '2026-06-28T18:02:00.000Z',
+      container: 'unknown-upstream',
+      stream: 'stderr',
+      level: 'error',
+      status_code: 503,
+      provider: 'openai',
+      message: 'recent-b',
+    }
+    old.fingerprint = buildDockerLogErrorFingerprint(old)
+    firstRecent.fingerprint = buildDockerLogErrorFingerprint(firstRecent)
+    secondRecent.fingerprint = buildDockerLogErrorFingerprint(secondRecent)
+
+    const oldLine = `${JSON.stringify({
+      ...old,
+      ingested_at: '2026-06-28T18:00:00.000Z',
+    })}\n`
+    const firstRecentLine = `${JSON.stringify({
+      ...firstRecent,
+      ingested_at: '2026-06-28T18:01:00.000Z',
+    })}\n`
+    const secondRecentLine = `${JSON.stringify({
+      ...secondRecent,
+      ingested_at: '2026-06-28T18:02:00.000Z',
+    })}\n`
+    const readWindowBytes = Buffer.byteLength(firstRecentLine + secondRecentLine)
+
+    await appendFile(filePath, `${oldLine}${firstRecentLine}${secondRecentLine}`, 'utf8')
+    const set = await loadPersistedDockerLogErrorFingerprintsFromJsonl(filePath, {
+      maxBytes: readWindowBytes,
+      maxLines: 2,
+    })
+
+    expect(set.has(old.fingerprint)).toBe(false)
+    expect(set.has(firstRecent.fingerprint)).toBe(true)
+    expect(set.has(secondRecent.fingerprint)).toBe(true)
+    expect(set.size).toBe(2)
   })
 
   test('append failure does not poison dedupe so retry can succeed', async () => {

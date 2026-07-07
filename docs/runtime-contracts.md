@@ -450,6 +450,20 @@ Durable intake layout:
 - Intake directory: `SHELL_CONTAINER_ERROR_INTAKE_DIR` and
   `SHELL_REPORT_ERROR_INTAKE_DIR` (compose default `/dashboard-shell-analysis`,
   bind-mounted to repo-local `./.analysis`)
+- Centralized intake lock and dedupe behavior:
+  - `acquireIntakeFileLock` keeps the per-container intake lock in a `.intake.lock`
+    directory and recovers stale locks via `stat` + `rename` + `rm` on the stale
+    path. Stale cleanup never removes a lock directory that has been re-created
+    by another waiter in between stale observation and removal.
+  - `loadPersistedDockerLogErrorFingerprintsFromJsonl` reads bounded recent rows
+    (`128KiB` tail plus `1000` line cap defaults) before `Set`-based dedupe, so
+    large files are not fully reread for every scan. A duplicate older than that
+    bounded window can be appended again; this is accepted to keep each scan
+    bounded and should be handled by cleanup/triage instead of unbounded rereads.
+- Compose-project marker matching is not hard-coded to `/projects/dashboard-shell`:
+  if needed, set `SHELL_REPORT_DOCKER_COMPOSE_PROJECT_MARKERS` to one or more
+  comma-separated path fragments so renamed checkouts can still match with
+  `discoverDockerJsonLogSources` while unrelated projects remain excluded.
 
 - Shell wrapper behavior: actionable lines written through `container-error-intake.sh`
   are appended as durable local rows by the wrapper process after a bounded
