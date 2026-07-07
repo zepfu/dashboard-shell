@@ -30,7 +30,7 @@ export function handleListboxArrowKey(
   if (optionCount === 0) return
   if (e.key === 'ArrowDown') {
     e.preventDefault()
-    const next = Math.min(activeIndex + 1, optionCount - 1)
+    const next = activeIndex >= optionCount - 1 ? 0 : activeIndex + 1
     setActiveIndex(next)
     focusOption(next)
     return

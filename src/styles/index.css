@@ -1013,6 +1013,11 @@
   white-space: nowrap;
 }
 
+/* Top Models pane: hidden below 3840px without inline display:none (G-2). */
+.provider-card .card-pane-right {
+  display: none;
+}
+
 @media (min-width: 3840px) {
   .provider-card {
     max-width: none !important;

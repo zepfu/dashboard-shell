@@ -523,7 +523,7 @@ export const HealthStrip = memo(function HealthStrip({
 
     const stripInner = (
       <>
-        <div className='vbar-label top'>24H</div>
+        <div className='vbar-label top'>1D</div>
         <div
           style={{
             flex: 1,

@@ -2,20 +2,24 @@
  * Pure helpers for ProviderCard (S2-22 decomposition).
  */
 import { formatResetDistance } from '../lib/usage-report-display'
-import type { QuotaBarGroup } from './provider-card-types'
+import type { EarlyResetMap, QuotaBarGroup } from './provider-card-types'
 
-/** Packet loss at or above this threshold degrades Status (S2-18). */
-export const PACKET_LOSS_STATUS_WARN_THRESHOLD = 100
+/** Packet loss at or above this threshold degrades Status (S2-18 / C-4). */
+export const PACKET_LOSS_STATUS_WARN_THRESHOLD = 49
 
-/** Check whether a provider is flagged in either Set or Map form. */
+/** Whether the provider is flagged for an early quota reset. */
 export function hasEarlyReset(
-  earlyReset: Set<string> | Map<string, { prior: string; current: string }>,
+  earlyReset: EarlyResetMap | Set<string>,
   provider: string
 ): boolean {
   return earlyReset.has(provider)
 }
 
-export function wrapperIncludesAggregate(wrapperClassName?: string): boolean {
+export function wrapperIncludesAggregate(
+  wrapperClassName?: string,
+  variant?: 'aggregate'
+): boolean {
+  if (variant === 'aggregate') return true
   if (wrapperClassName === undefined || wrapperClassName === '') return false
   return wrapperClassName.split(/\s+/).includes('aggregate')
 }
@@ -47,7 +51,7 @@ export function fmtRequestCount(count: number | undefined): string {
 
 /**
  * Returns the CSS modifier class for a `.quota-row-pct` element based on
- * consumed percentage.
+ * consumed percentage (aligned with segment iv-* scale intent).
  */
 export function pctSeverityClass(consumedPct: number): string {
   if (consumedPct >= 75) return 'hot'

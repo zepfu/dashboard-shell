@@ -7,7 +7,6 @@
 import { memo, type ReactElement, type ReactNode } from 'react'
 import type { UsageReportLocalHealthRow } from '../api/usage-report'
 import { HealthStrip } from './primitives/health-strip'
-import { wrapperIncludesAggregate } from './provider-card-helpers'
 import {
   ProviderCardMetricsBody,
   ProviderCardTopModelsPane,
@@ -53,6 +52,8 @@ export interface ProviderCardProps {
    * Used by AggregateCard to add the `aggregate` class for CSS targeting.
    */
   wrapperClassName?: string
+  /** Type-safe aggregate styling (preferred over parsing wrapperClassName). */
+  variant?: 'aggregate'
   /**
    * Optional content rendered at the end of `card-pane-left`, after the
    * REASONING sub-section. Used by AggregateCard to inject FLEET ACTIVITY
@@ -71,11 +72,19 @@ function ProviderCardInner({
   topModels = [],
   localHealthItems = [],
   wrapperClassName,
+  variant,
   extraPaneLeft,
 }: ProviderCardProps): ReactElement {
-  const isAggregateVariant = wrapperIncludesAggregate(wrapperClassName)
+  const isAggregateVariant =
+    variant === 'aggregate' ||
+    (wrapperClassName !== undefined &&
+      wrapperClassName.split(/\s+/).includes('aggregate'))
 
-  const rootClassName = ['provider-card', wrapperClassName]
+  const rootClassName = [
+    'provider-card',
+    variant === 'aggregate' ? 'aggregate' : undefined,
+    wrapperClassName,
+  ]
     .filter(Boolean)
     .join(' ')
 
