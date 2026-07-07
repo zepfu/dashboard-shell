@@ -59,7 +59,7 @@ import {
   shouldIncludeEmptyUsageRowFields,
   buildUsageReportRowSerializationMetadata,
   proxyTargetUrl,
-} from './report-service.mjs'
+} from './report-service'
 
 function compactWhitespace(sql: string): string {
   return sql.replace(/\s+/g, ' ').trim()
@@ -1326,7 +1326,7 @@ describe('report-service query builders', () => {
     const aegisAdminUrl = buildAegisPgBouncerAdminDatabaseUrl({
       AEGIS_DB_PASSWORD: 'aegis secret',
     })
-    const parsedAegisUrl = new URL(aegisAdminUrl)
+    const parsedAegisUrl = new URL(aegisAdminUrl!)
 
     expect(parsedAegisUrl.username).toBe('aegis_app')
     expect(parsedAegisUrl.password).toBe('aegis%20secret')
@@ -2508,7 +2508,7 @@ describe('report-service query builders', () => {
         url: '/api/aawm-observe/suites/symbols?limit=50&lane=type_shape',
         headers: { host: 'dashboard-shell.test' },
       },
-      proxy
+      proxy!
     )
 
     expect(target.pathname).toBe('/suites/symbols')
@@ -2611,14 +2611,25 @@ describe('D1-323 provider alias routing health contracts', () => {
     const serialized = JSON.stringify(report)
     expect(serialized).not.toContain('sk-should-not-appear')
     expect(serialized).not.toContain('secret')
-    expect(report.entries.some((entry) => entry.state_kind === 'affinity')).toBe(
-      true
-    )
-    expect(report.entries.some((entry) => entry.state_kind === 'cooldown')).toBe(
+    expect(
+      report.entries.some(
+        (entry: { state_kind?: string }) => entry.state_kind === 'affinity'
+      )
+    ).toBe(
       true
     )
     expect(
-      report.entries.find((entry) => entry.state_kind === 'affinity')?.state_source
+      report.entries.some(
+        (entry: { state_kind?: string }) => entry.state_kind === 'cooldown'
+      )
+    ).toBe(
+      true
+    )
+    expect(
+      report.entries.find(
+        (entry: { state_kind?: string; state_source?: string }) =>
+          entry.state_kind === 'affinity'
+      )?.state_source
     ).toBe('durable_cache')
   })
 })
@@ -2804,7 +2815,9 @@ describe('D1-417 / D1-422 provider credit lifecycle contracts', () => {
       },
     ]
     const filtered = filterLegacyProviderCreditAggregateRows(rows)
-    expect(filtered.map((r) => r.credit_identity ?? '')).toEqual([
+    expect(
+      filtered.map((r: { credit_identity?: string | null }) => r.credit_identity ?? '')
+    ).toEqual([
       '',
       'credit-a',
       'credit-b',
@@ -2939,7 +2952,11 @@ describe('D1-417 / D1-422 provider credit lifecycle contracts', () => {
       },
     ])
     expect(report.data_source).toBe('provider_credit_current')
-    expect(report.entries.map((entry) => entry.status)).toEqual(['used', 'expired'])
+    expect(
+      report.entries.map(
+        (entry: { status?: string }) => entry.status
+      )
+    ).toEqual(['used', 'expired'])
     expect(report.summaries[0]?.used_count).toBe(1)
     expect(report.summaries[0]?.expired_count).toBe(1)
   })

@@ -63,9 +63,8 @@ describe('report-service query-builder test ownership', () => {
       'report-service-query-builders.test.ts'
     )
     const source = await readFile(serverSuite, 'utf8')
-    const hasReportServiceImport = /from ['"]\.\/report-service\.mjs['"]/.test(
-      source
-    )
+    const hasReportServiceImport =
+      /from ['"]\.\/report-service(?:\.mjs)?['"]/.test(source)
     const hasParseValidationDescribe =
       /describe\(\s*['"][^'"]*parse-validation/i.test(source)
     const hasParserShapeValidation = /expectParsableSQL/.test(source)
