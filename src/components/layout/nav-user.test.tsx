@@ -3,6 +3,8 @@
  * NavUser and ProfileDropdown (no duplicate local implementations).
  */
 import { render, screen } from '@testing-library/react'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { describe, expect, test } from 'vitest'
 import { SidebarProvider } from '@/components/ui/sidebar'
 import { NavUser } from './nav-user'
@@ -54,11 +56,11 @@ describe('D1-451 A4 — shared userInitials module', () => {
     expect(shared!.userInitials('Dashboard Shell')).toBe('DS')
   })
 
-  test('test_nav_user_does_not_define_local_user_initials', async () => {
-    const { readFile } = await import('node:fs/promises')
-    const { fileURLToPath } = await import('node:url')
-    const path = fileURLToPath(new URL('./nav-user.tsx', import.meta.url))
-    const text = await readFile(path, 'utf8')
+  test('test_nav_user_does_not_define_local_user_initials', () => {
+    const text = readFileSync(
+      resolve(process.cwd(), 'src/components/layout/nav-user.tsx'),
+      'utf8'
+    )
     expect(text).not.toMatch(/function userInitials\s*\(/)
     expect(text).toMatch(/user-initials|from ['"]@\/lib\/user-initials['"]/)
   })

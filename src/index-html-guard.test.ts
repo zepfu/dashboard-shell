@@ -5,12 +5,10 @@
  * Engineer fixes index.html meta to dark chrome (e.g. #020817).
  */
 import { readFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { resolve } from 'node:path'
 import { describe, expect, test } from 'vitest'
 
-const repoRoot = dirname(fileURLToPath(import.meta.url))
-const indexHtml = readFileSync(join(repoRoot, 'index.html'), 'utf8')
+const indexHtml = readFileSync(resolve(process.cwd(), 'index.html'), 'utf8')
 
 describe('D1-451 G1 — index.html theme-color', () => {
   test('test_theme_color_meta_is_dark_not_white', () => {
