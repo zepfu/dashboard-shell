@@ -221,6 +221,48 @@ uses the same base-row fallback for the range-aware Quota tab, preserving static
 quota bars with empty usage enrichment when the `session_history` join times
 out.
 
+### Materialized View Refresh Cron
+
+Quota and provider-health materialized view refreshes are owned by `pg_cron`,
+not by the HTTP report service. Apply
+`scripts/configure-dashboard-refresh-cron.sql` to the PostgreSQL database used by
+the shell report service `DATABASE_URL`: the target database must contain
+`public.rate_limit_intervals`, `public.provider_latency_health_5m`, and the
+`cron` schema from the `pg_cron` extension. For the local dashboard stack, that
+means the same report database the `dashboard-shell-reports` service queries,
+not the shell nginx container.
+
+Operator application:
+
+```bash
+psql "$DATABASE_URL" -f scripts/configure-dashboard-refresh-cron.sql
+```
+
+The script creates or replaces
+`public.dashboard_shell_maintain_materialized_view(view_name, operation)`, then
+idempotently creates and re-applies the four load-bearing cron jobs:
+
+- `aawm_rate_limit_intervals_refresh`
+- `aawm_rate_limit_intervals_analyze`
+- `aawm_provider_latency_health_5m_refresh`
+- `aawm_provider_latency_health_5m_analyze`
+
+Keep those job names stable. `GET /api/shell/health` looks up those exact names
+in `cron.job`, joins latest status and messages from `cron.job_run_details`, and
+uses the result to report materialized-view freshness, active refresh work, last
+success, and last failure. If a job is renamed outside this script, health
+monitoring treats it as missing even if a cron schedule still exists.
+
+The maintenance function serializes refresh and analyze work through a shared
+advisory lock. If one materialized-view job is still active when another starts,
+the later job emits a PostgreSQL `NOTICE` and skips instead of queuing duplicate
+refresh work; staleness should then be visible through the health payload's
+latest data age and cron job status. `REFRESH MATERIALIZED VIEW CONCURRENTLY`
+inside this wrapper is intentional. The fork-review concern about that syntax
+was retracted after checking PostgreSQL behavior; the remaining runbook
+requirement is to make this manually-applied script discoverable and to keep the
+health-monitored job names intact.
+
 
 ## Provider Health — Provider Auth Expiry (D1-338)
 
