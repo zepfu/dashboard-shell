@@ -694,6 +694,16 @@ describe('Dashboard — TCG-2: cold-load render path', () => {
     expect(
       within(statusTabs).getByRole('tab', { name: 'Health' })
     ).toHaveAttribute('aria-selected', 'true')
+    await waitFor(
+      () => {
+        expect(
+          screen.getByRole('button', {
+            name: /refresh provider data/i,
+          })
+        ).toBeEnabled()
+      },
+      { timeout: 3000 }
+    )
     await act(async () => {
       fireEvent.click(
         screen.getByRole('button', {

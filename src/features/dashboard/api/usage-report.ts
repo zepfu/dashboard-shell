@@ -1,7 +1,8 @@
-import { z } from 'zod'
 import { queryOptions } from '@tanstack/react-query'
 
-const LIVE_DASHBOARD_QUOTAS_REFETCH_INTERVAL_MS = 60_000
+export const LIVE_DASHBOARD_QUOTAS_REFETCH_INTERVAL_MS = 60_000
+export const LIVE_DASHBOARD_HEAVY_REFETCH_INTERVAL_MS = 120_000
+export const LIVE_DASHBOARD_HEAVY_REPORT_GC_TIME_MS = 90_000
 
 /** Shared React Query key for quota fetches (index + phosphor-dashboard). */
 export function usageReportQuotasKey(
@@ -43,43 +44,44 @@ export function usageReportQuotasQueryOptions({
   })
 }
 
-export const usageReportGroupPresets = [
+type UsageReportGroupPresetList = readonly [
   {
-    value: 'daily-model',
-    label: 'Daily model',
-    groupBy: ['environment', 'client', 'repository', 'provider_model'],
+    value: 'daily-model'
+    label: 'Daily model'
+    groupBy: readonly ['environment', 'client', 'repository', 'provider_model']
   },
   {
-    value: 'repository',
-    label: 'Repository',
-    groupBy: ['repository', 'provider_model'],
+    value: 'repository'
+    label: 'Repository'
+    groupBy: readonly ['repository', 'provider_model']
   },
   {
-    value: 'environment',
-    label: 'Environment',
-    groupBy: ['environment', 'client'],
+    value: 'environment'
+    label: 'Environment'
+    groupBy: readonly ['environment', 'client']
   },
   {
-    value: 'provider-model',
-    label: 'Provider model',
-    groupBy: ['provider', 'model'],
+    value: 'provider-model'
+    label: 'Provider model'
+    groupBy: readonly ['provider', 'model']
   },
   {
-    value: 'provider',
-    label: 'Provider',
-    groupBy: ['provider'],
+    value: 'provider'
+    label: 'Provider'
+    groupBy: readonly ['provider']
   },
-] as const
-
-export const usageReportGrains = ['day', 'week', 'month'] as const
-export const usageReportIdentityDimensions = [
+]
+type UsageReportGrainList = readonly ['day', 'week', 'month']
+type UsageReportIdentityDimensionList = readonly [
   'inbound_model_alias',
   'agent_name',
   'agent_id',
-] as const
+]
 
-export type UsageReportGrain = (typeof usageReportGrains)[number]
-export type UsageReportGroupPreset = (typeof usageReportGroupPresets)[number]
+export type UsageReportGrain = UsageReportGrainList[number]
+export type UsageReportGroupPreset = UsageReportGroupPresetList[number]
+export type UsageReportIdentityDimension =
+  UsageReportIdentityDimensionList[number]
 
 /** Wire fields attached to usage-report API metadata when cache decoration is present. */
 export interface ReportCacheMetadata {
@@ -93,8 +95,7 @@ export interface ReportCacheMetadata {
   cacheRefreshing?: boolean
 }
 
-/** Canonical field names for {@link ReportCacheMetadata} (runtime companion). */
-export const REPORT_CACHE_METADATA_FIELDS = [
+const REPORT_CACHE_METADATA_FIELDS = [
   'cacheBackend',
   'cacheFreshUntil',
   'cacheGeneratedAt',
@@ -105,9 +106,10 @@ export const REPORT_CACHE_METADATA_FIELDS = [
   'cacheRefreshing',
 ] as const
 
-export type ReportCacheMetadataField =
-  (typeof REPORT_CACHE_METADATA_FIELDS)[number]
-
+/**
+ * W1: Keeps this runtime guard intentionally as the companion export for
+ * decomposition/contract expectations and metadata shape validation.
+ */
 export function isReportCacheMetadata(
   value: unknown
 ): value is ReportCacheMetadata {
@@ -136,7 +138,7 @@ export function isReportCacheMetadata(
 }
 export type UsageReportDimension =
   | UsageReportGroupPreset['groupBy'][number]
-  | (typeof usageReportIdentityDimensions)[number]
+  | UsageReportIdentityDimension
 export type UsageReportConfigChangeFilterValue =
   | 'true'
   | 'false'
@@ -144,6 +146,65 @@ export type UsageReportConfigChangeFilterValue =
   | 'unknown'
   | 'evaluated'
   | 'unevaluated'
+
+const USAGE_REPORT_FILTER_PARAM_KEYS = [
+  'provider',
+  'repository',
+  'client',
+  'environment',
+  'model',
+  'inbound_model_alias',
+  'agent_name',
+  'agent_id',
+] as const satisfies readonly (keyof UsageReportFilterParams)[]
+
+const USAGE_REPORT_CONFIG_CHANGE_FILTER_PARAM_KEYS = [
+  'changed_pre_commit_config',
+  'changed_env_file',
+  'changed_pyproject_toml',
+  'changed_gitignore',
+] as const satisfies readonly (keyof UsageReportFilterParams)[]
+
+const USAGE_REPORT_FILTER_PARAM_KEYS_WITH_CONFIG_CHANGES = [
+  ...USAGE_REPORT_FILTER_PARAM_KEYS,
+  ...USAGE_REPORT_CONFIG_CHANGE_FILTER_PARAM_KEYS,
+] as const satisfies readonly (keyof UsageReportFilterParams)[]
+
+const USAGE_REPORT_DEFAULT_GROUP_BY: UsageReportDimension[] = [
+  'environment',
+  'client',
+  'repository',
+  'provider_model',
+]
+export const USAGE_REPORT_DEFAULT_LIMIT = 50_000
+const USAGE_REPORT_DEFAULT_SORT = 'period_end'
+/**
+ * P1: `/api/shell/reports/usage` keeps these sections for backward-compatible
+ * bootstrap/fallback behavior while dedicated endpoints remain authoritative for
+ * live dashboard refresh.
+ *
+ * Live dashboard authoritative sources:
+ * - `/api/shell/reports/quotas`
+ * - `/api/shell/reports/usage/quota-range-history`
+ * - `/api/shell/reports/usage/tool-activity`
+ */
+export const USAGE_REPORT_MONOLITH_PAYLOAD_DEFAULT_INCLUDES = {
+  includeQuotas: true,
+  includeQuotaHistory: true,
+  includeToolActivity: true,
+} as const
+export const USAGE_REPORT_DEFAULT_INCLUDE_QUOTAS =
+  USAGE_REPORT_MONOLITH_PAYLOAD_DEFAULT_INCLUDES.includeQuotas
+export const USAGE_REPORT_DEFAULT_INCLUDE_QUOTA_HISTORY =
+  USAGE_REPORT_MONOLITH_PAYLOAD_DEFAULT_INCLUDES.includeQuotaHistory
+export const USAGE_REPORT_DEFAULT_INCLUDE_TOOL_ACTIVITY =
+  USAGE_REPORT_MONOLITH_PAYLOAD_DEFAULT_INCLUDES.includeToolActivity
+
+type UsageReportMonolithPayloadSections = {
+  includeQuotas: boolean
+  includeQuotaHistory: boolean
+  includeToolActivity: boolean
+}
 
 /**
  * Multi-value dimension filters supported by the usage report API.
@@ -191,6 +252,22 @@ export interface UsageReportParams extends UsageReportFilterParams {
   groupBy?: readonly UsageReportDimension[]
   cacheBust?: string
   includeEmptyRowFields?: boolean
+  /**
+   * Fallback contract toggles for `/api/shell/reports/usage`.
+   * Monolith payload sections are still kept for backward-compatibility; live
+   * dashboard refresh is authoritative from dedicated endpoints:
+   * `/api/shell/reports/quotas`,
+   * `/api/shell/reports/usage/quota-range-history`, and
+   * `/api/shell/reports/usage/tool-activity`.
+   * Set explicit `false` values to opt out of each section in the monolith
+   * payload (for lighter bootstrap responses while dedicated endpoints cover
+   * live updates).
+   */
+  includeQuotas?: boolean
+  includeQuotaHistory?: boolean
+  includeToolActivity?: boolean
+  /** Exposed caller override for row limit; default is `USAGE_REPORT_DEFAULT_LIMIT`. */
+  limit?: number
 }
 
 export interface UsageReportAgentScoreReason {
@@ -1236,12 +1313,14 @@ export interface UsageReportResponse {
   providerAliasRouting?: UsageReportProviderAliasRouting
   providerAuthHealth?: UsageReportProviderAuthHealth
   providerCreditLifecycle?: UsageReportProviderCreditLifecycle
+  /** Backward-compatible /usage bootstrap/fallback payload. */
   quotas: UsageReportQuotaRow[]
   /** W32: flat list of past reset windows per (provider, quota_type). */
   quotaHistory: UsageReportQuotaHistoryRow[]
-  /** Range-aware quota history for the PROVIDERS / Quota tab. */
+  /** W32: range-aware quota history, refreshed from `/usage/quota-range-history`. */
   quotaRangeHistory?: UsageReportQuotaHistoryRow[]
   /** W33: per-tool and per-command-label call counts for the TOOL cell hover. */
+  /** Backward-compatible /usage fallback while `/usage/tool-activity` is authoritative for live refresh. */
   toolActivity: UsageReportToolActivityRow[]
   rows: UsageReportRow[]
 }
@@ -1269,15 +1348,7 @@ export interface UsageReportQuotaRangeHistoryResponse {
     timedOutSubquery?: string
     timedOutSubqueries?: string[]
     quotaRangeHistoryStatementTimeoutMs?: number
-    cacheBackend?: string
-    cacheFreshUntil?: string | null
-    cacheGeneratedAt?: string | null
-    cacheKeyHash?: string
-    cacheScope?: string
-    cacheStaleUntil?: string | null
-    cacheStatus?: string
-    cacheRefreshing?: boolean
-  }
+  } & ReportCacheMetadata
   quotaRangeHistory: UsageReportQuotaHistoryRow[]
 }
 
@@ -1291,15 +1362,7 @@ export interface UsageReportQuotaHistoryResponse {
     timedOutSubquery?: string
     timedOutSubqueries?: string[]
     quotaHistoryStatementTimeoutMs?: number
-    cacheBackend?: string
-    cacheFreshUntil?: string | null
-    cacheGeneratedAt?: string | null
-    cacheKeyHash?: string
-    cacheScope?: string
-    cacheStaleUntil?: string | null
-    cacheStatus?: string
-    cacheRefreshing?: boolean
-  }
+  } & ReportCacheMetadata
   quotaHistory: UsageReportQuotaHistoryRow[]
 }
 
@@ -1389,15 +1452,7 @@ export interface UsageReportQuotaEstimatorResponse {
     phase: '0-2'
     lagCandidatesMinutes: number[]
     estimatorVersion: string
-    cacheBackend?: string
-    cacheFreshUntil?: string | null
-    cacheGeneratedAt?: string | null
-    cacheKeyHash?: string
-    cacheScope?: string
-    cacheStaleUntil?: string | null
-    cacheStatus?: string
-    cacheRefreshing?: boolean
-  }
+  } & ReportCacheMetadata
   phase0Audit: {
     source_database: string
     usage_event_shape: Record<string, unknown>
@@ -1417,15 +1472,7 @@ export interface UsageReportToolActivityResponse {
     degradedReason?: string
     degradedMessage?: string
     toolActivityRecentRowLimit?: number
-    cacheBackend?: string
-    cacheFreshUntil?: string | null
-    cacheGeneratedAt?: string | null
-    cacheKeyHash?: string
-    cacheScope?: string
-    cacheStaleUntil?: string | null
-    cacheStatus?: string
-    cacheRefreshing?: boolean
-  }
+  } & ReportCacheMetadata
   toolActivity: UsageReportToolActivityRow[]
 }
 
@@ -1435,15 +1482,7 @@ export interface UsageReportSessionDiagnosticsResponse {
     to: string
     limit: number
     generatedAt?: string
-    cacheBackend?: string
-    cacheFreshUntil?: string | null
-    cacheGeneratedAt?: string | null
-    cacheKeyHash?: string
-    cacheScope?: string
-    cacheStaleUntil?: string | null
-    cacheStatus?: string
-    cacheRefreshing?: boolean
-  }
+  } & ReportCacheMetadata
   sessionDiagnostics: UsageReportSessionDiagnosticsRow[]
 }
 
@@ -1479,15 +1518,7 @@ export interface UsageReportTokenTrendSummaryResponse {
     tokenTrendSummaryRawLaneMaxDays?: number
     tokenTrendSummaryRangeDays?: number
     tokenTrendSummaryStatementTimeoutMs?: number
-    cacheBackend?: string
-    cacheFreshUntil?: string | null
-    cacheGeneratedAt?: string | null
-    cacheKeyHash?: string
-    cacheScope?: string
-    cacheStaleUntil?: string | null
-    cacheStatus?: string
-    cacheRefreshing?: boolean
-  }
+  } & ReportCacheMetadata
   tokenTrendHours: UsageReportTokenTrendHourRow[]
   tokenTrendHealth?: UsageReportProviderLatencyHealthRow[]
   tokenTrendScores?: UsageReportTokenTrendScoreRow[]
@@ -1501,52 +1532,792 @@ export interface UsageReportTokenTrendDayResponse {
     from: string
     to: string
     generatedAt?: string
-    cacheBackend?: string
-    cacheFreshUntil?: string | null
-    cacheGeneratedAt?: string | null
-    cacheKeyHash?: string
-    cacheScope?: string
-    cacheStaleUntil?: string | null
-    cacheStatus?: string
-    cacheRefreshing?: boolean
-  }
+  } & ReportCacheMetadata
   date: string
   rows: UsageReportTokenTrendDayDetailRow[]
 }
 
-const zUsageJsonObject = z.record(z.string(), z.unknown())
+type UsageReportJsonRecord = Record<string, unknown>
+
+type UsageReportSpotCheckRequirements = {
+  metadataKeys?: readonly string[]
+  metadataShape?: UsageReportMetadataShape
+  requireObjects?: readonly string[]
+  requireArrays?: readonly string[]
+}
+
+const USAGE_REPORT_SUMMARY_CHECK_NUMBERS = [
+  'traces',
+  'token_in',
+  'token_out',
+  'token_cache_input',
+  'token_cache_creation',
+  'token_reasoning_reported',
+  'token_reasoning_estimated',
+  'token_total',
+  'usd_cost',
+  'cache_miss_usd_cost',
+  'tool_calls',
+  'git_commit',
+  'git_push',
+] as const
+
+const USAGE_REPORT_SUMMARY_CHECK_OPTIONAL_NUMBERS = [
+  'config_change_evaluated_rows',
+  'config_change_unevaluated_rows',
+  'config_change_any_true_rows',
+  'changed_pre_commit_config_true_rows',
+  'changed_pre_commit_config_false_rows',
+  'changed_pre_commit_config_unknown_rows',
+  'changed_env_file_true_rows',
+  'changed_env_file_false_rows',
+  'changed_env_file_unknown_rows',
+  'changed_pyproject_toml_true_rows',
+  'changed_pyproject_toml_false_rows',
+  'changed_pyproject_toml_unknown_rows',
+  'changed_gitignore_true_rows',
+  'changed_gitignore_false_rows',
+  'changed_gitignore_unknown_rows',
+] as const
+
+const USAGE_REPORT_SUMMARY_CHECK_OPTIONAL_STRINGS = [
+  'period_start',
+  'period_end',
+] as const
+const USAGE_REPORT_SUMMARY_CHECK_OPTIONAL_NULLABLE_STRINGS = [
+  'latest_record_at',
+] as const
+
+const USAGE_REPORT_ROW_CHECK_FIELDS = [
+  'bucket',
+  'traces',
+  'token_total',
+] as const
+const USAGE_REPORT_ROW_CHECK_NUMBERS = [
+  'token_in',
+  'token_out',
+  'token_cache_input',
+  'token_cache_creation',
+  'token_reasoning_reported',
+  'token_reasoning_estimated',
+  'usd_cost',
+  'cache_miss_usd_cost',
+  'tool_calls',
+  'git_commit',
+  'git_push',
+] as const
+const USAGE_REPORT_ROW_CHECK_STRINGS = [
+  'provider',
+  'model',
+  'environment',
+  'client',
+  'repository',
+  'provider_model',
+] as const
+const USAGE_REPORT_ROW_CHECK_NULLABLE_STRINGS = [
+  'inbound_model_alias',
+  'agent_name',
+  'agent_id',
+] as const
+
+type UsageReportMetadataShape = {
+  strings?: readonly string[]
+  nullableStrings?: readonly string[]
+  numbers?: readonly string[]
+  nullableNumbers?: readonly string[]
+  booleans?: readonly string[]
+  arrayOfStrings?: readonly string[]
+  arrayOfNumbers?: readonly string[]
+}
+
+const USAGE_REPORT_QUERY_REQUIRED_METADATA_KEYS = [
+  'from',
+  'to',
+  'grain',
+  'groupBy',
+  'limit',
+  'generatedAt',
+  'latestRecordAt',
+  'latestRecordAgeMinutes',
+  'latestRecordStale',
+  'staleRecordThresholdMinutes',
+] as const
+
+const USAGE_REPORT_QUERY_REQUIRED_METADATA_SHAPE: UsageReportMetadataShape = {
+  strings: ['from', 'to', 'grain', 'generatedAt'],
+  nullableStrings: ['latestRecordAt'],
+  numbers: ['limit', 'staleRecordThresholdMinutes'],
+  nullableNumbers: ['latestRecordAgeMinutes'],
+  booleans: ['latestRecordStale'],
+  arrayOfStrings: ['groupBy'],
+}
+
+const USAGE_REPORT_QUOTAS_METADATA_SHAPE: UsageReportMetadataShape = {
+  strings: ['generatedAt'],
+  nullableStrings: ['latestRecordAt'],
+  nullableNumbers: ['latestRecordAgeMinutes'],
+  numbers: ['staleRecordThresholdMinutes'],
+  booleans: ['latestRecordStale'],
+}
+
+function isRecord(value: unknown): value is UsageReportJsonRecord {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+}
+
+function assertRecord(
+  value: unknown,
+  context: string
+): asserts value is UsageReportJsonRecord {
+  if (!isRecord(value)) {
+    throw new Error(`Invalid ${context}`)
+  }
+}
+
+function assertArray(
+  value: unknown,
+  context: string
+): asserts value is unknown[] {
+  if (!Array.isArray(value)) {
+    throw new Error(`Invalid ${context}`)
+  }
+}
+
+function assertNullableString(
+  value: unknown,
+  context: string
+): asserts value is string | null {
+  if (value !== null && typeof value !== 'string') {
+    throw new Error(`Invalid ${context}`)
+  }
+}
+
+function assertNullableNumber(
+  value: unknown,
+  context: string
+): asserts value is number | null {
+  if (value !== null && typeof value !== 'number') {
+    throw new Error(`Invalid ${context}`)
+  }
+}
+
+function assertArrayOfStrings(
+  value: unknown,
+  context: string
+): asserts value is string[] {
+  assertArray(value, context)
+  for (const item of value) {
+    if (typeof item !== 'string') {
+      throw new Error(`Invalid ${context}`)
+    }
+  }
+}
+
+function assertArrayOfNumbers(
+  value: unknown,
+  context: string
+): asserts value is number[] {
+  assertArray(value, context)
+  for (const item of value) {
+    if (typeof item !== 'number') {
+      throw new Error(`Invalid ${context}`)
+    }
+  }
+}
+
+function assertUsageReportMetadata(
+  metadata: UsageReportJsonRecord,
+  shape: UsageReportMetadataShape
+): void {
+  for (const key of shape.strings ?? []) {
+    if (!(key in metadata) || typeof metadata[key] !== 'string') {
+      throw new Error(`Invalid usage report metadata: ${key}`)
+    }
+  }
+  for (const key of shape.nullableStrings ?? []) {
+    if (!(key in metadata)) {
+      throw new Error(`Invalid usage report metadata: missing ${key}`)
+    }
+    assertNullableString(metadata[key], `usage report metadata.${key}`)
+  }
+  for (const key of shape.numbers ?? []) {
+    if (!(key in metadata) || typeof metadata[key] !== 'number') {
+      throw new Error(`Invalid usage report metadata: ${key}`)
+    }
+  }
+  for (const key of shape.nullableNumbers ?? []) {
+    if (!(key in metadata)) {
+      throw new Error(`Invalid usage report metadata: missing ${key}`)
+    }
+    assertNullableNumber(metadata[key], `usage report metadata.${key}`)
+  }
+  for (const key of shape.booleans ?? []) {
+    if (!(key in metadata) || typeof metadata[key] !== 'boolean') {
+      throw new Error(`Invalid usage report metadata: ${key}`)
+    }
+  }
+  for (const key of shape.arrayOfStrings ?? []) {
+    if (!(key in metadata)) {
+      throw new Error(`Invalid usage report metadata: missing ${key}`)
+    }
+    assertArrayOfStrings(metadata[key], `usage report metadata.${key}`)
+  }
+  for (const key of shape.arrayOfNumbers ?? []) {
+    if (!(key in metadata)) {
+      throw new Error(`Invalid usage report metadata: missing ${key}`)
+    }
+    assertArrayOfNumbers(metadata[key], `usage report metadata.${key}`)
+  }
+}
+
+function assertUsageReportSummary(summary: unknown): void {
+  assertRecord(summary, 'usage report summary')
+  const record = summary as UsageReportJsonRecord
+  for (const key of USAGE_REPORT_SUMMARY_CHECK_NUMBERS) {
+    if (typeof record[key] !== 'number') {
+      throw new Error(`Invalid usage report summary.${key}`)
+    }
+  }
+  for (const key of USAGE_REPORT_SUMMARY_CHECK_OPTIONAL_STRINGS) {
+    if (key in record) {
+      assertNullableString(record[key], `usage report summary.${key}`)
+    }
+  }
+  for (const key of USAGE_REPORT_SUMMARY_CHECK_OPTIONAL_NULLABLE_STRINGS) {
+    if (key in record) {
+      assertNullableString(record[key], `usage report summary.${key}`)
+    }
+  }
+  for (const key of USAGE_REPORT_SUMMARY_CHECK_OPTIONAL_NUMBERS) {
+    if (key in record) {
+      assertNullableNumber(record[key], `usage report summary.${key}`)
+    }
+  }
+}
+
+function assertUsageReportRowShape(row: unknown, index: number): void {
+  assertRecord(row, `usage report rows[${index}]`)
+  const record = row as UsageReportJsonRecord
+  for (const key of USAGE_REPORT_ROW_CHECK_FIELDS) {
+    const value = record[key]
+    if (key === 'bucket') {
+      if (typeof value !== 'string') {
+        throw new Error(`Invalid usage report rows[${index}].bucket`)
+      }
+      continue
+    }
+    if (value === undefined) {
+      throw new Error(`Invalid usage report rows[${index}].${key}`)
+    }
+    if (value === null) {
+      // Keep row checks conservative and nullable-safe across payload variants.
+      continue
+    }
+    if (typeof value !== 'number') {
+      throw new Error(`Invalid usage report rows[${index}].${key}`)
+    }
+  }
+  for (const key of USAGE_REPORT_ROW_CHECK_NUMBERS) {
+    const value = record[key]
+    if (value === undefined) {
+      continue
+    }
+    if (value === null) {
+      continue
+    }
+    if (typeof value !== 'number') {
+      throw new Error(`Invalid usage report rows[${index}].${key}`)
+    }
+  }
+
+  for (const key of USAGE_REPORT_ROW_CHECK_STRINGS) {
+    if (key in record && typeof record[key] !== 'string') {
+      throw new Error(`Invalid usage report rows[${index}].${key}`)
+    }
+  }
+
+  for (const key of USAGE_REPORT_ROW_CHECK_NULLABLE_STRINGS) {
+    if (key in record) {
+      assertNullableString(record[key], `usage report rows[${index}].${key}`)
+    }
+  }
+}
+
+function assertUsageReportRows(rows: unknown): void {
+  assertArray(rows, 'usage report rows')
+  if (rows.length === 0) {
+    return
+  }
+  assertUsageReportRowShape(rows[0], 0)
+}
+
+function assertUsageReportTopLevelObjects(
+  record: UsageReportJsonRecord,
+  requiredObjects: readonly string[]
+): void {
+  for (const key of requiredObjects) {
+    assertRecord(record[key], `usage report ${key}`)
+  }
+}
+
+function assertUsageReportTopLevelArrays(
+  record: UsageReportJsonRecord,
+  requiredArrays: readonly string[]
+): void {
+  for (const key of requiredArrays) {
+    assertArray(record[key], `usage report ${key}`)
+  }
+}
+
+function assertArrayOfRecords(
+  value: unknown,
+  context: string
+): asserts value is UsageReportJsonRecord[] {
+  assertArray(value, context)
+  for (const item of value) {
+    assertRecord(item, `${context} record`)
+  }
+}
+
+function assertShellHealthSourceTables(value: unknown): void {
+  assertRecord(value, 'shell health payload sourceTables')
+  const sourceTables = value as UsageReportJsonRecord
+  if (typeof sourceTables.status !== 'string') {
+    throw new Error('Invalid shell health response: sourceTables.status')
+  }
+  if (typeof sourceTables.checkedAt !== 'string') {
+    throw new Error('Invalid shell health response: sourceTables.checkedAt')
+  }
+  if (
+    sourceTables.cacheTtlMs !== undefined &&
+    typeof sourceTables.cacheTtlMs !== 'number'
+  ) {
+    throw new Error('Invalid shell health response: sourceTables.cacheTtlMs')
+  }
+  assertArrayOfRecords(
+    sourceTables.tables,
+    'shell health payload sourceTables.tables'
+  )
+  for (const table of sourceTables.tables as UsageReportJsonRecord[]) {
+    if (typeof table.tableName !== 'string') {
+      throw new Error(
+        'Invalid shell health response: sourceTables.tables.tableName'
+      )
+    }
+    if (typeof table.status !== 'string') {
+      throw new Error(
+        'Invalid shell health response: sourceTables.tables.status'
+      )
+    }
+    if (!('latestDataAt' in table)) {
+      throw new Error(
+        'Invalid shell health response: sourceTables.tables.latestDataAt'
+      )
+    }
+    assertNullableString(table.latestDataAt, 'sourceTables.tables.latestDataAt')
+  }
+}
+
+function assertShellHealthPgBouncerSidecars(value: unknown): void {
+  assertRecord(value, 'shell health payload pgBouncerSidecars')
+  const source = value as UsageReportJsonRecord
+  if (typeof source.status !== 'string') {
+    throw new Error('Invalid shell health response: pgBouncerSidecars.status')
+  }
+  assertArrayOfRecords(
+    source.sidecars,
+    'shell health payload pgBouncerSidecars.sidecars'
+  )
+  for (const sidecar of source.sidecars as UsageReportJsonRecord[]) {
+    if (typeof sidecar.key !== 'string') {
+      throw new Error('Invalid shell health response: pgBouncerSidecars.key')
+    }
+    if (typeof sidecar.label !== 'string') {
+      throw new Error('Invalid shell health response: pgBouncerSidecars.label')
+    }
+    assertArrayOfStrings(
+      sidecar.runtimeAliases,
+      'shell health payload pgBouncerSidecars.runtimeAliases'
+    )
+    if (
+      sidecar.container === undefined ||
+      sidecar.container === null ||
+      sidecar.admin === undefined ||
+      sidecar.admin === null
+    ) {
+      throw new Error('Invalid shell health response: pgBouncerSidecars.admin')
+    }
+    assertRecord(
+      sidecar.container,
+      'shell health payload pgBouncerSidecars.container'
+    )
+    assertRecord(sidecar.admin, 'shell health payload pgBouncerSidecars.admin')
+  }
+}
 
 function assertUsageReportSpotCheck(
   json: unknown,
-  options: { requireSummary?: boolean; firstRowKey?: string }
+  options: UsageReportSpotCheckRequirements
 ): void {
-  if (json === null || typeof json !== 'object' || Array.isArray(json)) {
-    throw new Error('Invalid usage report response')
-  }
-  const record = json as Record<string, unknown>
-  if (!zUsageJsonObject.safeParse(record.metadata).success) {
-    throw new Error('Invalid usage report metadata')
-  }
-  if (options.requireSummary !== false) {
-    if (!zUsageJsonObject.safeParse(record.summary).success) {
-      throw new Error('Invalid usage report summary')
-    }
-    const rows = record.rows
-    if (Array.isArray(rows) && rows.length > 0) {
-      if (!zUsageJsonObject.safeParse(rows[0]).success) {
-        throw new Error('Invalid usage report row')
-      }
+  assertRecord(json, 'usage report payload')
+  const record = json as UsageReportJsonRecord
+
+  assertRecord(record.metadata, 'usage report metadata')
+  const metadata = record.metadata as UsageReportJsonRecord
+  const metadataKeys = options.metadataKeys ?? []
+  for (const key of metadataKeys) {
+    if (!(key in metadata)) {
+      throw new Error(`Invalid usage report metadata: missing ${key}`)
     }
   }
-  const rowKey = options.firstRowKey
-  if (rowKey !== undefined) {
-    const rows = record[rowKey]
-    if (Array.isArray(rows) && rows.length > 0) {
-      if (!zUsageJsonObject.safeParse(rows[0]).success) {
-        throw new Error(`Invalid usage report ${rowKey} row`)
-      }
-    }
+  if (options.metadataShape) {
+    assertUsageReportMetadata(metadata, options.metadataShape)
   }
+
+  assertUsageReportTopLevelObjects(record, options.requireObjects ?? [])
+  assertUsageReportTopLevelArrays(record, options.requireArrays ?? [])
+}
+
+function assertShellHealthResponse(json: unknown): void {
+  assertRecord(json, 'shell health payload')
+  const record = json as UsageReportJsonRecord
+  if (typeof record.ok !== 'boolean') {
+    throw new Error('Invalid shell health response: missing ok')
+  }
+  if (record.pgBouncerSidecars !== undefined) {
+    assertShellHealthPgBouncerSidecars(record.pgBouncerSidecars)
+  }
+  if (record.sourceTables !== undefined) {
+    assertShellHealthSourceTables(record.sourceTables)
+  }
+}
+
+function assertUsageReportMetadataResponse(
+  json: unknown,
+  includeSections: UsageReportMonolithPayloadSections = {
+    ...USAGE_REPORT_MONOLITH_PAYLOAD_DEFAULT_INCLUDES,
+  }
+): void {
+  const include = {
+    ...USAGE_REPORT_MONOLITH_PAYLOAD_DEFAULT_INCLUDES,
+    ...includeSections,
+  }
+  const requireArrays = [
+    'rows',
+    'trend',
+    'clients',
+    'providerLatencyHealth',
+    'providerErrorObservations',
+    'providerStatusUsage',
+  ] as const
+  const requiredArrays: string[] = [...requireArrays]
+  if (include.includeQuotas) {
+    requiredArrays.push('quotas')
+  }
+  if (include.includeQuotaHistory) {
+    requiredArrays.push('quotaHistory')
+  }
+  if (include.includeToolActivity) {
+    requiredArrays.push('toolActivity')
+  }
+
+  assertUsageReportSpotCheck(json, {
+    metadataKeys: USAGE_REPORT_QUERY_REQUIRED_METADATA_KEYS,
+    metadataShape: USAGE_REPORT_QUERY_REQUIRED_METADATA_SHAPE,
+    requireObjects: ['summary'],
+    requireArrays: requiredArrays,
+  })
+  const record = json as UsageReportJsonRecord
+  assertUsageReportSummary(record.summary)
+  assertUsageReportRows(record.rows)
+}
+
+function assertUsageReportQuotasResponse(json: unknown): void {
+  assertUsageReportSpotCheck(json, {
+    metadataKeys: [
+      'generatedAt',
+      'latestRecordAt',
+      'latestRecordAgeMinutes',
+      'latestRecordStale',
+      'staleRecordThresholdMinutes',
+    ],
+    metadataShape: USAGE_REPORT_QUOTAS_METADATA_SHAPE,
+    requireArrays: ['quotas'],
+  })
+}
+
+function assertUsageReportQuotaRangeHistoryResponse(json: unknown): void {
+  assertUsageReportSpotCheck(json, {
+    metadataKeys: ['from', 'to'],
+    metadataShape: { strings: ['from', 'to'] },
+    requireArrays: ['quotaRangeHistory'],
+  })
+}
+
+function assertUsageReportQuotaHistoryResponse(json: unknown): void {
+  assertUsageReportSpotCheck(json, {
+    requireArrays: ['quotaHistory'],
+  })
+}
+
+function assertUsageReportQuotaEstimatorResponse(json: unknown): void {
+  assertUsageReportSpotCheck(json, {
+    metadataShape: {
+      nullableStrings: ['from', 'to'],
+      strings: ['phase', 'estimatorVersion'],
+      arrayOfNumbers: ['lagCandidatesMinutes'],
+    },
+    requireArrays: ['estimates'],
+  })
+}
+
+function assertUsageReportToolActivityResponse(json: unknown): void {
+  assertUsageReportSpotCheck(json, {
+    metadataKeys: ['from', 'to'],
+    metadataShape: { strings: ['from', 'to'] },
+    requireArrays: ['toolActivity'],
+  })
+}
+
+function assertUsageReportSessionDiagnosticsResponse(json: unknown): void {
+  assertUsageReportSpotCheck(json, {
+    metadataKeys: ['from', 'to', 'limit'],
+    metadataShape: {
+      strings: ['from', 'to'],
+      numbers: ['limit'],
+    },
+    requireArrays: ['sessionDiagnostics'],
+  })
+}
+
+function assertUsageReportTokenTrendSummaryResponse(json: unknown): void {
+  assertUsageReportSpotCheck(json, {
+    metadataKeys: ['from', 'to'],
+    metadataShape: { strings: ['from', 'to'] },
+    requireArrays: ['tokenTrendHours', 'tokenTrendVersions'],
+  })
+}
+
+function assertUsageReportTokenTrendDayResponse(json: unknown): void {
+  assertUsageReportSpotCheck(json, {
+    metadataKeys: ['date', 'from', 'to'],
+    metadataShape: { strings: ['date', 'from', 'to'] },
+    requireArrays: ['rows'],
+  })
+}
+
+async function parseJsonResponse<T>(
+  response: Response,
+  validate: ((json: unknown) => void) | undefined
+): Promise<T> {
+  const json: unknown = await response.json()
+  validate?.(json)
+  return json as T
+}
+
+async function fetchDashboardJson<T>(options: {
+  url: string
+  signal?: AbortSignal
+  errorMessage: string
+  validate?: (json: unknown) => void
+}): Promise<T> {
+  const response = await fetch(options.url, { signal: options.signal })
+  if (!response.ok) {
+    const payload = await response.json().catch(() => null)
+    const message =
+      isRecord(payload) && typeof payload.error === 'string'
+        ? payload.error
+        : `${options.errorMessage} ${response.status}`
+    throw new Error(message)
+  }
+
+  return parseJsonResponse<T>(response, options.validate)
+}
+
+function buildUsageReportQueryParams(
+  params: UsageReportParams,
+  includeSections: UsageReportMonolithPayloadSections = {
+    ...USAGE_REPORT_MONOLITH_PAYLOAD_DEFAULT_INCLUDES,
+  }
+): URLSearchParams {
+  // Keep these defaults in the monolith endpoint as the source of truth for
+  // current consumers that do not pass explicit `groupBy/limit/sort`.
+  // Removing this fallback risks row-order/coverage regressions in old callers.
+  // P1/P2: legacy payload flags and cap are made explicit so monolith callers
+  // can intentionally opt out of sections once decomposition is complete.
+  const include = {
+    ...USAGE_REPORT_MONOLITH_PAYLOAD_DEFAULT_INCLUDES,
+    ...includeSections,
+  }
+  const limit = params.limit ?? USAGE_REPORT_DEFAULT_LIMIT
+
+  const searchParams = new URLSearchParams({
+    from: params.from,
+    to: params.to,
+    grain: params.grain,
+    group_by:
+      params.groupBy?.join(',') ?? USAGE_REPORT_DEFAULT_GROUP_BY.join(','),
+    limit: String(limit),
+    sort: USAGE_REPORT_DEFAULT_SORT,
+  })
+  appendUsageReportBooleanFlagParam(
+    searchParams,
+    'include_quotas',
+    include.includeQuotas
+  )
+  appendUsageReportBooleanFlagParam(
+    searchParams,
+    'include_quota_history',
+    include.includeQuotaHistory
+  )
+  appendUsageReportBooleanFlagParam(
+    searchParams,
+    'include_tool_activity',
+    include.includeToolActivity
+  )
+
+  return searchParams
+}
+
+function encodeBooleanFilterValue(
+  value: boolean | string | null | undefined
+): string | undefined {
+  if (value === undefined || value === null) {
+    return undefined
+  }
+  if (typeof value === 'boolean') {
+    return value ? 'true' : 'false'
+  }
+  const lowered = value.toLowerCase()
+  if (lowered === 'true' || lowered === '1') {
+    return 'true'
+  }
+  if (lowered === 'false' || lowered === '0') {
+    return 'false'
+  }
+  return value
+}
+
+function appendUsageReportBooleanFlagParam(
+  searchParams: URLSearchParams,
+  key: string,
+  value: boolean | undefined
+): void {
+  if (value === undefined) return
+  searchParams.set(key, value ? '1' : '0')
+}
+
+function appendUsageReportBooleanFilterParam(
+  searchParams: URLSearchParams,
+  key: string,
+  value: boolean | string | null | undefined
+): void {
+  const encoded = encodeBooleanFilterValue(value)
+  if (encoded === undefined) return
+  searchParams.set(key, encoded)
+}
+
+/**
+ * G1 boundary policy:
+ * This module intentionally preserves server wire row shapes after shallow
+ * response-guard validation at the fetch boundary; deeper display/domain
+ * normalization is handled in consumer/display helpers.
+ * Only narrow session-diagnostics coercions are applied here.
+ */
+function normalizeBooleanishString(
+  value: unknown
+): boolean | string | null | undefined {
+  if (value === undefined || value === null || typeof value === 'boolean') {
+    return value
+  }
+  if (typeof value !== 'string') {
+    return undefined
+  }
+  const lowered = value.toLowerCase()
+  if (lowered === 'true' || lowered === '1') {
+    return true
+  }
+  if (lowered === 'false' || lowered === '0') {
+    return false
+  }
+  return value
+}
+
+function normalizeUsageReportSessionDiagnosticsRow(
+  row: UsageReportSessionDiagnosticsRow
+): UsageReportSessionDiagnosticsRow {
+  return {
+    ...row,
+    grok_oauth: row.grok_oauth
+      ? {
+          ...row.grok_oauth,
+          grok_native_oauth_managed: normalizeBooleanishString(
+            row.grok_oauth.grok_native_oauth_managed
+          ),
+        }
+      : row.grok_oauth,
+    grok_side_channel: row.grok_side_channel
+      ? {
+          ...row.grok_side_channel,
+          enabled: normalizeBooleanishString(row.grok_side_channel.enabled),
+        }
+      : row.grok_side_channel,
+    output_contract: row.output_contract
+      ? {
+          ...row.output_contract,
+          usage_output_contract_required_final_phrase_present:
+            normalizeBooleanishString(
+              row.output_contract
+                .usage_output_contract_required_final_phrase_present
+            ),
+          usage_output_contract_setup_only_detected: normalizeBooleanishString(
+            row.output_contract.usage_output_contract_setup_only_detected
+          ),
+        }
+      : row.output_contract,
+    xai_sanitizer: row.xai_sanitizer
+      ? {
+          ...row.xai_sanitizer,
+          xai_responses_request_sanitized: normalizeBooleanishString(
+            row.xai_sanitizer.xai_responses_request_sanitized
+          ),
+        }
+      : row.xai_sanitizer,
+    tool_definitions: row.tool_definitions
+      ? {
+          ...row.tool_definitions,
+          aawm_tool_definition_snapshot_truncated: normalizeBooleanishString(
+            row.tool_definitions.aawm_tool_definition_snapshot_truncated
+          ),
+        }
+      : row.tool_definitions,
+    alias_route_events: row.alias_route_events?.map((event) => ({
+      ...event,
+      redispatch_required: normalizeBooleanishString(event.redispatch_required),
+      last_resort: normalizeBooleanishString(event.last_resort),
+    })),
+  }
+}
+
+function normalizeUsageReportSessionDiagnosticsResponse(
+  response: UsageReportSessionDiagnosticsResponse
+): UsageReportSessionDiagnosticsResponse {
+  if (response.sessionDiagnostics.length === 0) {
+    return response
+  }
+  return {
+    ...response,
+    sessionDiagnostics: response.sessionDiagnostics.map(
+      normalizeUsageReportSessionDiagnosticsRow
+    ),
+  }
+}
+
+function appendUsageReportStringArrayFilter(
+  searchParams: URLSearchParams,
+  key: keyof UsageReportFilterParams,
+  values: UsageReportFilterParams[keyof UsageReportFilterParams] | undefined
+): void {
+  appendStringArrayParam(searchParams, key, values)
 }
 
 function appendUsageReportFilters(
@@ -1554,40 +2325,8 @@ function appendUsageReportFilters(
   params: UsageReportFilterParams
 ): void {
   // 15-D.1: Multi-value filters — encode each element so commas in values are safe.
-  const filterKeys = [
-    'provider',
-    'repository',
-    'client',
-    'environment',
-    'model',
-    'inbound_model_alias',
-    'agent_name',
-    'agent_id',
-  ] as const
-  for (const key of filterKeys) {
-    const values = params[key]
-    if (values !== undefined && values.length > 0) {
-      searchParams.set(
-        key,
-        values.map((value) => encodeURIComponent(value)).join(',')
-      )
-    }
-  }
-
-  const configChangeFilterKeys = [
-    'changed_pre_commit_config',
-    'changed_env_file',
-    'changed_pyproject_toml',
-    'changed_gitignore',
-  ] as const
-  for (const key of configChangeFilterKeys) {
-    const values = params[key]
-    if (values !== undefined && values.length > 0) {
-      searchParams.set(
-        key,
-        values.map((value) => encodeURIComponent(value)).join(',')
-      )
-    }
+  for (const key of USAGE_REPORT_FILTER_PARAM_KEYS_WITH_CONFIG_CHANGES) {
+    appendUsageReportStringArrayFilter(searchParams, key, params[key])
   }
 }
 
@@ -1608,22 +2347,26 @@ export async function fetchUsageReport(
   params: UsageReportParams,
   signal?: AbortSignal
 ): Promise<UsageReportResponse> {
-  // Wave 24-D30: raised limit from 500 to 50000 to fix 30-day undercounting.
+  // Wave 24-D30: raised limit from 500 to USAGE_REPORT_DEFAULT_LIMIT to fix
+  // 30-day undercounting.
   // At 30-day daily grain with provider+model+repository groupBy, row count
-  // exceeds 500 causing ~70% undercount in per-row surfaces (Master Ledger,
-  // Repo Breakdown, Slicer Repo Options). The server MAX_LIMIT is now 50000.
+  // exceeds the historical default causing ~70% undercount in per-row surfaces
+  // (Master Ledger, Repo Breakdown, Slicer Repo Options). The server MAX_LIMIT
+  // is now USAGE_REPORT_DEFAULT_LIMIT.
   // Aggregate/KPI surfaces use report.summary and were always correct.
   // Future work: server-side pagination would be more scalable.
-  const searchParams = new URLSearchParams({
-    from: params.from,
-    to: params.to,
-    grain: params.grain,
-    group_by:
-      params.groupBy?.join(',') ??
-      'environment,client,repository,provider_model',
-    limit: '50000',
-    sort: 'period_end',
-  })
+  const includeSections = {
+    includeQuotas:
+      params.includeQuotas ??
+      USAGE_REPORT_MONOLITH_PAYLOAD_DEFAULT_INCLUDES.includeQuotas,
+    includeQuotaHistory:
+      params.includeQuotaHistory ??
+      USAGE_REPORT_MONOLITH_PAYLOAD_DEFAULT_INCLUDES.includeQuotaHistory,
+    includeToolActivity:
+      params.includeToolActivity ??
+      USAGE_REPORT_MONOLITH_PAYLOAD_DEFAULT_INCLUDES.includeToolActivity,
+  }
+  const searchParams = buildUsageReportQueryParams(params, includeSections)
 
   appendUsageReportFilters(searchParams, params)
   if (params.cacheBust !== undefined && params.cacheBust !== '') {
@@ -1633,37 +2376,24 @@ export async function fetchUsageReport(
     searchParams.set('include_empty_row_fields', '1')
   }
 
-  const response = await fetch(`/api/shell/reports/usage?${searchParams}`, {
+  return fetchDashboardJson<UsageReportResponse>({
+    url: `/api/shell/reports/usage?${searchParams}`,
     signal,
+    errorMessage: 'Usage report request failed with',
+    validate: (json: unknown) =>
+      assertUsageReportMetadataResponse(json, includeSections),
   })
-  if (!response.ok) {
-    const payload = await response.json().catch(() => null)
-    const message =
-      typeof payload?.error === 'string'
-        ? payload.error
-        : `Usage report request failed with ${response.status}`
-    throw new Error(message)
-  }
-
-  const json: unknown = await response.json()
-  assertUsageReportSpotCheck(json, { requireSummary: true })
-  return json as UsageReportResponse
 }
 
 export async function fetchShellHealth(
   signal?: AbortSignal
 ): Promise<ShellHealthResponse> {
-  const response = await fetch('/api/shell/health', { signal })
-  if (!response.ok) {
-    const payload = await response.json().catch(() => null)
-    const message =
-      typeof payload?.error === 'string'
-        ? payload.error
-        : `Shell health request failed with ${response.status}`
-    throw new Error(message)
-  }
-
-  return response.json()
+  return fetchDashboardJson<ShellHealthResponse>({
+    url: '/api/shell/health',
+    signal,
+    errorMessage: 'Shell health request failed with',
+    validate: assertShellHealthResponse,
+  })
 }
 
 export async function fetchUsageReportQuotaRangeHistory(
@@ -1678,25 +2408,12 @@ export async function fetchUsageReportQuotaRangeHistory(
     searchParams.set('cache_bust', params.cacheBust)
   }
 
-  const response = await fetch(
-    `/api/shell/reports/usage/quota-range-history?${searchParams}`,
-    { signal }
-  )
-  if (!response.ok) {
-    const payload = await response.json().catch(() => null)
-    const message =
-      typeof payload?.error === 'string'
-        ? payload.error
-        : `Quota range history request failed with ${response.status}`
-    throw new Error(message)
-  }
-
-  const json: unknown = await response.json()
-  assertUsageReportSpotCheck(json, {
-    requireSummary: false,
-    firstRowKey: 'quotaRangeHistory',
+  return fetchDashboardJson<UsageReportQuotaRangeHistoryResponse>({
+    url: `/api/shell/reports/usage/quota-range-history?${searchParams}`,
+    signal,
+    errorMessage: 'Quota range history request failed with',
+    validate: assertUsageReportQuotaRangeHistoryResponse,
   })
-  return json as UsageReportQuotaRangeHistoryResponse
 }
 
 export async function fetchUsageReportQuotaHistory(
@@ -1709,27 +2426,14 @@ export async function fetchUsageReportQuotaHistory(
   }
 
   const queryString = searchParams.toString()
-  const response = await fetch(
-    `/api/shell/reports/usage/quota-history${
+  return fetchDashboardJson<UsageReportQuotaHistoryResponse>({
+    url: `/api/shell/reports/usage/quota-history${
       queryString === '' ? '' : `?${queryString}`
     }`,
-    { signal }
-  )
-  if (!response.ok) {
-    const payload = await response.json().catch(() => null)
-    const message =
-      typeof payload?.error === 'string'
-        ? payload.error
-        : `Quota history request failed with ${response.status}`
-    throw new Error(message)
-  }
-
-  const json: unknown = await response.json()
-  assertUsageReportSpotCheck(json, {
-    requireSummary: false,
-    firstRowKey: 'quotaHistory',
+    signal,
+    errorMessage: 'Quota history request failed with',
+    validate: assertUsageReportQuotaHistoryResponse,
   })
-  return json as UsageReportQuotaHistoryResponse
 }
 
 export async function fetchUsageReportQuotaEstimator(
@@ -1744,25 +2448,12 @@ export async function fetchUsageReportQuotaEstimator(
     searchParams.set('cache_bust', params.cacheBust)
   }
 
-  const response = await fetch(
-    `/api/shell/reports/usage/quota-estimator?${searchParams}`,
-    { signal }
-  )
-  if (!response.ok) {
-    const payload = await response.json().catch(() => null)
-    const message =
-      typeof payload?.error === 'string'
-        ? payload.error
-        : `Quota estimator request failed with ${response.status}`
-    throw new Error(message)
-  }
-
-  const json: unknown = await response.json()
-  assertUsageReportSpotCheck(json, {
-    requireSummary: false,
-    firstRowKey: 'estimates',
+  return fetchDashboardJson<UsageReportQuotaEstimatorResponse>({
+    url: `/api/shell/reports/usage/quota-estimator?${searchParams}`,
+    signal,
+    errorMessage: 'Quota estimator request failed with',
+    validate: assertUsageReportQuotaEstimatorResponse,
   })
-  return json as UsageReportQuotaEstimatorResponse
 }
 
 export async function fetchUsageReportToolActivity(
@@ -1778,25 +2469,12 @@ export async function fetchUsageReportToolActivity(
     searchParams.set('cache_bust', params.cacheBust)
   }
 
-  const response = await fetch(
-    `/api/shell/reports/usage/tool-activity?${searchParams}`,
-    { signal }
-  )
-  if (!response.ok) {
-    const payload = await response.json().catch(() => null)
-    const message =
-      typeof payload?.error === 'string'
-        ? payload.error
-        : `Tool activity request failed with ${response.status}`
-    throw new Error(message)
-  }
-
-  const json: unknown = await response.json()
-  assertUsageReportSpotCheck(json, {
-    requireSummary: false,
-    firstRowKey: 'toolActivity',
+  return fetchDashboardJson<UsageReportToolActivityResponse>({
+    url: `/api/shell/reports/usage/tool-activity?${searchParams}`,
+    signal,
+    errorMessage: 'Tool activity request failed with',
+    validate: assertUsageReportToolActivityResponse,
   })
-  return json as UsageReportToolActivityResponse
 }
 
 export async function fetchUsageReportSessionDiagnostics(
@@ -1815,13 +2493,11 @@ export async function fetchUsageReportSessionDiagnostics(
     'litellm_call_id',
     params.litellm_call_id
   )
-  if (
-    params.grok_side_channel === true ||
-    params.grok_side_channel === 'true' ||
-    params.grok_side_channel === '1'
-  ) {
-    searchParams.set('grok_side_channel', 'true')
-  }
+  appendUsageReportBooleanFilterParam(
+    searchParams,
+    'grok_side_channel',
+    params.grok_side_channel
+  )
   appendStringArrayParam(
     searchParams,
     'grok_side_channel_endpoint_type',
@@ -1834,25 +2510,14 @@ export async function fetchUsageReportSessionDiagnostics(
     searchParams.set('cache_bust', params.cacheBust)
   }
 
-  const response = await fetch(
-    `/api/shell/reports/usage/session-diagnostics?${searchParams}`,
-    { signal }
-  )
-  if (!response.ok) {
-    const payload = await response.json().catch(() => null)
-    const message =
-      typeof payload?.error === 'string'
-        ? payload.error
-        : `Session diagnostics request failed with ${response.status}`
-    throw new Error(message)
-  }
-
-  const json: unknown = await response.json()
-  assertUsageReportSpotCheck(json, {
-    requireSummary: false,
-    firstRowKey: 'sessionDiagnostics',
-  })
-  return json as UsageReportSessionDiagnosticsResponse
+  const response =
+    await fetchDashboardJson<UsageReportSessionDiagnosticsResponse>({
+      url: `/api/shell/reports/usage/session-diagnostics?${searchParams}`,
+      signal,
+      errorMessage: 'Session diagnostics request failed with',
+      validate: assertUsageReportSessionDiagnosticsResponse,
+    })
+  return normalizeUsageReportSessionDiagnosticsResponse(response)
 }
 
 export async function fetchUsageReportTokenTrendSummary(
@@ -1871,25 +2536,12 @@ export async function fetchUsageReportTokenTrendSummary(
     searchParams.set('include_health', '1')
   }
 
-  const response = await fetch(
-    `/api/shell/reports/usage/token-trend-summary?${searchParams}`,
-    { signal }
-  )
-  if (!response.ok) {
-    const payload = await response.json().catch(() => null)
-    const message =
-      typeof payload?.error === 'string'
-        ? payload.error
-        : `Token trend summary request failed with ${response.status}`
-    throw new Error(message)
-  }
-
-  const json: unknown = await response.json()
-  assertUsageReportSpotCheck(json, {
-    requireSummary: false,
-    firstRowKey: 'tokenTrendHours',
+  return fetchDashboardJson<UsageReportTokenTrendSummaryResponse>({
+    url: `/api/shell/reports/usage/token-trend-summary?${searchParams}`,
+    signal,
+    errorMessage: 'Token trend summary request failed with',
+    validate: assertUsageReportTokenTrendSummaryResponse,
   })
-  return json as UsageReportTokenTrendSummaryResponse
 }
 
 export async function fetchUsageReportTokenTrendDay(
@@ -1906,25 +2558,12 @@ export async function fetchUsageReportTokenTrendDay(
     searchParams.set('cache_bust', params.cacheBust)
   }
 
-  const response = await fetch(
-    `/api/shell/reports/usage/token-trend-day?${searchParams}`,
-    { signal }
-  )
-  if (!response.ok) {
-    const payload = await response.json().catch(() => null)
-    const message =
-      typeof payload?.error === 'string'
-        ? payload.error
-        : `Token trend day request failed with ${response.status}`
-    throw new Error(message)
-  }
-
-  const json: unknown = await response.json()
-  assertUsageReportSpotCheck(json, {
-    requireSummary: false,
-    firstRowKey: 'rows',
+  return fetchDashboardJson<UsageReportTokenTrendDayResponse>({
+    url: `/api/shell/reports/usage/token-trend-day?${searchParams}`,
+    signal,
+    errorMessage: 'Token trend day request failed with',
+    validate: assertUsageReportTokenTrendDayResponse,
   })
-  return json as UsageReportTokenTrendDayResponse
 }
 
 export async function fetchUsageReportQuotas(
@@ -1937,23 +2576,10 @@ export async function fetchUsageReportQuotas(
   }
 
   const queryString = searchParams.toString()
-  const response = await fetch(
-    `/api/shell/reports/quotas${queryString === '' ? '' : `?${queryString}`}`,
-    { signal }
-  )
-  if (!response.ok) {
-    const payload = await response.json().catch(() => null)
-    const message =
-      typeof payload?.error === 'string'
-        ? payload.error
-        : `Usage quota request failed with ${response.status}`
-    throw new Error(message)
-  }
-
-  const json: unknown = await response.json()
-  assertUsageReportSpotCheck(json, {
-    requireSummary: false,
-    firstRowKey: 'quotas',
+  return fetchDashboardJson<UsageReportQuotasResponse>({
+    url: `/api/shell/reports/quotas${queryString === '' ? '' : `?${queryString}`}`,
+    signal,
+    errorMessage: 'Usage quota request failed with',
+    validate: assertUsageReportQuotasResponse,
   })
-  return json as UsageReportQuotasResponse
 }

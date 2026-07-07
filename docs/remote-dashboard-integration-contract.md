@@ -158,6 +158,22 @@ The shell report/proxy service is responsible for:
 Remote repos should document their required backend target, health route, and
 credential names, but should not put real secrets in `VITE_*` variables.
 
+### Usage report payload contract
+
+For the General dashboard:
+
+- `/api/shell/reports/usage` is treated as a bootstrap/fallback payload in
+  this repo and keeps legacy sections for compatibility.
+- Dedicated refresh contracts are authoritative and should be preferred for live
+  section updates:
+  - `/api/shell/reports/quotas`
+  - `/api/shell/reports/usage/quota-range-history`
+  - `/api/shell/reports/usage/tool-activity`
+- The monolith endpoint accepts explicit include toggles:
+  `include_quotas`, `include_quota_history`, and `include_tool_activity`.
+- `include_*` values are encoded as `1`/`0`; defaults in this API client are all
+  `true`, and callers may pass explicit `false` to omit each section.
+
 ## Styling Contract
 
 Use the vendor-and-sync model for now.

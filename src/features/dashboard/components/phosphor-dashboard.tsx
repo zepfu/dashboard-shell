@@ -39,6 +39,9 @@ import {
   fetchUsageReportQuotaEstimator,
   fetchUsageReportQuotaHistory,
   fetchUsageReportSessionDiagnostics,
+  LIVE_DASHBOARD_HEAVY_REFETCH_INTERVAL_MS,
+  LIVE_DASHBOARD_HEAVY_REPORT_GC_TIME_MS,
+  LIVE_DASHBOARD_QUOTAS_REFETCH_INTERVAL_MS,
   usageReportQuotasQueryOptions,
   fetchUsageReportToolActivity,
   fetchUsageReportTokenTrendDay,
@@ -113,10 +116,6 @@ import {
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
-
-const LIVE_DASHBOARD_LIGHTWEIGHT_REFETCH_INTERVAL_MS = 60_000
-const LIVE_DASHBOARD_HEAVY_REFETCH_INTERVAL_MS = 120_000
-const LIVE_DASHBOARD_HEAVY_REPORT_GC_TIME_MS = 90_000
 
 function resolveProviderHealthColumnCount(viewportWidth: number): number {
   if (viewportWidth >= 2100) return 8
@@ -549,7 +548,7 @@ export default function PhosphorDashboard({
     enabled:
       providerSectionView === 'health' || providerSectionView === 'pgbouncer',
     staleTime: 15_000,
-    refetchInterval: LIVE_DASHBOARD_LIGHTWEIGHT_REFETCH_INTERVAL_MS,
+    refetchInterval: LIVE_DASHBOARD_QUOTAS_REFETCH_INTERVAL_MS,
     refetchIntervalInBackground: false,
   })
 

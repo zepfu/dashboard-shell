@@ -30,6 +30,9 @@ import {
   fetchUsageReport,
   fetchUsageReportQuotaHistory,
   fetchUsageReportQuotaRangeHistory,
+  LIVE_DASHBOARD_HEAVY_REFETCH_INTERVAL_MS,
+  LIVE_DASHBOARD_HEAVY_REPORT_GC_TIME_MS,
+  LIVE_DASHBOARD_QUOTAS_REFETCH_INTERVAL_MS,
   usageReportQuotasKey,
   usageReportQuotasQueryOptions,
   type UsageReportGrain,
@@ -82,10 +85,6 @@ function defaultDateRange(): { from: string; to: string } {
     to: addDaysToDateString(today, 1),
   }
 }
-
-const LIVE_DASHBOARD_LIGHTWEIGHT_REFETCH_INTERVAL_MS = 60_000
-const LIVE_DASHBOARD_HEAVY_REFETCH_INTERVAL_MS = 120_000
-const LIVE_DASHBOARD_HEAVY_REPORT_GC_TIME_MS = 90_000
 
 interface RecencyBreakoutItem {
   label: string
@@ -296,7 +295,7 @@ export function Dashboard(): ReactElement {
     queryKey: ['shell-health-pgbouncer'],
     queryFn: ({ signal }) => fetchShellHealth(signal),
     staleTime: 15_000,
-    refetchInterval: LIVE_DASHBOARD_LIGHTWEIGHT_REFETCH_INTERVAL_MS,
+    refetchInterval: LIVE_DASHBOARD_QUOTAS_REFETCH_INTERVAL_MS,
     refetchIntervalInBackground: false,
   })
 

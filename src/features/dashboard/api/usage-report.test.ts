@@ -3,11 +3,18 @@ import { expectTypeOf } from 'vitest'
 import { server } from '../../../test/setup'
 import {
   type UsageReportTokenTrendSummaryResponse,
+  USAGE_REPORT_DEFAULT_LIMIT,
+  USAGE_REPORT_DEFAULT_INCLUDE_QUOTAS,
+  USAGE_REPORT_DEFAULT_INCLUDE_QUOTA_HISTORY,
+  USAGE_REPORT_DEFAULT_INCLUDE_TOOL_ACTIVITY,
+  USAGE_REPORT_MONOLITH_PAYLOAD_DEFAULT_INCLUDES,
+  isReportCacheMetadata,
   fetchUsageReport,
   fetchUsageReportQuotaEstimator,
   fetchUsageReportQuotaHistory,
   fetchUsageReportQuotaRangeHistory,
   fetchUsageReportQuotas,
+  fetchShellHealth,
   fetchUsageReportSessionDiagnostics,
   fetchUsageReportTokenTrendDay,
   fetchUsageReportTokenTrendSummary,
@@ -24,6 +31,7 @@ test('test_usageReportQuotasQueryOptions_disables_background_polling', () => {
 
   expect(options.refetchInterval).toBe(60_000)
   expect(options.refetchIntervalInBackground).toBe(false)
+  expect(options.queryKey).toHaveLength(1)
 })
 
 test('test_fetchUsageReportTokenTrendSummary_sends_filters', async () => {
@@ -139,7 +147,7 @@ function minimalUsageReportPayload() {
       to: '2026-05-21',
       grain: 'day',
       groupBy: ['provider', 'model', 'repository'],
-      limit: 50_000,
+      limit: USAGE_REPORT_DEFAULT_LIMIT,
       generatedAt: '2026-05-21T00:00:00.000Z',
       latestRecordAt: null,
       latestRecordAgeMinutes: null,
@@ -176,6 +184,22 @@ function minimalUsageReportPayload() {
   }
 }
 
+type UsageReportMonolithPayloadSection =
+  | 'quotas'
+  | 'quotaHistory'
+  | 'toolActivity'
+
+function minimalUsageReportPayloadWithoutMonolithSections(
+  omittedSections: readonly UsageReportMonolithPayloadSection[]
+) {
+  const payload = minimalUsageReportPayload() as Record<string, unknown>
+  const filteredPayload = { ...payload }
+  for (const section of omittedSections) {
+    delete filteredPayload[section]
+  }
+  return filteredPayload
+}
+
 test('test_fetchUsageReport_uses_compact_rows_by_default', async () => {
   let requestedUrl: URL | null = null
 
@@ -192,7 +216,159 @@ test('test_fetchUsageReport_uses_compact_rows_by_default', async () => {
     grain: 'day',
   })
 
+  expect(requestedUrl?.searchParams.get('group_by')).toBe(
+    'environment,client,repository,provider_model'
+  )
+  expect(requestedUrl?.searchParams.get('limit')).toBe(
+    String(USAGE_REPORT_DEFAULT_LIMIT)
+  )
+  expect(requestedUrl?.searchParams.get('sort')).toBe('period_end')
+  expect(requestedUrl?.searchParams.get('include_quotas')).toBe(
+    USAGE_REPORT_MONOLITH_PAYLOAD_DEFAULT_INCLUDES.includeQuotas ? '1' : '0'
+  )
+  expect(requestedUrl?.searchParams.get('include_quota_history')).toBe(
+    USAGE_REPORT_MONOLITH_PAYLOAD_DEFAULT_INCLUDES.includeQuotaHistory
+      ? '1'
+      : '0'
+  )
+  expect(requestedUrl?.searchParams.get('include_tool_activity')).toBe(
+    USAGE_REPORT_MONOLITH_PAYLOAD_DEFAULT_INCLUDES.includeToolActivity
+      ? '1'
+      : '0'
+  )
   expect(requestedUrl?.searchParams.has('include_empty_row_fields')).toBe(false)
+})
+
+test('test_usage_report_monolith_section_defaults_are_explicit', () => {
+  expect(USAGE_REPORT_MONOLITH_PAYLOAD_DEFAULT_INCLUDES).toEqual({
+    includeQuotas: true,
+    includeQuotaHistory: true,
+    includeToolActivity: true,
+  })
+  expect(USAGE_REPORT_DEFAULT_INCLUDE_QUOTAS).toBe(
+    USAGE_REPORT_MONOLITH_PAYLOAD_DEFAULT_INCLUDES.includeQuotas
+  )
+  expect(USAGE_REPORT_DEFAULT_INCLUDE_QUOTA_HISTORY).toBe(
+    USAGE_REPORT_MONOLITH_PAYLOAD_DEFAULT_INCLUDES.includeQuotaHistory
+  )
+  expect(USAGE_REPORT_DEFAULT_INCLUDE_TOOL_ACTIVITY).toBe(
+    USAGE_REPORT_MONOLITH_PAYLOAD_DEFAULT_INCLUDES.includeToolActivity
+  )
+})
+
+test('test_fetchUsageReport_uses_caller_supplied_limit_and_can_toggle_monolith_payload_sections', async () => {
+  let requestedUrl: URL | null = null
+
+  server.use(
+    http.get('/api/shell/reports/usage', ({ request }) => {
+      requestedUrl = new URL(request.url)
+      return HttpResponse.json(minimalUsageReportPayload())
+    })
+  )
+
+  await fetchUsageReport({
+    from: '2026-05-20',
+    to: '2026-05-21',
+    grain: 'day',
+    limit: 25,
+    includeQuotas: false,
+    includeQuotaHistory: false,
+    includeToolActivity: false,
+  })
+
+  expect(requestedUrl?.searchParams.get('limit')).toBe('25')
+  expect(requestedUrl?.searchParams.get('include_quotas')).toBe('0')
+  expect(requestedUrl?.searchParams.get('include_quota_history')).toBe('0')
+  expect(requestedUrl?.searchParams.get('include_tool_activity')).toBe('0')
+})
+
+test('test_fetchUsageReport_can_individually_opt_out_of_each_monolith_payload_section', async () => {
+  let requestedUrl: URL | null
+
+  server.use(
+    http.get('/api/shell/reports/usage', ({ request }) => {
+      requestedUrl = new URL(request.url)
+      return HttpResponse.json(minimalUsageReportPayload())
+    })
+  )
+
+  const toggles: Array<{
+    request: Pick<
+      Parameters<typeof fetchUsageReport>[0],
+      'includeQuotas' | 'includeQuotaHistory' | 'includeToolActivity'
+    >
+    expected: {
+      includeQuotas: '0' | '1'
+      includeQuotaHistory: '0' | '1'
+      includeToolActivity: '0' | '1'
+    }
+  }> = [
+    {
+      request: { includeQuotas: false },
+      expected: {
+        includeQuotas: '0',
+        includeQuotaHistory: '1',
+        includeToolActivity: '1',
+      },
+    },
+    {
+      request: { includeQuotaHistory: false },
+      expected: {
+        includeQuotas: '1',
+        includeQuotaHistory: '0',
+        includeToolActivity: '1',
+      },
+    },
+    {
+      request: { includeToolActivity: false },
+      expected: {
+        includeQuotas: '1',
+        includeQuotaHistory: '1',
+        includeToolActivity: '0',
+      },
+    },
+  ]
+
+  for (const { request, expected } of toggles) {
+    requestedUrl = null
+    await fetchUsageReport({
+      from: '2026-05-20',
+      to: '2026-05-21',
+      grain: 'day',
+      ...request,
+    })
+
+    expect(requestedUrl?.searchParams.get('include_quotas')).toBe(
+      expected.includeQuotas
+    )
+    expect(requestedUrl?.searchParams.get('include_quota_history')).toBe(
+      expected.includeQuotaHistory
+    )
+    expect(requestedUrl?.searchParams.get('include_tool_activity')).toBe(
+      expected.includeToolActivity
+    )
+  }
+})
+
+test('test_usage_report_cache_metadata_exports_capture_decomposition_contract', () => {
+  // W1: runtime guard is the intentional cache-metadata contract companion
+  // after removing the exported field tuple while preserving metadata validation.
+  expect(
+    isReportCacheMetadata({
+      cacheBackend: 'memory',
+      cacheFreshUntil: null,
+      cacheGeneratedAt: '2026-05-21T00:00:00.000Z',
+      cacheStaleUntil: null,
+      cacheStatus: 'fresh',
+      cacheRefreshing: false,
+    })
+  ).toBe(true)
+  expect(
+    isReportCacheMetadata({
+      cacheFreshUntil: 123 as unknown as string,
+      cacheBackend: 'memory',
+    })
+  ).toBe(false)
 })
 
 test('test_fetchUsageReport_can_opt_into_full_empty_row_fields', async () => {
@@ -414,7 +590,7 @@ test('test_fetchUsageReport_preserves_providerAliasRouting_contract', async () =
           to: '2026-05-21',
           grain: 'day',
           groupBy: ['provider', 'model'],
-          limit: 50000,
+          limit: USAGE_REPORT_DEFAULT_LIMIT,
           generatedAt: '2026-05-21T00:00:00.000Z',
           latestRecordAt: null,
           latestRecordAgeMinutes: null,
@@ -497,7 +673,7 @@ test('test_fetchUsageReport_preserves_providerAuthHealth_contract', async () => 
           to: '2026-05-21',
           grain: 'day',
           groupBy: ['provider', 'model'],
-          limit: 50000,
+          limit: USAGE_REPORT_DEFAULT_LIMIT,
           generatedAt: '2026-05-21T00:00:00.000Z',
           latestRecordAt: null,
           latestRecordAgeMinutes: null,
@@ -575,7 +751,7 @@ test('test_fetchUsageReport_preserves_providerCreditLifecycle_contract', async (
           to: '2026-05-21',
           grain: 'day',
           groupBy: ['provider', 'model'],
-          limit: 50000,
+          limit: USAGE_REPORT_DEFAULT_LIMIT,
           generatedAt: '2026-05-21T00:00:00.000Z',
           latestRecordAt: null,
           latestRecordAgeMinutes: null,
@@ -845,6 +1021,308 @@ describe('test_fetchers_validate_metadata_summary_firstrow', () => {
     ).rejects.toThrow()
   })
 
+  test('fetchUsageReport rejects metadata_missing_required_fields', async () => {
+    server.use(
+      http.get('/api/shell/reports/usage', () =>
+        HttpResponse.json({
+          metadata: {
+            from: '2026-05-20',
+            to: '2026-05-21',
+          },
+          ...(() => {
+            const payload = minimalUsageReportPayload()
+            const { metadata, ...rest } = payload
+            return rest
+          })(),
+        })
+      )
+    )
+
+    await expect(
+      fetchUsageReport({
+        from: '2026-05-20',
+        to: '2026-05-21',
+        grain: 'day',
+      })
+    ).rejects.toThrow('Invalid usage report metadata: missing grain')
+  })
+
+  test('fetchUsageReport rejects malformed top-level payload_contract_shape', async () => {
+    server.use(
+      http.get('/api/shell/reports/usage', () =>
+        HttpResponse.json({
+          metadata: {
+            from: '2026-05-20',
+            to: '2026-05-21',
+            grain: 'day',
+            groupBy: ['provider', 'model'],
+            limit: USAGE_REPORT_DEFAULT_LIMIT,
+            generatedAt: '2026-05-21T00:00:00.000Z',
+            latestRecordAt: null,
+            latestRecordAgeMinutes: null,
+            latestRecordStale: false,
+            staleRecordThresholdMinutes: 60,
+          },
+          summary: null,
+          rows: [],
+          trend: [],
+          clients: [],
+          providerLatencyHealth: [],
+          providerErrorObservations: [],
+          providerStatusUsage: [],
+          quotas: [],
+          quotaHistory: [],
+          toolActivity: [],
+        })
+      )
+    )
+
+    await expect(
+      fetchUsageReport({
+        from: '2026-05-20',
+        to: '2026-05-21',
+        grain: 'day',
+      })
+    ).rejects.toThrow('Invalid usage report summary')
+  })
+
+  test('fetchUsageReport rejects malformed summary field types', async () => {
+    const payload = minimalUsageReportPayload() as {
+      summary: Record<string, unknown>
+      rows: Array<Record<string, unknown>>
+    }
+    payload.summary.token_total = 'three-hundred' as unknown as number
+
+    server.use(
+      http.get('/api/shell/reports/usage', () => HttpResponse.json(payload))
+    )
+    await expect(
+      fetchUsageReport({
+        from: '2026-05-20',
+        to: '2026-05-21',
+        grain: 'day',
+      })
+    ).rejects.toThrow('Invalid usage report summary.token_total')
+  })
+
+  test('fetchUsageReport rejects malformed row field types', async () => {
+    const payload = minimalUsageReportPayload() as {
+      summary: Record<string, unknown>
+      rows: Array<Record<string, unknown>>
+    }
+    payload.rows = [
+      {
+        bucket: '2026-05-20',
+        traces: 12,
+        token_in: 20,
+        token_out: 30,
+        token_cache_input: 0,
+        token_cache_creation: 0,
+        token_reasoning_reported: 0,
+        token_reasoning_estimated: 0,
+        token_total: 'bad-total' as unknown as number,
+        usd_cost: 0.12,
+        cache_miss_usd_cost: 0,
+        tool_calls: 0,
+        git_commit: 0,
+        git_push: 0,
+        period_start: '2026-05-20',
+        period_end: '2026-05-21',
+      },
+    ]
+
+    server.use(
+      http.get('/api/shell/reports/usage', () => HttpResponse.json(payload))
+    )
+    await expect(
+      fetchUsageReport({
+        from: '2026-05-20',
+        to: '2026-05-21',
+        grain: 'day',
+      })
+    ).rejects.toThrow('Invalid usage report rows[0].token_total')
+  })
+
+  test('fetchUsageReport rejects malformed summary optional field types', async () => {
+    const payload = minimalUsageReportPayload() as {
+      summary: Record<string, unknown>
+      rows: Array<Record<string, unknown>>
+    }
+    payload.summary.changed_gitignore_true_rows = 'four' as unknown as number
+
+    server.use(
+      http.get('/api/shell/reports/usage', () => HttpResponse.json(payload))
+    )
+    await expect(
+      fetchUsageReport({
+        from: '2026-05-20',
+        to: '2026-05-21',
+        grain: 'day',
+      })
+    ).rejects.toThrow(
+      'Invalid usage report summary.changed_gitignore_true_rows'
+    )
+  })
+
+  test('fetchUsageReport rejects malformed row optional string field types', async () => {
+    const payload = minimalUsageReportPayload() as {
+      summary: Record<string, unknown>
+      rows: Array<Record<string, unknown>>
+    }
+    payload.rows = [
+      {
+        bucket: '2026-05-20',
+        traces: 12,
+        token_total: 40,
+        provider: 123 as unknown as string,
+      },
+    ]
+
+    server.use(
+      http.get('/api/shell/reports/usage', () => HttpResponse.json(payload))
+    )
+    await expect(
+      fetchUsageReport({
+        from: '2026-05-20',
+        to: '2026-05-21',
+        grain: 'day',
+      })
+    ).rejects.toThrow('Invalid usage report rows[0].provider')
+  })
+
+  test('fetchUsageReport accepts minimal payloads after stronger contract checks', async () => {
+    server.use(
+      http.get('/api/shell/reports/usage', () =>
+        HttpResponse.json(minimalUsageReportPayload())
+      )
+    )
+
+    await expect(
+      fetchUsageReport({
+        from: '2026-05-20',
+        to: '2026-05-21',
+        grain: 'day',
+      })
+    ).resolves.toMatchObject({
+      summary: {
+        traces: 0,
+        token_in: 0,
+        token_out: 0,
+        token_cache_input: 0,
+        token_cache_creation: 0,
+        token_reasoning_reported: 0,
+        token_reasoning_estimated: 0,
+        token_total: 0,
+      },
+      rows: [],
+    })
+  })
+
+  test('fetchUsageReport accepts missing monolith sections when include flags opt out', async () => {
+    let omittedSections: UsageReportMonolithPayloadSection[] = []
+
+    server.use(
+      http.get('/api/shell/reports/usage', () =>
+        HttpResponse.json(
+          minimalUsageReportPayloadWithoutMonolithSections(omittedSections)
+        )
+      )
+    )
+
+    const toggles: Array<{
+      request: Pick<
+        Parameters<typeof fetchUsageReport>[0],
+        'includeQuotas' | 'includeQuotaHistory' | 'includeToolActivity'
+      >
+      omittedSections: UsageReportMonolithPayloadSection[]
+    }> = [
+      {
+        request: { includeQuotas: false },
+        omittedSections: ['quotas'],
+      },
+      {
+        request: { includeQuotaHistory: false },
+        omittedSections: ['quotaHistory'],
+      },
+      {
+        request: { includeToolActivity: false },
+        omittedSections: ['toolActivity'],
+      },
+      {
+        request: {
+          includeQuotas: false,
+          includeQuotaHistory: false,
+          includeToolActivity: false,
+        },
+        omittedSections: ['quotas', 'quotaHistory', 'toolActivity'],
+      },
+    ]
+
+    for (const { request, omittedSections: sectionsToOmit } of toggles) {
+      omittedSections = sectionsToOmit
+      await expect(
+        fetchUsageReport({
+          from: '2026-05-20',
+          to: '2026-05-21',
+          grain: 'day',
+          ...request,
+        })
+      ).resolves.toMatchObject({
+        summary: {
+          traces: 0,
+          token_in: 0,
+          token_out: 0,
+          token_cache_input: 0,
+          token_cache_creation: 0,
+          token_reasoning_reported: 0,
+          token_reasoning_estimated: 0,
+          token_total: 0,
+        },
+        rows: [],
+      })
+    }
+  })
+
+  test('fetchUsageReport rejects missing monolith sections when defaults include them', async () => {
+    let omittedSection: UsageReportMonolithPayloadSection = 'quotas'
+    server.use(
+      http.get('/api/shell/reports/usage', () =>
+        HttpResponse.json(
+          minimalUsageReportPayloadWithoutMonolithSections([omittedSection])
+        )
+      )
+    )
+
+    const requiredCases: Array<{
+      omittedSection: UsageReportMonolithPayloadSection
+      expectedError: string
+    }> = [
+      {
+        omittedSection: 'quotas',
+        expectedError: 'Invalid usage report quotas',
+      },
+      {
+        omittedSection: 'quotaHistory',
+        expectedError: 'Invalid usage report quotaHistory',
+      },
+      {
+        omittedSection: 'toolActivity',
+        expectedError: 'Invalid usage report toolActivity',
+      },
+    ]
+
+    for (const { omittedSection: section, expectedError } of requiredCases) {
+      omittedSection = section
+      await expect(
+        fetchUsageReport({
+          from: '2026-05-20',
+          to: '2026-05-21',
+          grain: 'day',
+        })
+      ).rejects.toThrow(expectedError)
+    }
+  })
+
   test('fetchUsageReportTokenTrendSummary rejects malformed metadata', async () => {
     server.use(
       http.get('/api/shell/reports/usage/token-trend-summary', () =>
@@ -1003,7 +1481,7 @@ test('test_filter_values_comma_escaped', async () => {
           to: '2026-05-21',
           grain: 'day',
           groupBy: [],
-          limit: 50_000,
+          limit: USAGE_REPORT_DEFAULT_LIMIT,
           generatedAt: '2026-05-21T00:00:00.000Z',
           latestRecordAt: null,
           latestRecordAgeMinutes: null,
@@ -1056,6 +1534,36 @@ test('test_filter_values_comma_escaped', async () => {
   // The un-encoded comma would split "acme,corp" into two entries on the server.
   // Confirm the raw string is NOT the plain comma-joined form.
   expect(repoParam).not.toBe('acme,corp')
+})
+
+test('test_fetchUsageReport_forwards_config_change_filters', async () => {
+  let capturedUrl: URL | null = null
+
+  server.use(
+    http.get('/api/shell/reports/usage', ({ request }) => {
+      capturedUrl = new URL(request.url)
+      return HttpResponse.json(minimalUsageReportPayload())
+    })
+  )
+
+  await fetchUsageReport({
+    from: '2026-05-20',
+    to: '2026-05-21',
+    grain: 'day',
+    changed_env_file: ['false', 'null'],
+    changed_pre_commit_config: ['true'],
+    changed_pyproject_toml: ['unevaluated', 'evaluated'],
+    changed_gitignore: ['null'],
+  } as Parameters<typeof fetchUsageReport>[0])
+
+  expect(capturedUrl?.searchParams.get('changed_env_file')).toBe('false,null')
+  expect(capturedUrl?.searchParams.get('changed_pre_commit_config')).toBe(
+    'true'
+  )
+  expect(capturedUrl?.searchParams.get('changed_pyproject_toml')).toBe(
+    'unevaluated,evaluated'
+  )
+  expect(capturedUrl?.searchParams.get('changed_gitignore')).toBe('null')
 })
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1155,6 +1663,35 @@ test('test_fetchUsageReportSessionDiagnostics_forwards_grok_side_channel_filters
   expect(grok).not.toHaveProperty('body_raw')
   expect(grok).not.toHaveProperty('raw_body')
   expect(JSON.stringify(grok)).not.toContain('RAW_SECRET')
+})
+
+test('test_fetchUsageReportSessionDiagnostics_forwards_grok_side_channel_false', async () => {
+  let capturedUrl: URL | null = null
+
+  server.use(
+    http.get('/api/shell/reports/usage/session-diagnostics', ({ request }) => {
+      capturedUrl = new URL(request.url)
+      return HttpResponse.json({
+        metadata: {
+          from: '2026-05-20',
+          to: '2026-05-21',
+          limit: 1,
+          generatedAt: '2026-05-21T00:00:00.000Z',
+        },
+        sessionDiagnostics: [],
+      })
+    })
+  )
+
+  await fetchUsageReportSessionDiagnostics({
+    from: '2026-05-20',
+    to: '2026-05-21',
+    grok_side_channel: false,
+    limit: 1,
+  })
+
+  expect(capturedUrl?.searchParams.has('grok_side_channel')).toBe(true)
+  expect(capturedUrl?.searchParams.get('grok_side_channel')).toEqual('false')
 })
 
 // ---------------------------------------------------------------------------
@@ -1374,6 +1911,141 @@ describe('D1-212/215/213/178/221/222 session diagnostics API contracts', () => {
       },
     })
   })
+
+  test('test_fetchUsageReportSessionDiagnostics_normalizes_stringish_boolean_fields', async () => {
+    server.use(
+      http.get('/api/shell/reports/usage/session-diagnostics', () =>
+        HttpResponse.json({
+          metadata: {
+            from: '2026-05-20',
+            to: '2026-05-21',
+            limit: 1,
+            generatedAt: '2026-05-21T00:00:00.000Z',
+          },
+          sessionDiagnostics: [
+            {
+              provider: 'xai',
+              model: 'grok-composer-2.5-fast',
+              grok_oauth: {
+                credential_family: 'xai_grok_oidc',
+                grok_native_oauth_managed: 'true',
+              },
+              grok_side_channel: {
+                enabled: '0',
+                endpoint_type: 'tool_register',
+              },
+              output_contract: {
+                usage_output_contract_required_final_phrase_present: 'false',
+                usage_output_contract_setup_only_detected: '1',
+              },
+              xai_sanitizer: {
+                xai_responses_request_sanitized: '1',
+              },
+              tool_definitions: {
+                snapshot_hash: 'abc123',
+                aawm_tool_definition_snapshot_truncated: '0',
+              },
+              alias_route_events: [
+                {
+                  alias_model: 'aawm-code',
+                  redispatch_required: '1',
+                  last_resort: 'false',
+                  attempt_number: '7',
+                },
+              ],
+            },
+          ],
+        })
+      )
+    )
+
+    const response = await fetchUsageReportSessionDiagnostics({
+      from: '2026-05-20',
+      to: '2026-05-21',
+      provider: ['xai'],
+      limit: 1,
+    } as Parameters<typeof fetchUsageReportSessionDiagnostics>[0])
+
+    expect(response.sessionDiagnostics[0].grok_oauth).toMatchObject({
+      grok_native_oauth_managed: true,
+    })
+    expect(response.sessionDiagnostics[0].grok_side_channel).toMatchObject({
+      enabled: false,
+    })
+    expect(
+      response.sessionDiagnostics[0].output_contract
+        ?.usage_output_contract_required_final_phrase_present
+    ).toBe(false)
+    expect(
+      response.sessionDiagnostics[0].output_contract
+        ?.usage_output_contract_setup_only_detected
+    ).toBe(true)
+    expect(
+      response.sessionDiagnostics[0].xai_sanitizer
+        ?.xai_responses_request_sanitized
+    ).toBe(true)
+    expect(
+      response.sessionDiagnostics[0].tool_definitions
+        ?.aawm_tool_definition_snapshot_truncated
+    ).toBe(false)
+    expect(
+      response.sessionDiagnostics[0].alias_route_events?.[0]
+    ).toMatchObject({
+      redispatch_required: true,
+      last_resort: false,
+    })
+    expect(
+      response.sessionDiagnostics[0].alias_route_events?.[0]?.attempt_number
+    ).toBe('7')
+  })
+})
+
+test('test_fetchShellHealth_validates_shell_health_payload_shape', async () => {
+  server.use(
+    http.get('/api/shell/health', () =>
+      HttpResponse.json({
+        ok: true,
+        sourceTables: {
+          status: 'ok',
+          checkedAt: '2026-07-01T00:00:00.000Z',
+          tables: [],
+        },
+      })
+    )
+  )
+
+  await expect(fetchShellHealth()).resolves.toMatchObject({ ok: true })
+})
+
+test('test_fetchShellHealth_rejects_nonBoolean_ok', async () => {
+  server.use(
+    http.get('/api/shell/health', () =>
+      HttpResponse.json({ ok: 'not-a-boolean' as unknown as boolean })
+    )
+  )
+
+  await expect(fetchShellHealth()).rejects.toThrow(
+    'Invalid shell health response: missing ok'
+  )
+})
+
+test('test_fetchShellHealth_rejects_malformed_source_tables_payload', async () => {
+  server.use(
+    http.get('/api/shell/health', () =>
+      HttpResponse.json({
+        ok: true,
+        sourceTables: {
+          status: 'ok',
+          checkedAt: '2026-07-01T00:00:00.000Z',
+          tables: 'not-an-array',
+        },
+      })
+    )
+  )
+
+  await expect(fetchShellHealth()).rejects.toThrow(
+    'Invalid shell health payload sourceTables'
+  )
 })
 
 // ---------------------------------------------------------------------------
@@ -1445,7 +2117,7 @@ describe('D1-223/224/225 usage identity and billing contracts', () => {
               'agent_name',
               'agent_id',
             ],
-            limit: 50_000,
+            limit: USAGE_REPORT_DEFAULT_LIMIT,
             generatedAt: '2026-05-21T00:00:00.000Z',
             latestRecordAt: null,
             latestRecordAgeMinutes: null,
