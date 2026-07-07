@@ -16,6 +16,12 @@ Local compose and dev defaults use `SHELL_REPORT_PROXY_SHARED_SECRET=dashboard-s
   `docker-compose.yml` and `docker-compose.dev.yml` (same variable names and
   local defaults) for drift visibility, not YAML factoring.
 - Redis dependency/runtime follow-up work is owned by server-package/report-service TODOs.
+- Redis cache support is optional for the report-service process:
+  - If `redis` package import/connectivity is healthy, cached report payloads use Redis where configured.
+  - If Redis is reachable, `buildShellHealthPayload` reports `redisPackageAvailable: true`, `redisStatus: ready`, and `redisConfigured: true`, `redisReady: true`.
+  - If Redis client configuration exists but startup connect fails, startup logs emit `WARN: Redis report cache unavailable; falling back to SQL/local cache`, and health payload reports `redisPackageAvailable: true`, `redisStatus: disconnected`, `redisConfigured: true`, `redisReady: false`.
+  - If the `redis` package is unavailable at startup, report-service writes one startup/runtime warning: `Redis package is unavailable; report-service is falling back to local/SQL cache`, and health payload reports `redisPackageAvailable: false`, `redisStatus: missing-package`.
+  - In all failure modes, report cache fallback remains local/SQL.
 - Dev compose ports are intentionally loopback-bound by default (`127.0.0.1`), with an intentional override path (`DASHBOARD_DEV_BIND_HOST`) for LAN operator sessions.
 
 ## Nginx and Public Surface Contract

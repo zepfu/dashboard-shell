@@ -5,6 +5,7 @@ const envSnapshot = { ...process.env }
 afterEach(() => {
   process.env = { ...envSnapshot }
   vi.resetModules()
+  vi.doUnmock('redis')
   vi.unstubAllEnvs()
 })
 
@@ -96,8 +97,10 @@ describe('D1-444 /api/shell/health parallel health checks', () => {
       databaseEndpoint: null,
       databasePool: null,
       healthDatabasePool: null,
+      redisPackageAvailable: true,
       redisConfigured: false,
       redisReady: false,
+      redisStatus: 'unconfigured',
       reportQueryPressure: expect.objectContaining({ status: 'unconfigured' }),
       pgBouncerSidecars: { status: 'green', sidecars: [] },
       sourceTables: expect.objectContaining({ status: 'unconfigured' }),
@@ -110,8 +113,10 @@ describe('D1-444 /api/shell/health parallel health checks', () => {
         'databasePool',
         'healthDatabasePool',
         'materializedViews',
+        'redisPackageAvailable',
         'ok',
         'pgBouncerSidecars',
+        'redisStatus',
         'redisConfigured',
         'redisReady',
         'reportQueryPressure',
@@ -132,8 +137,10 @@ describe('D1-444 /api/shell/health parallel health checks', () => {
     expect(payload).toHaveProperty('databaseEndpoint')
     expect(payload).toHaveProperty('databasePool')
     expect(payload).toHaveProperty('healthDatabasePool')
+    expect(payload).toHaveProperty('redisPackageAvailable')
     expect(payload).toHaveProperty('redisConfigured')
     expect(payload).toHaveProperty('redisReady')
+    expect(payload).toHaveProperty('redisStatus')
     expect(payload).toHaveProperty('reportQueryPressure')
     expect(payload).toHaveProperty('pgBouncerSidecars')
     expect(payload).toHaveProperty('sourceTables')
@@ -157,6 +164,33 @@ describe('D1-444 /api/shell/health parallel health checks', () => {
       views: expect.any(Array),
       cronJobs: expect.any(Array),
     })
+  })
+
+  test('buildShellHealthPayload exposes redis package missing-state fallback on import', async () => {
+    vi.stubEnv('VITEST', 'true')
+    delete process.env.DATABASE_URL
+    vi.resetModules()
+    const warnSpy = vi
+      .spyOn(process.stderr, 'write')
+      .mockImplementation(() => true)
+
+    vi.doMock('redis', () => ({}))
+
+    const { buildShellHealthPayload } = await import('./report-service.mjs')
+    const payload = await buildShellHealthPayload()
+
+    expect(payload).toMatchObject({
+      redisPackageAvailable: false,
+      redisConfigured: false,
+      redisReady: false,
+      redisStatus: 'missing-package',
+    })
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining(
+        '[report-service] WARN: Redis package is unavailable; report-service is falling back to local/SQL cache:'
+      )
+    )
+    warnSpy.mockRestore()
   })
 })
 

@@ -37,11 +37,23 @@ import {
 // test time.
 let createClient = null
 let RESP_TYPES = null
+let redisPackageAvailable = true
+let redisPackageUnavailableReason = null
 try {
   const redisMod = await import('redis')
-  createClient = redisMod.createClient
+  const redisCreateClient = redisMod.createClient
+  if (typeof redisCreateClient !== 'function') {
+    throw new TypeError('redis package does not expose createClient')
+  }
+  createClient = redisCreateClient
   RESP_TYPES = redisMod.RESP_TYPES ?? null
-} catch {
+} catch (error) {
+  redisPackageAvailable = false
+  redisPackageUnavailableReason =
+    error instanceof Error ? formatError(error) : String(error)
+  process.stderr.write(
+    `[report-service] WARN: Redis package is unavailable; report-service is falling back to local/SQL cache: ${redisPackageUnavailableReason}\n`
+  )
   // redis not resolvable; redisClient remains null below.
 }
 
@@ -11369,13 +11381,21 @@ async function buildShellHealthPayload({ loaders = {} } = {}) {
           waiting: healthPool.waitingCount,
         }
       : null,
+    redisPackageAvailable: Boolean(redisPackageAvailable),
     redisConfigured: Boolean(redisClient),
     redisReady: Boolean(redisClient?.isReady),
+    redisStatus: resolveRedisHealthStatus(),
     reportQueryPressure,
     pgBouncerSidecars,
     sourceTables,
     materializedViews,
   }
+}
+
+function resolveRedisHealthStatus() {
+  if (!redisPackageAvailable) return 'missing-package'
+  if (!redisClient) return 'unconfigured'
+  return redisClient.isReady ? 'ready' : 'disconnected'
 }
 
 async function handleRequest(req, res) {
