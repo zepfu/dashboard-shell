@@ -334,6 +334,31 @@ export type ProviderSectionView =
   | 'weights'
   | 'diagnostics'
 
+/** All STATUS section tab view keys (W1 — single enumeration for skeleton wiring). */
+// eslint-disable-next-line react-refresh/only-export-components
+export const PROVIDER_SECTION_VIEWS: readonly ProviderSectionView[] = [
+  'health',
+  'pgbouncer',
+  'provider-credits',
+  'quota',
+  'provider-auth',
+  'alias-routing',
+  'weights',
+  'diagnostics',
+]
+
+/** Views backed by the main usage report that show a skeleton while it loads. */
+// eslint-disable-next-line react-refresh/only-export-components
+export const REPORT_LOADING_VIEWS: ReadonlySet<ProviderSectionView> = new Set(
+  PROVIDER_SECTION_VIEWS.filter(
+    (providerSectionView) =>
+      providerSectionView === 'health' ||
+      providerSectionView === 'provider-credits' ||
+      providerSectionView === 'provider-auth' ||
+      providerSectionView === 'alias-routing'
+  )
+)
+
 export interface PhosphorDashboardProps {
   /** ISO date string for the range start (YYYY-MM-DD). */
   from?: string
@@ -1632,11 +1657,7 @@ export default function PhosphorDashboard({
         >
           STATUS
         </SectionTitle>
-        {reportLoading &&
-        (providerSectionView === 'health' ||
-          providerSectionView === 'provider-credits' ||
-          providerSectionView === 'provider-auth' ||
-          providerSectionView === 'alias-routing') ? (
+        {reportLoading && REPORT_LOADING_VIEWS.has(providerSectionView) ? (
           <SectionSkeleton height={120} />
         ) : providerSectionView === 'pgbouncer' ? (
           <PgBouncerHealthPanel

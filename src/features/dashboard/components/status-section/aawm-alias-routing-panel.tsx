@@ -3,6 +3,10 @@ import type {
   UsageReportProviderAliasRouting,
   UsageReportProviderAliasRoutingEntry,
 } from '../../api/usage-report'
+import {
+  formatRemainingSeconds,
+  formatStatusTimestamp,
+} from '../../lib/status-formatters'
 
 function stateSourceLabel(
   source: UsageReportProviderAliasRoutingEntry['state_source']
@@ -19,26 +23,23 @@ function stateSourceLabel(
   }
 }
 
-function formatRemainingSeconds(seconds: number | null | undefined): string {
-  if (seconds == null) return '—'
-  if (seconds <= 0) return 'expired'
-  if (seconds < 60) return `${seconds}s`
-  const minutes = Math.floor(seconds / 60)
-  const remainder = seconds % 60
-  return remainder > 0 ? `${minutes}m ${remainder}s` : `${minutes}m`
-}
-
-function formatAliasRoutingTimestamp(value: string | null | undefined): string {
-  if (!value) return '—'
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return value
-  return date.toISOString().replace('T', ' ').slice(0, 16)
-}
-
 function entryHeadline(entry: UsageReportProviderAliasRoutingEntry): string {
   const route = [entry.provider, entry.model].filter(Boolean).join(' / ')
   const kind = entry.state_kind === 'affinity' ? 'Affinity' : 'Cooldown'
   return `${kind}: ${route || 'unknown route'}`
+}
+
+function aliasRoutingEntryKey(
+  entry: UsageReportProviderAliasRoutingEntry
+): string {
+  return [
+    entry.family,
+    entry.state_kind,
+    entry.observed_at,
+    entry.provider ?? '',
+    entry.model ?? '',
+    entry.alias_label ?? '',
+  ].join('|')
 }
 
 function AliasRoutingEntryCard({
@@ -68,13 +69,11 @@ function AliasRoutingEntryCard({
         <span>state source</span>
         <strong>{stateSourceLabel(entry.state_source)}</strong>
         <span>observed</span>
-        <strong>{formatAliasRoutingTimestamp(entry.observed_at)}</strong>
+        <strong>{formatStatusTimestamp(entry.observed_at)}</strong>
         <span>expires</span>
         <strong>
-          {formatAliasRoutingTimestamp(
-            entry.expires_at ?? entry.cooldown_until
-          )}{' '}
-          ({formatRemainingSeconds(entry.remaining_seconds)})
+          {formatStatusTimestamp(entry.expires_at ?? entry.cooldown_until)} (
+          {formatRemainingSeconds(entry.remaining_seconds)})
         </strong>
         {entry.selection_reason ? (
           <>
@@ -85,10 +84,10 @@ function AliasRoutingEntryCard({
       </div>
       {entry.skipped_candidates && entry.skipped_candidates.length > 0 ? (
         <div className='alias-routing-skipped' aria-label='Skipped candidates'>
-          {entry.skipped_candidates.slice(0, 4).map((candidate, index) => (
+          {entry.skipped_candidates.slice(0, 4).map((candidate) => (
             <div
               className='alias-routing-skipped-row'
-              key={`${entry.family}-${candidate.provider ?? 'p'}-${candidate.model ?? 'm'}-${index.toString()}`}
+              key={`${entry.family}-${candidate.provider ?? 'p'}-${candidate.model ?? 'm'}-${candidate.reason ?? 'skip'}`}
             >
               <span>
                 {[candidate.provider, candidate.model]
@@ -132,9 +131,9 @@ export function AawmAliasRoutingPanel({
           <div className='alias-routing-family-title'>codex</div>
           <div className='alias-routing-grid'>
             {codexEntries.length > 0 ? (
-              codexEntries.map((entry, index) => (
+              codexEntries.map((entry) => (
                 <AliasRoutingEntryCard
-                  key={`codex-${entry.state_kind}-${entry.observed_at}-${index.toString()}`}
+                  key={`codex-${aliasRoutingEntryKey(entry)}`}
                   entry={entry}
                 />
               ))
@@ -149,9 +148,9 @@ export function AawmAliasRoutingPanel({
           <div className='alias-routing-family-title'>anthropic</div>
           <div className='alias-routing-grid'>
             {anthropicEntries.length > 0 ? (
-              anthropicEntries.map((entry, index) => (
+              anthropicEntries.map((entry) => (
                 <AliasRoutingEntryCard
-                  key={`anthropic-${entry.state_kind}-${entry.observed_at}-${index.toString()}`}
+                  key={`anthropic-${aliasRoutingEntryKey(entry)}`}
                   entry={entry}
                 />
               ))

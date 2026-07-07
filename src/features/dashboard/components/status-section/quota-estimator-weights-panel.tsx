@@ -4,6 +4,8 @@ import type {
   UsageReportQuotaEstimatorEstimate,
   UsageReportQuotaEstimatorResponse,
 } from '../../api/usage-report'
+import { quotaTypeToLaneKey } from '../../lib/quota-bars/fields'
+import { PROVIDER_LANE_DEFS } from '../../lib/quota-bars/lane-defs'
 import {
   canonicalProvider,
   providerBrandHex,
@@ -46,40 +48,27 @@ function formatEstimatorStatusLabel(status: string): string {
     case 'consistent':
       return 'consistent'
     default:
-      return status.replace(/_/g, ' ')
+      return status
   }
 }
 
 function quotaEstimatorLaneLabel(
   estimate: UsageReportQuotaEstimatorEstimate
 ): string {
-  const provider = canonicalProvider(estimate.provider).toLowerCase()
-  const quotaType = estimate.quota_type.toLowerCase()
-  if (provider === 'openai') {
-    switch (quotaType) {
-      case 'short':
-        return 'all models · 5h'
-      case 'weekly':
-        return 'all models · 7d'
-      case 'short_special':
-        return 'codex-spark · 5h'
-      case 'special':
-        return 'codex-spark · 7d'
-      default:
-        return estimate.quota_lane
-    }
-  }
-  if (provider === 'anthropic') {
-    switch (quotaType) {
-      case 'short':
-        return 'all models · 5h'
-      case 'weekly':
-        return 'all models · 7d'
-      case 'special':
-        return 'sonnet-only · 7d'
-      default:
-        return estimate.quota_lane
-    }
+  const providerKey = canonicalProvider(estimate.provider).toLowerCase()
+  const laneKey = quotaTypeToLaneKey(estimate.quota_type)
+  const defs = PROVIDER_LANE_DEFS[providerKey]
+  if (defs) {
+    const match = defs.find((def) => {
+      const defLaneKey =
+        def.laneKey.split('/').slice(1).join('/') || def.quotaType
+      return (
+        quotaTypeToLaneKey(def.quotaType) === laneKey ||
+        defLaneKey === laneKey ||
+        def.quotaType === estimate.quota_type
+      )
+    })
+    if (match) return match.laneLabel
   }
   return estimate.quota_lane
 }

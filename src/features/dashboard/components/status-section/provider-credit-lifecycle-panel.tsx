@@ -3,13 +3,7 @@ import type {
   UsageReportProviderCreditLifecycle,
   UsageReportProviderCreditLifecycleEntry,
 } from '../../api/usage-report'
-
-function formatCreditTimestamp(value: string | null | undefined): string {
-  if (!value) return 'n/a'
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return value
-  return date.toISOString().replace('T', ' ').slice(0, 16)
-}
+import { formatStatusTimestamp } from '../../lib/status-formatters'
 
 function statusLabel(
   status: UsageReportProviderCreditLifecycleEntry['status']
@@ -66,11 +60,40 @@ function codexSummaryHeadlines(
   return []
 }
 
+function creditTableCaption(
+  entries: UsageReportProviderCreditLifecycleEntry[]
+): string {
+  const providers = new Set(entries.map((e) => e.provider))
+  const families = new Set(entries.map((e) => e.credit_family))
+  if (
+    providers.size === 1 &&
+    providers.has('openai') &&
+    families.size === 1 &&
+    families.has('codex_rate_limit_reset')
+  ) {
+    return 'Current OpenAI Codex rate-limit reset credits by environment and credit identity'
+  }
+  return 'Current provider credits by environment, family, and credit identity'
+}
+
 function creditRowAccessibleLabel(
   entry: UsageReportProviderCreditLifecycleEntry
 ): string {
   const identity = entry.credit_identity ?? 'aggregate credit'
   return `${entry.provider} ${entry.credit_family} ${identity}`
+}
+
+function creditLifecycleEntryKey(
+  entry: UsageReportProviderCreditLifecycleEntry
+): string {
+  return [
+    entry.environment,
+    entry.provider,
+    entry.credit_family,
+    entry.credit_identity ?? 'agg',
+    entry.observed_at,
+    entry.granted_at ?? '',
+  ].join('|')
 }
 
 function CreditLifecycleRow({
@@ -96,9 +119,9 @@ function CreditLifecycleRow({
           {statusLabel(entry.status)}
         </span>
       </td>
-      <td>{formatCreditTimestamp(entry.granted_at)}</td>
-      <td>{formatCreditTimestamp(entry.expires_at)}</td>
-      <td>{formatCreditTimestamp(entry.observed_at)}</td>
+      <td>{formatStatusTimestamp(entry.granted_at)}</td>
+      <td>{formatStatusTimestamp(entry.expires_at)}</td>
+      <td>{formatStatusTimestamp(entry.observed_at)}</td>
       <td className='provider-credit-annotation'>
         {entry.operator_annotation ?? 'n/a'}
         {entry.source_url ? (
@@ -156,8 +179,7 @@ export function ProviderCreditLifecyclePanel({
             aria-label='Provider credit lifecycle entries'
           >
             <caption className='provider-credit-table-caption'>
-              Current OpenAI Codex rate-limit reset credits by environment and
-              credit identity
+              {creditTableCaption(entries)}
             </caption>
             <thead>
               <tr>
@@ -173,9 +195,9 @@ export function ProviderCreditLifecyclePanel({
               </tr>
             </thead>
             <tbody>
-              {entries.map((entry, index) => (
+              {entries.map((entry) => (
                 <CreditLifecycleRow
-                  key={`${entry.environment}-${entry.provider}-${entry.credit_family}-${entry.credit_identity ?? 'agg'}-${entry.observed_at}-${index.toString()}`}
+                  key={creditLifecycleEntryKey(entry)}
                   entry={entry}
                 />
               ))}

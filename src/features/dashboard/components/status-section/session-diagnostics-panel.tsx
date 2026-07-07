@@ -1,4 +1,4 @@
-import type { ReactElement, ReactNode } from 'react'
+import { memo, useState, type ReactElement, type ReactNode } from 'react'
 import type {
   UsageReportSessionDiagnosticsResponse,
   UsageReportSessionDiagnosticsRow,
@@ -12,6 +12,10 @@ type JsonRecord = Record<string, unknown>
 type AliasRouteEvent = NonNullable<
   UsageReportSessionDiagnosticsRow['alias_route_events']
 >[number]
+
+function displayKey(key: string): string {
+  return key.replace(/^usage_output_contract_/, '').replace(/^xai_/, '')
+}
 
 function asRecord(value: unknown): JsonRecord | null {
   if (value === null || value === undefined) return null
@@ -114,11 +118,27 @@ function DiagnosticKeyValues({
     <div className='status-estimator-meta-grid'>
       {entries.map(([key, fieldValue]) => (
         <span key={key}>
-          {key.replace(/^usage_output_contract_/, '').replace(/^xai_/, '')}{' '}
-          <strong>{formatDiagnosticValue(fieldValue)}</strong>
+          {displayKey(key)} <strong>{formatDiagnosticValue(fieldValue)}</strong>
         </span>
       ))}
     </div>
+  )
+}
+
+function ObjectDiagnosticDetails({
+  label,
+  record,
+  keys,
+}: {
+  label: string
+  record: Record<string, unknown>
+  keys: string[]
+}): ReactElement {
+  return (
+    <details className='status-diagnostics-details'>
+      <summary>{label}</summary>
+      <DiagnosticKeyValues value={record} keys={keys} />
+    </details>
   )
 }
 
@@ -139,12 +159,63 @@ function DiagnosticDetails({
     return null
   }
 
+  const record =
+    typeof value === 'object' && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : null
+
+  if (record !== null) {
+    if (label === 'tool definition snapshot') {
+      return <LazyJsonDetails label={label} value={value} />
+    }
+    const keys = Object.keys(record)
+    return <ObjectDiagnosticDetails label={label} record={record} keys={keys} />
+  }
+
+  return <LazyJsonDetails label={label} value={value} />
+}
+
+function LazyJsonDetails({
+  label,
+  value,
+}: {
+  label: string
+  value: unknown
+}): ReactElement {
+  const [json, setJson] = useState<string | null>(null)
+
   return (
     <details className='status-diagnostics-details'>
-      <summary>{label}</summary>
-      <pre>{formatJson(value)}</pre>
+      <summary
+        onClick={(event) => {
+          const details = event.currentTarget.parentElement
+          if (!(details instanceof HTMLDetailsElement)) return
+          const willOpen = !details.open
+          if (willOpen) {
+            setJson(formatJson(value))
+          } else {
+            setJson(null)
+          }
+        }}
+      >
+        {label}
+      </summary>
+      <pre>{json}</pre>
     </details>
   )
+}
+
+function aliasRouteEventKey(event: AliasRouteEvent): string {
+  return [
+    event.observed_at,
+    event.alias_model,
+    event.provider,
+    event.model,
+    event.event_type,
+    event.attempt_number,
+  ]
+    .filter((part) => part !== undefined && part !== null)
+    .join('|')
 }
 
 function aliasTimelineEvents(
@@ -168,16 +239,9 @@ function AliasRouteTimeline({
 
   return (
     <div className='status-diagnostics-timeline'>
-      {timeline.map((event, index) => (
+      {timeline.map((event) => (
         <div
-          key={[
-            event.observed_at,
-            event.alias_model,
-            event.provider,
-            event.model,
-            event.event_type,
-            index,
-          ].join('|')}
+          key={aliasRouteEventKey(event)}
           className='status-diagnostics-timeline-row'
         >
           <div className='status-diagnostics-timeline-main'>
@@ -215,7 +279,22 @@ function AliasRouteTimeline({
   )
 }
 
-function SessionDiagnosticsCard({
+function sessionDiagnosticsCardKey(
+  row: UsageReportSessionDiagnosticsRow
+): string {
+  return [
+    row.session_id,
+    row.trace_id,
+    row.litellm_call_id,
+    row.created_at,
+    row.provider,
+    row.model,
+  ]
+    .filter((part) => part !== undefined && part !== null && part !== '')
+    .join('|')
+}
+
+const SessionDiagnosticsCard = memo(function SessionDiagnosticsCard({
   row,
 }: {
   row: UsageReportSessionDiagnosticsRow
@@ -279,20 +358,22 @@ function SessionDiagnosticsCard({
         ))}
       </div>
 
-      <div className='status-estimator-block'>
-        <strong>Route identity</strong>
-        <DiagnosticKeyValues
-          value={row.grok_oauth}
-          keys={[
-            'credential_family',
-            'grok_native_oauth_managed',
-            'grok_native_entrypoint',
-            'passthrough_route_family',
-            'route_family',
-            'auth_mode',
-          ]}
-        />
-      </div>
+      {row.grok_oauth ? (
+        <div className='status-estimator-block'>
+          <strong>Route identity</strong>
+          <DiagnosticKeyValues
+            value={row.grok_oauth}
+            keys={[
+              'credential_family',
+              'grok_native_oauth_managed',
+              'grok_native_entrypoint',
+              'passthrough_route_family',
+              'route_family',
+              'auth_mode',
+            ]}
+          />
+        </div>
+      ) : null}
 
       {anthropicContextWindow ? (
         <div className='status-estimator-block'>
@@ -439,7 +520,7 @@ function SessionDiagnosticsCard({
       </div>
     </article>
   )
-}
+})
 
 export function SessionDiagnosticsPanel({
   response,
@@ -476,15 +557,9 @@ export function SessionDiagnosticsPanel({
         </span>
       </header>
       <div className='status-estimator-grid status-diagnostics-grid'>
-        {rows.map((row, index) => (
+        {rows.map((row) => (
           <SessionDiagnosticsCard
-            key={[
-              row.session_id,
-              row.trace_id,
-              row.litellm_call_id,
-              row.created_at,
-              index,
-            ].join('|')}
+            key={sessionDiagnosticsCardKey(row)}
             row={row}
           />
         ))}

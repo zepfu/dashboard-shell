@@ -3,28 +3,31 @@ import type {
   ShellPgBouncerHealth,
   ShellPgBouncerSidecar,
 } from '../../api/usage-report'
-import { formatCompactQuantity } from '../../lib/quota-history-display'
+import { formatCompactQuantity } from '../../lib/status-formatters'
 
-function pgBouncerStatusLabel(status: ShellPgBouncerSidecar['status']): string {
-  switch (status) {
-    case 'green':
-      return 'ok'
-    case 'yellow':
-      return 'degraded'
-    case 'red':
-      return 'down'
+const PGBOUNCER_STATUS_PILL = {
+  green: { label: 'ok', className: 'is-green' },
+  yellow: { label: 'degraded', className: 'is-yellow' },
+  red: { label: 'down', className: 'is-red' },
+} as const
+
+const PGBOUNCER_STATUS_UNKNOWN = {
+  label: 'unknown',
+  className: 'is-unknown',
+} as const
+
+function pgBouncerStatusLabel(status: string | undefined): string {
+  if (status === 'green' || status === 'yellow' || status === 'red') {
+    return PGBOUNCER_STATUS_PILL[status].label
   }
+  return PGBOUNCER_STATUS_UNKNOWN.label
 }
 
-function pgBouncerStatusClass(status: ShellPgBouncerSidecar['status']): string {
-  switch (status) {
-    case 'green':
-      return 'is-green'
-    case 'yellow':
-      return 'is-yellow'
-    case 'red':
-      return 'is-red'
+function pgBouncerStatusClass(status: string | undefined): string {
+  if (status === 'green' || status === 'yellow' || status === 'red') {
+    return PGBOUNCER_STATUS_PILL[status].className
   }
+  return PGBOUNCER_STATUS_UNKNOWN.className
 }
 
 function formatPgBouncerWait(seconds: number, microseconds: number): string {
@@ -50,18 +53,17 @@ function PgBouncerSidecarCard({
   const stats = sidecar.admin.statsSummary
   const servers = sidecar.admin.serverSummary
   const poolRows = sidecar.admin.pools.slice(0, 3)
+  const statusKey = String(sidecar.status)
 
   return (
-    <article
-      className={`pgbouncer-card ${pgBouncerStatusClass(sidecar.status)}`}
-    >
+    <article className={`pgbouncer-card ${pgBouncerStatusClass(statusKey)}`}>
       <div className='pgbouncer-card-head'>
         <div>
           <span className='pgbouncer-card-name'>{sidecar.label}</span>
           <span className='pgbouncer-card-sub'>{sidecar.containerName}</span>
         </div>
         <span className='pgbouncer-status-pill'>
-          {pgBouncerStatusLabel(sidecar.status)}
+          {pgBouncerStatusLabel(statusKey)}
         </span>
       </div>
       <div className='pgbouncer-metrics'>
@@ -90,9 +92,15 @@ function PgBouncerSidecarCard({
             (sidecar.container.present ? 'unknown' : 'missing')}
         </strong>
         <span>health</span>
-        <strong>{sidecar.container.health ?? 'unknown'}</strong>
+        <strong>
+          {sidecar.container.health === 'healthy'
+            ? 'pass'
+            : (sidecar.container.health ?? 'unknown')}
+        </strong>
         <span>admin</span>
-        <strong>{sidecar.admin.status}</strong>
+        <strong>
+          {sidecar.admin.status === 'ok' ? 'reachable' : sidecar.admin.status}
+        </strong>
         <span>traffic</span>
         <strong>
           {formatCompactQuantity(stats.totalXactCount)} tx /{' '}
@@ -106,10 +114,10 @@ function PgBouncerSidecarCard({
         <span>logs</span>
         <strong>
           {logConfig
-            ? `${logConfig.type ?? 'unknown'} ${logConfig.maxSize ?? '?'} x${
+            ? `${logConfig.type ?? 'n/a'} ${logConfig.maxSize ?? '?'} x${
                 logConfig.maxFile ?? '?'
               }`
-            : 'unknown'}
+            : 'n/a'}
         </strong>
       </div>
       {poolRows.length > 0 ? (
@@ -144,12 +152,13 @@ export function PgBouncerHealthPanel({
   loading: boolean
 }): ReactElement {
   const sidecars = health?.sidecars ?? []
+  const headStatus = health?.status
   return (
     <section className='pgbouncer-health-panel' aria-label='PgBouncer health'>
       <div className='pgbouncer-panel-head'>
         <span>PgBouncer</span>
         <span className='pgbouncer-panel-status'>
-          {loading ? 'updating' : (health?.status ?? 'unknown')}
+          {loading ? 'updating' : (headStatus ?? 'unknown')}
         </span>
       </div>
       <div className='pgbouncer-grid'>
