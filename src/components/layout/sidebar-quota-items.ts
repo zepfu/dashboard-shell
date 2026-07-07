@@ -18,49 +18,51 @@ export function buildSidebarQuotaItems(
 ): SidebarQuotaItem[] {
   const safeRows = rows ?? []
   const items: SidebarQuotaItem[] = []
-  const openai = providerRow(safeRows, 'openai')
-  const anthropic = providerRow(safeRows, 'anthropic')
+  const openaiWeekly = providerRowForWeekly(safeRows, 'openai')
+  const openaiSpecial = providerRowForSpecial(safeRows, 'openai')
+  const anthropicWeekly = providerRowForWeekly(safeRows, 'anthropic')
+  const anthropicSpecial = providerRowForSpecial(safeRows, 'anthropic')
   const openaiColor = providerColorFor('openai')
   const anthropicColor = providerColorFor('anthropic')
   const googleColor = providerColorFor('google')
 
-  if (openai?.weekly_remaining_pct != null) {
+  if (openaiWeekly?.weekly_remaining_pct != null) {
     items.push({
       key: 'openai-weekly',
       label: 'OpenAI Weekly',
-      percent: openai.weekly_remaining_pct,
+      percent: openaiWeekly.weekly_remaining_pct,
       color: openaiColor,
     })
   }
-  if (openai?.special_remaining_pct != null) {
+  if (openaiSpecial?.special_remaining_pct != null) {
     items.push({
       key: 'openai-spark',
       label: 'OpenAI Spark',
-      percent: openai.special_remaining_pct,
+      percent: openaiSpecial.special_remaining_pct,
       color: openaiColor,
     })
   }
-  if (anthropic?.weekly_remaining_pct != null) {
+  if (anthropicWeekly?.weekly_remaining_pct != null) {
     items.push({
       key: 'anthropic-weekly',
       label: 'Anthropic Weekly',
-      percent: anthropic.weekly_remaining_pct,
+      percent: anthropicWeekly.weekly_remaining_pct,
       color: anthropicColor,
     })
   }
-  if (anthropic?.weekly_overage_included_remaining_pct != null) {
+  if (anthropicWeekly?.weekly_overage_included_remaining_pct != null) {
     items.push({
       key: 'anthropic-fable-overage',
       label: 'Anthropic Fable 7d OI',
-      percent: anthropic.weekly_overage_included_remaining_pct,
+      percent: anthropicWeekly.weekly_overage_included_remaining_pct,
       color: anthropicColor,
     })
   }
-  if (anthropic?.special_remaining_pct != null) {
+  if (anthropicSpecial?.special_remaining_pct != null) {
     items.push({
       key: 'anthropic-sonnet-retired',
       label: 'Anthropic Retired Sonnet',
-      percent: anthropic.special_remaining_pct,
+      percent: anthropicSpecial.special_remaining_pct,
       color: anthropicColor,
     })
   }
@@ -80,7 +82,7 @@ export function buildSidebarQuotaItems(
   return items
 }
 
-function providerRow(rows: UsageReportQuotaRow[], provider: string) {
+function providerRowForWeekly(rows: UsageReportQuotaRow[], provider: string) {
   const matches = rows.filter(
     (row) => row.provider.toLowerCase() === provider.toLowerCase()
   )
@@ -88,27 +90,46 @@ function providerRow(rows: UsageReportQuotaRow[], provider: string) {
 
   return matches.reduce((best, row) => {
     if (!best) return row
-    return compareProviderQuotaRows(row, best, 'weekly') < 0 ? row : best
+    return compareWeeklyQuotaRows(row, best) < 0 ? row : best
   })
 }
 
-function compareProviderQuotaRows(
+function providerRowForSpecial(rows: UsageReportQuotaRow[], provider: string) {
+  const matches = rows.filter(
+    (row) => row.provider.toLowerCase() === provider.toLowerCase()
+  )
+  if (matches.length === 0) return undefined
+
+  return matches.reduce((best, row) => {
+    if (!best) return row
+    return compareSpecialQuotaRows(row, best) < 0 ? row : best
+  })
+}
+
+function compareWeeklyQuotaRows(
   left: UsageReportQuotaRow,
-  right: UsageReportQuotaRow,
-  kind: 'weekly' | 'special'
+  right: UsageReportQuotaRow
 ) {
-  const leftActive =
-    kind === 'weekly' ? left.weekly_active : left.special_active
-  const rightActive =
-    kind === 'weekly' ? right.weekly_active : right.special_active
-  if (leftActive !== rightActive) {
-    return leftActive ? -1 : 1
+  if (left.weekly_active !== right.weekly_active) {
+    return left.weekly_active ? -1 : 1
   }
-  const leftPct =
-    kind === 'weekly' ? left.weekly_remaining_pct : left.special_remaining_pct
-  const rightPct =
-    kind === 'weekly' ? right.weekly_remaining_pct : right.special_remaining_pct
-  return quotaSortValue(leftPct) - quotaSortValue(rightPct)
+  return (
+    quotaSortValue(left.weekly_remaining_pct) -
+    quotaSortValue(right.weekly_remaining_pct)
+  )
+}
+
+function compareSpecialQuotaRows(
+  left: UsageReportQuotaRow,
+  right: UsageReportQuotaRow
+) {
+  if (left.special_active !== right.special_active) {
+    return left.special_active ? -1 : 1
+  }
+  return (
+    quotaSortValue(left.special_remaining_pct) -
+    quotaSortValue(right.special_remaining_pct)
+  )
 }
 
 function googleQuotaRows(rows: UsageReportQuotaRow[]) {

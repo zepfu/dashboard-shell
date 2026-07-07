@@ -1,4 +1,5 @@
 import { Link } from '@tanstack/react-router'
+import { userInitials } from '@/lib/user-initials'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { Button } from '@/components/ui/button'
 import {
@@ -61,15 +62,4 @@ export function ProfileDropdown({ user = defaultUser }: ProfileDropdownProps) {
       </DropdownMenuContent>
     </DropdownMenu>
   )
-}
-
-function userInitials(name: string) {
-  const initials = name
-    .split(/\s+/)
-    .filter(Boolean)
-    .slice(0, 2)
-    .map((part) => part.charAt(0).toUpperCase())
-    .join('')
-
-  return initials || 'DS'
 }

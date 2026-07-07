@@ -1,6 +1,6 @@
 import type { NavItem } from './types'
 
-function remoteNavBasePath(itemUrl: string) {
+export function remoteNavBasePath(itemUrl: string) {
   const pathOnly = itemUrl.split('?')[0] ?? itemUrl
   const segments = pathOnly.split('/').filter(Boolean)
   if (segments.length === 0) return '/'

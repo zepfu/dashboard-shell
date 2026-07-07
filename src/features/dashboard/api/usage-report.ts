@@ -8,13 +8,9 @@ export const LIVE_DASHBOARD_HEAVY_REPORT_GC_TIME_MS = 90_000
 export function usageReportQuotasKey(
   _from?: string,
   _to?: string,
-  cacheBust?: string
+  _cacheBust?: string
 ): readonly [string, ...string[]] {
-  const key: [string, ...string[]] = ['usage-report-quotas']
-  if (cacheBust !== undefined) {
-    key.push(cacheBust)
-  }
-  return key
+  return ['usage-report-quotas']
 }
 
 export interface UsageReportQuotasQueryOptionsParams {
@@ -34,14 +30,17 @@ export function usageReportQuotasQueryOptions({
 }: UsageReportQuotasQueryOptionsParams) {
   const resolvedCacheBust =
     cacheBust !== undefined && cacheBust !== '' ? cacheBust : undefined
+  // cacheBust is fetch-only (P1/P2 dedupe); intentionally omitted from queryKey.
+  /* eslint-disable @tanstack/query/exhaustive-deps -- bust must not fork /quotas cache */
   return queryOptions({
-    queryKey: usageReportQuotasKey(from, to, resolvedCacheBust),
+    queryKey: usageReportQuotasKey(from, to),
     queryFn: ({ signal }) =>
       fetchUsageReportQuotas({ cacheBust: resolvedCacheBust }, signal),
     staleTime: LIVE_DASHBOARD_QUOTAS_REFETCH_INTERVAL_MS,
     refetchInterval: LIVE_DASHBOARD_QUOTAS_REFETCH_INTERVAL_MS,
     refetchIntervalInBackground: false,
   })
+  /* eslint-enable @tanstack/query/exhaustive-deps */
 }
 
 type UsageReportGroupPresetList = readonly [

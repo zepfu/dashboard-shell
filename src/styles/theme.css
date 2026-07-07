@@ -82,7 +82,9 @@ body::before {
   --font-sans: 'Inter', system-ui, sans-serif;
   --font-inter: 'Inter', sans-serif;
   --font-manrope: 'Manrope', sans-serif;
+  --font-ibm-plex-mono: 'IBM Plex Mono', monospace;
   --font-mono: 'IBM Plex Mono', monospace;
+  --font-playfair-display: 'Playfair Display', serif;
   --font-serif: 'Playfair Display', serif;
 
   --radius-sm: calc(var(--radius) - 4px);

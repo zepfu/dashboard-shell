@@ -1,5 +1,7 @@
 import { type SVGProps } from 'react'
 import { Root as Radio, Item } from '@radix-ui/react-radio-group'
+import { useLocation } from '@tanstack/react-router'
+import { remoteDashboardMetadata } from '@/shell/remote-dashboard-metadata'
 import { CircleCheck, RotateCcw, Settings } from 'lucide-react'
 import { IconDir } from '@/assets/custom/icon-dir'
 import { IconLayoutCompact } from '@/assets/custom/icon-layout-compact'
@@ -28,6 +30,8 @@ export function ConfigDrawer() {
   const { setOpen } = useSidebar()
   const { resetDir } = useDirection()
   const { resetLayout } = useLayout()
+  const location = useLocation()
+  const hideInertSidebarControls = isPhosphorSidebarRoute(location.pathname)
 
   const handleReset = () => {
     setOpen(true)
@@ -57,7 +61,7 @@ export function ConfigDrawer() {
         </SheetHeader>
         <div className='space-y-6 overflow-y-auto px-4'>
           <ThemeConfig />
-          <SidebarConfig />
+          {!hideInertSidebarControls ? <SidebarConfig /> : null}
           <LayoutConfig />
           <DirConfig />
         </div>
@@ -72,6 +76,17 @@ export function ConfigDrawer() {
         </SheetFooter>
       </SheetContent>
     </Sheet>
+  )
+}
+
+function isPhosphorSidebarRoute(pathname: string) {
+  return (
+    pathname === '/' ||
+    remoteDashboardMetadata.some(
+      (dashboard) =>
+        pathname === dashboard.basePath ||
+        pathname.startsWith(`${dashboard.basePath}/`)
+    )
   )
 }
 

@@ -22,9 +22,9 @@ import {
   UserX,
   Users,
   MessagesSquare,
-  ShieldCheck,
 } from 'lucide-react'
 import { ClerkLogo } from '@/assets/clerk-logo'
+import { remoteNavBasePath } from '../nav-active'
 import { type SidebarData } from '../types'
 
 const remoteDashboardTeams = remoteDashboardMetadata.map((dashboard) => ({
@@ -35,12 +35,16 @@ const remoteDashboardTeams = remoteDashboardMetadata.map((dashboard) => ({
   accentColor: dashboard.accentColor,
 }))
 
-const remoteDashboardNavItems = remoteDashboardMetadata.map((dashboard) => ({
-  title: dashboard.name,
-  url: remoteDashboardHref(dashboard, dashboard.defaultRoutePath),
-  icon: dashboard.icon,
-  accentColor: dashboard.accentColor,
-}))
+const remoteDashboardNavItems = remoteDashboardMetadata.map((dashboard) => {
+  const url = remoteDashboardHref(dashboard, dashboard.defaultRoutePath)
+  void remoteNavBasePath(url)
+  return {
+    title: dashboard.name,
+    url,
+    icon: dashboard.icon,
+    accentColor: dashboard.accentColor,
+  }
+})
 
 const baseNavGroups = [
   {
@@ -146,32 +150,6 @@ const scaffoldNavGroups = [
   {
     title: 'Pages',
     items: [
-      {
-        title: 'Auth',
-        icon: ShieldCheck,
-        items: [
-          {
-            title: 'Sign In',
-            url: '/sign-in',
-          },
-          {
-            title: 'Sign In (2 Col)',
-            url: '/sign-in-2',
-          },
-          {
-            title: 'Sign Up',
-            url: '/sign-up',
-          },
-          {
-            title: 'Forgot Password',
-            url: '/forgot-password',
-          },
-          {
-            title: 'OTP',
-            url: '/otp',
-          },
-        ],
-      },
       {
         title: 'Errors',
         icon: Bug,
