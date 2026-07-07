@@ -1,6 +1,9 @@
 /**
- * Report cache policy — canonical identity and TTL semantics from
- * `server/report-cache-identity.mjs` (S6-T7 / #39).
+ * Report cache policy contract coverage for cache identity and TTL behavior in
+ * `server/report-cache-identity.mjs`.
+ *
+ * The assertions below capture current behavior: scope-specific TTL policy,
+ * cache identity and key shape, and cache_bust handling.
  */
 import { describe, expect, test } from 'vitest'
 import {
