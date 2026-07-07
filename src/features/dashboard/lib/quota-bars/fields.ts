@@ -52,8 +52,7 @@ type QuotaIntervalKind =
  */
 export function buildQuotaSegments(
   remainingPct: number,
-  velocitySegments?: readonly boolean[],
-  velocityScores?: readonly number[]
+  velocityScores: readonly number[] | undefined = undefined
 ): QuotaRowConfig[] {
   const consumedPct = Math.max(0, Math.min(100, 100 - remainingPct))
   const SEGMENTS = 100
@@ -85,8 +84,6 @@ export function buildQuotaSegments(
       velocityClass === 'velocity-fast' ||
       velocityClass === 'velocity-hot' ||
       velocityClass === 'velocity-peak'
-
-    void velocitySegments
 
     return {
       widthPct: 100 / SEGMENTS,
@@ -596,24 +593,8 @@ export function tipModelsFromBreakdownSingleLabel(
  *   < 14d → "2d ago"
  *   ≥ 14d → "2w ago"
  */
-export function formatTimeAgo(roundedDate: Date): string {
-  const diffMs = Date.now() - roundedDate.getTime()
-  // Treat slightly-future timestamps (rounding artefacts ≤ 30 min) as their
-  // absolute distance so the label is sensible rather than "now".
-  const absDiffMs = Math.abs(diffMs)
-  if (diffMs < -60_000) {
-    // More than a minute in the future — absolute distance with "in" copy (E9).
-    const totalMins = Math.floor(absDiffMs / 60_000)
-    const hours = Math.floor(totalMins / 60)
-    const days = Math.floor(hours / 24)
-    const weeks = Math.floor(days / 7)
-    if (totalMins < 60) return `in ${totalMins.toString()}m`
-    if (hours < 24) return `in ${hours.toString()}h`
-    if (days < 14) return `in ${days.toString()}d`
-    return `in ${weeks.toString()}w`
-  }
-  if (diffMs < 0) return 'just now' // within 1 minute in future — truly at boundary
-  const totalMins = Math.floor(diffMs / 60_000)
+function formatTimeAgoFromAbsMs(absDiffMs: number): string {
+  const totalMins = Math.floor(absDiffMs / 60_000)
   const hours = Math.floor(totalMins / 60)
   const days = Math.floor(hours / 24)
   const weeks = Math.floor(days / 7)
@@ -621,6 +602,16 @@ export function formatTimeAgo(roundedDate: Date): string {
   if (hours < 24) return `${hours.toString()}h ago`
   if (days < 14) return `${days.toString()}d ago`
   return `${weeks.toString()}w ago`
+}
+
+export function formatTimeAgo(roundedDate: Date): string {
+  const diffMs = Date.now() - roundedDate.getTime()
+  const absDiffMs = Math.abs(diffMs)
+  if (diffMs < -60_000) {
+    return formatTimeAgoFromAbsMs(absDiffMs)
+  }
+  if (diffMs < 0) return 'just now'
+  return formatTimeAgoFromAbsMs(absDiffMs)
 }
 
 /**
@@ -710,11 +701,7 @@ export function makeQuotaBarGroup(
     consumedPct,
     remainingPct: iv.remainingPct,
     resetAt: iv.resetAt,
-    segments: buildQuotaSegments(
-      iv.remainingPct,
-      iv.velocitySegments,
-      iv.velocityScores
-    ),
+    segments: buildQuotaSegments(iv.remainingPct, iv.velocityScores),
     // F1b: computed tip fields.
     tipWindow: formatTipWindow(
       interval,
@@ -836,6 +823,7 @@ export function quotaTypeToBarPeriodType(
     case 'weekly_overage_included':
       return 'weekly_overage_included'
     case 'special':
+    case 'weekly_special':
       return 'special'
     case 'monthly':
       return 'monthly'

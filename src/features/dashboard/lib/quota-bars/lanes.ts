@@ -31,6 +31,41 @@ import {
 } from './fields'
 import { PROVIDER_LANE_DEFS } from './lane-defs'
 
+type QuotaBarInterval = Parameters<typeof makeQuotaBarGroup>[2]
+
+function quotaTypeToBarInterval(quotaType: string): QuotaBarInterval {
+  switch (quotaType.toLowerCase()) {
+    case 'short':
+      return 'short'
+    case 'weekly':
+      return 'weekly'
+    case 'weekly_overage_included':
+      return 'weekly_overage_included'
+    case 'special':
+      return 'special'
+    case 'short_special':
+      return 'short_special'
+    case 'monthly':
+      return 'monthly'
+    case 'wtus':
+      return 'wtus'
+    default:
+      return 'weekly'
+  }
+}
+
+function priorBarDedupKey(h: UsageReportQuotaHistoryRow): string {
+  if (h.expected_reset_at !== null) {
+    const rounded = roundToNearest30Min(h.expected_reset_at)
+    if (!Number.isNaN(rounded.getTime())) {
+      return rounded.toISOString()
+    }
+  }
+  const start = h.interval_start?.trim()
+  if (start) return `null-reset:${start}`
+  return `null-reset:${h.provider}:${h.quota_type}:${String(h.min_remaining_pct)}`
+}
+
 function shouldSuppressProviderLanePriorBars(
   providerLower: string,
   def: { quotaType: string }
@@ -68,7 +103,7 @@ export function buildPriorBarFromHistory(
       consumedPct: 0,
       remainingPct: 100,
       resetAt: h.expected_reset_at ?? undefined,
-      segments: buildQuotaSegments(100, h.velocity_segments, h.velocity_scores),
+      segments: buildQuotaSegments(100, h.velocity_scores),
       tipWindow: fmtIntervalCompact(h.interval_start, h.interval_end),
       tipIdentity: quotaHistoryIdentityBits(h),
       tipModels: undefined,
@@ -124,11 +159,7 @@ export function buildPriorBarFromHistory(
     consumedPct,
     remainingPct,
     resetAt: h.expected_reset_at ?? undefined,
-    segments: buildQuotaSegments(
-      remainingPct,
-      h.velocity_segments,
-      h.velocity_scores
-    ),
+    segments: buildQuotaSegments(remainingPct, h.velocity_scores),
     tipWindow: fmtIntervalCompact(h.interval_start, h.interval_end),
     tipIdentity: quotaHistoryIdentityBits(h),
     tipModels,
@@ -234,26 +265,7 @@ export function buildProviderLanes(
       // Anthropic / OpenAI: all quota data lives in the model=null row.
       const allRow = laneQuotas.find((r) => r.model === null)
       if (allRow !== undefined) {
-        const interval = ((): Parameters<typeof makeQuotaBarGroup>[2] => {
-          switch (def.quotaType) {
-            case 'short':
-              return 'short'
-            case 'weekly':
-              return 'weekly'
-            case 'weekly_overage_included':
-              return 'weekly_overage_included'
-            case 'special':
-              return 'special'
-            case 'short_special':
-              return 'short_special'
-            case 'monthly':
-              return 'monthly'
-            case 'wtus':
-              return 'wtus'
-            default:
-              return 'weekly'
-          }
-        })()
+        const interval = quotaTypeToBarInterval(def.quotaType)
         const g =
           laneProvider === 'openai'
             ? makeQuotaBarGroupAlways(def.laneLabel, allRow, interval)
@@ -312,10 +324,11 @@ export function buildProviderLanes(
         h.expected_reset_at !== null
           ? roundToNearest30Min(h.expected_reset_at)
           : null
-      const roundedSlot =
-        roundedSlotDate !== null
-          ? roundedSlotDate.toISOString()
-          : (h.interval_start ?? `null-reset-${seen.size.toString()}`)
+      if (roundedSlotDate !== null && Number.isNaN(roundedSlotDate.getTime())) {
+        continue
+      }
+
+      const roundedSlot = priorBarDedupKey(h)
 
       // Skip if this slot is within ±30 min of the current bar's reset time.
       // The ±30 min window absorbs rounding artefacts from Math.round that can

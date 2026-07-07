@@ -296,15 +296,20 @@ export function buildDashboardAlertSummary({
     if (bucketStart === null || bucketStart < cutoff) continue
     const count = row.status_probe_count ?? 0
     let failures = 0
-    if (count > 0 && row.status_probe_success_pct !== null) {
-      failures += Math.round(count * (1 - row.status_probe_success_pct / 100))
+    const successPctRaw = row.status_probe_success_pct
+    if (count > 0 && successPctRaw !== null) {
+      const successPct = Math.min(100, Math.max(0, successPctRaw))
+      failures += Math.max(0, Math.round(count * (1 - successPct / 100)))
     }
     failures +=
       (row.icmp_failures ?? 0) +
       (row.dns_failures ?? 0) +
       (row.tcp_failures ?? 0) +
       (row.tls_failures ?? 0)
-    if (failures <= 0) continue
+    const invalidProbeSuccessPct =
+      successPctRaw !== null && successPctRaw > 100 && count > 0
+    if (failures <= 0 && !invalidProbeSuccessPct) continue
+    if (failures < 0) failures = 0
     const provider = providerLabel(row.provider)
     recentPingFailures.set(
       provider,
@@ -389,6 +394,31 @@ export function buildDashboardAlertSummary({
   }
 }
 
+const STABLE_EMPTY_OBSERVATIONS: UsageReportProviderErrorObservationRow[] = []
+const STABLE_EMPTY_DOCKER: UsageReportDockerLogErrorRow[] = []
+const STABLE_EMPTY_LATENCY: UsageReportProviderLatencyHealthRow[] = []
+
+function stableObservations(
+  value: UsageReportProviderErrorObservationRow[] | undefined
+): UsageReportProviderErrorObservationRow[] | undefined {
+  if (value === undefined) return undefined
+  return value.length === 0 ? STABLE_EMPTY_OBSERVATIONS : value
+}
+
+function stableDocker(
+  value: UsageReportDockerLogErrorRow[] | undefined
+): UsageReportDockerLogErrorRow[] | undefined {
+  if (value === undefined) return undefined
+  return value.length === 0 ? STABLE_EMPTY_DOCKER : value
+}
+
+function stableLatency(
+  value: UsageReportProviderLatencyHealthRow[] | undefined
+): UsageReportProviderLatencyHealthRow[] | undefined {
+  if (value === undefined) return undefined
+  return value.length === 0 ? STABLE_EMPTY_LATENCY : value
+}
+
 export function useDashboardAlertSummary(
   anomalies: AnomalyFlags,
   summary?: AlertSummaryShape,
@@ -398,24 +428,28 @@ export function useDashboardAlertSummary(
   providerLatencyHealth?: UsageReportProviderLatencyHealthRow[],
   now?: Date
 ): DashboardAlertSummary {
+  const stableProviderErrors = stableObservations(providerErrorObservations)
+  const stableDockerErrors = stableDocker(dockerLogErrors)
+  const stableLatencyHealth = stableLatency(providerLatencyHealth)
+
   return useMemo(
     () =>
       buildDashboardAlertSummary({
         anomalies,
         summary,
         quotas,
-        providerErrorObservations,
-        dockerLogErrors,
-        providerLatencyHealth,
+        providerErrorObservations: stableProviderErrors,
+        dockerLogErrors: stableDockerErrors,
+        providerLatencyHealth: stableLatencyHealth,
         now,
       }),
     [
       anomalies,
       summary,
       quotas,
-      providerErrorObservations,
-      dockerLogErrors,
-      providerLatencyHealth,
+      stableProviderErrors,
+      stableDockerErrors,
+      stableLatencyHealth,
       now,
     ]
   )
