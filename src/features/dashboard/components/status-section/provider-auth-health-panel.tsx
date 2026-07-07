@@ -3,27 +3,10 @@ import type {
   UsageReportProviderAuthHealth,
   UsageReportProviderAuthHealthEntry,
 } from '../../api/usage-report'
-
-function formatRemainingSeconds(seconds: number | null | undefined): string {
-  if (seconds == null) return 'n/a'
-  if (seconds <= 0) return 'expired'
-  if (seconds < 60) return `${seconds}s`
-  const minutes = Math.floor(seconds / 60)
-  const remainder = seconds % 60
-  if (minutes < 60) {
-    return remainder > 0 ? `${minutes}m ${remainder}s` : `${minutes}m`
-  }
-  const hours = Math.floor(minutes / 60)
-  const hourRemainder = minutes % 60
-  return hourRemainder > 0 ? `${hours}h ${hourRemainder}m` : `${hours}h`
-}
-
-function formatAuthTimestamp(value: string | null | undefined): string {
-  if (!value) return 'n/a'
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return value
-  return date.toISOString().replace('T', ' ').slice(0, 16)
-}
+import {
+  formatRemainingSeconds,
+  formatStatusTimestamp,
+} from '../../lib/status-formatters'
 
 function authStateLabel(
   state: UsageReportProviderAuthHealthEntry['auth_health_state']
@@ -70,6 +53,16 @@ function entryHeadline(entry: UsageReportProviderAuthHealthEntry): string {
   return parts.join(' / ')
 }
 
+function authHealthEntryKey(entry: UsageReportProviderAuthHealthEntry): string {
+  return [
+    entry.environment,
+    entry.provider,
+    entry.auth_family,
+    entry.credential_scope ?? '',
+    entry.observed_at,
+  ].join('|')
+}
+
 function ProviderAuthHealthCard({
   entry,
 }: {
@@ -95,14 +88,14 @@ function ProviderAuthHealthCard({
       </div>
       <div className='provider-auth-detail-grid'>
         <span>observed</span>
-        <strong>{formatAuthTimestamp(entry.observed_at)}</strong>
+        <strong>{formatStatusTimestamp(entry.observed_at)}</strong>
         <span>expires</span>
         <strong>
-          {formatAuthTimestamp(entry.expires_at)} (
+          {formatStatusTimestamp(entry.expires_at)} (
           {formatRemainingSeconds(entry.remaining_seconds)})
         </strong>
         <span>last success</span>
-        <strong>{formatAuthTimestamp(entry.last_success_at)}</strong>
+        <strong>{formatStatusTimestamp(entry.last_success_at)}</strong>
         <span>source</span>
         <strong>{entry.source_task ?? 'n/a'}</strong>
         {entry.auth_file_source ? (
@@ -153,9 +146,9 @@ export function ProviderAuthHealthPanel({
       </div>
       {entries.length > 0 ? (
         <div className='provider-auth-grid'>
-          {entries.map((entry, index) => (
+          {entries.map((entry) => (
             <ProviderAuthHealthCard
-              key={`${entry.environment}-${entry.provider}-${entry.auth_family}-${entry.credential_scope ?? ''}-${entry.observed_at}-${index.toString()}`}
+              key={authHealthEntryKey(entry)}
               entry={entry}
             />
           ))}

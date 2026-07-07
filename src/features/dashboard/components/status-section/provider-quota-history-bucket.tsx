@@ -51,7 +51,10 @@ export function ProviderQuotaHistoryBucket({
       style={{ borderTopColor: providerColor }}
     >
       <div className='provider-quota-bucket-head'>
-        <span style={{ color: providerColor }}>{provider}</span>
+        <span style={{ color: providerColor }}>{providerLabel}</span>
+        {provider !== providerLabel ? (
+          <span className='provider-quota-bucket-raw-key'>{provider}</span>
+        ) : null}
         <span>{visibleRowCount.toLocaleString()} bars</span>
       </div>
       {quotaTabs.length === 0 ? null : (
@@ -88,7 +91,7 @@ export function ProviderQuotaHistoryBucket({
             no quota history for {providerLabel} in {rangeLabel}
           </div>
         ) : (
-          selectedRows.map((row, rowIndex) => {
+          selectedRows.map((row) => {
             const consumedPct = quotaHistoryConsumedPct(row)
             const requests = quotaHistoryRequests(row)
             const modelLabel =
@@ -106,7 +109,7 @@ export function ProviderQuotaHistoryBucket({
               row.source ?? null,
               row.client ?? null,
             ].filter((bit): bit is string => Boolean(bit && bit.length > 0))
-            const rangeLabel = fmtIntervalCompact(
+            const rowIntervalLabel = fmtIntervalCompact(
               row.interval_start,
               row.interval_end
             )
@@ -116,8 +119,9 @@ export function ProviderQuotaHistoryBucket({
                   row.provider,
                   row.model ?? 'all',
                   row.quota_type,
-                  row.expected_reset_at ?? rangeLabel,
-                  rowIndex,
+                  row.expected_reset_at ?? rowIntervalLabel,
+                  row.quota_key ?? '',
+                  row.source ?? '',
                 ].join('|')}
                 className='provider-quota-history-row'
               >
@@ -139,7 +143,7 @@ export function ProviderQuotaHistoryBucket({
                   />
                 </div>
                 <div className='provider-quota-history-foot'>
-                  <span>{rangeLabel}</span>
+                  <span>{rowIntervalLabel}</span>
                   <span>
                     {formatCompactQuantity(row.usage_tokens)} tok ·{' '}
                     {formatCompactQuantity(requests)} req

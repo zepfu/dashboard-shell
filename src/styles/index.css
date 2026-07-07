@@ -117,6 +117,15 @@
   }
 }
 
+.section-title {
+  font-size: clamp(10px, 0.6vw, 18px);
+  color: var(--accent-chrome);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-weight: 600;
+  margin: 0;
+}
+
 .section-title-row {
   display: flex;
   align-items: center;

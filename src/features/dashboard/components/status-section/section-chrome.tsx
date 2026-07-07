@@ -14,18 +14,7 @@ export function SectionTitle({
   tabs?: ReactNode
 }): ReactElement {
   const title = (
-    <h2
-      id={id}
-      className='section-title'
-      style={{
-        fontSize: 'clamp(10px, 0.6vw, 18px)',
-        color: 'var(--accent-chrome)',
-        textTransform: 'uppercase',
-        letterSpacing: '0.05em',
-        fontWeight: 600,
-        margin: 0,
-      }}
-    >
+    <h2 id={id} className='section-title'>
       {children}
     </h2>
   )
@@ -137,6 +126,7 @@ export function SectionTabs<T extends string>({
     </div>
   )
 }
+
 interface SectionSkeletonProps {
   height?: number
 }
@@ -151,5 +141,64 @@ export function SectionSkeleton({
       className='skeleton-block'
       style={{ height, borderRadius: 0 }}
     />
+  )
+}
+
+type StatusPillMap<T extends string> = Readonly<
+  Record<T, { label: string; className: string }>
+>
+
+// eslint-disable-next-line react-refresh/only-export-components
+export function statusPill<T extends string>(
+  map: StatusPillMap<T>,
+  value: T | string | null | undefined,
+  fallback: { label: string; className: string }
+): { label: string; className: string } {
+  if (value == null || value === '') return fallback
+  const key = String(value) as T
+  return map[key] ?? fallback
+}
+
+export function StatusPanel({
+  title,
+  subLabel,
+  loading,
+  emptyMessage,
+  children,
+  className,
+  ariaLabel,
+}: {
+  title: string
+  subLabel?: string
+  loading?: boolean
+  emptyMessage?: string
+  children?: ReactNode
+  className?: string
+  ariaLabel?: string
+}): ReactElement {
+  const showEmpty =
+    !loading && emptyMessage !== undefined && children === undefined
+
+  return (
+    <section className={className} aria-label={ariaLabel ?? title}>
+      <div className='status-panel-head'>
+        <span>{title}</span>
+        {subLabel !== undefined ? (
+          <span className='status-panel-sub'>{subLabel}</span>
+        ) : null}
+        {loading ? (
+          <span className='status-panel-loading' role='status'>
+            updating
+          </span>
+        ) : null}
+      </div>
+      {showEmpty ? (
+        <div className='status-panel-empty' role='status'>
+          {emptyMessage}
+        </div>
+      ) : (
+        children
+      )}
+    </section>
   )
 }
