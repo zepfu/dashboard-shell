@@ -1,9 +1,15 @@
 import path from 'path'
-import { defineConfig, type Plugin } from 'vite'
+import {
+  defineConfig,
+  type HttpProxy,
+  type Plugin,
+  type ProxyOptions,
+} from 'vite'
 import react from '@vitejs/plugin-react-swc'
 import { federation } from '@module-federation/vite'
 import tailwindcss from '@tailwindcss/vite'
 import { tanstackRouter } from '@tanstack/router-plugin/vite'
+import type { ClientRequest } from 'http'
 
 const aawmTapRemoteEntry =
   process.env.AAWM_TAP_REMOTE_ENTRY ?? '/modules/aawm-tap/remoteEntry.js'
@@ -26,6 +32,34 @@ const sluiceRemoteEntry =
 const sluiceRemoteEntryType = process.env.SLUICE_REMOTE_ENTRY_TYPE ?? 'module'
 const shellReportApiTarget =
   process.env.SHELL_REPORT_API_TARGET ?? 'http://127.0.0.1:3010'
+const DEFAULT_SHELL_REPORT_PROXY_SHARED_SECRET =
+  'dashboard-shell-local-proxy-secret'
+const shellReportProxySharedSecret =
+  process.env.SHELL_REPORT_PROXY_SHARED_SECRET ??
+  DEFAULT_SHELL_REPORT_PROXY_SHARED_SECRET
+const REPORT_PROXY_SECRET_HEADER = 'X-Dashboard-Shell-Proxy-Secret'
+
+const shellReportProxyConfig = (): ProxyOptions => ({
+  target: shellReportApiTarget,
+  changeOrigin: true,
+  configure: (proxy: HttpProxy.ProxyServer) => {
+    proxy.on('proxyReq', (proxyReq: ClientRequest) => {
+      proxyReq.setHeader(
+        REPORT_PROXY_SECRET_HEADER,
+        shellReportProxySharedSecret
+      )
+    })
+  },
+})
+
+const UPSTREAM_SHELL_REPORT_PROXY_PATHS = [
+  '/api/aawm-tap',
+  '/api/aawm-observe',
+  '/api/aawm',
+  '/api/aegis',
+  '/api/sluice',
+  '/hook-api',
+] as const
 const dashboardShellDevPort = Number(
   process.env.DASHBOARD_SHELL_DEV_PORT ?? 3006
 )
@@ -142,31 +176,13 @@ export default defineConfig({
       ignored: isIgnoredDevWatchPath,
     },
     proxy: {
-      '/api/aawm-tap': {
-        target: shellReportApiTarget,
-        changeOrigin: true,
-      },
-      '/api/aawm-observe': {
-        target: shellReportApiTarget,
-        changeOrigin: true,
-      },
-      '/api/aawm': {
-        target: shellReportApiTarget,
-        changeOrigin: true,
-      },
-      '/api/aegis': {
-        target: shellReportApiTarget,
-        changeOrigin: true,
-      },
+      ...Object.fromEntries(
+        UPSTREAM_SHELL_REPORT_PROXY_PATHS.map((pathPrefix) => [
+          pathPrefix,
+          shellReportProxyConfig(),
+        ])
+      ),
       '/api/shell': {
-        target: shellReportApiTarget,
-        changeOrigin: true,
-      },
-      '/api/sluice': {
-        target: shellReportApiTarget,
-        changeOrigin: true,
-      },
-      '/hook-api': {
         target: shellReportApiTarget,
         changeOrigin: true,
       },

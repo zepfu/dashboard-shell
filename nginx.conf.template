@@ -1,6 +1,6 @@
 server {
   listen 80;
-  set $shell_report_proxy_secret "dashboard-shell-local-proxy-secret";
+  set $shell_report_proxy_secret "${SHELL_REPORT_PROXY_SHARED_SECRET}";
   server_name _;
 
   root /usr/share/nginx/html;

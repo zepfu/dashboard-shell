@@ -20,6 +20,7 @@ services:
     environment:
       SHELL_CONTAINER_NAME: dashboard-shell-dev
       SHELL_CONTAINER_ERROR_INTAKE_DIR: /dashboard-shell-analysis
+      SHELL_REPORT_PROXY_SHARED_SECRET: "${SHELL_REPORT_PROXY_SHARED_SECRET:-dashboard-shell-local-proxy-secret}"
       AAWM_DASHBOARD_REMOTE_ENTRY: "http://localhost:${AAWM_DASHBOARD_REMOTE_DEV_PORT:-5176}/remoteEntry.js"
       AAWM_DASHBOARD_REMOTE_ENTRY_TYPE: "module"
       AAWM_OBSERVE_REMOTE_ENTRY: "http://localhost:${AAWM_OBSERVE_REMOTE_DEV_PORT:-5177}/remoteEntry.js"
@@ -76,6 +77,7 @@ services:
     environment:
       SHELL_CONTAINER_NAME: dashboard-shell-reports-dev
       SHELL_CONTAINER_ERROR_INTAKE_DIR: /dashboard-shell-analysis
+      SHELL_REPORT_PROXY_SHARED_SECRET: "${SHELL_REPORT_PROXY_SHARED_SECRET:-dashboard-shell-local-proxy-secret}"
       AAWM_API_KEY: "${AAWM_API_KEY:-}"
       AAWM_ACCESS_TOKEN: "${AAWM_ACCESS_TOKEN:-}"
       AAWM_API_TARGET: "${AAWM_API_TARGET:-http://aawm-api:8000}"

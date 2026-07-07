@@ -5,6 +5,8 @@ services:
       context: .
       dockerfile: Dockerfile
     image: dashboard-shell:local
+    environment:
+      SHELL_REPORT_PROXY_SHARED_SECRET: "${SHELL_REPORT_PROXY_SHARED_SECRET:-dashboard-shell-local-proxy-secret}"
     volumes:
       - ./.analysis:/dashboard-shell-analysis
     ports:
@@ -36,6 +38,7 @@ services:
     environment:
       SHELL_CONTAINER_NAME: dashboard-shell-reports
       SHELL_CONTAINER_ERROR_INTAKE_DIR: /dashboard-shell-analysis
+      SHELL_REPORT_PROXY_SHARED_SECRET: "${SHELL_REPORT_PROXY_SHARED_SECRET:-dashboard-shell-local-proxy-secret}"
       AAWM_API_KEY: "${AAWM_API_KEY:-}"
       AAWM_ACCESS_TOKEN: "${AAWM_ACCESS_TOKEN:-}"
       AAWM_API_TARGET: "${AAWM_API_TARGET:-http://aawm-api:8000}"

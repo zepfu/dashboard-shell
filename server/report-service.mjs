@@ -18,7 +18,6 @@ import {
   extractDockerLogErrorsFromTail,
   selectNewDockerLogErrors,
   resolveDockerLogContainerNames,
-  capDockerLogErrorsForDashboard,
   discoverDockerJsonLogSourcesFromConfigs,
   shouldDiscoverDockerJsonLogSources,
   splitDockerLogErrorsForDashboardAndIntake,
@@ -36,9 +35,11 @@ import pg from 'pg'
 // local/SQL as designed. This keeps the pure query-builder functions
 // importable without requiring a live Redis or the package at test time.
 let createClient = null
+let RESP_TYPES = null
 try {
   const redisMod = await import('redis')
   createClient = redisMod.createClient
+  RESP_TYPES = redisMod.RESP_TYPES ?? null
 } catch {
   // redis not resolvable; redisClient remains null below.
 }
@@ -47,7 +48,91 @@ const { Pool } = pg
 const gzip = promisify(gzipCallback)
 const gunzip = promisify(gunzipCallback)
 
-const PORT = Number(process.env.SHELL_REPORT_PORT ?? 3010)
+function parseFiniteNumberEnv(name, fallback) {
+  const parsed = Number(process.env[name] ?? fallback)
+  if (!Number.isFinite(parsed)) {
+    const fallbackNumber = Number(fallback)
+    return Number.isFinite(fallbackNumber) ? fallbackNumber : 0
+  }
+  return parsed
+}
+
+function boundedIntegerEnv(
+  name,
+  fallback,
+  { minimum = Number.NEGATIVE_INFINITY, maximum = Number.POSITIVE_INFINITY, floor = true } = {}
+) {
+  const finiteMinimum = Number.isFinite(minimum) ? minimum : Number.NEGATIVE_INFINITY
+  const finiteMaximum = Number.isFinite(maximum) ? maximum : Number.POSITIVE_INFINITY
+  const clamp = (value) => Math.max(finiteMinimum, Math.min(finiteMaximum, value))
+  const parsed = Number(process.env[name] ?? fallback)
+  const resolveFallback = () => {
+    const fallbackNumber = Number(fallback)
+    if (!Number.isFinite(fallbackNumber)) {
+      return Number.isFinite(finiteMinimum) ? finiteMinimum : 0
+    }
+    const normalizedFallback = floor ? Math.floor(fallbackNumber) : fallbackNumber
+    return clamp(normalizedFallback)
+  }
+  if (!Number.isFinite(parsed)) {
+    return resolveFallback()
+  }
+  const normalized = floor ? Math.floor(parsed) : parsed
+  return clamp(normalized)
+}
+
+function positiveIntegerEnv(name, fallback, minimum = 1) {
+  return boundedIntegerEnv(name, fallback, {
+    minimum,
+    maximum: Number.POSITIVE_INFINITY,
+    floor: true,
+  })
+}
+
+const BOOLEAN_ENV_TRUE = new Set(['1', 'true', 'yes', 'on'])
+const BOOLEAN_ENV_FALSE = new Set(['0', 'false', 'no', 'off'])
+
+function parseBooleanEnv(name, fallback) {
+  const raw = process.env[name]
+  if (raw == null || String(raw).trim() === '') {
+    return fallback
+  }
+  const normalized = String(raw).trim().toLowerCase()
+  if (BOOLEAN_ENV_TRUE.has(normalized)) return true
+  if (BOOLEAN_ENV_FALSE.has(normalized)) return false
+  return fallback
+}
+
+function normalizeDatabaseUrl(value) {
+  if (!value) return value
+
+  const hostRewrite = process.env.SHELL_REPORT_DATABASE_HOST_REWRITE
+  if (!hostRewrite) return value
+
+  try {
+    const databaseUrl = new URL(value)
+    const shouldRewrite =
+      databaseUrl.hostname === '127.0.0.1' ||
+      databaseUrl.hostname === 'localhost'
+
+    if (!shouldRewrite) return value
+
+    const portRewrite = process.env.SHELL_REPORT_DATABASE_PORT_REWRITE
+    if (portRewrite) {
+      databaseUrl.port = portRewrite
+    }
+
+    databaseUrl.hostname = hostRewrite
+    return databaseUrl.toString()
+  } catch {
+    return value
+  }
+}
+
+const PORT = boundedIntegerEnv('SHELL_REPORT_PORT', 3010, {
+  minimum: 1,
+  maximum: 65_535,
+})
 const DATABASE_URL = normalizeDatabaseUrl(process.env.DATABASE_URL)
 const UPSTREAM_API_PROXIES = [
   {
@@ -137,21 +222,20 @@ const HEALTH_WINDOW_HOURS = 24
 // remains 20_000 — operators can lower it via SHELL_REPORT_HEALTH_MAX_ROWS.
 // A >75% capacity warning is emitted at query time to surface truncation risk
 // before it becomes a silent data loss.
-const MAX_HEALTH_ROWS = Math.max(
-  100,
-  Math.min(Number(process.env.SHELL_REPORT_HEALTH_MAX_ROWS ?? 20_000), 20_000)
-)
+const MAX_HEALTH_ROWS = boundedIntegerEnv('SHELL_REPORT_HEALTH_MAX_ROWS', 20_000, {
+  minimum: 100,
+  maximum: 20_000,
+})
 const MAX_PROVIDER_ERROR_ROWS = 2_000
-const MAX_DOCKER_LOG_ERROR_ROWS = Math.max(
-  0,
-  Math.min(Number(process.env.SHELL_REPORT_DOCKER_LOG_ERROR_ROWS ?? 200), 1_000)
+const MAX_DOCKER_LOG_ERROR_ROWS = boundedIntegerEnv(
+  'SHELL_REPORT_DOCKER_LOG_ERROR_ROWS',
+  200,
+  { minimum: 0, maximum: 1_000 }
 )
-const DOCKER_LOG_TAIL_BYTES = Math.max(
-  64 * 1024,
-  Math.min(
-    Number(process.env.SHELL_REPORT_DOCKER_LOG_TAIL_BYTES ?? 4 * 1024 * 1024),
-    32 * 1024 * 1024
-  )
+const DOCKER_LOG_TAIL_BYTES = boundedIntegerEnv(
+  'SHELL_REPORT_DOCKER_LOG_TAIL_BYTES',
+  4 * 1024 * 1024,
+  { minimum: 64 * 1024, maximum: 32 * 1024 * 1024 }
 )
 const DOCKER_LOG_ROOT =
   process.env.SHELL_REPORT_DOCKER_LOG_ROOT ?? '/host/docker/containers'
@@ -160,10 +244,74 @@ const DOCKER_LOG_ERROR_INTAKE_DIR = path.resolve(
   process.env.SHELL_REPORT_ERROR_INTAKE_DIR ??
     path.join(process.cwd(), '.analysis')
 )
-const dockerLogErrorIntakeSeenFingerprints = new Set()
-const LOCAL_HEALTH_TIMEOUT_MS = Math.max(
-  250,
-  Math.min(Number(process.env.SHELL_REPORT_LOCAL_HEALTH_TIMEOUT_MS ?? 900), 5_000)
+const DOCKER_LOG_SCAN_MAX_SOURCES = boundedIntegerEnv(
+  'SHELL_REPORT_DOCKER_LOG_SCAN_MAX_SOURCES',
+  24,
+  { minimum: 1, maximum: 128 }
+)
+const DOCKER_LOG_SCAN_MAX_TOTAL_BYTES = boundedIntegerEnv(
+  'SHELL_REPORT_DOCKER_LOG_SCAN_MAX_TOTAL_BYTES',
+  16 * 1024 * 1024,
+  { minimum: 256 * 1024, maximum: 128 * 1024 * 1024 }
+)
+const DOCKER_LOG_SCAN_CACHE_TTL_MS = boundedIntegerEnv(
+  'SHELL_REPORT_DOCKER_LOG_SCAN_CACHE_TTL_MS',
+  45_000,
+  { minimum: 0, maximum: 10 * 60 * 1000 }
+)
+const DOCKER_LOG_INTAKE_FINGERPRINT_MAX = boundedIntegerEnv(
+  'SHELL_REPORT_DOCKER_LOG_INTAKE_FINGERPRINT_MAX',
+  8_192,
+  { minimum: 256, maximum: 65_536 }
+)
+
+class BoundedDockerLogFingerprintSet {
+  constructor(maxEntries) {
+    this.maxEntries = Math.max(1, Number(maxEntries) || 1)
+    this.keys = new Map()
+  }
+
+  has(key) {
+    return this.keys.has(key)
+  }
+
+  add(key) {
+    const normalized = String(key)
+    if (!normalized) return this
+    if (this.keys.has(normalized)) {
+      this.keys.delete(normalized)
+    }
+    this.keys.set(normalized, true)
+    while (this.keys.size > this.maxEntries) {
+      const oldest = this.keys.keys().next().value
+      this.keys.delete(oldest)
+    }
+    return this
+  }
+
+  get size() {
+    return this.keys.size
+  }
+
+  clear() {
+    this.keys.clear()
+  }
+}
+
+const dockerLogErrorIntakeSeenFingerprints = new BoundedDockerLogFingerprintSet(
+  DOCKER_LOG_INTAKE_FINGERPRINT_MAX
+)
+
+/** @type {{ sources: Array<{ container: string, logPath: string, matchKind?: string }>, cachedAt: number } | null} */
+let dockerLogJsonSourcesCache = null
+
+/** @type {{ sortedRows: unknown[], forDashboard: unknown[], cachedAt: number } | null} */
+let dockerLogErrorsScanCache = null
+let dockerLogTailReadCountForTests = 0
+const LOCAL_HEALTH_TIMEOUT_MS = boundedIntegerEnv(
+  'SHELL_REPORT_LOCAL_HEALTH_TIMEOUT_MS',
+  900,
+  { minimum: 250, maximum: 5_000 }
 )
 const LOCAL_CONTAINER_HEALTH_PROBES = [
   {
@@ -231,105 +379,106 @@ const LOCAL_MODEL_HEALTH_PROBES = [
 }))
 const MAX_PROVIDER_STATUS_ROWS = 500
 const STALE_RECORD_THRESHOLD_MINUTES = 120
-const REPORT_DB_DISABLE_PARALLELISM =
-  (process.env.SHELL_REPORT_DB_DISABLE_PARALLELISM ?? 'true').toLowerCase() !==
-  'false'
-const REPORT_SQL_FANOUT_CONCURRENCY = Math.max(
+const REPORT_DB_DISABLE_PARALLELISM = parseBooleanEnv(
+  'SHELL_REPORT_DB_DISABLE_PARALLELISM',
+  true
+)
+const REPORT_SQL_FANOUT_CONCURRENCY = boundedIntegerEnv(
+  'SHELL_REPORT_SQL_FANOUT_CONCURRENCY',
   1,
-  Math.min(Number(process.env.SHELL_REPORT_SQL_FANOUT_CONCURRENCY ?? 1), 4)
+  { minimum: 1, maximum: 4 }
 )
-const REPORT_DB_STATEMENT_TIMEOUT_MS = Math.max(
-  0,
-  Number(process.env.SHELL_REPORT_DB_STATEMENT_TIMEOUT_MS ?? 120_000)
+const REPORT_DB_STATEMENT_TIMEOUT_MS = boundedIntegerEnv(
+  'SHELL_REPORT_DB_STATEMENT_TIMEOUT_MS',
+  120_000,
+  { minimum: 0, maximum: Number.POSITIVE_INFINITY }
 )
-const REPORT_DB_POOL_MAX = Math.max(
-  1,
-  Math.min(Number(process.env.SHELL_REPORT_DB_POOL_MAX ?? 4), 8)
+const REPORT_DB_POOL_MAX = boundedIntegerEnv('SHELL_REPORT_DB_POOL_MAX', 4, {
+  minimum: 1,
+  maximum: 8,
+})
+const REPORT_DB_CONNECTION_TIMEOUT_MS = boundedIntegerEnv(
+  'SHELL_REPORT_DB_CONNECTION_TIMEOUT_MS',
+  5_000,
+  { minimum: 500, maximum: Number.POSITIVE_INFINITY }
 )
-const REPORT_DB_CONNECTION_TIMEOUT_MS = Math.max(
-  500,
-  Number(process.env.SHELL_REPORT_DB_CONNECTION_TIMEOUT_MS ?? 5_000)
+const HEALTH_DB_STATEMENT_TIMEOUT_MS = boundedIntegerEnv(
+  'SHELL_REPORT_HEALTH_DB_STATEMENT_TIMEOUT_MS',
+  2_000,
+  { minimum: 500, maximum: Number.POSITIVE_INFINITY }
 )
-const HEALTH_DB_STATEMENT_TIMEOUT_MS = Math.max(
-  500,
-  Number(process.env.SHELL_REPORT_HEALTH_DB_STATEMENT_TIMEOUT_MS ?? 2_000)
-)
-const HEALTH_DB_CONNECTION_TIMEOUT_MS = Math.max(
-  500,
-  Number(process.env.SHELL_REPORT_HEALTH_DB_CONNECTION_TIMEOUT_MS ?? 1_000)
-)
-const PGBOUNCER_HEALTH_CACHE_TTL_MS = Math.max(
+const HEALTH_DB_CONNECTION_TIMEOUT_MS = boundedIntegerEnv(
+  'SHELL_REPORT_HEALTH_DB_CONNECTION_TIMEOUT_MS',
   1_000,
-  Number(process.env.SHELL_REPORT_PGBOUNCER_HEALTH_CACHE_TTL_MS ?? 15_000)
+  { minimum: 500, maximum: Number.POSITIVE_INFINITY }
 )
-const PGBOUNCER_ADMIN_QUERY_TIMEOUT_MS = Math.max(
-  500,
-  Number(process.env.SHELL_REPORT_PGBOUNCER_ADMIN_QUERY_TIMEOUT_MS ?? 2_000)
+const PGBOUNCER_HEALTH_CACHE_TTL_MS = boundedIntegerEnv(
+  'SHELL_REPORT_PGBOUNCER_HEALTH_CACHE_TTL_MS',
+  15_000,
+  { minimum: 1_000, maximum: Number.POSITIVE_INFINITY }
 )
-const MATERIALIZED_VIEW_HEALTH_CACHE_TTL_MS = Math.max(
-  1_000,
-  Number(process.env.SHELL_REPORT_MV_HEALTH_CACHE_TTL_MS ?? 30_000)
+const PGBOUNCER_ADMIN_QUERY_TIMEOUT_MS = boundedIntegerEnv(
+  'SHELL_REPORT_PGBOUNCER_ADMIN_QUERY_TIMEOUT_MS',
+  2_000,
+  { minimum: 500, maximum: Number.POSITIVE_INFINITY }
 )
-const QUOTA_MV_STALE_AFTER_MS = Math.max(
-  60_000,
-  Number(process.env.SHELL_REPORT_QUOTA_MV_STALE_AFTER_MS ?? 30 * 60 * 1000)
+const MATERIALIZED_VIEW_HEALTH_CACHE_TTL_MS = boundedIntegerEnv(
+  'SHELL_REPORT_MV_HEALTH_CACHE_TTL_MS',
+  30_000,
+  { minimum: 1_000, maximum: Number.POSITIVE_INFINITY }
 )
-const PROVIDER_HEALTH_MV_STALE_AFTER_MS = Math.max(
-  60_000,
-  Number(process.env.SHELL_REPORT_PROVIDER_HEALTH_MV_STALE_AFTER_MS ?? 60 * 60 * 1000)
+const QUOTA_MV_STALE_AFTER_MS = boundedIntegerEnv(
+  'SHELL_REPORT_QUOTA_MV_STALE_AFTER_MS',
+  30 * 60 * 1000,
+  { minimum: 60_000, maximum: Number.POSITIVE_INFINITY }
 )
-// Keep the generic report cache short for quota-style endpoints that still need
-// near-live semantics. Heavy usage-summary reports get a longer Redis freshness
-// window below so browser polling does not force SQL refreshes every minute.
-// Operators can override via SHELL_REPORT_CACHE_TTL_MS when needed.
-const REPORT_CACHE_TTL_MS = Math.max(
-  0,
-  Number(process.env.SHELL_REPORT_CACHE_TTL_MS ?? 60 * 1000)
-)
-const REPORT_CACHE_USAGE_TTL_MS = Math.max(
-  0,
-  Number(process.env.SHELL_REPORT_USAGE_CACHE_TTL_MS ?? 10 * 60 * 1000)
-)
-const REPORT_CACHE_STALE_TTL_MS = Math.max(
-  0,
-  Number(process.env.SHELL_REPORT_CACHE_STALE_TTL_MS ?? 24 * 60 * 60 * 1000)
+const PROVIDER_HEALTH_MV_STALE_AFTER_MS = boundedIntegerEnv(
+  'SHELL_REPORT_PROVIDER_HEALTH_MV_STALE_AFTER_MS',
+  60 * 60 * 1000,
+  { minimum: 60_000, maximum: Number.POSITIVE_INFINITY }
 )
 const REPORT_CACHE_REDIS_URL = process.env.SHELL_REPORT_REDIS_URL
 const REPORT_CACHE_PREFIX =
   process.env.SHELL_REPORT_CACHE_PREFIX ?? 'dashboard-shell:reports'
 const REPORT_CACHE_VERSION = process.env.SHELL_REPORT_CACHE_VERSION ?? 'v14'
-const REPORT_CACHE_LOCK_TTL_MS = Math.max(
-  1_000,
-  Number(process.env.SHELL_REPORT_CACHE_LOCK_TTL_MS ?? 30 * 60 * 1000)
+const REPORT_CACHE_LOCK_TTL_MS = boundedIntegerEnv(
+  'SHELL_REPORT_CACHE_LOCK_TTL_MS',
+  30 * 60 * 1000,
+  { minimum: 1_000, maximum: Number.POSITIVE_INFINITY }
 )
-const REPORT_CACHE_LOCK_WAIT_MS = Math.max(
-  0,
-  Number(process.env.SHELL_REPORT_CACHE_LOCK_WAIT_MS ?? 60 * 1000)
+const REPORT_CACHE_LOCK_WAIT_MS = boundedIntegerEnv(
+  'SHELL_REPORT_CACHE_LOCK_WAIT_MS',
+  60 * 1000,
+  { minimum: 0, maximum: Number.POSITIVE_INFINITY }
 )
-const REPORT_CACHE_FOREGROUND_LOCK_WAIT_MS = Math.max(
-  0,
-  Number(process.env.SHELL_REPORT_CACHE_FOREGROUND_LOCK_WAIT_MS ?? 2 * 1000)
+const REPORT_CACHE_FOREGROUND_LOCK_WAIT_MS = boundedIntegerEnv(
+  'SHELL_REPORT_CACHE_FOREGROUND_LOCK_WAIT_MS',
+  2 * 1000,
+  { minimum: 0, maximum: Number.POSITIVE_INFINITY }
 )
-const REPORT_CACHE_LOCK_POLL_MS = Math.max(
-  100,
-  Number(process.env.SHELL_REPORT_CACHE_LOCK_POLL_MS ?? 500)
+const REPORT_CACHE_LOCK_POLL_MS = boundedIntegerEnv(
+  'SHELL_REPORT_CACHE_LOCK_POLL_MS',
+  500,
+  { minimum: 100, maximum: Number.POSITIVE_INFINITY }
 )
-const REPORT_CACHE_PREWARM =
-  (process.env.SHELL_REPORT_CACHE_PREWARM ?? 'false').toLowerCase() !== 'false'
-const REPORT_CACHE_PREWARM_INTERVAL_MS = Math.max(
-  0,
-  Number(process.env.SHELL_REPORT_CACHE_PREWARM_INTERVAL_MS ?? 15 * 60 * 1000)
+const REPORT_CACHE_PREWARM = parseBooleanEnv('SHELL_REPORT_CACHE_PREWARM', false)
+const REPORT_CACHE_PREWARM_INTERVAL_MS = boundedIntegerEnv(
+  'SHELL_REPORT_CACHE_PREWARM_INTERVAL_MS',
+  15 * 60 * 1000,
+  { minimum: 0, maximum: Number.POSITIVE_INFINITY }
 )
-const REPORT_CACHE_PREWARM_LOCK_TTL_MS = Math.max(
-  60_000,
-  Number(process.env.SHELL_REPORT_CACHE_PREWARM_LOCK_TTL_MS ?? 2 * 60 * 60 * 1000)
+const REPORT_CACHE_PREWARM_LOCK_TTL_MS = boundedIntegerEnv(
+  'SHELL_REPORT_CACHE_PREWARM_LOCK_TTL_MS',
+  2 * 60 * 60 * 1000,
+  { minimum: 60_000, maximum: Number.POSITIVE_INFINITY }
 )
 const MAX_REPORT_CACHE_ENTRIES = 20
-function positiveIntegerEnv(name, fallback, minimum = 1) {
-  const parsed = Number(process.env[name] ?? fallback)
-  if (!Number.isFinite(parsed)) return fallback
-  return Math.max(minimum, Math.floor(parsed))
-}
+let reportCacheMaxEntries = MAX_REPORT_CACHE_ENTRIES
+let readRedisCacheEntryTestImpl = null
+let writeRedisCacheEntryTestImpl = null
+let queryReportDatabaseTestImpl = null
+let loadDockerLogErrorsTestImpl = null
+let loadLocalHealthTestImpl = null
 const TOOL_ACTIVITY_RECENT_ROW_LIMIT = positiveIntegerEnv(
   'SHELL_REPORT_TOOL_ACTIVITY_RECENT_ROW_LIMIT',
   5_000,
@@ -375,12 +524,10 @@ const QUOTA_HISTORY_MAX_UPPER_HOURS = positiveIntegerEnv(
   72,
   0
 )
-const QUOTA_HISTORY_MAX_INTERVALS_PER_LANE = Math.max(
-  24,
-  Math.min(
-    Number(process.env.SHELL_REPORT_QUOTA_HISTORY_MAX_INTERVALS_PER_LANE ?? 180),
-    999
-  )
+const QUOTA_HISTORY_MAX_INTERVALS_PER_LANE = boundedIntegerEnv(
+  'SHELL_REPORT_QUOTA_HISTORY_MAX_INTERVALS_PER_LANE',
+  180,
+  { minimum: 24, maximum: 999 }
 )
 const AGENT_SCORE_REASON_RECENT_ROW_LIMIT = positiveIntegerEnv(
   'SHELL_REPORT_AGENT_SCORE_REASON_RECENT_ROW_LIMIT',
@@ -404,22 +551,14 @@ const USAGE_TOKEN_TREND_SUMMARY_CACHE_SCOPE = 'usage-token-trend-summary-v6'
 const USAGE_QUOTA_HISTORY_CACHE_SCOPE = 'usage-quota-history-v2'
 export const USAGE_REPORT_CACHE_SCOPE = 'usage-v2'
 
-const USAGE_REPORT_CACHE_SCOPES = new Set([
-  USAGE_REPORT_CACHE_SCOPE,
-  USAGE_TOKEN_TREND_SUMMARY_CACHE_SCOPE,
-  'usage-tool-activity',
-  'usage-token-trend-day',
-])
 const QUOTA_VELOCITY_SEGMENT_COUNT = 100
 const QUOTA_ESTIMATOR_LAG_MINUTES = [0, 1, 5, 10, 30, 60]
 const QUOTA_ESTIMATOR_MIN_TRAINING_ROWS = 4
 const QUOTA_ESTIMATOR_HIGH_CONFIDENCE_ROWS = 20
-const QUOTA_ESTIMATOR_MAX_INTERVALS_PER_LANE = Math.max(
-  10,
-  Math.min(
-    Number(process.env.SHELL_REPORT_QUOTA_ESTIMATOR_MAX_INTERVALS_PER_LANE ?? 40),
-    500
-  )
+const QUOTA_ESTIMATOR_MAX_INTERVALS_PER_LANE = boundedIntegerEnv(
+  'SHELL_REPORT_QUOTA_ESTIMATOR_MAX_INTERVALS_PER_LANE',
+  40,
+  { minimum: 10, maximum: 500 }
 )
 const QUOTA_ESTIMATOR_ROLLING_HALF_LIFE_HOURS = {
   short: 5,
@@ -428,8 +567,9 @@ const QUOTA_ESTIMATOR_ROLLING_HALF_LIFE_HOURS = {
   special: 72,
   monthly: 168,
 }
-const UPSTREAM_FETCH_TIMEOUT_MS = Number(
-  process.env.SHELL_REPORT_UPSTREAM_TIMEOUT_MS ?? 30_000
+const UPSTREAM_FETCH_TIMEOUT_MS = parseFiniteNumberEnv(
+  'SHELL_REPORT_UPSTREAM_TIMEOUT_MS',
+  30_000
 )
 const HOP_BY_HOP_HEADERS = new Set([
   'connection',
@@ -450,6 +590,45 @@ const CLIENT_AUTH_HEADERS = new Set([
   'x-admin-capability',
   'x-api-key',
 ])
+const REPORT_PROXY_SECRET_HEADER = 'X-Dashboard-Shell-Proxy-Secret'
+const DEFAULT_REPORT_PROXY_SHARED_SECRET = 'dashboard-shell-local-proxy-secret'
+const INTERNAL_PROXY_HEADERS = new Set([REPORT_PROXY_SECRET_HEADER.toLowerCase()])
+
+function resolveReportProxySharedSecret() {
+  const raw = process.env.SHELL_REPORT_PROXY_SHARED_SECRET
+  if (raw != null && String(raw).trim() !== '') {
+    return String(raw).trim()
+  }
+  return DEFAULT_REPORT_PROXY_SHARED_SECRET
+}
+
+function readHeaderValue(headers, headerName) {
+  const lower = headerName.toLowerCase()
+  const direct = headers[headerName] ?? headers[lower]
+  if (direct == null) return undefined
+  return Array.isArray(direct) ? direct[0] : direct
+}
+
+export function evaluateUpstreamProxySecret(headers) {
+  const expected = resolveReportProxySharedSecret()
+  const provided = readHeaderValue(headers, REPORT_PROXY_SECRET_HEADER)
+  if (provided == null || String(provided).trim() === '') {
+    return {
+      ok: false,
+      status: 401,
+      error: 'Missing dashboard shell proxy secret.',
+    }
+  }
+  if (String(provided) !== expected) {
+    return {
+      ok: false,
+      status: 403,
+      error: 'Invalid dashboard shell proxy secret.',
+    }
+  }
+  return { ok: true }
+}
+
 const PGBOUNCER_SIDECARS = [
   {
     key: 'aawm-pgbouncer',
@@ -655,6 +834,9 @@ function summarizeReportSql(sql) {
 }
 
 async function queryReportDatabase(sql, values, options = {}) {
+  if (queryReportDatabaseTestImpl) {
+    return queryReportDatabaseTestImpl(sql, values, options)
+  }
   if (!pool) {
     throw new Error('DATABASE_URL is not configured for the shell report service.')
   }
@@ -726,23 +908,118 @@ end
 return 0
 `
 
-const redisClient = REPORT_CACHE_REDIS_URL && createClient
-  ? createClient({
-      url: REPORT_CACHE_REDIS_URL,
-      socket: {
-        reconnectStrategy: (retries) => Math.min(retries * 100, 5_000),
-      },
-    })
-  : null
+function createRedisCacheClient(redisUrl, clientFactory = createClient, respTypes = RESP_TYPES) {
+  if (!redisUrl || !clientFactory) return null
+
+  const client = clientFactory({
+    url: redisUrl,
+    socket: {
+      reconnectStrategy: (retries) => Math.min(retries * 100, 5_000),
+    },
+  })
+  const blobStringType = respTypes?.BLOB_STRING
+  if (
+    blobStringType == null ||
+    typeof client?.withTypeMapping !== 'function'
+  ) {
+    return client
+  }
+
+  return client.withTypeMapping({
+    [blobStringType]: Buffer,
+  })
+}
+
+const redisClient = createRedisCacheClient(REPORT_CACHE_REDIS_URL)
 let prewarmTimer = null
 let prewarmPromise = null
-let materializedViewHealthCache = null
-let materializedViewHealthPromise = null
-let sourceTableHealthCache = null
-let sourceTableHealthPromise = null
-let pgBouncerHealthCache = null
-let pgBouncerHealthPromise = null
+function createTtlMemoizer(ttlMs, onError) {
+  /** @type {{ expiresAt: number, value: unknown } | null} */
+  let cache = null
+  /** @type {Promise<unknown> | null} */
+  let inFlight = null
+
+  async function load(loader) {
+    const now = Date.now()
+    if (cache && cache.expiresAt > now) {
+      return cache.value
+    }
+    if (inFlight) {
+      return inFlight
+    }
+
+    inFlight = Promise.resolve()
+      .then(() => loader())
+      .then((value) => {
+        cache = {
+          expiresAt: Date.now() + ttlMs,
+          value,
+        }
+        return value
+      })
+      .catch((error) => {
+        const value = onError(error)
+        cache = {
+          expiresAt: Date.now() + ttlMs,
+          value,
+        }
+        return value
+      })
+      .finally(() => {
+        inFlight = null
+      })
+
+    return inFlight
+  }
+
+  function resetForTests() {
+    cache = null
+    inFlight = null
+  }
+
+  return { load, resetForTests }
+}
+
+const materializedViewHealthMemo = createTtlMemoizer(
+  MATERIALIZED_VIEW_HEALTH_CACHE_TTL_MS,
+  (error) => ({
+    status: 'unknown',
+    error: formatError(error),
+    views: [],
+    cronJobs: [],
+  })
+)
+const pgBouncerHealthMemo = createTtlMemoizer(
+  PGBOUNCER_HEALTH_CACHE_TTL_MS,
+  (error) => ({
+    status: 'unknown',
+    error: formatError(error),
+    sidecars: PGBOUNCER_SIDECARS.map((sidecar) =>
+      buildPgBouncerSidecarUnavailable(sidecar, formatError(error))
+    ),
+  })
+)
+const sourceTableHealthMemo = createTtlMemoizer(
+  MATERIALIZED_VIEW_HEALTH_CACHE_TTL_MS,
+  (error) => ({
+    status: 'unknown',
+    error: formatError(error),
+    tables: [],
+  })
+)
+
 let reportServiceShuttingDown = false
+let shutdownForceExitTimer = null
+
+const SHUTDOWN_GRACE_MS = boundedIntegerEnv('SHELL_REPORT_SHUTDOWN_GRACE_MS', 30_000, {
+  minimum: 1_000,
+  maximum: 300_000,
+})
+
+const GENERIC_INTERNAL_SERVER_ERROR_BODY = Object.freeze({
+  error: 'Internal server error',
+})
+
 
 if (redisClient) {
   redisClient.on('error', (error) => {
@@ -838,24 +1115,6 @@ async function cachedReport(scope, load, options = {}) {
     )
   }
 
-  const localEntry = readLocalReportCache(identity.cacheKey)
-  if (localEntry?.status === 'fresh' || localEntry?.status === 'stale') {
-    if (localEntry.status === 'stale') {
-      scheduleBackgroundCacheRefresh(identity, load, { cacheTtlMs }, 'background')
-    }
-    return maybeDecorateCacheMetadata(
-      localEntry.entry.payload,
-      {
-        ...identity,
-        backend: 'local',
-        status: localEntry.status === 'fresh' ? 'local_hit' : 'local_stale',
-        refreshing: localEntry.status === 'stale',
-        entry: localEntry.entry,
-      },
-      decorateMetadata
-    )
-  }
-
   if (redisEntry.status === 'error' || redisEntry.status === 'unavailable') {
     const localEntry = readLocalReportCache(identity.cacheKey)
     if (localEntry?.status === 'fresh' || localEntry?.status === 'stale') {
@@ -882,6 +1141,24 @@ async function cachedReport(scope, load, options = {}) {
         decorateMetadata
       )
     }
+  }
+
+  const localEntry = readLocalReportCache(identity.cacheKey)
+  if (localEntry?.status === 'fresh' || localEntry?.status === 'stale') {
+    if (localEntry.status === 'stale') {
+      scheduleBackgroundCacheRefresh(identity, load, { cacheTtlMs }, 'background')
+    }
+    return maybeDecorateCacheMetadata(
+      localEntry.entry.payload,
+      {
+        ...identity,
+        backend: 'local',
+        status: localEntry.status === 'fresh' ? 'local_hit' : 'local_stale',
+        refreshing: localEntry.status === 'stale',
+        entry: localEntry.entry,
+      },
+      decorateMetadata
+    )
   }
 
   const refreshResult = await refreshReportCache(identity, load, {
@@ -957,21 +1234,57 @@ function classifyCacheEntry(entry) {
   return 'expired'
 }
 
+
+function coerceRedisCacheStoredValue(encoded) {
+  if (encoded == null) return null
+  if (Buffer.isBuffer(encoded)) {
+    if (encoded[0] === 0x1f && encoded[1] === 0x8b) return encoded
+    return Buffer.from(encoded.toString('utf8'), 'base64')
+  }
+  if (encoded instanceof Uint8Array) {
+    const buffer = Buffer.from(encoded)
+    if (buffer[0] === 0x1f && buffer[1] === 0x8b) return buffer
+    return Buffer.from(buffer.toString('utf8'), 'base64')
+  }
+  if (typeof encoded === 'string') {
+    return Buffer.from(encoded, 'base64')
+  }
+  throw new Error('Unsupported Redis report cache payload type')
+}
+
+async function encodeRedisReportCachePayload(entry) {
+  return gzip(Buffer.from(JSON.stringify(entry)))
+}
+
+async function decodeRedisReportCachePayload(encoded) {
+  const compressed = coerceRedisCacheStoredValue(encoded)
+  if (!compressed?.length) {
+    throw new Error('Redis report cache payload is empty')
+  }
+  const json = (await gunzip(compressed)).toString('utf8')
+  return JSON.parse(json)
+}
+
 async function readRedisCacheEntry(identity) {
-  if (!redisClient) return { status: 'unavailable' }
-  if (!redisClient.isReady) return { status: 'unavailable' }
+  if (readRedisCacheEntryTestImpl) {
+    return readRedisCacheEntryTestImpl(identity)
+  }
+  return readRedisCacheEntryFromClient(identity, redisClient)
+}
+
+async function readRedisCacheEntryFromClient(identity, client) {
+  if (!client) return { status: 'unavailable' }
+  if (!client.isReady) return { status: 'unavailable' }
 
   try {
-    const encoded = await redisClient.get(identity.cacheKey)
+    const encoded = await client.get(identity.cacheKey)
     if (!encoded) return { status: 'miss' }
 
-    const entry = JSON.parse(
-      (await gunzip(Buffer.from(encoded, 'base64'))).toString('utf8')
-    )
+    const entry = await decodeRedisReportCachePayload(encoded)
     const status = classifyCacheEntry(entry)
     if (status === 'fresh' || status === 'stale') return { status, entry }
 
-    redisClient.del(identity.cacheKey).catch(() => {})
+    client.del(identity.cacheKey).catch(() => {})
     return { status }
   } catch (error) {
     process.stderr.write(
@@ -982,12 +1295,13 @@ async function readRedisCacheEntry(identity) {
 }
 
 async function writeRedisCacheEntry(identity, entry) {
+  if (writeRedisCacheEntryTestImpl) {
+    return writeRedisCacheEntryTestImpl(identity, entry)
+  }
   if (!redisClient?.isReady) return false
 
   const ttlMs = Math.max(1_000, entry.staleUntil - Date.now())
-  const encoded = (await gzip(Buffer.from(JSON.stringify(entry)))).toString(
-    'base64'
-  )
+  const encoded = await encodeRedisReportCachePayload(entry)
 
   await redisClient.set(identity.cacheKey, encoded, {
     expiration: { type: 'PX', value: ttlMs },
@@ -1085,11 +1399,6 @@ async function refreshReportCacheUnshared(identity, load, options) {
       await releaseRedisCacheLock(identity, lockToken)
     }
 
-    const cached = reportCache.get(identity.cacheKey)
-    if (cached?.promise) {
-      delete cached.promise
-      reportCache.set(identity.cacheKey, cached)
-    }
   }
 }
 
@@ -1214,38 +1523,9 @@ async function loadMaterializedViewHealth() {
     }
   }
 
-  const now = Date.now()
-  if (materializedViewHealthCache?.expiresAt > now) {
-    return materializedViewHealthCache.value
-  }
-  if (materializedViewHealthPromise) return materializedViewHealthPromise
-
-  materializedViewHealthPromise = loadMaterializedViewHealthFromDatabase()
-    .then((value) => {
-      materializedViewHealthCache = {
-        expiresAt: Date.now() + MATERIALIZED_VIEW_HEALTH_CACHE_TTL_MS,
-        value,
-      }
-      return value
-    })
-    .catch((error) => {
-      const value = {
-        status: 'unknown',
-        error: formatError(error),
-        views: [],
-        cronJobs: [],
-      }
-      materializedViewHealthCache = {
-        expiresAt: Date.now() + MATERIALIZED_VIEW_HEALTH_CACHE_TTL_MS,
-        value,
-      }
-      return value
-    })
-    .finally(() => {
-      materializedViewHealthPromise = null
-    })
-
-  return materializedViewHealthPromise
+  return materializedViewHealthMemo.load(() =>
+    loadMaterializedViewHealthFromDatabase()
+  )
 }
 
 export function buildReportQueryPressureQuery() {
@@ -1405,39 +1685,7 @@ async function loadReportQueryPressure() {
 }
 
 async function loadPgBouncerHealth() {
-  const now = Date.now()
-  if (pgBouncerHealthCache?.expiresAt > now) {
-    return pgBouncerHealthCache.value
-  }
-  if (pgBouncerHealthPromise) return pgBouncerHealthPromise
-
-  pgBouncerHealthPromise = loadPgBouncerHealthUncached()
-    .then((value) => {
-      pgBouncerHealthCache = {
-        expiresAt: Date.now() + PGBOUNCER_HEALTH_CACHE_TTL_MS,
-        value,
-      }
-      return value
-    })
-    .catch((error) => {
-      const value = {
-        status: 'unknown',
-        error: formatError(error),
-        sidecars: PGBOUNCER_SIDECARS.map((sidecar) =>
-          buildPgBouncerSidecarUnavailable(sidecar, formatError(error))
-        ),
-      }
-      pgBouncerHealthCache = {
-        expiresAt: Date.now() + PGBOUNCER_HEALTH_CACHE_TTL_MS,
-        value,
-      }
-      return value
-    })
-    .finally(() => {
-      pgBouncerHealthPromise = null
-    })
-
-  return pgBouncerHealthPromise
+  return pgBouncerHealthMemo.load(() => loadPgBouncerHealthUncached())
 }
 
 async function loadPgBouncerHealthUncached() {
@@ -1608,6 +1856,41 @@ function normalizeDockerLogConfig(logConfig) {
   }
 }
 
+const pgBouncerAdminPoolsByKey = new Map()
+
+function pgBouncerAdminPoolCacheKey(sidecar) {
+  return JSON.stringify([sidecar.key, sidecar.adminDatabaseUrl])
+}
+
+function getOrCreatePgBouncerAdminPool(sidecar) {
+  const cacheKey = pgBouncerAdminPoolCacheKey(sidecar)
+  let adminPool = pgBouncerAdminPoolsByKey.get(cacheKey)
+  if (!adminPool) {
+    adminPool = new Pool({
+      connectionString: sidecar.adminDatabaseUrl,
+      application_name: 'dashboard-shell-pgbouncer-health',
+      max: 1,
+      idleTimeoutMillis: 1_000,
+      connectionTimeoutMillis: PGBOUNCER_ADMIN_QUERY_TIMEOUT_MS,
+      query_timeout: PGBOUNCER_ADMIN_QUERY_TIMEOUT_MS,
+    })
+    adminPool.on('error', (error) => {
+      process.stderr.write(
+        `[report-service] WARN: idle PgBouncer admin client error for ${sidecar.key}: ${formatError(error)}
+`
+      )
+    })
+    pgBouncerAdminPoolsByKey.set(cacheKey, adminPool)
+  }
+  return adminPool
+}
+
+async function cleanupPgBouncerAdminPools() {
+  const pools = [...pgBouncerAdminPoolsByKey.values()]
+  pgBouncerAdminPoolsByKey.clear()
+  await Promise.all(pools.map((pool) => pool.end().catch(() => {})))
+}
+
 async function loadPgBouncerAdminSummary(sidecar) {
   if (!sidecar.adminDatabaseUrl) {
     return {
@@ -1623,19 +1906,7 @@ async function loadPgBouncerAdminSummary(sidecar) {
     }
   }
 
-  const adminPool = new Pool({
-    connectionString: sidecar.adminDatabaseUrl,
-    application_name: 'dashboard-shell-pgbouncer-health',
-    max: 1,
-    idleTimeoutMillis: 1_000,
-    connectionTimeoutMillis: PGBOUNCER_ADMIN_QUERY_TIMEOUT_MS,
-    query_timeout: PGBOUNCER_ADMIN_QUERY_TIMEOUT_MS,
-  })
-  adminPool.on('error', (error) => {
-    process.stderr.write(
-      `[report-service] WARN: idle PgBouncer admin client error for ${sidecar.key}: ${formatError(error)}\n`
-    )
-  })
+  const adminPool = getOrCreatePgBouncerAdminPool(sidecar)
 
   try {
     const client = await adminPool.connect()
@@ -1673,8 +1944,6 @@ async function loadPgBouncerAdminSummary(sidecar) {
       pools: [],
       stats: [],
     }
-  } finally {
-    await adminPool.end().catch(() => {})
   }
 }
 
@@ -1953,37 +2222,7 @@ async function loadSourceTableHealth() {
     }
   }
 
-  const now = Date.now()
-  if (sourceTableHealthCache?.expiresAt > now) {
-    return sourceTableHealthCache.value
-  }
-  if (sourceTableHealthPromise) return sourceTableHealthPromise
-
-  sourceTableHealthPromise = loadSourceTableHealthFromDatabase()
-    .then((value) => {
-      sourceTableHealthCache = {
-        expiresAt: Date.now() + MATERIALIZED_VIEW_HEALTH_CACHE_TTL_MS,
-        value,
-      }
-      return value
-    })
-    .catch((error) => {
-      const value = {
-        status: 'unknown',
-        error: formatError(error),
-        tables: [],
-      }
-      sourceTableHealthCache = {
-        expiresAt: Date.now() + MATERIALIZED_VIEW_HEALTH_CACHE_TTL_MS,
-        value,
-      }
-      return value
-    })
-    .finally(() => {
-      sourceTableHealthPromise = null
-    })
-
-  return sourceTableHealthPromise
+  return sourceTableHealthMemo.load(() => loadSourceTableHealthFromDatabase())
 }
 
 export function buildSourceTableHealthQuery() {
@@ -2219,33 +2458,18 @@ function formatError(error) {
 }
 
 function pruneReportCache() {
-  while (reportCache.size > MAX_REPORT_CACHE_ENTRIES) {
-    const oldestKey = reportCache.keys().next().value
-    if (oldestKey === undefined) return
-    reportCache.delete(oldestKey)
+  while (reportCache.size > reportCacheMaxEntries) {
+    let oldestEvictableKey
+    for (const key of reportCache.keys()) {
+      const cached = reportCache.get(key)
+      if (!cached?.promise) {
+        oldestEvictableKey = key
+        break
+      }
+    }
+    if (oldestEvictableKey === undefined) return
+    reportCache.delete(oldestEvictableKey)
   }
-}
-
-function normalizeDatabaseUrl(value) {
-  if (!value) return value
-
-  const hostRewrite = process.env.SHELL_REPORT_DATABASE_HOST_REWRITE
-  if (!hostRewrite) return value
-
-  const databaseUrl = new URL(value)
-  const shouldRewrite =
-    databaseUrl.hostname === '127.0.0.1' ||
-    databaseUrl.hostname === 'localhost'
-
-  if (!shouldRewrite) return value
-
-  const portRewrite = process.env.SHELL_REPORT_DATABASE_PORT_REWRITE
-  if (portRewrite) {
-    databaseUrl.port = portRewrite
-  }
-
-  databaseUrl.hostname = hostRewrite
-  return databaseUrl.toString()
 }
 
 export function buildPgBouncerAdminDatabaseUrl(value) {
@@ -2315,35 +2539,46 @@ function envSecret(...names) {
 
 const DASHBOARD_TIME_ZONE = 'America/New_York'
 const createdAtEastern = "(sh.created_at AT TIME ZONE 'America/New_York')"
-const providerDimension = `
+function providerDimensionExpression(
+  columnExpression = 'sh.provider',
+  { includeAntigravity = false } = {}
+) {
+  const antigravityBranch = includeAntigravity
+    ? `
+    WHEN lower(COALESCE(${columnExpression}, 'unknown')) = 'antigravity' THEN 'antigravity'`
+    : ''
+  return `
 CASE
-    WHEN lower(COALESCE(sh.provider, 'unknown')) IN ('google', 'gemini') THEN 'google'
-    WHEN lower(COALESCE(sh.provider, 'unknown')) IN ('claude', 'anthropic') THEN 'anthropic'
-    WHEN lower(COALESCE(sh.provider, 'unknown')) LIKE 'claude/%' THEN 'anthropic'
-    WHEN lower(COALESCE(sh.provider, 'unknown')) LIKE 'anthropic/%' THEN 'anthropic'
-    WHEN lower(COALESCE(sh.provider, 'unknown')) LIKE 'deepseek/%' THEN 'deepseek'
-    WHEN lower(COALESCE(sh.provider, 'unknown')) IN ('xai', 'x.ai') THEN 'xai'
-    WHEN lower(COALESCE(sh.provider, 'unknown')) LIKE 'xai/%' THEN 'xai'
-    WHEN lower(COALESCE(sh.provider, 'unknown')) = 'nvidia' THEN 'nvidia_nim'
-    WHEN lower(COALESCE(sh.provider, 'unknown')) LIKE 'nvidia_nim/%' THEN 'nvidia_nim'
-    WHEN lower(COALESCE(sh.provider, 'unknown')) LIKE 'nvidia/%' THEN 'nvidia_nim'
-    WHEN lower(COALESCE(sh.provider, 'unknown')) LIKE 'local/%' THEN 'local'
-    WHEN lower(COALESCE(sh.provider, 'unknown')) LIKE 'local_%' THEN 'local'
-    ELSE COALESCE(sh.provider, 'unknown')
+    WHEN lower(COALESCE(${columnExpression}, 'unknown')) IN ('google', 'gemini') THEN 'google'${antigravityBranch}
+    WHEN lower(COALESCE(${columnExpression}, 'unknown')) IN ('claude', 'anthropic') THEN 'anthropic'
+    WHEN lower(COALESCE(${columnExpression}, 'unknown')) LIKE 'claude/%' THEN 'anthropic'
+    WHEN lower(COALESCE(${columnExpression}, 'unknown')) LIKE 'anthropic/%' THEN 'anthropic'
+    WHEN lower(COALESCE(${columnExpression}, 'unknown')) LIKE 'deepseek/%' THEN 'deepseek'
+    WHEN lower(COALESCE(${columnExpression}, 'unknown')) IN ('xai', 'x.ai') THEN 'xai'
+    WHEN lower(COALESCE(${columnExpression}, 'unknown')) LIKE 'xai/%' THEN 'xai'
+    WHEN lower(COALESCE(${columnExpression}, 'unknown')) = 'nvidia' THEN 'nvidia_nim'
+    WHEN lower(COALESCE(${columnExpression}, 'unknown')) LIKE 'nvidia_nim/%' THEN 'nvidia_nim'
+    WHEN lower(COALESCE(${columnExpression}, 'unknown')) LIKE 'nvidia/%' THEN 'nvidia_nim'
+    WHEN lower(COALESCE(${columnExpression}, 'unknown')) LIKE 'local/%' THEN 'local'
+    WHEN lower(COALESCE(${columnExpression}, 'unknown')) LIKE 'local_%' THEN 'local'
+    ELSE COALESCE(${columnExpression}, 'unknown')
 END`
+}
 
-function providerDimensionForAlias(alias = 'sh') {
-  return providerDimension.replaceAll('sh.', `${alias}.`)
+const providerDimension = providerDimensionExpression('sh.provider')
+
+function providerDimensionForAlias(alias = 'sh', options = {}) {
+  return providerDimensionExpression(`${alias}.provider`, options)
 }
 
 const providerDimensionRecent = providerDimensionForAlias('sh_recent')
 const healthProviderDimension = providerDimensionForAlias('h')
 const inboundModelAliasDimension =
-  "COALESCE(NULLIF(to_jsonb(sh)->>'inbound_model_alias', ''), 'unknown_inbound_model')"
+  "COALESCE(NULLIF(sh.inbound_model_alias, ''), 'unknown_inbound_model')"
 const agentNameDimension =
-  "COALESCE(NULLIF(to_jsonb(sh)->>'agent_name', ''), 'unknown_agent_name')"
+  "COALESCE(NULLIF(sh.agent_name, ''), 'unknown_agent_name')"
 const agentIdDimension =
-  "COALESCE(NULLIF(to_jsonb(sh)->>'agent_id', ''), 'uncaptured_agent_id')"
+  "COALESCE(NULLIF(sh.agent_id, ''), 'uncaptured_agent_id')"
 
 function sessionHistoryTokenSignalExpression(alias = 'sh') {
   return `(COALESCE(${alias}.input_tokens, 0)
@@ -2360,7 +2595,7 @@ function sessionHistoryCostSignalExpression(alias = 'sh') {
 }
 
 function sessionHistoryMetadataText(alias, key, fallback) {
-  return `lower(btrim(COALESCE(${alias}.metadata->>'${key}', '${fallback}')))`
+  return `lower(btrim(COALESCE(${alias}.metadata->>${sqlTextLiteral(key)}, ${sqlTextLiteral(fallback)})))`
 }
 
 function legacyGrokSideChannelPredicate(alias = 'sh') {
@@ -2616,64 +2851,6 @@ const agentPassScoreFamilies = {
 const agentRiskScoreColumns = [
   'repetition_loop_risk_score',
   'stall_risk_score',
-]
-
-function buildLatencyMetricSelects(column, alias) {
-  return [
-    `percentile_cont(0.50) WITHIN GROUP (ORDER BY sh.${column})
-        FILTER (WHERE sh.${column} IS NOT NULL) AS ${alias}_p50_ms`,
-    `percentile_cont(0.95) WITHIN GROUP (ORDER BY sh.${column})
-        FILTER (WHERE sh.${column} IS NOT NULL) AS ${alias}_p95_ms`,
-    `percentile_cont(0.99) WITHIN GROUP (ORDER BY sh.${column})
-        FILTER (WHERE sh.${column} IS NOT NULL) AS ${alias}_p99_ms`,
-    `COUNT(sh.${column})::double precision AS ${alias}_count`,
-  ]
-}
-
-const latencyMetricSelectParts = [
-  'COUNT(*)::double precision AS latency_sample_rows',
-  ...buildLatencyMetricSelects('litellm_pre_send_ms', 'litellm_pre_send'),
-  ...buildLatencyMetricSelects(
-    'litellm_post_response_ms',
-    'litellm_post_response'
-  ),
-  ...buildLatencyMetricSelects('litellm_processing_ms', 'litellm_processing'),
-  ...buildLatencyMetricSelects(
-    'llm_upstream_time_to_first_byte_ms',
-    'llm_upstream_time_to_first_byte'
-  ),
-  ...buildLatencyMetricSelects(
-    'llm_upstream_elapsed_ms',
-    'llm_upstream_elapsed'
-  ),
-  ...buildLatencyMetricSelects('llm_upstream_stream_ms', 'llm_upstream_stream'),
-  ...buildLatencyMetricSelects('ttft_ms', 'ttft'),
-  ...buildLatencyMetricSelects(
-    'total_server_elapsed_ms',
-    'total_server_elapsed'
-  ),
-  ...buildLatencyMetricSelects(
-    'latency_unclassified_ms',
-    'latency_unclassified'
-  ),
-  ...buildLatencyMetricSelects(
-    'previous_response_to_current_request_ms',
-    'previous_response_to_current_request'
-  ),
-  `percentile_cont(0.50) WITHIN GROUP (
-        ORDER BY (COALESCE(sh.output_tokens, 0) / NULLIF(sh.llm_upstream_elapsed_ms / 1000.0, 0))
-    ) FILTER (WHERE sh.llm_upstream_elapsed_ms > 0) AS llm_upstream_output_tokens_per_second_p50`,
-  `percentile_cont(0.95) WITHIN GROUP (
-        ORDER BY (COALESCE(sh.output_tokens, 0) / NULLIF(sh.llm_upstream_elapsed_ms / 1000.0, 0))
-    ) FILTER (WHERE sh.llm_upstream_elapsed_ms > 0) AS llm_upstream_output_tokens_per_second_p95`,
-  `COUNT(*) FILTER (WHERE sh.llm_upstream_elapsed_ms > 0)::double precision AS llm_upstream_output_tokens_per_second_count`,
-  `percentile_cont(0.50) WITHIN GROUP (
-        ORDER BY (COALESCE(sh.output_tokens, 0) / NULLIF(sh.llm_upstream_stream_ms / 1000.0, 0))
-    ) FILTER (WHERE sh.llm_upstream_stream_ms > 0) AS llm_stream_output_tokens_per_second_p50`,
-  `percentile_cont(0.95) WITHIN GROUP (
-        ORDER BY (COALESCE(sh.output_tokens, 0) / NULLIF(sh.llm_upstream_stream_ms / 1000.0, 0))
-    ) FILTER (WHERE sh.llm_upstream_stream_ms > 0) AS llm_stream_output_tokens_per_second_p95`,
-  `COUNT(*) FILTER (WHERE sh.llm_upstream_stream_ms > 0)::double precision AS llm_stream_output_tokens_per_second_count`,
 ]
 
 function buildFastLatencyMetricSelects(column, alias) {
@@ -2967,17 +3144,144 @@ const usageFilteredColumns = [
 ]
 const usageFilteredColumnSelects = [
   ...usageFilteredColumns.map((column) => `        sh.${column}`),
-  "        NULLIF(to_jsonb(sh)->>'inbound_model_alias', '') AS inbound_model_alias",
-  "        NULLIF(to_jsonb(sh)->>'agent_name', '') AS agent_name",
-  "        NULLIF(to_jsonb(sh)->>'agent_id', '') AS agent_id",
+  "        NULLIF(sh.inbound_model_alias, '') AS inbound_model_alias",
+  "        NULLIF(sh.agent_name, '') AS agent_name",
+  "        NULLIF(sh.agent_id, '') AS agent_id",
 ]
 
-function sendJson(res, status, body) {
+function acceptsGzipEncoding(req) {
+  const raw = req?.headers?.['accept-encoding']
+  if (!raw || typeof raw !== 'string') {
+    return false
+  }
+  return raw.split(',').some((part) => {
+    const segments = part.trim().split(';').map((segment) => segment.trim())
+    const token = segments[0]?.toLowerCase()
+    if (token !== 'gzip') {
+      return false
+    }
+    let quality = 1
+    for (let index = 1; index < segments.length; index += 1) {
+      const match = segments[index].match(/^q=(.+)$/i)
+      if (!match) {
+        continue
+      }
+      const parsed = Number.parseFloat(match[1].trim())
+      if (Number.isFinite(parsed)) {
+        quality = parsed
+      }
+      break
+    }
+    return quality > 0
+  })
+}
+
+function isHttpResponseCommitted(res) {
+  if (!res) return true
+  return Boolean(res.headersSent || res.writableEnded || res.destroyed)
+}
+
+function logUnhandledRequestError(error) {
+  process.stderr.write(
+    `[report-service] WARN: unhandled request error: ${formatError(error)}\n`
+  )
+}
+
+async function respondWithGenericServerError(req, res, error) {
+  logUnhandledRequestError(error)
+  if (isHttpResponseCommitted(res)) {
+    return
+  }
+  await sendJson(req, res, 500, GENERIC_INTERNAL_SERVER_ERROR_BODY)
+}
+
+function resolveBoundedShutdownGraceMs(graceMs = SHUTDOWN_GRACE_MS) {
+  const parsed = Number(graceMs)
+  if (!Number.isFinite(parsed)) {
+    return SHUTDOWN_GRACE_MS
+  }
+  return Math.max(1_000, Math.min(300_000, Math.floor(parsed)))
+}
+
+function scheduleShutdownForceExit(
+  server,
+  graceMs,
+  {
+    setTimeoutFn = setTimeout,
+    exitFn = (code) => process.exit(code),
+  } = {}
+) {
+  const boundedGraceMs = resolveBoundedShutdownGraceMs(graceMs)
+  const timer = setTimeoutFn(() => {
+    server?.closeAllConnections?.()
+    exitFn(1)
+  }, boundedGraceMs)
+  if (timer && typeof timer.unref === 'function') {
+    timer.unref()
+  }
+  return { timer, boundedGraceMs }
+}
+
+function closeHttpServer(server) {
+  return new Promise((resolve) => {
+    server.close(() => resolve())
+    server.closeIdleConnections?.()
+  })
+}
+
+function beginHttpServerShutdown(server, onClosed) {
+  server.close(onClosed)
+  server.closeIdleConnections?.()
+}
+
+async function runBoundedShutdownSequence(
+  server,
+  {
+    graceMs = SHUTDOWN_GRACE_MS,
+    runCleanup = async () => {},
+    exitFn = (code) => process.exit(code),
+    setForceExitTimer = (timer) => {
+      shutdownForceExitTimer = timer
+    },
+    clearForceExitTimer = () => {
+      if (shutdownForceExitTimer) {
+        clearTimeout(shutdownForceExitTimer)
+        shutdownForceExitTimer = null
+      }
+    },
+  } = {}
+) {
+  const { timer } = scheduleShutdownForceExit(server, graceMs, { exitFn })
+  setForceExitTimer(timer)
+
+  try {
+    await closeHttpServer(server)
+    await runCleanup()
+    clearForceExitTimer()
+    exitFn(0)
+  } catch (error) {
+    clearForceExitTimer()
+    throw error
+  }
+}
+
+async function sendJson(req, res, status, body) {
   const payload = JSON.stringify(body)
-  res.writeHead(status, {
+  const headers = {
     'content-type': 'application/json; charset=utf-8',
     'cache-control': 'no-store',
-  })
+  }
+  if (acceptsGzipEncoding(req)) {
+    const compressed = await gzip(Buffer.from(payload, 'utf8'))
+    res.writeHead(status, {
+      ...headers,
+      'content-encoding': 'gzip',
+      vary: 'Accept-Encoding',
+    })
+    res.end(compressed)
+    return
+  }
+  res.writeHead(status, headers)
   res.end(payload)
 }
 
@@ -2986,11 +3290,7 @@ function parseDateParam(value, fallback) {
   if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
     return parseDateOnlyParam(value)
   }
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) {
-    throw new Error(`Invalid date: ${value}`)
-  }
-  return date.toISOString()
+  throw new Error('A valid date=YYYY-MM-DD parameter is required.')
 }
 
 function parseDateOnlyParam(value) {
@@ -3083,7 +3383,13 @@ function defaultFromDate() {
 }
 
 function defaultToDate() {
-  return addDaysToDateString(formatDashboardDate(new Date()), 1)
+  return resolveDefaultToDateString()
+}
+
+// The report API treats `to` as an exclusive dashboard-date upper bound.
+// Omitting it means "through today" by using tomorrow in America/New_York.
+export function resolveDefaultToDateString(referenceDate = new Date()) {
+  return addDaysToDateString(formatDashboardDate(referenceDate), 1)
 }
 
 function resolveHealthWindow(from, to) {
@@ -3110,7 +3416,15 @@ function parseCsv(value) {
   if (!value) return []
   return value
     .split(',')
-    .map((item) => item.trim())
+    .map((item) => {
+      const trimmed = item.trim()
+      if (!trimmed) return ''
+      try {
+        return decodeURIComponent(trimmed)
+      } catch {
+        return trimmed
+      }
+    })
     .filter(Boolean)
 }
 
@@ -3257,8 +3571,7 @@ function normalizeLatencyAggregateFields(row) {
   )
 }
 
-function normalizeRow(row) {
-  const numericKeys = [
+const normalizeRowNumericKeys = [
     'min_weekly_pct',
     'max_weekly_pct',
     'min_short_pct',
@@ -3406,11 +3719,27 @@ function normalizeRow(row) {
     'agent_compact_summary_resume_contexts',
     'agent_compact_summary_verify_contexts',
     ...configChangeAggregateNumericKeys,
-  ]
+]
 
+function normalizeRow(row) {
   const normalized = { ...row }
-  for (const key of numericKeys) {
+  for (const key of normalizeRowNumericKeys) {
     normalized[key] = normalizeNumber(normalized[key])
+  }
+  normalized.agent_score_reasons_bounded_min_id = normalizeNumber(
+    normalized.agent_score_reasons_bounded_min_id
+  )
+  normalized.agent_score_reasons_bounded_max_id = normalizeNumber(
+    normalized.agent_score_reasons_bounded_max_id
+  )
+  normalized.agent_score_reasons_recent_row_limit =
+    normalizeNumber(normalized.agent_score_reasons_recent_row_limit) ??
+    AGENT_SCORE_REASON_RECENT_ROW_LIMIT
+  if (normalized.agent_score_reasons_recent_id_cap_active == null) {
+    normalized.agent_score_reasons_recent_id_cap_active = true
+  }
+  if (normalized.agent_score_reasons_recent_id_cap_truncates_requested_window == null) {
+    normalized.agent_score_reasons_recent_id_cap_truncates_requested_window = false
   }
   return normalized
 }
@@ -3546,7 +3875,7 @@ function buildSessionDiagnosticsWhere(searchParams) {
     } else if (key === 'litellm_call_id') {
       whereParts.push(`sh.litellm_call_id::text = ANY($${values.length}::text[])`)
     } else {
-      whereParts.push(`NULLIF(to_jsonb(sh)->>'trace_id', '') = ANY($${values.length}::text[])`)
+      whereParts.push(`NULLIF(sh.trace_id, '') = ANY($${values.length}::text[])`)
     }
   }
 
@@ -3981,9 +4310,9 @@ ORDER BY
   return { sql, values }
 }
 
-function buildTokenTrendDayDetailQuery(searchParams) {
+export function buildTokenTrendDayDetailQuery(searchParams) {
   const date = parseDateOnlyParam(searchParams.get('date'))
-  const { from, to, values, whereParts } = buildFilteredWhere(searchParams)
+  const { from, to, values, whereParts } = buildTokenTrendFilteredWhere(searchParams)
   values.push(date)
   const dayExpression = `${createdAtEastern}::date`
   const hourExpression = `EXTRACT(hour FROM ${createdAtEastern})::int`
@@ -4339,6 +4668,11 @@ LIMIT $${values.length};
   return { sql, values }
 }
 
+const rateLimitProviderDimension = providerDimensionExpression('ri.provider', {
+  includeAntigravity: true,
+})
+const rateLimitRangeProviderDimension = providerDimensionExpression('ri.provider')
+
 const XAI_GROK_BUILD_WEEKLY_CREDITS_KEY = 'xai_grok_build_weekly_credits:credits'
 const XAI_GROK_BUILD_MONTHLY_REQUESTS_KEY = 'xai_grok_build_monthly_requests:requests'
 
@@ -4380,6 +4714,89 @@ const RATE_LIMIT_NORMALIZED_QUOTA_TYPE_CASE = `
             ELSE ri.quota_type
         END`
 
+const QUOTA_KEY_INTERVAL_QUOTA_TYPES_SQL =
+  "('weekly', 'weekly_overage_included', 'weekly_special', 'short', 'short_special', 'requests', 'monthly', 'wtus')"
+const QUOTA_LANE_TYPES = [
+  'weekly',
+  'weekly_overage_included',
+  'short',
+  'special',
+  'short_special',
+  'monthly',
+  'wtus',
+]
+
+function buildQuotaLaneAggregateSelectSql() {
+  return QUOTA_LANE_TYPES.map((quotaType) => {
+    const predicate = `s.quota_type = '${quotaType}'`
+    return [
+      `    MAX(s.remaining_pct) FILTER (WHERE ${predicate})::double precision AS ${quotaType}_remaining_pct`,
+      `    MAX(s.expected_reset_at) FILTER (WHERE ${predicate}) AS ${quotaType}_reset_at`,
+      `    MAX(s.interval_start) FILTER (WHERE ${predicate}) AS ${quotaType}_interval_start`,
+      `    MAX(s.interval_end) FILTER (WHERE ${predicate}) AS ${quotaType}_interval_end`,
+      `    MAX(s.active::int) FILTER (WHERE ${predicate})::double precision AS ${quotaType}_active`,
+      `    0::double precision AS ${quotaType}_usage_tokens`,
+      `    '[]'::jsonb AS ${quotaType}_usage_breakdown`,
+      `    MAX(billing.quota_limit) FILTER (WHERE ${predicate})::double precision AS ${quotaType}_quota_limit`,
+      `    MAX(billing.quota_used) FILTER (WHERE ${predicate})::double precision AS ${quotaType}_quota_used`,
+      `    MAX(billing.quota_remaining) FILTER (WHERE ${predicate})::double precision AS ${quotaType}_quota_remaining`,
+      `    MAX(billing.billing_observed_at) FILTER (WHERE ${predicate}) AS ${quotaType}_billing_observed_at`,
+      `    MAX(billing.billing_period_start_at) FILTER (WHERE ${predicate}) AS ${quotaType}_billing_period_start_at`,
+      `    MAX(billing.billing_period_end_at) FILTER (WHERE ${predicate}) AS ${quotaType}_billing_period_end_at`,
+      `    MAX(billing.quota_key) FILTER (WHERE ${predicate}) AS ${quotaType}_quota_key`,
+      `    MAX(billing.source) FILTER (WHERE ${predicate}) AS ${quotaType}_source`,
+      `    MAX(billing.client) FILTER (WHERE ${predicate}) AS ${quotaType}_client`,
+      `    MAX(billing.quota_unit) FILTER (WHERE ${predicate}) AS ${quotaType}_quota_unit`,
+      `    (ARRAY_AGG(billing.raw_provider_fields) FILTER (WHERE ${predicate}))[1] AS ${quotaType}_raw_provider_fields`,
+      `    (ARRAY_AGG(billing.evidence) FILTER (WHERE ${predicate}))[1] AS ${quotaType}_evidence`,
+    ].join(',\n')
+  }).join(',\n\n')
+}
+
+function buildQuotaKeyIntervalHoursCteSql({ requireQuotaKey = false } = {}) {
+  const quotaKeyFilter = requireQuotaKey
+    ? `
+          AND quota_key IS NOT NULL`
+    : ''
+  return `
+quota_key_gaps AS (
+    SELECT
+        provider,
+        quota_key,
+        quota_type,
+        EXTRACT(EPOCH FROM (
+            expected_reset_at
+            - LAG(expected_reset_at) OVER (
+                PARTITION BY provider, quota_key
+                ORDER BY expected_reset_at
+            )
+        )) / 3600.0 AS gap_hours
+    FROM (
+        SELECT DISTINCT provider, quota_key, quota_type, expected_reset_at
+        FROM public.rate_limit_intervals
+        WHERE quota_type IN ${QUOTA_KEY_INTERVAL_QUOTA_TYPES_SQL}
+          AND expected_reset_at IS NOT NULL${quotaKeyFilter}
+    ) distinct_resets
+),
+quota_key_interval_hours AS (
+    SELECT
+        provider,
+        quota_key,
+        quota_type,
+        PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY gap_hours) AS interval_hours,
+        COUNT(*) AS gap_count
+    FROM quota_key_gaps
+    WHERE gap_hours >= 1.0
+    GROUP BY provider, quota_key, quota_type
+),`
+}
+
+function quotaObservationIntervalBoundsSql(intervalStartExpr, expectedResetExpr) {
+  return `
+     AND o.observed_at >= ${intervalStartExpr} - INTERVAL '5 minutes'
+     AND o.observed_at <= ${expectedResetExpr} + INTERVAL '5 minutes'`
+}
+
 export function buildQuotaQuery() {
   const sql = `
 WITH normalized AS (
@@ -4387,22 +4804,7 @@ WITH normalized AS (
         ri.provider AS raw_provider,
         ri.quota_type AS raw_quota_type,
         ri.quota_key,
-        CASE
-            WHEN lower(COALESCE(ri.provider, 'unknown')) IN ('google', 'gemini') THEN 'google'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) = 'antigravity' THEN 'antigravity'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) IN ('claude', 'anthropic') THEN 'anthropic'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'claude/%' THEN 'anthropic'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'anthropic/%' THEN 'anthropic'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'deepseek/%' THEN 'deepseek'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) IN ('xai', 'x.ai') THEN 'xai'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'xai/%' THEN 'xai'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) = 'nvidia' THEN 'nvidia_nim'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'nvidia_nim/%' THEN 'nvidia_nim'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'nvidia/%' THEN 'nvidia_nim'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'local/%' THEN 'local'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'local_%' THEN 'local'
-            ELSE COALESCE(ri.provider, 'unknown')
-        END AS provider,
+        ${rateLimitProviderDimension} AS provider,
         ${RATE_LIMIT_NORMALIZED_MODEL_CASE} AS model,
         ${RATE_LIMIT_NORMALIZED_QUOTA_TYPE_CASE} AS quota_type,
         ri.expected_reset_at,
@@ -4436,11 +4838,11 @@ selected_with_fallbacks AS (
     UNION ALL
     SELECT
         weekly.raw_provider,
+        'weekly_special' AS raw_quota_type,
+        NULL::text AS quota_key,
         weekly.provider,
         weekly.model,
         'special' AS quota_type,
-        'weekly_special' AS raw_quota_type,
-        NULL::text AS quota_key,
         weekly.expected_reset_at,
         0::double precision AS remaining_pct,
         weekly.interval_start,
@@ -4461,11 +4863,11 @@ selected_with_fallbacks AS (
     UNION ALL
     SELECT
         short.raw_provider,
+        'short_special' AS raw_quota_type,
+        NULL::text AS quota_key,
         short.provider,
         short.model,
         'short_special' AS quota_type,
-        'short_special' AS raw_quota_type,
-        NULL::text AS quota_key,
         short.expected_reset_at,
         0::double precision AS remaining_pct,
         short.interval_start,
@@ -4484,23 +4886,14 @@ selected_with_fallbacks AS (
             AND short_special.quota_type = 'short_special'
       )
 ),
-usage_by_type AS (
-    SELECT
-        provider,
-        model,
-        quota_type,
-        0::double precision AS usage_tokens,
-        '[]'::jsonb AS usage_breakdown
-    FROM selected_with_fallbacks
-),
 billing_by_type AS (
     SELECT DISTINCT ON (s.provider, COALESCE(s.model, ''), s.quota_type)
         s.provider,
         s.model,
         s.quota_type,
         s.quota_key,
-        NULLIF(TRIM(BOTH FROM COALESCE(to_jsonb(o)->>'source', '')), '') AS source,
-        NULLIF(TRIM(BOTH FROM COALESCE(to_jsonb(o)->>'client', '')), '') AS client,
+        NULLIF(TRIM(BOTH FROM COALESCE(o.source, '')), '') AS source,
+        NULLIF(TRIM(BOTH FROM COALESCE(o.client, '')), '') AS client,
         CASE
             WHEN s.quota_key = '${XAI_GROK_BUILD_WEEKLY_CREDITS_KEY}' THEN 'credits'
             WHEN s.quota_key = '${XAI_GROK_BUILD_MONTHLY_REQUESTS_KEY}' THEN 'requests'
@@ -4509,13 +4902,13 @@ billing_by_type AS (
             ELSE NULL
         END AS quota_unit,
         o.observed_at AS billing_observed_at,
-        NULLIF(to_jsonb(o)->>'quota_limit', '')::double precision AS quota_limit,
-        NULLIF(to_jsonb(o)->>'quota_used', '')::double precision AS quota_used,
-        NULLIF(to_jsonb(o)->>'quota_remaining', '')::double precision AS quota_remaining,
-        NULLIF(to_jsonb(o)->>'billing_period_start_at', '') AS billing_period_start_at,
-        NULLIF(to_jsonb(o)->>'billing_period_end_at', '') AS billing_period_end_at,
-        COALESCE(to_jsonb(o)->'raw_provider_fields', '{}'::jsonb) AS raw_provider_fields,
-        COALESCE(to_jsonb(o)->'evidence', '{}'::jsonb) AS evidence
+        o.quota_limit AS quota_limit,
+        o.quota_used AS quota_used,
+        o.quota_remaining AS quota_remaining,
+        o.billing_period_start_at AS billing_period_start_at,
+        o.billing_period_end_at AS billing_period_end_at,
+        COALESCE(o.raw_provider_fields, '{}'::jsonb) AS raw_provider_fields,
+        COALESCE(o.evidence, '{}'::jsonb) AS evidence
     FROM selected_with_fallbacks s
     JOIN public.rate_limit_observations o
       ON o.provider = s.raw_provider
@@ -4526,6 +4919,14 @@ billing_by_type AS (
      )
     WHERE s.quota_key IS NOT NULL
       AND o.observed_at IS NOT NULL
+      AND (
+          s.expected_reset_at IS NULL
+          OR s.interval_start IS NULL
+          OR (
+              o.observed_at >= s.interval_start - INTERVAL '5 minutes'
+              AND o.observed_at <= s.expected_reset_at + INTERVAL '5 minutes'
+          )
+      )
     ORDER BY
         s.provider,
         COALESCE(s.model, ''),
@@ -4535,145 +4936,8 @@ billing_by_type AS (
 SELECT
     s.provider,
     s.model,
-    MAX(s.remaining_pct) FILTER (WHERE s.quota_type = 'weekly')::double precision AS weekly_remaining_pct,
-    MAX(s.expected_reset_at) FILTER (WHERE s.quota_type = 'weekly') AS weekly_reset_at,
-    MAX(s.interval_start) FILTER (WHERE s.quota_type = 'weekly') AS weekly_interval_start,
-    MAX(s.interval_end) FILTER (WHERE s.quota_type = 'weekly') AS weekly_interval_end,
-    MAX(s.active::int) FILTER (WHERE s.quota_type = 'weekly')::double precision AS weekly_active,
-    MAX(usage.usage_tokens) FILTER (WHERE s.quota_type = 'weekly')::double precision AS weekly_usage_tokens,
-    (ARRAY_AGG(usage.usage_breakdown) FILTER (WHERE s.quota_type = 'weekly'))[1] AS weekly_usage_breakdown,
-    MAX(billing.quota_limit) FILTER (WHERE s.quota_type = 'weekly')::double precision AS weekly_quota_limit,
-    MAX(billing.quota_used) FILTER (WHERE s.quota_type = 'weekly')::double precision AS weekly_quota_used,
-    MAX(billing.quota_remaining) FILTER (WHERE s.quota_type = 'weekly')::double precision AS weekly_quota_remaining,
-    MAX(billing.billing_observed_at) FILTER (WHERE s.quota_type = 'weekly') AS weekly_billing_observed_at,
-    MAX(billing.billing_period_start_at) FILTER (WHERE s.quota_type = 'weekly') AS weekly_billing_period_start_at,
-    MAX(billing.billing_period_end_at) FILTER (WHERE s.quota_type = 'weekly') AS weekly_billing_period_end_at,
-    MAX(billing.quota_key) FILTER (WHERE s.quota_type = 'weekly') AS weekly_quota_key,
-    MAX(billing.source) FILTER (WHERE s.quota_type = 'weekly') AS weekly_source,
-    MAX(billing.client) FILTER (WHERE s.quota_type = 'weekly') AS weekly_client,
-    MAX(billing.quota_unit) FILTER (WHERE s.quota_type = 'weekly') AS weekly_quota_unit,
-    (ARRAY_AGG(billing.raw_provider_fields) FILTER (WHERE s.quota_type = 'weekly'))[1] AS weekly_raw_provider_fields,
-    (ARRAY_AGG(billing.evidence) FILTER (WHERE s.quota_type = 'weekly'))[1] AS weekly_evidence,
-
-    MAX(s.remaining_pct) FILTER (WHERE s.quota_type = 'weekly_overage_included')::double precision AS weekly_overage_included_remaining_pct,
-    MAX(s.expected_reset_at) FILTER (WHERE s.quota_type = 'weekly_overage_included') AS weekly_overage_included_reset_at,
-    MAX(s.interval_start) FILTER (WHERE s.quota_type = 'weekly_overage_included') AS weekly_overage_included_interval_start,
-    MAX(s.interval_end) FILTER (WHERE s.quota_type = 'weekly_overage_included') AS weekly_overage_included_interval_end,
-    MAX(s.active::int) FILTER (WHERE s.quota_type = 'weekly_overage_included')::double precision AS weekly_overage_included_active,
-    MAX(usage.usage_tokens) FILTER (WHERE s.quota_type = 'weekly_overage_included')::double precision AS weekly_overage_included_usage_tokens,
-    (ARRAY_AGG(usage.usage_breakdown) FILTER (WHERE s.quota_type = 'weekly_overage_included'))[1] AS weekly_overage_included_usage_breakdown,
-    MAX(billing.quota_limit) FILTER (WHERE s.quota_type = 'weekly_overage_included')::double precision AS weekly_overage_included_quota_limit,
-    MAX(billing.quota_used) FILTER (WHERE s.quota_type = 'weekly_overage_included')::double precision AS weekly_overage_included_quota_used,
-    MAX(billing.quota_remaining) FILTER (WHERE s.quota_type = 'weekly_overage_included')::double precision AS weekly_overage_included_quota_remaining,
-    MAX(billing.billing_observed_at) FILTER (WHERE s.quota_type = 'weekly_overage_included') AS weekly_overage_included_billing_observed_at,
-    MAX(billing.billing_period_start_at) FILTER (WHERE s.quota_type = 'weekly_overage_included') AS weekly_overage_included_billing_period_start_at,
-    MAX(billing.billing_period_end_at) FILTER (WHERE s.quota_type = 'weekly_overage_included') AS weekly_overage_included_billing_period_end_at,
-    MAX(billing.quota_key) FILTER (WHERE s.quota_type = 'weekly_overage_included') AS weekly_overage_included_quota_key,
-    MAX(billing.source) FILTER (WHERE s.quota_type = 'weekly_overage_included') AS weekly_overage_included_source,
-    MAX(billing.client) FILTER (WHERE s.quota_type = 'weekly_overage_included') AS weekly_overage_included_client,
-    MAX(billing.quota_unit) FILTER (WHERE s.quota_type = 'weekly_overage_included') AS weekly_overage_included_quota_unit,
-    (ARRAY_AGG(billing.raw_provider_fields) FILTER (WHERE s.quota_type = 'weekly_overage_included'))[1] AS weekly_overage_included_raw_provider_fields,
-    (ARRAY_AGG(billing.evidence) FILTER (WHERE s.quota_type = 'weekly_overage_included'))[1] AS weekly_overage_included_evidence,
-    MAX(s.remaining_pct) FILTER (WHERE s.quota_type = 'short')::double precision AS short_remaining_pct,
-    MAX(s.expected_reset_at) FILTER (WHERE s.quota_type = 'short') AS short_reset_at,
-    MAX(s.interval_start) FILTER (WHERE s.quota_type = 'short') AS short_interval_start,
-    MAX(s.interval_end) FILTER (WHERE s.quota_type = 'short') AS short_interval_end,
-    MAX(s.active::int) FILTER (WHERE s.quota_type = 'short')::double precision AS short_active,
-    MAX(usage.usage_tokens) FILTER (WHERE s.quota_type = 'short')::double precision AS short_usage_tokens,
-    (ARRAY_AGG(usage.usage_breakdown) FILTER (WHERE s.quota_type = 'short'))[1] AS short_usage_breakdown,
-    MAX(billing.quota_limit) FILTER (WHERE s.quota_type = 'short')::double precision AS short_quota_limit,
-    MAX(billing.quota_used) FILTER (WHERE s.quota_type = 'short')::double precision AS short_quota_used,
-    MAX(billing.quota_remaining) FILTER (WHERE s.quota_type = 'short')::double precision AS short_quota_remaining,
-    MAX(billing.billing_observed_at) FILTER (WHERE s.quota_type = 'short') AS short_billing_observed_at,
-    MAX(billing.billing_period_start_at) FILTER (WHERE s.quota_type = 'short') AS short_billing_period_start_at,
-    MAX(billing.billing_period_end_at) FILTER (WHERE s.quota_type = 'short') AS short_billing_period_end_at,
-    MAX(billing.quota_key) FILTER (WHERE s.quota_type = 'short') AS short_quota_key,
-    MAX(billing.source) FILTER (WHERE s.quota_type = 'short') AS short_source,
-    MAX(billing.client) FILTER (WHERE s.quota_type = 'short') AS short_client,
-    MAX(billing.quota_unit) FILTER (WHERE s.quota_type = 'short') AS short_quota_unit,
-    (ARRAY_AGG(billing.raw_provider_fields) FILTER (WHERE s.quota_type = 'short'))[1] AS short_raw_provider_fields,
-    (ARRAY_AGG(billing.evidence) FILTER (WHERE s.quota_type = 'short'))[1] AS short_evidence,
-    MAX(s.remaining_pct) FILTER (WHERE s.quota_type = 'special')::double precision AS special_remaining_pct,
-    MAX(s.expected_reset_at) FILTER (WHERE s.quota_type = 'special') AS special_reset_at,
-    MAX(s.interval_start) FILTER (WHERE s.quota_type = 'special') AS special_interval_start,
-    MAX(s.interval_end) FILTER (WHERE s.quota_type = 'special') AS special_interval_end,
-    MAX(s.active::int) FILTER (WHERE s.quota_type = 'special')::double precision AS special_active,
-    MAX(usage.usage_tokens) FILTER (WHERE s.quota_type = 'special')::double precision AS special_usage_tokens,
-    (ARRAY_AGG(usage.usage_breakdown) FILTER (WHERE s.quota_type = 'special'))[1] AS special_usage_breakdown,
-    MAX(billing.quota_limit) FILTER (WHERE s.quota_type = 'special')::double precision AS special_quota_limit,
-    MAX(billing.quota_used) FILTER (WHERE s.quota_type = 'special')::double precision AS special_quota_used,
-    MAX(billing.quota_remaining) FILTER (WHERE s.quota_type = 'special')::double precision AS special_quota_remaining,
-    MAX(billing.billing_observed_at) FILTER (WHERE s.quota_type = 'special') AS special_billing_observed_at,
-    MAX(billing.billing_period_start_at) FILTER (WHERE s.quota_type = 'special') AS special_billing_period_start_at,
-    MAX(billing.billing_period_end_at) FILTER (WHERE s.quota_type = 'special') AS special_billing_period_end_at,
-    MAX(billing.quota_key) FILTER (WHERE s.quota_type = 'special') AS special_quota_key,
-    MAX(billing.source) FILTER (WHERE s.quota_type = 'special') AS special_source,
-    MAX(billing.client) FILTER (WHERE s.quota_type = 'special') AS special_client,
-    MAX(billing.quota_unit) FILTER (WHERE s.quota_type = 'special') AS special_quota_unit,
-    (ARRAY_AGG(billing.raw_provider_fields) FILTER (WHERE s.quota_type = 'special'))[1] AS special_raw_provider_fields,
-    (ARRAY_AGG(billing.evidence) FILTER (WHERE s.quota_type = 'special'))[1] AS special_evidence,
-    MAX(s.remaining_pct) FILTER (WHERE s.quota_type = 'short_special')::double precision AS short_special_remaining_pct,
-    MAX(s.expected_reset_at) FILTER (WHERE s.quota_type = 'short_special') AS short_special_reset_at,
-    MAX(s.interval_start) FILTER (WHERE s.quota_type = 'short_special') AS short_special_interval_start,
-    MAX(s.interval_end) FILTER (WHERE s.quota_type = 'short_special') AS short_special_interval_end,
-    MAX(s.active::int) FILTER (WHERE s.quota_type = 'short_special')::double precision AS short_special_active,
-    MAX(usage.usage_tokens) FILTER (WHERE s.quota_type = 'short_special')::double precision AS short_special_usage_tokens,
-    (ARRAY_AGG(usage.usage_breakdown) FILTER (WHERE s.quota_type = 'short_special'))[1] AS short_special_usage_breakdown,
-    MAX(billing.quota_limit) FILTER (WHERE s.quota_type = 'short_special')::double precision AS short_special_quota_limit,
-    MAX(billing.quota_used) FILTER (WHERE s.quota_type = 'short_special')::double precision AS short_special_quota_used,
-    MAX(billing.quota_remaining) FILTER (WHERE s.quota_type = 'short_special')::double precision AS short_special_quota_remaining,
-    MAX(billing.billing_observed_at) FILTER (WHERE s.quota_type = 'short_special') AS short_special_billing_observed_at,
-    MAX(billing.billing_period_start_at) FILTER (WHERE s.quota_type = 'short_special') AS short_special_billing_period_start_at,
-    MAX(billing.billing_period_end_at) FILTER (WHERE s.quota_type = 'short_special') AS short_special_billing_period_end_at,
-    MAX(billing.quota_key) FILTER (WHERE s.quota_type = 'short_special') AS short_special_quota_key,
-    MAX(billing.source) FILTER (WHERE s.quota_type = 'short_special') AS short_special_source,
-    MAX(billing.client) FILTER (WHERE s.quota_type = 'short_special') AS short_special_client,
-    MAX(billing.quota_unit) FILTER (WHERE s.quota_type = 'short_special') AS short_special_quota_unit,
-    (ARRAY_AGG(billing.raw_provider_fields) FILTER (WHERE s.quota_type = 'short_special'))[1] AS short_special_raw_provider_fields,
-    (ARRAY_AGG(billing.evidence) FILTER (WHERE s.quota_type = 'short_special'))[1] AS short_special_evidence,
-    MAX(s.remaining_pct) FILTER (WHERE s.quota_type = 'monthly')::double precision AS monthly_remaining_pct,
-    MAX(s.expected_reset_at) FILTER (WHERE s.quota_type = 'monthly') AS monthly_reset_at,
-    MAX(s.interval_start) FILTER (WHERE s.quota_type = 'monthly') AS monthly_interval_start,
-    MAX(s.interval_end) FILTER (WHERE s.quota_type = 'monthly') AS monthly_interval_end,
-    MAX(s.active::int) FILTER (WHERE s.quota_type = 'monthly')::double precision AS monthly_active,
-    MAX(usage.usage_tokens) FILTER (WHERE s.quota_type = 'monthly')::double precision AS monthly_usage_tokens,
-    (ARRAY_AGG(usage.usage_breakdown) FILTER (WHERE s.quota_type = 'monthly'))[1] AS monthly_usage_breakdown,
-    MAX(billing.quota_limit) FILTER (WHERE s.quota_type = 'monthly')::double precision AS monthly_quota_limit,
-    MAX(billing.quota_used) FILTER (WHERE s.quota_type = 'monthly')::double precision AS monthly_quota_used,
-    MAX(billing.quota_remaining) FILTER (WHERE s.quota_type = 'monthly')::double precision AS monthly_quota_remaining,
-    MAX(billing.billing_observed_at) FILTER (WHERE s.quota_type = 'monthly') AS monthly_billing_observed_at,
-    MAX(billing.billing_period_start_at) FILTER (WHERE s.quota_type = 'monthly') AS monthly_billing_period_start_at,
-    MAX(billing.billing_period_end_at) FILTER (WHERE s.quota_type = 'monthly') AS monthly_billing_period_end_at,
-    MAX(billing.quota_key) FILTER (WHERE s.quota_type = 'monthly') AS monthly_quota_key,
-    MAX(billing.source) FILTER (WHERE s.quota_type = 'monthly') AS monthly_source,
-    MAX(billing.client) FILTER (WHERE s.quota_type = 'monthly') AS monthly_client,
-    MAX(billing.quota_unit) FILTER (WHERE s.quota_type = 'monthly') AS monthly_quota_unit,
-    (ARRAY_AGG(billing.raw_provider_fields) FILTER (WHERE s.quota_type = 'monthly'))[1] AS monthly_raw_provider_fields,
-    (ARRAY_AGG(billing.evidence) FILTER (WHERE s.quota_type = 'monthly'))[1] AS monthly_evidence,
-    MAX(s.remaining_pct) FILTER (WHERE s.quota_type = 'wtus')::double precision AS wtus_remaining_pct,
-    MAX(s.expected_reset_at) FILTER (WHERE s.quota_type = 'wtus') AS wtus_reset_at,
-    MAX(s.interval_start) FILTER (WHERE s.quota_type = 'wtus') AS wtus_interval_start,
-    MAX(s.interval_end) FILTER (WHERE s.quota_type = 'wtus') AS wtus_interval_end,
-    MAX(s.active::int) FILTER (WHERE s.quota_type = 'wtus')::double precision AS wtus_active,
-    MAX(usage.usage_tokens) FILTER (WHERE s.quota_type = 'wtus')::double precision AS wtus_usage_tokens,
-    (ARRAY_AGG(usage.usage_breakdown) FILTER (WHERE s.quota_type = 'wtus'))[1] AS wtus_usage_breakdown,
-    MAX(billing.quota_limit) FILTER (WHERE s.quota_type = 'wtus')::double precision AS wtus_quota_limit,
-    MAX(billing.quota_used) FILTER (WHERE s.quota_type = 'wtus')::double precision AS wtus_quota_used,
-    MAX(billing.quota_remaining) FILTER (WHERE s.quota_type = 'wtus')::double precision AS wtus_quota_remaining,
-    MAX(billing.billing_observed_at) FILTER (WHERE s.quota_type = 'wtus') AS wtus_billing_observed_at,
-    MAX(billing.billing_period_start_at) FILTER (WHERE s.quota_type = 'wtus') AS wtus_billing_period_start_at,
-    MAX(billing.billing_period_end_at) FILTER (WHERE s.quota_type = 'wtus') AS wtus_billing_period_end_at,
-    MAX(billing.quota_key) FILTER (WHERE s.quota_type = 'wtus') AS wtus_quota_key,
-    MAX(billing.source) FILTER (WHERE s.quota_type = 'wtus') AS wtus_source,
-    MAX(billing.client) FILTER (WHERE s.quota_type = 'wtus') AS wtus_client,
-    MAX(billing.quota_unit) FILTER (WHERE s.quota_type = 'wtus') AS wtus_quota_unit,
-    (ARRAY_AGG(billing.raw_provider_fields) FILTER (WHERE s.quota_type = 'wtus'))[1] AS wtus_raw_provider_fields,
-    (ARRAY_AGG(billing.evidence) FILTER (WHERE s.quota_type = 'wtus'))[1] AS wtus_evidence
+${buildQuotaLaneAggregateSelectSql()}
 FROM selected_with_fallbacks s
-LEFT JOIN usage_by_type usage
-  ON usage.provider = s.provider
- AND usage.model IS NOT DISTINCT FROM s.model
- AND usage.quota_type = s.quota_type
 LEFT JOIN billing_by_type billing
   ON billing.provider = s.provider
  AND billing.model IS NOT DISTINCT FROM s.model
@@ -4686,59 +4950,14 @@ ORDER BY s.provider ASC, s.model ASC NULLS FIRST;
 }
 
 
-function buildQuotaVelocityQuery() {
+export function buildQuotaVelocityQuery() {
   const sql = `
 WITH
-quota_key_gaps AS (
-    SELECT
-        provider,
-        quota_key,
-        quota_type,
-        EXTRACT(EPOCH FROM (
-            expected_reset_at
-            - LAG(expected_reset_at) OVER (
-                PARTITION BY provider, quota_key
-                ORDER BY expected_reset_at
-            )
-        )) / 3600.0 AS gap_hours
-    FROM (
-        SELECT DISTINCT provider, quota_key, quota_type, expected_reset_at
-        FROM public.rate_limit_intervals
-        WHERE quota_type IN ('weekly', 'weekly_overage_included', 'weekly_special', 'short', 'short_special', 'requests', 'monthly', 'wtus')
-          AND expected_reset_at IS NOT NULL
-          AND quota_key IS NOT NULL
-    ) distinct_resets
-),
-quota_key_interval_hours AS (
-    SELECT
-        provider,
-        quota_key,
-        quota_type,
-        PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY gap_hours) AS interval_hours,
-        COUNT(*) AS gap_count
-    FROM quota_key_gaps
-    WHERE gap_hours >= 1.0
-    GROUP BY provider, quota_key, quota_type
-),
+${buildQuotaKeyIntervalHoursCteSql({ requireQuotaKey: true })}
 normalized AS (
     SELECT
         ri.provider AS raw_provider,
-        CASE
-            WHEN lower(COALESCE(ri.provider, 'unknown')) IN ('google', 'gemini') THEN 'google'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) = 'antigravity' THEN 'antigravity'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) IN ('claude', 'anthropic') THEN 'anthropic'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'claude/%' THEN 'anthropic'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'anthropic/%' THEN 'anthropic'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'deepseek/%' THEN 'deepseek'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) IN ('xai', 'x.ai') THEN 'xai'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'xai/%' THEN 'xai'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) = 'nvidia' THEN 'nvidia_nim'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'nvidia_nim/%' THEN 'nvidia_nim'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'nvidia/%' THEN 'nvidia_nim'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'local/%' THEN 'local'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'local_%' THEN 'local'
-            ELSE COALESCE(ri.provider, 'unknown')
-        END AS provider,
+        ${rateLimitProviderDimension} AS provider,
         ${RATE_LIMIT_NORMALIZED_MODEL_CASE} AS model,
         ${RATE_LIMIT_NORMALIZED_QUOTA_TYPE_CASE} AS quota_type,
         ri.quota_type AS raw_quota_type,
@@ -4859,7 +5078,8 @@ observations AS (
      AND o.remaining_pct IS NOT NULL
      AND o.remaining_pct >= 0
      AND o.observed_at IS NOT NULL
-     AND o.observed_at <= now() + INTERVAL '5 minutes'
+     AND o.observed_at >= s.interval_start - INTERVAL '5 minutes'
+     AND o.observed_at <= s.expected_reset_at + INTERVAL '5 minutes'
     GROUP BY s.provider, s.model, s.quota_type, s.interval_hours, o.observed_at
 ),
 ordered_observations AS (
@@ -4964,62 +5184,13 @@ WITH
 -- otherwise, when a key has many same-window duplicates, the median falls
 -- in the near-zero bucket and the computed interval collapses to ~0 h
 -- (floored to 1 h), producing a ~1.5 h lookback for a weekly key.
-quota_key_gaps AS (
-    SELECT
-        provider,
-        quota_key,
-        quota_type,
-        EXTRACT(EPOCH FROM (
-            expected_reset_at
-            - LAG(expected_reset_at) OVER (
-                PARTITION BY provider, quota_key
-                ORDER BY expected_reset_at
-            )
-        )) / 3600.0 AS gap_hours
-    FROM (
-        SELECT DISTINCT provider, quota_key, quota_type, expected_reset_at
-        FROM public.rate_limit_intervals
-        WHERE quota_type IN ('weekly', 'weekly_overage_included', 'weekly_special', 'short', 'short_special', 'requests', 'monthly', 'wtus')
-          AND expected_reset_at IS NOT NULL
-    ) distinct_resets
-),
--- Step 2: aggregate to the median gap per (provider, quota_key).
--- Only gaps >= 1 h are considered — this excludes sub-minute noise from
--- rapid duplicate observations within the same reset window.
--- We also track gap_count so the caller can require >= 2 qualifying samples
--- before trusting the median (fewer samples → fall back to quota_type default).
-quota_key_interval_hours AS (
-    SELECT
-        provider,
-        quota_key,
-        quota_type,
-        PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY gap_hours) AS interval_hours,
-        COUNT(*) AS gap_count
-    FROM quota_key_gaps
-    WHERE gap_hours >= 1.0   -- skip first-row NULLs and sub-minute noise gaps
-    GROUP BY provider, quota_key, quota_type
-),
+${buildQuotaKeyIntervalHoursCteSql()}
 normalized AS (
     SELECT
         ri.provider AS raw_provider,
         ri.quota_type AS raw_quota_type,
         ri.quota_key,
-        CASE
-            WHEN lower(COALESCE(ri.provider, 'unknown')) IN ('google', 'gemini') THEN 'google'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) = 'antigravity' THEN 'antigravity'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) IN ('claude', 'anthropic') THEN 'anthropic'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'claude/%' THEN 'anthropic'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'anthropic/%' THEN 'anthropic'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'deepseek/%' THEN 'deepseek'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) IN ('xai', 'x.ai') THEN 'xai'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'xai/%' THEN 'xai'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) = 'nvidia' THEN 'nvidia_nim'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'nvidia_nim/%' THEN 'nvidia_nim'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'nvidia/%' THEN 'nvidia_nim'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'local/%' THEN 'local'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'local_%' THEN 'local'
-            ELSE COALESCE(ri.provider, 'unknown')
-        END AS provider,
+        ${rateLimitProviderDimension} AS provider,
         ${RATE_LIMIT_NORMALIZED_MODEL_CASE} AS model,
         ${RATE_LIMIT_NORMALIZED_QUOTA_TYPE_CASE} AS quota_type,
         ri.quota_key AS normalized_quota_key,
@@ -5121,8 +5292,8 @@ observation_identity AS (
         n.raw_provider,
         n.quota_key,
         n.expected_reset_at,
-        NULLIF(TRIM(BOTH FROM COALESCE(to_jsonb(o)->>'source', '')), '') AS source,
-        NULLIF(TRIM(BOTH FROM COALESCE(to_jsonb(o)->>'client', '')), '') AS client
+        NULLIF(TRIM(BOTH FROM COALESCE(o.source, '')), '') AS source,
+        NULLIF(TRIM(BOTH FROM COALESCE(o.client, '')), '') AS client
     FROM bounded_normalized n
     JOIN public.rate_limit_observations o
       ON n.quota_key IS NOT NULL
@@ -5130,7 +5301,7 @@ observation_identity AS (
      AND o.provider = n.raw_provider
      AND o.quota_key = n.quota_key
      AND o.expected_reset_at IS NOT DISTINCT FROM n.expected_reset_at
-     AND o.observed_at IS NOT NULL
+     AND o.observed_at IS NOT NULL${quotaObservationIntervalBoundsSql('n.interval_start', 'n.expected_reset_at')}
     WHERE n.interval_rank <= ${QUOTA_HISTORY_MAX_INTERVALS_PER_LANE}
     ORDER BY n.raw_provider, n.quota_key, n.expected_reset_at, o.observed_at DESC
 ),
@@ -5152,9 +5323,7 @@ history_observations AS (
      AND o.expected_reset_at IS NOT DISTINCT FROM n.expected_reset_at
      AND o.remaining_pct IS NOT NULL
      AND o.remaining_pct >= 0
-     AND o.observed_at IS NOT NULL
-     AND o.observed_at >= n.interval_start - INTERVAL '5 minutes'
-     AND o.observed_at <= n.expected_reset_at + INTERVAL '5 minutes'
+     AND o.observed_at IS NOT NULL${quotaObservationIntervalBoundsSql('n.interval_start', 'n.expected_reset_at')}
      AND n.interval_rank <= ${QUOTA_HISTORY_MAX_INTERVALS_PER_LANE}
     GROUP BY n.provider, n.model, n.quota_type, n.expected_reset_at, o.observed_at
 ),
@@ -5285,24 +5454,7 @@ per_model_usage AS (
     FROM window_bounds wb
     JOIN public.session_history sh
       ON wb.provider <> 'antigravity'
-     AND (
-              CASE
-                  WHEN lower(COALESCE(sh.provider, 'unknown')) IN ('google', 'gemini') THEN 'google'
-                  WHEN lower(COALESCE(sh.provider, 'unknown')) = 'antigravity' THEN 'antigravity'
-                  WHEN lower(COALESCE(sh.provider, 'unknown')) IN ('claude', 'anthropic') THEN 'anthropic'
-                  WHEN lower(COALESCE(sh.provider, 'unknown')) LIKE 'claude/%' THEN 'anthropic'
-                  WHEN lower(COALESCE(sh.provider, 'unknown')) LIKE 'anthropic/%' THEN 'anthropic'
-                  WHEN lower(COALESCE(sh.provider, 'unknown')) LIKE 'deepseek/%' THEN 'deepseek'
-                  WHEN lower(COALESCE(sh.provider, 'unknown')) IN ('xai', 'x.ai') THEN 'xai'
-                  WHEN lower(COALESCE(sh.provider, 'unknown')) LIKE 'xai/%' THEN 'xai'
-                  WHEN lower(COALESCE(sh.provider, 'unknown')) = 'nvidia' THEN 'nvidia_nim'
-                  WHEN lower(COALESCE(sh.provider, 'unknown')) LIKE 'nvidia_nim/%' THEN 'nvidia_nim'
-                  WHEN lower(COALESCE(sh.provider, 'unknown')) LIKE 'nvidia/%' THEN 'nvidia_nim'
-                  WHEN lower(COALESCE(sh.provider, 'unknown')) LIKE 'local/%' THEN 'local'
-                  WHEN lower(COALESCE(sh.provider, 'unknown')) LIKE 'local_%' THEN 'local'
-                  ELSE COALESCE(sh.provider, 'unknown')
-              END
-          ) = wb.provider
+     AND ${providerDimensionForAlias('sh', { includeAntigravity: true })} = wb.provider
       -- Wave 35-C2 (⚠-7): use start_time (with created_at fallback) to match
       -- the live quota query (buildQuotaQuery), which also anchors on
       -- sh.start_time. Using created_at here caused sessions near quota-reset
@@ -5383,57 +5535,13 @@ ORDER BY wb.expected_reset_at DESC;
 export function buildQuotaHistoryFallbackQuery(_searchParams) {
   const sql = `
 WITH
-quota_key_gaps AS (
-    SELECT
-        provider,
-        quota_key,
-        quota_type,
-        EXTRACT(EPOCH FROM (
-            expected_reset_at
-            - LAG(expected_reset_at) OVER (
-                PARTITION BY provider, quota_key
-                ORDER BY expected_reset_at
-            )
-        )) / 3600.0 AS gap_hours
-    FROM (
-        SELECT DISTINCT provider, quota_key, quota_type, expected_reset_at
-        FROM public.rate_limit_intervals
-        WHERE quota_type IN ('weekly', 'weekly_overage_included', 'weekly_special', 'short', 'short_special', 'requests', 'monthly', 'wtus')
-          AND expected_reset_at IS NOT NULL
-    ) distinct_resets
-),
-quota_key_interval_hours AS (
-    SELECT
-        provider,
-        quota_key,
-        quota_type,
-        PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY gap_hours) AS interval_hours,
-        COUNT(*) AS gap_count
-    FROM quota_key_gaps
-    WHERE gap_hours >= 1.0
-    GROUP BY provider, quota_key, quota_type
-),
+${buildQuotaKeyIntervalHoursCteSql()}
 normalized AS (
     SELECT
         ri.provider AS raw_provider,
         ri.quota_type AS raw_quota_type,
         ri.quota_key,
-        CASE
-            WHEN lower(COALESCE(ri.provider, 'unknown')) IN ('google', 'gemini') THEN 'google'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) = 'antigravity' THEN 'antigravity'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) IN ('claude', 'anthropic') THEN 'anthropic'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'claude/%' THEN 'anthropic'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'anthropic/%' THEN 'anthropic'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'deepseek/%' THEN 'deepseek'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) IN ('xai', 'x.ai') THEN 'xai'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'xai/%' THEN 'xai'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) = 'nvidia' THEN 'nvidia_nim'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'nvidia_nim/%' THEN 'nvidia_nim'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'nvidia/%' THEN 'nvidia_nim'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'local/%' THEN 'local'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'local_%' THEN 'local'
-            ELSE COALESCE(ri.provider, 'unknown')
-        END AS provider,
+        ${rateLimitProviderDimension} AS provider,
         ${RATE_LIMIT_NORMALIZED_MODEL_CASE} AS model,
         ${RATE_LIMIT_NORMALIZED_QUOTA_TYPE_CASE} AS quota_type,
         ri.quota_key AS normalized_quota_key,
@@ -5572,8 +5680,8 @@ observation_identity AS (
         n.raw_provider,
         n.normalized_quota_key,
         n.expected_reset_at,
-        NULLIF(TRIM(BOTH FROM COALESCE(to_jsonb(o)->>'source', '')), '') AS source,
-        NULLIF(TRIM(BOTH FROM COALESCE(to_jsonb(o)->>'client', '')), '') AS client
+        NULLIF(TRIM(BOTH FROM COALESCE(o.source, '')), '') AS source,
+        NULLIF(TRIM(BOTH FROM COALESCE(o.client, '')), '') AS client
     FROM scoped_intervals n
     JOIN public.rate_limit_observations o
       ON n.normalized_quota_key IN (
@@ -5584,7 +5692,7 @@ observation_identity AS (
      AND o.provider = n.raw_provider
      AND o.quota_key = n.normalized_quota_key
      AND o.expected_reset_at IS NOT DISTINCT FROM n.expected_reset_at
-     AND o.observed_at IS NOT NULL
+     AND o.observed_at IS NOT NULL${quotaObservationIntervalBoundsSql('n.interval_start', 'n.expected_reset_at')}
     WHERE n.interval_rank <= ${QUOTA_HISTORY_MAX_INTERVALS_PER_LANE}
     ORDER BY n.raw_provider, n.normalized_quota_key, n.expected_reset_at, o.observed_at DESC
 ),
@@ -5642,22 +5750,7 @@ export function buildQuotaRangeHistoryFallbackQuery(searchParams) {
 WITH normalized AS (
     SELECT
         ri.provider AS raw_provider,
-        CASE
-            WHEN lower(COALESCE(ri.provider, 'unknown')) IN ('google', 'gemini') THEN 'google'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) = 'antigravity' THEN 'antigravity'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) IN ('claude', 'anthropic') THEN 'anthropic'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'claude/%' THEN 'anthropic'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'anthropic/%' THEN 'anthropic'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'deepseek/%' THEN 'deepseek'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) IN ('xai', 'x.ai') THEN 'xai'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'xai/%' THEN 'xai'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) = 'nvidia' THEN 'nvidia_nim'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'nvidia_nim/%' THEN 'nvidia_nim'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'nvidia/%' THEN 'nvidia_nim'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'local/%' THEN 'local'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'local_%' THEN 'local'
-            ELSE COALESCE(ri.provider, 'unknown')
-        END AS provider,
+        ${rateLimitProviderDimension} AS provider,
         ${RATE_LIMIT_NORMALIZED_MODEL_CASE} AS model,
         ${RATE_LIMIT_NORMALIZED_QUOTA_TYPE_CASE} AS quota_type,
         ri.quota_key AS normalized_quota_key,
@@ -5693,8 +5786,8 @@ observation_identity AS (
         n.raw_provider,
         n.normalized_quota_key,
         n.expected_reset_at,
-        NULLIF(TRIM(BOTH FROM COALESCE(to_jsonb(o)->>'source', '')), '') AS source,
-        NULLIF(TRIM(BOTH FROM COALESCE(to_jsonb(o)->>'client', '')), '') AS client
+        NULLIF(TRIM(BOTH FROM COALESCE(o.source, '')), '') AS source,
+        NULLIF(TRIM(BOTH FROM COALESCE(o.client, '')), '') AS client
     FROM normalized n
     JOIN public.rate_limit_observations o
       ON n.normalized_quota_key IN (
@@ -5705,7 +5798,7 @@ observation_identity AS (
      AND o.provider = n.raw_provider
      AND o.quota_key = n.normalized_quota_key
      AND o.expected_reset_at IS NOT DISTINCT FROM n.expected_reset_at
-     AND o.observed_at IS NOT NULL
+     AND o.observed_at IS NOT NULL${quotaObservationIntervalBoundsSql('n.interval_start', 'n.expected_reset_at')}
     ORDER BY n.raw_provider, n.normalized_quota_key, n.expected_reset_at, o.observed_at DESC
 ),
 window_bounds AS (
@@ -5762,21 +5855,7 @@ export function buildQuotaRangeHistoryQuery(searchParams) {
 WITH normalized AS (
     SELECT
         ri.provider AS raw_provider,
-        CASE
-            WHEN lower(COALESCE(ri.provider, 'unknown')) IN ('google', 'gemini') THEN 'google'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) IN ('claude', 'anthropic') THEN 'anthropic'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'claude/%' THEN 'anthropic'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'anthropic/%' THEN 'anthropic'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'deepseek/%' THEN 'deepseek'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) IN ('xai', 'x.ai') THEN 'xai'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'xai/%' THEN 'xai'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) = 'nvidia' THEN 'nvidia_nim'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'nvidia_nim/%' THEN 'nvidia_nim'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'nvidia/%' THEN 'nvidia_nim'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'local/%' THEN 'local'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'local_%' THEN 'local'
-            ELSE COALESCE(ri.provider, 'unknown')
-        END AS provider,
+        ${rateLimitRangeProviderDimension} AS provider,
         ${RATE_LIMIT_NORMALIZED_MODEL_CASE} AS model,
         ${RATE_LIMIT_NORMALIZED_QUOTA_TYPE_CASE} AS quota_type,
         ri.quota_key AS normalized_quota_key,
@@ -5816,8 +5895,8 @@ observation_identity AS (
         n.raw_provider,
         n.normalized_quota_key,
         n.expected_reset_at,
-        NULLIF(TRIM(BOTH FROM COALESCE(to_jsonb(o)->>'source', '')), '') AS source,
-        NULLIF(TRIM(BOTH FROM COALESCE(to_jsonb(o)->>'client', '')), '') AS client
+        NULLIF(TRIM(BOTH FROM COALESCE(o.source, '')), '') AS source,
+        NULLIF(TRIM(BOTH FROM COALESCE(o.client, '')), '') AS client
     FROM normalized n
     JOIN public.rate_limit_observations o
       ON n.normalized_quota_key IS NOT NULL
@@ -5825,7 +5904,7 @@ observation_identity AS (
      AND o.provider = n.raw_provider
      AND o.quota_key = n.normalized_quota_key
      AND o.expected_reset_at IS NOT DISTINCT FROM n.expected_reset_at
-     AND o.observed_at IS NOT NULL
+     AND o.observed_at IS NOT NULL${quotaObservationIntervalBoundsSql('n.interval_start', 'n.expected_reset_at')}
     ORDER BY n.raw_provider, n.normalized_quota_key, n.expected_reset_at, o.observed_at DESC
 ),
 window_bounds AS (
@@ -6002,13 +6081,13 @@ observations AS (
         o.expected_reset_at,
         o.observed_at,
         MAX(GREATEST(0, LEAST(100, 100 - o.remaining_pct)))::double precision AS consumed_pct,
-        MAX(NULLIF(to_jsonb(o)->>'quota_limit', '')::double precision) AS quota_limit,
-        MAX(NULLIF(to_jsonb(o)->>'quota_used', '')::double precision) AS quota_used,
-        MAX(NULLIF(to_jsonb(o)->>'quota_remaining', '')::double precision) AS quota_remaining,
-        MAX(NULLIF(to_jsonb(o)->>'billing_period_start_at', '')) AS billing_period_start_at,
-        MAX(NULLIF(to_jsonb(o)->>'billing_period_end_at', '')) AS billing_period_end_at,
-        (ARRAY_AGG(COALESCE(to_jsonb(o)->'raw_provider_fields', '{}'::jsonb) ORDER BY o.observed_at DESC))[1] AS raw_provider_fields,
-        (ARRAY_AGG(COALESCE(to_jsonb(o)->'evidence', '{}'::jsonb) ORDER BY o.observed_at DESC))[1] AS evidence
+        MAX(o.quota_limit) AS quota_limit,
+        MAX(o.quota_used) AS quota_used,
+        MAX(o.quota_remaining) AS quota_remaining,
+        MAX(o.billing_period_start_at) AS billing_period_start_at,
+        MAX(o.billing_period_end_at) AS billing_period_end_at,
+        (ARRAY_AGG(COALESCE(o.raw_provider_fields, '{}'::jsonb) ORDER BY o.observed_at DESC))[1] AS raw_provider_fields,
+        (ARRAY_AGG(COALESCE(o.evidence, '{}'::jsonb) ORDER BY o.observed_at DESC))[1] AS evidence
     FROM public.rate_limit_observations o
     WHERE o.provider IN ('anthropic', 'openai')
       AND o.quota_key IN (
@@ -6144,32 +6223,33 @@ export function buildToolActivityQuery(searchParams) {
   if (agentIdFilterValues.length > 0) {
     values.push(agentIdFilterValues)
     agentIdFilterClause = `
-      AND COALESCE(ra.activity_agent_id, NULLIF(to_jsonb(sh)->>'agent_id', ''), 'uncaptured_agent_id') = ANY($${values.length}::text[])`
+      AND COALESCE(ra.activity_agent_id, NULLIF(sh.agent_id, ''), 'uncaptured_agent_id') = ANY($${values.length}::text[])`
   }
 
-  // Inline the same provider-normalisation CASE that providerDimension uses,
-  // but referenced against sh.provider (the authoritative join column).
-  const providerExpr = `
-CASE
-    WHEN lower(COALESCE(sh.provider, 'unknown')) IN ('google', 'gemini') THEN 'google'
-    WHEN lower(COALESCE(sh.provider, 'unknown')) IN ('claude', 'anthropic') THEN 'anthropic'
-    WHEN lower(COALESCE(sh.provider, 'unknown')) LIKE 'claude/%' THEN 'anthropic'
-    WHEN lower(COALESCE(sh.provider, 'unknown')) LIKE 'anthropic/%' THEN 'anthropic'
-    WHEN lower(COALESCE(sh.provider, 'unknown')) LIKE 'deepseek/%' THEN 'deepseek'
-    WHEN lower(COALESCE(sh.provider, 'unknown')) IN ('xai', 'x.ai') THEN 'xai'
-    WHEN lower(COALESCE(sh.provider, 'unknown')) LIKE 'xai/%' THEN 'xai'
-    WHEN lower(COALESCE(sh.provider, 'unknown')) = 'nvidia' THEN 'nvidia_nim'
-    WHEN lower(COALESCE(sh.provider, 'unknown')) LIKE 'nvidia_nim/%' THEN 'nvidia_nim'
-    WHEN lower(COALESCE(sh.provider, 'unknown')) LIKE 'nvidia/%' THEN 'nvidia_nim'
-    WHEN lower(COALESCE(sh.provider, 'unknown')) LIKE 'local/%' THEN 'local'
-    WHEN lower(COALESCE(sh.provider, 'unknown')) LIKE 'local_%' THEN 'local'
-    ELSE COALESCE(sh.provider, 'unknown')
-END`
+  const providerExpr = providerDimensionExpression('sh.provider')
 
   const sql = `
 WITH bounds AS (
-    SELECT GREATEST(COALESCE(MAX(id), 0) - $${recentRowLimitIndex}::bigint, 0) AS min_id
+    SELECT
+        GREATEST(COALESCE(MAX(id), 0) - $${recentRowLimitIndex}::bigint, 0) AS min_id,
+        COALESCE(MAX(id), 0) AS max_id,
+        $${recentRowLimitIndex}::bigint AS recent_row_limit
     FROM public.session_history_tool_activity
+),
+window_cap_state AS (
+    SELECT
+        b.min_id AS tool_activity_bounded_min_id,
+        b.max_id AS tool_activity_bounded_max_id,
+        b.recent_row_limit AS tool_activity_recent_row_limit,
+        true AS tool_activity_recent_id_cap_active,
+        EXISTS (
+            SELECT 1
+            FROM public.session_history_tool_activity a
+            WHERE a.created_at >= ($1::date::timestamp AT TIME ZONE 'America/New_York')
+              AND a.created_at < ($2::date::timestamp AT TIME ZONE 'America/New_York')
+              AND a.id <= b.min_id
+        ) AS tool_activity_recent_id_cap_truncates_requested_window
+    FROM bounds b
 ),
 recent_activity AS MATERIALIZED (
     SELECT
@@ -6177,7 +6257,7 @@ recent_activity AS MATERIALIZED (
         COALESCE(a.tool_kind, 'other') AS tool_kind,
         a.tool_name,
         a.command_text,
-        NULLIF(to_jsonb(a)->>'agent_id', '') AS activity_agent_id
+        NULLIF(a.agent_id, '') AS activity_agent_id
     FROM public.session_history_tool_activity a
     CROSS JOIN bounds b
     WHERE a.id > b.min_id
@@ -6188,8 +6268,8 @@ tool_rows AS MATERIALIZED (
     SELECT
         ${providerExpr} AS provider,
         COALESCE(sh.model, 'unknown') AS model,
-        NULLIF(to_jsonb(sh)->>'agent_name', '') AS agent_name,
-        COALESCE(ra.activity_agent_id, NULLIF(to_jsonb(sh)->>'agent_id', '')) AS agent_id,
+        NULLIF(sh.agent_name, '') AS agent_name,
+        COALESCE(ra.activity_agent_id, NULLIF(sh.agent_id, '')) AS agent_id,
         ra.tool_kind,
         ra.tool_name,
         ra.command_text
@@ -6272,28 +6352,53 @@ shell_labels AS (
         )
 )
 SELECT
-    provider,
-    model,
-    'outer' AS kind,
-    tool_name AS label,
-    COALESCE(agent_names, '[]'::jsonb) AS agent_names,
-    COALESCE(agent_ids, '[]'::jsonb) AS agent_ids,
-    calls
-FROM outer_counts
-UNION ALL
-SELECT
-    provider,
-    model,
-    'shell' AS kind,
-    cmd_label AS label,
-    COALESCE(agent_names, '[]'::jsonb) AS agent_names,
-    COALESCE(agent_ids, '[]'::jsonb) AS agent_ids,
-    calls
-FROM shell_labels
-ORDER BY provider ASC, model ASC, kind ASC, calls DESC;
+    activity_rows.provider,
+    activity_rows.model,
+    activity_rows.kind,
+    activity_rows.label,
+    activity_rows.agent_names,
+    activity_rows.agent_ids,
+    activity_rows.calls,
+    cap.tool_activity_bounded_min_id,
+    cap.tool_activity_bounded_max_id,
+    cap.tool_activity_recent_row_limit,
+    cap.tool_activity_recent_id_cap_active,
+    cap.tool_activity_recent_id_cap_truncates_requested_window
+FROM window_cap_state cap
+LEFT JOIN (
+    SELECT
+        provider,
+        model,
+        'outer' AS kind,
+        tool_name AS label,
+        COALESCE(agent_names, '[]'::jsonb) AS agent_names,
+        COALESCE(agent_ids, '[]'::jsonb) AS agent_ids,
+        calls
+    FROM outer_counts
+    UNION ALL
+    SELECT
+        provider,
+        model,
+        'shell' AS kind,
+        cmd_label AS label,
+        COALESCE(agent_names, '[]'::jsonb) AS agent_names,
+        COALESCE(agent_ids, '[]'::jsonb) AS agent_ids,
+        calls
+    FROM shell_labels
+) activity_rows ON true
+ORDER BY activity_rows.provider ASC NULLS LAST, activity_rows.model ASC NULLS LAST, activity_rows.kind ASC NULLS LAST, activity_rows.calls DESC NULLS LAST;
 `
 
-  return { sql, values }
+  return {
+    sql,
+    values,
+    metadata: {
+      from: parseDateParam(searchParams.get('from'), defaultFromDate),
+      to: parseDateParam(searchParams.get('to'), defaultToDate),
+      toolActivityRecentRowLimit: TOOL_ACTIVITY_RECENT_ROW_LIMIT,
+      toolActivityRecentIdCapActive: true,
+    },
+  }
 }
 
 function normalizeToolActivityRow(row) {
@@ -6305,6 +6410,14 @@ function normalizeToolActivityRow(row) {
     agent_names: normalizeStringArray(row.agent_names),
     agent_ids: normalizeStringArray(row.agent_ids),
     calls: normalizeNumber(row.calls) ?? 0,
+    tool_activity_bounded_min_id: normalizeNumber(row.tool_activity_bounded_min_id),
+    tool_activity_bounded_max_id: normalizeNumber(row.tool_activity_bounded_max_id),
+    tool_activity_recent_row_limit:
+      normalizeNumber(row.tool_activity_recent_row_limit) ??
+      TOOL_ACTIVITY_RECENT_ROW_LIMIT,
+    tool_activity_recent_id_cap_active: row.tool_activity_recent_id_cap_active ?? true,
+    tool_activity_recent_id_cap_truncates_requested_window:
+      row.tool_activity_recent_id_cap_truncates_requested_window ?? false,
   }
 }
 
@@ -6314,6 +6427,7 @@ function buildUsageToolActivityMetadata(searchParams, extra = {}) {
     to: parseDateParam(searchParams.get('to'), defaultToDate),
     generatedAt: new Date().toISOString(),
     toolActivityRecentRowLimit: TOOL_ACTIVITY_RECENT_ROW_LIMIT,
+    toolActivityRecentIdCapActive: true,
     ...extra,
   }
 }
@@ -6548,7 +6662,7 @@ WITH recent_alias_sessions AS MATERIALIZED (
         sh.litellm_call_id::text AS litellm_call_id,
         ${providerDimension} AS provider,
         COALESCE(sh.model, 'unknown') AS model,
-        NULLIF(to_jsonb(sh)->>'inbound_model_alias', '') AS inbound_model_alias,
+        NULLIF(sh.inbound_model_alias, '') AS inbound_model_alias,
         COALESCE(sh.metadata, '{}'::jsonb) AS metadata
     FROM public.session_history sh
     WHERE sh.created_at >= NOW() - ($2::integer * INTERVAL '1 hour')
@@ -7545,18 +7659,18 @@ WITH candidate_sessions AS MATERIALIZED (
         sh.start_time,
         sh.end_time,
         sh.session_id::text AS session_id,
-        NULLIF(to_jsonb(sh)->>'trace_id', '') AS trace_id,
+        NULLIF(sh.trace_id, '') AS trace_id,
         sh.litellm_call_id::text AS litellm_call_id,
         ${providerDimension} AS provider,
         COALESCE(sh.model, 'unknown') AS model,
-        NULLIF(to_jsonb(sh)->>'model_group', '') AS model_group,
+        NULLIF(sh.model_group, '') AS model_group,
         COALESCE(sh.tenant_id, 'unknown') AS repository,
         COALESCE(sh.client_name, 'unknown') AS client,
         COALESCE(sh.client_version, '0.0.0') AS client_version,
         COALESCE(sh.litellm_environment, 'unknown') AS environment,
-        NULLIF(to_jsonb(sh)->>'inbound_model_alias', '') AS inbound_model_alias,
-        NULLIF(to_jsonb(sh)->>'agent_name', '') AS agent_name,
-        NULLIF(to_jsonb(sh)->>'agent_id', '') AS agent_id,
+        NULLIF(sh.inbound_model_alias, '') AS inbound_model_alias,
+        NULLIF(sh.agent_name, '') AS agent_name,
+        NULLIF(sh.agent_id, '') AS agent_id,
         COALESCE(sh.metadata, '{}'::jsonb) AS metadata,
         COALESCE(sh.agent_score_reasons, '{}'::jsonb) AS agent_score_reasons
     FROM public.session_history sh
@@ -8391,15 +8505,7 @@ function normalizeQuotaBillingDetail(row, prefix) {
 
 function normalizeQuotaBillingDetails(row) {
   const details = {}
-  for (const quotaType of [
-    'weekly',
-    'weekly_overage_included',
-    'short',
-    'special',
-    'short_special',
-    'monthly',
-    'wtus',
-  ]) {
+  for (const quotaType of QUOTA_LANE_TYPES) {
     const detail = normalizeQuotaBillingDetail(row, quotaType)
     if (detail !== null) {
       details[quotaType] = detail
@@ -8443,15 +8549,7 @@ function buildQuotaVelocityRowsByLane(rows) {
 
 function attachQuotaVelocityRows(row, quotaVelocityRowsByLane) {
   const merged = { ...row }
-  for (const quotaType of [
-    'weekly',
-    'weekly_overage_included',
-    'short',
-    'special',
-    'short_special',
-    'monthly',
-    'wtus',
-  ]) {
+  for (const quotaType of QUOTA_LANE_TYPES) {
     const velocityRow = quotaVelocityRowsByLane.get(
       quotaVelocityLaneKey(row.provider, row.model, quotaType)
     )
@@ -8464,130 +8562,45 @@ function attachQuotaVelocityRows(row, quotaVelocityRowsByLane) {
   return merged
 }
 
-function normalizeQuotaRow(row) {
+function normalizeQuotaLaneFields(row, quotaType) {
+  return {
+    [`${quotaType}_remaining_pct`]: normalizeNumber(
+      row[`${quotaType}_remaining_pct`]
+    ),
+    [`${quotaType}_reset_at`]: row[`${quotaType}_reset_at`] ?? null,
+    [`${quotaType}_interval_start`]:
+      row[`${quotaType}_interval_start`] ?? null,
+    [`${quotaType}_interval_end`]: row[`${quotaType}_interval_end`] ?? null,
+    [`${quotaType}_active`]: Boolean(
+      normalizeNumber(row[`${quotaType}_active`])
+    ),
+    [`${quotaType}_usage_tokens`]:
+      normalizeNumber(row[`${quotaType}_usage_tokens`]) ?? 0,
+    [`${quotaType}_usage_breakdown`]: normalizeUsageBreakdown(
+      row[`${quotaType}_usage_breakdown`]
+    ),
+    [`${quotaType}_velocity_segments`]: normalizeQuotaVelocitySegments(
+      row[`${quotaType}_velocity_segments`]
+    ),
+    [`${quotaType}_velocity_scores`]: normalizeQuotaVelocityScores(
+      row[`${quotaType}_velocity_scores`]
+    ),
+    [`${quotaType}_velocity_sample_count`]:
+      normalizeNumber(row[`${quotaType}_velocity_sample_count`]) ?? 0,
+  }
+}
+
+export function normalizeQuotaRow(row) {
   return {
     provider: row.provider,
     model: row.model ?? null,
     billing_details: normalizeQuotaBillingDetails(row),
-    weekly_remaining_pct: normalizeNumber(row.weekly_remaining_pct),
-    weekly_reset_at: row.weekly_reset_at ?? null,
-    weekly_interval_start: row.weekly_interval_start ?? null,
-    weekly_interval_end: row.weekly_interval_end ?? null,
-    weekly_active: Boolean(normalizeNumber(row.weekly_active)),
-    weekly_usage_tokens: normalizeNumber(row.weekly_usage_tokens) ?? 0,
-    weekly_usage_breakdown: normalizeUsageBreakdown(
-      row.weekly_usage_breakdown
+    ...Object.assign(
+      {},
+      ...QUOTA_LANE_TYPES.map((quotaType) =>
+        normalizeQuotaLaneFields(row, quotaType)
+      )
     ),
-    weekly_velocity_segments: normalizeQuotaVelocitySegments(
-      row.weekly_velocity_segments
-    ),
-    weekly_velocity_scores: normalizeQuotaVelocityScores(
-      row.weekly_velocity_scores
-    ),
-    weekly_velocity_sample_count:
-      normalizeNumber(row.weekly_velocity_sample_count) ?? 0,
-
-    weekly_overage_included_remaining_pct: normalizeNumber(row.weekly_overage_included_remaining_pct),
-    weekly_overage_included_reset_at: row.weekly_overage_included_reset_at ?? null,
-    weekly_overage_included_interval_start: row.weekly_overage_included_interval_start ?? null,
-    weekly_overage_included_interval_end: row.weekly_overage_included_interval_end ?? null,
-    weekly_overage_included_active: Boolean(normalizeNumber(row.weekly_overage_included_active)),
-    weekly_overage_included_usage_tokens: normalizeNumber(row.weekly_overage_included_usage_tokens) ?? 0,
-    weekly_overage_included_usage_breakdown: normalizeUsageBreakdown(
-      row.weekly_overage_included_usage_breakdown
-    ),
-    weekly_overage_included_velocity_segments: normalizeQuotaVelocitySegments(
-      row.weekly_overage_included_velocity_segments
-    ),
-    weekly_overage_included_velocity_scores: normalizeQuotaVelocityScores(
-      row.weekly_overage_included_velocity_scores
-    ),
-    weekly_overage_included_velocity_sample_count:
-      normalizeNumber(row.weekly_overage_included_velocity_sample_count) ?? 0,
-    short_remaining_pct: normalizeNumber(row.short_remaining_pct),
-    short_reset_at: row.short_reset_at ?? null,
-    short_interval_start: row.short_interval_start ?? null,
-    short_interval_end: row.short_interval_end ?? null,
-    short_active: Boolean(normalizeNumber(row.short_active)),
-    short_usage_tokens: normalizeNumber(row.short_usage_tokens) ?? 0,
-    short_usage_breakdown: normalizeUsageBreakdown(row.short_usage_breakdown),
-    short_velocity_segments: normalizeQuotaVelocitySegments(
-      row.short_velocity_segments
-    ),
-    short_velocity_scores: normalizeQuotaVelocityScores(
-      row.short_velocity_scores
-    ),
-    short_velocity_sample_count:
-      normalizeNumber(row.short_velocity_sample_count) ?? 0,
-    special_remaining_pct: normalizeNumber(row.special_remaining_pct),
-    special_reset_at: row.special_reset_at ?? null,
-    special_interval_start: row.special_interval_start ?? null,
-    special_interval_end: row.special_interval_end ?? null,
-    special_active: Boolean(normalizeNumber(row.special_active)),
-    special_usage_tokens: normalizeNumber(row.special_usage_tokens) ?? 0,
-    special_usage_breakdown: normalizeUsageBreakdown(
-      row.special_usage_breakdown
-    ),
-    special_velocity_segments: normalizeQuotaVelocitySegments(
-      row.special_velocity_segments
-    ),
-    special_velocity_scores: normalizeQuotaVelocityScores(
-      row.special_velocity_scores
-    ),
-    special_velocity_sample_count:
-      normalizeNumber(row.special_velocity_sample_count) ?? 0,
-    short_special_remaining_pct: normalizeNumber(
-      row.short_special_remaining_pct
-    ),
-    short_special_reset_at: row.short_special_reset_at ?? null,
-    short_special_interval_start: row.short_special_interval_start ?? null,
-    short_special_interval_end: row.short_special_interval_end ?? null,
-    short_special_active: Boolean(normalizeNumber(row.short_special_active)),
-    short_special_usage_tokens:
-      normalizeNumber(row.short_special_usage_tokens) ?? 0,
-    short_special_usage_breakdown: normalizeUsageBreakdown(
-      row.short_special_usage_breakdown
-    ),
-    short_special_velocity_segments: normalizeQuotaVelocitySegments(
-      row.short_special_velocity_segments
-    ),
-    short_special_velocity_scores: normalizeQuotaVelocityScores(
-      row.short_special_velocity_scores
-    ),
-    short_special_velocity_sample_count:
-      normalizeNumber(row.short_special_velocity_sample_count) ?? 0,
-    monthly_remaining_pct: normalizeNumber(row.monthly_remaining_pct),
-    monthly_reset_at: row.monthly_reset_at ?? null,
-    monthly_interval_start: row.monthly_interval_start ?? null,
-    monthly_interval_end: row.monthly_interval_end ?? null,
-    monthly_active: Boolean(normalizeNumber(row.monthly_active)),
-    monthly_usage_tokens: normalizeNumber(row.monthly_usage_tokens) ?? 0,
-    monthly_usage_breakdown: normalizeUsageBreakdown(
-      row.monthly_usage_breakdown
-    ),
-    monthly_velocity_segments: normalizeQuotaVelocitySegments(
-      row.monthly_velocity_segments
-    ),
-    monthly_velocity_scores: normalizeQuotaVelocityScores(
-      row.monthly_velocity_scores
-    ),
-    monthly_velocity_sample_count:
-      normalizeNumber(row.monthly_velocity_sample_count) ?? 0,
-    wtus_remaining_pct: normalizeNumber(row.wtus_remaining_pct),
-    wtus_reset_at: row.wtus_reset_at ?? null,
-    wtus_interval_start: row.wtus_interval_start ?? null,
-    wtus_interval_end: row.wtus_interval_end ?? null,
-    wtus_active: Boolean(normalizeNumber(row.wtus_active)),
-    wtus_usage_tokens: normalizeNumber(row.wtus_usage_tokens) ?? 0,
-    wtus_usage_breakdown: normalizeUsageBreakdown(row.wtus_usage_breakdown),
-    wtus_velocity_segments: normalizeQuotaVelocitySegments(
-      row.wtus_velocity_segments
-    ),
-    wtus_velocity_scores: normalizeQuotaVelocityScores(
-      row.wtus_velocity_scores
-    ),
-    wtus_velocity_sample_count:
-      normalizeNumber(row.wtus_velocity_sample_count) ?? 0,
   }
 }
 
@@ -8618,39 +8631,6 @@ function normalizeQuotaHistoryRow(row) {
           recent_traces_90m: normalizeNumber(b.recent_traces_90m) ?? 0,
         }))
       : [],
-  }
-}
-
-function normalizeQuotaEstimatorDatasetRow(row) {
-  return {
-    lag_minutes: normalizeNumber(row.lag_minutes) ?? 0,
-    provider: row.provider ?? 'unknown',
-    quota_key: row.quota_key ?? 'unknown',
-    quota_type: row.quota_type ?? 'unknown',
-    quota_lane: row.quota_lane ?? 'unknown',
-    raw_observation_quota_type: row.raw_observation_quota_type ?? null,
-    raw_interval_quota_type: row.raw_interval_quota_type ?? null,
-    expected_reset_at: row.expected_reset_at ?? null,
-    reset_start_at: row.reset_start_at ?? null,
-    reset_end_at: row.reset_end_at ?? null,
-    interval_start_at: row.interval_start_at ?? null,
-    interval_end_at: row.interval_end_at ?? null,
-    previous_consumed_pct: normalizeNumber(row.previous_consumed_pct),
-    current_consumed_pct: normalizeNumber(row.current_consumed_pct),
-    delta_pct: normalizeNumber(row.delta_pct),
-    is_reset_boundary: Boolean(row.is_reset_boundary),
-    is_capped_at_100: Boolean(row.is_capped_at_100),
-    trainable: Boolean(row.trainable),
-    exclude_reason: row.exclude_reason ?? null,
-    model_family: row.model_family ?? 'no_usage',
-    traces: normalizeNumber(row.traces) ?? 0,
-    uncached_input_tokens: normalizeNumber(row.uncached_input_tokens) ?? 0,
-    output_tokens: normalizeNumber(row.output_tokens) ?? 0,
-    cache_read_tokens: normalizeNumber(row.cache_read_tokens) ?? 0,
-    cache_create_tokens: normalizeNumber(row.cache_create_tokens) ?? 0,
-    reasoning_tokens: normalizeNumber(row.reasoning_tokens) ?? 0,
-    usd_cost: normalizeNumber(row.usd_cost) ?? 0,
-    tool_calls: normalizeNumber(row.tool_calls) ?? 0,
   }
 }
 
@@ -9538,11 +9518,15 @@ function joinUrlPath(basePath, requestPath) {
   return `${normalizedBase}${normalizedRequest}`
 }
 
-function proxyHeaders(req, proxyConfig) {
+export function proxyHeaders(req, proxyConfig) {
   const headers = {}
   for (const [key, value] of Object.entries(req.headers)) {
     const lowerKey = key.toLowerCase()
-    if (HOP_BY_HOP_HEADERS.has(lowerKey) || CLIENT_AUTH_HEADERS.has(lowerKey)) {
+    if (
+      HOP_BY_HOP_HEADERS.has(lowerKey) ||
+      CLIENT_AUTH_HEADERS.has(lowerKey) ||
+      INTERNAL_PROXY_HEADERS.has(lowerKey)
+    ) {
       continue
     }
     if (Array.isArray(value)) {
@@ -9711,8 +9695,28 @@ GROUP BY
     ${groupParts.join(',\n    ')}
 ),
 reason_bounds AS (
-    SELECT GREATEST(COALESCE(MAX(id), 0) - ${AGENT_SCORE_REASON_RECENT_ROW_LIMIT}::bigint, 0) AS min_id
+    SELECT
+        GREATEST(COALESCE(MAX(id), 0) - ${AGENT_SCORE_REASON_RECENT_ROW_LIMIT}::bigint, 0) AS min_id,
+        COALESCE(MAX(id), 0) AS max_id,
+        ${AGENT_SCORE_REASON_RECENT_ROW_LIMIT}::bigint AS recent_row_limit
     FROM public.session_history
+),
+reason_cap_state AS (
+    SELECT
+        rb.min_id AS agent_score_reasons_bounded_min_id,
+        rb.max_id AS agent_score_reasons_bounded_max_id,
+        rb.recent_row_limit AS agent_score_reasons_recent_row_limit,
+        true AS agent_score_reasons_recent_id_cap_active,
+        EXISTS (
+            SELECT 1
+            FROM public.session_history sh_window
+            WHERE sh_window.created_at >= ($1::date::timestamp AT TIME ZONE 'America/New_York')
+              AND sh_window.created_at < ($2::date::timestamp AT TIME ZONE 'America/New_York')
+              AND sh_window.id <= rb.min_id
+              AND sh_window.agent_score_reasons IS NOT NULL
+              AND sh_window.agent_score_reasons <> '{}'::jsonb
+        ) AS agent_score_reasons_recent_id_cap_truncates_requested_window
+    FROM reason_bounds rb
 ),
 reason_source AS MATERIALIZED (
     SELECT
@@ -9818,19 +9822,78 @@ GROUP BY
 )
 SELECT
     base.*,
-    COALESCE(reason_summary.agent_score_reasons_top, '[]'::jsonb) AS agent_score_reasons_top
+    COALESCE(reason_summary.agent_score_reasons_top, '[]'::jsonb) AS agent_score_reasons_top,
+    cap.agent_score_reasons_bounded_min_id,
+    cap.agent_score_reasons_bounded_max_id,
+    cap.agent_score_reasons_recent_row_limit,
+    cap.agent_score_reasons_recent_id_cap_active,
+    cap.agent_score_reasons_recent_id_cap_truncates_requested_window
 FROM base
+CROSS JOIN reason_cap_state cap
 LEFT JOIN reason_summary
   ON ${reasonJoinParts.join('\n  AND ')}
 ORDER BY ${sort} ${sortDirection}
 LIMIT $${values.length};
 `
 
-  return { sql, values, metadata: { from, to, grain, groupBy, limit } }
+  return {
+    sql,
+    values,
+    metadata: {
+      from,
+      to,
+      grain,
+      groupBy,
+      limit,
+      agentScoreReasonsRecentRowLimit: AGENT_SCORE_REASON_RECENT_ROW_LIMIT,
+      agentScoreReasonsRecentIdCapActive: true,
+    },
+  }
+}
+
+
+function capDockerJsonLogSourcesForScan(sources, options = {}) {
+  const list = Array.isArray(sources) ? sources : []
+  const maxSources = Number(options.maxSources ?? DOCKER_LOG_SCAN_MAX_SOURCES)
+  const maxTotalBytes = Number(
+    options.maxTotalBytes ?? DOCKER_LOG_SCAN_MAX_TOTAL_BYTES
+  )
+  const perFileDefault = Number(options.perFileTailBytes ?? DOCKER_LOG_TAIL_BYTES)
+  const cappedSources = list.slice(0, Math.max(0, maxSources))
+  let remainingBytes = Math.max(0, maxTotalBytes)
+  const selected = []
+  for (const source of cappedSources) {
+    if (remainingBytes <= 0) break
+    const tailBytes = Math.min(perFileDefault, remainingBytes)
+    if (tailBytes <= 0) break
+    selected.push({ ...source, tailBytes })
+    remainingBytes -= tailBytes
+  }
+  return selected
+}
+
+function isDockerLogScanCacheFresh(cachedAt, ttlMs = DOCKER_LOG_SCAN_CACHE_TTL_MS) {
+  const ttl = Number(ttlMs)
+  if (!Number.isFinite(ttl) || ttl <= 0) return false
+  return Date.now() - Number(cachedAt) < ttl
+}
+
+function resetDockerLogScanCachesForTests() {
+  dockerLogJsonSourcesCache = null
+  dockerLogErrorsScanCache = null
+  dockerLogTailReadCountForTests = 0
 }
 
 async function findDockerJsonLogSources() {
+  if (
+    dockerLogJsonSourcesCache &&
+    isDockerLogScanCacheFresh(dockerLogJsonSourcesCache.cachedAt)
+  ) {
+    return dockerLogJsonSourcesCache.sources
+  }
+
   if (!shouldDiscoverDockerJsonLogSources(DOCKER_LOG_CONTAINER_NAMES)) {
+    dockerLogJsonSourcesCache = { sources: [], cachedAt: Date.now() }
     return []
   }
 
@@ -9843,6 +9906,7 @@ async function findDockerJsonLogSources() {
         `[report-service] WARN: unable to scan Docker log root ${DOCKER_LOG_ROOT}: ${formatError(error)}\n`
       )
     }
+    dockerLogJsonSourcesCache = { sources: [], cachedAt: Date.now() }
     return []
   }
 
@@ -9861,10 +9925,16 @@ async function findDockerJsonLogSources() {
     configs.push({ containerDir, entryId: entry.name, config })
   }
 
-  return discoverDockerJsonLogSourcesFromConfigs(configs, DOCKER_LOG_CONTAINER_NAMES)
+  const sources = discoverDockerJsonLogSourcesFromConfigs(
+    configs,
+    DOCKER_LOG_CONTAINER_NAMES
+  )
+  dockerLogJsonSourcesCache = { sources, cachedAt: Date.now() }
+  return sources
 }
 
 async function readFileTail(filePath, maxBytes) {
+  dockerLogTailReadCountForTests += 1
   const handle = await open(filePath, 'r')
   try {
     const stats = await handle.stat()
@@ -9900,16 +9970,19 @@ async function persistDockerLogErrorsToIntake(rows) {
   }
 }
 
-async function loadDockerLogErrors() {
-  const sources = await findDockerJsonLogSources()
-  if (!sources.length) return []
+async function scanDockerLogErrorsFromSources(sources) {
+  if (!sources?.length) return []
 
   const cutoffMs = Date.now() - 90 * 60 * 1000
   const rows = []
-  for (const source of sources) {
+  const scanSources = capDockerJsonLogSourcesForScan(sources)
+  for (const source of scanSources) {
     let tail
     try {
-      tail = await readFileTail(source.logPath, DOCKER_LOG_TAIL_BYTES)
+      tail = await readFileTail(
+        source.logPath,
+        source.tailBytes ?? DOCKER_LOG_TAIL_BYTES
+      )
     } catch (error) {
       process.stderr.write(
         `[report-service] WARN: unable to read Docker log ${source.container}: ${formatError(error)}\n`
@@ -9930,14 +10003,50 @@ async function loadDockerLogErrors() {
     rows.push(...extracted)
   }
 
-  const sorted = rows.sort((a, b) =>
+  return rows.sort((a, b) =>
     String(b.observed_at).localeCompare(String(a.observed_at))
   )
+}
+
+async function loadDockerLogErrors() {
+  if (loadDockerLogErrorsTestImpl) {
+    return loadDockerLogErrorsTestImpl()
+  }
+
+  if (
+    dockerLogErrorsScanCache &&
+    isDockerLogScanCacheFresh(dockerLogErrorsScanCache.cachedAt)
+  ) {
+    const forCentralizedIntake = filterDockerLogErrorsForCentralizedIntake(
+      dockerLogErrorsScanCache.sortedRows,
+      { env: process.env }
+    )
+    await persistDockerLogErrorsToIntake(forCentralizedIntake)
+    return dockerLogErrorsScanCache.forDashboard
+  }
+
+  const sources = await findDockerJsonLogSources()
+  if (!sources.length) {
+    dockerLogErrorsScanCache = {
+      sortedRows: [],
+      forDashboard: [],
+      cachedAt: Date.now(),
+    }
+    return []
+  }
+
+  const sorted = await scanDockerLogErrorsFromSources(sources)
 
   const { forDashboard } = splitDockerLogErrorsForDashboardAndIntake(
     sorted,
     MAX_DOCKER_LOG_ERROR_ROWS
   )
+  dockerLogErrorsScanCache = {
+    sortedRows: sorted,
+    forDashboard,
+    cachedAt: Date.now(),
+  }
+
   const forCentralizedIntake = filterDockerLogErrorsForCentralizedIntake(sorted, {
     env: process.env,
   })
@@ -9998,12 +10107,24 @@ async function probeHttpHealth(probe, checkedAt) {
   }
 }
 
+export function classifyRedisPingProbeResponse(accumulated) {
+  const text = String(accumulated ?? '')
+  const newlineIdx = text.indexOf('\r\n')
+  if (newlineIdx < 0) return null
+  const line = text.slice(0, newlineIdx)
+  return {
+    status: line === '+PONG' ? 'green' : 'yellow',
+    detail: line,
+  }
+}
+
 function probeRedisHealth(probe, checkedAt) {
   const startedAt = Date.now()
 
   return new Promise((resolve) => {
     let settled = false
     let timeout
+    let accumulated = ''
     const socket = net.createConnection({
       host: probe.host,
       port: probe.port,
@@ -10036,14 +10157,19 @@ function probeRedisHealth(probe, checkedAt) {
     socket.once('error', (error) => {
       finish('red', error.message)
     })
-    socket.once('data', (buffer) => {
-      const response = buffer.toString('utf8').trim()
-      finish(response.startsWith('+PONG') ? 'green' : 'yellow', response)
+    socket.on('data', (buffer) => {
+      accumulated += buffer.toString('utf8')
+      const classified = classifyRedisPingProbeResponse(accumulated)
+      if (!classified) return
+      finish(classified.status, classified.detail)
     })
   })
 }
 
 async function loadLocalHealth() {
+  if (loadLocalHealthTestImpl) {
+    return loadLocalHealthTestImpl()
+  }
   const checkedAt = new Date().toISOString()
   const probes = [
     ...LOCAL_CONTAINER_HEALTH_PROBES.map((probe) => ({
@@ -10065,6 +10191,102 @@ async function loadLocalHealth() {
   )
 }
 
+const USAGE_REPORT_OPTIONAL_FANOUT_SECTION_KEYS = [
+  'provider_alias_routing',
+  'provider_auth_health',
+  'provider_credit_lifecycle',
+  'docker_log_errors',
+  'local_health',
+]
+
+const USAGE_REPORT_OPTIONAL_FANOUT_SECTION_KEY_SET = new Set(
+  USAGE_REPORT_OPTIONAL_FANOUT_SECTION_KEYS
+)
+
+function buildEmptyUsageReportProviderAliasRoutingReport(options = {}) {
+  return normalizeProviderAliasRoutingReport([], options)
+}
+
+function buildEmptyUsageReportProviderAuthHealthReport(options = {}) {
+  return normalizeProviderAuthHealthReport([], options)
+}
+
+function buildEmptyUsageReportProviderCreditLifecycleReport(options = {}) {
+  return normalizeProviderCreditLifecycleReport([], options)
+}
+
+export function buildUsageReportAuxiliaryDegradedMetadata(
+  unavailableAuxiliarySections = []
+) {
+  const normalizedSections = Array.from(
+    new Set(
+      (unavailableAuxiliarySections ?? []).filter(
+        (sectionKey) =>
+          typeof sectionKey === 'string' &&
+          USAGE_REPORT_OPTIONAL_FANOUT_SECTION_KEY_SET.has(sectionKey)
+      )
+    )
+  )
+  if (!normalizedSections.length) {
+    return {}
+  }
+  const sectionList = normalizedSections.map((key) => `"${key}"`).join(', ')
+  return {
+    degraded: true,
+    degradedReason: 'auxiliary_fanout_failure',
+    unavailableAuxiliarySections: normalizedSections,
+    degradedMessage:
+      normalizedSections.length === 1
+        ? `Usage report auxiliary section ${sectionList} is unavailable; returning empty fallback payload.`
+        : `Usage report auxiliary sections ${sectionList} are unavailable; returning empty fallback payloads.`,
+  }
+}
+
+async function runUsageReportFanoutTasks(labeledTasks, concurrency) {
+  const results = new Array(labeledTasks.length)
+  await runTasksWithConcurrency(
+    labeledTasks.map(({ taskKey, task }, index) => async () => {
+      try {
+        const value = await task()
+        results[index] = {
+          status: 'fulfilled',
+          taskKey,
+          value,
+        }
+      } catch (error) {
+        results[index] = {
+          status: 'rejected',
+          taskKey,
+          error,
+        }
+      }
+    }),
+    concurrency
+  )
+
+  const unavailableAuxiliarySections = []
+  for (const result of results) {
+    if (result.status === 'fulfilled') continue
+    if (USAGE_REPORT_OPTIONAL_FANOUT_SECTION_KEY_SET.has(result.taskKey)) {
+      unavailableAuxiliarySections.push(result.taskKey)
+      continue
+    }
+    throw result.error
+  }
+
+  return {
+    results,
+    unavailableAuxiliarySections,
+  }
+}
+
+function resolveUsageReportFanoutValue(results, taskKey, fallback) {
+  const match = results.find(
+    (result) => result.taskKey === taskKey && result.status === 'fulfilled'
+  )
+  return match?.value ?? fallback
+}
+
 async function loadUsageReport(searchParams) {
   const { sql, values, metadata } = buildUsageQuery(searchParams)
   const summaryQuery = buildSummaryQuery(searchParams)
@@ -10079,59 +10301,153 @@ async function loadUsageReport(searchParams) {
   const providerCreditLifecycleQuery =
     buildProviderCreditLifecycleQuery(searchParams)
 
-  const [
-    result,
-    summaryResult,
-    trendResult,
-    clientUsageResult,
-    providerLatencyHealthResult,
-    providerErrorObservationResult,
-    providerStatusUsageResult,
-    providerAliasRoutingResult,
-    providerAuthHealthResult,
-    providerCreditLifecycleResult,
-    dockerLogErrors,
-    localHealth,
-  ] = await runTasksWithConcurrency(
-    [
-      () => queryReportDatabase(sql, values),
-      () => queryReportDatabase(summaryQuery.sql, summaryQuery.values),
-      () => queryReportDatabase(trendQuery.sql, trendQuery.values),
-      () => queryReportDatabase(clientUsageQuery.sql, clientUsageQuery.values),
-      () =>
+  const fanoutTasks = [
+    {
+      taskKey: 'usage_rows',
+      task: () =>
+        queryReportDatabase(sql, values, { usageReportTaskKey: 'usage_rows' }),
+    },
+    {
+      taskKey: 'summary',
+      task: () =>
+        queryReportDatabase(summaryQuery.sql, summaryQuery.values, {
+          usageReportTaskKey: 'summary',
+        }),
+    },
+    {
+      taskKey: 'trend',
+      task: () =>
+        queryReportDatabase(trendQuery.sql, trendQuery.values, {
+          usageReportTaskKey: 'trend',
+        }),
+    },
+    {
+      taskKey: 'client_usage',
+      task: () =>
+        queryReportDatabase(clientUsageQuery.sql, clientUsageQuery.values, {
+          usageReportTaskKey: 'client_usage',
+        }),
+    },
+    {
+      taskKey: 'provider_latency_health',
+      task: () =>
         queryReportDatabase(
           providerLatencyHealthQuery.sql,
-          providerLatencyHealthQuery.values
+          providerLatencyHealthQuery.values,
+          { usageReportTaskKey: 'provider_latency_health' }
         ),
-      () =>
+    },
+    {
+      taskKey: 'provider_error_observations',
+      task: () =>
         queryReportDatabase(
           providerErrorObservationQuery.sql,
-          providerErrorObservationQuery.values
+          providerErrorObservationQuery.values,
+          { usageReportTaskKey: 'provider_error_observations' }
         ),
-      () =>
+    },
+    {
+      taskKey: 'provider_status_usage',
+      task: () =>
         queryReportDatabase(
           providerStatusUsageQuery.sql,
-          providerStatusUsageQuery.values
+          providerStatusUsageQuery.values,
+          { usageReportTaskKey: 'provider_status_usage' }
         ),
-      () =>
+    },
+    {
+      taskKey: 'provider_alias_routing',
+      task: () =>
         queryReportDatabase(
           providerAliasRoutingQuery.sql,
-          providerAliasRoutingQuery.values
+          providerAliasRoutingQuery.values,
+          { usageReportTaskKey: 'provider_alias_routing' }
         ),
-      () =>
+    },
+    {
+      taskKey: 'provider_auth_health',
+      task: () =>
         queryReportDatabase(
           providerAuthHealthQuery.sql,
-          providerAuthHealthQuery.values
+          providerAuthHealthQuery.values,
+          { usageReportTaskKey: 'provider_auth_health' }
         ),
-      () =>
+    },
+    {
+      taskKey: 'provider_credit_lifecycle',
+      task: () =>
         queryReportDatabase(
           providerCreditLifecycleQuery.sql,
-          providerCreditLifecycleQuery.values
+          providerCreditLifecycleQuery.values,
+          { usageReportTaskKey: 'provider_credit_lifecycle' }
         ),
-      () => loadDockerLogErrors(),
-      () => loadLocalHealth(),
-    ],
-    REPORT_SQL_FANOUT_CONCURRENCY
+    },
+    {
+      taskKey: 'docker_log_errors',
+      task: () => loadDockerLogErrors(),
+    },
+    {
+      taskKey: 'local_health',
+      task: () => loadLocalHealth(),
+    },
+  ]
+
+  const { results: fanoutResults, unavailableAuxiliarySections } =
+    await runUsageReportFanoutTasks(fanoutTasks, REPORT_SQL_FANOUT_CONCURRENCY)
+
+  const result = resolveUsageReportFanoutValue(fanoutResults, 'usage_rows', {
+    rows: [],
+  })
+  const summaryResult = resolveUsageReportFanoutValue(fanoutResults, 'summary', {
+    rows: [],
+  })
+  const trendResult = resolveUsageReportFanoutValue(fanoutResults, 'trend', {
+    rows: [],
+  })
+  const clientUsageResult = resolveUsageReportFanoutValue(
+    fanoutResults,
+    'client_usage',
+    { rows: [] }
+  )
+  const providerLatencyHealthResult = resolveUsageReportFanoutValue(
+    fanoutResults,
+    'provider_latency_health',
+    { rows: [] }
+  )
+  const providerErrorObservationResult = resolveUsageReportFanoutValue(
+    fanoutResults,
+    'provider_error_observations',
+    { rows: [] }
+  )
+  const providerStatusUsageResult = resolveUsageReportFanoutValue(
+    fanoutResults,
+    'provider_status_usage',
+    { rows: [] }
+  )
+  const providerAliasRoutingResult = resolveUsageReportFanoutValue(
+    fanoutResults,
+    'provider_alias_routing',
+    { rows: [] }
+  )
+  const providerAuthHealthResult = resolveUsageReportFanoutValue(
+    fanoutResults,
+    'provider_auth_health',
+    { rows: [] }
+  )
+  const providerCreditLifecycleResult = resolveUsageReportFanoutValue(
+    fanoutResults,
+    'provider_credit_lifecycle',
+    { rows: [] }
+  )
+  const dockerLogErrors = resolveUsageReportFanoutValue(
+    fanoutResults,
+    'docker_log_errors',
+    []
+  )
+  const localHealth = resolveUsageReportFanoutValue(
+    fanoutResults,
+    'local_health',
+    []
   )
 
   const rows = serializeUsageReportRows(result.rows.map(normalizeRow), searchParams)
@@ -10150,11 +10466,23 @@ async function loadUsageReport(searchParams) {
     )
   }
 
+  const firstUsageRow = result.rows[0]
+  const agentScoreReasonsCapTruncatesRequestedWindow =
+    firstUsageRow?.agent_score_reasons_recent_id_cap_truncates_requested_window ??
+    false
+
+  const auxiliaryDegradedMetadata = buildUsageReportAuxiliaryDegradedMetadata(
+    unavailableAuxiliarySections
+  )
+
   return {
     metadata: {
       ...metadata,
       staleRecordThresholdMinutes: STALE_RECORD_THRESHOLD_MINUTES,
       ...buildUsageReportRowSerializationMetadata(searchParams),
+      agentScoreReasonsRecentIdCapTruncatesRequestedWindow:
+        agentScoreReasonsCapTruncatesRequestedWindow,
+      ...auxiliaryDegradedMetadata,
     },
     summary,
     trend: trendResult.rows.map(normalizeTrendRow),
@@ -10170,15 +10498,23 @@ async function loadUsageReport(searchParams) {
     providerStatusUsage: providerStatusUsageResult.rows.map(
       normalizeProviderStatusUsageRow
     ),
-    providerAliasRouting: normalizeProviderAliasRoutingReport(
-      providerAliasRoutingResult.rows
-    ),
-    providerAuthHealth: normalizeProviderAuthHealthReport(
-      providerAuthHealthResult.rows
-    ),
-    providerCreditLifecycle: normalizeProviderCreditLifecycleReport(
-      providerCreditLifecycleResult.rows
-    ),
+    providerAliasRouting: unavailableAuxiliarySections.includes(
+      'provider_alias_routing'
+    )
+      ? buildEmptyUsageReportProviderAliasRoutingReport()
+      : normalizeProviderAliasRoutingReport(providerAliasRoutingResult.rows),
+    providerAuthHealth: unavailableAuxiliarySections.includes(
+      'provider_auth_health'
+    )
+      ? buildEmptyUsageReportProviderAuthHealthReport()
+      : normalizeProviderAuthHealthReport(providerAuthHealthResult.rows),
+    providerCreditLifecycle: unavailableAuxiliarySections.includes(
+      'provider_credit_lifecycle'
+    )
+      ? buildEmptyUsageReportProviderCreditLifecycleReport()
+      : normalizeProviderCreditLifecycleReport(
+          providerCreditLifecycleResult.rows
+        ),
     quotas: [],
     quotaHistory: [],
     toolActivity: [],
@@ -10298,9 +10634,17 @@ async function loadUsageToolActivity(searchParams) {
     const result = await queryReportDatabase(query.sql, query.values, {
       statementTimeoutMs: TOOL_ACTIVITY_STATEMENT_TIMEOUT_MS,
     })
+    const firstRow = result.rows[0]
+    const capTruncatesRequestedWindow =
+      firstRow?.tool_activity_recent_id_cap_truncates_requested_window ?? false
     return {
-      metadata: buildUsageToolActivityMetadata(searchParams),
-      toolActivity: result.rows.map(normalizeToolActivityRow),
+      metadata: buildUsageToolActivityMetadata(searchParams, {
+        ...query.metadata,
+        toolActivityRecentIdCapTruncatesRequestedWindow: capTruncatesRequestedWindow,
+      }),
+      toolActivity: result.rows
+        .filter((row) => row.kind != null)
+        .map(normalizeToolActivityRow),
     }
   } catch (error) {
     if (isDatabaseTimeoutError(error)) {
@@ -10481,172 +10825,95 @@ async function loadUsageTokenTrendDay(searchParams) {
   }
 }
 
-async function handleUsageReport(req, res) {
-  if (!pool) {
-    sendJson(res, 503, {
+async function handleCachedUsageSubreport(req, res, scope, load, deps = {}) {
+  const poolRef = deps.pool !== undefined ? deps.pool : pool
+  const cachedReportFn = deps.cachedReport ?? cachedReport
+  const sendJsonFn = deps.sendJson ?? sendJson
+
+  if (!poolRef) {
+    await sendJsonFn(req, res, 503, {
       error: 'DATABASE_URL is not configured for the shell report service.',
     })
     return
   }
 
   const requestUrl = new URL(req.url, `http://${req.headers.host}`)
-  const body = await cachedReport(USAGE_REPORT_CACHE_SCOPE, () => loadUsageReport(requestUrl.searchParams), {
-    searchParams: requestUrl.searchParams,
+  const searchParams = requestUrl.searchParams
+  const body = await cachedReportFn(scope, () => load(searchParams), {
+    searchParams,
   })
 
-  sendJson(res, 200, body)
+  await sendJsonFn(req, res, 200, body)
+}
+
+async function handleUsageReport(req, res) {
+  await handleCachedUsageSubreport(req, res, USAGE_REPORT_CACHE_SCOPE, loadUsageReport)
 }
 
 async function handleUsageQuotaRangeHistory(req, res) {
-  if (!pool) {
-    sendJson(res, 503, {
-      error: 'DATABASE_URL is not configured for the shell report service.',
-    })
-    return
-  }
-
-  const requestUrl = new URL(req.url, `http://${req.headers.host}`)
-  const body = await cachedReport(
+  await handleCachedUsageSubreport(
+    req,
+    res,
     'usage-quota-range-history',
-    () => loadUsageQuotaRangeHistory(requestUrl.searchParams),
-    {
-      searchParams: requestUrl.searchParams,
-    }
+    loadUsageQuotaRangeHistory
   )
-
-  sendJson(res, 200, body)
 }
 
 async function handleUsageQuotaHistory(req, res) {
-  if (!pool) {
-    sendJson(res, 503, {
-      error: 'DATABASE_URL is not configured for the shell report service.',
-    })
-    return
-  }
-
-  const requestUrl = new URL(req.url, `http://${req.headers.host}`)
-  const body = await cachedReport(
+  await handleCachedUsageSubreport(
+    req,
+    res,
     USAGE_QUOTA_HISTORY_CACHE_SCOPE,
-    () => loadUsageQuotaHistory(requestUrl.searchParams),
-    {
-      searchParams: requestUrl.searchParams,
-    }
+    loadUsageQuotaHistory
   )
-
-  sendJson(res, 200, body)
 }
 
 async function handleUsageQuotaEstimator(req, res) {
-  if (!pool) {
-    sendJson(res, 503, {
-      error: 'DATABASE_URL is not configured for the shell report service.',
-    })
-    return
-  }
-
-  const requestUrl = new URL(req.url, `http://${req.headers.host}`)
-  const body = await cachedReport(
+  await handleCachedUsageSubreport(
+    req,
+    res,
     'usage-quota-estimator-v1',
-    () => loadUsageQuotaEstimator(requestUrl.searchParams),
-    {
-      searchParams: requestUrl.searchParams,
-    }
+    loadUsageQuotaEstimator
   )
-
-  sendJson(res, 200, body)
 }
 
 async function handleUsageToolActivity(req, res) {
-  if (!pool) {
-    sendJson(res, 503, {
-      error: 'DATABASE_URL is not configured for the shell report service.',
-    })
-    return
-  }
-
-  const requestUrl = new URL(req.url, `http://${req.headers.host}`)
-  const body = await cachedReport(
-    'usage-tool-activity',
-    () => loadUsageToolActivity(requestUrl.searchParams),
-    {
-      searchParams: requestUrl.searchParams,
-    }
-  )
-
-  sendJson(res, 200, body)
+  await handleCachedUsageSubreport(req, res, 'usage-tool-activity', loadUsageToolActivity)
 }
 
 async function handleUsageSessionDiagnostics(req, res) {
-  if (!pool) {
-    sendJson(res, 503, {
-      error: 'DATABASE_URL is not configured for the shell report service.',
-    })
-    return
-  }
-
-  const requestUrl = new URL(req.url, `http://${req.headers.host}`)
-  const body = await cachedReport(
+  await handleCachedUsageSubreport(
+    req,
+    res,
     'usage-session-diagnostics-v1',
-    () => loadUsageSessionDiagnostics(requestUrl.searchParams),
-    {
-      searchParams: requestUrl.searchParams,
-    }
+    loadUsageSessionDiagnostics
   )
-
-  sendJson(res, 200, body)
 }
 
 async function handleUsageTokenTrendSummary(req, res) {
-  if (!pool) {
-    sendJson(res, 503, {
-      error: 'DATABASE_URL is not configured for the shell report service.',
-    })
-    return
-  }
-
-  const requestUrl = new URL(req.url, `http://${req.headers.host}`)
-  const body = await cachedReport(
+  await handleCachedUsageSubreport(
+    req,
+    res,
     USAGE_TOKEN_TREND_SUMMARY_CACHE_SCOPE,
-    () => loadUsageTokenTrendSummary(requestUrl.searchParams),
-    {
-      searchParams: requestUrl.searchParams,
-    }
+    loadUsageTokenTrendSummary
   )
-
-  sendJson(res, 200, body)
 }
 
 async function handleUsageTokenTrendDay(req, res) {
-  if (!pool) {
-    sendJson(res, 503, {
-      error: 'DATABASE_URL is not configured for the shell report service.',
-    })
-    return
-  }
-
-  const requestUrl = new URL(req.url, `http://${req.headers.host}`)
-  const body = await cachedReport(
-    'usage-token-trend-day',
-    () => loadUsageTokenTrendDay(requestUrl.searchParams),
-    {
-      searchParams: requestUrl.searchParams,
-    }
-  )
-
-  sendJson(res, 200, body)
+  await handleCachedUsageSubreport(req, res, 'usage-token-trend-day', loadUsageTokenTrendDay)
 }
 
 async function handleUsageQuotas(req, res) {
   if (!pool) {
-    sendJson(res, 503, {
+    await sendJson(req, res, 503, {
       error: 'DATABASE_URL is not configured for the shell report service.',
     })
     return
   }
 
   const requestUrl = new URL(req.url, `http://${req.headers.host}`)
-  sendJson(
+  await sendJson(
+    req,
     res,
     200,
     await loadQuotaReport({ searchParams: requestUrl.searchParams })
@@ -10809,6 +11076,14 @@ export function findUpstreamApiProxy(pathname) {
 }
 
 async function handleUpstreamApiProxy(req, res, proxyConfig) {
+  const upstreamSecretCheck = evaluateUpstreamProxySecret(req.headers)
+  if (!upstreamSecretCheck.ok) {
+    await sendJson(req, res, upstreamSecretCheck.status, {
+      error: upstreamSecretCheck.error,
+    })
+    return
+  }
+
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), UPSTREAM_FETCH_TIMEOUT_MS)
   let upstreamResponse
@@ -10824,7 +11099,7 @@ async function handleUpstreamApiProxy(req, res, proxyConfig) {
     })
   } catch (error) {
     if (error instanceof Error && error.name === 'AbortError') {
-      sendJson(res, 504, {
+      await sendJson(req, res, 504, {
         error: `${proxyConfig.displayName} upstream timed out after ${UPSTREAM_FETCH_TIMEOUT_MS}ms.`,
       })
       return
@@ -10839,38 +11114,65 @@ async function handleUpstreamApiProxy(req, res, proxyConfig) {
   res.end(body)
 }
 
+async function buildShellHealthPayload({
+  loaders = {},
+} = {}) {
+  const loadReportQueryPressureFn =
+    loaders.loadReportQueryPressure ?? loadReportQueryPressure
+  const loadPgBouncerHealthFn =
+    loaders.loadPgBouncerHealth ?? loadPgBouncerHealth
+  const loadSourceTableHealthFn =
+    loaders.loadSourceTableHealth ?? loadSourceTableHealth
+  const loadMaterializedViewHealthFn =
+    loaders.loadMaterializedViewHealth ?? loadMaterializedViewHealth
+
+  const [
+    reportQueryPressure,
+    pgBouncerSidecars,
+    sourceTables,
+    materializedViews,
+  ] = await Promise.all([
+    loadReportQueryPressureFn(),
+    loadPgBouncerHealthFn(),
+    loadSourceTableHealthFn(),
+    loadMaterializedViewHealthFn(),
+  ])
+
+  return {
+    ok: true,
+    databaseConfigured: Boolean(pool),
+    databaseEndpoint: describeDatabaseUrl(DATABASE_URL),
+    databasePool: pool
+      ? {
+          max: REPORT_DB_POOL_MAX,
+          total: pool.totalCount,
+          idle: pool.idleCount,
+          waiting: pool.waitingCount,
+          sqlFanoutConcurrency: REPORT_SQL_FANOUT_CONCURRENCY,
+        }
+      : null,
+    healthDatabasePool: healthPool
+      ? {
+          max: 1,
+          total: healthPool.totalCount,
+          idle: healthPool.idleCount,
+          waiting: healthPool.waitingCount,
+        }
+      : null,
+    redisConfigured: Boolean(redisClient),
+    redisReady: Boolean(redisClient?.isReady),
+    reportQueryPressure,
+    pgBouncerSidecars,
+    sourceTables,
+    materializedViews,
+  }
+}
+
 async function handleRequest(req, res) {
   const requestUrl = new URL(req.url, `http://${req.headers.host}`)
 
   if (req.method === 'GET' && requestUrl.pathname === '/api/shell/health') {
-    sendJson(res, 200, {
-      ok: true,
-      databaseConfigured: Boolean(pool),
-      databaseEndpoint: describeDatabaseUrl(DATABASE_URL),
-      databasePool: pool
-        ? {
-            max: REPORT_DB_POOL_MAX,
-            total: pool.totalCount,
-            idle: pool.idleCount,
-            waiting: pool.waitingCount,
-            sqlFanoutConcurrency: REPORT_SQL_FANOUT_CONCURRENCY,
-          }
-        : null,
-      healthDatabasePool: healthPool
-        ? {
-            max: 1,
-            total: healthPool.totalCount,
-            idle: healthPool.idleCount,
-            waiting: healthPool.waitingCount,
-          }
-        : null,
-      redisConfigured: Boolean(redisClient),
-      redisReady: Boolean(redisClient?.isReady),
-      reportQueryPressure: await loadReportQueryPressure(),
-      pgBouncerSidecars: await loadPgBouncerHealth(),
-      sourceTables: await loadSourceTableHealth(),
-      materializedViews: await loadMaterializedViewHealth(),
-    })
+    await sendJson(req, res, 200, await buildShellHealthPayload())
     return
   }
 
@@ -10952,17 +11254,13 @@ async function handleRequest(req, res) {
     return
   }
 
-  sendJson(res, 404, { error: 'Not found' })
+  await sendJson(req, res, 404, { error: 'Not found' })
 }
 
 const server = http.createServer((req, res) => {
-  handleRequest(req, res).catch((error) => {
-    const message =
-      error instanceof Error && error.message ? error.message : 'Unexpected error'
-    sendJson(res, 500, {
-      error: message,
-    })
-  })
+  void handleRequest(req, res).catch((error) =>
+    respondWithGenericServerError(req, res, error)
+  )
 })
 
 const shouldStartServer =
@@ -10991,12 +11289,24 @@ async function shutdown() {
     clearInterval(prewarmTimer)
     prewarmTimer = null
   }
-  if (redisClient?.isOpen) {
-    await redisClient.quit()
-  }
-  await healthPool?.end()
-  await pool?.end()
-  server.close(() => process.exit(0))
+
+  await runBoundedShutdownSequence(server, {
+    graceMs: SHUTDOWN_GRACE_MS,
+    async runCleanup() {
+      try {
+        if (redisClient?.isOpen) {
+          await redisClient.quit()
+        }
+        await cleanupPgBouncerAdminPools()
+        await healthPool?.end()
+        await pool?.end()
+      } catch (error) {
+        process.stderr.write(
+          `[report-service] WARN: shutdown cleanup failed: ${formatError(error)}\n`
+        )
+      }
+    },
+  })
 }
 
 if (shouldStartServer) {
@@ -11006,6 +11316,84 @@ if (shouldStartServer) {
   process.on('SIGINT', () => {
     void shutdown()
   })
+}
+
+export const __ttlMemoizerTestHelpers = {
+  createTtlMemoizer,
+  resetHealthLoaderCachesForTests() {
+    materializedViewHealthMemo.resetForTests()
+    pgBouncerHealthMemo.resetForTests()
+    sourceTableHealthMemo.resetForTests()
+  },
+}
+
+export const __reportCacheInternals = {
+  resetReportCache() {
+    reportCache.clear()
+  },
+  getReportCacheEntry(cacheKey) {
+    return reportCache.get(cacheKey)
+  },
+  setMaxReportCacheEntriesForTests(maxEntries) {
+    reportCacheMaxEntries = Math.max(
+      1,
+      Number(maxEntries) || MAX_REPORT_CACHE_ENTRIES
+    )
+  },
+  resetMaxReportCacheEntriesForTests() {
+    reportCacheMaxEntries = MAX_REPORT_CACHE_ENTRIES
+  },
+  setReadRedisCacheEntryImpl(impl) {
+    readRedisCacheEntryTestImpl = impl
+  },
+  setWriteRedisCacheEntryImpl(impl) {
+    writeRedisCacheEntryTestImpl = impl
+  },
+  encodeRedisReportCachePayload,
+  decodeRedisReportCachePayload,
+  readRedisCacheEntry,
+  readRedisCacheEntryFromClient,
+  writeRedisCacheEntry,
+  createRedisCacheClient,
+  cachedReport,
+  refreshReportCache,
+  readLocalReportCache,
+  setLocalReportCache,
+  pruneReportCache,
+}
+
+export const __localHealthTestHelpers = {
+  classifyRedisPingProbeResponse,
+  probeRedisHealth,
+}
+
+export const __responseTestHelpers = {
+  acceptsGzipEncoding,
+  sendJson,
+}
+
+
+export const __proxySecurityTestHelpers = {
+  evaluateUpstreamProxySecret,
+  resolveReportProxySharedSecret,
+  REPORT_PROXY_SECRET_HEADER,
+  DEFAULT_REPORT_PROXY_SHARED_SECRET,
+  proxyHeaders,
+}
+
+export const __envTestHelpers = {
+  boundedIntegerEnv,
+  positiveIntegerEnv,
+  parseBooleanEnv,
+  parseFiniteNumberEnv,
+  normalizeDatabaseUrl,
+  parseDateParam,
+  resolveDefaultToDateString,
+  addDaysToDateString,
+  formatDashboardDate,
+  providerDimensionExpression,
+  providerDimensionForAlias,
+  sessionHistoryMetadataText,
 }
 
 export {
@@ -11023,3 +11411,86 @@ export {
   isActionableErrorLog,
 } from './docker-log-error-intake.mjs'
 export { classifyCacheEntry }
+
+export const __dockerLogScanTestHelpers = {
+  capDockerJsonLogSourcesForScan,
+  isDockerLogScanCacheFresh,
+  scanDockerLogErrorsFromSources,
+  loadDockerLogErrors,
+  resetDockerLogScanCachesForTests,
+  resetDockerLogErrorIntakeSeenFingerprintsForTests() {
+    dockerLogErrorIntakeSeenFingerprints.clear()
+  },
+  dockerLogErrorIntakeSeenFingerprintsSizeForTests() {
+    return dockerLogErrorIntakeSeenFingerprints.size
+  },
+  seedDockerLogErrorIntakeFingerprintsForTests(keys) {
+    for (const key of keys ?? []) {
+      dockerLogErrorIntakeSeenFingerprints.add(key)
+    }
+  },
+  DOCKER_LOG_SCAN_MAX_SOURCES,
+  DOCKER_LOG_SCAN_MAX_TOTAL_BYTES,
+  DOCKER_LOG_INTAKE_FINGERPRINT_MAX,
+  getDockerLogTailReadCountForTests() {
+    return dockerLogTailReadCountForTests
+  },
+}
+
+export const __cachedUsageSubreportTestHelpers = {
+  handleCachedUsageSubreport,
+}
+
+export const __usageReportTestHelpers = {
+  loadUsageReport,
+  runUsageReportFanoutTasks,
+  buildUsageReportAuxiliaryDegradedMetadata,
+  USAGE_REPORT_OPTIONAL_FANOUT_SECTION_KEYS,
+  normalizeRow,
+  AGENT_SCORE_REASON_RECENT_ROW_LIMIT,
+  setQueryReportDatabaseTestImpl(impl) {
+    queryReportDatabaseTestImpl = impl
+  },
+  resetQueryReportDatabaseTestImpl() {
+    queryReportDatabaseTestImpl = null
+  },
+  setLoadDockerLogErrorsTestImpl(impl) {
+    loadDockerLogErrorsTestImpl = impl
+  },
+  resetLoadDockerLogErrorsTestImpl() {
+    loadDockerLogErrorsTestImpl = null
+  },
+  setLoadLocalHealthTestImpl(impl) {
+    loadLocalHealthTestImpl = impl
+  },
+  resetLoadLocalHealthTestImpl() {
+    loadLocalHealthTestImpl = null
+  },
+}
+
+export { buildShellHealthPayload }
+
+export const __shellHealthTestHelpers = {
+  buildShellHealthPayload,
+}
+
+export const __pgBouncerAdminTestHelpers = {
+  cleanupPgBouncerAdminPools,
+  getOrCreatePgBouncerAdminPool,
+  getPgBouncerAdminPoolCacheSize() {
+    return pgBouncerAdminPoolsByKey.size
+  },
+  loadPgBouncerAdminSummaryForTests: loadPgBouncerAdminSummary,
+}
+
+export const __serverRuntimeTestHelpers = {
+  GENERIC_INTERNAL_SERVER_ERROR_BODY,
+  isHttpResponseCommitted,
+  logUnhandledRequestError,
+  respondWithGenericServerError,
+  resolveBoundedShutdownGraceMs,
+  scheduleShutdownForceExit,
+  beginHttpServerShutdown,
+  closeHttpServer,
+  runBoundedShutdownSequence,
+}

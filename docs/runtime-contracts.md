@@ -2,6 +2,15 @@
 
 This document supplements the integration contract for federated dashboards.
 
+
+## Report Service Upstream Proxy Secret
+
+Credential-injecting upstream proxy routes (`/api/aawm*`, `/api/aawm-tap*`, `/api/aawm-observe*`, `/api/aegis*`, `/api/sluice*`, `/hook-api*`) are internal-only. The shell static nginx container and Vite dev proxy must send `X-Dashboard-Shell-Proxy-Secret` on every request forwarded to `dashboard-shell-reports`. The report service rejects missing or wrong values before it injects upstream API credentials.
+
+`GET /api/shell/*` report and health routes are not gated by this header.
+
+Local compose and dev defaults use `SHELL_REPORT_PROXY_SHARED_SECRET=dashboard-shell-local-proxy-secret`. Override the same variable on the shell container, report-service container, and Vite dev environment for any non-local deployment.
+
 ## QueryClient
 
 The shell owns the federated-mode `QueryClientProvider`. Remote dashboards should
@@ -110,6 +119,14 @@ page-load path. The `token-trend-summary`, `quota-history`, and
 database timeout they return
 `metadata.degraded=true`, a `database_timeout` reason, and a section-level
 `Degraded` badge in the dashboard.
+
+The report service applies PostgreSQL report-query settings with
+transaction-local `set_config(...)` calls after `BEGIN`. This is intentional:
+different report endpoints use different statement-timeout budgets, and
+`max_parallel_workers_per_gather` must stay scoped to the report transaction
+rather than the pooled connection. Do not move these settings into pool-wide
+connection options unless all endpoint-specific timeout behavior is replaced by
+an equivalent per-query mechanism.
 
 `GET /api/shell/reports/usage` returns compact usage rows by default. The report
 service omits row properties whose normalized value is `null`, `undefined`, or
