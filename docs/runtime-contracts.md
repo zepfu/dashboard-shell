@@ -451,6 +451,28 @@ Durable intake layout:
   `SHELL_REPORT_ERROR_INTAKE_DIR` (compose default `/dashboard-shell-analysis`,
   bind-mounted to repo-local `./.analysis`)
 
+- Shell wrapper behavior: actionable lines written through `container-error-intake.sh`
+  are appended as durable local rows by the wrapper process after a bounded
+  fingerprint check over the recent local JSONL tail
+  (`SHELL_CONTAINER_ERROR_DEDUPE_TAIL_LINES`, default `2000`). The wrapper does
+  not take the report-service append lock; the directory-level no-dual-writer
+  contract is enforced by keeping repo-owned wrapper containers, centralized
+  unknown-container intake, and external alert-only containers disjoint.
+- Wrapper deployment shape: the static nginx image intentionally keeps the
+  shell wrapper because the final image has no Node runtime for reusing
+  `server/docker-log-error-intake.mjs`. The wrapper therefore keeps a small
+  POSIX-sh classifier in parity with the JS classifier and is covered by
+  end-to-end wrapper tests for positive capture, status-code boundaries, JSON
+  escaping, and bounded duplicate suppression.
+- Wrapper performance and lifecycle: benign lines first pass through a
+  zero-fork shell prefilter before the awk/grep classifier runs, so ordinary
+  successful access logs do not all pay the full intake cost. FIFO paths are
+  created with `mktemp`, converted with `mkfifo`, cleaned on `EXIT`, and a FIFO
+  setup failure exits the wrapper instead of running with broken redirections.
+  `TERM`, `INT`, `QUIT`, and `HUP` are forwarded to the child process; if a
+  trapped signal interrupts `wait`, the wrapper waits again while the child is
+  still alive so graceful child shutdown can complete.
+
 Each JSONL record includes normalized fields such as `observed_at`, `container`,
 `stream`, `level`, `status_code`, `provider`, compact `message`,
 `source_identity`, `source_path` (host log path when report-service writes an
@@ -458,6 +480,16 @@ unknown non-repo, non-external Docker JSON log row), `fingerprint`, and
 `ingested_at`. Real failures (errors, exceptions, tracebacks, 5xx, connection
 refused, timeouts) are classified at `error` or `critical`, not downgraded to
 `warning`.
+
+For wrapper-authored rows, `observed_at` is the wrapper append time and equals
+`ingested_at`; the wrapper is reading stdout/stderr streams and does not have the
+Docker JSON log timestamp. Report-service Docker-tail rows use the Docker JSON
+`time` value for `observed_at`.
+
+The wrapper strips ANSI escape sequences with POSIX awk octal escape syntax,
+normalizes remaining control characters before message compaction, JSON-escapes
+all string fields, and caps wrapper messages at the JS intake cap of `280`
+characters.
 
 Informational or debug lines that only mention the word `error` in a
 non-failure context (for example report-service `INFO: appended N docker log error

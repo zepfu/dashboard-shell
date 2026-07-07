@@ -139,6 +139,136 @@ describe('docker-log-error-intake', () => {
     await expect(readdir(intakeDir)).resolves.toEqual([])
   })
 
+  test('container wrapper records actionable stderr with JSON-escaped fields', async () => {
+    const intakeDir = await mkdtemp(path.join(os.tmpdir(), 'd1-445-wrapper-json-'))
+    tmpDirs.push(intakeDir)
+    const containerName = 'dashboard-shell-reports-"weird"-wrapper\\test'
+    const msg = `ERROR: \u001b[31mupstream provider failure status 502\u001b[0m with "quoted" payload at path C:\\tmp\\app, tab\t bell\u0007 and end marker`
+
+    await execFileAsync(
+      'sh',
+      [
+        path.resolve('scripts/container-error-intake.sh'),
+        'sh',
+        '-c',
+        'printf "%s" "$WRAPPER_MESSAGE" >&2',
+      ],
+      {
+        env: {
+          ...process.env,
+          SHELL_CONTAINER_NAME: containerName,
+          SHELL_CONTAINER_ERROR_INTAKE_DIR: intakeDir,
+          WRAPPER_MESSAGE: msg,
+        },
+      }
+    )
+
+    const filePath = path.join(intakeDir, `${safeContainerErrorIntakeBasename(containerName)}-error.jsonl`)
+    const text = await readFile(filePath, 'utf8')
+    const rows = text.trim().split('\n')
+    expect(rows).toHaveLength(1)
+    const row = JSON.parse(rows[0])
+
+    expect(row.container).toBe(containerName)
+    expect(row.stream).toBe('stderr')
+    expect(row.level).toBe('error')
+    expect(row.status_code).toBe(502)
+    expect(row.provider).toBe('unknown')
+    expect(row.source_identity).toBe('container-self-log')
+    expect(row.source_path).toBe(null)
+    expect(row.message).toContain('ERROR: upstream provider failure status 502')
+    expect(row.message).toContain('"quoted"')
+    expect(row.message).toContain('C:\\tmp\\app')
+    expect(row.message).not.toContain('\t')
+    expect(row.message).not.toContain('\u001b')
+    expect(row.message).not.toContain('\u0007')
+    expect(row.message).toContain('tab bell and end marker')
+    expect(typeof row.fingerprint).toBe('string')
+    expect(row.fingerprint).toBeTruthy()
+    expect(row.observed_at).toMatch(/\d{4}-\d{2}-\d{2}T/)
+    expect(row.ingested_at).toMatch(/\d{4}-\d{2}-\d{2}T/)
+    expect(row.ingested_at).toBe(row.observed_at)
+  })
+
+  test('container wrapper ignores adjacent status-like digits while preserving contextual 502', async () => {
+    const intakeDir = await mkdtemp(path.join(os.tmpdir(), 'd1-445-wrapper-status-'))
+    tmpDirs.push(intakeDir)
+    const msgNoStatusOne =
+      'ERROR: response 4123 bytes from D1-424 while listening on http://127.0.0.1:5020/api'
+    const msgNoStatusTwo = 'ERROR: upstream returned 5023 bytes'
+    const msgStatus = 'ERROR: upstream gateway failure 502'
+
+    await execFileAsync(
+      'sh',
+      [
+        path.resolve('scripts/container-error-intake.sh'),
+        'sh',
+        '-c',
+        'printf "%s\\n%s\\n%s\\n" "$WRAPPER_MSG_NO_STATUS_ONE" "$WRAPPER_MSG_NO_STATUS_TWO" "$WRAPPER_MSG_STATUS" >&2',
+      ],
+      {
+        env: {
+          ...process.env,
+          SHELL_CONTAINER_NAME: 'dashboard-shell-reports-dev',
+          SHELL_CONTAINER_ERROR_INTAKE_DIR: intakeDir,
+          WRAPPER_MSG_NO_STATUS_ONE: msgNoStatusOne,
+          WRAPPER_MSG_NO_STATUS_TWO: msgNoStatusTwo,
+          WRAPPER_MSG_STATUS: msgStatus,
+        },
+      }
+    )
+
+    const filePath = path.join(intakeDir, 'dashboard-shell-reports-dev-error.jsonl')
+    const text = await readFile(filePath, 'utf8')
+    const rows = text
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line))
+    expect(rows).toHaveLength(3)
+    expect(rows[0].status_code).toBe(null)
+    expect(rows[0].message).toContain(msgNoStatusOne)
+    expect(rows[1].status_code).toBe(null)
+    expect(rows[1].message).toContain(msgNoStatusTwo)
+    expect(rows[2].status_code).toBe(502)
+    expect(rows[2].message).toContain(msgStatus)
+  })
+
+  test('container wrapper dedupes duplicate actionable lines in the bounded local tail', async () => {
+    const intakeDir = await mkdtemp(path.join(os.tmpdir(), 'd1-445-wrapper-duplicates-'))
+    tmpDirs.push(intakeDir)
+    const msg = 'ERROR: repeated actionable status 502 test line'
+
+    const runWrapper = () =>
+      execFileAsync(
+        'sh',
+        [
+          path.resolve('scripts/container-error-intake.sh'),
+          'sh',
+          '-c',
+          'printf "%s\\n%s\\n" "$WRAPPER_MSG" "$WRAPPER_MSG" >&2',
+        ],
+        {
+          env: {
+            ...process.env,
+            SHELL_CONTAINER_NAME: 'dashboard-shell-reports-dev',
+            SHELL_CONTAINER_ERROR_INTAKE_DIR: intakeDir,
+            WRAPPER_MSG: msg,
+          },
+        }
+      )
+
+    await runWrapper()
+    await new Promise((resolve) => setTimeout(resolve, 1100))
+    await runWrapper()
+
+    const filePath = path.join(intakeDir, 'dashboard-shell-reports-dev-error.jsonl')
+    const text = await readFile(filePath, 'utf8')
+    const rows = text.trim().split('\n')
+    expect(rows).toHaveLength(1)
+    const parsedRows = rows.map((row) => JSON.parse(row))
+    expect(parsedRows[0].message).toContain(msg)
+  })
+
 
   test('status extraction ignores decimal timestamps package counts and bare port numbers', () => {
     const falsePositives = [
