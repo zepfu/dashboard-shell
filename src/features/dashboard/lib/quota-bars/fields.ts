@@ -13,12 +13,15 @@ import type {
   QuotaRowConfig,
   QuotaTipModel,
 } from '../../components/provider-card'
+import type { QuotaSegmentSeverityClass } from '../../components/provider-card-types'
 import {
   canonicalProvider,
   formatDashboardIntervalCompact,
 } from '../usage-report-display'
 
-export function ivClassForConsumed(consumedPct: number): string {
+export function ivClassForConsumed(
+  consumedPct: number
+): QuotaSegmentSeverityClass {
   if (consumedPct >= 50) return 'iv-50-p'
   if (consumedPct >= 25) return 'iv-25-50'
   if (consumedPct >= 10) return 'iv-10-25'
@@ -65,7 +68,7 @@ export function buildQuotaSegments(
   return Array.from({ length: SEGMENTS }, (_, i) => {
     const isConsumed = i < consumedWholeSegments
     const isBoundary = i === consumedWholeSegments && i < consumedSegmentLimit
-    let severityClass: string
+    let severityClass: QuotaSegmentSeverityClass
 
     if (isConsumed) {
       severityClass = consumedClass
