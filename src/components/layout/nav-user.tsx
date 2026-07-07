@@ -6,6 +6,7 @@ import {
   CreditCard,
   Sparkles,
 } from 'lucide-react'
+import { userInitials } from '@/lib/user-initials'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import {
   DropdownMenu,
@@ -113,15 +114,4 @@ export function NavUser({ user }: NavUserProps) {
       </SidebarMenuItem>
     </SidebarMenu>
   )
-}
-
-function userInitials(name: string) {
-  const initials = name
-    .split(/\s+/)
-    .filter(Boolean)
-    .slice(0, 2)
-    .map((part) => part.charAt(0).toUpperCase())
-    .join('')
-
-  return initials || 'DS'
 }

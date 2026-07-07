@@ -1,4 +1,10 @@
-import { createContext, useCallback, useContext, useEffect } from 'react'
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+} from 'react'
 
 type Theme = 'dark'
 type ResolvedTheme = 'dark'
@@ -22,7 +28,7 @@ type ThemeProviderState = {
 
 const ThemeContext = createContext<ThemeProviderState | null>(null)
 
-export function ThemeProvider({ children, ...props }: ThemeProviderProps) {
+export function ThemeProvider({ children }: ThemeProviderProps) {
   useEffect(() => {
     const root = window.document.documentElement
     root.classList.remove('light')
@@ -37,19 +43,18 @@ export function ThemeProvider({ children, ...props }: ThemeProviderProps) {
     // no-op: Phosphor Atlas is dark-only
   }, [])
 
-  const contextValue: ThemeProviderState = {
-    defaultTheme: DEFAULT_THEME,
-    resolvedTheme: 'dark',
-    theme: DEFAULT_THEME,
-    setTheme,
-    resetTheme,
-  }
-
-  return (
-    <ThemeContext value={contextValue} {...props}>
-      {children}
-    </ThemeContext>
+  const contextValue = useMemo<ThemeProviderState>(
+    () => ({
+      defaultTheme: DEFAULT_THEME,
+      resolvedTheme: 'dark',
+      theme: DEFAULT_THEME,
+      setTheme,
+      resetTheme,
+    }),
+    [setTheme, resetTheme]
   )
+
+  return <ThemeContext value={contextValue}>{children}</ThemeContext>
 }
 
 // eslint-disable-next-line react-refresh/only-export-components

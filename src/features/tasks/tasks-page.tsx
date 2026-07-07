@@ -18,6 +18,7 @@ import { TasksPrimaryButtons } from './components/tasks-primary-buttons'
 import { TasksProvider } from './components/tasks-provider'
 import { TasksTable } from './components/tasks-table'
 import { tasks } from './data/tasks'
+import './tasks.module.css'
 
 /**
  * TasksPage renders the full tasks feature content, including the data table

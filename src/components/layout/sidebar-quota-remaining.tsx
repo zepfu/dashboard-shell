@@ -26,9 +26,31 @@ export function SidebarQuotaRemaining() {
   const collapsed = state === 'collapsed'
   const quotaQuery = useQuery(usageReportQuotasQueryOptions({}))
   const items = useMemo(
-    () => buildSidebarQuotaItems(quotaQuery.data?.quotas ?? []),
+    () => buildSidebarQuotaItems(quotaQuery.data?.quotas),
     [quotaQuery.data?.quotas]
   )
+
+  if (quotaQuery.isError) {
+    return (
+      <SidebarGroup className='py-1'>
+        <SidebarGroupContent>
+          <div
+            className='space-y-2 rounded-md border border-sidebar-border bg-sidebar-accent/30 p-2'
+            role='status'
+            aria-label='Quota unavailable'
+          >
+            <div className='flex items-center justify-between text-xs'>
+              <span className='font-medium'>Quota</span>
+              <span className='text-muted-foreground'>remaining</span>
+            </div>
+            <p className='text-[11px] text-muted-foreground'>
+              Quota data is temporarily unavailable.
+            </p>
+          </div>
+        </SidebarGroupContent>
+      </SidebarGroup>
+    )
+  }
 
   if (quotaQuery.isPending) {
     return (
@@ -43,11 +65,11 @@ export function SidebarQuotaRemaining() {
               <Skeleton className='h-8 w-8 rounded-md' />
             </div>
           ) : (
-            <div className='space-y-2 rounded-md border border-sidebar-border p-2'>
-              <div className='flex items-center justify-between text-xs'>
-                <span className='font-medium'>Quota</span>
-                <span className='text-muted-foreground'>remaining</span>
-              </div>
+            <div
+              className='space-y-2 rounded-md border border-sidebar-border p-2'
+              aria-busy='true'
+              aria-label='Loading quota remaining'
+            >
               <Skeleton className='h-3 w-20' />
               <Skeleton className='h-2 w-full' />
               <Skeleton className='h-2 w-full' />
@@ -61,9 +83,19 @@ export function SidebarQuotaRemaining() {
 
   if (!items.length) {
     return (
-      <SidebarGroup className='py-1'>
+      <SidebarGroup
+        className={
+          collapsed ? 'py-1 group-data-[collapsible=icon]:px-2' : 'py-1'
+        }
+      >
         <SidebarGroupContent>
-          <div className='space-y-2 rounded-md border border-sidebar-border bg-sidebar-accent/30 p-2'>
+          <div
+            className={
+              collapsed
+                ? 'mx-auto max-w-8 space-y-2 rounded-md border border-sidebar-border bg-sidebar-accent/30 px-1 py-2 text-center'
+                : 'space-y-2 rounded-md border border-sidebar-border bg-sidebar-accent/30 p-2'
+            }
+          >
             <div className='flex items-center justify-between text-xs'>
               <span className='font-medium'>Quota</span>
               <span className='text-muted-foreground'>remaining</span>

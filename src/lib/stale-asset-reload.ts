@@ -9,26 +9,40 @@ const staleAssetErrorPatterns = [
   /loading chunk .+ failed/i,
 ]
 
-export function errorText(value: unknown): string {
-  if (value instanceof Error) {
-    return `${value.name} ${value.message} ${value.stack ?? ''}`
-  }
+const MAX_ERROR_TEXT_DEPTH = 32
 
-  if (typeof value === 'string') return value
-  if (value && typeof value === 'object') {
-    const details = value as {
-      message?: unknown
-      reason?: unknown
-      error?: unknown
+export function errorText(value: unknown): string {
+  const visited = new WeakSet<object>()
+
+  function walk(current: unknown, depth: number): string {
+    if (depth > MAX_ERROR_TEXT_DEPTH) return ''
+
+    if (current instanceof Error) {
+      return `${current.name} ${current.message} ${current.stack ?? ''}`
     }
 
-    return [details.message, details.reason, details.error]
-      .map(errorText)
-      .filter(Boolean)
-      .join(' ')
+    if (typeof current === 'string') return current
+
+    if (current && typeof current === 'object') {
+      if (visited.has(current)) return '(nested error)'
+      visited.add(current)
+
+      const details = current as {
+        message?: unknown
+        reason?: unknown
+        error?: unknown
+      }
+
+      return [details.message, details.reason, details.error]
+        .map((part) => walk(part, depth + 1))
+        .filter(Boolean)
+        .join(' ')
+    }
+
+    return ''
   }
 
-  return ''
+  return walk(value, 0)
 }
 
 export function isStaleAssetError(value: unknown) {
