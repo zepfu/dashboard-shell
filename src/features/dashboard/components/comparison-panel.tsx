@@ -352,7 +352,7 @@ export function ComparisonPanel({
                     padding: '5px 6px',
                     textAlign: 'right',
                     borderRight: '1px solid var(--border)',
-                    color: deltaColor(deltaCost),
+                    color: deltaColor(deltaCost, 'cost'),
                     whiteSpace: 'nowrap',
                   }}
                   title={
@@ -364,7 +364,8 @@ export function ComparisonPanel({
                   {formatDeltaPctWithPrior(
                     stat.totalCost,
                     prior?.totalCost,
-                    deltaCost
+                    deltaCost,
+                    'cost'
                   )}
                 </td>
 
@@ -374,7 +375,7 @@ export function ComparisonPanel({
                     padding: '5px 6px',
                     textAlign: 'right',
                     borderRight: '1px solid var(--border)',
-                    color: deltaColor(deltaTok),
+                    color: deltaColor(deltaTok, 'tokens'),
                     whiteSpace: 'nowrap',
                   }}
                   title={
@@ -386,7 +387,8 @@ export function ComparisonPanel({
                   {formatDeltaPctWithPrior(
                     stat.totalTokens,
                     prior?.totalTokens,
-                    deltaTok
+                    deltaTok,
+                    'tokens'
                   )}
                 </td>
 
@@ -396,7 +398,7 @@ export function ComparisonPanel({
                     padding: '5px 6px',
                     textAlign: 'right',
                     borderRight: '1px solid var(--border)',
-                    color: deltaColor(deltaP95),
+                    color: deltaColor(deltaP95, 'p95'),
                     whiteSpace: 'nowrap',
                   }}
                   title={
@@ -408,7 +410,8 @@ export function ComparisonPanel({
                   {formatDeltaPctWithPrior(
                     stat.avgP95,
                     prior?.avgP95,
-                    deltaP95
+                    deltaP95,
+                    'p95'
                   )}
                 </td>
 
@@ -418,7 +421,7 @@ export function ComparisonPanel({
                     padding: '5px 6px',
                     textAlign: 'right',
                     borderRight: '1px solid var(--border)',
-                    color: deltaColor(deltaErr),
+                    color: deltaColor(deltaErr, 'err'),
                     whiteSpace: 'nowrap',
                   }}
                   title={
@@ -430,7 +433,8 @@ export function ComparisonPanel({
                   {formatDeltaPctWithPrior(
                     stat.avgErrPct,
                     prior?.avgErrPct,
-                    deltaErr
+                    deltaErr,
+                    'err'
                   )}
                 </td>
 

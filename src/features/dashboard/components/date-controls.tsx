@@ -11,7 +11,7 @@
  *
  * Apply is disabled until both inputs match YYYY-MM-DD format.
  */
-import { useState, type ChangeEvent, type ReactElement } from 'react'
+import { useEffect, useState, type ChangeEvent, type ReactElement } from 'react'
 
 interface DateControlsProps {
   initialFrom?: string
@@ -32,17 +32,21 @@ function isValidDateOnly(value: string): boolean {
 /**
  * DateControls renders From/To date inputs with an Apply button.
  */
-function DateControlsState({
+export function DateControls({
   initialFrom = '',
   initialTo = '',
   onRangeChange,
-}: {
-  initialFrom: string
-  initialTo: string
-  onRangeChange: (from: string, to: string) => void
-}): ReactElement {
+}: DateControlsProps): ReactElement {
   const [from, setFrom] = useState(initialFrom)
   const [to, setTo] = useState(initialTo)
+
+  useEffect(() => {
+    // C-1: mirror parent-controlled range into local draft when host updates props.
+    /* eslint-disable react-hooks/set-state-in-effect -- intentional controlled sync */
+    setFrom(initialFrom)
+    setTo(initialTo)
+    /* eslint-enable react-hooks/set-state-in-effect */
+  }, [initialFrom, initialTo])
 
   const fromValid = isValidDateOnly(from)
   const toValid = isValidDateOnly(to)
@@ -121,22 +125,5 @@ function DateControlsState({
         </span>
       )}
     </div>
-  )
-}
-
-export function DateControls({
-  initialFrom = '',
-  initialTo = '',
-  onRangeChange,
-}: DateControlsProps): ReactElement {
-  const rangeKey = JSON.stringify([initialFrom, initialTo])
-
-  return (
-    <DateControlsState
-      key={rangeKey}
-      initialFrom={initialFrom}
-      initialTo={initialTo}
-      onRangeChange={onRangeChange}
-    />
   )
 }

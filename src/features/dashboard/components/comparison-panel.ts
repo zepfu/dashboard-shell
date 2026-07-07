@@ -6,5 +6,6 @@ export {
   deltaColor,
   formatDeltaPct,
   formatDeltaPctWithPrior,
+  type DeltaColumnKind,
   type ProviderCurrentStats,
 } from './comparison-panel.helpers'
