@@ -24,6 +24,7 @@ import {
   fetchUsageReportTokenTrendSummary,
   fetchUsageReportToolActivity,
   usageReportQuotasQueryOptions,
+  type UsageReportProviderCreditLifecycleStatus,
   type UsageReportQuotaHistoryRow,
   type UsageReportSessionDiagnosticsResponse,
   type UsageReportSessionDiagnosticsRow,
@@ -2116,5 +2117,22 @@ describe('D1-223/224/225 usage identity and billing contracts', () => {
     }
     expect(row.quota_key).toBe('xai_grok_build_weekly_credits:credits')
     expect(row.quota_unit).toBe('credits')
+  })
+})
+
+// D1-451 Wave 4 — G4 ProviderCreditLifecycleStatus tightened or documented
+describe('D1-451 G4 — UsageReportProviderCreditLifecycleStatus', () => {
+  test('test_credit_lifecycle_status_is_closed_union_not_collapsed_string', () => {
+    type StatusWithoutStringFallback = Exclude<
+      UsageReportProviderCreditLifecycleStatus,
+      string
+    >
+    expectTypeOf<StatusWithoutStringFallback>().toEqualTypeOf<
+      'available' | 'used' | 'expired'
+    >()
+    // RED: `| string` on the exported type collapses assignability — remove fallback or document.
+    expectTypeOf<UsageReportProviderCreditLifecycleStatus>().not.toEqualTypeOf<
+      'available' | 'used' | 'expired'
+    >()
   })
 })

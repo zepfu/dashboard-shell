@@ -1,33 +1,9 @@
 /**
- * Wave 11 — provider-identity module contract (S1-8 / #71).
+ * Wave 11 / D1-451 E1 — provider-identity module contract (S1-8).
  *
- * ENGINEER: A
- *
- * RED PHASE: This entire file fails at import time because
- * `lib/provider-identity.ts` does not exist yet.  That import error IS the
- * "red" phase — it documents the module's required public API.
- *
- * WHEN TO GREEN: Engineer A creates `src/features/dashboard/lib/provider-identity.ts`
- * and exports:
- *   - `CANONICAL_PROVIDERS: ReadonlyArray<string>` — the 8 canonical keys
- *   - `canonicalProvider(provider: string): string` — maps aliases to canonical
- *   - `providerAliases(provider: string): ReadonlyArray<string>` — inverse lookup
- *
- * After creation:
- *   - use-alerts-from-anomalies.ts imports CANONICAL_PROVIDERS from this module
- *     (removing its inline 7-entry list)
- *   - phosphor-dashboard.testkit.ts imports CANONICAL_PROVIDERS from this module
- *     (removing its inline 8-entry list)
- *   - usage-report-display.ts re-exports or defers to this module for
- *     canonicalProvider / PROVIDER_ALIASES
- *
- * "7 vs 8 providers" doc-drift resolution (S1-8):
- *   - The 7-entry list in use-alerts-from-anomalies.ts is WRONG — antigravity
- *     is a real provider in the data.
- *   - The 8-entry list in phosphor-dashboard.testkit.ts is correct.
- *   - After W11: ONE list with 8 entries in this module.
+ * Public API: CANONICAL_PROVIDERS (8 keys), canonicalProvider, providerAliases.
+ * Consumers: usage-report-display re-export, health-cells, provider-metrics, alerts.
  */
-// RED: import fails until Engineer A creates the module.
 import { describe, expect, test } from 'vitest'
 import {
   CANONICAL_PROVIDERS,
@@ -73,19 +49,12 @@ describe('provider-identity CANONICAL_PROVIDERS', () => {
   })
 
   test('test_canonical_providers_is_readonly', () => {
-    // The array must be readonly — no mutation allowed.
-    expect(
-      Object.isFrozen(CANONICAL_PROVIDERS) || Array.isArray(CANONICAL_PROVIDERS)
-    ).toBe(true)
-    // Attempting mutation should not silently succeed.
+    expect(Object.isFrozen(CANONICAL_PROVIDERS)).toBe(true)
     const original = [...CANONICAL_PROVIDERS]
-    try {
+    expect(() => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       ;(CANONICAL_PROVIDERS as any).push('test-mutation')
-    } catch {
-      // Readonly arrays throw in strict mode — expected.
-    }
-    // Length must be unchanged.
+    }).toThrow()
     expect(CANONICAL_PROVIDERS).toHaveLength(original.length)
   })
 })
