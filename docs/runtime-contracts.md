@@ -530,6 +530,13 @@ with a 2xx/3xx status, even if the URL path contains `error` (for example static
 error-boundary chunk names). Matching 4xx/5xx access logs remain actionable and
 retain their `status_code`.
 
+The `probe:ingestion` durability probe keeps a similar boundary for LiteLLM
+access logs but preserves 3xx redirects as `http_redirect`, not `success` or
+`http_error`, so redirect traffic does not inflate error counts. Its
+source-table freshness comparison uses the same timestamp precedence as the
+report-service health payload: `latestEventAt`, then `latestPersistedAt`, then
+`latestDataAt`.
+
 Container scope for Docker JSON log tailing defaults to repo-owned compose
 services plus configured external containers. Legacy LiteLLM tails remain available
 through `SHELL_REPORT_DOCKER_LOG_EXTERNAL_CONTAINERS` (default
