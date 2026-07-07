@@ -816,29 +816,19 @@ export default function PhosphorDashboard({
     }))
   }, [summaryTokenTrendScores, reportTokenTrendScores, reportRows])
 
-  const tokenTrendDayEnvelopes = useMemo(
-    () =>
-      buildTokenTrendDayEnvelopes(
-        tokenTrendSummaryData?.tokenTrendHours ?? report?.tokenTrendHours ?? []
-      ),
-    [tokenTrendSummaryData?.tokenTrendHours, report?.tokenTrendHours]
-  )
-  const tokenTrendRequestDayEnvelopes = useMemo(
-    () =>
-      buildTokenTrendDayEnvelopes(
-        tokenTrendSummaryData?.tokenTrendHours ?? report?.tokenTrendHours ?? [],
-        'requests'
-      ),
-    [tokenTrendSummaryData?.tokenTrendHours, report?.tokenTrendHours]
-  )
-  const tokenTrendToolDayEnvelopes = useMemo(
-    () =>
-      buildTokenTrendDayEnvelopes(
-        tokenTrendSummaryData?.tokenTrendHours ?? report?.tokenTrendHours ?? [],
-        'tools'
-      ),
-    [tokenTrendSummaryData?.tokenTrendHours, report?.tokenTrendHours]
-  )
+  const tokenTrendDayEnvelopeBundle = useMemo(() => {
+    const hours =
+      tokenTrendSummaryData?.tokenTrendHours ?? report?.tokenTrendHours ?? []
+    const build = buildTokenTrendDayEnvelopes
+    return {
+      tokens: build(hours),
+      requests: build(hours, 'requests'),
+      tools: build(hours, 'tools'),
+    }
+  }, [tokenTrendSummaryData?.tokenTrendHours, report?.tokenTrendHours])
+  const tokenTrendDayEnvelopes = tokenTrendDayEnvelopeBundle.tokens
+  const tokenTrendRequestDayEnvelopes = tokenTrendDayEnvelopeBundle.requests
+  const tokenTrendToolDayEnvelopes = tokenTrendDayEnvelopeBundle.tools
 
   const [tokenTrendHoverTarget, setTokenTrendHoverTarget] = useState<{
     day: string
@@ -1051,6 +1041,17 @@ export default function PhosphorDashboard({
     ]
   )
 
+  const providerLanesByProvider = useMemo(() => {
+    const map = new Map<string, ReturnType<typeof buildProviderLanes>>()
+    for (const provider of providerHealthCardProviders) {
+      map.set(
+        provider,
+        buildProviderLanes(provider, quotaRows, quotaHistoryRows)
+      )
+    }
+    return map
+  }, [providerHealthCardProviders, quotaRows, quotaHistoryRows])
+
   const providerHealthCardRows = useMemo(
     () =>
       providerHealthCardProviders.map((provider) => {
@@ -1073,12 +1074,7 @@ export default function PhosphorDashboard({
           providerErrorObservations,
           aliases
         )
-        // Wave 41: build structured QuotaLane[] for providers with lane
-        // definitions. Each lane groups
-        // the current bar + prior bars for a single quota type side-by-side.
-        // Providers without lane defs (nvidia_nim, local) are not
-        // rendered in the status grid (no lane defs = no quota bars).
-        const lanes = buildProviderLanes(provider, quotaRows, quotaHistoryRows)
+        const lanes = providerLanesByProvider.get(provider) ?? []
         const topModels = buildTopModels(
           providerStatusUsage,
           provider,
@@ -1098,10 +1094,9 @@ export default function PhosphorDashboard({
       }),
     [
       providerHealthCardProviders,
+      providerLanesByProvider,
       healthRows,
       providerErrorObservations,
-      quotaRows,
-      quotaHistoryRows,
       providerStatusUsage,
       report?.localHealth,
       report?.rows,
