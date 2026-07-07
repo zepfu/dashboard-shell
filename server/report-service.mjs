@@ -30,12 +30,12 @@ import {
 import pg from 'pg'
 
 // Dynamic import for redis so that the module can be imported in environments
-// where the 'redis' package is not installed (e.g. root workspace running the
-// server vitest project after only adding pgsql-parser as a devDep). All
-// call sites already guard on the presence of a usable redisClient; when the
-// package is absent we simply get a null client and cache paths degrade to
-// local/SQL as designed. This keeps the pure query-builder functions
-// importable without requiring a live Redis or the package at test time.
+// where the 'redis' package is not installed (for example, environments that
+// only exercise SQL query-builder and report cache logic). All call sites already
+// guard on the presence of a usable redisClient; when the package is absent we
+// get a null client and cache paths degrade to local/SQL as designed. This keeps
+// query-builder and cache helpers importable without requiring a live Redis at
+// test time.
 let createClient = null
 let RESP_TYPES = null
 try {

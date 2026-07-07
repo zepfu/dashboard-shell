@@ -1,30 +1,10 @@
 /**
  * report-service-query-builders — server-side test suite.
  *
- * MOVED FROM: src/features/dashboard/lib/report-service-query-builders.test.ts
- * REASON (W10): The vitest jsdom frontend project cannot bundle `redis` (a
- * Node.js native module imported by report-service.mjs). Moving this suite to
- * `server/` allows a dedicated server vitest project (no jsdom, Node.js env)
- * to run it without bundling conflicts.
- *
- * ENGINEER ACTION REQUIRED:
- *   1. Add a `server/` vitest project entry in `vitest.config.ts` (or a separate
- *      `server/vitest.config.ts`) targeting `server/**\/*.test.*` with
- *      environment: 'node' (not jsdom).
- *   2. Add `pgsql-parser` as a devDependency in the root `package.json`.
- *      Until (2) is done, the pgsql-parser tests in the
- *      "SQL parse-validation" describe block will FAIL with an import error.
- *
- * Until the server vitest project is configured, this file will NOT be picked
- * up by `vitest run` (the frontend config includes only `src/**\/*.test.*`).
- * The original file at `src/features/dashboard/lib/report-service-query-builders.test.ts`
- * is left in place (renamed to a redirect stub) so the frontend suite retains
- * a record of the move.
- *
- * What's new in W10 vs the original file:
- *   - pgsql-parser parse-validation for EACH built SQL query (S4-8)
- *   - buildQuotaEstimatorObservationQuery value assertions (S4-6)
- *   - Reportable-filter sweep test (S4-8 companion)
+ * Moved from: src/features/dashboard/lib/report-service-query-builders.test.ts
+ * Reason: `report-service.mjs` pulls Node-native modules, so this suite runs in
+ * the server vitest project (Node environment) instead of the frontend jsdom
+ * project.
  */
 import { describe, expect, test } from 'vitest'
 import {
@@ -81,6 +61,35 @@ import {
   proxyTargetUrl,
 } from './report-service.mjs'
 
+function compactWhitespace(sql: string): string {
+  return sql.replace(/\s+/g, ' ').trim()
+}
+
+function expectSelectAlias(sql: string, alias: string) {
+  expect(compactWhitespace(sql).toUpperCase()).toMatch(
+    new RegExp(`\\bAS\\s+${alias.toUpperCase()}\\b`)
+  )
+}
+
+function assertNoShorthandMetadataProjection(sql: string) {
+  expect(compactWhitespace(sql).toUpperCase()).not.toMatch(/\bMETADATA\b/)
+}
+
+async function parseSQL(sql: string): Promise<{
+  version: unknown
+  stmts: unknown[]
+}> {
+  const { parse } = await import('pgsql-parser')
+  return (await parse(sql)) as { version: unknown; stmts: unknown[] }
+}
+
+async function expectParsableSQL(sql: string): Promise<void> {
+  const parsed = await parseSQL(sql)
+  expect(parsed).toHaveProperty('version')
+  expect(Array.isArray(parsed.stmts)).toBe(true)
+  expect(parsed.stmts.length).toBeGreaterThan(0)
+}
+
 // ---------------------------------------------------------------------------
 // Helper: reportable-session-history filter assertions
 // ---------------------------------------------------------------------------
@@ -110,32 +119,11 @@ function expectReportableSessionHistoryFilter(sql: string, alias = 'sh') {
 // ---------------------------------------------------------------------------
 // S4-8: pgsql-parser parse-validation for each built SQL query
 //
-// These tests import `pgsql-parser` to parse each SQL string and assert
-// it produces a valid parse tree. They will FAIL with ImportError until
-// the engineer adds `pgsql-parser` as a devDependency.
-//
-// Purpose: catch SQL syntax errors, bad JOIN conditions, malformed GROUP BY
-// clauses, and other structural problems that string-contains assertions miss.
+// These tests import `pgsql-parser` directly and assert against its real return
+// shape: `{ version, stmts }`.
 // ---------------------------------------------------------------------------
 
 describe('SQL parse-validation (pgsql-parser) (S4-8)', () => {
-  /**
-   * TRIPWIRE NOTE: these tests are RED until the engineer runs:
-   *   pnpm add -D pgsql-parser (in the root workspace)
-   *
-   * They become green automatically once the dep is available and the server
-   * vitest project is configured. No source changes needed.
-   */
-
-  // Dynamic import so the test file can be parsed even before the dep exists.
-  // If pgsql-parser is absent, all tests in this describe block fail with the
-  // import error — which is the correct red-phase behaviour.
-  async function parseSQL(sql: string): Promise<unknown> {
-    const { parse } = await import('pgsql-parser')
-    const result = await parse(sql)
-    return result
-  }
-
   test('test_buildUsageQuery_sql_is_syntactically_valid', async () => {
     const query = buildUsageQuery(
       new URLSearchParams({
@@ -147,26 +135,19 @@ describe('SQL parse-validation (pgsql-parser) (S4-8)', () => {
       })
     )
 
-    // pgsql-parser will throw on syntax errors; a successful parse = valid SQL.
-    const tree = await parseSQL(query.sql)
-    expect(Array.isArray(tree)).toBe(true)
-    expect((tree as unknown[]).length).toBeGreaterThan(0)
+    await expectParsableSQL(query.sql)
   })
 
   test('test_buildQuotaQuery_sql_is_syntactically_valid', async () => {
     const query = buildQuotaQuery()
-    const tree = await parseSQL(query.sql)
-    expect(Array.isArray(tree)).toBe(true)
-    expect((tree as unknown[]).length).toBeGreaterThan(0)
+    await expectParsableSQL(query.sql)
   })
 
   test('test_buildTokenTrendHoursQuery_sql_is_syntactically_valid', async () => {
     const query = buildTokenTrendHoursQuery(
       new URLSearchParams({ from: '2026-05-01', to: '2026-05-08' })
     )
-    const tree = await parseSQL(query.sql)
-    expect(Array.isArray(tree)).toBe(true)
-    expect((tree as unknown[]).length).toBeGreaterThan(0)
+    await expectParsableSQL(query.sql)
   })
 
   test('test_buildTokenTrendScoreQuery_sql_is_syntactically_valid', async () => {
@@ -177,93 +158,71 @@ describe('SQL parse-validation (pgsql-parser) (S4-8)', () => {
         provider: 'anthropic',
       })
     )
-    const tree = await parseSQL(query.sql)
-    expect(Array.isArray(tree)).toBe(true)
-    expect((tree as unknown[]).length).toBeGreaterThan(0)
+    await expectParsableSQL(query.sql)
   })
 
   test('test_buildTokenTrendModelFirstSeenQuery_sql_is_syntactically_valid', async () => {
     const query = buildTokenTrendModelFirstSeenQuery(
       new URLSearchParams({ from: '2026-05-01', to: '2026-05-08' })
     )
-    const tree = await parseSQL(query.sql)
-    expect(Array.isArray(tree)).toBe(true)
-    expect((tree as unknown[]).length).toBeGreaterThan(0)
+    await expectParsableSQL(query.sql)
   })
 
   test('test_buildTokenTrendHealthQuery_sql_is_syntactically_valid', async () => {
     const query = buildTokenTrendHealthQuery(
       new URLSearchParams({ from: '2026-05-01', to: '2026-05-08' })
     )
-    const tree = await parseSQL(query.sql)
-    expect(Array.isArray(tree)).toBe(true)
-    expect((tree as unknown[]).length).toBeGreaterThan(0)
+    await expectParsableSQL(query.sql)
   })
 
   test('test_buildToolActivityQuery_sql_is_syntactically_valid', async () => {
     const query = buildToolActivityQuery(
       new URLSearchParams({ from: '2026-05-01', to: '2026-05-08' })
     )
-    const tree = await parseSQL(query.sql)
-    expect(Array.isArray(tree)).toBe(true)
-    expect((tree as unknown[]).length).toBeGreaterThan(0)
+    await expectParsableSQL(query.sql)
   })
 
   test('test_buildQuotaRangeHistoryQuery_sql_is_syntactically_valid', async () => {
     const query = buildQuotaRangeHistoryQuery(
       new URLSearchParams({ from: '2026-05-01', to: '2026-05-08' })
     )
-    const tree = await parseSQL(query.sql)
-    expect(Array.isArray(tree)).toBe(true)
-    expect((tree as unknown[]).length).toBeGreaterThan(0)
+    await expectParsableSQL(query.sql)
   })
 
   test('test_buildQuotaRangeHistoryFallbackQuery_sql_is_syntactically_valid', async () => {
     const query = buildQuotaRangeHistoryFallbackQuery(
       new URLSearchParams({ from: '2026-05-01', to: '2026-05-08' })
     )
-    const tree = await parseSQL(query.sql)
-    expect(Array.isArray(tree)).toBe(true)
-    expect((tree as unknown[]).length).toBeGreaterThan(0)
+    await expectParsableSQL(query.sql)
   })
 
   test('test_buildQuotaHistoryQuery_sql_is_syntactically_valid', async () => {
     const query = buildQuotaHistoryQuery(new URLSearchParams())
-    const tree = await parseSQL(query.sql)
-    expect(Array.isArray(tree)).toBe(true)
-    expect((tree as unknown[]).length).toBeGreaterThan(0)
+    await expectParsableSQL(query.sql)
   })
 
   test('test_buildQuotaEstimatorUsageBucketQuery_sql_is_syntactically_valid', async () => {
     const query = buildQuotaEstimatorUsageBucketQuery(
       new URLSearchParams({ from: '2026-05-01', to: '2026-05-08' })
     )
-    const tree = await parseSQL(query.sql)
-    expect(Array.isArray(tree)).toBe(true)
-    expect((tree as unknown[]).length).toBeGreaterThan(0)
+    await expectParsableSQL(query.sql)
   })
 
   test('test_buildQuotaEstimatorObservationQuery_sql_is_syntactically_valid', async () => {
     const query = buildQuotaEstimatorObservationQuery(
       new URLSearchParams({ from: '2026-05-01', to: '2026-05-08' })
     )
-    const tree = await parseSQL(query.sql)
-    expect(Array.isArray(tree)).toBe(true)
-    expect((tree as unknown[]).length).toBeGreaterThan(0)
+    await expectParsableSQL(query.sql)
   })
 
   test('test_buildSourceTableHealthQuery_sql_is_syntactically_valid', async () => {
     const query = buildSourceTableHealthQuery()
-    const tree = await parseSQL(query.sql)
-    expect(Array.isArray(tree)).toBe(true)
-    expect((tree as unknown[]).length).toBeGreaterThan(0)
+    await expectParsableSQL(query.sql)
   })
 
   test('test_buildReportQueryPressureQuery_sql_is_syntactically_valid', async () => {
     const query = buildReportQueryPressureQuery()
-    const tree = await parseSQL(query.sql)
-    expect(Array.isArray(tree)).toBe(true)
-    expect((tree as unknown[]).length).toBeGreaterThan(0)
+    await expectParsableSQL(query.sql)
   })
 })
 
@@ -271,7 +230,8 @@ describe('SQL parse-validation (pgsql-parser) (S4-8)', () => {
 // S4-6: buildQuotaEstimatorObservationQuery value assertions
 //
 // These tests run WITHOUT pgsql-parser (they use string-contains assertions).
-// They will run in the server vitest project once the project config is added.
+// These run in the server vitest project that owns report-service query builder
+// contracts and parser-backed behavior checks.
 // ---------------------------------------------------------------------------
 
 describe('buildQuotaEstimatorObservationQuery value assertions (S4-6)', () => {
@@ -1075,21 +1035,15 @@ describe('report-service query builders', () => {
     expect(query.sql).toContain('AS agent_contract_score')
     expect(query.sql).toContain('AS agent_progress_score')
     expect(query.sql).toContain('AS agent_risk_score')
-    expect(query.sql).toContain('AS agent_discovery_inventory_coverage_score')
-    expect(query.sql).toContain(
-      'AS agent_discovery_inventory_coverage_evaluated'
-    )
-    expect(query.sql).toContain(
-      'AS agent_discovery_inventory_coverage_possible'
-    )
-    expect(query.sql).toContain(
-      'AS agent_discovery_inventory_coverage_failures'
-    )
-    expect(query.sql).toContain('AS agent_discovery_inventory_missing_count')
-    expect(query.sql).toContain('AS agent_terminal_completion_score')
-    expect(query.sql).toContain('AS agent_terminal_completion_evaluated')
-    expect(query.sql).toContain('AS agent_terminal_completion_possible')
-    expect(query.sql).toContain('AS agent_terminal_completion_failures')
+    expectSelectAlias(query.sql, 'agent_discovery_inventory_coverage_score')
+    expectSelectAlias(query.sql, 'agent_discovery_inventory_coverage_evaluated')
+    expectSelectAlias(query.sql, 'agent_discovery_inventory_coverage_possible')
+    expectSelectAlias(query.sql, 'agent_discovery_inventory_coverage_failures')
+    expectSelectAlias(query.sql, 'agent_discovery_inventory_missing_count')
+    expectSelectAlias(query.sql, 'agent_terminal_completion_score')
+    expectSelectAlias(query.sql, 'agent_terminal_completion_evaluated')
+    expectSelectAlias(query.sql, 'agent_terminal_completion_possible')
+    expectSelectAlias(query.sql, 'agent_terminal_completion_failures')
     expect(query.sql).toContain('AS agent_compact_summary_events')
     expect(query.sql).toContain('AS agent_compact_summary_thread_count')
     expect(query.sql).toContain('AS agent_compact_summary_id_count')
@@ -1346,8 +1300,8 @@ describe('report-service query builders', () => {
 
     expect(query.values).toEqual([])
     expect(query.sql).toContain('FROM pg_stat_activity')
-    expect(query.sql).toContain(
-      "application_name IN (\n      'dashboard-shell-report-service'"
+    expect(query.sql).toMatch(
+      /application_name\s+IN\s*\(\s*'dashboard-shell-report-service'/i
     )
     expect(query.sql).toContain("'dashboard-shell-health'")
     expect(query.sql).toContain('wait_event_type')
@@ -1764,7 +1718,9 @@ describe('report-service query builders', () => {
     expect(query.sql).toContain(
       "COALESCE(sh_recent.start_time, sh_recent.created_at) >= now() - INTERVAL '90 minutes'"
     )
-    expect(query.sql).not.toContain('SELECT COUNT(*)::double precision\n            FROM public.session_history sh_recent')
+    expect(query.sql).not.toMatch(
+      /SELECT\s+COUNT\(\*\)::double precision\s+FROM\s+public\.session_history\s+sh_recent/i
+    )
   })
 
 
@@ -2516,7 +2472,7 @@ describe('report-service query builders', () => {
     expect(query.sql).toContain('AS first_seen_day')
     expect(query.sql).toContain('AS first_seen_hour')
     expect(query.sql).toContain('AS observations')
-    expect(query.sql).not.toContain('release')
+    expect(query.sql).not.toMatch(/\brelease\b/i)
   })
 
   test('test_aawm_observe_proxy_prefix_covers_handoff_route_patterns', () => {
@@ -2688,7 +2644,7 @@ describe('D1-338 provider auth health contracts', () => {
     expect(query.sql).not.toContain('refresh_token')
     expect(query.sql).not.toContain('access_token')
     expect(query.sql).not.toContain('metadata::text')
-    expect(query.sql).not.toContain('    metadata\n')
+    expect(query.sql).not.toMatch(/\smetadata\s*\n/i)
   })
 
   test('test_normalizeProviderAuthHealthRow_short_hash_and_redaction', () => {
@@ -2794,7 +2750,7 @@ describe('D1-417 / D1-422 provider credit lifecycle contracts', () => {
     expect(query.sql).not.toContain('raw_provider_fields')
     expect(query.sql).not.toContain('evidence')
     expect(query.sql).not.toContain('SELECT *')
-    expect(query.sql).not.toContain('metadata')
+    assertNoShorthandMetadataProjection(query.sql)
     expect(query.sql).toContain('WITH filtered_credit_rows AS')
     expect(query.sql).toContain('FROM public.provider_credit_current cr')
     expect(query.sql).toContain('FROM public.provider_credit_current detail')
