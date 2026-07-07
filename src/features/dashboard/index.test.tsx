@@ -697,6 +697,7 @@ describe('Dashboard — TCG-2: cold-load render path', () => {
     expect(tokenTrendRefreshedQueries).toHaveLength(1)
   })
 
+  // D1-451 Wave 3 C-1 (host): user-applied range must survive 60s sync tick.
   test('test_custom_date_range_not_overwritten_by_default_range_interval', async () => {
     const usageUrls: string[] = []
     registerTokenTrendSummaryHandler()
@@ -783,6 +784,7 @@ describe('Dashboard — TCG-2: cold-load render path', () => {
     }
   })
 
+  // D1-451 Wave 3 C-1 (host): rolling default still advances when still on prior default.
   test('test_default_owned_date_range_advances_after_eastern_day_change', async () => {
     const usageUrls: string[] = []
     registerTokenTrendSummaryHandler()
@@ -897,6 +899,7 @@ describe('Dashboard — TCG-2: cold-load render path', () => {
     }
   })
 
+  // D1-451 Wave 3 C-1 (DateControls half): covered in date-controls.test.tsx; host wiring regression pin.
   test('test_date_controls_syncs_local_inputs_when_parent_initial_props_change', () => {
     const onRangeChange = vi.fn()
     const { rerender } = render(

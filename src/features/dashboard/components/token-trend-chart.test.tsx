@@ -2099,3 +2099,360 @@ test('D1-450_I5_lowerLaneMode_uses_useControllableState', () => {
     /const \[internalLowerLaneMode, setInternalLowerLaneMode\]/
   )
 })
+
+// ---------------------------------------------------------------------------
+// D1-451 Wave 3 — dash-widgets-trend (red-phase / guard pins)
+// ---------------------------------------------------------------------------
+
+test('D1-451_W1_dayEnvelopeRange_not_dead_on_public_props', () => {
+  const chartPath = path.join(import.meta.dirname, 'token-trend-chart.tsx')
+  const source = readFileSync(chartPath, 'utf8')
+  expect(source).not.toMatch(/dayEnvelopeRange\?:/)
+  expect(source).not.toMatch(/void dayEnvelopeRange/)
+})
+
+test('D1-451_C2_parseTrendDayHour_single_digit_hour_no_mixed_clocks', async () => {
+  const { parseTrendDayHour } = await import('./token-trend-chart')
+  const result = parseTrendDayHour('2026-05-20T5:00')
+  expect(result).not.toBeNull()
+  if (result !== null) {
+    expect(result.day).toBe('2026-05-20')
+    expect(result.hour).toBeNull()
+  }
+})
+
+test('D1-451_C3_offset_timestamp_day_matches_envelope_day_field', async () => {
+  const { parseTrendDayHour } = await import('./token-trend-chart')
+  const { buildTrendSignalRows } = await import('./token-trend-chart')
+  const envelopeDay = '2026-05-20'
+  const row = {
+    bucket_start: '2026-05-20T23:30:00.000Z',
+    environment: 'local',
+    provider: 'anthropic',
+    model: 'claude-sonnet-4-6',
+    model_group: 'claude',
+    requests: 3,
+    passive_latency_sample_status: 'ok',
+    upstream_p50_ms: 100,
+    upstream_p95_ms: 200,
+    upstream_p99_ms: 250,
+    total_p95_ms: 220,
+    proxy_processing_p95_ms: 10,
+    missing_upstream_latency: 0,
+    provider_error_events: 0,
+    rate_limit_events: 0,
+    capacity_events: 0,
+    provider_5xx_events: 0,
+    provider_timeout_events: 0,
+    network_error_events: 0,
+    auth_failed_events: 0,
+    adapter_error_events: 0,
+    status_probe_count: 0,
+    status_probe_success_pct: 100,
+    status_probe_p95_ms: 0,
+    provider_ping_avg_ms: 0,
+    provider_ping_packet_loss_pct: 0,
+    control_ping_avg_ms: 0,
+    control_packet_loss_pct: 0,
+    control_probe_success_pct: 100,
+    provider_ping_minus_control_ms: 0,
+    dns_failures: 0,
+    tcp_failures: 0,
+    tls_failures: 0,
+    icmp_failures: 0,
+    probed_endpoints: null,
+    status_error_classes: null,
+    min_remaining_pct: null,
+    max_remaining_pct: null,
+    next_expected_reset_at: null,
+    quota_keys: null,
+    request_period_start: null,
+    request_period_end: null,
+  } as UsageReportProviderLatencyHealthRow
+
+  const parsed = parseTrendDayHour(row.bucket_start)
+  expect(parsed?.day).toBe(envelopeDay)
+
+  const { rows } = buildTrendSignalRows({
+    dayEnvelopes: buildTokenTrendDayEnvelopes([
+      {
+        day: envelopeDay,
+        hour: 23,
+        provider: 'anthropic',
+        traces: 1,
+        token_total: 10,
+        usd_cost: 0,
+      },
+    ]),
+    healthRows: [row],
+    scoreRows: [],
+    selectedMetrics: ['requests'],
+    scope: { providers: ['anthropic'], models: [], repositories: [] },
+  })
+  const requestRow = rows.find((r) => r.metricKey === 'requests')
+  expect(requestRow?.cells.get(`${envelopeDay}|23`)).toBe(3)
+})
+
+test('D1-451_C4_token_scale_floor_tick_not_misleading_in_distortion_band', async () => {
+  const { buildTokenScaleTicks } = await import('./token-trend-chart')
+  const { tokenTrendDayHeightPct } = await import('../lib/trend-utils')
+
+  const maxDayTotal = 100_000
+  const midBandDayTotal = 4_000
+
+  const ticks = buildTokenScaleTicks(maxDayTotal)
+  const renderedPct = tokenTrendDayHeightPct(midBandDayTotal, maxDayTotal)
+  const floorTick = ticks[0]
+  expect(renderedPct).toBeCloseTo(8, 1)
+  expect(floorTick.label).not.toMatch(/^0\.5\s*%·max$/)
+})
+
+test('D1-451_C5_summarizeDayDetailRows_releaseKeys_filter_is_meaningful', () => {
+  const chartPath = path.join(import.meta.dirname, 'token-trend-chart.tsx')
+  const source = readFileSync(chartPath, 'utf8')
+  const summarizeBlock = source.slice(
+    source.indexOf('function summarizeDayDetailRows'),
+    source.indexOf('function buildDayTooltip')
+  )
+  expect(summarizeBlock).toContain('releaseKeys.has')
+  const buildDayBlock = source.slice(
+    source.indexOf('function buildDayTooltip'),
+    source.indexOf('interface TokenScaleTick')
+  )
+  const rendersDetailWithFirstSeen =
+    /clientFirstSeenRows\.length\s*>\s*0[\s\S]*detailRows/.test(
+      buildDayBlock
+    ) ||
+    /detailRows[\s\S]*clientFirstSeenRows\.length\s*>\s*0/.test(buildDayBlock)
+  const onlyWhenNoFirstSeen = buildDayBlock.includes(
+    'clientFirstSeenRows.length === 0 && detailRows'
+  )
+  expect(onlyWhenNoFirstSeen && !rendersDetailWithFirstSeen).toBe(false)
+})
+
+test('D1-451_P1_buildTokenScaleTicks_not_recomputed_when_only_dayDetail_changes', async () => {
+  const chartMod = await import('./token-trend-chart')
+  const buildSpy = vi.spyOn(chartMod, 'buildTokenScaleTicks')
+  const rows = [
+    {
+      day: '2026-05-20',
+      hour: 8,
+      provider: 'anthropic',
+      traces: 5,
+      token_total: 500,
+      usd_cost: 0,
+    },
+  ]
+  const dayEnvelopes = buildTokenTrendDayEnvelopes(rows)
+  const baseProps = {
+    dayEnvelopes,
+    series,
+    healthRows: [...trendHealthRows],
+    detailLoading: false,
+    dayDetail: {
+      metadata: { from: '2026-05-20', to: '2026-05-21' },
+      date: '2026-05-20',
+      rows: [],
+    },
+  }
+
+  const { rerender } = render(<TokenTrendChart {...baseProps} />)
+  const callsAfterMount = buildSpy.mock.calls.length
+  expect(callsAfterMount).toBeGreaterThan(0)
+
+  rerender(
+    <TokenTrendChart
+      {...baseProps}
+      dayDetail={{
+        ...baseProps.dayDetail,
+        date: '2026-05-21',
+        rows: [{ model: 'm', tokens: 1 }],
+      }}
+    />
+  )
+  expect(buildSpy.mock.calls.length).toBe(callsAfterMount)
+  buildSpy.mockRestore()
+})
+
+test('D1-451_P2_legacy_branch_defers_bar_tooltip_content', () => {
+  const chartPath = path.join(import.meta.dirname, 'token-trend-chart.tsx')
+  const source = readFileSync(chartPath, 'utf8')
+  const legacyBranch = source.slice(source.lastIndexOf('const skipAlternate'))
+  expect(legacyBranch).not.toMatch(
+    /const tooltipContent\s*=\s*isEmpty\s*\?\s*null\s*:\s*buildBarTooltip/
+  )
+  expect(legacyBranch).toMatch(
+    /content=\{\(\)\s*=>\s*buildBarTooltip\(bucket,\s*series\)/
+  )
+})
+
+test('D1-451_P3_buildTrendSignalRows_groups_cells_by_metric_in_one_pass', async () => {
+  const { buildTrendSignalRows } = await import('./token-trend-chart')
+  const chartPath = path.join(import.meta.dirname, 'token-trend-chart.tsx')
+  const source = readFileSync(chartPath, 'utf8')
+  const fnBlock = source.slice(
+    source.indexOf('function buildTrendSignalRows'),
+    source.indexOf('function TrendSignalPanel')
+  )
+  expect(fnBlock).toMatch(/cellsByMetric|group.*metric/i)
+  expect(fnBlock).not.toMatch(
+    /for \(const metric of selectedMetrics\)[\s\S]*for \(const \[cellKey/
+  )
+
+  const envelopes = buildTokenTrendDayEnvelopes([
+    {
+      day: '2026-05-20',
+      hour: 8,
+      provider: 'anthropic',
+      traces: 1,
+      token_total: 10,
+      usd_cost: 0,
+    },
+  ])
+  const { rows } = buildTrendSignalRows({
+    dayEnvelopes: envelopes,
+    healthRows: [...trendHealthRows],
+    scoreRows: [...trendScoreRows],
+    selectedMetrics: ['requests', 'errors'],
+    scope: { providers: ['anthropic'], models: [], repositories: [] },
+  })
+  expect(rows.length).toBe(2)
+})
+
+test('D1-451_A1_parseTrendDayHour_lives_in_trend_utils_not_chart_monolith', async () => {
+  const chartPath = path.join(import.meta.dirname, 'token-trend-chart.tsx')
+  const chartSource = readFileSync(chartPath, 'utf8')
+  expect(chartSource).not.toMatch(/export function parseTrendDayHour/)
+  const trendUtils = await import('../lib/trend-utils')
+  expect(typeof trendUtils.parseTrendDayHour).toBe('function')
+})
+
+test('D1-451_A2_day_tooltip_uses_shared_TipRow_helper', () => {
+  const chartPath = path.join(import.meta.dirname, 'token-trend-chart.tsx')
+  const source = readFileSync(chartPath, 'utf8')
+  expect(source).toMatch(/function TipRow|const TipRow/)
+  const tipRowUses = (source.match(/<TipRow/g) ?? []).length
+  expect(tipRowUses).toBeGreaterThanOrEqual(4)
+})
+
+test('D1-451_A3_metric_scale_labels_use_stylesheet_not_inline_duplication', () => {
+  const chartPath = path.join(import.meta.dirname, 'token-trend-chart.tsx')
+  const cssPath = path.join(import.meta.dirname, '../styles/index.css')
+  const chartSource = readFileSync(chartPath, 'utf8')
+  const cssSource = readFileSync(cssPath, 'utf8')
+  expect(chartSource).not.toMatch(
+    /fontSize:\s*'8px'[\s\S]{0,120}tt-metric-scale-label/
+  )
+  expect(cssSource).toContain('.tt-metric-scale-label')
+})
+
+test('D1-451_I1_no_pointless_hasActiveVersionLaneData_alias', () => {
+  const chartPath = path.join(import.meta.dirname, 'token-trend-chart.tsx')
+  const source = readFileSync(chartPath, 'utf8')
+  expect(source).not.toMatch(
+    /const hasActiveVersionLaneData = hasActiveVersionLanes/
+  )
+})
+
+test('D1-451_I2_hoverHour_reduce_does_not_use_dead_nullish_zero', () => {
+  const chartPath = path.join(import.meta.dirname, 'token-trend-chart.tsx')
+  const source = readFileSync(chartPath, 'utf8')
+  expect(source).not.toMatch(/\)\.hour \?\? 0/)
+})
+
+test('D1-451_I3_header_doc_matches_label_stride_policy', () => {
+  const chartPath = path.join(import.meta.dirname, 'token-trend-chart.tsx')
+  const source = readFileSync(chartPath, 'utf8')
+  const header = source.slice(0, 80)
+  expect(header).not.toMatch(/24 bars only even-indexed/)
+  expect(source).toMatch(/labelStride/)
+})
+
+test('D1-451_I4_single_active_version_row_height_constant', () => {
+  const chartPath = path.join(import.meta.dirname, 'token-trend-chart.tsx')
+  const source = readFileSync(chartPath, 'utf8')
+  const heightConstMatches = source.match(
+    /ACTIVE_VERSION_(?:ROW_HEIGHT_PX|VIEW_ROW_HEIGHT)\s*=\s*(\d+)/g
+  )
+  expect(heightConstMatches?.length ?? 0).toBeLessThanOrEqual(1)
+})
+
+test('D1-451_I5_day_banding_uses_one_mechanism', () => {
+  const chartPath = path.join(import.meta.dirname, 'token-trend-chart.tsx')
+  const source = readFileSync(chartPath, 'utf8')
+  const usesStripeLayer = source.includes('renderDayStripeLayer')
+  const usesDayBandClass = source.includes('dayBandClass(dayIndex)')
+  const usesInlineEnvelopeBg = source.includes(
+    'dayEnvelopeBackground(dayIndex)'
+  )
+  const bandingMechanisms = [
+    usesStripeLayer,
+    usesDayBandClass,
+    usesInlineEnvelopeBg,
+  ].filter(Boolean).length
+  expect(bandingMechanisms).toBe(1)
+})
+
+test('D1-451_I6_formatDayLabel_inlined_or_computeDeltaPct_uses_Number_isFinite', () => {
+  const chartPath = path.join(import.meta.dirname, 'token-trend-chart.tsx')
+  const helpersPath = path.join(
+    import.meta.dirname,
+    'comparison-panel.helpers.ts'
+  )
+  const chartSource = readFileSync(chartPath, 'utf8')
+  const helpersSource = readFileSync(helpersPath, 'utf8')
+  expect(chartSource).not.toMatch(/function formatDayLabel\(/)
+  expect(helpersSource).toMatch(/Number\.isFinite\(prior\)/)
+})
+
+test('D1-451_I7_empty_padded_days_skip_hover_tooltip_in_envelope_mode', () => {
+  const rows = [
+    {
+      day: '2026-05-20',
+      hour: 8,
+      provider: 'anthropic',
+      traces: 1,
+      token_total: 100,
+      usd_cost: 0,
+    },
+  ]
+  const dayEnvelopes = buildTokenTrendDayEnvelopes(rows, 'tokens', {
+    from: '2026-05-20',
+    to: '2026-05-22',
+  } as Parameters<typeof buildTokenTrendDayEnvelopes>[2])
+  const { container } = render(
+    <TokenTrendChart dayEnvelopes={dayEnvelopes} series={series} />
+  )
+  const emptyDay = dayEnvelopes.find((d) => d.total === 0)
+  expect(emptyDay).toBeDefined()
+  const emptyShell = container
+    .querySelector(`[data-day="${emptyDay!.day}"]`)
+    ?.closest('.tt-day-tip-wrap')
+  expect(emptyShell).toBeNull()
+})
+
+test('D1-451_E1_token_trend_chart_no_stale_EXPECTED_FAIL_narration', () => {
+  const testPath = path.join(import.meta.dirname, 'token-trend-chart.test.tsx')
+  const source = readFileSync(testPath, 'utf8')
+  const wave3Start = source.indexOf('D1-451 Wave 3')
+  const wave3Block =
+    wave3Start >= 0 ? source.slice(wave3Start) : source.slice(-8000)
+  const wave3WithoutThisTest = wave3Block.replace(
+    /test\('D1-451_E1_token_trend_chart_no_stale_EXPECTED_FAIL_narration'[\s\S]*?\n\}\)\n/,
+    ''
+  )
+  expect(wave3WithoutThisTest).not.toMatch(/EXPECTED FAIL/)
+})
+
+test('D1-451_E2_token_scale_ticks_match_bar_heights_unconditional', async () => {
+  const { buildTokenScaleTicks } = await import('./token-trend-chart')
+  const { tokenTrendDayHeightPct } = await import('../lib/trend-utils')
+  const maxDayTotal = 100_000
+  const smallDayTotal = 500
+  const ticks = buildTokenScaleTicks(maxDayTotal)
+  const renderedPct = tokenTrendDayHeightPct(smallDayTotal, maxDayTotal)
+  const nearestTick = ticks.find((t) => t.pct >= renderedPct)
+  expect(nearestTick).toBeDefined()
+  const ratio = nearestTick!.value / smallDayTotal
+  expect(ratio).toBeLessThan(4)
+})
