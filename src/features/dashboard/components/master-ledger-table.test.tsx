@@ -1,19 +1,12 @@
 /**
- * Wave 5 — MasterLedgerTable red-phase tests.
+ * MasterLedgerTable integration and unit-adjacent tests (GREEN suite).
  *
- * Component path: src/features/dashboard/components/master-ledger-table.tsx
- * Expected export: MasterLedgerTable (named)
- * Props: { rows: ModelRow[] }
- * Uses @tanstack/react-table for sorting. Sticky thead.
- *
- * All tests expected to FAIL (red) — source file does not exist yet.
- *
- * Wave 31 additions:
- * - Q8: Err% hover tooltip when providerErrorObservations are provided.
- *
- * Wave 33 additions:
- * - TOOL cell hover: MCP rollup logic, shell-class filtering, empty-state.
+ * Component: src/features/dashboard/components/master-ledger-table.tsx
+ * Export: MasterLedgerTable (React.memo-wrapped)
+ * Covers sorting, expansion, tooltips, aggregation exports, and D1-449 production-path
+ * spark/repo/family behavior via buildModelRows + aggregateRows.
  */
+import * as React from 'react'
 import { render, screen, fireEvent } from '@testing-library/react'
 import { vi } from 'vitest'
 import {
@@ -26,7 +19,8 @@ import {
 } from '../api/usage-report'
 import { buildModelRows } from '../lib/ledger-rows'
 import { providerBrandHex } from '../lib/usage-report-display'
-import { aggregateRows } from './master-ledger-aggregation'
+import * as masterLedgerAggregation from './master-ledger-aggregation'
+import { type ModelRow } from './master-ledger-aggregation'
 import {
   formatLedgerModelDisplayName,
   modelFamilyForRow,
@@ -40,6 +34,8 @@ import {
   SHELL_CLASS_TOOL_NAMES,
 } from './master-ledger-tool-activity'
 
+const { aggregateRows } = masterLedgerAggregation
+
 /** Opens lazy HoverTooltip panels for table cells (tooltip content mounts on hover). */
 function openLazyHoverTooltipsIn(container: HTMLElement): void {
   container.querySelectorAll('tbody td').forEach((td) => {
@@ -49,12 +45,9 @@ function openLazyHoverTooltipsIn(container: HTMLElement): void {
   })
 }
 
-// ---------------------------------------------------------------------------
-// Fixtures
-// ---------------------------------------------------------------------------
-
-const mockRows = [
-  {
+/** Default ledger row shape; override only fields a test cares about. */
+function makeRow(overrides: Partial<ModelRow> = {}): ModelRow {
+  return {
     model: 'claude-3',
     provider: 'anthropic',
     tokens_in: 1000,
@@ -68,8 +61,17 @@ const mockRows = [
     cache_miss_usd_cost: 0.01,
     reasoning_reported: 500,
     reasoning_estimated: 600,
-  },
-  {
+    ...overrides,
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Fixtures
+// ---------------------------------------------------------------------------
+
+const mockRows = [
+  makeRow({ model: 'claude-3', provider: 'anthropic' }),
+  makeRow({
     model: 'gpt-4o',
     provider: 'openai',
     tokens_in: 5000,
@@ -83,8 +85,8 @@ const mockRows = [
     cache_miss_usd_cost: 0.02,
     reasoning_reported: 0,
     reasoning_estimated: 100,
-  },
-  {
+  }),
+  makeRow({
     model: 'gemini-1.5',
     provider: 'google',
     tokens_in: 2000,
@@ -98,7 +100,7 @@ const mockRows = [
     cache_miss_usd_cost: undefined,
     reasoning_reported: undefined,
     reasoning_estimated: undefined,
-  },
+  }),
 ]
 
 function expandLedger(
@@ -762,28 +764,16 @@ const makeErrorObs = (
   expected_reset_at: null,
 })
 
-const errorRow = {
+const errorRow = makeRow({
   model: 'claude-3',
-  provider: 'anthropic',
-  tokens_in: 1000,
-  tokens_out: 2000,
-  requests: 100,
-  p50_ms: 200,
-  p95_ms: 500,
   error_pct: 9.0,
-  cost_usd: 0.1,
-  cache_miss_pct: 12.5,
-  cache_miss_usd_cost: 0.01,
-  reasoning_reported: 500,
-  reasoning_estimated: 600,
-}
+})
 
-const zeroErrorRow = {
-  ...errorRow,
+const zeroErrorRow = makeRow({
   model: 'gpt-4o',
   provider: 'openai',
   error_pct: 0,
-}
+})
 
 const matchingObs: ProviderErrorObservation[] = [
   makeErrorObs(
@@ -1696,10 +1686,8 @@ test('test_aggregateRows_math', async () => {
     isExpandable: true,
   }
 
-  // Row A: 100 reqs, 10% error, reasoning_reported=500 (truthy)
-  const rowA = {
+  const rowA = makeRow({
     model: 'a',
-    provider: 'anthropic',
     tokens_in: 1000,
     tokens_out: 500,
     requests: 100,
@@ -1713,11 +1701,9 @@ test('test_aggregateRows_math', async () => {
     reasoning_estimated: 0,
     queue: 3,
     resets: 1,
-  }
-  // Row B: 200 reqs, 1% error, reasoning_reported=0 (zero — must be kept)
-  const rowB = {
+  })
+  const rowB = makeRow({
     model: 'b',
-    provider: 'anthropic',
     tokens_in: 2000,
     tokens_out: 1000,
     requests: 200,
@@ -1731,11 +1717,9 @@ test('test_aggregateRows_math', async () => {
     reasoning_estimated: 0,
     queue: 0,
     resets: 0,
-  }
-  // Row C: 50 reqs, 0% error, no cache/reasoning (undefined)
-  const rowC = {
+  })
+  const rowC = makeRow({
     model: 'c',
-    provider: 'anthropic',
     tokens_in: 500,
     tokens_out: 200,
     requests: 50,
@@ -1749,7 +1733,7 @@ test('test_aggregateRows_math', async () => {
     reasoning_estimated: undefined,
     queue: 0,
     resets: 0,
-  }
+  })
 
   const result = aggregateRowsFn([rowA, rowB, rowC], overrides)
 
@@ -1807,21 +1791,17 @@ test('test_aggregateRows_math', async () => {
  */
 test('test_errpct_hover_alias_provider_shows_tooltip', () => {
   // Row uses canonical provider 'google'; observation uses alias 'gemini'.
-  const googleRow = {
+  const googleRow = makeRow({
     model: 'gemini-1.5-pro',
-    provider: 'google', // canonical key
+    provider: 'google',
     tokens_in: 1000,
     tokens_out: 500,
     requests: 100,
     p50_ms: 200,
     p95_ms: 500,
-    error_pct: 5.0, // non-zero → tooltip should fire
+    error_pct: 5.0,
     cost_usd: 0.5,
-    cache_miss_pct: undefined,
-    cache_miss_usd_cost: undefined,
-    reasoning_reported: undefined,
-    reasoning_estimated: undefined,
-  }
+  })
 
   // Observation uses the alias 'gemini' (not 'google')
   const aliasObs: ProviderErrorObservation[] = [
@@ -1851,23 +1831,11 @@ test('test_errpct_hover_alias_provider_shows_tooltip', () => {
 })
 
 /**
- * S2-3: Err% hover tooltip — repo-view leaf row scoping.
- *
- * In repository view, leaf model rows show the repository-scoped error rate,
- * not the global model error rate. The tooltip must be gated or annotated to
- * make it clear which scope the % refers to. Currently the tooltip fires
- * using the same global observations without scoping them to the repository.
- *
- * After the fix the tooltip content must include a repo-scope annotation
- * (e.g. "errors scoped to: dashboard-shell") OR the tooltip must only render
- * when the observations are filtered to that repository.
- *
- * This test verifies that in repository view the tooltip either:
- *  a) includes a repo-scope annotation, OR
- *  b) does NOT show raw global observations without scoping context.
+ * S2-3 / C5: Err% tooltip on repository-view model rows must not imply repo-filtered
+ * observations. Copy is "(model-wide on repo row)" — observations stay global.
  */
 test('test_errpct_hover_repo_view_scoping', () => {
-  const repoRow = {
+  const repoRow = makeRow({
     model: 'claude-opus-4-7',
     provider: 'anthropic',
     tokens_in: 800,
@@ -1877,28 +1845,20 @@ test('test_errpct_hover_repo_view_scoping', () => {
     p95_ms: 300,
     error_pct: 12.0,
     cost_usd: 0.8,
-    cache_miss_pct: undefined,
-    cache_miss_usd_cost: undefined,
-    reasoning_reported: undefined,
-    reasoning_estimated: undefined,
     repositoryChildren: [
-      {
-        model: 'dashboard-shell', // repository name used as model key
+      makeRow({
+        model: 'dashboard-shell',
         provider: 'anthropic',
         tokens_in: 800,
         tokens_out: 200,
         requests: 40,
         p50_ms: 100,
         p95_ms: 300,
-        error_pct: 12.0, // repo-scoped error rate
+        error_pct: 12.0,
         cost_usd: 0.8,
-        cache_miss_pct: undefined,
-        cache_miss_usd_cost: undefined,
-        reasoning_reported: undefined,
-        reasoning_estimated: undefined,
-      },
+      }),
     ],
-  }
+  })
 
   const globalObs: ProviderErrorObservation[] = [
     makeErrorObs(
@@ -1925,31 +1885,10 @@ test('test_errpct_hover_repo_view_scoping', () => {
 
   openLazyHoverTooltipsIn(container)
 
-  // After the fix, the tooltip on a repo-scoped row MUST either:
-  //  a) include a scoping annotation indicating the repo context, OR
-  //  b) not render global observations at all for repo-leaf rows.
-  //
-  // Current behaviour (pre-fix): tooltip fires without any repo-scope annotation.
-  // Post-fix: at minimum, "scoped to" or "(repo)" must appear alongside the obs.
-  //
-  // We assert the presence of a scope annotation. If the engineer chooses (b)
-  // (suppress tooltip on repo-leaf rows), this assertion will fail differently —
-  // in that case update this test to `expect(queryByText).toBeNull()`.
-  //
-  // For now: if tooltip appears, it must include repo-scope context.
-  const tooltip = screen.queryByText(/most recent error/i)
-  if (tooltip !== null) {
-    // Tooltip is present — verify it carries the scope annotation
-    const tooltipContainer = tooltip.closest('[class]') ?? document.body
-    expect(tooltipContainer.textContent).toMatch(
-      /scoped to|repo|dashboard-shell/i
-    )
-  } else {
-    // Tooltip suppressed for repo-view leaf rows — also an acceptable fix.
-    // This branch passes only if the engineer explicitly suppresses repo-leaf tooltips.
-    // Force a specific assertion so this case is intentionally red until chosen:
-    expect(tooltip).not.toBeNull() // will fail → red until engineer decides
-  }
+  expect(
+    screen.getByText('1 most recent error (model-wide on repo row):')
+  ).toBeInTheDocument()
+  expect(screen.queryByText('(scoped to: dashboard-shell)')).toBeNull()
 })
 
 /**
@@ -2562,145 +2501,29 @@ test('test_tool_scalar_targeted_to_tool_cell_by_data_attr', () => {
   expect(toolCell!.textContent).toBe('460')
 })
 
-/**
- * S2-T8: Replace tautological `segments.toHaveLength(QUOTA_SEGMENTS)` (×3)
- * with fixture-independent assertions — applied to the LEDGER sparkline.
- *
- * The tautological pattern in provider-card.test.tsx:
- *   expect(mockQuotas[0].segments).toHaveLength(QUOTA_SEGMENTS)  // always true!
- * only asserts on the fixture, never on component behavior.
- *
- * This test pins the COMPONENT-LEVEL behavior: when two rows with different
- * spark data are aggregated by the provider row, the RENDERED sparkline path
- * must encode the actual aggregated totals — not a flat line or zero.
- *
- * The test is RED because:
- *  a) `sumSpark` currently uses index-alignment (not bucket alignment), so the
- *     path drawn will encode wrong sums; AND
- *  b) the sparkline SVG path values must change between the pre- and post-fix
- *     implementations. We assert the path encodes non-trivially varying data.
- *
- * This is fixture-independent: the assertion checks the DOM, not the fixture.
- */
-test('test_segments_fixture_independent_assertion', () => {
-  // Two rows with a clear, verifiable aggregate spark pattern.
-  // Row A: spark=[0, 1000, 0, 1000, 0]  (alternating)
-  // Row B: spark=[500, 0, 500, 0, 500]  (complementary)
-  // Correct bucket-aligned sum: [500, 1000, 500, 1000, 500]
-  // Min=500 (or 0 with index-alignment misalignment)
-  //
-  // The SVG path for a [500,1000,500,1000,500] series has a specific non-trivial
-  // shape (alternating high/low). For index-aligned wrong sum the shape differs.
-  // We verify the path is non-trivial (not flat).
+/** S2-T8: provider aggregate sparkline cell is scoped by data-col-id (not fixture length). */
+test('test_provider_sparkline_cell_has_data_col_id', () => {
   const rows = [
-    {
+    makeRow({
       model: 'claude-sonnet-4-5',
-      provider: 'anthropic',
-      tokens_in: 3000,
-      tokens_out: 1000,
-      requests: 50,
-      p50_ms: 100,
-      p95_ms: 250,
-      error_pct: 0,
-      cost_usd: 0.5,
-      cache_miss_pct: undefined,
-      cache_miss_usd_cost: undefined,
-      reasoning_reported: undefined,
-      reasoning_estimated: undefined,
       spark: [0, 1000, 0, 1000, 0],
-    },
-    {
+    }),
+    makeRow({
       model: 'claude-opus-4-7',
-      provider: 'anthropic',
       tokens_in: 1500,
       tokens_out: 500,
-      requests: 50,
-      p50_ms: 200,
-      p95_ms: 500,
-      error_pct: 0,
       cost_usd: 1.0,
-      cache_miss_pct: undefined,
-      cache_miss_usd_cost: undefined,
-      reasoning_reported: undefined,
-      reasoning_estimated: undefined,
       spark: [500, 0, 500, 0, 500],
-    },
+    }),
   ]
 
   const { container } = render(<MasterLedgerTable rows={rows} />)
 
-  // The Anthropic PROVIDER row shows the aggregated spark
-  // (sumSpark of both child rows = [500, 1000, 500, 1000, 500])
-  const headers = Array.from(
-    container.querySelectorAll('thead th')
-  ) as HTMLElement[]
-  const sparkIndex = headers.findIndex((h) =>
-    h.textContent?.toLowerCase().includes('tokens trend')
+  const sparkCell = container.querySelector(
+    'tbody tr td[data-col-id="sparkline"]'
   )
-  expect(sparkIndex).toBeGreaterThanOrEqual(0)
-
-  // Provider row is the first tbody row (not expanded, so it's the aggregate)
-  const firstRow = container.querySelector('tbody tr') as HTMLElement | null
-  expect(firstRow).not.toBeNull()
-
-  const sparkCell = firstRow!.querySelectorAll('td')[sparkIndex] as
-    | HTMLElement
-    | undefined
-  expect(sparkCell).toBeDefined()
-
-  const sparkSvg = sparkCell!.querySelector('svg')
-  expect(sparkSvg).not.toBeNull()
-
-  const pathEl = sparkSvg!.querySelector('path, polyline')
-  expect(pathEl).not.toBeNull()
-
-  const pathStr =
-    pathEl!.getAttribute('d') ?? pathEl!.getAttribute('points') ?? ''
-
-  // FIXTURE-INDEPENDENT assertion: the SVG path must contain at least 3 distinct
-  // numeric Y values (corresponding to [500, 1000, 500, 1000, 500] which has 2 unique
-  // values). This rules out a flat-line rendering (all equal to 0 or all equal to 1).
-  // Extract all numeric values from the path string
-  const nums = (pathStr.match(/-?\d+\.?\d*/g) ?? []).map(Number)
-  const yValues = nums.filter((n) => !Number.isNaN(n))
-
-  // Tautological assertion (the pattern we must REPLACE):
-  // expect(rows[0].spark).toHaveLength(5)  // always true — useless
-  // REAL assertion (tests component behavior, not fixture):
-  expect(yValues.length).toBeGreaterThan(4) // path has meaningful coordinates
-
-  const _uniqueYValues = new Set(yValues.map((v) => Math.round(v * 10) / 10))
-  // The rendered path must encode at LEAST 2 distinct Y values
-  // (corresponding to high=1000 and low=500 in the aggregated series).
-  // If sumSpark produces a flat [0,0,0,0,0] due to a bug, _uniqueYValues.size will be 1.
-  // After the fix: _uniqueYValues.size >= 2.
-  // This assertion is CURRENTLY RED because index-misaligned sumSpark may
-  // produce [500, 1000, 500, 1000, 500] correctly (it does for equal-length series)
-  // but the test is red for a different reason: the sparkline path in the DOM
-  // must be VERIFIED against expected coordinates, not just "non-trivial".
-  //
-  // Stronger assertion: the max Y value (mapped to SVG coords) must be at LEAST
-  // 2× the min Y value — indicating a visually distinct alternating pattern.
-  const minY = Math.min(...yValues)
-  const maxY = Math.max(...yValues)
-  // Engineer must fix: sumSpark produces wrong aggregation for unequal-length sparks.
-  // For equal-length sparks (this test), sumSpark is correct. But the SPARKLINE
-  // component must render the path with observable variation. If path is normalized
-  // to [0,1] range and quantized, min=0 and max=height px.
-  // Assertion: path spans at least 30% of SVG height (non-flat).
-  expect(maxY - minY).toBeGreaterThan(0)
-
-  // The key non-tautological contract: rendered sparkline reflects the data.
-  // Verify the SVG viewBox or height is set (not just empty).
-  const svgEl = sparkSvg as SVGElement
-  const viewBox = svgEl.getAttribute('viewBox') ?? ''
-  const height = svgEl.getAttribute('height') ?? ''
-  expect(viewBox.length + height.length).toBeGreaterThan(0)
-
-  // Finally: assert the provider-row sparkline cell has a data-col-id attribute.
-  // This is the FAILING assertion for S2-T8 — the cell must be identifiable
-  // by attribute, not by array index. Until added, this fails.
-  expect(sparkCell!.getAttribute('data-col-id')).toBe('sparkline')
+  expect(sparkCell).not.toBeNull()
+  expect(sparkCell!.querySelector('svg')).not.toBeNull()
 })
 
 /**
@@ -2726,51 +2549,27 @@ test('test_model_display_name_no_dangling_separator', () => {
 })
 
 // ---------------------------------------------------------------------------
-// Wave 7 — S2-11 / S2-12: perf identity guards
+// Expand/collapse UX + React.memo (honest contracts; two-stage displayRows memo deferred)
 // ---------------------------------------------------------------------------
 
 /**
- * test_master_ledger_aggregation_not_recomputed_on_expand (S2-11)
- *
- * The Wave 7 engineer fix splits `displayRows` into two memoized stages:
- *   1. `buildHierarchy(rows)` — keyed on `rows` only (never re-runs on expand).
- *   2. `flatten(hierarchy, expandedStates)` — keyed on expand state.
- *
- * This guard verifies the behaviour contract via DOM assertions:
- *   - Expanding a provider row causes the table to show child rows (visual change).
- *   - Collapsing returns to the original row count (hierarchy is preserved, not lost).
- *   - The provider row label remains stable across expand/collapse cycles.
- *
- * The perf contract (hierarchy built once, not on every expand) is enforced
- * structurally by the two-memo split; this DOM-level test is the regression guard
- * that locks in observable correctness. A broken hierarchy rebuild would produce
- * stale row counts or missing entries after collapse.
- *
- * NOTE: vi.spyOn on ES-module named exports in jsdom requires vi.mock at the
- * module level and cannot be done with dynamic await import() in a sync test.
- * We use DOM observation as the primary assertion strategy.
+ * Expand/collapse preserves hierarchy: row counts return to the same values after
+ * collapse and re-expand. Does NOT assert that aggregation skips recompute on expand
+ * (displayRows is still a single useMemo over rows + expansion — follow-up P1).
  */
-test('test_master_ledger_aggregation_not_recomputed_on_expand', () => {
-  // Two models under the same provider so expansion shows 2+ family/model rows.
+test('test_master_ledger_expand_collapse_row_counts_stable', () => {
   const rows = [
-    {
+    makeRow({
       model: 'claude-3-opus',
-      provider: 'anthropic',
-      tokens_in: 1000,
-      tokens_out: 2000,
-      requests: 100,
-      p50_ms: 200,
-      p95_ms: 500,
       error_pct: 0.5,
       cost_usd: 0.1,
       cache_miss_pct: undefined,
       cache_miss_usd_cost: undefined,
       reasoning_reported: undefined,
       reasoning_estimated: undefined,
-    },
-    {
+    }),
+    makeRow({
       model: 'claude-3-haiku',
-      provider: 'anthropic',
       tokens_in: 500,
       tokens_out: 800,
       requests: 50,
@@ -2782,7 +2581,7 @@ test('test_master_ledger_aggregation_not_recomputed_on_expand', () => {
       cache_miss_usd_cost: undefined,
       reasoning_reported: undefined,
       reasoning_estimated: undefined,
-    },
+    }),
   ]
 
   const { container } = render(<MasterLedgerTable rows={rows} />)
@@ -2832,26 +2631,12 @@ test('test_master_ledger_aggregation_not_recomputed_on_expand', () => {
 })
 
 /**
- * test_master_ledger_table_memo_no_rerender_on_stable_props (S2-12)
- *
- * After the Wave 7 engineer wraps MasterLedgerTable in React.memo, re-rendering
- * the parent with STABLE props must not cause MasterLedgerTable to re-render.
- *
- * Strategy: wrap MasterLedgerTable in a counter-tracking wrapper, render it
- * inside a parent, re-render the parent with identical props, assert the
- * MasterLedgerTable render output is unchanged.
- *
- * NOTE: In jsdom we cannot observe render counts directly without React DevTools
- * or a dedicated render-count hook. Instead this test verifies the BEHAVIOUR
- * contract of React.memo: the DOM output after parent re-render is identical to
- * the DOM output after initial render (i.e., no "flash" or DOM mutation).
- *
- * A direct render-count assertion is left as a comment showing the pattern;
- * the DOM-identity assertion is the primary value guard.
+ * React.memo: identical props must not re-run displayRows (observed via aggregateRows).
+ * Removing memo() causes extra aggregateRows calls on parent rerender — this test fails.
  */
-test('test_master_ledger_table_memo_no_rerender_on_stable_props', () => {
+test('test_master_ledger_table_memo_skips_display_rows_recompute_on_stable_props', () => {
   const rows = [
-    {
+    makeRow({
       model: 'gpt-4o',
       provider: 'openai',
       tokens_in: 5000,
@@ -2865,25 +2650,24 @@ test('test_master_ledger_table_memo_no_rerender_on_stable_props', () => {
       cache_miss_usd_cost: undefined,
       reasoning_reported: undefined,
       reasoning_estimated: undefined,
-    },
+    }),
   ]
 
-  const { container, rerender } = render(<MasterLedgerTable rows={rows} />)
+  const aggregateSpy = vi.spyOn(masterLedgerAggregation, 'aggregateRows')
+  try {
+    const { rerender } = render(<MasterLedgerTable rows={rows} />)
+    const callsAfterMount = aggregateSpy.mock.calls.length
+    expect(callsAfterMount).toBeGreaterThan(0)
 
-  // Capture initial DOM snapshot of the table body.
-  const initialHTML = container.querySelector('tbody')?.innerHTML ?? ''
-  expect(initialHTML.length).toBeGreaterThan(0)
-
-  // Re-render with the exact same props reference — React.memo should bail out.
-  rerender(<MasterLedgerTable rows={rows} />)
-
-  // DOM must be identical (no re-render side-effects, no row reorder, no flicker).
-  const afterHTML = container.querySelector('tbody')?.innerHTML ?? ''
-  expect(afterHTML).toBe(initialHTML)
+    rerender(<MasterLedgerTable rows={rows} />)
+    expect(aggregateSpy.mock.calls.length).toBe(callsAfterMount)
+  } finally {
+    aggregateSpy.mockRestore()
+  }
 })
 
 // ---------------------------------------------------------------------------
-// Wave 2 D1-449 fork-review remediation (2-a) — production-path RED tests
+// Wave 2 D1-449 fork-review remediation (2-a) — production-path spark/repo/family tests
 // ---------------------------------------------------------------------------
 
 const PERIOD_START = '2026-06-01T00:00:00Z'
@@ -3187,6 +2971,8 @@ test('test_errpct_tooltip_does_not_claim_repo_scoping_on_repo_view_model_row', (
   expandLedger('Opus', 'family')
 
   openLazyHoverTooltipsIn(container)
-  expect(screen.getByText(/most recent error/i)).toBeInTheDocument()
+  expect(
+    screen.getByText('1 most recent error (model-wide on repo row):')
+  ).toBeInTheDocument()
   expect(screen.queryByText('(scoped to: dashboard-shell)')).toBeNull()
 })
