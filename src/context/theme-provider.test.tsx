@@ -1,16 +1,14 @@
 /**
  * ThemeProvider — Phosphor Atlas dark-only behaviour.
  *
- * Wave 1 implementation delivered a simplified dark-only ThemeProvider.
- * These tests are permanent regression guards; stale "red-phase" scaffolding
- * has been removed (S6-T3, Wave 10 cleanup).
- *
- * Test coverage:
- *   1. resolvedTheme is always 'dark' regardless of stored cookie
- *   2. setTheme('light') is a no-op — resolvedTheme remains 'dark'
- *   3. The 'dark' class is always applied to document.documentElement on mount
+ * D1-451 Wave 5 additions (P3, G3, I2):
+ *   - P3: context value must be referentially stable across benign parent re-renders.
+ *   - G3: ThemeProvider must not spread unknown props onto ThemeContext (narrow surface).
+ *   - I2: vestigial light-theme API removed or explicitly documented on the type.
  */
+import { useEffect, useRef } from 'react'
 import { act, render, screen } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 import { ThemeProvider, useTheme } from './theme-provider'
 
 // ---------------------------------------------------------------------------
@@ -40,6 +38,25 @@ function ThemeToggle(): React.JSX.Element {
       </button>
     </>
   )
+}
+
+function ThemeContextIdentityProbe({
+  onCapture,
+}: {
+  onCapture: (first: unknown, second: unknown) => void
+}): React.JSX.Element {
+  const first = useRef<ReturnType<typeof useTheme> | null>(null)
+  const ctx = useTheme()
+  useEffect(() => {
+    if (first.current === null) {
+      first.current = ctx
+      return
+    }
+    if (first.current !== ctx) {
+      onCapture(first.current, ctx)
+    }
+  })
+  return <span data-testid='probe'>ok</span>
 }
 
 // ---------------------------------------------------------------------------
@@ -129,4 +146,51 @@ test('test_dark_class_applied_to_html_root', () => {
   )
 
   expect(document.documentElement.classList.contains('dark')).toBe(true)
+})
+
+describe('D1-451 Wave 5 — ThemeProvider internals', () => {
+  test('test_theme_context_value_is_memoized_across_parent_rerender', () => {
+    let unstable: { first: unknown; second: unknown } | null = null
+    const { rerender } = render(
+      <ThemeProvider data-testid='should-not-leak'>
+        <ThemeContextIdentityProbe
+          onCapture={(first, second) => {
+            unstable = { first, second }
+          }}
+        />
+      </ThemeProvider>
+    )
+
+    rerender(
+      <ThemeProvider data-testid='should-not-leak'>
+        <ThemeContextIdentityProbe
+          onCapture={(first, second) => {
+            unstable = { first, second }
+          }}
+        />
+      </ThemeProvider>
+    )
+
+    expect(unstable).toBeNull()
+  })
+
+  test('test_theme_provider_does_not_forward_arbitrary_props_to_context', () => {
+    // G3: {...props} on ThemeContext must be removed — only children wired.
+    render(
+      <ThemeProvider storageKey='custom-key-should-not-appear-on-context'>
+        <ThemeDisplay />
+      </ThemeProvider>
+    )
+
+    const leaked = document.querySelector('[storagekey]')
+    expect(leaked).toBeNull()
+  })
+
+  test('test_theme_type_excludes_vestigial_light_theme_literal', () => {
+    // I2: document dark-only contract — `light` must not remain on Theme union.
+    type ThemeFromHook = ReturnType<typeof useTheme>['theme']
+    type ThemeAllowsLight = 'light' extends ThemeFromHook ? true : false
+    const allowsLight: ThemeAllowsLight = false
+    expect(allowsLight).toBe(false)
+  })
 })
