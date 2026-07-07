@@ -8,6 +8,8 @@
  * All tests expected to FAIL (red) — source file does not exist yet.
  */
 import { act, render, screen } from '@testing-library/react'
+import { readFileSync } from 'node:fs'
+import path from 'node:path'
 import AnchorBar from './anchor-bar'
 
 const SECTIONS = [
@@ -281,4 +283,34 @@ test('test_anchor_bar_shift_s_does_not_jump', () => {
 
   // EXPECTED FAIL: Shift+S currently triggers onSectionChange
   expect(onSectionChange).not.toHaveBeenCalled()
+})
+
+// ---------------------------------------------------------------------------
+// D1-451 Wave 3 — G-3 (info): bare-letter shortcut disposition
+// ---------------------------------------------------------------------------
+
+/**
+ * G-3: document-level bare-letter shortcuts are deliberate; suppression must
+ * stay aligned with `shouldSuppressListboxShortcutKey` (shared with slicer).
+ */
+test('D1-451_G3_anchor_bar_documents_bare_letter_shortcut_contract_in_source', () => {
+  const sourcePath = path.join(import.meta.dirname, 'anchor-bar.tsx')
+  const source = readFileSync(sourcePath, 'utf8')
+  expect(source).toContain('shouldSuppressListboxShortcutKey')
+  expect(source).toMatch(/keydown/)
+  expect(source).toMatch(/shiftKey/)
+})
+
+test('D1-451_G3_bare_letter_s_fires_when_focus_is_body_not_suppressed_control', () => {
+  const onSectionChange = vi.fn()
+  render(<AnchorBar activeSection='ledger' onSectionChange={onSectionChange} />)
+  document.body.focus()
+
+  act(() => {
+    document.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 's', bubbles: true })
+    )
+  })
+
+  expect(onSectionChange).toHaveBeenCalledWith('status')
 })

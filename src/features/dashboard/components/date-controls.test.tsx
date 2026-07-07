@@ -154,3 +154,41 @@ test('test_date_controls_disabled_reason_surfaced', () => {
   // At least one disabled-reason mechanism must be present
   expect(hasTitle || hasAriaDescribedBy).toBe(true)
 })
+
+// ---------------------------------------------------------------------------
+// D1-451 Wave 3 — C-1 (DateControls half): re-sync when parent range changes
+// ---------------------------------------------------------------------------
+
+/**
+ * When the host advances the active query range (e.g. rolling default sync),
+ * From/To inputs must reflect `initialFrom` / `initialTo` — not stale local edits.
+ */
+test('D1-451_C1_date_controls_resync_after_user_edits_when_parent_props_change', () => {
+  const onRangeChange = vi.fn()
+  const { rerender } = render(
+    <DateControls
+      initialFrom='2026-01-01'
+      initialTo='2026-01-31'
+      onRangeChange={onRangeChange}
+    />
+  )
+
+  fireEvent.change(screen.getByLabelText(/from/i), {
+    target: { value: '2026-06-01' },
+  })
+  fireEvent.change(screen.getByLabelText(/^to$/i), {
+    target: { value: '2026-06-15' },
+  })
+  expect(screen.getByLabelText(/from/i)).toHaveValue('2026-06-01')
+
+  rerender(
+    <DateControls
+      initialFrom='2026-02-01'
+      initialTo='2026-02-10'
+      onRangeChange={onRangeChange}
+    />
+  )
+
+  expect(screen.getByLabelText(/from/i)).toHaveValue('2026-02-01')
+  expect(screen.getByLabelText(/^to$/i)).toHaveValue('2026-02-10')
+})

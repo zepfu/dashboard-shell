@@ -16,9 +16,11 @@ import {
   computeDeltaPct,
   deltaColor,
   formatDeltaPct,
+  formatDeltaPctWithPrior,
   type ProviderCurrentStats,
 } from './comparison-panel'
 import type { ModelRow } from './master-ledger-aggregation'
+import type { TrendBucket } from './token-trend-chart'
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -515,8 +517,8 @@ test('test_delta_zero_prior_renders_new_not_dash', () => {
  */
 test('test_comparison_sparkline_color_per_provider', () => {
   // 24 buckets with different totals per provider
-  const trendBuckets = Array.from({ length: 24 }, (_, i) => ({
-    hour: i,
+  const trendBuckets: TrendBucket[] = Array.from({ length: 24 }, (_, i) => ({
+    label: `${i.toString()}h`,
     totals: { anthropic: i * 100, openai: i * 50 },
   }))
 
@@ -538,4 +540,35 @@ test('test_comparison_sparkline_color_per_provider', () => {
   const strokes = Array.from(polylines).map((p) => p.getAttribute('stroke'))
   const uniqueStrokes = new Set(strokes)
   expect(uniqueStrokes.size).toBeGreaterThan(1)
+})
+
+// ---------------------------------------------------------------------------
+// D1-451 Wave 3 — comparison-panel.helpers (G-1, G-2) + E-3 fixture contract
+// ---------------------------------------------------------------------------
+
+/**
+ * G-1: Δ Tok increases should not use the same "hot" polarity as cost/errors unless
+ * product explicitly treats token growth as bad. RED until per-column polarity lands.
+ */
+test('D1-451_G1_delta_tok_increase_uses_neutral_or_non_hot_color', () => {
+  const deltaTokUp = 12.5
+  expect(deltaColor(deltaTokUp)).not.toBe('var(--accent-hot)')
+})
+
+/**
+ * G-2: prior=0 on Δ p95 must not show the generic "new" label (latency semantics).
+ */
+test('D1-451_G2_prior_zero_p95_delta_not_labeled_new', () => {
+  const label = formatDeltaPctWithPrior(120, 0, null)
+  expect(label).not.toBe('new')
+  expect(label.length).toBeGreaterThan(0)
+})
+
+test('D1-451_E3_sparkline_trendBuckets_fixture_satisfies_TrendBucket_type', () => {
+  const buckets: TrendBucket[] = [
+    { label: '0h', totals: { anthropic: 1 } },
+    { label: '1h', totals: { openai: 2 } },
+  ]
+  expect(buckets.every((b) => typeof b.label === 'string')).toBe(true)
+  expect(buckets.every((b) => b.totals !== undefined)).toBe(true)
 })
