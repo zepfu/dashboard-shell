@@ -1,6 +1,6 @@
-# Contributing to Shadcn-Admin
+# Contributing to Dashboard Shell
 
-Thank you for considering contributing to **shadcn-admin**! Every contribution is valuable, whether it's reporting bugs, suggesting improvements, adding features, or refining README.
+Thank you for considering contributing to **Dashboard Shell**! Every contribution is valuable, whether it's reporting bugs, suggesting improvements, adding features, or refining documentation.
 
 ## Table of Contents
 
@@ -19,7 +19,7 @@ Thank you for considering contributing to **shadcn-admin**! Every contribution i
 2. **Clone** your fork:
 
    ```bash
-   git clone https://github.com/your-username/shadcn-admin.git
+   git clone https://github.com/your-username/dashboard-shell.git
    ```
 
 3. **Install dependencies:**
@@ -44,11 +44,11 @@ Thank you for considering contributing to **shadcn-admin**! Every contribution i
 
 ## How to Contribute
 
-- **Feature Requests:** Open an issue or start a discussion to discuss the feature before implementation.
+- **Feature Requests:** Open an issue to discuss the feature before implementation.
 - **Bug Fixes:** Provide clear reproduction steps in your issue.
 - **Documentation:** Improvements to the documentation (README) are always appreciated.
 
-> **Note:** Pull Requests adding new features without a prior issue or discussion will **not be accepted**.
+> **Note:** Pull Requests adding new features without a prior issue will **not be accepted**.
 
 ---
 
@@ -95,10 +95,10 @@ required as part of routine CI-equivalent validation.
 
 - Be respectful and constructive.
 - Follow the [Code of Conduct](./CODE_OF_CONDUCT.md).
-- Stay on topic in discussions.
+- Stay on topic in issue threads.
 
 ---
 
-Thank you for helping make **shadcn-admin** better! 🚀
+Thank you for helping make **Dashboard Shell** better!
 
-If you have any questions, feel free to reach out via [Discussions](https://github.com/satnaing/shadcn-admin/discussions).
+If you have any questions, open or continue the discussion in the relevant issue thread.
