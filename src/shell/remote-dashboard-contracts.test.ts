@@ -1,14 +1,7 @@
 /**
  * Wave 6 — Remote Dashboard Contract Tests (S6-1, S6-2, S6-T1)
  *
- * These tests replace the THEATER grep-file tests with real contract
- * assertions against the live metadata and runtime utilities.
- *
- * Every test in this file MUST FAIL until the engineer:
- *   - Exports `matchRoutePath` from remote-dashboard.tsx (or metadata)
- *   - Exports `assertProjectModule` (net-new function, throws named error)
- *   - Exports `buildRemoteRouteProps` from remote-dashboard.tsx
- *   - Ensures `normalizeRemoteRoutePath` is exported from metadata (already is)
+ * Contract assertions against live metadata and runtime utilities.
  */
 import { readFileSync } from 'node:fs'
 import { describe, expect, test } from 'vitest'
@@ -18,7 +11,6 @@ import {
   remoteDashboardMetadata,
   type RemoteDashboardMetadataEntry,
 } from './remote-dashboard-metadata'
-// These imports will fail (red) until the engineer exports them:
 import {
   assertProjectModule,
   buildRemoteRouteProps,
@@ -110,8 +102,6 @@ describe('remoteDashboardMetadata invariants (S6-1)', () => {
     for (const dashboard of remoteDashboardMetadata) {
       for (const navItem of dashboard.navItems) {
         const normalizedPath = normalizeRemoteRoutePath(navItem.path)
-        // matchRoutePath is currently internal — this test will fail (RED)
-        // until the engineer exports it from remote-dashboard.tsx
         const result = matchRoutePath(navItem.path, normalizedPath)
         expect(result).not.toBeUndefined()
       }
@@ -178,7 +168,6 @@ describe('normalizeRemoteRoutePath (S6-2)', () => {
 
 // ---------------------------------------------------------------------------
 // S6-2: matchRoutePath unit tests
-// These will fail (RED) until matchRoutePath is exported from remote-dashboard.tsx
 // ---------------------------------------------------------------------------
 
 describe('matchRoutePath (S6-2)', () => {
@@ -226,7 +215,6 @@ describe('matchRoutePath (S6-2)', () => {
 
 // ---------------------------------------------------------------------------
 // S6-2 / S6-5: buildRemoteRouteProps — does NOT clobber reserved params
-// This will fail (RED) until buildRemoteRouteProps is exported from remote-dashboard.tsx
 // ---------------------------------------------------------------------------
 
 describe('buildRemoteRouteProps (S6-5)', () => {
@@ -276,7 +264,6 @@ describe('buildRemoteRouteProps (S6-5)', () => {
 
 // ---------------------------------------------------------------------------
 // S6-2: assertProjectModule — throws a named error on malformed default
-// This will fail (RED) until assertProjectModule is exported / implemented
 // ---------------------------------------------------------------------------
 
 describe('assertProjectModule (S6-2)', () => {
