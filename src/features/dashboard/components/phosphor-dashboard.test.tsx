@@ -5598,3 +5598,317 @@ describe('PhosphorDashboard — D1-436: token trend hover/detail cleanup', () =>
     expect(dayDetailCallCount).toBe(1)
   })
 })
+
+// ---------------------------------------------------------------------------
+// Wave 1 (D1-448 fork-review remediation) — behavioral RED tests (C4–C7, P3)
+// ---------------------------------------------------------------------------
+
+describe('PhosphorDashboard — Wave 1 fork-review remediation (RED)', () => {
+  test('prior report query forwards AbortSignal', async () => {
+    const usageReportModule = await import('../api/usage-report')
+    const originalFetch = usageReportModule.fetchUsageReport
+
+    let priorAbortObserved = false
+
+    const fetchUsageReportSpy = vi
+      .spyOn(usageReportModule, 'fetchUsageReport')
+      .mockImplementation(async (params, signal) => {
+        const isPriorWindow =
+          params.from === '2026-03-20' && params.to === '2026-04-19'
+        if (isPriorWindow) {
+          await new Promise<void>((resolve, reject) => {
+            const onAbort = (): void => {
+              priorAbortObserved = true
+              reject(new DOMException('Aborted', 'AbortError'))
+            }
+            if (signal?.aborted === true) {
+              onAbort()
+              return
+            }
+            signal?.addEventListener('abort', onAbort, { once: true })
+            setTimeout(() => {
+              resolve()
+            }, 5_000)
+          })
+        }
+        return originalFetch(params, signal)
+      })
+
+    let container!: HTMLElement
+    let rerender!: (ui: React.ReactElement) => void
+
+    await act(async () => {
+      const renderResult = render(
+        <Wrapper>
+          <PhosphorDashboard
+            from='2026-04-19'
+            to='2026-05-19'
+            showComparison={true}
+          />
+        </Wrapper>
+      )
+      container = renderResult.container
+      rerender = renderResult.rerender
+    })
+
+    await waitFor(() => {
+      expect(
+        fetchUsageReportSpy.mock.calls.some(
+          (call) =>
+            call[0]?.from === '2026-03-20' && call[0]?.to === '2026-04-19'
+        )
+      ).toBe(true)
+    })
+
+    await act(async () => {
+      rerender(
+        <Wrapper>
+          <PhosphorDashboard
+            from='2026-04-19'
+            to='2026-05-19'
+            showComparison={false}
+          />
+        </Wrapper>
+      )
+    })
+
+    await waitFor(
+      () => {
+        expect(priorAbortObserved).toBe(true)
+      },
+      { timeout: 2_000 }
+    )
+
+    const priorCalls = fetchUsageReportSpy.mock.calls.filter(
+      (call) => call[0]?.from === '2026-03-20' && call[0]?.to === '2026-04-19'
+    )
+    expect(
+      priorCalls.some(
+        (call) => call[1] instanceof AbortSignal && call[1].aborted
+      )
+    ).toBe(true)
+
+    fetchUsageReportSpy.mockRestore()
+    void container
+  })
+
+  test('red aggregate PgBouncer status with zero sidecars still raises the tab indicator', async () => {
+    server.use(
+      http.get('/api/shell/health', () =>
+        HttpResponse.json({
+          ok: true,
+          pgBouncerSidecars: {
+            status: 'red',
+            sidecars: [],
+          },
+        } satisfies ShellHealthResponse)
+      )
+    )
+
+    await act(async () => {
+      render(
+        <Wrapper>
+          <PhosphorDashboard
+            from='2026-05-20'
+            to='2026-05-21'
+            report={MOCK_REPORT}
+            reportLoading={false}
+            showComparison={false}
+            quotas={[]}
+          />
+        </Wrapper>
+      )
+    })
+
+    const pgBouncerTab = screen.getByRole('tab', { name: /PgBouncer/ })
+
+    await waitFor(() => {
+      expect(
+        pgBouncerTab.querySelector('.section-tab-indicator.is-red')
+      ).not.toBeNull()
+    })
+  })
+
+  test('parent-provided quota data does not trigger disabled internal refetch', async () => {
+    let quotasCallCount = 0
+    let quotaHistoryCallCount = 0
+
+    server.use(
+      http.get('/api/shell/reports/quotas', () => {
+        quotasCallCount += 1
+        return HttpResponse.json({
+          metadata: {
+            generatedAt: '2026-05-19T00:00:00.000Z',
+            latestRecordAt: null,
+            latestRecordAgeMinutes: null,
+            latestRecordStale: false,
+            staleRecordThresholdMinutes: 60,
+          },
+          quotas: [],
+        })
+      }),
+      http.get('/api/shell/reports/usage/quota-history', () => {
+        quotaHistoryCallCount += 1
+        return HttpResponse.json({
+          metadata: {
+            generatedAt: '2026-05-19T00:00:00.000Z',
+          },
+          quotaHistory: [],
+        })
+      })
+    )
+
+    await act(async () => {
+      render(
+        <Wrapper>
+          <PhosphorDashboard
+            from='2026-05-20'
+            to='2026-05-21'
+            report={MOCK_REPORT}
+            reportLoading={false}
+            showComparison={false}
+            quotas={[]}
+            quotaHistory={[]}
+          />
+        </Wrapper>
+      )
+    })
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole('button', { name: /refresh provider data/i })
+      ).toBeEnabled()
+    })
+
+    await act(async () => {
+      fireEvent.click(
+        screen.getByRole('button', { name: /refresh provider data/i })
+      )
+    })
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 100))
+    })
+
+    expect(quotasCallCount).toBe(0)
+    expect(quotaHistoryCallCount).toBe(0)
+  })
+
+  test('early force refresh does not split quota dedup', async () => {
+    let quotasCallCount = 0
+    const seenQuotaKeys = new Set<string>()
+
+    let resolveQuotas!: () => void
+    const quotasGate = new Promise<void>((resolve) => {
+      resolveQuotas = resolve
+    })
+
+    server.use(
+      http.get('/api/shell/reports/usage', () =>
+        HttpResponse.json(MOCK_REPORT)
+      ),
+      http.get('/api/shell/reports/quotas', async ({ request }) => {
+        const url = new URL(request.url)
+        seenQuotaKeys.add(url.searchParams.get('cache_bust') ?? '')
+        quotasCallCount += 1
+        await quotasGate
+        return HttpResponse.json({
+          metadata: {
+            generatedAt: '2026-05-19T00:00:00.000Z',
+            latestRecordAt: null,
+            latestRecordAgeMinutes: null,
+            latestRecordStale: false,
+            staleRecordThresholdMinutes: 60,
+          },
+          quotas: [],
+        })
+      })
+    )
+
+    const { QueryClient, QueryClientProvider } =
+      await import('@tanstack/react-query')
+    const {
+      createRootRoute,
+      createRouter,
+      createMemoryHistory,
+      RouterProvider,
+    } = await import('@tanstack/react-router')
+    const { SidebarProvider } = await import('@/components/ui/sidebar')
+    const { DirectionProvider } = await import('@/context/direction-provider')
+    const { SearchProvider } = await import('@/context/search-provider')
+    const { LayoutProvider } = await import('@/context/layout-provider')
+    const Dashboard = (await import('../index')).Dashboard
+
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false, gcTime: 0 } },
+    })
+    const rootRoute = createRootRoute({ component: Dashboard })
+    const router = createRouter({
+      routeTree: rootRoute,
+      history: createMemoryHistory({ initialEntries: ['/'] }),
+      context: { queryClient: client },
+    })
+
+    await act(async () => {
+      render(
+        <QueryClientProvider client={client}>
+          <DirectionProvider>
+            <SearchProvider>
+              <LayoutProvider>
+                <SidebarProvider>
+                  <RouterProvider router={router} />
+                </SidebarProvider>
+              </LayoutProvider>
+            </SearchProvider>
+          </DirectionProvider>
+        </QueryClientProvider>
+      )
+    })
+
+    await waitFor(
+      () => {
+        expect(quotasCallCount).toBeGreaterThanOrEqual(1)
+      },
+      { timeout: 5_000 }
+    )
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /force refresh/i }))
+    })
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 200))
+    })
+
+    resolveQuotas()
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 200))
+    })
+
+    expect(quotasCallCount).toBe(1)
+    expect(seenQuotaKeys.size).toBeLessThanOrEqual(1)
+  })
+
+  test('ComparisonPanel does not mount below 3840px', async () => {
+    await act(async () => {
+      render(
+        <Wrapper>
+          <PhosphorDashboard
+            from='2026-04-19'
+            to='2026-05-19'
+            report={MOCK_REPORT}
+            reportLoading={false}
+            showComparison={false}
+            quotas={[]}
+          />
+        </Wrapper>
+      )
+    })
+
+    expect(document.getElementById('comparison')).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole('table', { name: /provider comparison/i })
+    ).not.toBeInTheDocument()
+  })
+})
