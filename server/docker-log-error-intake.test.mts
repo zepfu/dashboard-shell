@@ -155,6 +155,48 @@ describe('docker-log-error-intake', () => {
     await expect(readdir(intakeDir)).resolves.toEqual([])
   })
 
+  test('container wrapper records an actionable stdout line with required JSONL fields', async () => {
+    const intakeDir = await mkdtemp(path.join(os.tmpdir(), 'd1-445-wrapper-actionable-'))
+    tmpDirs.push(intakeDir)
+    const containerName = 'dashboard-shell-reports-dev'
+    const msg = 'ERROR: upstream gateway returned status 502 for deterministic wrapper smoke check'
+
+    await execFileAsync(
+      'sh',
+      [
+        path.resolve('scripts/container-error-intake.sh'),
+        'sh',
+        '-c',
+        'printf "%s\\n" "$WRAPPER_MESSAGE"',
+      ],
+      {
+        env: {
+          ...process.env,
+          SHELL_CONTAINER_NAME: containerName,
+          SHELL_CONTAINER_ERROR_INTAKE_DIR: intakeDir,
+          WRAPPER_MESSAGE: msg,
+        },
+      }
+    )
+
+    const filePath = path.join(
+      intakeDir,
+      `${safeContainerErrorIntakeBasename(containerName)}-error.jsonl`
+    )
+    const text = await readFile(filePath, 'utf8')
+    const rowLines = text.trim().split('\n').filter(Boolean)
+    expect(rowLines).toHaveLength(1)
+    const row = JSON.parse(rowLines[0])
+
+    expect(row.fingerprint).toEqual(expect.any(String))
+    expect(row.fingerprint).toBeTruthy()
+    expect(row.status_code).toBe(502)
+    expect(row.level).toBe('error')
+    expect(row.container).toBe(containerName)
+    expect(row.stream).toBe('stdout')
+    expect(row.message).toContain('upstream gateway returned status 502')
+  })
+
   test('container wrapper records actionable stderr with JSON-escaped fields', async () => {
     const intakeDir = await mkdtemp(path.join(os.tmpdir(), 'd1-445-wrapper-json-'))
     tmpDirs.push(intakeDir)
