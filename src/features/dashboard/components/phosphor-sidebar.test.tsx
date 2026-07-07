@@ -7,9 +7,9 @@ import {
 } from '@tanstack/react-router'
 import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import { http, HttpResponse } from 'msw'
+import { vi } from 'vitest'
 import { server } from '../../../test/setup'
 import type { DashboardAlertSummary } from '../hooks/use-alerts-from-anomalies'
-import { PhosphorSidebar } from './phosphor-sidebar'
 
 beforeEach(() => {
   server.use(
@@ -32,6 +32,7 @@ async function renderSidebar(
   initialPath = '/',
   dashboardAlerts?: DashboardAlertSummary
 ) {
+  const { PhosphorSidebar } = await import('./phosphor-sidebar')
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   })
@@ -177,4 +178,46 @@ test('sidebar_keyboard_user_can_read_alert_issue_count', async () => {
   expect(
     nameIncludesCount || disclosureBtn !== null || detailsEl !== null
   ).toBe(true)
+})
+
+// ---------------------------------------------------------------------------
+// Wave 1 (D1-448 fork-review) — RED behavioral tests
+// ---------------------------------------------------------------------------
+
+describe('PhosphorSidebar — Wave 1 fork-review remediation (RED)', () => {
+  test('alert disclosure exposes issue details to keyboard users', async () => {
+    await renderSidebar('/', {
+      severity: 'error',
+      issues: [
+        {
+          severity: 'error',
+          head: '10 529 errors from Anthropic',
+          sub: 'Observed in the last 90 minutes',
+        },
+      ],
+    })
+
+    const disclosure = screen.getByRole('button', {
+      name: /alert issues — expand for details/i,
+    })
+    expect(disclosure).toHaveAttribute('aria-expanded', 'false')
+    expect(
+      screen.queryByText('10 529 errors from Anthropic')
+    ).not.toBeInTheDocument()
+
+    fireEvent.click(disclosure)
+
+    expect(disclosure).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByText('10 529 errors from Anthropic')).toBeInTheDocument()
+  })
+
+  test('importing phosphor-sidebar does not mutate window.matchMedia', async () => {
+    vi.resetModules()
+
+    Reflect.deleteProperty(window, 'matchMedia')
+
+    await import('./phosphor-sidebar')
+
+    expect(window.matchMedia).toBeUndefined()
+  })
 })
