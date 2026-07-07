@@ -19,6 +19,10 @@ import fs from 'node:fs'
 import path from 'node:path'
 
 const css = fs.readFileSync(path.resolve('src/styles/index.css'), 'utf8')
+const selfSource = fs.readFileSync(
+  path.resolve('src/styles/quota-burn-colors.test.ts'),
+  'utf8'
+)
 
 function readRule(selector: string): string {
   const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
@@ -26,6 +30,11 @@ function readRule(selector: string): string {
     new RegExp(`${escapedSelector}\\s*\\{([^}]*)\\}`, 's')
   )
   return match?.[1] ?? ''
+}
+
+function readBackgroundHex(ruleBody: string): string | null {
+  const hex = ruleBody.match(/background:\s*(#[0-9a-fA-F]{6})\s*;/)
+  return hex ? hex[1].toLowerCase() : null
 }
 
 /**
@@ -46,6 +55,14 @@ const burnTiers = [
   ['fast', '--quota-burn-fast'],
   ['hot', '--quota-burn-hot'],
   ['peak', '--quota-burn-peak'],
+] as const
+
+const ivThresholdTiers = [
+  ['0-5', 'quota-0-5', 'iv-0-5'],
+  ['5-10', 'quota-5-10', 'iv-5-10'],
+  ['10-25', 'quota-10-25', 'iv-10-25'],
+  ['25-50', 'quota-25-50', 'iv-25-50'],
+  ['50-p', 'quota-50-p', 'iv-50-p'],
 ] as const
 
 // ---------------------------------------------------------------------------
@@ -114,4 +131,48 @@ test('test_all_five_burn_tiers_have_both_legend_and_bar_rules', () => {
       barDefined: true,
     })
   }
+})
+
+test.each(ivThresholdTiers)(
+  'test_iv_threshold_legend_bar_consistency_%s',
+  (_label, legendClass, barClass) => {
+    /**
+     * C-5/C-7: iv-* bar tiers and quota-* legend swatches must use identical hex
+     * (mirrors the velocity-* / --quota-burn-* consistency guard).
+     */
+    const legendHex = readBackgroundHex(
+      readRule(`.status-legend-swatch.${legendClass}`)
+    )
+    const barHex = readBackgroundHex(readRule(`.quota-interval.${barClass}`))
+
+    expect(legendHex, `legend .${legendClass}`).not.toBeNull()
+    expect(barHex, `bar .${barClass}`).not.toBeNull()
+    expect(legendHex, `tier ${legendClass} vs ${barClass}`).toBe(barHex)
+  }
+)
+
+test('test_assertBurnVarDefined_comment_matches_regex', () => {
+  /**
+   * C-7: helper comment must not overclaim top-level-only matching unless the
+   * regex is tightened to exclude selector rule bodies.
+   */
+  const helperMatch = selfSource.match(
+    /function assertBurnVarDefined[\s\S]*?^}/m
+  )
+  expect(helperMatch).not.toBeNull()
+  const helperBody = helperMatch![0]
+
+  const commentClaimsTopLevelOnly =
+    /at top level \(not inside a selector rule body\)/.test(helperBody)
+
+  // Fails while comment overclaims but regex matches anywhere in the file
+  const overclaimWithoutEnforcement =
+    commentClaimsTopLevelOnly &&
+    !/:root\s*\{[^}]*\$\{cssVariable/.test(helperBody) &&
+    !/function isBurnVarDefinedAtRoot/.test(helperBody)
+
+  expect(
+    overclaimWithoutEnforcement,
+    'assertBurnVarDefined comment must match what the regex enforces (top-level :root only)'
+  ).toBe(false)
 })
