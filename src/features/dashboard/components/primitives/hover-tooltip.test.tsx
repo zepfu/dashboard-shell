@@ -9,9 +9,7 @@
  * visibility — jsdom cannot execute CSS :hover rules. Tests written against
  * state-driven visibility.
  *
- * All tests expected to FAIL (red) — source file does not exist yet.
- *
- * Wave 8 (S3-24) — a11y red-phase additions:
+ * Wave 8 (S3-24) — a11y:
  *  - role='tooltip' on the floating panel
  *  - aria-describedby wired from trigger child to tooltip panel
  *  - Opens on focus (not just pointer hover)
@@ -319,8 +317,6 @@ test('test_hover_tooltip_does_not_inject_style_tag', () => {
  * links to it via `aria-describedby`. Without this role the panel is an
  * anonymous div that AT may or may not announce.
  *
- * EXPECTED FAIL: current implementation uses `<div className='v9-tip ...'>` with
- * no `role` attribute. The panel is invisible to AT even when open.
  */
 test('test_hover_tooltip_panel_has_role_tooltip', () => {
   const { container } = render(
@@ -334,7 +330,6 @@ test('test_hover_tooltip_panel_has_role_tooltip', () => {
   const panel = document.body.querySelector('.v9-tip') as HTMLElement | null
   expect(panel).not.toBeNull()
 
-  // EXPECTED FAIL: role='tooltip' absent in current implementation
   expect(panel!.getAttribute('role')).toBe('tooltip')
 })
 
@@ -349,41 +344,33 @@ test('test_hover_tooltip_panel_has_role_tooltip', () => {
  * EXPECTED FAIL: current implementation has no `id` on `.v9-tip` and no
  * `aria-describedby` on the wrapper or children.
  */
-test('test_hover_tooltip_aria_describedby_wired_to_panel', () => {
+test('test_aria_describedby_only_while_open', () => {
+  const preExistingId = 'existing-describedby-target'
   const { container } = render(
     <HoverTooltip content={() => <span>Described content</span>}>
-      <button type='button' id='my-trigger'>
+      <button type='button' id='my-trigger' aria-describedby={preExistingId}>
         Trigger
       </button>
     </HoverTooltip>
   )
 
-  fireEvent.focus(container.querySelector('button') as HTMLButtonElement)
+  const trigger = container.querySelector('button') as HTMLButtonElement
+  expect(trigger.getAttribute('aria-describedby')).toBe(preExistingId)
+
+  fireEvent.pointerEnter(container.firstChild as HTMLElement)
 
   const panel = document.body.querySelector('.v9-tip') as HTMLElement | null
   expect(panel).not.toBeNull()
-
-  // Panel must have a non-empty id
   const panelId = panel!.getAttribute('id')
-  // EXPECTED FAIL: no id on the panel in current implementation
   expect(panelId).not.toBeNull()
   expect(panelId).not.toBe('')
 
-  // The wrapper or the trigger child must carry aria-describedby=panelId
-  const wrapper = container.firstChild as HTMLElement
-  const triggerChild = wrapper.querySelector(
-    '[id="my-trigger"]'
-  ) as HTMLElement | null
+  expect(trigger.getAttribute('aria-describedby')).toBe(panelId)
 
-  const wrapperDescribedBy = wrapper.getAttribute('aria-describedby')
-  const triggerDescribedBy =
-    triggerChild?.getAttribute('aria-describedby') ?? null
+  fireEvent.pointerLeave(container.firstChild as HTMLElement)
 
-  const hasDescribedBy =
-    wrapperDescribedBy === panelId || triggerDescribedBy === panelId
-
-  // EXPECTED FAIL: no aria-describedby set in current implementation
-  expect(hasDescribedBy).toBe(true)
+  expect(document.body.querySelector('.v9-tip')).toBeNull()
+  expect(trigger.getAttribute('aria-describedby')).toBe(preExistingId)
 })
 
 /**
@@ -499,7 +486,7 @@ test('test_hover_tooltip_reenter_keeps_pin', () => {
   // After fix: pin must be preserved (data-pinned remains 'true').
   // Before fix: setIsPinned(false) → data-pinned flips to 'false'.
   tip = document.body.querySelector('.v9-tip') as HTMLElement | null
-  expect(tip!.getAttribute('data-pinned')).toBe('true') // FAILS before fix
+  expect(tip!.getAttribute('data-pinned')).toBe('true')
 })
 
 /**
