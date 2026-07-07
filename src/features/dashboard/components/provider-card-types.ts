@@ -37,11 +37,18 @@ export interface ProviderMetrics {
   packet_loss_pct: number | null
 }
 
+/** v9.7 segment severity class names for quota bar intervals. */
+export type QuotaSegmentSeverityClass =
+  | 'iv-0-5'
+  | 'iv-5-10'
+  | 'iv-10-25'
+  | 'iv-25-50'
+  | 'iv-50-p'
+
 /** Interval configuration for one segment within a quota bar. */
 export interface QuotaRowConfig {
   widthPct: number
-  /** v9.7 threshold class: iv-0-5 | iv-5-10 | iv-10-25 | iv-25-50 | iv-50-p */
-  severityClass: string
+  severityClass: QuotaSegmentSeverityClass
   highVelocity: boolean
   velocityClass?: string
   label?: string
@@ -112,12 +119,14 @@ export interface TopModelRow {
   p95_ms?: number | null
 }
 
+/** Early-reset anomaly payload keyed by provider (hook output). */
+export type EarlyResetMap = Map<string, { prior: string; current: string }>
+
 /**
  * Anomaly flags raised by useAnomalyDetection.
- * earlyReset accepts both Set<string> (legacy ProviderCard contract)
- * and Map<string, {prior:string; current:string}> (hook output).
  */
 export interface AnomalyFlags {
-  earlyReset: Set<string> | Map<string, { prior: string; current: string }>
+  /** Hook output is Map; legacy tests may still pass Set (both support `.has`). */
+  earlyReset: EarlyResetMap | Set<string>
   cacheStale: boolean
 }

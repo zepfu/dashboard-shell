@@ -25,6 +25,21 @@ import type {
   TopModelRow,
 } from './provider-card-types'
 
+const LEGACY_LANE_ORDER: ReadonlyArray<QuotaBarGroup['periodType']> = [
+  '5hr',
+  'weekly',
+  'weekly_overage_included',
+  'special',
+  'monthly',
+]
+const LEGACY_LANE_LABEL: Readonly<Record<string, string>> = {
+  '5hr': '5hr resets',
+  weekly: 'weekly resets',
+  weekly_overage_included: 'weekly OI resets',
+  special: 'special resets',
+  monthly: 'monthly resets',
+}
+
 interface PcSubTitleProps {
   title: string
 }
@@ -222,7 +237,7 @@ export function ProviderCardTopModelsPane({
   errorCount,
 }: ProviderCardTopModelsPaneProps): ReactElement {
   return (
-    <div className='card-pane-right' style={{ display: 'none' }}>
+    <div className='card-pane-right'>
       <div
         className='pane-title'
         style={{
@@ -328,12 +343,11 @@ export function ProviderCardQuotasSection({
   const showEarlyReset =
     anomalies !== undefined &&
     hasEarlyReset(anomalies.earlyReset, config.provider)
-  const showCacheStale = anomalies?.cacheStale === true
 
   return (
     <>
       <QuotaSectionTitle title='Quotas' />
-      {(showEarlyReset || showCacheStale) && (
+      {(showEarlyReset || anomalies?.cacheStale === true) && (
         <div
           className='quota-anomaly-header'
           style={{
@@ -346,7 +360,7 @@ export function ProviderCardQuotasSection({
             color: 'var(--fg-muted)',
           }}
         >
-          {showEarlyReset && (
+          {showEarlyReset ? (
             <span
               className='quota-anomaly-icon icon-reset'
               aria-label='early reset'
@@ -355,8 +369,8 @@ export function ProviderCardQuotasSection({
             >
               ⟲
             </span>
-          )}
-          {showCacheStale && (
+          ) : null}
+          {anomalies?.cacheStale === true ? (
             <span
               className='quota-anomaly-icon icon-cache'
               aria-label='cache stale'
@@ -365,7 +379,7 @@ export function ProviderCardQuotasSection({
             >
               ⚠
             </span>
-          )}
+          ) : null}
         </div>
       )}
       {lanes !== undefined ? (
@@ -419,10 +433,7 @@ export function ProviderCardQuotasSection({
                 >
                   {allBars.map(({ bar: quotaBar, isPrior }, barIdx) => (
                     <QuotaBarRow
-                      key={
-                        quotaBar.resetAt ??
-                        `${lane.laneKey}-${isPrior ? 'prior' : 'current'}-${barIdx.toString()}`
-                      }
+                      key={`${lane.laneKey}-${isPrior ? 'prior' : 'current'}-${quotaBar.resetAt ?? barIdx.toString()}`}
                       quotaBar={quotaBar}
                       isPrior={isPrior}
                       layout='lane'
@@ -447,21 +458,6 @@ function ProviderCardLegacyQuotas({
 }): ReactElement {
   const currentQuotas = quotas.filter((q) => q.periodType === undefined)
   const historyQuotas = quotas.filter((q) => q.periodType !== undefined)
-
-  const LEGACY_LANE_ORDER: ReadonlyArray<QuotaBarGroup['periodType']> = [
-    '5hr',
-    'weekly',
-    'weekly_overage_included',
-    'special',
-    'monthly',
-  ]
-  const LEGACY_LANE_LABEL: Readonly<Record<string, string>> = {
-    '5hr': '5hr resets',
-    weekly: 'weekly resets',
-    weekly_overage_included: 'weekly OI resets',
-    special: 'special resets',
-    monthly: 'monthly resets',
-  }
 
   return (
     <>
@@ -557,7 +553,7 @@ export function ProviderCardMetricsBody({
   const isHealthy =
     data.errors === 0 &&
     (data.packet_loss_pct === null ||
-      data.packet_loss_pct < PACKET_LOSS_STATUS_WARN_THRESHOLD)
+      data.packet_loss_pct < PACKET_LOSS_STATUS_WARN_THRESHOLD - 1)
   const statusColor = isHealthy
     ? providerBrandHex(config.provider)
     : 'var(--accent-hot)'

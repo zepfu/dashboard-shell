@@ -55,13 +55,17 @@ export interface SlicerOptions {
   models: string[]
 }
 
+export type SlicerOnChange = (
+  next: SlicerFilters | ((prev: SlicerFilters) => SlicerFilters)
+) => void
+
 export interface SlicerBarProps {
   /** Currently active filter values. */
   filters: SlicerFilters
   /** Universe of available values per dimension (from API response). */
   options: SlicerOptions
-  /** Called whenever any filter changes. */
-  onChange: (next: SlicerFilters) => void
+  /** Called whenever any filter changes (object or functional update). */
+  onChange: SlicerOnChange
   /** Optional CSS class added to the bar wrapper. */
   className?: string
 }
@@ -125,7 +129,10 @@ const DimensionDropdown = memo(function DimensionDropdown({
   const wrapperRef = useRef<HTMLDivElement>(null)
   const triggerRef = useRef<HTMLButtonElement>(null)
   const optionRefs = useRef<Array<HTMLLIElement | null>>([])
-  const skipNextOptionClickRef = useRef(false)
+  const skipClickForOptionRef = useRef<string | null>(null)
+
+  const rovingOptionIndex =
+    options.length === 0 ? 0 : Math.min(activeOptionIndex, options.length - 1)
 
   // Close on outside click
   useEffect(() => {
@@ -177,12 +184,12 @@ const DimensionDropdown = memo(function DimensionDropdown({
       handleListboxArrowKey(
         e,
         options.length,
-        activeOptionIndex,
+        rovingOptionIndex,
         setActiveOptionIndex,
         focusOption
       )
     },
-    [activeOptionIndex, closeDropdown, focusOption, options.length]
+    [rovingOptionIndex, closeDropdown, focusOption, options.length]
   )
 
   const handleOptionKeyDown = useCallback(
@@ -194,19 +201,20 @@ const DimensionDropdown = memo(function DimensionDropdown({
       }
       if (e.key === 'Enter' || e.key === ' ') {
         e.preventDefault()
-        skipNextOptionClickRef.current = true
+        skipClickForOptionRef.current = opt
         onToggle(opt)
+        setOpen(false)
         return
       }
       handleListboxArrowKey(
         e,
         options.length,
-        activeOptionIndex,
+        rovingOptionIndex,
         setActiveOptionIndex,
         focusOption
       )
     },
-    [activeOptionIndex, closeDropdown, focusOption, onToggle, options.length]
+    [rovingOptionIndex, closeDropdown, focusOption, onToggle, options.length]
   )
 
   const hasSelections = selected.length > 0
@@ -227,9 +235,17 @@ const DimensionDropdown = memo(function DimensionDropdown({
         aria-haspopup='listbox'
         aria-expanded={open}
         aria-controls={dropdownId}
+        aria-label={`${label} dimension`}
         data-shortcut-target={shortcutTarget}
         onClick={() => {
-          setOpen((prev) => !prev)
+          setOpen((prev) => {
+            const next = !prev
+            if (next) {
+              setActiveOptionIndex(0)
+              optionRefs.current = optionRefs.current.slice(0, options.length)
+            }
+            return next
+          })
         }}
         onKeyDown={handleTriggerKeyDown}
       >
@@ -247,16 +263,19 @@ const DimensionDropdown = memo(function DimensionDropdown({
         </span>
       </button>
 
-      {/* Chip row — selected values */}
-      {hasSelections && (
+      {hasSelections && !open && (
         <div className='slicer-chips' aria-label={`${label} filter chips`}>
           {selected.map((v) => (
             <span
               key={v}
               className={[
                 'slicer-chip',
-                staleChips.has(v) ? 'slicer-chip--stale' : '',
-                staleChips.has(v) ? 'slicer-chip--muted' : '',
+                staleChips.has(v) && !selected.includes(v)
+                  ? 'slicer-chip--stale'
+                  : '',
+                staleChips.has(v) && !selected.includes(v)
+                  ? 'slicer-chip--muted'
+                  : '',
               ]
                 .filter(Boolean)
                 .join(' ')}
@@ -325,11 +344,12 @@ const DimensionDropdown = memo(function DimensionDropdown({
                       .join(' ')}
                     tabIndex={isActive ? 0 : -1}
                     onClick={() => {
-                      if (skipNextOptionClickRef.current) {
-                        skipNextOptionClickRef.current = false
+                      if (skipClickForOptionRef.current === opt) {
+                        skipClickForOptionRef.current = null
                         return
                       }
                       onToggle(opt)
+                      setOpen(false)
                     }}
                     onKeyDown={(e) => {
                       handleOptionKeyDown(e, opt)
@@ -375,27 +395,49 @@ export function SlicerBar({
   onChange,
   className,
 }: SlicerBarProps): ReactElement {
+  const filtersRef = useRef(filters)
+  useEffect(() => {
+    filtersRef.current = filters
+  }, [filters])
+
+  const emitFilters = useCallback(
+    (
+      update: SlicerFilters | ((prev: SlicerFilters) => SlicerFilters)
+    ): void => {
+      const prev = filtersRef.current
+      const next =
+        typeof update === 'function'
+          ? (update as (p: SlicerFilters) => SlicerFilters)(prev)
+          : update
+      filtersRef.current = next
+      onChange(next)
+    },
+    [onChange]
+  )
+
   const handleToggle = useCallback(
     (key: keyof SlicerFilters, value: string): void => {
-      const current = filters[key]
-      const next = current.includes(value)
-        ? current.filter((v) => v !== value)
-        : [...current, value]
-      onChange({ ...filters, [key]: next })
+      emitFilters((prev) => {
+        const current = prev[key]
+        const next = current.includes(value)
+          ? current.filter((v) => v !== value)
+          : [...current, value]
+        return { ...prev, [key]: next }
+      })
     },
-    [filters, onChange]
+    [emitFilters]
   )
 
   const handleClear = useCallback(
     (key: keyof SlicerFilters): void => {
-      onChange({ ...filters, [key]: [] })
+      emitFilters((prev) => ({ ...prev, [key]: [] }))
     },
-    [filters, onChange]
+    [emitFilters]
   )
 
   const handleClearAll = useCallback((): void => {
-    onChange({ ...EMPTY_FILTERS })
-  }, [onChange])
+    emitFilters({ ...EMPTY_FILTERS })
+  }, [emitFilters])
 
   const hasAnyFilter = DIMENSIONS.some((d) => filters[d.key].length > 0)
 

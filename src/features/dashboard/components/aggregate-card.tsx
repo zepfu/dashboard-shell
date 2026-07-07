@@ -7,7 +7,7 @@
  * `invalidToolCalls > 0` (mockup L2766).
  *
  * Wave 11 PR2 (11-e):
- * - Adds `aggregate` class to the card wrapper via ProviderCard.wrapperClassName
+ * - Adds `aggregate` class to the card wrapper via ProviderCard.variant
  *   so `.provider-card.aggregate` CSS rules apply (dashed amber border).
  * - FLEET ACTIVITY moved inside card-pane-left using the pc-sub-title /
  *   pc-mini-table pattern consistent with TOKEN CACHE and REASONING sections.
@@ -41,6 +41,7 @@ import {
   type ProviderMetrics,
   type AnomalyFlags,
 } from './provider-card'
+import { PcSubTitle } from './provider-card-sections'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -127,45 +128,14 @@ export function AggregateCard({
 }: AggregateCardProps): ReactElement {
   const invalidHot = fleetActivity.invalidToolCalls > 0
 
-  // Fleet activity content rendered inside card-pane-left via extraPaneLeft
-  // slot — mirrors the pc-sub-title / pc-mini-table pattern used for TOKEN
-  // CACHE and REASONING sections in ProviderCard.
   const fleetActivitySection = (
     <>
-      {/* FLEET ACTIVITY sub-section header — pc-sub-title pattern */}
-      <h4
-        className='pc-sub-title'
-        style={{
-          fontFamily: 'var(--font-mono)',
-          fontSize: '10px',
-          color: 'var(--accent-chrome)',
-          textTransform: 'uppercase',
-          letterSpacing: '0.1em',
-          marginTop: '6px',
-          marginBottom: '3px',
-          paddingTop: '4px',
-          borderTop: '1px dashed var(--border)',
-          fontWeight: 600,
-        }}
-      >
-        FLEET ACTIVITY
-      </h4>
+      <PcSubTitle title='FLEET ACTIVITY' />
 
-      {/*
-       * Fleet activity grid per mockup lines 1101-1135:
-       *   col 1: label (minmax(0, 1fr)) — muted, mono, 10px
-       *   col 2: value (64px) — right-aligned, fg color; accent-hot when invalid
-       *
-       * Each <div class="fleet-activity-row"> uses `display: contents` so its
-       * dt/dd children flow directly into the grid columns.
-       *
-       * Tests use exact-match queries (`{ exact: true }`) to avoid ambiguity
-       * between "Tool Calls" and "Invalid Tool Calls".
-       */}
       <dl className='fleet-activity-list'>
         <FleetRow
           label='Tool Calls'
-          value={fleetActivity.toolCalls.toLocaleString()}
+          value={fleetActivity.toolCalls.toLocaleString('en-US')}
         />
         <FleetRow
           label='Git Commits'
@@ -209,7 +179,7 @@ export function AggregateCard({
       healthCells={healthCells}
       quotas={[]}
       anomalies={anomalies}
-      wrapperClassName='aggregate'
+      variant='aggregate'
       extraPaneLeft={fleetActivitySection}
     />
   )

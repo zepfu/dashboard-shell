@@ -1274,14 +1274,27 @@ export default function PhosphorDashboard({
     [healthRows, providerErrorObservations]
   )
 
+  const fleetInvalidToolCalls = useMemo(() => {
+    const rows = reportRows ?? []
+    return rows.reduce(
+      (sum, row) => sum + (row.agent_invalid_tool_call_errors ?? 0),
+      0
+    )
+  }, [reportRows])
+
   const fleetActivity = useMemo(
     () => ({
       toolCalls: summary?.tool_calls ?? 0,
       gitCommits: summary?.git_commit ?? 0,
       gitPushes: summary?.git_push ?? 0,
-      invalidToolCalls: 0,
+      invalidToolCalls: fleetInvalidToolCalls,
     }),
-    [summary?.tool_calls, summary?.git_commit, summary?.git_push]
+    [
+      summary?.tool_calls,
+      summary?.git_commit,
+      summary?.git_push,
+      fleetInvalidToolCalls,
+    ]
   )
 
   const periodDays = useMemo(

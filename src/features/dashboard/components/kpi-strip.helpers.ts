@@ -4,12 +4,23 @@ export interface KpiSummary {
   cost_usd: number
   requests: number
   errors: number
-  p95_ms: number
+  p95_ms: number | null
 }
 
 export type KpiKey = keyof KpiSummary
 
-const DELTA_DEADBAND_FRACTION = 0.0005
+/** Max raw value across KPI tiles for share-of-max microbar when no explicit max passed. */
+function kpiShareOfMaxDenominator(summary: KpiSummary): number {
+  return Math.max(
+    summary.token_in,
+    summary.token_out,
+    summary.cost_usd,
+    summary.requests,
+    summary.errors,
+    summary.p95_ms ?? 0,
+    1
+  )
+}
 
 /** Per-tile scale for microbar fill (avoids token counts dominating other tiles). */
 export function microbarScale(key: KpiKey, summary: KpiSummary): number {
@@ -25,31 +36,33 @@ export function microbarScale(key: KpiKey, summary: KpiSummary): number {
     case 'errors':
       return Math.max(summary.errors, 1)
     case 'p95_ms':
-      return Math.max(summary.p95_ms, 1)
+      return Math.max(summary.p95_ms ?? 0, 1)
     default:
       return 1
   }
 }
 
 export function kpiMicrobarFillPct(
-  key: KpiKey,
+  _key: KpiKey,
   summary: KpiSummary,
   rawValue: number,
-  priorFraction: number | undefined
+  priorFraction: number | undefined,
+  maxRawAcrossTiles?: number
 ): number {
   if (priorFraction !== undefined) {
-    return Math.min(
-      100,
-      Math.max(
-        0,
-        Math.round((Math.abs(priorFraction) * 100) / DELTA_DEADBAND_FRACTION)
-      )
-    )
+    const pctPoints = Math.abs(priorFraction) * 100
+    return Math.min(100, Math.max(0, Math.round((pctPoints / 5) * 100) / 100))
   }
-  return Math.min(
-    100,
-    Math.max(0, Math.round((rawValue / microbarScale(key, summary)) * 100))
-  )
+  const denominator =
+    maxRawAcrossTiles !== undefined && maxRawAcrossTiles > 0
+      ? maxRawAcrossTiles
+      : kpiShareOfMaxDenominator(summary)
+  const shareMax = rawValue / denominator
+  const pct = Math.round(shareMax * 100)
+  if (pct === 0 && rawValue > 0) {
+    return 1
+  }
+  return Math.min(100, Math.max(0, pct))
 }
 
 /** Render a delta fraction as a ↑/↓/→ percentage string. */
@@ -59,6 +72,7 @@ export function renderDelta(delta: number | undefined): string {
   if (delta === 0 || absFraction * 100 < 0.05) {
     return '→ 0.0%'
   }
-  const pct = (absFraction * 100).toFixed(1)
+  const pctPoints = absFraction * 100
+  const pct = pctPoints < 0.1 ? pctPoints.toFixed(2) : pctPoints.toFixed(1)
   return delta > 0 ? `↑ ${pct}%` : `↓ ${pct}%`
 }

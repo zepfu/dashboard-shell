@@ -120,7 +120,8 @@ function alertClassNames(type: AlertItem['type']): string {
  * CSS rule from Wave 15-A applies correctly.
  */
 function alertStableKey(alert: AlertItem): string {
-  return `${alert.type}::${alert.head}`
+  const subPart = alert.sub ?? ''
+  return `${alert.type}::${alert.head}::${subPart}`
 }
 
 function alertGlyph(type: AlertItem['type']): string {
