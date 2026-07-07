@@ -1026,7 +1026,7 @@ export function buildTrendSignalRows(input: BuildTrendSignalRowsInput): {
     }
   }
   const metricKeys = input.selectedMetrics
-  const selectedMetrics: TrendMetricDefinition[] =
+  const selectedMetrics: readonly TrendMetricDefinition[] =
     typeof metricKeys[0] === 'string'
       ? HEALTH_TREND_METRICS.filter((m) =>
           (metricKeys as readonly string[]).includes(m.key)
