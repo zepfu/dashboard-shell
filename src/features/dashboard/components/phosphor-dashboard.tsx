@@ -420,11 +420,6 @@ export interface PhosphorDashboardProps {
   /** Cache-bust key from the shell Force Refresh action. */
   reportRefreshKey?: string
   /**
-   * Quota cache-bust key from the parent (index `quotaCacheBust`). When set,
-   * aligns the child standalone quotas query with the parent dedup key (C7).
-   */
-  quotasRefreshKey?: string
-  /**
    * Wave 36 Fix 4: Whether the ComparisonPanel is visible (viewport ≥3840px).
    * Controls the `enabled` flag on the priorReport useQuery so that the prior-
    * period API call is only made when the panel is actually rendered.
@@ -503,7 +498,6 @@ export default function PhosphorDashboard({
   reportLoading: reportLoadingProp = false,
   reportFetching: reportFetchingProp = false,
   reportRefreshKey,
-  quotasRefreshKey,
   showComparison = false,
   quotas: quotasProp,
   quotasFetching: quotasFetchingProp = false,
@@ -528,7 +522,6 @@ export default function PhosphorDashboard({
   const resolvedFrom = from ?? defaults.from
   const resolvedTo = to ?? defaults.to
   const resolvedGrain: UsageReportGrain = grain ?? 'day'
-  const quotasCacheBust = quotasRefreshKey
   const [providerSectionView, setProviderSectionView] =
     useControllableState<ProviderSectionView>(
       providerSectionViewProp,
@@ -608,7 +601,6 @@ export default function PhosphorDashboard({
   //
   // Wave 37 SF-1: this query is ONLY used when PhosphorDashboard is rendered
   // in isolation (e.g. Storybook, tests) without a parent supplying `quotas`.
-  // The optional cache-bust element is only populated by explicit refresh.
   const internalQuotasEnabled = quotasProp === undefined
   const {
     data: quotasData,
@@ -618,7 +610,6 @@ export default function PhosphorDashboard({
     ...usageReportQuotasQueryOptions({
       from: resolvedFrom,
       to: resolvedTo,
-      cacheBust: quotasCacheBust,
     }),
     // Skip when the parent has already provided quota rows.
     enabled: internalQuotasEnabled,

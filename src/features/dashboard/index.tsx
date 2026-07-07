@@ -302,9 +302,6 @@ export function Dashboard(): ReactElement {
   const [reportCacheBust, setReportCacheBust] = useState<string | undefined>(
     undefined
   )
-  const [quotaCacheBust, setQuotaCacheBust] = useState<string | undefined>(
-    undefined
-  )
   const [quotaRangeHistoryCacheBust, setQuotaRangeHistoryCacheBust] = useState<
     string | undefined
   >(undefined)
@@ -609,20 +606,12 @@ export function Dashboard(): ReactElement {
     summaryReport?.metadata
   )
 
-  // Wave 37 SF-1 / W37-1: queryKey matches PhosphorDashboard's key prefix and
-  // date shape so React Query can dedupe normal load subscribers. The optional
-  // cache-bust element is only populated by manual quota refresh.
+  // Wave 37 SF-1 / D1-451 C2: stable shared key for sidebar + dashboard poll dedupe.
+  // Manual quota refresh uses fetchQuery on this key (fetch-only cache_bust), not key forks.
+  const quotaQueryBase = usageReportQuotasQueryOptions({ from, to })
   const { data: quotasData, isFetching: quotasFetching } = useQuery({
-    ...usageReportQuotasQueryOptions({
-      from,
-      to,
-      cacheBust: quotaCacheBust,
-    }),
+    ...quotaQueryBase,
     refetchIntervalInBackground: false,
-  })
-  const quotaQueryBase = usageReportQuotasQueryOptions({
-    from,
-    to,
   })
 
   const quotaRangeHistoryBaseQueryKey = useMemo(
@@ -873,15 +862,10 @@ export function Dashboard(): ReactElement {
 
   const handleQuotaRefresh = useCallback(async (): Promise<void> => {
     const bust = Date.now().toString()
-    await runWithOneShotCacheBust(setQuotaCacheBust, bust, async () => {
-      const refreshed = await queryClient.fetchQuery(
-        usageReportQuotasQueryOptions({
-          from,
-          to,
-          cacheBust: bust,
-        })
-      )
-      queryClient.setQueryData(quotaQueryBase.queryKey, refreshed)
+    await queryClient.fetchQuery({
+      ...usageReportQuotasQueryOptions({ from, to, cacheBust: bust }),
+      queryKey: quotaQueryBase.queryKey,
+      staleTime: 0,
     })
   }, [from, queryClient, quotaQueryBase.queryKey, to])
 
@@ -1092,7 +1076,6 @@ export function Dashboard(): ReactElement {
             reportLoading={summaryLoading}
             showComparison={showComparison}
             reportRefreshKey={reportCacheBust}
-            quotasRefreshKey={quotaCacheBust}
             quotas={quotasData?.quotas}
             reportFetching={summaryFetching}
             quotasFetching={quotasFetching}

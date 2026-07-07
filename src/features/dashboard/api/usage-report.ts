@@ -18,7 +18,7 @@ export interface UsageReportQuotasQueryOptionsParams {
   from?: string
   /** Retained for call-site compatibility; /quotas is currently a live global endpoint. */
   to?: string
-  /** Optional bust token; included in queryKey when set (manual refresh / report refresh). */
+  /** Optional bust token for manual refresh only (query string); never part of queryKey. */
   cacheBust?: string
 }
 
