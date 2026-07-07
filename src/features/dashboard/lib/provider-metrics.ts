@@ -11,6 +11,63 @@ import type { ProviderMetrics } from '../components/provider-card'
 import { sumRequestsInLast90mFromNewestBucket } from './quota-bars/fields'
 import { computeFleetP95, providerAliases } from './usage-report-display'
 
+const PACKET_LOSS_RECENT_BUCKET_COUNT = 12
+
+function passiveP95(row: UsageReportProviderLatencyHealthRow): number | null {
+  return row.upstream_p95_ms ?? row.total_p95_ms
+}
+
+function newestBucketStartMs(
+  rows: UsageReportProviderLatencyHealthRow[]
+): number | null {
+  let newest: number | null = null
+  for (const row of rows) {
+    if (row.bucket_start == null) continue
+    const ms = new Date(row.bucket_start).getTime()
+    if (!Number.isFinite(ms)) continue
+    if (newest === null || ms > newest) newest = ms
+  }
+  return newest
+}
+
+function maxP95InNewestBucket(
+  rows: UsageReportProviderLatencyHealthRow[]
+): number | null {
+  const newestMs = newestBucketStartMs(rows)
+  if (newestMs === null) return null
+  let max: number | null = null
+  for (const row of rows) {
+    if (row.bucket_start == null) continue
+    const ms = new Date(row.bucket_start).getTime()
+    if (!Number.isFinite(ms) || ms !== newestMs) continue
+    const p95 = passiveP95(row)
+    if (p95 === null) continue
+    max = max === null ? p95 : Math.max(max, p95)
+  }
+  return max
+}
+
+function weightedPacketLossRecent(
+  rows: UsageReportProviderLatencyHealthRow[]
+): number | null {
+  const newestMs = newestBucketStartMs(rows)
+  if (newestMs === null) return null
+  const cutoffMs = newestMs - PACKET_LOSS_RECENT_BUCKET_COUNT * 5 * 60 * 1000
+  let weightedSum = 0
+  let weightTotal = 0
+  for (const row of rows) {
+    if (row.bucket_start == null) continue
+    const loss = row.provider_ping_packet_loss_pct
+    if (loss === null) continue
+    const ms = new Date(row.bucket_start).getTime()
+    if (!Number.isFinite(ms) || ms < cutoffMs) continue
+    const weight = row.requests > 0 ? row.requests : 1
+    weightedSum += loss * weight
+    weightTotal += weight
+  }
+  return weightTotal > 0 ? weightedSum / weightTotal : null
+}
+
 export function buildProviderMetrics(
   provider: string,
   healthRows: UsageReportProviderLatencyHealthRow[],
@@ -42,18 +99,7 @@ export function buildProviderMetrics(
     0
   )
 
-  // 15-B.1: providerLatencyHealth is ordered bucket_start DESC (newest first).
-  // The original code used `[length - 1]` (oldest row), which consistently
-  // has upstream_p95_ms = null (no-traffic tail buckets). Fix: scan from
-  // index 0 (most-recent) and pick the first row with a non-null p95. Use
-  // total_p95_ms as a fallback for local routes that do not emit upstream spans.
-  const latestP95Row = providerHealthRows.find(
-    (r) => (r.upstream_p95_ms ?? r.total_p95_ms) !== null
-  )
-  const p95 =
-    latestP95Row !== undefined
-      ? (latestP95Row.upstream_p95_ms ?? latestP95Row.total_p95_ms ?? null)
-      : null
+  const p95 = maxP95InNewestBucket(providerHealthRows)
 
   // Wave 14-C: rate_limits, capacity from health rows; packet_loss from ping probe.
   const rate_limits = providerHealthRows.reduce(
@@ -61,14 +107,7 @@ export function buildProviderMetrics(
     0
   )
   const capacity = providerHealthRows.reduce((s, r) => s + r.capacity_events, 0)
-  // Use average packet loss across all health rows that have data; null if none probed.
-  const packetLossValues = providerHealthRows
-    .map((r) => r.provider_ping_packet_loss_pct)
-    .filter((v): v is number => v !== null)
-  const packet_loss_pct =
-    packetLossValues.length > 0
-      ? packetLossValues.reduce((s, v) => s + v, 0) / packetLossValues.length
-      : null
+  const packet_loss_pct = weightedPacketLossRecent(providerHealthRows)
 
   // Aggregate per-provider token / cost / cache / reasoning from usage rows
   const tokens_in = providerUsageRows.reduce((s, r) => s + (r.token_in ?? 0), 0)
@@ -159,13 +198,7 @@ export function buildAggregateMetrics(
   // Wave 14-C: aggregate rate_limits, capacity, packet_loss across all health rows.
   const rate_limits = healthRows.reduce((s, r) => s + r.rate_limit_events, 0)
   const capacity = healthRows.reduce((s, r) => s + r.capacity_events, 0)
-  const packetLossValues = healthRows
-    .map((r) => r.provider_ping_packet_loss_pct)
-    .filter((v): v is number => v !== null)
-  const packet_loss_pct =
-    packetLossValues.length > 0
-      ? packetLossValues.reduce((s, v) => s + v, 0) / packetLossValues.length
-      : null
+  const packet_loss_pct = weightedPacketLossRecent(healthRows)
 
   // Wave 16-D: use summary (server-side full-dataset totals) to avoid the
   // row-cap undercount. When summary is undefined (data still loading), return

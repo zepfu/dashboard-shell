@@ -8,19 +8,21 @@ import type {
 } from '../api/usage-report'
 import {
   classifyGeminiModel,
+  ivClassForConsumed,
   quotaTypeToLaneKey,
   roundToNearest30Min,
 } from './quota-bars/fields'
 import { PROVIDER_LANE_DEFS } from './quota-bars/lane-defs'
 import { canonicalProvider, providerAliases } from './usage-report-display'
 
-const FORMAT_COMPACT_QUANTITY = new Intl.NumberFormat('en-US', {
-  notation: 'compact',
-  maximumFractionDigits: 1,
-})
+export { formatCompactQuantity } from './status-formatters'
 
-export function formatCompactQuantity(value: number): string {
-  return FORMAT_COMPACT_QUANTITY.format(value)
+const QUOTA_HISTORY_IV_HEX: Record<string, string> = {
+  'iv-0-5': '#1e3a5f',
+  'iv-5-10': '#3b82f6',
+  'iv-10-25': '#14b8a6',
+  'iv-25-50': '#cc7e0a',
+  'iv-50-p': '#cc3838',
 }
 
 export function quotaHistoryConsumedPct(
@@ -30,11 +32,10 @@ export function quotaHistoryConsumedPct(
   return Math.max(0, Math.min(100, 100 - remaining))
 }
 
+/** Fill color for quota history bars — same 5/10/25/50 scale and hex as `iv-*` legend. */
 export function quotaHistoryFillColor(consumedPct: number): string {
-  if (consumedPct >= 75) return 'var(--accent-hot)'
-  if (consumedPct >= 25) return 'var(--accent-warm)'
-  if (consumedPct >= 10) return 'var(--accent-teal)'
-  return 'var(--accent-cool)'
+  const ivClass = ivClassForConsumed(consumedPct)
+  return QUOTA_HISTORY_IV_HEX[ivClass] ?? QUOTA_HISTORY_IV_HEX['iv-0-5']
 }
 
 export function quotaHistoryRequests(row: UsageReportQuotaHistoryRow): number {
@@ -166,6 +167,11 @@ function maxNullableNumber(values: (number | null)[]): number | null {
   return concrete.length === 0 ? null : Math.max(...concrete)
 }
 
+/**
+ * Merges duplicate model rows within a reset group using Math.max per metric.
+ * Assumes rows in a group are cumulative snapshots for the same model, not
+ * per-interval deltas — if the API ever emits deltas, totals would undercount.
+ */
 function aggregateQuotaUsageBreakdown(
   breakdown: UsageReportQuotaUsageBreakdown[]
 ): UsageReportQuotaUsageBreakdown[] {

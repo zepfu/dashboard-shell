@@ -64,8 +64,15 @@ const PROVIDER_ALIASES: Record<string, readonly string[]> = {
  * dropping gemini rows for the google provider card.
  */
 export function providerAliases(provider: string): readonly string[] {
-  const key = provider.toLowerCase()
-  return PROVIDER_ALIASES[key] ?? [key]
+  const key = canonicalProvider(provider)
+  if (
+    (CANONICAL_PROVIDERS as readonly string[]).includes(key) ||
+    key in PROVIDER_ALIASES
+  ) {
+    return PROVIDER_ALIASES[key] ?? [key]
+  }
+  // Fail loud on non-canonical / unknown keys — do not silently return [raw input].
+  return []
 }
 
 /**
