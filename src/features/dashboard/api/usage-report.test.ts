@@ -41,10 +41,9 @@ test('test_usageReportQuotasQueryOptions_disables_background_polling', () => {
   expect(options.queryKey).toHaveLength(1)
 })
 
-test('test_usageReportQuotasKey_includes_cacheBust_token', () => {
+test('test_usageReportQuotasKey_dedupes_cacheBust_out_of_key', () => {
   expect(usageReportQuotasKey('2026-05-20', '2026-05-21', 'manual-1')).toEqual([
     'usage-report-quotas',
-    'manual-1',
   ])
 })
 
