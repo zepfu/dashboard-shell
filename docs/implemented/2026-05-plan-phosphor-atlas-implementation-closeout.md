@@ -92,3 +92,9 @@ These shaped the W40+ trajectory and are worth preserving for whoever picks up n
 3. Promote `develop` → `main` via `promote()` MCP tool.
 4. Move plan + closeout to `docs/implemented/`.
 5. Leave the keepalive cron running (operator hasn't explicitly authorized stop).
+
+---
+
+## Post-Promotion Corrections (2026-07-07 — D1-454 archive integrity)
+
+> **Correction (2026-07-07, D1-454) — D-7 (closeout vs promoted main archive):** This closeout is **`Status: PROMOTED (2026-05-20)`** and records Waves 30–47 execution, but it does **not** check off the main plan’s **Close-Out Checklist** or resolve Wave 9’s **`Verdict: PENDING operator review.`** in `docs/implemented/2026-05-plan-phosphor-atlas-implementation.md` (`:709`, checklist `:713-726` still all `[ ]`). **HEAD:** those unchecked / PENDING lines remain in the promoted main archive file. Full reconciliation and evidence: **`docs/implemented/2026-05-plan-phosphor-atlas-implementation.md`** → _Post-Promotion Corrections (2026-07-07 — D1-454 archive integrity)_ — **D-7**.
