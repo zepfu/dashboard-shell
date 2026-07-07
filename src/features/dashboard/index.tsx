@@ -6,7 +6,7 @@
  *   attribution legend.
  * - DateControls promoted to live state (operator decision 4).
  * - Controls bar styled per reference (control-input).
- * - Alerts wired via useAlertsFromAnomalies hook (operator decision 3).
+ * - Sidebar alerts via useDashboardAlertSummary (buildDashboardAlertSummary).
  * - Body topographic overlay added in theme.css (operator decision 8).
  *
  * Wave 11 PR7-lite:
@@ -196,6 +196,18 @@ function scrollDashboardTargetIntoView(targetId: string): void {
   if (typeof document === 'undefined') return
   const el = document.getElementById(targetId)
   el?.scrollIntoView?.({ behavior: 'smooth' })
+}
+
+function quantizeDashboardNowToMinute(now: Date): Date {
+  return new Date(
+    now.getFullYear(),
+    now.getMonth(),
+    now.getDate(),
+    now.getHours(),
+    now.getMinutes(),
+    0,
+    0
+  )
 }
 
 function focusDashboardShortcutTarget(selector: string): void {
@@ -864,7 +876,7 @@ export function Dashboard(): ReactElement {
     summaryReport?.providerErrorObservations,
     summaryReport?.dockerLogErrors,
     summaryReport?.providerLatencyHealth,
-    recencyNow
+    quantizeDashboardNowToMinute(recencyNow)
   )
 
   return (

@@ -78,6 +78,7 @@ import {
   canonicalProvider,
   PROVIDER_BRAND_HEX,
 } from '../lib/usage-report-display'
+import { useControllableState } from '../lib/use-controllable-state'
 import { HoverTooltip } from './primitives/hover-tooltip'
 import { StackedBar } from './primitives/stacked-bar'
 
@@ -2118,8 +2119,11 @@ export function TokenTrendChart({
   lowerLaneMode: lowerLaneModeProp,
   onLowerLaneModeChange,
 }: TokenTrendChartProps): ReactElement {
-  const [internalLowerLaneMode, setInternalLowerLaneMode] =
-    useState<LowerLaneMode>('tui')
+  const [lowerLaneMode, setLowerLaneMode] = useControllableState<LowerLaneMode>(
+    lowerLaneModeProp,
+    'tui',
+    onLowerLaneModeChange
+  )
   const lastHourHoverRef = useRef<{ day: string; hour: number } | null>(null)
   const reportHourHover = useCallback(
     (target: { day: string; hour: number } | null): void => {
@@ -2138,34 +2142,42 @@ export function TokenTrendChart({
     [onHourHover]
   )
   void dayEnvelopeRange
-  const lowerLaneMode = lowerLaneModeProp ?? internalLowerLaneMode
-  const handleLowerLaneModeChange = (mode: LowerLaneMode): void => {
-    if (lowerLaneModeProp === undefined) {
-      setInternalLowerLaneMode(mode)
-    }
-    onLowerLaneModeChange?.(mode)
-  }
+
+  const alignedRequestDayEnvelopes = useMemo(
+    () =>
+      dayEnvelopes === undefined
+        ? []
+        : alignDayEnvelopesToRange(dayEnvelopes, requestDayEnvelopes),
+    [dayEnvelopes, requestDayEnvelopes]
+  )
+  const alignedToolDayEnvelopes = useMemo(
+    () =>
+      dayEnvelopes === undefined
+        ? []
+        : alignDayEnvelopesToRange(dayEnvelopes, toolDayEnvelopes),
+    [dayEnvelopes, toolDayEnvelopes]
+  )
+  const activeVersionLanes = useMemo(
+    () =>
+      dayEnvelopes === undefined
+        ? []
+        : deriveTokenTrendActiveVersionLanes(dayEnvelopes, versionIntervals),
+    [dayEnvelopes, versionIntervals]
+  )
+  const modelFirstSeenGroups = useMemo(
+    () =>
+      dayEnvelopes === undefined
+        ? []
+        : deriveTokenTrendModelFirstSeenGroups(dayEnvelopes, modelFirstSeen),
+    [dayEnvelopes, modelFirstSeen]
+  )
+  const modelFirstSeenMarkersByDay = useMemo(
+    () => groupModelFirstSeenMarkersByDay(modelFirstSeenGroups),
+    [modelFirstSeenGroups]
+  )
 
   if (dayEnvelopes !== undefined) {
     const maxDayTotal = Math.max(0, ...dayEnvelopes.map((day) => day.total))
-    const activeVersionLanes = deriveTokenTrendActiveVersionLanes(
-      dayEnvelopes,
-      versionIntervals
-    )
-    const alignedRequestDayEnvelopes = alignDayEnvelopesToRange(
-      dayEnvelopes,
-      requestDayEnvelopes
-    )
-    const alignedToolDayEnvelopes = alignDayEnvelopesToRange(
-      dayEnvelopes,
-      toolDayEnvelopes
-    )
-    const modelFirstSeenGroups = deriveTokenTrendModelFirstSeenGroups(
-      dayEnvelopes,
-      modelFirstSeen
-    )
-    const modelFirstSeenMarkersByDay =
-      groupModelFirstSeenMarkersByDay(modelFirstSeenGroups)
     const hasActiveVersionLanes = activeVersionLanes.some(
       (lane) => lane.segments.length > 0
     )
@@ -2459,7 +2471,7 @@ export function TokenTrendChart({
                   aria-selected={selected}
                   className={selected ? 'is-active' : undefined}
                   onClick={() => {
-                    handleLowerLaneModeChange(mode)
+                    setLowerLaneMode(mode)
                   }}
                 >
                   {label}
