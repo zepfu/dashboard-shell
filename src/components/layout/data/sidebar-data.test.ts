@@ -166,8 +166,8 @@ describe('D1-451 Wave 5 — sidebar-data (W2, C4)', () => {
     for (const dead of DEAD_DEV_AUTH_URLS) {
       expect(urls).not.toContain(dead)
     }
-    // Vitest sets import.meta.env.DEV=false — scaffold nav is omitted; clerk links live there.
-    // Engineer removes dead URLs from scaffoldNavGroups when DEV=true (manual dev verify).
+    // With import.meta.env.DEV=true (Vitest default), scaffold nav is included; dead auth
+    // routes must still be absent from scaffoldNavGroups.
   })
 
   test('test_sidebar_data_imports_shared_remote_nav_base_path_helper', async () => {

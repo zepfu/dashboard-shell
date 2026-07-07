@@ -8,10 +8,6 @@ import { defineConfig } from 'vitest/config'
 // tanstackRouter since it is a code-generation/dev-server concern only.
 export default defineConfig({
   plugins: [react()],
-  define: {
-    'import.meta.env.DEV': JSON.stringify(false),
-    'import.meta.env.PROD': JSON.stringify(true),
-  },
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),
