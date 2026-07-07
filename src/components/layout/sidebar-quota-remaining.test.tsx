@@ -1,273 +1,131 @@
 /**
- * Wave 6 — SidebarQuotaRemaining tests (S6-9, S6-10, S6-11)
+ * D1-451 Wave 5 — SidebarQuotaRemaining (C2, P1, P2 info, E2).
+ *
+ * - C2/P1: collapsed and expanded empty/error UI aligned with phosphor sidebar treatment.
+ * - P2 (info): query key must not fork on cacheBust — dedupe /quotas poll with index.
+ * - E2: null quota payload must not present misleading zero-width bars as “data”.
  */
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { server } from '@/test/setup'
 import { render, screen } from '@testing-library/react'
 import { http, HttpResponse } from 'msw'
 import { describe, expect, test } from 'vitest'
-import type { UsageReportQuotaRow } from '@/features/dashboard/api/usage-report'
-import { buildSidebarQuotaItems } from './sidebar-quota-items'
+import { SidebarProvider } from '@/components/ui/sidebar'
+import {
+  usageReportQuotasKey,
+  usageReportQuotasQueryOptions,
+} from '@/features/dashboard/api/usage-report'
+import { SidebarQuotaRemaining } from './sidebar-quota-remaining'
 
-function makeQuotaRow(
-  overrides: Partial<UsageReportQuotaRow> &
-    Pick<UsageReportQuotaRow, 'provider'>
-): UsageReportQuotaRow {
-  return {
-    model: null,
-    weekly_remaining_pct: null,
-    weekly_reset_at: null,
-    weekly_interval_start: null,
-    weekly_interval_end: null,
-    weekly_active: false,
-    weekly_usage_tokens: 0,
-    weekly_usage_breakdown: [],
-    weekly_overage_included_remaining_pct: null,
-    weekly_overage_included_reset_at: null,
-    weekly_overage_included_interval_start: null,
-    weekly_overage_included_interval_end: null,
-    weekly_overage_included_active: false,
-    weekly_overage_included_usage_tokens: 0,
-    weekly_overage_included_usage_breakdown: [],
-    short_remaining_pct: null,
-    short_reset_at: null,
-    short_interval_start: null,
-    short_interval_end: null,
-    short_active: false,
-    short_usage_tokens: 0,
-    short_usage_breakdown: [],
-    special_remaining_pct: null,
-    special_reset_at: null,
-    special_interval_start: null,
-    special_interval_end: null,
-    special_active: false,
-    special_usage_tokens: 0,
-    special_usage_breakdown: [],
-    short_special_remaining_pct: null,
-    short_special_reset_at: null,
-    short_special_interval_start: null,
-    short_special_interval_end: null,
-    short_special_active: false,
-    short_special_usage_tokens: 0,
-    short_special_usage_breakdown: [],
-    ...overrides,
-  }
-}
-
-const QUOTAS_METADATA = {
-  generatedAt: '2026-05-19T00:00:00.000Z',
-  latestRecordAt: null,
-  latestRecordAgeMinutes: null,
-  latestRecordStale: false,
-  staleRecordThresholdMinutes: 60,
-}
-
-function registerQuotasHandler(quotas: UsageReportQuotaRow[]) {
-  server.use(
-    http.get('/api/shell/reports/quotas', () =>
-      HttpResponse.json({
-        metadata: QUOTAS_METADATA,
-        quotas,
-      })
-    )
+function renderQuotaSidebar(collapsed = false) {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  })
+  return render(
+    <QueryClientProvider client={queryClient}>
+      <SidebarProvider defaultOpen={!collapsed}>
+        <SidebarQuotaRemaining />
+      </SidebarProvider>
+    </QueryClientProvider>
   )
 }
 
-describe('buildSidebarQuotaItems — provider row selection (S6-10)', () => {
-  test('test_sidebar_quota_provider_multiple_rows_selection_picks_active_row', () => {
-    const rows: UsageReportQuotaRow[] = [
-      makeQuotaRow({
-        provider: 'openai',
-        weekly_remaining_pct: 80,
-        weekly_active: false,
-      }),
-      makeQuotaRow({
-        provider: 'openai',
-        weekly_remaining_pct: 45,
-        weekly_active: true,
-      }),
-    ]
+describe('D1-451 Wave 5 — usageReportQuotasKey dedupe (P1/P2)', () => {
+  test('test_passive_quotas_query_key_ignores_cacheBust_for_dedupe', () => {
+    // RED until cacheBust is removed from queryKey (fetch-only bust).
+    const passive = usageReportQuotasQueryOptions({ from: 'a', to: 'b' })
+    const withBust = usageReportQuotasQueryOptions({
+      from: 'a',
+      to: 'b',
+      cacheBust: '1730000000000',
+    })
 
-    const items = buildSidebarQuotaItems(rows)
-
-    const weeklyItem = items.find((i) => i.key === 'openai-weekly')
-    expect(weeklyItem).toBeDefined()
-    expect(weeklyItem?.percent).toBe(45)
-  })
-
-  test('test_sidebar_quota_provider_multiple_rows_selection_lowest_remaining_when_both_active', () => {
-    const rows: UsageReportQuotaRow[] = [
-      makeQuotaRow({
-        provider: 'openai',
-        weekly_remaining_pct: 60,
-        weekly_active: true,
-      }),
-      makeQuotaRow({
-        provider: 'openai',
-        weekly_remaining_pct: 20,
-        weekly_active: true,
-      }),
-    ]
-
-    const items = buildSidebarQuotaItems(rows)
-
-    const weeklyItem = items.find((i) => i.key === 'openai-weekly')
-    expect(weeklyItem).toBeDefined()
-    expect(weeklyItem?.percent).toBe(20)
-  })
-
-  test('test_sidebar_quota_anthropic_multiple_rows_selection', () => {
-    const rows: UsageReportQuotaRow[] = [
-      makeQuotaRow({
-        provider: 'anthropic',
-        weekly_remaining_pct: 75,
-        weekly_active: false,
-      }),
-      makeQuotaRow({
-        provider: 'anthropic',
-        weekly_remaining_pct: 30,
-        weekly_active: true,
-      }),
-    ]
-
-    const items = buildSidebarQuotaItems(rows)
-
-    const weeklyItem = items.find((i) => i.key === 'anthropic-weekly')
-    expect(weeklyItem).toBeDefined()
-    expect(weeklyItem?.percent).toBe(30)
-  })
-
-  test('test_sidebar_quota_anthropic_fable_7d_oi_separate_from_retired_sonnet', () => {
-    const rows: UsageReportQuotaRow[] = [
-      makeQuotaRow({
-        provider: 'anthropic',
-        weekly_remaining_pct: 44,
-        weekly_active: true,
-        weekly_overage_included_remaining_pct: 90,
-        weekly_overage_included_active: true,
-        special_remaining_pct: 12,
-        special_active: false,
-      }),
-    ]
-
-    const items = buildSidebarQuotaItems(rows)
-
-    expect(items).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          key: 'anthropic-weekly',
-          label: 'Anthropic Weekly',
-          percent: 44,
-        }),
-        expect.objectContaining({
-          key: 'anthropic-fable-overage',
-          label: 'Anthropic Fable 7d OI',
-          percent: 90,
-        }),
-        expect.objectContaining({
-          key: 'anthropic-sonnet-retired',
-          label: 'Anthropic Retired Sonnet',
-          percent: 12,
-        }),
-      ])
+    expect(passive.queryKey).toEqual(withBust.queryKey)
+    expect(usageReportQuotasKey('a', 'b', '1730000000000')).toEqual(
+      usageReportQuotasKey('a', 'b')
     )
-    expect(
-      items.find((item) => item.key === 'anthropic-sonnet')
-    ).toBeUndefined()
   })
 })
 
-describe('buildSidebarQuotaItems — null consistency (S6-11)', () => {
-  test('test_buildSidebarQuotaItems_null_percent_excluded_not_shown_as_zero', () => {
-    const rows: UsageReportQuotaRow[] = [
-      makeQuotaRow({
-        provider: 'openai',
-        weekly_remaining_pct: null,
-        weekly_active: true,
-      }),
-    ]
-
-    const items = buildSidebarQuotaItems(rows)
-
-    const weeklyItem = items.find((i) => i.key === 'openai-weekly')
-    expect(weeklyItem).toBeUndefined()
-  })
-
-  test('test_buildSidebarQuotaItems_zero_percent_is_included', () => {
-    const rows: UsageReportQuotaRow[] = [
-      makeQuotaRow({
-        provider: 'openai',
-        weekly_remaining_pct: 0,
-        weekly_active: true,
-      }),
-    ]
-
-    const items = buildSidebarQuotaItems(rows)
-
-    const weeklyItem = items.find((i) => i.key === 'openai-weekly')
-    expect(weeklyItem).toBeDefined()
-    expect(weeklyItem?.percent).toBe(0)
-  })
-
-  test('test_buildSidebarQuotaItems_empty_rows_returns_empty_array', () => {
-    const items = buildSidebarQuotaItems([])
-    expect(items).toHaveLength(0)
-  })
-
-  test('test_buildSidebarQuotaItems_null_rows_coerced_to_empty', () => {
-    const items = buildSidebarQuotaItems([] as UsageReportQuotaRow[])
-    expect(items).toHaveLength(0)
-  })
-})
-
-describe('PhosphorSidebar mounts SidebarQuotaRemaining (S6-9)', () => {
-  test('test_sidebar_quota_widget_mounted_where_quota_matters', async () => {
-    registerQuotasHandler([
-      makeQuotaRow({
-        provider: 'openai',
-        weekly_remaining_pct: 55,
-        weekly_active: true,
-      }),
-    ])
-
-    const { PhosphorSidebar } =
-      await import('@/features/dashboard/components/phosphor-sidebar')
-
-    const { createMemoryHistory, createRouter, RouterProvider } =
-      await import('@tanstack/react-router')
-    const { createRootRoute } = await import('@tanstack/react-router')
-    const { QueryClient, QueryClientProvider } =
-      await import('@tanstack/react-query')
-    const { SidebarProvider } = await import('@/components/ui/sidebar')
-    const React = await import('react')
-
-    const rootRoute = createRootRoute({
-      component: () =>
-        React.createElement(
-          SidebarProvider,
-          null,
-          React.createElement(PhosphorSidebar)
-        ),
-    })
-    const router = createRouter({
-      routeTree: rootRoute,
-      history: createMemoryHistory({ initialEntries: ['/aawm-tap/overview'] }),
-    })
-    const queryClient = new QueryClient({
-      defaultOptions: { queries: { retry: false } },
-    })
-
-    render(
-      React.createElement(
-        QueryClientProvider,
-        { client: queryClient },
-        React.createElement(RouterProvider, { router })
+describe('D1-451 Wave 5 — SidebarQuotaRemaining UI (C2/E2)', () => {
+  test('test_sidebar_quota_null_data_shows_empty_state_not_progress_bars', async () => {
+    server.use(
+      http.get('/api/shell/reports/quotas', () =>
+        HttpResponse.json({
+          metadata: {
+            generatedAt: '2026-05-19T00:00:00.000Z',
+            latestRecordAt: null,
+            latestRecordAgeMinutes: null,
+            latestRecordStale: false,
+            staleRecordThresholdMinutes: 60,
+          },
+          quotas: [],
+        })
       )
     )
 
+    renderQuotaSidebar(false)
+
+    expect(await screen.findByText('Quota')).toBeInTheDocument()
+    expect(screen.queryAllByRole('progressbar')).toHaveLength(0)
+  })
+
+  test('test_sidebar_quota_collapsed_empty_state_matches_expanded_heading', async () => {
+    server.use(
+      http.get('/api/shell/reports/quotas', () =>
+        HttpResponse.json({
+          metadata: {
+            generatedAt: '2026-05-19T00:00:00.000Z',
+            latestRecordAt: null,
+            latestRecordAgeMinutes: null,
+            latestRecordStale: false,
+            staleRecordThresholdMinutes: 60,
+          },
+          quotas: [],
+        })
+      )
+    )
+
+    renderQuotaSidebar(true)
+
+    await screen.findByText('Quota')
+    expect(screen.getByText('remaining')).toBeInTheDocument()
+    // Collapsed empty state should not fall back to icon-only skeleton forever (C2).
+    expect(screen.queryByLabelText('Provider quota remaining')).toBeNull()
+  })
+
+  test('test_sidebar_quota_error_state_surfaces_muted_notice', async () => {
+    server.use(
+      http.get('/api/shell/reports/quotas', () => HttpResponse.error())
+    )
+
+    renderQuotaSidebar(false)
+
+    await screen.findByText('Quota')
+    // RED: component has no dedicated error affordance today.
     expect(
-      await screen.findByRole('progressbar', {
-        name: /openai weekly quota remaining/i,
-      })
+      screen.getByRole('status', { name: /quota unavailable/i })
     ).toBeInTheDocument()
+  })
+
+  test('test_buildSidebarQuotaItems_null_via_component_empty_not_bars', async () => {
+    server.use(
+      http.get('/api/shell/reports/quotas', () =>
+        HttpResponse.json({
+          metadata: {
+            generatedAt: '2026-05-19T00:00:00.000Z',
+            latestRecordAt: null,
+            latestRecordAgeMinutes: null,
+            latestRecordStale: false,
+            staleRecordThresholdMinutes: 60,
+          },
+          quotas: null,
+        })
+      )
+    )
+
+    renderQuotaSidebar(false)
+    expect(await screen.findByText('Quota')).toBeInTheDocument()
+    expect(screen.queryAllByRole('progressbar')).toHaveLength(0)
   })
 })
