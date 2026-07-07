@@ -15,6 +15,10 @@ COPY server ./server
 COPY scripts/container-error-intake.sh /usr/local/bin/container-error-intake.sh
 RUN chmod +x /usr/local/bin/container-error-intake.sh
 
+# Runtime boundary note (D1-446):
+# This image intentionally runs as root in the local operator stack.
+# Current behavior reads a read-only host Docker JSON log mount and writes repo-local .analysis intake via bind mount.
+# This shape is operationally convenient but not hardened for untrusted multi-tenant host deployments.
 EXPOSE 3010
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \

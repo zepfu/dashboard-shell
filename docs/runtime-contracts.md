@@ -20,6 +20,19 @@ Local compose and dev defaults use `SHELL_REPORT_PROXY_SHARED_SECRET=dashboard-s
 - API/hook prefixes use `^~` route matches (`/api/aawm-tap/`, `/api/aawm-observe/`, `/api/aawm/`, `/api/aegis/`, `/api/sluice/`, `/api/shell/`, `/hook-api/`) so regex static handlers do not shadow proxy routes.
 - `/`-scoped static assets are served with gzip compression enabled for JS/CSS/SVG/font/media text types; caching behavior for immutable fingerprinted assets remains unchanged.
 
+## Container Runtime User and Operator Blast Radius (D1-446)
+
+- The shell nginx image (`Dockerfile`) intentionally runs as `root` in the current operator shape:
+  - It serves on port 80 and uses nginx stock runtime behavior/paths from `nginx:1.27-alpine` (entrypoint, cache/temp directories, pid path).
+  - A non-root migration requires explicit follow-up work for port binding strategy and writable temp/cache/pid ownership plus entrypoint/runtime compatibility.
+- The report-service image (`Dockerfile.report-service`) intentionally runs as `root` in this repo’s local compose stacks:
+  - It reads read-only host Docker JSON logs (default `SHELL_REPORT_DOCKER_LOG_ROOT=/host/docker/containers`) and writes report-service/report-shell operator intake under the bind-mounted `/dashboard-shell-analysis`.
+  - This is a trusted local operator posture and is **not** hardened for untrusted or multi-tenant hosts.
+- Blast-radius scope is explicit:
+  - `.analysis` durability writes happen through repo bind mounts configured in compose.
+  - Docker log error intake follows the mounted host log directory selected by `SHELL_REPORT_DOCKER_LOG_ROOT`.
+- The host dependency-tree issue is handled by `.dockerignore` (for example `node_modules`, `dist`, `.analysis`, `.env*`, `.git`, and compose files) so it is not a Dockerfile runtime behavior gap.
+
 ## Report cache identity
 
 `server/report-cache-identity.mjs` is the canonical owner of report Redis cache

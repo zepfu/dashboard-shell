@@ -99,6 +99,17 @@ service injects it as `X-API-Key` and strips client-sent auth before forwarding.
 Do not keep a real TAP key in `../aawm-tap-dashboard/.env` as a `VITE_*` value,
 because Vite exposes those values to browser code.
 
+### Container runtime boundary (D1-446)
+
+Both shell and report-service images currently run as `root` in this repo’s local compose workflows:
+
+- The nginx shell image is intentionally root today because it serves on port 80 and follows stock `nginx:1.27-alpine` runtime behavior (entrypoint and stock path layout).
+- The report-service image is intentionally root because local operator mode reads a read-only host Docker JSON log mount and writes repo-local `.analysis` intake through the bind-mounted `/dashboard-shell-analysis`.
+
+This is a deliberate trusted-host/local-operator choice, not a hardened untrusted-host profile. If you need non-root hardening, plan the migration as a separate follow-up that includes explicit port binding, writable temp/cache/pid ownership, and log/intake path ownership controls.
+
+Container-build dependency-tree hygiene for this operator model is handled by `.dockerignore` rather than Dockerfile behavior, so changes here are documentation and operator-boundary alignment only.
+
 Stop the live dev stack with:
 
 ```bash

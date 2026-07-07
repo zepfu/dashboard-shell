@@ -17,6 +17,10 @@ COPY nginx.conf.template /etc/nginx/templates/default.conf.template
 COPY scripts/container-error-intake.sh /usr/local/bin/container-error-intake.sh
 RUN chmod +x /usr/local/bin/container-error-intake.sh
 
+# Runtime boundary note (D1-446):
+# The shell image intentionally runs as root for now.
+# It ships nginx-alpine as a stock, port-80 runtime with default paths and entrypoint behavior.
+# Moving to non-root needs a planned follow-up for port binding, temp/cache/pid ownership, and entrypoint startup behavior.
 EXPOSE 80
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \

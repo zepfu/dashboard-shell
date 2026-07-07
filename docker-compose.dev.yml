@@ -124,6 +124,9 @@ services:
       SHELL_REPORT_CACHE_PREWARM_LOCK_TTL_MS: "${SHELL_REPORT_CACHE_PREWARM_LOCK_TTL_MS:-7200000}"
       SHELL_REPORT_AGENT_SCORE_REASON_RECENT_ROW_LIMIT: "${SHELL_REPORT_AGENT_SCORE_REASON_RECENT_ROW_LIMIT:-10000}"
       SHELL_REPORT_TOOL_ACTIVITY_RECENT_ROW_LIMIT: "${SHELL_REPORT_TOOL_ACTIVITY_RECENT_ROW_LIMIT:-10000}"
+      # Runtime boundary note (D1-446): report-service root mode is intentional in local operator mode.
+      # It currently depends on host Docker JSON log mounts and repo-local .analysis intake.
+      # This is not a hardened multi-tenant/untrusted-host deployment shape.
       SHELL_REPORT_DOCKER_LOG_ROOT: "${SHELL_REPORT_DOCKER_LOG_ROOT:-/host/docker/containers}"
       SHELL_REPORT_DOCKER_LOG_CONTAINERS: "${SHELL_REPORT_DOCKER_LOG_CONTAINERS:-}"
       SHELL_REPORT_DOCKER_LOG_EXTERNAL_CONTAINERS: "${SHELL_REPORT_DOCKER_LOG_EXTERNAL_CONTAINERS:-aawm-litellm,litellm-dev}"
@@ -145,6 +148,8 @@ services:
       - .:/workspace/dashboard-shell
       - dashboard_shell_reports_dev_node_modules:/workspace/dashboard-shell/node_modules
       - dashboard_shell_reports_dev_pnpm_store:/pnpm/store
+      # Runtime boundary note (D1-446): report-service root mode is required for local operator paths.
+      # It tails host logs from /host/docker/containers and writes intake rows under the bind-mounted /dashboard-shell-analysis.
       - /var/lib/docker/containers:/host/docker/containers:ro
     entrypoint: ["/usr/local/bin/container-error-intake.sh"]
     command:
