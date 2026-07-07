@@ -26,7 +26,10 @@ const {
 const TEST_SCOPE = 'cache-lifecycle-test'
 
 function testIdentity(suffix = 'default') {
-  return buildReportCacheIdentity(TEST_SCOPE, new URLSearchParams({ q: suffix }))
+  return buildReportCacheIdentity(
+    TEST_SCOPE,
+    new URLSearchParams({ q: suffix })
+  )
 }
 
 function freshLocalEntry(payload: unknown, cacheTtlMs = 60_000) {
@@ -34,7 +37,10 @@ function freshLocalEntry(payload: unknown, cacheTtlMs = 60_000) {
 }
 
 function staleLocalEntry(payload: unknown, cacheTtlMs = 1) {
-  const entry = buildReportCacheEntry(payload, { scope: TEST_SCOPE, cacheTtlMs })
+  const entry = buildReportCacheEntry(payload, {
+    scope: TEST_SCOPE,
+    cacheTtlMs,
+  })
   return {
     ...entry,
     freshUntil: Date.now() - 10_000,
@@ -61,8 +67,14 @@ describe('report-service cache lifecycle', () => {
     }
 
     const [a, b] = await Promise.all([
-      refreshReportCache(identity, load, { cacheTtlMs: 60_000, useRedis: false }),
-      refreshReportCache(identity, load, { cacheTtlMs: 60_000, useRedis: false }),
+      refreshReportCache(identity, load, {
+        cacheTtlMs: 60_000,
+        useRedis: false,
+      }),
+      refreshReportCache(identity, load, {
+        cacheTtlMs: 60_000,
+        useRedis: false,
+      }),
     ])
 
     expect(loadCount).toBe(1)
@@ -80,7 +92,10 @@ describe('report-service cache lifecycle', () => {
     const evictableIdentity = testIdentity('evictable')
     const keepIdentity = testIdentity('keep')
 
-    setLocalReportCache(evictableIdentity.cacheKey, freshLocalEntry({ id: 'old' }))
+    setLocalReportCache(
+      evictableIdentity.cacheKey,
+      freshLocalEntry({ id: 'old' })
+    )
     setLocalReportCache(keepIdentity.cacheKey, freshLocalEntry({ id: 'keep' }))
 
     let releaseLoad: (() => void) | undefined
@@ -97,11 +112,15 @@ describe('report-service cache lifecycle', () => {
       useRedis: false,
     })
 
-    expect(getReportCacheEntry(inFlightIdentity.cacheKey)?.promise).toBeDefined()
+    expect(
+      getReportCacheEntry(inFlightIdentity.cacheKey)?.promise
+    ).toBeDefined()
 
     pruneReportCache()
 
-    expect(getReportCacheEntry(inFlightIdentity.cacheKey)?.promise).toBeDefined()
+    expect(
+      getReportCacheEntry(inFlightIdentity.cacheKey)?.promise
+    ).toBeDefined()
     expect(getReportCacheEntry(evictableIdentity.cacheKey)).toBeUndefined()
     expect(getReportCacheEntry(keepIdentity.cacheKey)).toBeDefined()
 
@@ -122,14 +141,10 @@ describe('report-service cache lifecycle', () => {
       error: new Error('redis down'),
     }))
 
-    const body = await cachedReport(
-      TEST_SCOPE,
-      async () => ({ metric: 999 }),
-      {
-        searchParams: new URLSearchParams({ q: 'redis-error-fresh' }),
-        decorateMetadata: true,
-      }
-    )
+    const body = await cachedReport(TEST_SCOPE, async () => ({ metric: 999 }), {
+      searchParams: new URLSearchParams({ q: 'redis-error-fresh' }),
+      decorateMetadata: true,
+    })
 
     expect(body).toMatchObject({
       metric: 42,
@@ -230,7 +245,9 @@ describe('Redis report cache binary gzip storage', () => {
   test('decodeRedisReportCachePayload reads legacy base64 gzip string payloads', async () => {
     const entry = freshLocalEntry({ metric: 'legacy' })
     const { gzipSync } = await import('node:zlib')
-    const legacy = gzipSync(Buffer.from(JSON.stringify(entry))).toString('base64')
+    const legacy = gzipSync(Buffer.from(JSON.stringify(entry))).toString(
+      'base64'
+    )
     const decoded = await decodeRedisReportCachePayload(legacy)
 
     expect(decoded).toEqual(entry)
@@ -266,7 +283,9 @@ describe('Redis report cache binary gzip storage', () => {
       },
     }
 
-    await expect(readRedisCacheEntryFromClient(identity, redis)).resolves.toEqual({
+    await expect(
+      readRedisCacheEntryFromClient(identity, redis)
+    ).resolves.toEqual({
       status: 'fresh',
       entry,
     })

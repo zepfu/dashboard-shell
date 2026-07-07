@@ -160,9 +160,7 @@ declare module './report-service' {
     searchParams: SearchParamsLike
   ) => QueryResult
   export const buildQuotaQuery: () => QueryResult
-  export const normalizeQuotaRow: (
-    row: RecordRow
-  ) => RecordRow & {
+  export const normalizeQuotaRow: (row: RecordRow) => RecordRow & {
     provider: string
     model: string | null
     billing_details: RecordRow
@@ -274,9 +272,7 @@ declare module './report-service' {
   export const buildUsageQuery: (
     searchParams: SearchParamsLike
   ) => QueryResultWithMetadata
-  export const parseUsageReportSort: (
-    searchParams: SearchParamsLike
-  ) => {
+  export const parseUsageReportSort: (searchParams: SearchParamsLike) => {
     sort: string
     sortDirection: 'ASC' | 'DESC'
   }

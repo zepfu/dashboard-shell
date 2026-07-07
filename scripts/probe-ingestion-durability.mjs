@@ -331,8 +331,7 @@ function countByType(rows, type) {
 }
 
 function summarizeIngestionDurability(health, parsedLogRows, options = {}) {
-  const gapWarnSeconds =
-    options.gapWarnSeconds ?? DEFAULT_GAP_WARN_SECONDS
+  const gapWarnSeconds = options.gapWarnSeconds ?? DEFAULT_GAP_WARN_SECONDS
   const sessionHistory = findSourceTable(health, 'session_history')
   const rateLimitObservations = findSourceTable(
     health,
@@ -547,8 +546,7 @@ async function main(argv = process.argv.slice(2)) {
 }
 
 const isDirectRun =
-  process.argv[1] &&
-  import.meta.url === pathToFileURL(process.argv[1]).href
+  process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href
 
 if (isDirectRun) {
   main().then(

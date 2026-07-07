@@ -11,10 +11,14 @@ afterEach(() => {
 describe('report-service generic unhandled error response', () => {
   test('respondWithGenericServerError does not expose internal error message', async () => {
     vi.stubEnv('VITEST', 'true')
-    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    const stderrSpy = vi
+      .spyOn(process.stderr, 'write')
+      .mockImplementation(() => true)
     const { __serverRuntimeTestHelpers } = await import('./report-service.mjs')
-    const { respondWithGenericServerError, GENERIC_INTERNAL_SERVER_ERROR_BODY } =
-      __serverRuntimeTestHelpers
+    const {
+      respondWithGenericServerError,
+      GENERIC_INTERNAL_SERVER_ERROR_BODY,
+    } = __serverRuntimeTestHelpers
 
     const writeHead = vi.fn()
     const end = vi.fn()
@@ -27,7 +31,11 @@ describe('report-service generic unhandled error response', () => {
     }
     const req = { headers: {} }
 
-    await respondWithGenericServerError(req, res, new Error('secret-db-password-leak'))
+    await respondWithGenericServerError(
+      req,
+      res,
+      new Error('secret-db-password-leak')
+    )
 
     expect(writeHead).toHaveBeenCalledWith(
       500,
@@ -39,13 +47,17 @@ describe('report-service generic unhandled error response', () => {
     expect(payload).toEqual(GENERIC_INTERNAL_SERVER_ERROR_BODY)
     expect(JSON.stringify(payload)).not.toContain('secret-db-password-leak')
     expect(stderrSpy).toHaveBeenCalled()
-    expect(String(stderrSpy.mock.calls[0]?.[0])).toContain('secret-db-password-leak')
+    expect(String(stderrSpy.mock.calls[0]?.[0])).toContain(
+      'secret-db-password-leak'
+    )
     stderrSpy.mockRestore()
   })
 
   test('respondWithGenericServerError skips JSON when response is already committed', async () => {
     vi.stubEnv('VITEST', 'true')
-    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    const stderrSpy = vi
+      .spyOn(process.stderr, 'write')
+      .mockImplementation(() => true)
     const { __serverRuntimeTestHelpers } = await import('./report-service.mjs')
     const { respondWithGenericServerError } = __serverRuntimeTestHelpers
 
@@ -265,7 +277,10 @@ describe('D1-444 PgBouncer admin pool shutdown cleanup', () => {
     }))
     const on = vi.fn()
     const end = vi.fn(async () => {})
-    const Pool = vi.fn(function Pool(this: { connect: typeof connect; on: typeof on; end: typeof end }, _opts: unknown) {
+    const Pool = vi.fn(function Pool(
+      this: { connect: typeof connect; on: typeof on; end: typeof end },
+      _opts: unknown
+    ) {
       this.connect = connect
       this.on = on
       this.end = end

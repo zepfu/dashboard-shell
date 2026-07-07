@@ -67,10 +67,20 @@ describe('D1-444 /api/shell/health parallel health checks', () => {
       status: 'unconfigured',
       error: 'DATABASE_URL is not configured.',
       inProcess: { active: 0 },
-      pgStatActivity: { connectionCount: 0, activeCount: 0, waitingCount: 0, maxActiveAgeMs: null, rows: [] },
+      pgStatActivity: {
+        connectionCount: 0,
+        activeCount: 0,
+        waitingCount: 0,
+        maxActiveAgeMs: null,
+        rows: [],
+      },
     })
     gates.pgBouncer.resolve({ status: 'green', sidecars: [] })
-    gates.sourceTables.resolve({ status: 'unconfigured', error: 'DATABASE_URL is not configured.', tables: [] })
+    gates.sourceTables.resolve({
+      status: 'unconfigured',
+      error: 'DATABASE_URL is not configured.',
+      tables: [],
+    })
     gates.materializedViews.resolve({
       status: 'unconfigured',
       error: 'DATABASE_URL is not configured.',
@@ -165,7 +175,10 @@ describe('D1-444 PgBouncer admin pool cache', () => {
     }))
     const on = vi.fn()
     const end = vi.fn(async () => {})
-    const Pool = vi.fn(function Pool(this: { connect: typeof connect; on: typeof on; end: typeof end }, _opts: unknown) {
+    const Pool = vi.fn(function Pool(
+      this: { connect: typeof connect; on: typeof on; end: typeof end },
+      _opts: unknown
+    ) {
       this.connect = connect
       this.on = on
       this.end = end
@@ -206,7 +219,10 @@ describe('D1-444 PgBouncer admin pool cache', () => {
     }))
     const on = vi.fn()
     const end = vi.fn(async () => {})
-    const Pool = vi.fn(function Pool(this: { connect: typeof connect; on: typeof on; end: typeof end }, _opts: unknown) {
+    const Pool = vi.fn(function Pool(
+      this: { connect: typeof connect; on: typeof on; end: typeof end },
+      _opts: unknown
+    ) {
       this.connect = connect
       this.on = on
       this.end = end
@@ -245,8 +261,10 @@ describe('D1-444 PgBouncer admin pool cache', () => {
     vi.doMock('pg', () => ({ default: { Pool }, Pool }))
 
     const { __pgBouncerAdminTestHelpers } = await import('./report-service.mjs')
-    const { loadPgBouncerAdminSummaryForTests, getPgBouncerAdminPoolCacheSize } =
-      __pgBouncerAdminTestHelpers
+    const {
+      loadPgBouncerAdminSummaryForTests,
+      getPgBouncerAdminPoolCacheSize,
+    } = __pgBouncerAdminTestHelpers
 
     const summary = await loadPgBouncerAdminSummaryForTests({
       key: 'aawm-pgbouncer',

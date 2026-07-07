@@ -70,7 +70,10 @@ function resolveReportCacheTtlMs(scope, options = {}) {
     : config.defaultTtlMs
 }
 
-function canonicalizeSearchParams(searchParams, config = defaultReportCacheConfig) {
+function canonicalizeSearchParams(
+  searchParams,
+  config = defaultReportCacheConfig
+) {
   const excluded = config.cacheBustExcludedKeys ?? CACHE_IDENTITY_EXCLUDED_KEYS
   const entries = []
   const keys = [...new Set([...searchParams.keys()])]
@@ -86,7 +89,11 @@ function canonicalizeSearchParams(searchParams, config = defaultReportCacheConfi
   return new URLSearchParams(entries).toString()
 }
 
-function buildReportCacheIdentity(scope, searchParams, config = defaultReportCacheConfig) {
+function buildReportCacheIdentity(
+  scope,
+  searchParams,
+  config = defaultReportCacheConfig
+) {
   const canonicalParams = searchParams
     ? canonicalizeSearchParams(searchParams, config)
     : ''

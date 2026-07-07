@@ -39,11 +39,15 @@ function unique(value) {
 }
 
 function normalizedRepoPath(env = process.env) {
-  return String(env.PWD ?? process.cwd()).replace(/\\+/g, '/').toLowerCase()
+  return String(env.PWD ?? process.cwd())
+    .replace(/\\+/g, '/')
+    .toLowerCase()
 }
 
 function normalizeForComposeMatch(value) {
-  return String(value ?? '').replace(/\\+/g, '/').toLowerCase()
+  return String(value ?? '')
+    .replace(/\\+/g, '/')
+    .toLowerCase()
 }
 
 function markerBoundaryBefore(value, index) {
@@ -86,12 +90,18 @@ function currentComposeProjectMarkers(env = process.env) {
 }
 
 export function resolveRepoComposeProjectMarkers(env = process.env) {
-  const configured = splitList(env[SHELL_REPORT_DOCKER_COMPOSE_PROJECT_MARKERS_ENV_VAR])
+  const configured = splitList(
+    env[SHELL_REPORT_DOCKER_COMPOSE_PROJECT_MARKERS_ENV_VAR]
+  )
   if (configured.length) return configured
   return currentComposeProjectMarkers(env)
 }
 
-function readFileTailText(filePath, maxBytes, { statFn, openFn, readFileFn } = {}) {
+function readFileTailText(
+  filePath,
+  maxBytes,
+  { statFn, openFn, readFileFn } = {}
+) {
   const resolvedStatFn = statFn ?? stat
   const resolvedOpenFn = openFn ?? open
   const resolvedReadFileFn = readFileFn ?? readFile
@@ -112,7 +122,12 @@ function readFileTailText(filePath, maxBytes, { statFn, openFn, readFileFn } = {
     try {
       let startsAtLineBoundary = true
       if (offset > 0) {
-        const { bytesRead } = await handle.read(previousByteBuffer, 0, 1, previousOffset)
+        const { bytesRead } = await handle.read(
+          previousByteBuffer,
+          0,
+          1,
+          previousOffset
+        )
         if (bytesRead === 1) {
           startsAtLineBoundary = previousByteBuffer[0] === 10
         }
@@ -145,15 +160,23 @@ function fingerprintFromPersistedRow(parsed) {
 }
 
 function dockerLogErrorFingerprint(row) {
-  return row?.fingerprint != null ? String(row.fingerprint) : buildDockerLogErrorFingerprint(row)
+  return row?.fingerprint != null
+    ? String(row.fingerprint)
+    : buildDockerLogErrorFingerprint(row)
 }
 
 function sameLockStat(left, right) {
   if (!left || !right) return false
-  if (left.dev != null && right.dev != null && left.dev !== right.dev) return false
-  if (left.ino != null && right.ino != null && left.ino !== right.ino) return false
+  if (left.dev != null && right.dev != null && left.dev !== right.dev)
+    return false
+  if (left.ino != null && right.ino != null && left.ino !== right.ino)
+    return false
   if (left.mtimeMs !== right.mtimeMs) return false
-  if (left.ctimeMs != null && right.ctimeMs != null && left.ctimeMs !== right.ctimeMs) {
+  if (
+    left.ctimeMs != null &&
+    right.ctimeMs != null &&
+    left.ctimeMs !== right.ctimeMs
+  ) {
     return false
   }
   return true
@@ -170,13 +193,19 @@ export async function loadPersistedDockerLogErrorFingerprintsFromJsonl(
   const readFileFn =
     typeof readFileFnOrOptions === 'function'
       ? readFileFnOrOptions
-      : readFileFnOrOptions.readFileFn ?? readFile
+      : (readFileFnOrOptions.readFileFn ?? readFile)
   const loadOptions =
     typeof readFileFnOrOptions === 'function' ? options : readFileFnOrOptions
-  const maxBytes = Number(loadOptions?.maxBytes ?? DEFAULT_INTAKE_FINGERPRINT_MAX_BYTES)
-  const maxLines = Number(loadOptions?.maxLines ?? DEFAULT_INTAKE_FINGERPRINT_MAX_LINES)
-  const boundedBytes = Number.isFinite(maxBytes) && maxBytes > 0 ? Math.floor(maxBytes) : 0
-  const boundedLines = Number.isFinite(maxLines) && maxLines > 0 ? Math.floor(maxLines) : 0
+  const maxBytes = Number(
+    loadOptions?.maxBytes ?? DEFAULT_INTAKE_FINGERPRINT_MAX_BYTES
+  )
+  const maxLines = Number(
+    loadOptions?.maxLines ?? DEFAULT_INTAKE_FINGERPRINT_MAX_LINES
+  )
+  const boundedBytes =
+    Number.isFinite(maxBytes) && maxBytes > 0 ? Math.floor(maxBytes) : 0
+  const boundedLines =
+    Number.isFinite(maxLines) && maxLines > 0 ? Math.floor(maxLines) : 0
   const statFn = loadOptions?.statFn ?? stat
   const openFn = loadOptions?.openFn ?? open
   const persisted = new Set()
@@ -311,7 +340,6 @@ export async function withIntakeFileLock(filePath, fn, options = {}) {
   return run
 }
 
-
 /** Containers defined by dashboard-shell compose (prod + dev explicit names). */
 export const DEFAULT_REPO_OWNED_DOCKER_LOG_CONTAINERS = [
   'dashboard-shell',
@@ -348,22 +376,35 @@ export const DEFAULT_REPO_COMPOSE_PROJECT_MARKERS = [
 ]
 
 export function normalizeDockerContainerName(name) {
-  return String(name ?? '').replace(/^\//, '').trim()
+  return String(name ?? '')
+    .replace(/^\//, '')
+    .trim()
 }
 
 export function readDockerComposeLabels(config) {
   return config?.Config?.Labels ?? config?.Labels ?? {}
 }
 
-export function isDashboardShellComposeProject(labels, markers = resolveRepoComposeProjectMarkers()) {
+export function isDashboardShellComposeProject(
+  labels,
+  markers = resolveRepoComposeProjectMarkers()
+) {
   const project = String(labels['com.docker.compose.project'] ?? '')
-  const workingDir = String(labels['com.docker.compose.project.working_dir'] ?? '')
-  const configFiles = String(labels['com.docker.compose.project.config_files'] ?? '')
-  const haystack = normalizeForComposeMatch(`${project}\n${workingDir}\n${configFiles}`)
+  const workingDir = String(
+    labels['com.docker.compose.project.working_dir'] ?? ''
+  )
+  const configFiles = String(
+    labels['com.docker.compose.project.config_files'] ?? ''
+  )
+  const haystack = normalizeForComposeMatch(
+    `${project}\n${workingDir}\n${configFiles}`
+  )
   const resolvedMarkers = markers?.length
     ? unique(markers.map(normalizeForComposeMatch))
     : resolveRepoComposeProjectMarkers()
-  return resolvedMarkers.some((marker) => composeMarkerMatches(haystack, marker))
+  return resolvedMarkers.some((marker) =>
+    composeMarkerMatches(haystack, marker)
+  )
 }
 
 /**
@@ -371,9 +412,15 @@ export function isDashboardShellComposeProject(labels, markers = resolveRepoComp
  * Dev containers use explicit container_name (exact Name match). Prod compose services
  * without container_name match via compose service + dashboard-shell project markers.
  */
-export function matchDockerJsonLogContainer(config, wantedContainerNames, options = {}) {
+export function matchDockerJsonLogContainer(
+  config,
+  wantedContainerNames,
+  options = {}
+) {
   const wanted = new Set(
-    (wantedContainerNames ?? []).map((item) => String(item).trim()).filter(Boolean)
+    (wantedContainerNames ?? [])
+      .map((item) => String(item).trim())
+      .filter(Boolean)
   )
   if (!wanted.size) {
     return { matched: false, container: null, matchKind: null }
@@ -394,7 +441,9 @@ export function matchDockerJsonLogContainer(config, wantedContainerNames, option
     return { matched: false, container: null, matchKind: null }
   }
 
-  const markers = options.repoComposeProjectMarkers ?? resolveRepoComposeProjectMarkers(options.env)
+  const markers =
+    options.repoComposeProjectMarkers ??
+    resolveRepoComposeProjectMarkers(options.env)
   if (!isDashboardShellComposeProject(labels, markers)) {
     return { matched: false, container: null, matchKind: null }
   }
@@ -405,14 +454,24 @@ export function matchDockerJsonLogContainer(config, wantedContainerNames, option
 
 /** Discovery/tailing is enabled when at least one container name is configured (not by dashboard row cap). */
 export function shouldDiscoverDockerJsonLogSources(resolvedContainerNames) {
-  return Array.isArray(resolvedContainerNames) && resolvedContainerNames.length > 0
+  return (
+    Array.isArray(resolvedContainerNames) && resolvedContainerNames.length > 0
+  )
 }
 
-export function discoverDockerJsonLogSourcesFromConfigs(entries, wantedContainerNames, options = {}) {
+export function discoverDockerJsonLogSourcesFromConfigs(
+  entries,
+  wantedContainerNames,
+  options = {}
+) {
   const sources = []
   for (const { containerDir, entryId, config } of entries) {
     if (!containerDir || !entryId || !config) continue
-    const match = matchDockerJsonLogContainer(config, wantedContainerNames, options)
+    const match = matchDockerJsonLogContainer(
+      config,
+      wantedContainerNames,
+      options
+    )
     if (!match.matched) continue
     sources.push({
       container: match.container,
@@ -423,13 +482,12 @@ export function discoverDockerJsonLogSourcesFromConfigs(entries, wantedContainer
   return sources
 }
 
-
-export function parseDockerLogContainerNames(value, fallback = DEFAULT_REPO_OWNED_DOCKER_LOG_CONTAINERS) {
+export function parseDockerLogContainerNames(
+  value,
+  fallback = DEFAULT_REPO_OWNED_DOCKER_LOG_CONTAINERS
+) {
   return unique(splitList(value).length ? splitList(value) : fallback)
 }
-
-
-
 
 export function parseDockerLogExternalContainerNames(
   value,
@@ -442,7 +500,8 @@ export function resolveDockerLogExternalContainerNames(env = process.env) {
   return [
     ...new Set(
       parseDockerLogExternalContainerNames(
-        env.SHELL_REPORT_DOCKER_LOG_EXTERNAL_CONTAINERS ?? 'aawm-litellm,litellm-dev',
+        env.SHELL_REPORT_DOCKER_LOG_EXTERNAL_CONTAINERS ??
+          'aawm-litellm,litellm-dev',
         []
       )
     ),
@@ -455,7 +514,9 @@ export function isRepoOwnedDockerLogContainerName(
 ) {
   const normalized = normalizeDockerContainerName(containerName)
   if (!normalized) return false
-  const owned = new Set((repoOwned ?? []).map((item) => String(item).trim()).filter(Boolean))
+  const owned = new Set(
+    (repoOwned ?? []).map((item) => String(item).trim()).filter(Boolean)
+  )
   if (owned.has(normalized)) return true
 
   const composeGenerated = /^dashboard-shell-(.+)-(\d+)$/.exec(normalized)
@@ -465,16 +526,15 @@ export function isRepoOwnedDockerLogContainerName(
   return owned.has(serviceName)
 }
 
-export function filterDockerLogErrorsForCentralizedIntake(
-  rows,
-  options = {}
-) {
+export function filterDockerLogErrorsForCentralizedIntake(rows, options = {}) {
   const repoOwned =
     options.repoOwnedContainerNames ?? DEFAULT_REPO_OWNED_DOCKER_LOG_CONTAINERS
   const external =
     options.externalContainerNames ??
     resolveDockerLogExternalContainerNames(options.env ?? process.env)
-  const externalSet = new Set(external.map((item) => String(item).trim()).filter(Boolean))
+  const externalSet = new Set(
+    external.map((item) => String(item).trim()).filter(Boolean)
+  )
   const list = Array.isArray(rows) ? rows : []
   return list.filter((row) => {
     const container = normalizeDockerContainerName(row?.container)
@@ -485,15 +545,18 @@ export function filterDockerLogErrorsForCentralizedIntake(
   })
 }
 
-
 export function resolveDockerLogContainerNames(env = process.env) {
   const explicit = String(env.SHELL_REPORT_DOCKER_LOG_CONTAINERS ?? '').trim()
   if (explicit) {
     return [...new Set(parseDockerLogContainerNames(explicit, []))]
   }
-  const owned = parseDockerLogContainerNames('', DEFAULT_REPO_OWNED_DOCKER_LOG_CONTAINERS)
+  const owned = parseDockerLogContainerNames(
+    '',
+    DEFAULT_REPO_OWNED_DOCKER_LOG_CONTAINERS
+  )
   const external = parseDockerLogContainerNames(
-    env.SHELL_REPORT_DOCKER_LOG_EXTERNAL_CONTAINERS ?? 'aawm-litellm,litellm-dev',
+    env.SHELL_REPORT_DOCKER_LOG_EXTERNAL_CONTAINERS ??
+      'aawm-litellm,litellm-dev',
     []
   )
   return [...new Set([...owned, ...external])]
@@ -509,8 +572,10 @@ export function compactLogMessage(value) {
 
 export function inferLogProvider(message) {
   const lower = message.toLowerCase()
-  const hasWord = (token) => new RegExp(`(^|[^a-z0-9_])${token}([^a-z0-9_]|$)`).test(lower)
-  const hasOpenAiPrefix = /\bgpt-[a-z0-9]/i.test(message) || /\bgpt_?[0-9]/i.test(message)
+  const hasWord = (token) =>
+    new RegExp(`(^|[^a-z0-9_])${token}([^a-z0-9_]|$)`).test(lower)
+  const hasOpenAiPrefix =
+    /\bgpt-[a-z0-9]/i.test(message) || /\bgpt_?[0-9]/i.test(message)
 
   if (hasWord('anthropic') || hasWord('claude')) return 'anthropic'
   if (hasWord('openrouter')) return 'openrouter'
@@ -561,18 +626,29 @@ export function extractHttpStatusCodes(message) {
     if (/[0-9.]/.test(before) || /[0-9.]/.test(afterChar)) continue
     if (before === '-') continue
 
-    const after = text.slice(codeIndex + code.length, codeIndex + code.length + 24).toLowerCase()
-    const beforeWindow = text.slice(Math.max(0, codeIndex - 16), codeIndex).toLowerCase()
+    const after = text
+      .slice(codeIndex + code.length, codeIndex + code.length + 24)
+      .toLowerCase()
+    const beforeWindow = text
+      .slice(Math.max(0, codeIndex - 16), codeIndex)
+      .toLowerCase()
     if (/^\s*packages\b/.test(after)) continue
     if (/\baudited\s*$/.test(beforeWindow)) continue
     if (/\badded\s*$/.test(beforeWindow)) continue
-    if (/:\d{2}:\d{2}\.$/.test(text.slice(Math.max(0, codeIndex - 12), codeIndex + 1))) continue
+    if (
+      /:\d{2}:\d{2}\.$/.test(
+        text.slice(Math.max(0, codeIndex - 12), codeIndex + 1)
+      )
+    )
+      continue
     if (!hasStatusContext(codeIndex)) continue
 
     add(code)
   }
 
-  for (const match of lowerText.matchAll(/"[a-z]+ [^"]+ http\/[0-9.]+"\s+(4\d{2}|5\d{2})\s+/g)) {
+  for (const match of lowerText.matchAll(
+    /"[a-z]+ [^"]+ http\/[0-9.]+"\s+(4\d{2}|5\d{2})\s+/g
+  )) {
     add(match[1])
   }
 
@@ -608,7 +684,8 @@ export function inferLogStatusCode(message) {
 export function isIgnoredContainerLogNoise(message) {
   const lower = String(message ?? '').toLowerCase()
   if (!lower) return false
-  if (/\buser requested shutdown\b|\bready to exit, bye bye\b/.test(lower)) return true
+  if (/\buser requested shutdown\b|\bready to exit, bye bye\b/.test(lower))
+    return true
   if (/\b(?:added|audited)\s+\d+\s+packages\b/.test(lower)) return true
   return /^\s*\d+\s+vulnerabilities\b/.test(lower)
 }
@@ -663,7 +740,8 @@ export function isActionableErrorLog(message) {
   if (isIgnoredContainerLogNoise(lower)) return false
   if (isSuccessfulCacheWaitFallbackWarning(lower)) return false
   if (hasHttpStatusSignal(message)) return true
-  if (/\bconnection refused\b|\betimed out\b|\btimeout\b/.test(lower)) return true
+  if (/\bconnection refused\b|\betimed out\b|\btimeout\b/.test(lower))
+    return true
   if (/\b(?:critical|fatal|exception|traceback)\b/.test(lower)) return true
   if (isInformationalErrorMention(lower)) return false
   if (isSuccessfulHttpAccessLog(message)) return false
@@ -767,7 +845,10 @@ export function commitDockerLogErrorFingerprints(rows, seenFingerprints) {
   }
 }
 
-export function splitDockerLogErrorsForDashboardAndIntake(sortedRows, maxDashboardRows) {
+export function splitDockerLogErrorsForDashboardAndIntake(
+  sortedRows,
+  maxDashboardRows
+) {
   const sorted = Array.isArray(sortedRows) ? sortedRows : []
   return {
     forIntake: sorted,
@@ -824,10 +905,11 @@ export async function appendDockerLogErrorsToIntake({
     const batch = await withIntakeFileLock(
       filePath,
       async () => {
-        const persisted = await loadPersistedDockerLogErrorFingerprintsFromJsonl(
-          filePath,
-          readFileFn
-        )
+        const persisted =
+          await loadPersistedDockerLogErrorFingerprintsFromJsonl(
+            filePath,
+            readFileFn
+          )
         if (seenFingerprints) {
           for (const fp of persisted) seenFingerprints.add(fp)
         }
@@ -850,7 +932,9 @@ export async function appendDockerLogErrorsToIntake({
           return { appendedLocal: 0, skippedLocal, wrote: false }
         }
 
-        const payload = toWrite.map((record) => `${JSON.stringify(record)}\n`).join('')
+        const payload = toWrite
+          .map((record) => `${JSON.stringify(record)}\n`)
+          .join('')
         try {
           await appendFileFn(filePath, payload, 'utf8')
         } catch (error) {

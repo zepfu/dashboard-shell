@@ -20,25 +20,25 @@ services:
     environment:
       SHELL_CONTAINER_NAME: dashboard-shell-dev
       SHELL_CONTAINER_ERROR_INTAKE_DIR: /dashboard-shell-analysis
-      SHELL_REPORT_PROXY_SHARED_SECRET: "${SHELL_REPORT_PROXY_SHARED_SECRET:-dashboard-shell-local-proxy-secret}"
-      AAWM_DASHBOARD_REMOTE_ENTRY: "http://localhost:${AAWM_DASHBOARD_REMOTE_DEV_PORT:-5176}/remoteEntry.js"
-      AAWM_DASHBOARD_REMOTE_ENTRY_TYPE: "module"
-      AAWM_OBSERVE_REMOTE_ENTRY: "http://localhost:${AAWM_OBSERVE_REMOTE_DEV_PORT:-5177}/remoteEntry.js"
-      AAWM_OBSERVE_REMOTE_ENTRY_TYPE: "module"
-      AAWM_TAP_REMOTE_ENTRY: "http://localhost:${AAWM_TAP_REMOTE_DEV_PORT:-5173}/remoteEntry.js"
-      AAWM_TAP_REMOTE_ENTRY_TYPE: "module"
-      AEGIS_REMOTE_ENTRY: "http://localhost:${AEGIS_REMOTE_DEV_PORT:-5174}/remoteEntry.js"
-      AEGIS_REMOTE_ENTRY_TYPE: "module"
-      CHOKIDAR_USEPOLLING: "${CHOKIDAR_USEPOLLING:-true}"
-      DASHBOARD_SHELL_DEV_PORT: "${DASHBOARD_SHELL_DEV_PORT:-3006}"
-      SHELL_REPORT_API_TARGET: "http://dashboard-shell-reports-dev:${SHELL_REPORT_PORT:-3010}"
-      SLUICE_REMOTE_ENTRY: "http://localhost:${SLUICE_REMOTE_DEV_PORT:-5175}/remoteEntry.js"
-      SLUICE_REMOTE_ENTRY_TYPE: "module"
-      WATCHPACK_POLLING: "${WATCHPACK_POLLING:-true}"
+      SHELL_REPORT_PROXY_SHARED_SECRET: '${SHELL_REPORT_PROXY_SHARED_SECRET:-dashboard-shell-local-proxy-secret}'
+      AAWM_DASHBOARD_REMOTE_ENTRY: 'http://localhost:${AAWM_DASHBOARD_REMOTE_DEV_PORT:-5176}/remoteEntry.js'
+      AAWM_DASHBOARD_REMOTE_ENTRY_TYPE: 'module'
+      AAWM_OBSERVE_REMOTE_ENTRY: 'http://localhost:${AAWM_OBSERVE_REMOTE_DEV_PORT:-5177}/remoteEntry.js'
+      AAWM_OBSERVE_REMOTE_ENTRY_TYPE: 'module'
+      AAWM_TAP_REMOTE_ENTRY: 'http://localhost:${AAWM_TAP_REMOTE_DEV_PORT:-5173}/remoteEntry.js'
+      AAWM_TAP_REMOTE_ENTRY_TYPE: 'module'
+      AEGIS_REMOTE_ENTRY: 'http://localhost:${AEGIS_REMOTE_DEV_PORT:-5174}/remoteEntry.js'
+      AEGIS_REMOTE_ENTRY_TYPE: 'module'
+      CHOKIDAR_USEPOLLING: '${CHOKIDAR_USEPOLLING:-true}'
+      DASHBOARD_SHELL_DEV_PORT: '${DASHBOARD_SHELL_DEV_PORT:-3006}'
+      SHELL_REPORT_API_TARGET: 'http://dashboard-shell-reports-dev:${SHELL_REPORT_PORT:-3010}'
+      SLUICE_REMOTE_ENTRY: 'http://localhost:${SLUICE_REMOTE_DEV_PORT:-5175}/remoteEntry.js'
+      SLUICE_REMOTE_ENTRY_TYPE: 'module'
+      WATCHPACK_POLLING: '${WATCHPACK_POLLING:-true}'
     extra_hosts:
-      - "host.docker.internal:host-gateway"
+      - 'host.docker.internal:host-gateway'
     ports:
-      - "${DASHBOARD_DEV_BIND_HOST:-127.0.0.1}:${DASHBOARD_SHELL_DEV_PORT:-3006}:${DASHBOARD_SHELL_DEV_PORT:-3006}"
+      - '${DASHBOARD_DEV_BIND_HOST:-127.0.0.1}:${DASHBOARD_SHELL_DEV_PORT:-3006}:${DASHBOARD_SHELL_DEV_PORT:-3006}'
     networks:
       - aawm_tap
     volumes:
@@ -47,7 +47,7 @@ services:
       - .:/workspace/dashboard-shell
       - dashboard_shell_dev_node_modules:/workspace/dashboard-shell/node_modules
       - dashboard_shell_dev_pnpm_store:/pnpm/store
-    entrypoint: ["/usr/local/bin/container-error-intake.sh"]
+    entrypoint: ['/usr/local/bin/container-error-intake.sh']
     command:
       - sh
       - -lc
@@ -61,8 +61,8 @@ services:
     healthcheck:
       test:
         [
-          "CMD-SHELL",
-          "wget -qO- http://127.0.0.1:$${DASHBOARD_SHELL_DEV_PORT:-3006}/ >/dev/null",
+          'CMD-SHELL',
+          'wget -qO- http://127.0.0.1:$${DASHBOARD_SHELL_DEV_PORT:-3006}/ >/dev/null',
         ]
       interval: 30s
       timeout: 5s
@@ -77,68 +77,68 @@ services:
     environment:
       SHELL_CONTAINER_NAME: dashboard-shell-reports-dev
       SHELL_CONTAINER_ERROR_INTAKE_DIR: /dashboard-shell-analysis
-      SHELL_REPORT_PROXY_SHARED_SECRET: "${SHELL_REPORT_PROXY_SHARED_SECRET:-dashboard-shell-local-proxy-secret}"
-      AAWM_API_KEY: "${AAWM_API_KEY:-}"
-      AAWM_ACCESS_TOKEN: "${AAWM_ACCESS_TOKEN:-}"
-      AAWM_API_TARGET: "${AAWM_API_TARGET:-http://aawm-api:8000}"
-      AAWM_HOOK_API_KEY: "${AAWM_HOOK_API_KEY:-}"
-      AAWM_HOOK_ACCESS_TOKEN: "${AAWM_HOOK_ACCESS_TOKEN:-}"
-      AAWM_HOOK_API_TARGET: "${AAWM_HOOK_API_TARGET:-http://aawm-hook-server:8318}"
-      AAWM_OBSERVE_API_KEY: "${AAWM_OBSERVE_API_KEY:-}"
-      AAWM_OBSERVE_ACCESS_TOKEN: "${AAWM_OBSERVE_ACCESS_TOKEN:-}"
-      AAWM_OBSERVE_API_TARGET: "${AAWM_OBSERVE_API_TARGET:-http://host.docker.internal:34042}"
-      AAWM_TAP_API_KEY: "${AAWM_TAP_API_KEY:-}"
-      AAWM_TAP_ACCESS_TOKEN: "${AAWM_TAP_ACCESS_TOKEN:-}"
-      AAWM_TAP_ADMIN_CAPABILITY: "${AAWM_TAP_ADMIN_CAPABILITY:-}"
-      AAWM_TAP_API_TARGET: "${AAWM_TAP_API_TARGET:-http://host.docker.internal:8010}"
-      AEGIS_ACCESS_TOKEN: "${AEGIS_ACCESS_TOKEN:-}"
-      AEGIS_API_TARGET: "${AEGIS_API_TARGET:-http://aegis-api:8001/api/v1}"
+      SHELL_REPORT_PROXY_SHARED_SECRET: '${SHELL_REPORT_PROXY_SHARED_SECRET:-dashboard-shell-local-proxy-secret}'
+      AAWM_API_KEY: '${AAWM_API_KEY:-}'
+      AAWM_ACCESS_TOKEN: '${AAWM_ACCESS_TOKEN:-}'
+      AAWM_API_TARGET: '${AAWM_API_TARGET:-http://aawm-api:8000}'
+      AAWM_HOOK_API_KEY: '${AAWM_HOOK_API_KEY:-}'
+      AAWM_HOOK_ACCESS_TOKEN: '${AAWM_HOOK_ACCESS_TOKEN:-}'
+      AAWM_HOOK_API_TARGET: '${AAWM_HOOK_API_TARGET:-http://aawm-hook-server:8318}'
+      AAWM_OBSERVE_API_KEY: '${AAWM_OBSERVE_API_KEY:-}'
+      AAWM_OBSERVE_ACCESS_TOKEN: '${AAWM_OBSERVE_ACCESS_TOKEN:-}'
+      AAWM_OBSERVE_API_TARGET: '${AAWM_OBSERVE_API_TARGET:-http://host.docker.internal:34042}'
+      AAWM_TAP_API_KEY: '${AAWM_TAP_API_KEY:-}'
+      AAWM_TAP_ACCESS_TOKEN: '${AAWM_TAP_ACCESS_TOKEN:-}'
+      AAWM_TAP_ADMIN_CAPABILITY: '${AAWM_TAP_ADMIN_CAPABILITY:-}'
+      AAWM_TAP_API_TARGET: '${AAWM_TAP_API_TARGET:-http://host.docker.internal:8010}'
+      AEGIS_ACCESS_TOKEN: '${AEGIS_ACCESS_TOKEN:-}'
+      AEGIS_API_TARGET: '${AEGIS_API_TARGET:-http://aegis-api:8001/api/v1}'
       # D1-446 local-only default. Override AEGIS_DB_PASSWORD for non-local operators.
-      AEGIS_DB_PASSWORD: "${AEGIS_DB_PASSWORD:-aegis_dev_password}"
-      SLUICE_ACCESS_TOKEN: "${SLUICE_ACCESS_TOKEN:-}"
-      SLUICE_API_TARGET: "${SLUICE_API_TARGET:-http://host.docker.internal:8002/api/v1}"
-      VITE_API_KEY: "${VITE_API_KEY:-}"
-      VITE_ACCESS_TOKEN: "${VITE_ACCESS_TOKEN:-}"
-      VITE_TAP_ACCESS_TOKEN: "${VITE_TAP_ACCESS_TOKEN:-}"
-      VITE_TAP_API_KEY: "${VITE_TAP_API_KEY:-}"
-      DATABASE_URL: "${DATABASE_URL:-}"
-      SHELL_REPORT_DATABASE_HOST_REWRITE: "${SHELL_REPORT_DATABASE_HOST_REWRITE:-aawm-pgbouncer}"
-      SHELL_REPORT_DATABASE_PORT_REWRITE: "${SHELL_REPORT_DATABASE_PORT_REWRITE:-6432}"
-      SHELL_REPORT_AAWM_PGBOUNCER_DATABASE_URL: "${SHELL_REPORT_AAWM_PGBOUNCER_DATABASE_URL:-}"
-      SHELL_REPORT_AEGIS_PGBOUNCER_DATABASE_URL: "${SHELL_REPORT_AEGIS_PGBOUNCER_DATABASE_URL:-}"
-      SHELL_REPORT_DB_POOL_MAX: "${SHELL_REPORT_DB_POOL_MAX:-4}"
-      SHELL_REPORT_DB_CONNECTION_TIMEOUT_MS: "${SHELL_REPORT_DB_CONNECTION_TIMEOUT_MS:-5000}"
-      SHELL_REPORT_DB_DISABLE_PARALLELISM: "${SHELL_REPORT_DB_DISABLE_PARALLELISM:-true}"
-      SHELL_REPORT_SQL_FANOUT_CONCURRENCY: "${SHELL_REPORT_SQL_FANOUT_CONCURRENCY:-1}"
-      SHELL_REPORT_HEALTH_DB_CONNECTION_TIMEOUT_MS: "${SHELL_REPORT_HEALTH_DB_CONNECTION_TIMEOUT_MS:-1000}"
-      SHELL_REPORT_HEALTH_DB_STATEMENT_TIMEOUT_MS: "${SHELL_REPORT_HEALTH_DB_STATEMENT_TIMEOUT_MS:-2000}"
-      SHELL_REPORT_MV_HEALTH_CACHE_TTL_MS: "${SHELL_REPORT_MV_HEALTH_CACHE_TTL_MS:-30000}"
-      SHELL_REPORT_PORT: "${SHELL_REPORT_PORT:-3010}"
-      SHELL_REPORT_REDIS_URL: "${SHELL_REPORT_REDIS_URL:-redis://dashboard-shell-redis:6379}"
-      SHELL_REPORT_CACHE_PREFIX: "${SHELL_REPORT_CACHE_PREFIX:-dashboard-shell:reports}"
-      SHELL_REPORT_CACHE_VERSION: "${SHELL_REPORT_CACHE_VERSION:-v14}"
-      SHELL_REPORT_CACHE_STALE_TTL_MS: "${SHELL_REPORT_CACHE_STALE_TTL_MS:-86400000}"
-      SHELL_REPORT_CACHE_LOCK_TTL_MS: "${SHELL_REPORT_CACHE_LOCK_TTL_MS:-1800000}"
-      SHELL_REPORT_CACHE_LOCK_WAIT_MS: "${SHELL_REPORT_CACHE_LOCK_WAIT_MS:-60000}"
-      SHELL_REPORT_CACHE_PREWARM: "${SHELL_REPORT_CACHE_PREWARM:-false}"
-      SHELL_REPORT_CACHE_PREWARM_INTERVAL_MS: "${SHELL_REPORT_CACHE_PREWARM_INTERVAL_MS:-900000}"
-      SHELL_REPORT_CACHE_PREWARM_LOCK_TTL_MS: "${SHELL_REPORT_CACHE_PREWARM_LOCK_TTL_MS:-7200000}"
-      SHELL_REPORT_AGENT_SCORE_REASON_RECENT_ROW_LIMIT: "${SHELL_REPORT_AGENT_SCORE_REASON_RECENT_ROW_LIMIT:-10000}"
-      SHELL_REPORT_TOOL_ACTIVITY_RECENT_ROW_LIMIT: "${SHELL_REPORT_TOOL_ACTIVITY_RECENT_ROW_LIMIT:-10000}"
+      AEGIS_DB_PASSWORD: '${AEGIS_DB_PASSWORD:-aegis_dev_password}'
+      SLUICE_ACCESS_TOKEN: '${SLUICE_ACCESS_TOKEN:-}'
+      SLUICE_API_TARGET: '${SLUICE_API_TARGET:-http://host.docker.internal:8002/api/v1}'
+      VITE_API_KEY: '${VITE_API_KEY:-}'
+      VITE_ACCESS_TOKEN: '${VITE_ACCESS_TOKEN:-}'
+      VITE_TAP_ACCESS_TOKEN: '${VITE_TAP_ACCESS_TOKEN:-}'
+      VITE_TAP_API_KEY: '${VITE_TAP_API_KEY:-}'
+      DATABASE_URL: '${DATABASE_URL:-}'
+      SHELL_REPORT_DATABASE_HOST_REWRITE: '${SHELL_REPORT_DATABASE_HOST_REWRITE:-aawm-pgbouncer}'
+      SHELL_REPORT_DATABASE_PORT_REWRITE: '${SHELL_REPORT_DATABASE_PORT_REWRITE:-6432}'
+      SHELL_REPORT_AAWM_PGBOUNCER_DATABASE_URL: '${SHELL_REPORT_AAWM_PGBOUNCER_DATABASE_URL:-}'
+      SHELL_REPORT_AEGIS_PGBOUNCER_DATABASE_URL: '${SHELL_REPORT_AEGIS_PGBOUNCER_DATABASE_URL:-}'
+      SHELL_REPORT_DB_POOL_MAX: '${SHELL_REPORT_DB_POOL_MAX:-4}'
+      SHELL_REPORT_DB_CONNECTION_TIMEOUT_MS: '${SHELL_REPORT_DB_CONNECTION_TIMEOUT_MS:-5000}'
+      SHELL_REPORT_DB_DISABLE_PARALLELISM: '${SHELL_REPORT_DB_DISABLE_PARALLELISM:-true}'
+      SHELL_REPORT_SQL_FANOUT_CONCURRENCY: '${SHELL_REPORT_SQL_FANOUT_CONCURRENCY:-1}'
+      SHELL_REPORT_HEALTH_DB_CONNECTION_TIMEOUT_MS: '${SHELL_REPORT_HEALTH_DB_CONNECTION_TIMEOUT_MS:-1000}'
+      SHELL_REPORT_HEALTH_DB_STATEMENT_TIMEOUT_MS: '${SHELL_REPORT_HEALTH_DB_STATEMENT_TIMEOUT_MS:-2000}'
+      SHELL_REPORT_MV_HEALTH_CACHE_TTL_MS: '${SHELL_REPORT_MV_HEALTH_CACHE_TTL_MS:-30000}'
+      SHELL_REPORT_PORT: '${SHELL_REPORT_PORT:-3010}'
+      SHELL_REPORT_REDIS_URL: '${SHELL_REPORT_REDIS_URL:-redis://dashboard-shell-redis:6379}'
+      SHELL_REPORT_CACHE_PREFIX: '${SHELL_REPORT_CACHE_PREFIX:-dashboard-shell:reports}'
+      SHELL_REPORT_CACHE_VERSION: '${SHELL_REPORT_CACHE_VERSION:-v14}'
+      SHELL_REPORT_CACHE_STALE_TTL_MS: '${SHELL_REPORT_CACHE_STALE_TTL_MS:-86400000}'
+      SHELL_REPORT_CACHE_LOCK_TTL_MS: '${SHELL_REPORT_CACHE_LOCK_TTL_MS:-1800000}'
+      SHELL_REPORT_CACHE_LOCK_WAIT_MS: '${SHELL_REPORT_CACHE_LOCK_WAIT_MS:-60000}'
+      SHELL_REPORT_CACHE_PREWARM: '${SHELL_REPORT_CACHE_PREWARM:-false}'
+      SHELL_REPORT_CACHE_PREWARM_INTERVAL_MS: '${SHELL_REPORT_CACHE_PREWARM_INTERVAL_MS:-900000}'
+      SHELL_REPORT_CACHE_PREWARM_LOCK_TTL_MS: '${SHELL_REPORT_CACHE_PREWARM_LOCK_TTL_MS:-7200000}'
+      SHELL_REPORT_AGENT_SCORE_REASON_RECENT_ROW_LIMIT: '${SHELL_REPORT_AGENT_SCORE_REASON_RECENT_ROW_LIMIT:-10000}'
+      SHELL_REPORT_TOOL_ACTIVITY_RECENT_ROW_LIMIT: '${SHELL_REPORT_TOOL_ACTIVITY_RECENT_ROW_LIMIT:-10000}'
       # Runtime boundary note (D1-446): report-service root mode is intentional in local operator mode.
       # It currently depends on host Docker JSON log mounts and repo-local .analysis intake.
       # This is not a hardened multi-tenant/untrusted-host deployment shape.
-      SHELL_REPORT_DOCKER_LOG_ROOT: "${SHELL_REPORT_DOCKER_LOG_ROOT:-/host/docker/containers}"
-      SHELL_REPORT_DOCKER_LOG_CONTAINERS: "${SHELL_REPORT_DOCKER_LOG_CONTAINERS:-}"
-      SHELL_REPORT_DOCKER_LOG_EXTERNAL_CONTAINERS: "${SHELL_REPORT_DOCKER_LOG_EXTERNAL_CONTAINERS:-aawm-litellm,litellm-dev}"
-      SHELL_REPORT_ERROR_INTAKE_DIR: "${SHELL_REPORT_ERROR_INTAKE_DIR:-/dashboard-shell-analysis}"
+      SHELL_REPORT_DOCKER_LOG_ROOT: '${SHELL_REPORT_DOCKER_LOG_ROOT:-/host/docker/containers}'
+      SHELL_REPORT_DOCKER_LOG_CONTAINERS: '${SHELL_REPORT_DOCKER_LOG_CONTAINERS:-}'
+      SHELL_REPORT_DOCKER_LOG_EXTERNAL_CONTAINERS: '${SHELL_REPORT_DOCKER_LOG_EXTERNAL_CONTAINERS:-aawm-litellm,litellm-dev}'
+      SHELL_REPORT_ERROR_INTAKE_DIR: '${SHELL_REPORT_ERROR_INTAKE_DIR:-/dashboard-shell-analysis}'
     expose:
-      - "${SHELL_REPORT_PORT:-3010}"
+      - '${SHELL_REPORT_PORT:-3010}'
     depends_on:
       dashboard-shell-redis:
         condition: service_healthy
     extra_hosts:
-      - "host.docker.internal:host-gateway"
+      - 'host.docker.internal:host-gateway'
     networks:
       - aawm_tap
       - aawm_core
@@ -152,7 +152,7 @@ services:
       # Runtime boundary note (D1-446): report-service root mode is required for local operator paths.
       # It tails host logs from /host/docker/containers and writes intake rows under the bind-mounted /dashboard-shell-analysis.
       - /var/lib/docker/containers:/host/docker/containers:ro
-    entrypoint: ["/usr/local/bin/container-error-intake.sh"]
+    entrypoint: ['/usr/local/bin/container-error-intake.sh']
     command:
       - sh
       - -lc
@@ -165,8 +165,8 @@ services:
     healthcheck:
       test:
         [
-          "CMD-SHELL",
-          "node -e \"fetch('http://127.0.0.1:$${SHELL_REPORT_PORT:-3010}/api/shell/health').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\"",
+          'CMD-SHELL',
+          'node -e "fetch(''http://127.0.0.1:$${SHELL_REPORT_PORT:-3010}/api/shell/health'').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"',
         ]
       interval: 30s
       timeout: 5s
@@ -179,28 +179,28 @@ services:
     environment:
       SHELL_CONTAINER_NAME: dashboard-shell-redis
       SHELL_CONTAINER_ERROR_INTAKE_DIR: /dashboard-shell-analysis
-    entrypoint: ["/usr/local/bin/container-error-intake.sh"]
+    entrypoint: ['/usr/local/bin/container-error-intake.sh']
     command:
       [
-        "redis-server",
-        "--save",
-        "",
-        "--appendonly",
-        "no",
-        "--maxmemory",
-        "${SHELL_REPORT_REDIS_MAXMEMORY:-512mb}",
-        "--maxmemory-policy",
-        "allkeys-lru",
+        'redis-server',
+        '--save',
+        '',
+        '--appendonly',
+        'no',
+        '--maxmemory',
+        '${SHELL_REPORT_REDIS_MAXMEMORY:-512mb}',
+        '--maxmemory-policy',
+        'allkeys-lru',
       ]
     volumes:
       - ./scripts/container-error-intake.sh:/usr/local/bin/container-error-intake.sh:ro
       - ./.analysis:/dashboard-shell-analysis
     expose:
-      - "6379"
+      - '6379'
     networks:
       - aawm_tap
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ['CMD', 'redis-cli', 'ping']
       interval: 30s
       timeout: 5s
       start_period: 5s
@@ -214,11 +214,11 @@ services:
     environment:
       SHELL_CONTAINER_NAME: dashboard-shell-aawm-dashboard-dev
       SHELL_CONTAINER_ERROR_INTAKE_DIR: /dashboard-shell-analysis
-      AAWM_DASHBOARD_REMOTE_DEV_PORT: "${AAWM_DASHBOARD_REMOTE_DEV_PORT:-5176}"
-      CHOKIDAR_USEPOLLING: "${CHOKIDAR_USEPOLLING:-true}"
-      WATCHPACK_POLLING: "${WATCHPACK_POLLING:-true}"
+      AAWM_DASHBOARD_REMOTE_DEV_PORT: '${AAWM_DASHBOARD_REMOTE_DEV_PORT:-5176}'
+      CHOKIDAR_USEPOLLING: '${CHOKIDAR_USEPOLLING:-true}'
+      WATCHPACK_POLLING: '${WATCHPACK_POLLING:-true}'
     ports:
-      - "${DASHBOARD_DEV_BIND_HOST:-127.0.0.1}:${AAWM_DASHBOARD_REMOTE_DEV_PORT:-5176}:${AAWM_DASHBOARD_REMOTE_DEV_PORT:-5176}"
+      - '${DASHBOARD_DEV_BIND_HOST:-127.0.0.1}:${AAWM_DASHBOARD_REMOTE_DEV_PORT:-5176}:${AAWM_DASHBOARD_REMOTE_DEV_PORT:-5176}'
     networks:
       - aawm_tap
     volumes:
@@ -227,7 +227,7 @@ services:
       - ../aawm-dashboard:/workspace/aawm-dashboard
       - aawm_dashboard_dev_node_modules:/workspace/aawm-dashboard/node_modules
       - aawm_dashboard_dev_npm_cache:/root/.npm
-    entrypoint: ["/usr/local/bin/container-error-intake.sh"]
+    entrypoint: ['/usr/local/bin/container-error-intake.sh']
     command:
       - sh
       - -lc
@@ -237,8 +237,8 @@ services:
     healthcheck:
       test:
         [
-          "CMD-SHELL",
-          "wget -qO- http://127.0.0.1:$${AAWM_DASHBOARD_REMOTE_DEV_PORT:-5176}/remoteEntry.js >/dev/null",
+          'CMD-SHELL',
+          'wget -qO- http://127.0.0.1:$${AAWM_DASHBOARD_REMOTE_DEV_PORT:-5176}/remoteEntry.js >/dev/null',
         ]
       interval: 30s
       timeout: 5s
@@ -253,11 +253,11 @@ services:
     environment:
       SHELL_CONTAINER_NAME: dashboard-shell-aawm-observe-dashboard-dev
       SHELL_CONTAINER_ERROR_INTAKE_DIR: /dashboard-shell-analysis
-      AAWM_OBSERVE_REMOTE_DEV_PORT: "${AAWM_OBSERVE_REMOTE_DEV_PORT:-5177}"
-      CHOKIDAR_USEPOLLING: "${CHOKIDAR_USEPOLLING:-true}"
-      WATCHPACK_POLLING: "${WATCHPACK_POLLING:-true}"
+      AAWM_OBSERVE_REMOTE_DEV_PORT: '${AAWM_OBSERVE_REMOTE_DEV_PORT:-5177}'
+      CHOKIDAR_USEPOLLING: '${CHOKIDAR_USEPOLLING:-true}'
+      WATCHPACK_POLLING: '${WATCHPACK_POLLING:-true}'
     ports:
-      - "${DASHBOARD_DEV_BIND_HOST:-127.0.0.1}:${AAWM_OBSERVE_REMOTE_DEV_PORT:-5177}:${AAWM_OBSERVE_REMOTE_DEV_PORT:-5177}"
+      - '${DASHBOARD_DEV_BIND_HOST:-127.0.0.1}:${AAWM_OBSERVE_REMOTE_DEV_PORT:-5177}:${AAWM_OBSERVE_REMOTE_DEV_PORT:-5177}'
     networks:
       - aawm_tap
     volumes:
@@ -266,7 +266,7 @@ services:
       - ../aawm-observe-dashboard:/workspace/aawm-observe-dashboard
       - aawm_observe_dashboard_dev_node_modules:/workspace/aawm-observe-dashboard/node_modules
       - aawm_observe_dashboard_dev_npm_cache:/root/.npm
-    entrypoint: ["/usr/local/bin/container-error-intake.sh"]
+    entrypoint: ['/usr/local/bin/container-error-intake.sh']
     command:
       - sh
       - -lc
@@ -276,8 +276,8 @@ services:
     healthcheck:
       test:
         [
-          "CMD-SHELL",
-          "wget -qO- http://127.0.0.1:$${AAWM_OBSERVE_REMOTE_DEV_PORT:-5177}/remoteEntry.js >/dev/null",
+          'CMD-SHELL',
+          'wget -qO- http://127.0.0.1:$${AAWM_OBSERVE_REMOTE_DEV_PORT:-5177}/remoteEntry.js >/dev/null',
         ]
       interval: 30s
       timeout: 5s
@@ -292,15 +292,15 @@ services:
     environment:
       SHELL_CONTAINER_NAME: dashboard-shell-aawm-tap-dashboard-dev
       SHELL_CONTAINER_ERROR_INTAKE_DIR: /dashboard-shell-analysis
-      AAWM_TAP_REMOTE_DEV_PORT: "${AAWM_TAP_REMOTE_DEV_PORT:-5173}"
-      CHOKIDAR_USEPOLLING: "${CHOKIDAR_USEPOLLING:-true}"
-      VITE_API_KEY: ""
-      VITE_ACCESS_TOKEN: ""
-      VITE_TAP_ACCESS_TOKEN: ""
-      VITE_TAP_API_KEY: ""
-      WATCHPACK_POLLING: "${WATCHPACK_POLLING:-true}"
+      AAWM_TAP_REMOTE_DEV_PORT: '${AAWM_TAP_REMOTE_DEV_PORT:-5173}'
+      CHOKIDAR_USEPOLLING: '${CHOKIDAR_USEPOLLING:-true}'
+      VITE_API_KEY: ''
+      VITE_ACCESS_TOKEN: ''
+      VITE_TAP_ACCESS_TOKEN: ''
+      VITE_TAP_API_KEY: ''
+      WATCHPACK_POLLING: '${WATCHPACK_POLLING:-true}'
     ports:
-      - "${DASHBOARD_DEV_BIND_HOST:-127.0.0.1}:${AAWM_TAP_REMOTE_DEV_PORT:-5173}:${AAWM_TAP_REMOTE_DEV_PORT:-5173}"
+      - '${DASHBOARD_DEV_BIND_HOST:-127.0.0.1}:${AAWM_TAP_REMOTE_DEV_PORT:-5173}:${AAWM_TAP_REMOTE_DEV_PORT:-5173}'
     networks:
       - aawm_tap
     volumes:
@@ -309,7 +309,7 @@ services:
       - ../aawm-tap-dashboard:/workspace/aawm-tap-dashboard
       - aawm_tap_dashboard_dev_node_modules:/workspace/aawm-tap-dashboard/node_modules
       - aawm_tap_dashboard_dev_npm_cache:/root/.npm
-    entrypoint: ["/usr/local/bin/container-error-intake.sh"]
+    entrypoint: ['/usr/local/bin/container-error-intake.sh']
     command:
       - sh
       - -lc
@@ -319,8 +319,8 @@ services:
     healthcheck:
       test:
         [
-          "CMD-SHELL",
-          "wget -qO- http://127.0.0.1:$${AAWM_TAP_REMOTE_DEV_PORT:-5173}/remoteEntry.js >/dev/null",
+          'CMD-SHELL',
+          'wget -qO- http://127.0.0.1:$${AAWM_TAP_REMOTE_DEV_PORT:-5173}/remoteEntry.js >/dev/null',
         ]
       interval: 30s
       timeout: 5s
@@ -335,11 +335,11 @@ services:
     environment:
       SHELL_CONTAINER_NAME: dashboard-shell-aegis-dashboard-dev
       SHELL_CONTAINER_ERROR_INTAKE_DIR: /dashboard-shell-analysis
-      AEGIS_REMOTE_DEV_PORT: "${AEGIS_REMOTE_DEV_PORT:-5174}"
-      CHOKIDAR_USEPOLLING: "${CHOKIDAR_USEPOLLING:-true}"
-      WATCHPACK_POLLING: "${WATCHPACK_POLLING:-true}"
+      AEGIS_REMOTE_DEV_PORT: '${AEGIS_REMOTE_DEV_PORT:-5174}'
+      CHOKIDAR_USEPOLLING: '${CHOKIDAR_USEPOLLING:-true}'
+      WATCHPACK_POLLING: '${WATCHPACK_POLLING:-true}'
     ports:
-      - "${DASHBOARD_DEV_BIND_HOST:-127.0.0.1}:${AEGIS_REMOTE_DEV_PORT:-5174}:${AEGIS_REMOTE_DEV_PORT:-5174}"
+      - '${DASHBOARD_DEV_BIND_HOST:-127.0.0.1}:${AEGIS_REMOTE_DEV_PORT:-5174}:${AEGIS_REMOTE_DEV_PORT:-5174}'
     networks:
       - aawm_tap
     volumes:
@@ -348,7 +348,7 @@ services:
       - ../aegis-dashboard:/workspace/aegis-dashboard
       - aegis_dashboard_dev_node_modules:/workspace/aegis-dashboard/node_modules
       - aegis_dashboard_dev_npm_cache:/root/.npm
-    entrypoint: ["/usr/local/bin/container-error-intake.sh"]
+    entrypoint: ['/usr/local/bin/container-error-intake.sh']
     command:
       - sh
       - -lc
@@ -358,8 +358,8 @@ services:
     healthcheck:
       test:
         [
-          "CMD-SHELL",
-          "wget -qO- http://127.0.0.1:$${AEGIS_REMOTE_DEV_PORT:-5174}/remoteEntry.js >/dev/null",
+          'CMD-SHELL',
+          'wget -qO- http://127.0.0.1:$${AEGIS_REMOTE_DEV_PORT:-5174}/remoteEntry.js >/dev/null',
         ]
       interval: 30s
       timeout: 5s
@@ -374,11 +374,11 @@ services:
     environment:
       SHELL_CONTAINER_NAME: dashboard-shell-sluice-dashboard-dev
       SHELL_CONTAINER_ERROR_INTAKE_DIR: /dashboard-shell-analysis
-      CHOKIDAR_USEPOLLING: "${CHOKIDAR_USEPOLLING:-true}"
-      SLUICE_REMOTE_DEV_PORT: "${SLUICE_REMOTE_DEV_PORT:-5175}"
-      WATCHPACK_POLLING: "${WATCHPACK_POLLING:-true}"
+      CHOKIDAR_USEPOLLING: '${CHOKIDAR_USEPOLLING:-true}'
+      SLUICE_REMOTE_DEV_PORT: '${SLUICE_REMOTE_DEV_PORT:-5175}'
+      WATCHPACK_POLLING: '${WATCHPACK_POLLING:-true}'
     ports:
-      - "${DASHBOARD_DEV_BIND_HOST:-127.0.0.1}:${SLUICE_REMOTE_DEV_PORT:-5175}:${SLUICE_REMOTE_DEV_PORT:-5175}"
+      - '${DASHBOARD_DEV_BIND_HOST:-127.0.0.1}:${SLUICE_REMOTE_DEV_PORT:-5175}:${SLUICE_REMOTE_DEV_PORT:-5175}'
     networks:
       - aawm_tap
     volumes:
@@ -387,7 +387,7 @@ services:
       - ../sluice-dashboard:/workspace/sluice-dashboard
       - sluice_dashboard_dev_node_modules:/workspace/sluice-dashboard/node_modules
       - sluice_dashboard_dev_npm_cache:/root/.npm
-    entrypoint: ["/usr/local/bin/container-error-intake.sh"]
+    entrypoint: ['/usr/local/bin/container-error-intake.sh']
     command:
       - sh
       - -lc
@@ -397,8 +397,8 @@ services:
     healthcheck:
       test:
         [
-          "CMD-SHELL",
-          "wget -qO- http://127.0.0.1:$${SLUICE_REMOTE_DEV_PORT:-5175}/remoteEntry.js >/dev/null",
+          'CMD-SHELL',
+          'wget -qO- http://127.0.0.1:$${SLUICE_REMOTE_DEV_PORT:-5175}/remoteEntry.js >/dev/null',
         ]
       interval: 30s
       timeout: 5s

@@ -58,9 +58,7 @@ export default {
     { path: '/overview', component: lazy(() => import('./pages/Overview')) },
     { path: '/items/:id', component: lazy(() => import('./pages/ItemDetail')) },
   ],
-  navItems: [
-    { label: 'Overview', path: '/overview', icon: LayoutDashboard },
-  ],
+  navItems: [{ label: 'Overview', path: '/overview', icon: LayoutDashboard }],
   extensions: [],
 }
 ```
@@ -201,7 +199,6 @@ The shell toggles `.dark` on the document root. A remote that uses token-backed
 Tailwind classes and imports `src/styles/theme.css` in standalone mode will
 inherit the same light and dark palettes in both standalone and shell-mounted
 modes.
-
 
 ## General Dashboard STATUS Tabs (Shell-Owned)
 

@@ -66,7 +66,11 @@ describe('D1-445 docker log scan performance helpers', () => {
       stream: 'stderr',
       log: 'upstream connection refused while proxying request status 502',
     })
-    await writeFile(path.join(containerDir, `${entryId}-json.log`), `${logLine}\n`, 'utf8')
+    await writeFile(
+      path.join(containerDir, `${entryId}-json.log`),
+      `${logLine}\n`,
+      'utf8'
+    )
 
     vi.stubEnv('SHELL_REPORT_DOCKER_LOG_ROOT', root)
     vi.stubEnv('SHELL_REPORT_DOCKER_LOG_CONTAINERS', 'dashboard-shell-dev')
@@ -94,7 +98,9 @@ describe('D1-445 docker log scan performance helpers', () => {
   })
 
   test('loadDockerLogErrors does not reread unchanged Docker JSON sources after TTL expiry', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'd1-445-docker-unchanged-'))
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), 'd1-445-docker-unchanged-')
+    )
     const entryId = 'abc123'
     const containerDir = path.join(root, entryId)
     await mkdir(containerDir, { recursive: true })
@@ -108,7 +114,11 @@ describe('D1-445 docker log scan performance helpers', () => {
       stream: 'stderr',
       log: 'upstream connection refused while proxying request status 502',
     })
-    await writeFile(path.join(containerDir, `${entryId}-json.log`), `${logLine}\n`, 'utf8')
+    await writeFile(
+      path.join(containerDir, `${entryId}-json.log`),
+      `${logLine}\n`,
+      'utf8'
+    )
 
     vi.stubEnv('SHELL_REPORT_DOCKER_LOG_ROOT', root)
     vi.stubEnv('SHELL_REPORT_DOCKER_LOG_CONTAINERS', 'dashboard-shell-dev')
@@ -151,7 +161,11 @@ describe('D1-445 docker log scan performance helpers', () => {
       stream: 'stderr',
       log: 'upstream connection refused while proxying request status 502',
     })
-    await writeFile(path.join(containerDir, `${entryId}-json.log`), `${logLine}\n`, 'utf8')
+    await writeFile(
+      path.join(containerDir, `${entryId}-json.log`),
+      `${logLine}\n`,
+      'utf8'
+    )
 
     vi.stubEnv('SHELL_REPORT_DOCKER_LOG_ROOT', root)
     vi.stubEnv('SHELL_REPORT_DOCKER_LOG_CONTAINERS', 'dashboard-shell-dev')
@@ -190,7 +204,9 @@ describe('D1-445 docker log scan performance helpers', () => {
     vi.useFakeTimers()
     const startedAt = new Date('2026-07-06T18:00:00.000Z')
     vi.setSystemTime(startedAt)
-    const root = await mkdtemp(path.join(os.tmpdir(), 'd1-445-docker-stale-cache-'))
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), 'd1-445-docker-stale-cache-')
+    )
     const entryId = 'ghi789'
     const containerDir = path.join(root, entryId)
     await mkdir(containerDir, { recursive: true })
@@ -204,7 +220,11 @@ describe('D1-445 docker log scan performance helpers', () => {
       stream: 'stderr',
       log: 'upstream connection refused while proxying request status 502',
     })
-    await writeFile(path.join(containerDir, `${entryId}-json.log`), `${logLine}\n`, 'utf8')
+    await writeFile(
+      path.join(containerDir, `${entryId}-json.log`),
+      `${logLine}\n`,
+      'utf8'
+    )
 
     vi.stubEnv('SHELL_REPORT_DOCKER_LOG_ROOT', root)
     vi.stubEnv('SHELL_REPORT_DOCKER_LOG_CONTAINERS', 'dashboard-shell-dev')
@@ -232,9 +252,8 @@ describe('D1-445 docker log scan performance helpers', () => {
   })
 
   test('filterDockerLogErrorsForCentralizedIntake excludes external LiteLLM containers', async () => {
-    const { filterDockerLogErrorsForCentralizedIntake } = await import(
-      './docker-log-error-intake.mjs'
-    )
+    const { filterDockerLogErrorsForCentralizedIntake } =
+      await import('./docker-log-error-intake.mjs')
     const rows = [
       {
         container: 'aawm-litellm',

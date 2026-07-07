@@ -24,7 +24,9 @@ function createMockResponse(): MockResponse {
   return res
 }
 
-function createMockRequest(headers: Record<string, string | string[] | undefined> = {}) {
+function createMockRequest(
+  headers: Record<string, string | string[] | undefined> = {}
+) {
   return { headers }
 }
 
@@ -54,9 +56,7 @@ describe('report-service JSON response compression', () => {
       )
     ).toBe(true)
     expect(
-      acceptsGzipEncoding(
-        createMockRequest({ 'accept-encoding': 'gzip;q=0' })
-      )
+      acceptsGzipEncoding(createMockRequest({ 'accept-encoding': 'gzip;q=0' }))
     ).toBe(false)
     expect(
       acceptsGzipEncoding(
@@ -86,7 +86,9 @@ describe('report-service JSON response compression', () => {
     expect(res.headers['content-encoding']).toBe('gzip')
     expect(res.headers['vary']).toBe('Accept-Encoding')
 
-    const raw = Buffer.isBuffer(res.body) ? res.body : Buffer.from(String(res.body))
+    const raw = Buffer.isBuffer(res.body)
+      ? res.body
+      : Buffer.from(String(res.body))
     const parsed = JSON.parse(gunzipSync(raw).toString('utf8'))
     expect(parsed).toEqual(body)
   })

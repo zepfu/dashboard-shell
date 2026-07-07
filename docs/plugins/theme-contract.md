@@ -8,28 +8,28 @@ overrides to their own route without affecting the rest of the shell.
 ## 1. Global Phosphor tokens
 
 All base design tokens are defined in `src/styles/theme.css` as CSS custom
-properties on `:root`.  These tokens form the **stable public API** that
+properties on `:root`. These tokens form the **stable public API** that
 plugins may reference or override.
 
 ### Stable API tokens (Phosphor base set)
 
-| Token | Default value | Purpose |
-|---|---|---|
-| `--accent-chrome` | `#3b82f6` | Primary brand accent (nav, active states) |
-| `--accent-hot` | `#ef4444` | Error / critical severity |
-| `--accent-warm` | `#f97316` | Warning / degraded severity |
-| `--accent-cool` | `#06b6d4` | Informational / sparkline colour |
-| `--fg` | `#e2e8f0` | Primary foreground text |
-| `--fg-muted` | `#94a3b8` | Secondary / label text |
-| `--bg` | `#0f172a` | Page background |
-| `--card` | `#1e293b` | Card / panel surface |
-| `--card-2` | `#334155` | Secondary card / alternate row |
-| `--border` | `#334155` | Divider and border |
+| Token             | Default value | Purpose                                   |
+| ----------------- | ------------- | ----------------------------------------- |
+| `--accent-chrome` | `#3b82f6`     | Primary brand accent (nav, active states) |
+| `--accent-hot`    | `#ef4444`     | Error / critical severity                 |
+| `--accent-warm`   | `#f97316`     | Warning / degraded severity               |
+| `--accent-cool`   | `#06b6d4`     | Informational / sparkline colour          |
+| `--fg`            | `#e2e8f0`     | Primary foreground text                   |
+| `--fg-muted`      | `#94a3b8`     | Secondary / label text                    |
+| `--bg`            | `#0f172a`     | Page background                           |
+| `--card`          | `#1e293b`     | Card / panel surface                      |
+| `--card-2`        | `#334155`     | Secondary card / alternate row            |
+| `--border`        | `#334155`     | Divider and border                        |
 
 ### Internal tokens (do NOT override)
 
 Tokens prefixed with `--card-2`, `--iv-`, or any undocumented token are
-internal and subject to change between minor versions.  Overriding them
+internal and subject to change between minor versions. Overriding them
 from a plugin is unsupported and may break with future Phosphor updates.
 
 ---
@@ -46,16 +46,14 @@ attribute so that CSS selectors can target your plugin's subtree exclusively.
 export function TasksPage(): ReactElement {
   return (
     <TasksProvider>
-      <div data-plugin="tasks">
-        {/* ... route content ... */}
-      </div>
+      <div data-plugin='tasks'>{/* ... route content ... */}</div>
     </TasksProvider>
   )
 }
 ```
 
 The `data-plugin` attribute must be on the element that contains all of the
-plugin's rendered output.  It must **not** be placed on the global layout
+plugin's rendered output. It must **not** be placed on the global layout
 elements (`<Header>`, `<Main>`, `<SidebarProvider>`) — those are shared shell
 chrome and must always use the global tokens.
 
@@ -66,12 +64,12 @@ your token overrides:
 
 ```css
 /* src/features/tasks/tasks.module.css */
-[data-plugin="tasks"] {
+[data-plugin='tasks'] {
   --accent-chrome: #6366f1;
 }
 ```
 
-Override only the stable API tokens listed in §1.  Multiple token overrides
+Override only the stable API tokens listed in §1. Multiple token overrides
 may appear in a single rule block.
 
 ### Step 3 — Import the CSS module as a side-effect
@@ -85,7 +83,7 @@ import './tasks.module.css'
 ```
 
 The `import './tasks.module.css'` is a side-effect import (no exported
-bindings).  Vite/Rollup will bundle the rule into a scoped `<style>` block.
+bindings). Vite/Rollup will bundle the rule into a scoped `<style>` block.
 
 ---
 
@@ -94,18 +92,20 @@ bindings).  Vite/Rollup will bundle the rule into a scoped `<style>` block.
 The tasks route ships as the canonical plugin override example.
 
 **File: `src/features/tasks/tasks.module.css`**
+
 ```css
-[data-plugin="tasks"] {
-  --accent-chrome: #6366f1;   /* indigo — replaces the default blue accent */
+[data-plugin='tasks'] {
+  --accent-chrome: #6366f1; /* indigo — replaces the default blue accent */
 }
 ```
 
 **File: `src/features/tasks/tasks-page.tsx`** (excerpt)
+
 ```tsx
 export function TasksPage(): ReactElement {
   return (
     <TasksProvider>
-      <div data-plugin="tasks">
+      <div data-plugin='tasks'>
         {/* All tasks content here — uses --accent-chrome: #6366f1 */}
         <TasksTable data={tasks} />
         <TasksDialogs />
@@ -116,18 +116,20 @@ export function TasksPage(): ReactElement {
 ```
 
 **File: `src/features/tasks/index.tsx`** (excerpt)
-```tsx
-import './tasks.module.css'   // side-effect: injects the [data-plugin] rule
-import { TasksPage } from './tasks-page'
 
-export { TasksPage as Tasks }  // exported for test isolation (no SidebarProvider)
+```tsx
+// side-effect: injects the [data-plugin] rule
+import { TasksPage } from './tasks-page'
+import './tasks.module.css'
+
+export { TasksPage as Tasks } // exported for test isolation (no SidebarProvider)
 
 export function TasksRoute(): ReactElement {
   return (
     <>
       <Header fixed>…</Header>
       <Main>
-        <TasksPage />   {/* data-plugin="tasks" is on the inner element */}
+        <TasksPage /> {/* data-plugin="tasks" is on the inner element */}
       </Main>
     </>
   )
@@ -141,8 +143,8 @@ export function TasksRoute(): ReactElement {
 ### Why split into `TasksPage` and `TasksRoute`?
 
 `TasksRoute` contains `<Header>` and `<Main>`, which are part of the
-authenticated shell layout and depend on `SidebarProvider`.  `TasksPage`
-(the core content) has no such dependency.  This split enables:
+authenticated shell layout and depend on `SidebarProvider`. `TasksPage`
+(the core content) has no such dependency. This split enables:
 
 - **Test isolation**: unit tests can render `<Tasks />` (= `TasksPage`)
   without wrapping in a full `SidebarProvider`.
@@ -152,7 +154,7 @@ authenticated shell layout and depend on `SidebarProvider`.  `TasksPage`
 ### Why import the CSS as a side-effect in `index.tsx`?
 
 Vitest + jsdom processes ES module side-effect imports, which causes the CSS
-rule to appear in `document.styleSheets`.  This makes plugin override tests
+rule to appear in `document.styleSheets`. This makes plugin override tests
 reliable without requiring a full browser environment.
 
 ---

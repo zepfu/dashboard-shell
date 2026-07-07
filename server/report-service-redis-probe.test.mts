@@ -24,14 +24,16 @@ afterEach(() => {
 
 describe('classifyRedisPingProbeResponse', () => {
   test('returns null until a complete RESP line terminator is present', async () => {
-    const { classifyRedisPingProbeResponse } = await import('./report-service.mjs')
+    const { classifyRedisPingProbeResponse } =
+      await import('./report-service.mjs')
     expect(classifyRedisPingProbeResponse('+PO')).toBeNull()
     expect(classifyRedisPingProbeResponse('+PONG')).toBeNull()
     expect(classifyRedisPingProbeResponse('+PO\r')).toBeNull()
   })
 
   test('treats a complete +PONG line as green', async () => {
-    const { classifyRedisPingProbeResponse } = await import('./report-service.mjs')
+    const { classifyRedisPingProbeResponse } =
+      await import('./report-service.mjs')
     expect(classifyRedisPingProbeResponse('+PONG\r\n')).toEqual({
       status: 'green',
       detail: '+PONG',
@@ -39,8 +41,11 @@ describe('classifyRedisPingProbeResponse', () => {
   })
 
   test('treats other complete RESP simple-string replies as yellow', async () => {
-    const { classifyRedisPingProbeResponse } = await import('./report-service.mjs')
-    expect(classifyRedisPingProbeResponse('+LOADING Redis is loading\r\n')).toEqual({
+    const { classifyRedisPingProbeResponse } =
+      await import('./report-service.mjs')
+    expect(
+      classifyRedisPingProbeResponse('+LOADING Redis is loading\r\n')
+    ).toEqual({
       status: 'yellow',
       detail: '+LOADING Redis is loading',
     })

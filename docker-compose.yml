@@ -6,11 +6,11 @@ services:
       dockerfile: Dockerfile
     image: dashboard-shell:local
     environment:
-      SHELL_REPORT_PROXY_SHARED_SECRET: "${SHELL_REPORT_PROXY_SHARED_SECRET:-dashboard-shell-local-proxy-secret}"
+      SHELL_REPORT_PROXY_SHARED_SECRET: '${SHELL_REPORT_PROXY_SHARED_SECRET:-dashboard-shell-local-proxy-secret}'
     volumes:
       - ./.analysis:/dashboard-shell-analysis
     ports:
-      - "${DASHBOARD_SHELL_PORT:-3005}:80"
+      - '${DASHBOARD_SHELL_PORT:-3005}:80'
     depends_on:
       aawm-dashboard:
         condition: service_healthy
@@ -25,7 +25,7 @@ services:
       sluice-dashboard:
         condition: service_healthy
     extra_hosts:
-      - "host.docker.internal:host-gateway"
+      - 'host.docker.internal:host-gateway'
     networks:
       - aawm_tap
 
@@ -38,63 +38,63 @@ services:
     environment:
       SHELL_CONTAINER_NAME: dashboard-shell-reports
       SHELL_CONTAINER_ERROR_INTAKE_DIR: /dashboard-shell-analysis
-      SHELL_REPORT_PROXY_SHARED_SECRET: "${SHELL_REPORT_PROXY_SHARED_SECRET:-dashboard-shell-local-proxy-secret}"
-      AAWM_API_KEY: "${AAWM_API_KEY:-}"
-      AAWM_ACCESS_TOKEN: "${AAWM_ACCESS_TOKEN:-}"
-      AAWM_API_TARGET: "${AAWM_API_TARGET:-http://aawm-api:8000}"
-      AAWM_HOOK_API_KEY: "${AAWM_HOOK_API_KEY:-}"
-      AAWM_HOOK_ACCESS_TOKEN: "${AAWM_HOOK_ACCESS_TOKEN:-}"
-      AAWM_HOOK_API_TARGET: "${AAWM_HOOK_API_TARGET:-http://aawm-hook-server:8318}"
-      AAWM_OBSERVE_API_KEY: "${AAWM_OBSERVE_API_KEY:-}"
-      AAWM_OBSERVE_ACCESS_TOKEN: "${AAWM_OBSERVE_ACCESS_TOKEN:-}"
-      AAWM_OBSERVE_API_TARGET: "${AAWM_OBSERVE_API_TARGET:-http://host.docker.internal:34042}"
-      AAWM_TAP_API_KEY: "${AAWM_TAP_API_KEY:-}"
-      AAWM_TAP_ACCESS_TOKEN: "${AAWM_TAP_ACCESS_TOKEN:-}"
-      AAWM_TAP_ADMIN_CAPABILITY: "${AAWM_TAP_ADMIN_CAPABILITY:-}"
-      AAWM_TAP_API_TARGET: "${AAWM_TAP_API_TARGET:-http://host.docker.internal:8010}"
-      AEGIS_ACCESS_TOKEN: "${AEGIS_ACCESS_TOKEN:-}"
-      AEGIS_API_TARGET: "${AEGIS_API_TARGET:-http://aegis-api:8001/api/v1}"
+      SHELL_REPORT_PROXY_SHARED_SECRET: '${SHELL_REPORT_PROXY_SHARED_SECRET:-dashboard-shell-local-proxy-secret}'
+      AAWM_API_KEY: '${AAWM_API_KEY:-}'
+      AAWM_ACCESS_TOKEN: '${AAWM_ACCESS_TOKEN:-}'
+      AAWM_API_TARGET: '${AAWM_API_TARGET:-http://aawm-api:8000}'
+      AAWM_HOOK_API_KEY: '${AAWM_HOOK_API_KEY:-}'
+      AAWM_HOOK_ACCESS_TOKEN: '${AAWM_HOOK_ACCESS_TOKEN:-}'
+      AAWM_HOOK_API_TARGET: '${AAWM_HOOK_API_TARGET:-http://aawm-hook-server:8318}'
+      AAWM_OBSERVE_API_KEY: '${AAWM_OBSERVE_API_KEY:-}'
+      AAWM_OBSERVE_ACCESS_TOKEN: '${AAWM_OBSERVE_ACCESS_TOKEN:-}'
+      AAWM_OBSERVE_API_TARGET: '${AAWM_OBSERVE_API_TARGET:-http://host.docker.internal:34042}'
+      AAWM_TAP_API_KEY: '${AAWM_TAP_API_KEY:-}'
+      AAWM_TAP_ACCESS_TOKEN: '${AAWM_TAP_ACCESS_TOKEN:-}'
+      AAWM_TAP_ADMIN_CAPABILITY: '${AAWM_TAP_ADMIN_CAPABILITY:-}'
+      AAWM_TAP_API_TARGET: '${AAWM_TAP_API_TARGET:-http://host.docker.internal:8010}'
+      AEGIS_ACCESS_TOKEN: '${AEGIS_ACCESS_TOKEN:-}'
+      AEGIS_API_TARGET: '${AEGIS_API_TARGET:-http://aegis-api:8001/api/v1}'
       # D1-446 local-only default. Override AEGIS_DB_PASSWORD for non-local operators.
-      AEGIS_DB_PASSWORD: "${AEGIS_DB_PASSWORD:-aegis_dev_password}"
-      SLUICE_ACCESS_TOKEN: "${SLUICE_ACCESS_TOKEN:-}"
-      SLUICE_API_TARGET: "${SLUICE_API_TARGET:-http://host.docker.internal:8002/api/v1}"
-      VITE_API_KEY: "${VITE_API_KEY:-}"
-      VITE_ACCESS_TOKEN: "${VITE_ACCESS_TOKEN:-}"
-      VITE_TAP_ACCESS_TOKEN: "${VITE_TAP_ACCESS_TOKEN:-}"
-      VITE_TAP_API_KEY: "${VITE_TAP_API_KEY:-}"
-      DATABASE_URL: "${DATABASE_URL:-}"
-      SHELL_REPORT_DATABASE_HOST_REWRITE: "${SHELL_REPORT_DATABASE_HOST_REWRITE:-aawm-pgbouncer}"
-      SHELL_REPORT_DATABASE_PORT_REWRITE: "${SHELL_REPORT_DATABASE_PORT_REWRITE:-6432}"
-      SHELL_REPORT_AAWM_PGBOUNCER_DATABASE_URL: "${SHELL_REPORT_AAWM_PGBOUNCER_DATABASE_URL:-}"
-      SHELL_REPORT_AEGIS_PGBOUNCER_DATABASE_URL: "${SHELL_REPORT_AEGIS_PGBOUNCER_DATABASE_URL:-}"
-      SHELL_REPORT_DB_POOL_MAX: "${SHELL_REPORT_DB_POOL_MAX:-4}"
-      SHELL_REPORT_DB_CONNECTION_TIMEOUT_MS: "${SHELL_REPORT_DB_CONNECTION_TIMEOUT_MS:-5000}"
-      SHELL_REPORT_DB_DISABLE_PARALLELISM: "${SHELL_REPORT_DB_DISABLE_PARALLELISM:-true}"
-      SHELL_REPORT_SQL_FANOUT_CONCURRENCY: "${SHELL_REPORT_SQL_FANOUT_CONCURRENCY:-1}"
-      SHELL_REPORT_HEALTH_DB_CONNECTION_TIMEOUT_MS: "${SHELL_REPORT_HEALTH_DB_CONNECTION_TIMEOUT_MS:-1000}"
-      SHELL_REPORT_HEALTH_DB_STATEMENT_TIMEOUT_MS: "${SHELL_REPORT_HEALTH_DB_STATEMENT_TIMEOUT_MS:-2000}"
-      SHELL_REPORT_MV_HEALTH_CACHE_TTL_MS: "${SHELL_REPORT_MV_HEALTH_CACHE_TTL_MS:-30000}"
-      SHELL_REPORT_PORT: "3010"
-      SHELL_REPORT_REDIS_URL: "${SHELL_REPORT_REDIS_URL:-redis://dashboard-shell-redis:6379}"
-      SHELL_REPORT_CACHE_PREFIX: "${SHELL_REPORT_CACHE_PREFIX:-dashboard-shell:reports}"
-      SHELL_REPORT_CACHE_VERSION: "${SHELL_REPORT_CACHE_VERSION:-v14}"
-      SHELL_REPORT_CACHE_STALE_TTL_MS: "${SHELL_REPORT_CACHE_STALE_TTL_MS:-86400000}"
-      SHELL_REPORT_CACHE_LOCK_TTL_MS: "${SHELL_REPORT_CACHE_LOCK_TTL_MS:-1800000}"
-      SHELL_REPORT_CACHE_LOCK_WAIT_MS: "${SHELL_REPORT_CACHE_LOCK_WAIT_MS:-60000}"
-      SHELL_REPORT_CACHE_PREWARM: "${SHELL_REPORT_CACHE_PREWARM:-false}"
-      SHELL_REPORT_CACHE_PREWARM_INTERVAL_MS: "${SHELL_REPORT_CACHE_PREWARM_INTERVAL_MS:-900000}"
-      SHELL_REPORT_CACHE_PREWARM_LOCK_TTL_MS: "${SHELL_REPORT_CACHE_PREWARM_LOCK_TTL_MS:-7200000}"
-      SHELL_REPORT_AGENT_SCORE_REASON_RECENT_ROW_LIMIT: "${SHELL_REPORT_AGENT_SCORE_REASON_RECENT_ROW_LIMIT:-10000}"
-      SHELL_REPORT_TOOL_ACTIVITY_RECENT_ROW_LIMIT: "${SHELL_REPORT_TOOL_ACTIVITY_RECENT_ROW_LIMIT:-10000}"
+      AEGIS_DB_PASSWORD: '${AEGIS_DB_PASSWORD:-aegis_dev_password}'
+      SLUICE_ACCESS_TOKEN: '${SLUICE_ACCESS_TOKEN:-}'
+      SLUICE_API_TARGET: '${SLUICE_API_TARGET:-http://host.docker.internal:8002/api/v1}'
+      VITE_API_KEY: '${VITE_API_KEY:-}'
+      VITE_ACCESS_TOKEN: '${VITE_ACCESS_TOKEN:-}'
+      VITE_TAP_ACCESS_TOKEN: '${VITE_TAP_ACCESS_TOKEN:-}'
+      VITE_TAP_API_KEY: '${VITE_TAP_API_KEY:-}'
+      DATABASE_URL: '${DATABASE_URL:-}'
+      SHELL_REPORT_DATABASE_HOST_REWRITE: '${SHELL_REPORT_DATABASE_HOST_REWRITE:-aawm-pgbouncer}'
+      SHELL_REPORT_DATABASE_PORT_REWRITE: '${SHELL_REPORT_DATABASE_PORT_REWRITE:-6432}'
+      SHELL_REPORT_AAWM_PGBOUNCER_DATABASE_URL: '${SHELL_REPORT_AAWM_PGBOUNCER_DATABASE_URL:-}'
+      SHELL_REPORT_AEGIS_PGBOUNCER_DATABASE_URL: '${SHELL_REPORT_AEGIS_PGBOUNCER_DATABASE_URL:-}'
+      SHELL_REPORT_DB_POOL_MAX: '${SHELL_REPORT_DB_POOL_MAX:-4}'
+      SHELL_REPORT_DB_CONNECTION_TIMEOUT_MS: '${SHELL_REPORT_DB_CONNECTION_TIMEOUT_MS:-5000}'
+      SHELL_REPORT_DB_DISABLE_PARALLELISM: '${SHELL_REPORT_DB_DISABLE_PARALLELISM:-true}'
+      SHELL_REPORT_SQL_FANOUT_CONCURRENCY: '${SHELL_REPORT_SQL_FANOUT_CONCURRENCY:-1}'
+      SHELL_REPORT_HEALTH_DB_CONNECTION_TIMEOUT_MS: '${SHELL_REPORT_HEALTH_DB_CONNECTION_TIMEOUT_MS:-1000}'
+      SHELL_REPORT_HEALTH_DB_STATEMENT_TIMEOUT_MS: '${SHELL_REPORT_HEALTH_DB_STATEMENT_TIMEOUT_MS:-2000}'
+      SHELL_REPORT_MV_HEALTH_CACHE_TTL_MS: '${SHELL_REPORT_MV_HEALTH_CACHE_TTL_MS:-30000}'
+      SHELL_REPORT_PORT: '3010'
+      SHELL_REPORT_REDIS_URL: '${SHELL_REPORT_REDIS_URL:-redis://dashboard-shell-redis:6379}'
+      SHELL_REPORT_CACHE_PREFIX: '${SHELL_REPORT_CACHE_PREFIX:-dashboard-shell:reports}'
+      SHELL_REPORT_CACHE_VERSION: '${SHELL_REPORT_CACHE_VERSION:-v14}'
+      SHELL_REPORT_CACHE_STALE_TTL_MS: '${SHELL_REPORT_CACHE_STALE_TTL_MS:-86400000}'
+      SHELL_REPORT_CACHE_LOCK_TTL_MS: '${SHELL_REPORT_CACHE_LOCK_TTL_MS:-1800000}'
+      SHELL_REPORT_CACHE_LOCK_WAIT_MS: '${SHELL_REPORT_CACHE_LOCK_WAIT_MS:-60000}'
+      SHELL_REPORT_CACHE_PREWARM: '${SHELL_REPORT_CACHE_PREWARM:-false}'
+      SHELL_REPORT_CACHE_PREWARM_INTERVAL_MS: '${SHELL_REPORT_CACHE_PREWARM_INTERVAL_MS:-900000}'
+      SHELL_REPORT_CACHE_PREWARM_LOCK_TTL_MS: '${SHELL_REPORT_CACHE_PREWARM_LOCK_TTL_MS:-7200000}'
+      SHELL_REPORT_AGENT_SCORE_REASON_RECENT_ROW_LIMIT: '${SHELL_REPORT_AGENT_SCORE_REASON_RECENT_ROW_LIMIT:-10000}'
+      SHELL_REPORT_TOOL_ACTIVITY_RECENT_ROW_LIMIT: '${SHELL_REPORT_TOOL_ACTIVITY_RECENT_ROW_LIMIT:-10000}'
       # Runtime boundary note (D1-446): report-service root mode is intentional in local operator stack.
       # It currently depends on host Docker JSON log mounts and repo-local .analysis intake.
       # This is not a hardened multi-tenant/untrusted-host deployment shape.
-      SHELL_REPORT_DOCKER_LOG_ROOT: "${SHELL_REPORT_DOCKER_LOG_ROOT:-/host/docker/containers}"
-      SHELL_REPORT_DOCKER_LOG_CONTAINERS: "${SHELL_REPORT_DOCKER_LOG_CONTAINERS:-}"
-      SHELL_REPORT_DOCKER_LOG_EXTERNAL_CONTAINERS: "${SHELL_REPORT_DOCKER_LOG_EXTERNAL_CONTAINERS:-aawm-litellm,litellm-dev}"
-      SHELL_REPORT_ERROR_INTAKE_DIR: "${SHELL_REPORT_ERROR_INTAKE_DIR:-/dashboard-shell-analysis}"
+      SHELL_REPORT_DOCKER_LOG_ROOT: '${SHELL_REPORT_DOCKER_LOG_ROOT:-/host/docker/containers}'
+      SHELL_REPORT_DOCKER_LOG_CONTAINERS: '${SHELL_REPORT_DOCKER_LOG_CONTAINERS:-}'
+      SHELL_REPORT_DOCKER_LOG_EXTERNAL_CONTAINERS: '${SHELL_REPORT_DOCKER_LOG_EXTERNAL_CONTAINERS:-aawm-litellm,litellm-dev}'
+      SHELL_REPORT_ERROR_INTAKE_DIR: '${SHELL_REPORT_ERROR_INTAKE_DIR:-/dashboard-shell-analysis}'
     expose:
-      - "3010"
+      - '3010'
     depends_on:
       dashboard-shell-redis:
         condition: service_healthy
@@ -107,9 +107,9 @@ services:
     healthcheck:
       test:
         [
-          "CMD",
-          "node",
-          "-e",
+          'CMD',
+          'node',
+          '-e',
           "fetch('http://127.0.0.1:3010/api/shell/health').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
         ]
       interval: 30s
@@ -117,7 +117,7 @@ services:
       start_period: 10s
       retries: 3
     extra_hosts:
-      - "host.docker.internal:host-gateway"
+      - 'host.docker.internal:host-gateway'
     networks:
       - aawm_tap
       - aawm_core
@@ -132,23 +132,23 @@ services:
     volumes:
       - ./scripts/container-error-intake.sh:/usr/local/bin/container-error-intake.sh:ro
       - ./.analysis:/dashboard-shell-analysis
-    entrypoint: ["/usr/local/bin/container-error-intake.sh"]
+    entrypoint: ['/usr/local/bin/container-error-intake.sh']
     command:
       [
-        "redis-server",
-        "--save",
-        "",
-        "--appendonly",
-        "no",
-        "--maxmemory",
-        "${SHELL_REPORT_REDIS_MAXMEMORY:-512mb}",
-        "--maxmemory-policy",
-        "allkeys-lru",
+        'redis-server',
+        '--save',
+        '',
+        '--appendonly',
+        'no',
+        '--maxmemory',
+        '${SHELL_REPORT_REDIS_MAXMEMORY:-512mb}',
+        '--maxmemory-policy',
+        'allkeys-lru',
       ]
     expose:
-      - "6379"
+      - '6379'
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ['CMD', 'redis-cli', 'ping']
       interval: 30s
       timeout: 5s
       start_period: 5s
@@ -167,13 +167,14 @@ services:
     volumes:
       - ./scripts/container-error-intake.sh:/usr/local/bin/container-error-intake.sh:ro
       - ./.analysis:/dashboard-shell-analysis
-    entrypoint: ["/usr/local/bin/container-error-intake.sh"]
-    command: ["nginx", "-g", "daemon off;"]
+    entrypoint: ['/usr/local/bin/container-error-intake.sh']
+    command: ['nginx', '-g', 'daemon off;']
     image: aawm-dashboard-remote:local
     expose:
-      - "80"
+      - '80'
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/remoteEntry.js >/dev/null"]
+      test:
+        ['CMD-SHELL', 'wget -qO- http://127.0.0.1/remoteEntry.js >/dev/null']
       interval: 30s
       timeout: 5s
       start_period: 10s
@@ -192,13 +193,14 @@ services:
     volumes:
       - ./scripts/container-error-intake.sh:/usr/local/bin/container-error-intake.sh:ro
       - ./.analysis:/dashboard-shell-analysis
-    entrypoint: ["/usr/local/bin/container-error-intake.sh"]
-    command: ["nginx", "-g", "daemon off;"]
+    entrypoint: ['/usr/local/bin/container-error-intake.sh']
+    command: ['nginx', '-g', 'daemon off;']
     image: aawm-observe-dashboard-remote:local
     expose:
-      - "80"
+      - '80'
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/remoteEntry.js >/dev/null"]
+      test:
+        ['CMD-SHELL', 'wget -qO- http://127.0.0.1/remoteEntry.js >/dev/null']
       interval: 30s
       timeout: 5s
       start_period: 10s
@@ -217,13 +219,14 @@ services:
     volumes:
       - ./scripts/container-error-intake.sh:/usr/local/bin/container-error-intake.sh:ro
       - ./.analysis:/dashboard-shell-analysis
-    entrypoint: ["/usr/local/bin/container-error-intake.sh"]
-    command: ["nginx", "-g", "daemon off;"]
+    entrypoint: ['/usr/local/bin/container-error-intake.sh']
+    command: ['nginx', '-g', 'daemon off;']
     image: aawm-tap-dashboard:local
     expose:
-      - "80"
+      - '80'
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/remoteEntry.js >/dev/null"]
+      test:
+        ['CMD-SHELL', 'wget -qO- http://127.0.0.1/remoteEntry.js >/dev/null']
       interval: 30s
       timeout: 5s
       start_period: 10s
@@ -242,13 +245,14 @@ services:
     volumes:
       - ./scripts/container-error-intake.sh:/usr/local/bin/container-error-intake.sh:ro
       - ./.analysis:/dashboard-shell-analysis
-    entrypoint: ["/usr/local/bin/container-error-intake.sh"]
-    command: ["nginx", "-g", "daemon off;"]
+    entrypoint: ['/usr/local/bin/container-error-intake.sh']
+    command: ['nginx', '-g', 'daemon off;']
     image: aegis-dashboard-remote:local
     expose:
-      - "80"
+      - '80'
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/remoteEntry.js >/dev/null"]
+      test:
+        ['CMD-SHELL', 'wget -qO- http://127.0.0.1/remoteEntry.js >/dev/null']
       interval: 30s
       timeout: 5s
       start_period: 10s
@@ -267,13 +271,14 @@ services:
     volumes:
       - ./scripts/container-error-intake.sh:/usr/local/bin/container-error-intake.sh:ro
       - ./.analysis:/dashboard-shell-analysis
-    entrypoint: ["/usr/local/bin/container-error-intake.sh"]
-    command: ["nginx", "-g", "daemon off;"]
+    entrypoint: ['/usr/local/bin/container-error-intake.sh']
+    command: ['nginx', '-g', 'daemon off;']
     image: sluice-dashboard-remote:local
     expose:
-      - "80"
+      - '80'
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/remoteEntry.js >/dev/null"]
+      test:
+        ['CMD-SHELL', 'wget -qO- http://127.0.0.1/remoteEntry.js >/dev/null']
       interval: 30s
       timeout: 5s
       start_period: 10s

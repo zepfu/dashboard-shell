@@ -36,19 +36,29 @@ describe('report-service env and date helpers', () => {
   test('boundedIntegerEnv falls back and clamps instead of producing NaN', async () => {
     vi.stubEnv('SHELL_REPORT_HEALTH_MAX_ROWS', 'not-a-number')
     const { __envTestHelpers } = await import('./report-service.mjs')
-    expect(__envTestHelpers.boundedIntegerEnv('SHELL_REPORT_HEALTH_MAX_ROWS', 20_000, {
-      minimum: 100,
-      maximum: 20_000,
-    })).toBe(20_000)
+    expect(
+      __envTestHelpers.boundedIntegerEnv(
+        'SHELL_REPORT_HEALTH_MAX_ROWS',
+        20_000,
+        {
+          minimum: 100,
+          maximum: 20_000,
+        }
+      )
+    ).toBe(20_000)
 
     vi.stubEnv('SHELL_REPORT_HEALTH_MAX_ROWS', '999999')
     vi.resetModules()
     const mod2 = await import('./report-service.mjs')
     expect(
-      mod2.__envTestHelpers.boundedIntegerEnv('SHELL_REPORT_HEALTH_MAX_ROWS', 20_000, {
-        minimum: 100,
-        maximum: 20_000,
-      })
+      mod2.__envTestHelpers.boundedIntegerEnv(
+        'SHELL_REPORT_HEALTH_MAX_ROWS',
+        20_000,
+        {
+          minimum: 100,
+          maximum: 20_000,
+        }
+      )
     ).toBe(20_000)
   })
 
@@ -77,7 +87,9 @@ describe('report-service env and date helpers', () => {
     const { parseBooleanEnv } = __envTestHelpers
 
     vi.stubEnv('SHELL_REPORT_DB_DISABLE_PARALLELISM', 'yes')
-    expect(parseBooleanEnv('SHELL_REPORT_DB_DISABLE_PARALLELISM', false)).toBe(true)
+    expect(parseBooleanEnv('SHELL_REPORT_DB_DISABLE_PARALLELISM', false)).toBe(
+      true
+    )
 
     vi.stubEnv('SHELL_REPORT_CACHE_PREWARM', 'off')
     expect(parseBooleanEnv('SHELL_REPORT_CACHE_PREWARM', true)).toBe(false)
@@ -88,19 +100,29 @@ describe('report-service env and date helpers', () => {
 
   test('addDaysToDateString is leap-day safe for Feb 28 and Feb 29', async () => {
     const { __envTestHelpers } = await import('./report-service.mjs')
-    expect(__envTestHelpers.addDaysToDateString('2024-02-28', 1)).toBe('2024-02-29')
-    expect(__envTestHelpers.addDaysToDateString('2024-02-29', 1)).toBe('2024-03-01')
+    expect(__envTestHelpers.addDaysToDateString('2024-02-28', 1)).toBe(
+      '2024-02-29'
+    )
+    expect(__envTestHelpers.addDaysToDateString('2024-02-29', 1)).toBe(
+      '2024-03-01'
+    )
   })
 
   test('resolveDefaultToDateString returns tomorrow in dashboard timezone', async () => {
     const { __envTestHelpers } = await import('./report-service.mjs')
     const reference = new Date('2024-02-28T17:00:00.000Z')
     expect(__envTestHelpers.formatDashboardDate(reference)).toBe('2024-02-28')
-    expect(__envTestHelpers.resolveDefaultToDateString(reference)).toBe('2024-02-29')
+    expect(__envTestHelpers.resolveDefaultToDateString(reference)).toBe(
+      '2024-02-29'
+    )
 
     const leapReference = new Date('2024-02-29T17:00:00.000Z')
-    expect(__envTestHelpers.formatDashboardDate(leapReference)).toBe('2024-02-29')
-    expect(__envTestHelpers.resolveDefaultToDateString(leapReference)).toBe('2024-03-01')
+    expect(__envTestHelpers.formatDashboardDate(leapReference)).toBe(
+      '2024-02-29'
+    )
+    expect(__envTestHelpers.resolveDefaultToDateString(leapReference)).toBe(
+      '2024-03-01'
+    )
   })
 
   test('parseDateParam rejects timestamps because report ranges are date-only', async () => {

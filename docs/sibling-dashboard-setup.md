@@ -14,13 +14,13 @@ loading, see [`runtime-contracts.md`](runtime-contracts.md).
 
 ## Current Siblings
 
-| Dashboard | Repo | Module id | Base path | API base | Dev port | Static module path |
-| --- | --- | --- | --- | --- | --- | --- |
-| AAWM | `../aawm-dashboard` | `aawm-dashboard` | `/aawm` | `/api/aawm` | `5176` | `/modules/aawm/remoteEntry.js` |
-| AAWM TAP | `../aawm-tap-dashboard` | `aawm-tap-dashboard` | `/aawm-tap` | `/api/aawm-tap` | `5173` | `/modules/aawm-tap/remoteEntry.js` |
-| AAWM Observe | `../aawm-observe-dashboard` | `aawm-observe-dashboard` | `/aawm-observe` | `/api/aawm-observe` | `5177` | `/modules/aawm-observe/remoteEntry.js` |
-| Aegis | `../aegis-dashboard` | `aegis-dashboard` | `/aegis` | `/api/aegis` | `5174` | `/modules/aegis/remoteEntry.js` |
-| Sluice | `../sluice-dashboard` | `sluice` | `/sluice` | `/api/sluice` | `5175` | `/modules/sluice/remoteEntry.js` |
+| Dashboard    | Repo                        | Module id                | Base path       | API base            | Dev port | Static module path                     |
+| ------------ | --------------------------- | ------------------------ | --------------- | ------------------- | -------- | -------------------------------------- |
+| AAWM         | `../aawm-dashboard`         | `aawm-dashboard`         | `/aawm`         | `/api/aawm`         | `5176`   | `/modules/aawm/remoteEntry.js`         |
+| AAWM TAP     | `../aawm-tap-dashboard`     | `aawm-tap-dashboard`     | `/aawm-tap`     | `/api/aawm-tap`     | `5173`   | `/modules/aawm-tap/remoteEntry.js`     |
+| AAWM Observe | `../aawm-observe-dashboard` | `aawm-observe-dashboard` | `/aawm-observe` | `/api/aawm-observe` | `5177`   | `/modules/aawm-observe/remoteEntry.js` |
+| Aegis        | `../aegis-dashboard`        | `aegis-dashboard`        | `/aegis`        | `/api/aegis`        | `5174`   | `/modules/aegis/remoteEntry.js`        |
+| Sluice       | `../sluice-dashboard`       | `sluice`                 | `/sluice`       | `/api/sluice`       | `5175`   | `/modules/sluice/remoteEntry.js`       |
 
 ## Inputs Required From The Sibling Repo
 
@@ -57,7 +57,6 @@ Current AAWM notes:
 - `../aawm-observe-dashboard` currently renders placeholder pages and declares
   `/api/aawm-observe`, but its live data service contract is still evolving.
   Set `AAWM_OBSERVE_API_TARGET` when an upstream observe adapter is available.
-
 
 ## Report Service Proxy Secret
 
@@ -123,11 +122,11 @@ example-dashboard-dev:
   restart: unless-stopped
   working_dir: /workspace/example-dashboard
   environment:
-    CHOKIDAR_USEPOLLING: "${CHOKIDAR_USEPOLLING:-true}"
-    EXAMPLE_REMOTE_DEV_PORT: "${EXAMPLE_REMOTE_DEV_PORT:-5178}"
-    WATCHPACK_POLLING: "${WATCHPACK_POLLING:-true}"
+    CHOKIDAR_USEPOLLING: '${CHOKIDAR_USEPOLLING:-true}'
+    EXAMPLE_REMOTE_DEV_PORT: '${EXAMPLE_REMOTE_DEV_PORT:-5178}'
+    WATCHPACK_POLLING: '${WATCHPACK_POLLING:-true}'
   ports:
-    - "${EXAMPLE_REMOTE_DEV_PORT:-5178}:${EXAMPLE_REMOTE_DEV_PORT:-5178}"
+    - '${EXAMPLE_REMOTE_DEV_PORT:-5178}:${EXAMPLE_REMOTE_DEV_PORT:-5178}'
   networks:
     - aawm_tap
   volumes:
@@ -143,8 +142,8 @@ example-dashboard-dev:
   healthcheck:
     test:
       [
-        "CMD-SHELL",
-        "wget -qO- http://127.0.0.1:$${EXAMPLE_REMOTE_DEV_PORT:-5176}/remoteEntry.js >/dev/null",
+        'CMD-SHELL',
+        'wget -qO- http://127.0.0.1:$${EXAMPLE_REMOTE_DEV_PORT:-5176}/remoteEntry.js >/dev/null',
       ]
     interval: 30s
     timeout: 5s
@@ -183,9 +182,9 @@ example-dashboard:
     dockerfile: Dockerfile
   image: example-dashboard-remote:local
   expose:
-    - "80"
+    - '80'
   healthcheck:
-    test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/remoteEntry.js >/dev/null"]
+    test: ['CMD-SHELL', 'wget -qO- http://127.0.0.1/remoteEntry.js >/dev/null']
     interval: 30s
     timeout: 5s
     start_period: 10s

@@ -1,18 +1,57 @@
-# Ignore everything
+# Ignore everything by default, then opt into the hand-edited formatter surfaces.
 /*
 
-# Except these files & folders
+# Config surfaces tracked for formatting
 !/src
-!index.html
+!/server
+!/scripts
+!/docs
+!/.github
+!/.github/**/*.yml
+!/.github/**/*.yaml
+!docker-compose*.yml
+!docker-compose*.yaml
 !package.json
-!tailwind.config.js
+!pnpm-lock.yaml
 !tsconfig.json
+!tsconfig.app.json
 !tsconfig.node.json
+!tsconfig.test.json
 !vite.config.ts
-!.prettierrc
-!README.md
+!vitest.config.ts
 !eslint.config.js
-!postcss.config.js
+!knip.config.ts
+!components.json
+!cz.yaml
+!index.html
+!README.md
+!CHANGELOG.md
+!LICENSE
+!Dockerfile
+!Dockerfile.report-service
+!nginx.conf
+!nginx.conf.template
+!.prettierrc
+!.pre-commit-config.yaml
+!.prettierignore
 
-# Ignore auto generated routeTree.gen.ts
+# Keep generated/runtime artifacts explicitly out.
+/.analysis
+/.agents
+/.claude
+/.claire
+/.codex
+/.gemini
+/dist
+/node_modules
+/test-results
+/coverage
+/.turbo
+/.cache
+/server/node_modules
+/server/dist
+/server/.turbo
+/server/.cache
+
+# Ignore auto-generated/route-tree source
 /src/routeTree.gen.ts

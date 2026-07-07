@@ -33,7 +33,9 @@ describe('docker-log-error-intake', () => {
   let tmpDirs = []
 
   afterEach(async () => {
-    await Promise.all(tmpDirs.map((dir) => rm(dir, { recursive: true, force: true })))
+    await Promise.all(
+      tmpDirs.map((dir) => rm(dir, { recursive: true, force: true }))
+    )
     tmpDirs = []
   })
 
@@ -59,7 +61,12 @@ describe('docker-log-error-intake', () => {
       source: { sourceIdentity: 'docker-json-log' },
     })
     expect(rows).toHaveLength(0)
-    expect(buildDockerLogErrorRow(JSON.parse(tail.trim()), 'dashboard-shell-reports-dev')).toBeNull()
+    expect(
+      buildDockerLogErrorRow(
+        JSON.parse(tail.trim()),
+        'dashboard-shell-reports-dev'
+      )
+    ).toBeNull()
   })
 
   test('successful HTTP 200 nginx asset access logs with error-like filenames are not actionable', () => {
@@ -118,14 +125,22 @@ describe('docker-log-error-intake', () => {
 
   test('inferLogProvider avoids substring false positives and keeps expected provider hits', () => {
     expect(inferLogProvider('OpenAI GPT-4 request failed')).toBe('openai')
-    expect(inferLogProvider('Anthropic Claude fallback for tool')).toBe('anthropic')
+    expect(inferLogProvider('Anthropic Claude fallback for tool')).toBe(
+      'anthropic'
+    )
     expect(inferLogProvider('OpenRouter model route')).toBe('openrouter')
     expect(inferLogProvider('Google Gemini returned code')).toBe('google')
     expect(inferLogProvider('xAI/Grok quota exceeded')).toBe('xai')
-    expect(inferLogProvider('NVIDIA NIM service returned error')).toBe('nvidia_nim')
+    expect(inferLogProvider('NVIDIA NIM service returned error')).toBe(
+      'nvidia_nim'
+    )
     expect(inferLogProvider('local model serving failure')).toBe('local')
-    expect(inferLogProvider('local model failed at http://localhost:11434/v1')).toBe('local')
-    expect(inferLogProvider('minimum latency threshold reached')).toBe('unknown')
+    expect(
+      inferLogProvider('local model failed at http://localhost:11434/v1')
+    ).toBe('local')
+    expect(inferLogProvider('minimum latency threshold reached')).toBe(
+      'unknown'
+    )
     expect(inferLogProvider('http://localhost:11434/v1')).toBe('unknown')
   })
 
@@ -156,10 +171,13 @@ describe('docker-log-error-intake', () => {
   })
 
   test('container wrapper records an actionable stdout line with required JSONL fields', async () => {
-    const intakeDir = await mkdtemp(path.join(os.tmpdir(), 'd1-445-wrapper-actionable-'))
+    const intakeDir = await mkdtemp(
+      path.join(os.tmpdir(), 'd1-445-wrapper-actionable-')
+    )
     tmpDirs.push(intakeDir)
     const containerName = 'dashboard-shell-reports-dev'
-    const msg = 'ERROR: upstream gateway returned status 502 for deterministic wrapper smoke check'
+    const msg =
+      'ERROR: upstream gateway returned status 502 for deterministic wrapper smoke check'
 
     await execFileAsync(
       'sh',
@@ -198,7 +216,9 @@ describe('docker-log-error-intake', () => {
   })
 
   test('container wrapper records actionable stderr with JSON-escaped fields', async () => {
-    const intakeDir = await mkdtemp(path.join(os.tmpdir(), 'd1-445-wrapper-json-'))
+    const intakeDir = await mkdtemp(
+      path.join(os.tmpdir(), 'd1-445-wrapper-json-')
+    )
     tmpDirs.push(intakeDir)
     const containerName = 'dashboard-shell-reports-"weird"-wrapper\\test'
     const msg = `ERROR: \u001b[31mupstream provider failure status 502\u001b[0m with "quoted" payload at path C:\\tmp\\app, tab\t bell\u0007 and end marker`
@@ -221,7 +241,10 @@ describe('docker-log-error-intake', () => {
       }
     )
 
-    const filePath = path.join(intakeDir, `${safeContainerErrorIntakeBasename(containerName)}-error.jsonl`)
+    const filePath = path.join(
+      intakeDir,
+      `${safeContainerErrorIntakeBasename(containerName)}-error.jsonl`
+    )
     const text = await readFile(filePath, 'utf8')
     const rows = text.trim().split('\n')
     expect(rows).toHaveLength(1)
@@ -249,7 +272,9 @@ describe('docker-log-error-intake', () => {
   })
 
   test('container wrapper ignores adjacent status-like digits while preserving contextual 502', async () => {
-    const intakeDir = await mkdtemp(path.join(os.tmpdir(), 'd1-445-wrapper-status-'))
+    const intakeDir = await mkdtemp(
+      path.join(os.tmpdir(), 'd1-445-wrapper-status-')
+    )
     tmpDirs.push(intakeDir)
     const msgNoStatusOne =
       'ERROR: response 4123 bytes from D1-424 while listening on http://127.0.0.1:5020/api'
@@ -276,7 +301,10 @@ describe('docker-log-error-intake', () => {
       }
     )
 
-    const filePath = path.join(intakeDir, 'dashboard-shell-reports-dev-error.jsonl')
+    const filePath = path.join(
+      intakeDir,
+      'dashboard-shell-reports-dev-error.jsonl'
+    )
     const text = await readFile(filePath, 'utf8')
     const rows = text
       .trim()
@@ -292,7 +320,9 @@ describe('docker-log-error-intake', () => {
   })
 
   test('container wrapper dedupes duplicate actionable lines in the bounded local tail', async () => {
-    const intakeDir = await mkdtemp(path.join(os.tmpdir(), 'd1-445-wrapper-duplicates-'))
+    const intakeDir = await mkdtemp(
+      path.join(os.tmpdir(), 'd1-445-wrapper-duplicates-')
+    )
     tmpDirs.push(intakeDir)
     const msg = 'ERROR: repeated actionable status 502 test line'
 
@@ -319,7 +349,10 @@ describe('docker-log-error-intake', () => {
     await new Promise((resolve) => setTimeout(resolve, 1100))
     await runWrapper()
 
-    const filePath = path.join(intakeDir, 'dashboard-shell-reports-dev-error.jsonl')
+    const filePath = path.join(
+      intakeDir,
+      'dashboard-shell-reports-dev-error.jsonl'
+    )
     const text = await readFile(filePath, 'utf8')
     const rows = text.trim().split('\n')
     expect(rows).toHaveLength(1)
@@ -394,7 +427,9 @@ describe('docker-log-error-intake', () => {
     expect(staleTarget).not.toBeNull()
     expect(staleTarget).toContain('.stale.')
     expect(mkdirCalls).toContain(lockDir)
-    expect(rmCalls.filter((target) => target.startsWith(`${lockDir}.stale.`)).length).toBe(1)
+    expect(
+      rmCalls.filter((target) => target.startsWith(`${lockDir}.stale.`)).length
+    ).toBe(1)
   })
 
   test('acquireIntakeFileLock does not rename a fresh lock after stale stat changes', async () => {
@@ -402,7 +437,12 @@ describe('docker-log-error-intake', () => {
     const lockDir = `${filePath}.intake.lock`
     let mkdirAttempts = 0
     const oldStat = { mtimeMs: 1, ctimeMs: 1, dev: 1, ino: 10 }
-    const freshStat = { mtimeMs: Date.now(), ctimeMs: Date.now(), dev: 1, ino: 11 }
+    const freshStat = {
+      mtimeMs: Date.now(),
+      ctimeMs: Date.now(),
+      dev: 1,
+      ino: 11,
+    }
     const renameFn = vi.fn()
     const rmFn = vi.fn()
     const statFn = vi
@@ -436,7 +476,6 @@ describe('docker-log-error-intake', () => {
     expect(renameFn).not.toHaveBeenCalled()
     expect(rmFn).toHaveBeenCalledWith(lockDir, { recursive: true, force: true })
   })
-
 
   test('status extraction ignores decimal timestamps package counts and bare port numbers', () => {
     const falsePositives = [
@@ -559,7 +598,10 @@ describe('docker-log-error-intake', () => {
       seenFingerprints: seen,
     })
 
-    const filePath = path.join(intakeDir, `${safeContainerErrorIntakeBasename(row.container)}-error.jsonl`)
+    const filePath = path.join(
+      intakeDir,
+      `${safeContainerErrorIntakeBasename(row.container)}-error.jsonl`
+    )
     const text = await readFile(filePath, 'utf8')
     expect(text.trim().split('\n')).toHaveLength(1)
     const parsed = JSON.parse(text.trim())
@@ -585,13 +627,16 @@ describe('docker-log-error-intake', () => {
     expect(rows).toHaveLength(5)
   })
 
-
   test('matches dev containers by exact Docker Name', () => {
     const config = {
       Name: '/dashboard-shell-reports-dev',
-      Config: { Labels: { 'com.docker.compose.service': 'dashboard-shell-reports-dev' } },
+      Config: {
+        Labels: { 'com.docker.compose.service': 'dashboard-shell-reports-dev' },
+      },
     }
-    const result = matchDockerJsonLogContainer(config, ['dashboard-shell-reports-dev'])
+    const result = matchDockerJsonLogContainer(config, [
+      'dashboard-shell-reports-dev',
+    ])
     expect(result).toEqual({
       matched: true,
       container: 'dashboard-shell-reports-dev',
@@ -606,12 +651,16 @@ describe('docker-log-error-intake', () => {
         Labels: {
           'com.docker.compose.service': 'dashboard-shell-reports',
           'com.docker.compose.project': 'dashboard-shell',
-          'com.docker.compose.project.working_dir': '/home/zepfu/projects/dashboard-shell',
-          'com.docker.compose.project.config_files': '/home/zepfu/projects/dashboard-shell/docker-compose.yml',
+          'com.docker.compose.project.working_dir':
+            '/home/zepfu/projects/dashboard-shell',
+          'com.docker.compose.project.config_files':
+            '/home/zepfu/projects/dashboard-shell/docker-compose.yml',
         },
       },
     }
-    const result = matchDockerJsonLogContainer(config, ['dashboard-shell-reports'])
+    const result = matchDockerJsonLogContainer(config, [
+      'dashboard-shell-reports',
+    ])
     expect(result.matched).toBe(true)
     expect(result.matchKind).toBe('compose')
     expect(result.container).toBe('dashboard-shell-dashboard-shell-reports-1')
@@ -624,23 +673,39 @@ describe('docker-log-error-intake', () => {
         Labels: {
           'com.docker.compose.service': 'aawm-dashboard',
           'com.docker.compose.project': 'renamed-dashboard-shell',
-          'com.docker.compose.project.working_dir': '/srv/renamed-dashboard-shell',
-          'com.docker.compose.project.config_files': '/srv/renamed-dashboard-shell/docker-compose.yml',
+          'com.docker.compose.project.working_dir':
+            '/srv/renamed-dashboard-shell',
+          'com.docker.compose.project.config_files':
+            '/srv/renamed-dashboard-shell/docker-compose.yml',
         },
       },
     }
-    const defaultMatch = matchDockerJsonLogContainer(config, ['aawm-dashboard'], {
-      repoComposeProjectMarkers: resolveRepoComposeProjectMarkers({
-        SHELL_REPORT_DOCKER_COMPOSE_PROJECT_MARKERS: 'dashboard-shell/docker-compose',
-      }),
+    const defaultMatch = matchDockerJsonLogContainer(
+      config,
+      ['aawm-dashboard'],
+      {
+        repoComposeProjectMarkers: resolveRepoComposeProjectMarkers({
+          SHELL_REPORT_DOCKER_COMPOSE_PROJECT_MARKERS:
+            'dashboard-shell/docker-compose',
+        }),
+      }
+    )
+    expect(defaultMatch).toEqual({
+      matched: false,
+      container: null,
+      matchKind: null,
     })
-    expect(defaultMatch).toEqual({ matched: false, container: null, matchKind: null })
 
-    const overrideMatch = matchDockerJsonLogContainer(config, ['aawm-dashboard'], {
-      repoComposeProjectMarkers: resolveRepoComposeProjectMarkers({
-        SHELL_REPORT_DOCKER_COMPOSE_PROJECT_MARKERS: '/srv/renamed-dashboard-shell',
-      }),
-    })
+    const overrideMatch = matchDockerJsonLogContainer(
+      config,
+      ['aawm-dashboard'],
+      {
+        repoComposeProjectMarkers: resolveRepoComposeProjectMarkers({
+          SHELL_REPORT_DOCKER_COMPOSE_PROJECT_MARKERS:
+            '/srv/renamed-dashboard-shell',
+        }),
+      }
+    )
     expect(overrideMatch).toMatchObject({
       matched: true,
       matchKind: 'compose',
@@ -655,12 +720,16 @@ describe('docker-log-error-intake', () => {
         Labels: {
           'com.docker.compose.service': 'dashboard-shell-reports',
           'com.docker.compose.project': 'otherproj',
-          'com.docker.compose.project.working_dir': '/home/zepfu/projects/other-repo',
-          'com.docker.compose.project.config_files': '/home/zepfu/projects/other-repo/docker-compose.yml',
+          'com.docker.compose.project.working_dir':
+            '/home/zepfu/projects/other-repo',
+          'com.docker.compose.project.config_files':
+            '/home/zepfu/projects/other-repo/docker-compose.yml',
         },
       },
     }
-    const result = matchDockerJsonLogContainer(config, ['dashboard-shell-reports'])
+    const result = matchDockerJsonLogContainer(config, [
+      'dashboard-shell-reports',
+    ])
     expect(result).toEqual({ matched: false, container: null, matchKind: null })
   })
 
@@ -675,7 +744,8 @@ describe('docker-log-error-intake', () => {
             Config: {
               Labels: {
                 'com.docker.compose.service': 'aawm-dashboard',
-                'com.docker.compose.project.working_dir': '/home/zepfu/projects/dashboard-shell',
+                'com.docker.compose.project.working_dir':
+                  '/home/zepfu/projects/dashboard-shell',
               },
             },
           },
@@ -685,7 +755,9 @@ describe('docker-log-error-intake', () => {
     )
     expect(sources).toHaveLength(1)
     expect(sources[0].container).toBe('dashboard-shell-aawm-dashboard-1')
-    expect(sources[0].logPath).toBe('/host/docker/containers/abc123/abc123-json.log')
+    expect(sources[0].logPath).toBe(
+      '/host/docker/containers/abc123/abc123-json.log'
+    )
     expect(sources[0].matchKind).toBe('compose')
   })
 
@@ -705,9 +777,10 @@ describe('docker-log-error-intake', () => {
     const seen = new Set()
     const fresh = selectNewDockerLogErrors(split.forIntake, seen)
     expect(fresh).toHaveLength(3)
-    expect(shouldDiscoverDockerJsonLogSources(['dashboard-shell-reports'])).toBe(true)
+    expect(
+      shouldDiscoverDockerJsonLogSources(['dashboard-shell-reports'])
+    ).toBe(true)
   })
-
 
   test('existing JSONL fingerprint suppresses append and marks seen', async () => {
     const intakeDir = await mkdtemp(path.join(os.tmpdir(), 'd1-424-persist-'))
@@ -725,7 +798,10 @@ describe('docker-log-error-intake', () => {
     }
     row.fingerprint = buildDockerLogErrorFingerprint(row)
 
-    const filePath = path.join(intakeDir, `${safeContainerErrorIntakeBasename(row.container)}-error.jsonl`)
+    const filePath = path.join(
+      intakeDir,
+      `${safeContainerErrorIntakeBasename(row.container)}-error.jsonl`
+    )
     await appendFile(
       filePath,
       `${JSON.stringify({ ...row, ingested_at: '2026-06-28T18:00:00.000Z' })}\n`,
@@ -775,7 +851,10 @@ describe('docker-log-error-intake', () => {
     }
     fresh.fingerprint = buildDockerLogErrorFingerprint(fresh)
 
-    const filePath = path.join(intakeDir, `${safeContainerErrorIntakeBasename(existing.container)}-error.jsonl`)
+    const filePath = path.join(
+      intakeDir,
+      `${safeContainerErrorIntakeBasename(existing.container)}-error.jsonl`
+    )
     await appendFile(
       filePath,
       `${JSON.stringify({ ...existing, ingested_at: '2026-06-28T18:00:00.000Z' })}\n`,
@@ -819,7 +898,9 @@ describe('docker-log-error-intake', () => {
   })
 
   test('loadPersistedDockerLogErrorFingerprintsFromJsonl uses tail-size and line caps', async () => {
-    const intakeDir = await mkdtemp(path.join(os.tmpdir(), 'd1-445-load-bounded-'))
+    const intakeDir = await mkdtemp(
+      path.join(os.tmpdir(), 'd1-445-load-bounded-')
+    )
     tmpDirs.push(intakeDir)
     const filePath = path.join(intakeDir, 'unknown-upstream-error.jsonl')
 
@@ -866,13 +947,22 @@ describe('docker-log-error-intake', () => {
       ...secondRecent,
       ingested_at: '2026-06-28T18:02:00.000Z',
     })}\n`
-    const readWindowBytes = Buffer.byteLength(firstRecentLine + secondRecentLine)
+    const readWindowBytes = Buffer.byteLength(
+      firstRecentLine + secondRecentLine
+    )
 
-    await appendFile(filePath, `${oldLine}${firstRecentLine}${secondRecentLine}`, 'utf8')
-    const set = await loadPersistedDockerLogErrorFingerprintsFromJsonl(filePath, {
-      maxBytes: readWindowBytes,
-      maxLines: 2,
-    })
+    await appendFile(
+      filePath,
+      `${oldLine}${firstRecentLine}${secondRecentLine}`,
+      'utf8'
+    )
+    const set = await loadPersistedDockerLogErrorFingerprintsFromJsonl(
+      filePath,
+      {
+        maxBytes: readWindowBytes,
+        maxLines: 2,
+      }
+    )
 
     expect(set.has(old.fingerprint)).toBe(false)
     expect(set.has(firstRecent.fingerprint)).toBe(true)
@@ -881,7 +971,9 @@ describe('docker-log-error-intake', () => {
   })
 
   test('append failure does not poison dedupe so retry can succeed', async () => {
-    const intakeDir = await mkdtemp(path.join(os.tmpdir(), 'd1-424-intake-retry-'))
+    const intakeDir = await mkdtemp(
+      path.join(os.tmpdir(), 'd1-424-intake-retry-')
+    )
     tmpDirs.push(intakeDir)
     const row = {
       observed_at: '2026-06-28T18:41:00.000Z',
@@ -925,19 +1017,29 @@ describe('docker-log-error-intake', () => {
     })
 
     expect(seen.has(row.fingerprint)).toBe(true)
-    const filePath = path.join(intakeDir, `${safeContainerErrorIntakeBasename(row.container)}-error.jsonl`)
+    const filePath = path.join(
+      intakeDir,
+      `${safeContainerErrorIntakeBasename(row.container)}-error.jsonl`
+    )
     const text = await readFile(filePath, 'utf8')
     expect(text.trim().split('\n')).toHaveLength(1)
   })
 
-
   test('repo-owned helper matches generated compose container names', () => {
-    expect(isRepoOwnedDockerLogContainerName('dashboard-shell-dashboard-shell-reports-1')).toBe(
-      true
-    )
-    expect(isRepoOwnedDockerLogContainerName('dashboard-shell-aawm-dashboard-1')).toBe(true)
-    expect(isRepoOwnedDockerLogContainerName('dashboard-shell-aawm-litellm-1')).toBe(false)
-    expect(isRepoOwnedDockerLogContainerName('otherproj-aawm-dashboard-1')).toBe(false)
+    expect(
+      isRepoOwnedDockerLogContainerName(
+        'dashboard-shell-dashboard-shell-reports-1'
+      )
+    ).toBe(true)
+    expect(
+      isRepoOwnedDockerLogContainerName('dashboard-shell-aawm-dashboard-1')
+    ).toBe(true)
+    expect(
+      isRepoOwnedDockerLogContainerName('dashboard-shell-aawm-litellm-1')
+    ).toBe(false)
+    expect(
+      isRepoOwnedDockerLogContainerName('otherproj-aawm-dashboard-1')
+    ).toBe(false)
   })
 
   test('repo-owned and external container rows are excluded from centralized report-service intake', () => {
@@ -974,10 +1076,14 @@ describe('docker-log-error-intake', () => {
       },
     ]
     const filtered = filterDockerLogErrorsForCentralizedIntake(rows, {
-      env: { SHELL_REPORT_DOCKER_LOG_EXTERNAL_CONTAINERS: 'aawm-litellm,litellm-dev' },
+      env: {
+        SHELL_REPORT_DOCKER_LOG_EXTERNAL_CONTAINERS: 'aawm-litellm,litellm-dev',
+      },
     })
     expect(filtered.map((r) => r.container)).toEqual(['other-thing'])
-    expect(isRepoOwnedDockerLogContainerName('dashboard-shell-redis')).toBe(true)
+    expect(isRepoOwnedDockerLogContainerName('dashboard-shell-redis')).toBe(
+      true
+    )
     expect(isRepoOwnedDockerLogContainerName('aawm-litellm')).toBe(false)
   })
 
@@ -1012,10 +1118,19 @@ describe('docker-log-error-intake', () => {
       String(b.observed_at).localeCompare(String(a.observed_at))
     )
     const split = splitDockerLogErrorsForDashboardAndIntake(sorted, 10)
-    expect(split.forDashboard.map((r) => r.container)).toEqual(['mystery-service', 'aawm-litellm'])
-    const forIntake = filterDockerLogErrorsForCentralizedIntake(split.forIntake, {
-      env: { SHELL_REPORT_DOCKER_LOG_EXTERNAL_CONTAINERS: 'aawm-litellm,litellm-dev' },
-    })
+    expect(split.forDashboard.map((r) => r.container)).toEqual([
+      'mystery-service',
+      'aawm-litellm',
+    ])
+    const forIntake = filterDockerLogErrorsForCentralizedIntake(
+      split.forIntake,
+      {
+        env: {
+          SHELL_REPORT_DOCKER_LOG_EXTERNAL_CONTAINERS:
+            'aawm-litellm,litellm-dev',
+        },
+      }
+    )
     expect(forIntake.map((r) => r.container)).toEqual(['mystery-service'])
 
     const seen = new Set()
@@ -1025,10 +1140,11 @@ describe('docker-log-error-intake', () => {
       seenFingerprints: seen,
     })
     expect(result.appended).toBe(1)
-    await expect(readdir(intakeDir)).resolves.toEqual(['mystery-service-error.jsonl'])
+    await expect(readdir(intakeDir)).resolves.toEqual([
+      'mystery-service-error.jsonl',
+    ])
     await expect(
       readFile(path.join(intakeDir, 'aawm-litellm-error.jsonl'), 'utf8')
     ).rejects.toMatchObject({ code: 'ENOENT' })
   })
-
 })

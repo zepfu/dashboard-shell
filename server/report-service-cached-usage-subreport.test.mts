@@ -8,7 +8,9 @@ afterEach(() => {
   vi.unstubAllEnvs()
 })
 
-function makeReq(url = 'http://localhost/api/shell/reports/usage?from=2026-01-01&to=2026-01-08') {
+function makeReq(
+  url = 'http://localhost/api/shell/reports/usage?from=2026-01-01&to=2026-01-08'
+) {
   return {
     url: new URL(url).pathname + new URL(url).search,
     headers: { host: 'localhost' },
@@ -19,30 +21,24 @@ describe('D1-444 handleCachedUsageSubreport', () => {
   test('returns 503 when pool is missing', async () => {
     vi.stubEnv('VITEST', 'true')
     delete process.env.DATABASE_URL
-    const { __cachedUsageSubreportTestHelpers } = await import('./report-service.mjs')
+    const { __cachedUsageSubreportTestHelpers } =
+      await import('./report-service.mjs')
     const { handleCachedUsageSubreport } = __cachedUsageSubreportTestHelpers
 
     const sendJson = vi.fn(async () => {})
     const cachedReport = vi.fn()
     const load = vi.fn()
 
-    await handleCachedUsageSubreport(
-      makeReq(),
-      {},
-      'usage-v2',
-      load,
-      { pool: null, sendJson, cachedReport }
-    )
+    await handleCachedUsageSubreport(makeReq(), {}, 'usage-v2', load, {
+      pool: null,
+      sendJson,
+      cachedReport,
+    })
 
     expect(sendJson).toHaveBeenCalledTimes(1)
-    expect(sendJson).toHaveBeenCalledWith(
-      expect.anything(),
-      {},
-      503,
-      {
-        error: 'DATABASE_URL is not configured for the shell report service.',
-      }
-    )
+    expect(sendJson).toHaveBeenCalledWith(expect.anything(), {}, 503, {
+      error: 'DATABASE_URL is not configured for the shell report service.',
+    })
     expect(cachedReport).not.toHaveBeenCalled()
     expect(load).not.toHaveBeenCalled()
   })
@@ -50,7 +46,8 @@ describe('D1-444 handleCachedUsageSubreport', () => {
   test('loads via cachedReport and responds 200 with body', async () => {
     vi.stubEnv('VITEST', 'true')
     vi.stubEnv('DATABASE_URL', 'postgresql://user:pass@127.0.0.1:5432/testdb')
-    const { __cachedUsageSubreportTestHelpers } = await import('./report-service.mjs')
+    const { __cachedUsageSubreportTestHelpers } =
+      await import('./report-service.mjs')
     const { handleCachedUsageSubreport } = __cachedUsageSubreportTestHelpers
 
     const fakePool = {}

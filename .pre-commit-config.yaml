@@ -56,7 +56,8 @@ repos:
     hooks:
       - id: prettier
         name: Prettier
-        entry: npx prettier --check
+        # Scope is governed by .prettierignore so we don't imply narrower file-type coverage.
+        # pnpm format:check uses the same Prettier scope in CI.
+        entry: npx prettier --check --ignore-unknown
         language: system
-        types_or: [ts, tsx, json, yaml, markdown]
         require_serial: true

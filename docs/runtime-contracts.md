@@ -2,7 +2,6 @@
 
 This document supplements the integration contract for federated dashboards.
 
-
 ## Report Service Upstream Proxy Secret
 
 Credential-injecting upstream proxy routes (`/api/aawm*`, `/api/aawm-tap*`, `/api/aawm-observe*`, `/api/aegis*`, `/api/sluice*`, `/hook-api*`) are internal-only. The shell static nginx container and Vite dev proxy must send `X-Dashboard-Shell-Proxy-Secret` on every request forwarded to `dashboard-shell-reports`. The report service rejects missing or wrong values before it injects upstream API credentials.
@@ -18,7 +17,6 @@ Local compose and dev defaults use `SHELL_REPORT_PROXY_SHARED_SECRET=dashboard-s
   local defaults) for drift visibility, not YAML factoring.
 - Redis dependency/runtime follow-up work is owned by server-package/report-service TODOs.
 - Dev compose ports are intentionally loopback-bound by default (`127.0.0.1`), with an intentional override path (`DASHBOARD_DEV_BIND_HOST`) for LAN operator sessions.
-
 
 ## Nginx and Public Surface Contract
 
@@ -118,8 +116,6 @@ aggregated across period or unit:
   stored `remaining_pct` on `rate_limit_intervals`, sourced from LiteLLM
   `100 - creditUsagePercent` when usage percent is present).
 - `xai_grok_build_monthly_requests:requests` → monthly **requests** remaining.
-
-
 
 Anthropic Fable weekly overage-included (`7d_oi`) is a distinct quota family from
 baseline unified weekly (`7d`) and retired Sonnet weekly (`weekly_special` →
@@ -293,7 +289,6 @@ was retracted after checking PostgreSQL behavior; the remaining runbook
 requirement is to make this manually-applied script discoverable and to keep the
 health-monitored job names intact.
 
-
 ## Provider Health — Provider Auth Expiry (D1-338)
 
 `GET /api/shell/reports/usage` may include a sibling field
@@ -329,7 +324,6 @@ Redaction rules (server normalization and SQL projection):
 
 UI placement: General dashboard **STATUS > Provider Auth** tab. Provider auth
 health is not rendered inside the Health tab.
-
 
 ## Provider Health — Provider Credit Lifecycle (D1-417 / D1-422)
 

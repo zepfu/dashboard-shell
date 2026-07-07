@@ -12,26 +12,26 @@ The original implementation plan completed nominally through Wave 29. Waves 30�
 
 ## Wave Summary Table (30 – 47)
 
-| Wave | Theme | Headline commit(s) |
-|---|---|---|
-| 30 | Sparkline data wiring + health-strip dedup | `b8a69e4`, `40284db` ancestors |
-| 31 | KPI labels, ledger reorder, microbar tooltip, errors 429/529, trend bar heights, quota sentinel | numerous |
-| 32 | Last-seen, multi-reset full parity, error observations, hoist tooltip variant, dead code purge | `b9b913e` and ancestors |
-| 33 | Tool activity query + dashboard hover (SHELL/TOOLS 2-column) | landed in W32 batch |
-| 34 | First convergence cycle — researcher/engineer trio | `34-A/B/C/D` |
-| 35–36 | Cycle 2 — render perf, cycle-2 sweep, tooltip styles, server fixes | several commits |
-| 37–39 | Cycles 3-5 — code/CSS, data-flow, visual audits per cycle | converged W39 |
-| 40 | Reopened audit — 5hr quota lookback (`ab9628c`), TOOL column ungate (`b8425e3`), multi-reset redesign attempt 1 (`08e7033`) — rejected by operator |
-| 41 | Operator clarified lane spec → full per-lane redesign | `59cee03` |
-| 41 follow-ups | className concat (`3b43e55`), dedup proximity (`34ffd7a`), Google flash-lite tipModels aggregation (`a0395c9`) |
-| 42 | Stacked full-width prior bar rows (operator complaint: bars on same line) | `4d7a7b7` / `017b2cf` |
-| 43 | Date-range sub-label on prior bars | `15546b2` / `3e08d8f` |
-| 44 | Per-row interval-hours lookback (Google 24h → 36h, etc.) | `e73ed32` / `d63d3e9` |
-| 44b | Layer B sheen moved from bar to high-velocity segment | `5966e80` / `bb2ed3b` |
-| 45 | OpenAI weekly noise-gap median collapse fix | `3d6a97a` / `f4b2ade` |
-| 45b | Tooltip headers show absolute date + time | `1d8e871` / `2d9259e` |
-| 46 | Upper-bound `2 × interval_hours` so mid-cycle prior slots survive | `bcbe5c7` |
-| 47 | Regression-test net for 5/24 prior bar dedup scenarios | `dba03d8` / `1156dc1` |
+| Wave          | Theme                                                                                                                                              | Headline commit(s)             |
+| ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------ |
+| 30            | Sparkline data wiring + health-strip dedup                                                                                                         | `b8a69e4`, `40284db` ancestors |
+| 31            | KPI labels, ledger reorder, microbar tooltip, errors 429/529, trend bar heights, quota sentinel                                                    | numerous                       |
+| 32            | Last-seen, multi-reset full parity, error observations, hoist tooltip variant, dead code purge                                                     | `b9b913e` and ancestors        |
+| 33            | Tool activity query + dashboard hover (SHELL/TOOLS 2-column)                                                                                       | landed in W32 batch            |
+| 34            | First convergence cycle — researcher/engineer trio                                                                                                 | `34-A/B/C/D`                   |
+| 35–36         | Cycle 2 — render perf, cycle-2 sweep, tooltip styles, server fixes                                                                                 | several commits                |
+| 37–39         | Cycles 3-5 — code/CSS, data-flow, visual audits per cycle                                                                                          | converged W39                  |
+| 40            | Reopened audit — 5hr quota lookback (`ab9628c`), TOOL column ungate (`b8425e3`), multi-reset redesign attempt 1 (`08e7033`) — rejected by operator |
+| 41            | Operator clarified lane spec → full per-lane redesign                                                                                              | `59cee03`                      |
+| 41 follow-ups | className concat (`3b43e55`), dedup proximity (`34ffd7a`), Google flash-lite tipModels aggregation (`a0395c9`)                                     |
+| 42            | Stacked full-width prior bar rows (operator complaint: bars on same line)                                                                          | `4d7a7b7` / `017b2cf`          |
+| 43            | Date-range sub-label on prior bars                                                                                                                 | `15546b2` / `3e08d8f`          |
+| 44            | Per-row interval-hours lookback (Google 24h → 36h, etc.)                                                                                           | `e73ed32` / `d63d3e9`          |
+| 44b           | Layer B sheen moved from bar to high-velocity segment                                                                                              | `5966e80` / `bb2ed3b`          |
+| 45            | OpenAI weekly noise-gap median collapse fix                                                                                                        | `3d6a97a` / `f4b2ade`          |
+| 45b           | Tooltip headers show absolute date + time                                                                                                          | `1d8e871` / `2d9259e`          |
+| 46            | Upper-bound `2 × interval_hours` so mid-cycle prior slots survive                                                                                  | `bcbe5c7`                      |
+| 47            | Regression-test net for 5/24 prior bar dedup scenarios                                                                                             | `dba03d8` / `1156dc1`          |
 
 Wave numbering after W29 is not strictly sequential in commit history because dispatches often overlapped or were re-dispatched after stall/kill events. The headline commits above are the merge points on `develop`.
 

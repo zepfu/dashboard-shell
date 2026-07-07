@@ -1,11 +1,3 @@
-import {
-  buildReportCacheEntry,
-  buildReportCacheIdentity,
-  buildReportCachePrewarmLockKey,
-  canonicalizeSearchParams,
-  REPORT_CACHE_VERSION,
-  resolveReportCacheTtlMs,
-} from './report-cache-identity.mjs'
 import crypto from 'node:crypto'
 import { open, readdir, readFile } from 'node:fs/promises'
 import http from 'node:http'
@@ -15,6 +7,7 @@ import process from 'node:process'
 import { URL } from 'node:url'
 import { promisify } from 'node:util'
 import { gzip as gzipCallback, gunzip as gunzipCallback } from 'node:zlib'
+import pg from 'pg'
 import {
   appendDockerLogErrorsToIntake,
   extractDockerLogErrorsFromTail,
@@ -26,8 +19,14 @@ import {
   filterDockerLogErrorsForCentralizedIntake,
   stripAnsi,
 } from './docker-log-error-intake.mjs'
-
-import pg from 'pg'
+import {
+  buildReportCacheEntry,
+  buildReportCacheIdentity,
+  buildReportCachePrewarmLockKey,
+  canonicalizeSearchParams,
+  REPORT_CACHE_VERSION,
+  resolveReportCacheTtlMs,
+} from './report-cache-identity.mjs'
 
 // Dynamic import for redis so that the module can be imported in environments
 // where the 'redis' package is not installed (for example, environments that
@@ -62,18 +61,29 @@ function parseFiniteNumberEnv(name, fallback) {
 function boundedIntegerEnv(
   name,
   fallback,
-  { minimum = Number.NEGATIVE_INFINITY, maximum = Number.POSITIVE_INFINITY, floor = true } = {}
+  {
+    minimum = Number.NEGATIVE_INFINITY,
+    maximum = Number.POSITIVE_INFINITY,
+    floor = true,
+  } = {}
 ) {
-  const finiteMinimum = Number.isFinite(minimum) ? minimum : Number.NEGATIVE_INFINITY
-  const finiteMaximum = Number.isFinite(maximum) ? maximum : Number.POSITIVE_INFINITY
-  const clamp = (value) => Math.max(finiteMinimum, Math.min(finiteMaximum, value))
+  const finiteMinimum = Number.isFinite(minimum)
+    ? minimum
+    : Number.NEGATIVE_INFINITY
+  const finiteMaximum = Number.isFinite(maximum)
+    ? maximum
+    : Number.POSITIVE_INFINITY
+  const clamp = (value) =>
+    Math.max(finiteMinimum, Math.min(finiteMaximum, value))
   const parsed = Number(process.env[name] ?? fallback)
   const resolveFallback = () => {
     const fallbackNumber = Number(fallback)
     if (!Number.isFinite(fallbackNumber)) {
       return Number.isFinite(finiteMinimum) ? finiteMinimum : 0
     }
-    const normalizedFallback = floor ? Math.floor(fallbackNumber) : fallbackNumber
+    const normalizedFallback = floor
+      ? Math.floor(fallbackNumber)
+      : fallbackNumber
     return clamp(normalizedFallback)
   }
   if (!Number.isFinite(parsed)) {
@@ -181,19 +191,24 @@ const UPSTREAM_API_PROXIES = [
   {
     prefix: '/api/aegis',
     displayName: 'Aegis',
-    target:
-      process.env.AEGIS_API_TARGET ?? 'http://aegis-api:8001/api/v1',
+    target: process.env.AEGIS_API_TARGET ?? 'http://aegis-api:8001/api/v1',
     accessToken: envSecret('AEGIS_ACCESS_TOKEN', 'AEGIS_API_TOKEN'),
   },
   {
     prefix: '/api/sluice',
     displayName: 'Sluice',
     target:
-      process.env.SLUICE_API_TARGET ?? 'http://host.docker.internal:8002/api/v1',
+      process.env.SLUICE_API_TARGET ??
+      'http://host.docker.internal:8002/api/v1',
     accessToken: envSecret('SLUICE_ACCESS_TOKEN', 'SLUICE_API_TOKEN'),
   },
 ]
-const DEFAULT_GROUP_BY = ['environment', 'client', 'repository', 'provider_model']
+const DEFAULT_GROUP_BY = [
+  'environment',
+  'client',
+  'repository',
+  'provider_model',
+]
 // Wave 24-D30: raised from 500 to 50000 to fix 30-day undercounting.
 // At 30-day daily grain with provider+model+repository groupBy, row count
 // exceeds 500. The aggregate-level surfaces (KPI strip, Aggregate Card)
@@ -224,10 +239,14 @@ const HEALTH_WINDOW_HOURS = 24
 // remains 20_000 — operators can lower it via SHELL_REPORT_HEALTH_MAX_ROWS.
 // A >75% capacity warning is emitted at query time to surface truncation risk
 // before it becomes a silent data loss.
-const MAX_HEALTH_ROWS = boundedIntegerEnv('SHELL_REPORT_HEALTH_MAX_ROWS', 20_000, {
-  minimum: 100,
-  maximum: 20_000,
-})
+const MAX_HEALTH_ROWS = boundedIntegerEnv(
+  'SHELL_REPORT_HEALTH_MAX_ROWS',
+  20_000,
+  {
+    minimum: 100,
+    maximum: 20_000,
+  }
+)
 const MAX_PROVIDER_ERROR_ROWS = 2_000
 const MAX_DOCKER_LOG_ERROR_ROWS = boundedIntegerEnv(
   'SHELL_REPORT_DOCKER_LOG_ERROR_ROWS',
@@ -462,7 +481,10 @@ const REPORT_CACHE_LOCK_POLL_MS = boundedIntegerEnv(
   500,
   { minimum: 100, maximum: Number.POSITIVE_INFINITY }
 )
-const REPORT_CACHE_PREWARM = parseBooleanEnv('SHELL_REPORT_CACHE_PREWARM', false)
+const REPORT_CACHE_PREWARM = parseBooleanEnv(
+  'SHELL_REPORT_CACHE_PREWARM',
+  false
+)
 const REPORT_CACHE_PREWARM_INTERVAL_MS = boundedIntegerEnv(
   'SHELL_REPORT_CACHE_PREWARM_INTERVAL_MS',
   15 * 60 * 1000,
@@ -593,7 +615,9 @@ const CLIENT_AUTH_HEADERS = new Set([
 ])
 const REPORT_PROXY_SECRET_HEADER = 'X-Dashboard-Shell-Proxy-Secret'
 const DEFAULT_REPORT_PROXY_SHARED_SECRET = 'dashboard-shell-local-proxy-secret'
-const INTERNAL_PROXY_HEADERS = new Set([REPORT_PROXY_SECRET_HEADER.toLowerCase()])
+const INTERNAL_PROXY_HEADERS = new Set([
+  REPORT_PROXY_SECRET_HEADER.toLowerCase(),
+])
 
 function resolveReportProxySharedSecret() {
   const raw = process.env.SHELL_REPORT_PROXY_SHARED_SECRET
@@ -839,7 +863,9 @@ async function queryReportDatabase(sql, values, options = {}) {
     return queryReportDatabaseTestImpl(sql, values, options)
   }
   if (!pool) {
-    throw new Error('DATABASE_URL is not configured for the shell report service.')
+    throw new Error(
+      'DATABASE_URL is not configured for the shell report service.'
+    )
   }
   const statementTimeoutMs =
     options.statementTimeoutMs ?? REPORT_DB_STATEMENT_TIMEOUT_MS
@@ -892,7 +918,9 @@ async function queryReportDatabase(sql, values, options = {}) {
 
 async function queryHealthDatabase(sql, values) {
   if (!healthPool) {
-    throw new Error('DATABASE_URL is not configured for the shell report service.')
+    throw new Error(
+      'DATABASE_URL is not configured for the shell report service.'
+    )
   }
   return queryPostgresWithLocalSettings(
     healthPool,
@@ -909,7 +937,11 @@ end
 return 0
 `
 
-function createRedisCacheClient(redisUrl, clientFactory = createClient, respTypes = RESP_TYPES) {
+function createRedisCacheClient(
+  redisUrl,
+  clientFactory = createClient,
+  respTypes = RESP_TYPES
+) {
   if (!redisUrl || !clientFactory) return null
 
   const client = clientFactory({
@@ -919,10 +951,7 @@ function createRedisCacheClient(redisUrl, clientFactory = createClient, respType
     },
   })
   const blobStringType = respTypes?.BLOB_STRING
-  if (
-    blobStringType == null ||
-    typeof client?.withTypeMapping !== 'function'
-  ) {
+  if (blobStringType == null || typeof client?.withTypeMapping !== 'function') {
     return client
   }
 
@@ -1012,15 +1041,18 @@ const sourceTableHealthMemo = createTtlMemoizer(
 let reportServiceShuttingDown = false
 let shutdownForceExitTimer = null
 
-const SHUTDOWN_GRACE_MS = boundedIntegerEnv('SHELL_REPORT_SHUTDOWN_GRACE_MS', 30_000, {
-  minimum: 1_000,
-  maximum: 300_000,
-})
+const SHUTDOWN_GRACE_MS = boundedIntegerEnv(
+  'SHELL_REPORT_SHUTDOWN_GRACE_MS',
+  30_000,
+  {
+    minimum: 1_000,
+    maximum: 300_000,
+  }
+)
 
 const GENERIC_INTERNAL_SERVER_ERROR_BODY = Object.freeze({
   error: 'Internal server error',
 })
-
 
 if (redisClient) {
   redisClient.on('error', (error) => {
@@ -1052,11 +1084,15 @@ async function cachedReport(scope, load, options = {}) {
 
   if (cacheTtlMs <= 0) {
     const value = await load()
-    return maybeDecorateCacheMetadata(value, {
-      ...identity,
-      backend: 'sql',
-      status: 'bypass',
-    }, decorateMetadata)
+    return maybeDecorateCacheMetadata(
+      value,
+      {
+        ...identity,
+        backend: 'sql',
+        status: 'bypass',
+      },
+      decorateMetadata
+    )
   }
 
   const redisEntry = await readRedisCacheEntry(identity)
@@ -1079,7 +1115,8 @@ async function cachedReport(scope, load, options = {}) {
       try {
         const refreshResult = await refreshReportCache(identity, load, {
           cacheTtlMs,
-          lockWaitMs: options.lockWaitMs ?? REPORT_CACHE_FOREGROUND_LOCK_WAIT_MS,
+          lockWaitMs:
+            options.lockWaitMs ?? REPORT_CACHE_FOREGROUND_LOCK_WAIT_MS,
           requireFreshOnLockWait: true,
         })
         if (refreshResult.entry) {
@@ -1147,7 +1184,12 @@ async function cachedReport(scope, load, options = {}) {
   const localEntry = readLocalReportCache(identity.cacheKey)
   if (localEntry?.status === 'fresh' || localEntry?.status === 'stale') {
     if (localEntry.status === 'stale') {
-      scheduleBackgroundCacheRefresh(identity, load, { cacheTtlMs }, 'background')
+      scheduleBackgroundCacheRefresh(
+        identity,
+        load,
+        { cacheTtlMs },
+        'background'
+      )
     }
     return maybeDecorateCacheMetadata(
       localEntry.entry.payload,
@@ -1222,10 +1264,12 @@ function setLocalReportCache(cacheKey, entry) {
   pruneReportCache()
 }
 
-
 function classifyCacheEntry(entry) {
   if (!entry || entry.cacheVersion !== REPORT_CACHE_VERSION) return 'invalid'
-  if (!Number.isFinite(entry.freshUntil) || !Number.isFinite(entry.staleUntil)) {
+  if (
+    !Number.isFinite(entry.freshUntil) ||
+    !Number.isFinite(entry.staleUntil)
+  ) {
     return 'invalid'
   }
 
@@ -1234,7 +1278,6 @@ function classifyCacheEntry(entry) {
   if (entry.staleUntil > now) return 'stale'
   return 'expired'
 }
-
 
 function coerceRedisCacheStoredValue(encoded) {
   if (encoded == null) return null
@@ -1312,7 +1355,8 @@ async function writeRedisCacheEntry(identity, entry) {
 
 async function refreshReportCache(identity, load, options = {}) {
   const existing = reportCache.get(identity.cacheKey)
-  if (existing?.promise && options.sharePromise !== false) return existing.promise
+  if (existing?.promise && options.sharePromise !== false)
+    return existing.promise
 
   const promise = refreshReportCacheUnshared(identity, load, options)
     .then((result) => {
@@ -1399,7 +1443,6 @@ async function refreshReportCacheUnshared(identity, load, options) {
     if (lockToken) {
       await releaseRedisCacheLock(identity, lockToken)
     }
-
   }
 }
 
@@ -1470,7 +1513,8 @@ async function waitForRedisCacheEntry(
     if (redisEntry.status === 'fresh') {
       return redisEntry
     }
-    if (redisEntry.status === 'stale' && !options.requireFresh) return redisEntry
+    if (redisEntry.status === 'stale' && !options.requireFresh)
+      return redisEntry
   }
 
   process.stderr.write(
@@ -1490,7 +1534,9 @@ function maybeDecorateCacheMetadata(value, cacheDetails, decorateMetadata) {
   }
 
   const metadata =
-    value.metadata && typeof value.metadata === 'object' && !Array.isArray(value.metadata)
+    value.metadata &&
+    typeof value.metadata === 'object' &&
+    !Array.isArray(value.metadata)
       ? value.metadata
       : {}
 
@@ -1658,7 +1704,10 @@ async function loadReportQueryPressure() {
       status: 'ok',
       inProcess,
       pgStatActivity: {
-        connectionCount: rows.reduce((sum, row) => sum + row.connectionCount, 0),
+        connectionCount: rows.reduce(
+          (sum, row) => sum + row.connectionCount,
+          0
+        ),
         activeCount: rows.reduce((sum, row) => sum + row.activeCount, 0),
         waitingCount: rows.reduce((sum, row) => sum + row.waitingCount, 0),
         maxActiveAgeMs:
@@ -1815,15 +1864,16 @@ async function loadDockerContainerStatus(containerName) {
     const health = state?.Health?.Status ?? null
     const running = Boolean(state?.Running)
     const logConfig = normalizeDockerLogConfig(hostConfig?.LogConfig)
-    const status = health === 'unhealthy'
-      ? 'unhealthy'
-      : health === 'healthy'
-        ? 'healthy'
-        : running
-          ? 'running'
-          : state?.Status
-            ? String(state.Status)
-            : 'unknown'
+    const status =
+      health === 'unhealthy'
+        ? 'unhealthy'
+        : health === 'healthy'
+          ? 'healthy'
+          : running
+            ? 'running'
+            : state?.Status
+              ? String(state.Status)
+              : 'unknown'
 
     return {
       present: true,
@@ -2380,7 +2430,9 @@ function normalizeMaterializedViewCronJob(row, activeRows) {
     lastStartTime: row.last_start_time
       ? new Date(row.last_start_time).toISOString()
       : null,
-    lastEndTime: row.last_end_time ? new Date(row.last_end_time).toISOString() : null,
+    lastEndTime: row.last_end_time
+      ? new Date(row.last_end_time).toISOString()
+      : null,
     lastSuccessStartTime: row.last_success_start_time
       ? new Date(row.last_success_start_time).toISOString()
       : null,
@@ -2503,8 +2555,7 @@ export function buildAegisPgBouncerAdminDatabaseUrl(env = process.env) {
   if (!password) return undefined
   databaseUrl.password = password
   databaseUrl.hostname =
-    optionalEnvValue(env.SHELL_REPORT_AEGIS_PGBOUNCER_HOST) ??
-    'aegis-pgbouncer'
+    optionalEnvValue(env.SHELL_REPORT_AEGIS_PGBOUNCER_HOST) ?? 'aegis-pgbouncer'
   databaseUrl.port =
     optionalEnvValue(env.SHELL_REPORT_AEGIS_PGBOUNCER_PORT) ?? '6432'
   databaseUrl.pathname = `/${
@@ -2662,8 +2713,7 @@ const dimensions = {
   inbound_model_alias: inboundModelAliasDimension,
   agent_name: agentNameDimension,
   agent_id: agentIdDimension,
-  provider_model:
-    `${providerDimension} || '/' || COALESCE(sh.model, 'unknown')`,
+  provider_model: `${providerDimension} || '/' || COALESCE(sh.model, 'unknown')`,
 }
 
 const filterColumns = {
@@ -2704,7 +2754,6 @@ function parseTruthySearchParam(value) {
   const normalized = String(value).trim().toLowerCase()
   return normalized === '1' || normalized === 'true' || normalized === 'yes'
 }
-
 
 function isEmptyUsageRowFieldValue(value) {
   return value === null || value === undefined || value === ''
@@ -2793,8 +2842,7 @@ export function parseUsageReportSort(searchParams) {
     throw new Error(`Unsupported sort: ${rawSort}`)
   }
 
-  const sortDirection =
-    directionParam?.toLowerCase() === 'asc' ? 'ASC' : 'DESC'
+  const sortDirection = directionParam?.toLowerCase() === 'asc' ? 'ASC' : 'DESC'
 
   return { sort, sortDirection, sortKey: rawSort }
 }
@@ -2849,10 +2897,7 @@ const agentPassScoreFamilies = {
   progress: ['task_progress_score'],
 }
 
-const agentRiskScoreColumns = [
-  'repetition_loop_risk_score',
-  'stall_risk_score',
-]
+const agentRiskScoreColumns = ['repetition_loop_risk_score', 'stall_risk_score']
 
 function buildFastLatencyMetricSelects(column, alias) {
   return [
@@ -2870,7 +2915,10 @@ const fastUsageLatencyMetricSelectParts = [
     'litellm_post_response_ms',
     'litellm_post_response'
   ),
-  ...buildFastLatencyMetricSelects('litellm_processing_ms', 'litellm_processing'),
+  ...buildFastLatencyMetricSelects(
+    'litellm_processing_ms',
+    'litellm_processing'
+  ),
   ...buildFastLatencyMetricSelects(
     'llm_upstream_time_to_first_byte_ms',
     'llm_upstream_time_to_first_byte'
@@ -2879,7 +2927,10 @@ const fastUsageLatencyMetricSelectParts = [
     'llm_upstream_elapsed_ms',
     'llm_upstream_elapsed'
   ),
-  ...buildFastLatencyMetricSelects('llm_upstream_stream_ms', 'llm_upstream_stream'),
+  ...buildFastLatencyMetricSelects(
+    'llm_upstream_stream_ms',
+    'llm_upstream_stream'
+  ),
   ...buildFastLatencyMetricSelects('ttft_ms', 'ttft'),
   ...buildFastLatencyMetricSelects(
     'total_server_elapsed_ms',
@@ -2956,10 +3007,10 @@ const agentScoreSelectParts = [
   ...buildAgentPassScoreSelects('terminal_completion', [
     'terminal_completion_score',
   ]),
-  "COUNT(*) FILTER (WHERE sh.empty_completion_failure IS TRUE)::double precision AS agent_empty_completion_failures",
-  "COUNT(*) FILTER (WHERE sh.invalid_tool_call_error IS TRUE)::double precision AS agent_invalid_tool_call_errors",
-  "COUNT(*) FILTER (WHERE sh.destructive_checkout_after_work IS TRUE)::double precision AS agent_destructive_checkout_failures",
-  "COUNT(*) FILTER (WHERE sh.large_tool_result_payload_risk IS TRUE)::double precision AS agent_large_payload_risks",
+  'COUNT(*) FILTER (WHERE sh.empty_completion_failure IS TRUE)::double precision AS agent_empty_completion_failures',
+  'COUNT(*) FILTER (WHERE sh.invalid_tool_call_error IS TRUE)::double precision AS agent_invalid_tool_call_errors',
+  'COUNT(*) FILTER (WHERE sh.destructive_checkout_after_work IS TRUE)::double precision AS agent_destructive_checkout_failures',
+  'COUNT(*) FILTER (WHERE sh.large_tool_result_payload_risk IS TRUE)::double precision AS agent_large_payload_risks',
   'SUM(COALESCE(sh.read_only_policy_violation_count, 0))::double precision AS agent_read_only_policy_violations',
   'AVG(sh.ignored_path_tracking_policy_score)::double precision AS agent_ignored_path_tracking_policy_score',
   'COUNT(sh.ignored_path_tracking_policy_score)::double precision AS agent_ignored_path_tracking_policy_evaluated',
@@ -3156,7 +3207,10 @@ function acceptsGzipEncoding(req) {
     return false
   }
   return raw.split(',').some((part) => {
-    const segments = part.trim().split(';').map((segment) => segment.trim())
+    const segments = part
+      .trim()
+      .split(';')
+      .map((segment) => segment.trim())
     const token = segments[0]?.toLowerCase()
     if (token !== 'gzip') {
       return false
@@ -3207,10 +3261,7 @@ function resolveBoundedShutdownGraceMs(graceMs = SHUTDOWN_GRACE_MS) {
 function scheduleShutdownForceExit(
   server,
   graceMs,
-  {
-    setTimeoutFn = setTimeout,
-    exitFn = (code) => process.exit(code),
-  } = {}
+  { setTimeoutFn = setTimeout, exitFn = (code) => process.exit(code) } = {}
 ) {
   const boundedGraceMs = resolveBoundedShutdownGraceMs(graceMs)
   const timer = setTimeoutFn(() => {
@@ -3299,7 +3350,10 @@ function parseDateOnlyParam(value) {
     throw new Error('A valid date=YYYY-MM-DD parameter is required.')
   }
   const date = new Date(`${value}T00:00:00.000Z`)
-  if (Number.isNaN(date.getTime()) || date.toISOString().slice(0, 10) !== value) {
+  if (
+    Number.isNaN(date.getTime()) ||
+    date.toISOString().slice(0, 10) !== value
+  ) {
     throw new Error(`Invalid date: ${value}`)
   }
   return value
@@ -3369,7 +3423,10 @@ function parseSearchDateOnly(value, fallback) {
   return parseDateOnlyParam(value)
 }
 function calculateTokenTrendRangeDays(searchParams) {
-  const fromDate = parseSearchDateOnly(searchParams.get('from'), defaultFromDate)
+  const fromDate = parseSearchDateOnly(
+    searchParams.get('from'),
+    defaultFromDate
+  )
   const toDate = parseSearchDateOnly(searchParams.get('to'), defaultToDate)
   const fromMs = new Date(`${fromDate}T00:00:00.000Z`).getTime()
   const toMs = new Date(`${toDate}T00:00:00.000Z`).getTime()
@@ -3500,7 +3557,9 @@ function appendConfigChangeFilters(searchParams, whereParts) {
     if (!selected.length) continue
 
     const clauses = [
-      ...new Set(selected.map((value) => configChangeFilterClause(column, value))),
+      ...new Set(
+        selected.map((value) => configChangeFilterClause(column, value))
+      ),
     ]
     whereParts.push(`(${clauses.join(' OR ')})`)
   }
@@ -3573,153 +3632,153 @@ function normalizeLatencyAggregateFields(row) {
 }
 
 const normalizeRowNumericKeys = [
-    'min_weekly_pct',
-    'max_weekly_pct',
-    'min_short_pct',
-    'max_short_pct',
-    'min_weekly_pct_special',
-    'max_weekly_pct_special',
-    'min_short_pct_special',
-    'max_short_pct_special',
-    'traces',
-    'token_in',
-    'token_out',
-    'token_cache_input',
-    'token_cache_creation',
-    'token_reasoning_reported',
-    'token_reasoning_estimated',
-    'token_cache_miss',
-    'token_total',
-    'cache_miss_usd_cost',
-    'usd_cost',
-    'tool_calls',
-    'git_commit',
-    'git_push',
-    'litellm_processing_total_ms',
-    'litellm_processing_average_ms',
-    'llm_upstream_elapsed_total_ms',
-    'llm_upstream_elapsed_average_ms',
-    'latency_sample_rows',
-    'litellm_pre_send_p50_ms',
-    'litellm_pre_send_p95_ms',
-    'litellm_pre_send_p99_ms',
-    'litellm_pre_send_count',
-    'litellm_post_response_p50_ms',
-    'litellm_post_response_p95_ms',
-    'litellm_post_response_p99_ms',
-    'litellm_post_response_count',
-    'litellm_processing_p50_ms',
-    'litellm_processing_p95_ms',
-    'litellm_processing_p99_ms',
-    'litellm_processing_count',
-    'llm_upstream_time_to_first_byte_p50_ms',
-    'llm_upstream_time_to_first_byte_p95_ms',
-    'llm_upstream_time_to_first_byte_p99_ms',
-    'llm_upstream_time_to_first_byte_count',
-    'llm_upstream_elapsed_p50_ms',
-    'llm_upstream_elapsed_p95_ms',
-    'llm_upstream_elapsed_p99_ms',
-    'llm_upstream_elapsed_count',
-    'llm_upstream_stream_p50_ms',
-    'llm_upstream_stream_p95_ms',
-    'llm_upstream_stream_p99_ms',
-    'llm_upstream_stream_count',
-    'ttft_p50_ms',
-    'ttft_p95_ms',
-    'ttft_p99_ms',
-    'ttft_count',
-    'total_server_elapsed_p50_ms',
-    'total_server_elapsed_p95_ms',
-    'total_server_elapsed_p99_ms',
-    'total_server_elapsed_count',
-    'latency_unclassified_p50_ms',
-    'latency_unclassified_p95_ms',
-    'latency_unclassified_p99_ms',
-    'latency_unclassified_count',
-    'previous_response_to_current_request_p50_ms',
-    'previous_response_to_current_request_p95_ms',
-    'previous_response_to_current_request_p99_ms',
-    'previous_response_to_current_request_count',
-    'llm_upstream_output_tokens_per_second_p50',
-    'llm_upstream_output_tokens_per_second_p95',
-    'llm_upstream_output_tokens_per_second_count',
-    'llm_stream_output_tokens_per_second_p50',
-    'llm_stream_output_tokens_per_second_p95',
-    'llm_stream_output_tokens_per_second_count',
-    'agent_score_rows',
-    'agent_quality_score',
-    'agent_quality_evaluated',
-    'agent_quality_possible',
-    'agent_quality_failures',
-    'agent_instruction_score',
-    'agent_instruction_evaluated',
-    'agent_instruction_possible',
-    'agent_instruction_failures',
-    'agent_tool_score',
-    'agent_tool_evaluated',
-    'agent_tool_possible',
-    'agent_tool_failures',
-    'agent_contract_score',
-    'agent_contract_evaluated',
-    'agent_contract_possible',
-    'agent_contract_failures',
-    'agent_progress_score',
-    'agent_progress_evaluated',
-    'agent_progress_possible',
-    'agent_progress_failures',
-    'agent_risk_score',
-    'agent_risk_evaluated',
-    'agent_risk_possible',
-    'agent_risk_events',
-    'agent_empty_completion_failures',
-    'agent_invalid_tool_call_errors',
-    'agent_destructive_checkout_failures',
-    'agent_large_payload_risks',
-    'agent_read_only_policy_violations',
-    'agent_ignored_path_tracking_policy_score',
-    'agent_ignored_path_tracking_policy_evaluated',
-    'agent_ignored_path_tracking_policy_possible',
-    'agent_ignored_path_tracking_violation_count',
-    'agent_baseline_deflection_attempted_score',
-    'agent_baseline_deflection_attempted_evaluated',
-    'agent_baseline_deflection_attempted_incidents',
-    'agent_baseline_deflection_incident_score',
-    'agent_baseline_deflection_incident_evaluated',
-    'agent_baseline_deflection_incidents',
-    'agent_baseline_deflection_attempt_count',
-    'agent_baseline_deflection_tool_call_count',
-    'agent_baseline_deflection_input_tokens',
-    'agent_baseline_deflection_elapsed_ms',
-    'agent_quality_gate_trigger_count',
-    'agent_quality_gate_fix_attempt_count',
-    'agent_quality_gate_rerun_count',
-    'agent_sleep_wellness_interruption_attempted_score',
-    'agent_sleep_wellness_interruption_attempted_evaluated',
-    'agent_sleep_wellness_interruption_attempted_incidents',
-    'agent_sleep_wellness_interruption_incident_score',
-    'agent_sleep_wellness_interruption_incident_evaluated',
-    'agent_sleep_wellness_interruption_incidents',
-    'agent_sleep_wellness_interruption_count',
-    'agent_sleep_wellness_interruption_output_tokens',
-    'agent_sleep_wellness_interruption_input_tokens',
-    'agent_sleep_wellness_interruption_elapsed_ms',
-    'agent_sleep_wellness_interruption_after_user_pushback_count',
-    'agent_sleep_wellness_interruption_repeated_count',
-    'agent_discovery_inventory_coverage_score',
-    'agent_discovery_inventory_coverage_evaluated',
-    'agent_discovery_inventory_coverage_possible',
-    'agent_discovery_inventory_coverage_failures',
-    'agent_discovery_inventory_missing_count',
-    'agent_terminal_completion_score',
-    'agent_terminal_completion_evaluated',
-    'agent_terminal_completion_possible',
-    'agent_terminal_completion_failures',
-    'agent_compact_summary_events',
-    'agent_compact_summary_thread_count',
-    'agent_compact_summary_id_count',
-    'agent_compact_summary_resume_contexts',
-    'agent_compact_summary_verify_contexts',
-    ...configChangeAggregateNumericKeys,
+  'min_weekly_pct',
+  'max_weekly_pct',
+  'min_short_pct',
+  'max_short_pct',
+  'min_weekly_pct_special',
+  'max_weekly_pct_special',
+  'min_short_pct_special',
+  'max_short_pct_special',
+  'traces',
+  'token_in',
+  'token_out',
+  'token_cache_input',
+  'token_cache_creation',
+  'token_reasoning_reported',
+  'token_reasoning_estimated',
+  'token_cache_miss',
+  'token_total',
+  'cache_miss_usd_cost',
+  'usd_cost',
+  'tool_calls',
+  'git_commit',
+  'git_push',
+  'litellm_processing_total_ms',
+  'litellm_processing_average_ms',
+  'llm_upstream_elapsed_total_ms',
+  'llm_upstream_elapsed_average_ms',
+  'latency_sample_rows',
+  'litellm_pre_send_p50_ms',
+  'litellm_pre_send_p95_ms',
+  'litellm_pre_send_p99_ms',
+  'litellm_pre_send_count',
+  'litellm_post_response_p50_ms',
+  'litellm_post_response_p95_ms',
+  'litellm_post_response_p99_ms',
+  'litellm_post_response_count',
+  'litellm_processing_p50_ms',
+  'litellm_processing_p95_ms',
+  'litellm_processing_p99_ms',
+  'litellm_processing_count',
+  'llm_upstream_time_to_first_byte_p50_ms',
+  'llm_upstream_time_to_first_byte_p95_ms',
+  'llm_upstream_time_to_first_byte_p99_ms',
+  'llm_upstream_time_to_first_byte_count',
+  'llm_upstream_elapsed_p50_ms',
+  'llm_upstream_elapsed_p95_ms',
+  'llm_upstream_elapsed_p99_ms',
+  'llm_upstream_elapsed_count',
+  'llm_upstream_stream_p50_ms',
+  'llm_upstream_stream_p95_ms',
+  'llm_upstream_stream_p99_ms',
+  'llm_upstream_stream_count',
+  'ttft_p50_ms',
+  'ttft_p95_ms',
+  'ttft_p99_ms',
+  'ttft_count',
+  'total_server_elapsed_p50_ms',
+  'total_server_elapsed_p95_ms',
+  'total_server_elapsed_p99_ms',
+  'total_server_elapsed_count',
+  'latency_unclassified_p50_ms',
+  'latency_unclassified_p95_ms',
+  'latency_unclassified_p99_ms',
+  'latency_unclassified_count',
+  'previous_response_to_current_request_p50_ms',
+  'previous_response_to_current_request_p95_ms',
+  'previous_response_to_current_request_p99_ms',
+  'previous_response_to_current_request_count',
+  'llm_upstream_output_tokens_per_second_p50',
+  'llm_upstream_output_tokens_per_second_p95',
+  'llm_upstream_output_tokens_per_second_count',
+  'llm_stream_output_tokens_per_second_p50',
+  'llm_stream_output_tokens_per_second_p95',
+  'llm_stream_output_tokens_per_second_count',
+  'agent_score_rows',
+  'agent_quality_score',
+  'agent_quality_evaluated',
+  'agent_quality_possible',
+  'agent_quality_failures',
+  'agent_instruction_score',
+  'agent_instruction_evaluated',
+  'agent_instruction_possible',
+  'agent_instruction_failures',
+  'agent_tool_score',
+  'agent_tool_evaluated',
+  'agent_tool_possible',
+  'agent_tool_failures',
+  'agent_contract_score',
+  'agent_contract_evaluated',
+  'agent_contract_possible',
+  'agent_contract_failures',
+  'agent_progress_score',
+  'agent_progress_evaluated',
+  'agent_progress_possible',
+  'agent_progress_failures',
+  'agent_risk_score',
+  'agent_risk_evaluated',
+  'agent_risk_possible',
+  'agent_risk_events',
+  'agent_empty_completion_failures',
+  'agent_invalid_tool_call_errors',
+  'agent_destructive_checkout_failures',
+  'agent_large_payload_risks',
+  'agent_read_only_policy_violations',
+  'agent_ignored_path_tracking_policy_score',
+  'agent_ignored_path_tracking_policy_evaluated',
+  'agent_ignored_path_tracking_policy_possible',
+  'agent_ignored_path_tracking_violation_count',
+  'agent_baseline_deflection_attempted_score',
+  'agent_baseline_deflection_attempted_evaluated',
+  'agent_baseline_deflection_attempted_incidents',
+  'agent_baseline_deflection_incident_score',
+  'agent_baseline_deflection_incident_evaluated',
+  'agent_baseline_deflection_incidents',
+  'agent_baseline_deflection_attempt_count',
+  'agent_baseline_deflection_tool_call_count',
+  'agent_baseline_deflection_input_tokens',
+  'agent_baseline_deflection_elapsed_ms',
+  'agent_quality_gate_trigger_count',
+  'agent_quality_gate_fix_attempt_count',
+  'agent_quality_gate_rerun_count',
+  'agent_sleep_wellness_interruption_attempted_score',
+  'agent_sleep_wellness_interruption_attempted_evaluated',
+  'agent_sleep_wellness_interruption_attempted_incidents',
+  'agent_sleep_wellness_interruption_incident_score',
+  'agent_sleep_wellness_interruption_incident_evaluated',
+  'agent_sleep_wellness_interruption_incidents',
+  'agent_sleep_wellness_interruption_count',
+  'agent_sleep_wellness_interruption_output_tokens',
+  'agent_sleep_wellness_interruption_input_tokens',
+  'agent_sleep_wellness_interruption_elapsed_ms',
+  'agent_sleep_wellness_interruption_after_user_pushback_count',
+  'agent_sleep_wellness_interruption_repeated_count',
+  'agent_discovery_inventory_coverage_score',
+  'agent_discovery_inventory_coverage_evaluated',
+  'agent_discovery_inventory_coverage_possible',
+  'agent_discovery_inventory_coverage_failures',
+  'agent_discovery_inventory_missing_count',
+  'agent_terminal_completion_score',
+  'agent_terminal_completion_evaluated',
+  'agent_terminal_completion_possible',
+  'agent_terminal_completion_failures',
+  'agent_compact_summary_events',
+  'agent_compact_summary_thread_count',
+  'agent_compact_summary_id_count',
+  'agent_compact_summary_resume_contexts',
+  'agent_compact_summary_verify_contexts',
+  ...configChangeAggregateNumericKeys,
 ]
 
 function normalizeRow(row) {
@@ -3739,7 +3798,10 @@ function normalizeRow(row) {
   if (normalized.agent_score_reasons_recent_id_cap_active == null) {
     normalized.agent_score_reasons_recent_id_cap_active = true
   }
-  if (normalized.agent_score_reasons_recent_id_cap_truncates_requested_window == null) {
+  if (
+    normalized.agent_score_reasons_recent_id_cap_truncates_requested_window ==
+    null
+  ) {
     normalized.agent_score_reasons_recent_id_cap_truncates_requested_window = false
   }
   return normalized
@@ -3784,7 +3846,6 @@ function appendSessionDiagnosticsFilter(searchParams, key, whereParts, values) {
   whereParts.push(`${column} = ANY($${values.length}::text[])`)
 }
 
-
 function grokSideChannelMetadataPresentClause(columnPrefix = 'sh.') {
   const p = columnPrefix
   return `(
@@ -3801,7 +3862,11 @@ function grokSideChannelMetadataPresentClause(columnPrefix = 'sh.') {
   )`
 }
 
-function appendGrokSideChannelDiagnosticsFilters(searchParams, whereParts, values) {
+function appendGrokSideChannelDiagnosticsFilters(
+  searchParams,
+  whereParts,
+  values
+) {
   const grokSideChannel = parseCsv(searchParams.get('grok_side_channel'))
   if (
     grokSideChannel.some((value) =>
@@ -3863,7 +3928,13 @@ function buildSessionDiagnosticsWhere(searchParams) {
   const whereParts = []
 
   appendCreatedAtDateRangeWhere(whereParts, values, from, to)
-  for (const key of ['provider', 'model', 'repository', 'client', 'environment']) {
+  for (const key of [
+    'provider',
+    'model',
+    'repository',
+    'client',
+    'environment',
+  ]) {
     appendSessionDiagnosticsFilter(searchParams, key, whereParts, values)
   }
 
@@ -3874,9 +3945,13 @@ function buildSessionDiagnosticsWhere(searchParams) {
     if (key === 'session_id') {
       whereParts.push(`sh.session_id::text = ANY($${values.length}::text[])`)
     } else if (key === 'litellm_call_id') {
-      whereParts.push(`sh.litellm_call_id::text = ANY($${values.length}::text[])`)
+      whereParts.push(
+        `sh.litellm_call_id::text = ANY($${values.length}::text[])`
+      )
     } else {
-      whereParts.push(`NULLIF(sh.trace_id, '') = ANY($${values.length}::text[])`)
+      whereParts.push(
+        `NULLIF(sh.trace_id, '') = ANY($${values.length}::text[])`
+      )
     }
   }
 
@@ -4019,9 +4094,15 @@ ORDER BY
 }
 
 export function buildTokenTrendHealthQuery(searchParams) {
-  const fromDate = parseSearchDateOnly(searchParams.get('from'), defaultFromDate)
+  const fromDate = parseSearchDateOnly(
+    searchParams.get('from'),
+    defaultFromDate
+  )
   const toDate = parseSearchDateOnly(searchParams.get('to'), defaultToDate)
-  const values = [dashboardDateToUtcIso(fromDate), dashboardDateToUtcIso(toDate)]
+  const values = [
+    dashboardDateToUtcIso(fromDate),
+    dashboardDateToUtcIso(toDate),
+  ]
   const whereParts = [
     'h.bucket_start >= $1::timestamptz',
     'h.bucket_start < $2::timestamptz',
@@ -4313,7 +4394,8 @@ ORDER BY
 
 export function buildTokenTrendDayDetailQuery(searchParams) {
   const date = parseDateOnlyParam(searchParams.get('date'))
-  const { from, to, values, whereParts } = buildTokenTrendFilteredWhere(searchParams)
+  const { from, to, values, whereParts } =
+    buildTokenTrendFilteredWhere(searchParams)
   values.push(date)
   const dayExpression = `${createdAtEastern}::date`
   const hourExpression = `EXTRACT(hour FROM ${createdAtEastern})::int`
@@ -4401,7 +4483,10 @@ LIMIT $${values.length};
 // default report `to` date is tomorrow; historical/prior ranges end at their
 // requested `to`, so comparison windows still remain distinct.
 function buildProviderLatencyHealthQuery(searchParams) {
-  const fromDate = parseSearchDateOnly(searchParams.get('from'), defaultFromDate)
+  const fromDate = parseSearchDateOnly(
+    searchParams.get('from'),
+    defaultFromDate
+  )
   const toDate = parseSearchDateOnly(searchParams.get('to'), defaultToDate)
   const healthWindow = resolveHealthWindow(
     dashboardDateToUtcIso(fromDate),
@@ -4583,7 +4668,10 @@ LIMIT $1;
 // MAX_PROVIDER_ERROR_ROWS remains 2_000 — at daily grain a 30-day window
 // with typical error rates stays well below this cap.
 function buildProviderErrorObservationQuery(searchParams) {
-  const fromDate = parseSearchDateOnly(searchParams.get('from'), defaultFromDate)
+  const fromDate = parseSearchDateOnly(
+    searchParams.get('from'),
+    defaultFromDate
+  )
   const toDate = parseSearchDateOnly(searchParams.get('to'), defaultToDate)
   const from = dashboardDateToUtcIso(fromDate)
   const to = dashboardDateToUtcIso(toDate)
@@ -4672,10 +4760,13 @@ LIMIT $${values.length};
 const rateLimitProviderDimension = providerDimensionExpression('ri.provider', {
   includeAntigravity: true,
 })
-const rateLimitRangeProviderDimension = providerDimensionExpression('ri.provider')
+const rateLimitRangeProviderDimension =
+  providerDimensionExpression('ri.provider')
 
-const XAI_GROK_BUILD_WEEKLY_CREDITS_KEY = 'xai_grok_build_weekly_credits:credits'
-const XAI_GROK_BUILD_MONTHLY_REQUESTS_KEY = 'xai_grok_build_monthly_requests:requests'
+const XAI_GROK_BUILD_WEEKLY_CREDITS_KEY =
+  'xai_grok_build_weekly_credits:credits'
+const XAI_GROK_BUILD_MONTHLY_REQUESTS_KEY =
+  'xai_grok_build_monthly_requests:requests'
 
 const RATE_LIMIT_NORMALIZED_MODEL_CASE = `
         CASE
@@ -4792,7 +4883,10 @@ quota_key_interval_hours AS (
 ),`
 }
 
-function quotaObservationIntervalBoundsSql(intervalStartExpr, expectedResetExpr) {
+function quotaObservationIntervalBoundsSql(
+  intervalStartExpr,
+  expectedResetExpr
+) {
   return `
      AND o.observed_at >= ${intervalStartExpr} - INTERVAL '5 minutes'
      AND o.observed_at <= ${expectedResetExpr} + INTERVAL '5 minutes'`
@@ -4949,7 +5043,6 @@ ORDER BY s.provider ASC, s.model ASC NULLS FIRST;
 
   return { sql, values: [] }
 }
-
 
 export function buildQuotaVelocityQuery() {
   const sql = `
@@ -6411,12 +6504,17 @@ function normalizeToolActivityRow(row) {
     agent_names: normalizeStringArray(row.agent_names),
     agent_ids: normalizeStringArray(row.agent_ids),
     calls: normalizeNumber(row.calls) ?? 0,
-    tool_activity_bounded_min_id: normalizeNumber(row.tool_activity_bounded_min_id),
-    tool_activity_bounded_max_id: normalizeNumber(row.tool_activity_bounded_max_id),
+    tool_activity_bounded_min_id: normalizeNumber(
+      row.tool_activity_bounded_min_id
+    ),
+    tool_activity_bounded_max_id: normalizeNumber(
+      row.tool_activity_bounded_max_id
+    ),
     tool_activity_recent_row_limit:
       normalizeNumber(row.tool_activity_recent_row_limit) ??
       TOOL_ACTIVITY_RECENT_ROW_LIMIT,
-    tool_activity_recent_id_cap_active: row.tool_activity_recent_id_cap_active ?? true,
+    tool_activity_recent_id_cap_active:
+      row.tool_activity_recent_id_cap_active ?? true,
     tool_activity_recent_id_cap_truncates_requested_window:
       row.tool_activity_recent_id_cap_truncates_requested_window ?? false,
   }
@@ -6497,7 +6595,6 @@ export function buildDegradedUsageQuotaRangeHistoryReport({
     quotaRangeHistory,
   }
 }
-
 
 export function buildDegradedQuotaReport() {
   return {
@@ -6851,9 +6948,7 @@ function providerAliasRoutingFamilyFromMetadata(metadata) {
     return 'anthropic'
   }
   const aliasLabel = String(
-    metadata.requested_model_alias ??
-      metadata.model_alias_label ??
-      ''
+    metadata.requested_model_alias ?? metadata.model_alias_label ?? ''
   ).toLowerCase()
   if (aliasLabel.includes('anthropic')) return 'anthropic'
   if (aliasLabel.startsWith('aawm')) return 'codex'
@@ -7068,8 +7163,7 @@ function buildProviderAliasRoutingCooldownEntries(
 }
 
 export function normalizeProviderAliasRoutingReport(rows, options = {}) {
-  const generatedAt =
-    options.generatedAt ?? new Date().toISOString()
+  const generatedAt = options.generatedAt ?? new Date().toISOString()
   const affinityBest = new Map()
   const cooldownBest = new Map()
   const familiesSeen = new Set()
@@ -7249,7 +7343,10 @@ function sanitizeProviderAuthErrorMessage(value) {
     /(?:api[_-]?key|token|secret|password)\s*[:=]\s*\S+/gi,
     '[redacted-credential]'
   )
-  message = message.replace(/\/(?:home|Users|tmp|var)[^\s]*/g, '[redacted-path]')
+  message = message.replace(
+    /\/(?:home|Users|tmp|var)[^\s]*/g,
+    '[redacted-path]'
+  )
   if (message.length > 240) {
     message = `${message.slice(0, 237)}...`
   }
@@ -7339,8 +7436,7 @@ export function normalizeProviderAuthHealthRow(row, options = {}) {
 }
 
 export function normalizeProviderAuthHealthReport(rows, options = {}) {
-  const generatedAt =
-    options.generatedAt ?? new Date().toISOString()
+  const generatedAt = options.generatedAt ?? new Date().toISOString()
   const nowMs = options.nowMs ?? Date.now()
   const entries = rows.map((row) =>
     normalizeProviderAuthHealthRow(row, { generatedAt, nowMs })
@@ -7353,7 +7449,6 @@ export function normalizeProviderAuthHealthReport(rows, options = {}) {
     entries,
   }
 }
-
 
 const PROVIDER_CREDIT_LIFECYCLE_ROW_LIMIT = 500
 
@@ -7471,7 +7566,10 @@ function sanitizeProviderCreditOperatorAnnotation(value) {
     /(?:api[_-]?key|token|secret|password)\s*[:=]\s*\S+/gi,
     '[redacted-credential]'
   )
-  message = message.replace(/\/(?:home|Users|tmp|var)[^\s]*/g, '[redacted-path]')
+  message = message.replace(
+    /\/(?:home|Users|tmp|var)[^\s]*/g,
+    '[redacted-path]'
+  )
   if (message.length > 240) {
     message = `${message.slice(0, 237)}...`
   }
@@ -7557,11 +7655,9 @@ function providerCreditAvailableUnits(row) {
 export function buildProviderCreditLifecycleSummaries(entries) {
   const summariesByKey = new Map()
   for (const entry of entries) {
-    const key = [
-      entry.environment,
-      entry.provider,
-      entry.credit_family,
-    ].join('|')
+    const key = [entry.environment, entry.provider, entry.credit_family].join(
+      '|'
+    )
     const existing = summariesByKey.get(key) ?? {
       environment: entry.environment,
       provider: entry.provider,
@@ -7626,8 +7722,7 @@ export function normalizeProviderCreditLifecycleRow(row, options = {}) {
 }
 
 export function normalizeProviderCreditLifecycleReport(rows, options = {}) {
-  const generatedAt =
-    options.generatedAt ?? new Date().toISOString()
+  const generatedAt = options.generatedAt ?? new Date().toISOString()
   const filteredRows = filterLegacyProviderCreditAggregateRows(rows)
   const entries = filteredRows.map((row) =>
     normalizeProviderCreditLifecycleRow(row, { generatedAt })
@@ -7993,7 +8088,6 @@ ORDER BY created_at DESC;
   return { sql, values, metadata: { from, to, limit, candidateLimit } }
 }
 
-
 function normalizeAnthropicContextWindow(value) {
   const record = normalizeJsonRecord(value)
   const mode =
@@ -8095,7 +8189,10 @@ async function loadQuotaReportFromDatabase() {
       [
         () => queryReportDatabase(quotaQuery.sql, quotaQuery.values),
         () =>
-          queryReportDatabase(quotaVelocityQuery.sql, quotaVelocityQuery.values),
+          queryReportDatabase(
+            quotaVelocityQuery.sql,
+            quotaVelocityQuery.values
+          ),
         () => queryReportDatabase(freshnessQuery.sql, freshnessQuery.values),
       ],
       REPORT_SQL_FANOUT_CONCURRENCY
@@ -8515,7 +8612,6 @@ function normalizeQuotaBillingDetails(row) {
   return details
 }
 
-
 function normalizeQuotaVelocityScores(value) {
   if (!Array.isArray(value)) return []
 
@@ -8569,8 +8665,7 @@ function normalizeQuotaLaneFields(row, quotaType) {
       row[`${quotaType}_remaining_pct`]
     ),
     [`${quotaType}_reset_at`]: row[`${quotaType}_reset_at`] ?? null,
-    [`${quotaType}_interval_start`]:
-      row[`${quotaType}_interval_start`] ?? null,
+    [`${quotaType}_interval_start`]: row[`${quotaType}_interval_start`] ?? null,
     [`${quotaType}_interval_end`]: row[`${quotaType}_interval_end`] ?? null,
     [`${quotaType}_active`]: Boolean(
       normalizeNumber(row[`${quotaType}_active`])
@@ -8919,7 +9014,10 @@ function quotaEstimatorWeights(samples, halfLifeHours) {
 
 function effectiveSampleSize(weights) {
   const sum = weights.reduce((total, weight) => total + weight, 0)
-  const sumSquares = weights.reduce((total, weight) => total + weight * weight, 0)
+  const sumSquares = weights.reduce(
+    (total, weight) => total + weight * weight,
+    0
+  )
   if (sumSquares <= 0) return 0
   return (sum * sum) / sumSquares
 }
@@ -9052,7 +9150,10 @@ function quotaEstimatorCoefficientRows({
         category === 'workload' && sonnetBase > 0
           ? coefficient / sonnetBase
           : null,
-      confidence_low_pct_per_mtok: Math.max(0, coefficient - 1.96 * standardError),
+      confidence_low_pct_per_mtok: Math.max(
+        0,
+        coefficient - 1.96 * standardError
+      ),
       confidence_high_pct_per_mtok: coefficient + 1.96 * standardError,
       half_life_hours: halfLifeHours,
       effective_sample_size: identifiability.effective_sample_size,
@@ -9196,7 +9297,9 @@ function buildQuotaEstimatorLaneEstimate(laggedIntervals) {
   const rollingWeights = quotaEstimatorWeights(trainable, halfLifeHours)
   const rollingFit =
     trainable.length >= QUOTA_ESTIMATOR_MIN_TRAINING_ROWS
-      ? fitNonNegativeRidge(trainable, featureNames, { weights: rollingWeights })
+      ? fitNonNegativeRidge(trainable, featureNames, {
+          weights: rollingWeights,
+        })
       : { coefficients: {}, predictions: [] }
   const rollingResiduals = quotaEstimatorResidualMetrics(
     trainable,
@@ -9243,7 +9346,10 @@ function buildQuotaEstimatorLaneEstimate(laggedIntervals) {
       detail: identifiability.risks.join(', '),
     })
   }
-  if (intervals[0]?.provider === 'anthropic' && intervals[0]?.quotaType === 'special') {
+  if (
+    intervals[0]?.provider === 'anthropic' &&
+    intervals[0]?.quotaType === 'special'
+  ) {
     for (const family of ['haiku', 'opus']) {
       const coefficient = rollingFit.coefficients[`${family}:workload`] ?? 0
       const sonnet = rollingFit.coefficients['sonnet:workload'] ?? 0
@@ -9340,7 +9446,10 @@ function buildQuotaEstimatorRowsFromReadModels(observations, usageBuckets) {
       String(a.observed_at).localeCompare(String(b.observed_at))
     )
     const capped = laneObservations.slice(
-      Math.max(0, laneObservations.length - QUOTA_ESTIMATOR_MAX_INTERVALS_PER_LANE - 1)
+      Math.max(
+        0,
+        laneObservations.length - QUOTA_ESTIMATOR_MAX_INTERVALS_PER_LANE - 1
+      )
     )
     for (let index = 1; index < capped.length; index += 1) {
       const previous = capped[index - 1]
@@ -9351,16 +9460,15 @@ function buildQuotaEstimatorRowsFromReadModels(observations, usageBuckets) {
       const isResetBoundary = currentConsumed < previousConsumed
       const isCappedAt100 = previousConsumed >= 99.5 || currentConsumed >= 99.5
       const trainable = deltaPct > 0 && !isResetBoundary && !isCappedAt100
-      const excludeReason =
-        trainable
-          ? null
-          : isResetBoundary
-            ? 'reset_or_measurement_boundary'
-            : deltaPct === 0
-              ? 'plateau_no_positive_delta'
-              : isCappedAt100
-                ? 'capped_at_100'
-                : 'non_positive_delta'
+      const excludeReason = trainable
+        ? null
+        : isResetBoundary
+          ? 'reset_or_measurement_boundary'
+          : deltaPct === 0
+            ? 'plateau_no_positive_delta'
+            : isCappedAt100
+              ? 'capped_at_100'
+              : 'non_positive_delta'
       const baseInterval = {
         provider: current.provider,
         quota_key: current.quota_key,
@@ -9541,9 +9649,9 @@ export function proxyHeaders(req, proxyConfig) {
     headers['X-API-Key'] = proxyConfig.apiKey
   }
   if (proxyConfig.accessToken) {
-    headers.Authorization = proxyConfig.accessToken.toLowerCase().startsWith(
-      'bearer '
-    )
+    headers.Authorization = proxyConfig.accessToken
+      .toLowerCase()
+      .startsWith('bearer ')
       ? proxyConfig.accessToken
       : `Bearer ${proxyConfig.accessToken}`
   }
@@ -9598,16 +9706,13 @@ export function buildUsageQuery(searchParams) {
   values.push(limit)
 
   const bucketExpression = grains[grain]
-  const dimensionSelects = groupBy.map(
-    (key) => `${dimensions[key]} AS ${key}`
-  )
+  const dimensionSelects = groupBy.map((key) => `${dimensions[key]} AS ${key}`)
   const dimensionGroups = groupBy.map((key) => dimensions[key])
   const selectParts = [`${bucketExpression} AS bucket`, ...dimensionSelects]
   const groupParts = [bucketExpression, ...dimensionGroups]
   const outputColumns = ['bucket', ...groupBy]
   const reasonJoinParts = outputColumns.map(
-    (column) =>
-      `base.${column} IS NOT DISTINCT FROM reason_summary.${column}`
+    (column) => `base.${column} IS NOT DISTINCT FROM reason_summary.${column}`
   )
   const sql = `
 WITH filtered AS (
@@ -9852,14 +9957,15 @@ LIMIT $${values.length};
   }
 }
 
-
 function capDockerJsonLogSourcesForScan(sources, options = {}) {
   const list = Array.isArray(sources) ? sources : []
   const maxSources = Number(options.maxSources ?? DOCKER_LOG_SCAN_MAX_SOURCES)
   const maxTotalBytes = Number(
     options.maxTotalBytes ?? DOCKER_LOG_SCAN_MAX_TOTAL_BYTES
   )
-  const perFileDefault = Number(options.perFileTailBytes ?? DOCKER_LOG_TAIL_BYTES)
+  const perFileDefault = Number(
+    options.perFileTailBytes ?? DOCKER_LOG_TAIL_BYTES
+  )
   const cappedSources = list.slice(0, Math.max(0, maxSources))
   let remainingBytes = Math.max(0, maxTotalBytes)
   const selected = []
@@ -9873,7 +9979,10 @@ function capDockerJsonLogSourcesForScan(sources, options = {}) {
   return selected
 }
 
-function isDockerLogScanCacheFresh(cachedAt, ttlMs = DOCKER_LOG_SCAN_CACHE_TTL_MS) {
+function isDockerLogScanCacheFresh(
+  cachedAt,
+  ttlMs = DOCKER_LOG_SCAN_CACHE_TTL_MS
+) {
   const ttl = Number(ttlMs)
   if (!Number.isFinite(ttl) || ttl <= 0) return false
   return Date.now() - Number(cachedAt) < ttl
@@ -9970,9 +10079,11 @@ async function readDockerLogFileStats(filePath) {
   }
 }
 
-
 async function persistDockerLogErrorsToIntake(rows) {
-  const fresh = selectNewDockerLogErrors(rows, dockerLogErrorIntakeSeenFingerprints)
+  const fresh = selectNewDockerLogErrors(
+    rows,
+    dockerLogErrorIntakeSeenFingerprints
+  )
   if (!fresh.length) return
   try {
     const result = await appendDockerLogErrorsToIntake({
@@ -10029,11 +10140,7 @@ async function scanDockerLogErrorsFromSources(sources) {
 
     let tail
     try {
-      tail = await readFileTail(
-        source.logPath,
-        tailBytes,
-        stats
-      )
+      tail = await readFileTail(source.logPath, tailBytes, stats)
     } catch (error) {
       process.stderr.write(
         `[report-service] WARN: unable to read Docker log ${source.container}: ${formatError(error)}\n`
@@ -10106,9 +10213,12 @@ async function loadDockerLogErrors() {
     cachedAt: Date.now(),
   }
 
-  const forCentralizedIntake = filterDockerLogErrorsForCentralizedIntake(sorted, {
-    env: process.env,
-  })
+  const forCentralizedIntake = filterDockerLogErrorsForCentralizedIntake(
+    sorted,
+    {
+      env: process.env,
+    }
+  )
   await persistDockerLogErrorsToIntake(forCentralizedIntake)
   return forDashboard
 }
@@ -10146,7 +10256,9 @@ async function probeHttpHealth(probe, checkedAt) {
       key: probe.key,
       label: probe.label,
       status: localHealthStatusForHttp(response),
-      detail: body ? `HTTP ${response.status}: ${body}` : `HTTP ${response.status}`,
+      detail: body
+        ? `HTTP ${response.status}: ${body}`
+        : `HTTP ${response.status}`,
       target: probe.url,
       latency_ms: latencyMs,
     }
@@ -10351,7 +10463,8 @@ async function loadUsageReport(searchParams) {
   const summaryQuery = buildSummaryQuery(searchParams)
   const trendQuery = buildTrendQuery(searchParams)
   const clientUsageQuery = buildClientUsageQuery(searchParams)
-  const providerLatencyHealthQuery = buildProviderLatencyHealthQuery(searchParams)
+  const providerLatencyHealthQuery =
+    buildProviderLatencyHealthQuery(searchParams)
   const providerErrorObservationQuery =
     buildProviderErrorObservationQuery(searchParams)
   const providerStatusUsageQuery = buildProviderStatusUsageQuery(searchParams)
@@ -10457,9 +10570,13 @@ async function loadUsageReport(searchParams) {
   const result = resolveUsageReportFanoutValue(fanoutResults, 'usage_rows', {
     rows: [],
   })
-  const summaryResult = resolveUsageReportFanoutValue(fanoutResults, 'summary', {
-    rows: [],
-  })
+  const summaryResult = resolveUsageReportFanoutValue(
+    fanoutResults,
+    'summary',
+    {
+      rows: [],
+    }
+  )
   const trendResult = resolveUsageReportFanoutValue(fanoutResults, 'trend', {
     rows: [],
   })
@@ -10509,7 +10626,10 @@ async function loadUsageReport(searchParams) {
     []
   )
 
-  const rows = serializeUsageReportRows(result.rows.map(normalizeRow), searchParams)
+  const rows = serializeUsageReportRows(
+    result.rows.map(normalizeRow),
+    searchParams
+  )
   const summary = normalizeSummary(firstRow(summaryResult))
 
   // Wave 35-C2 (⚠-8): warn when health rows approach MAX_HEALTH_ROWS cap.
@@ -10699,7 +10819,8 @@ async function loadUsageToolActivity(searchParams) {
     return {
       metadata: buildUsageToolActivityMetadata(searchParams, {
         ...query.metadata,
-        toolActivityRecentIdCapTruncatesRequestedWindow: capTruncatesRequestedWindow,
+        toolActivityRecentIdCapTruncatesRequestedWindow:
+          capTruncatesRequestedWindow,
       }),
       toolActivity: result.rows
         .filter((row) => row.kind != null)
@@ -10774,9 +10895,13 @@ async function loadUsageTokenTrendSummary(searchParams) {
     {
       subqueryKey: 'modelFirstSeen',
       task: () =>
-        queryReportDatabase(modelFirstSeenQuery.sql, modelFirstSeenQuery.values, {
-          statementTimeoutMs: TOKEN_TREND_SUMMARY_STATEMENT_TIMEOUT_MS,
-        }),
+        queryReportDatabase(
+          modelFirstSeenQuery.sql,
+          modelFirstSeenQuery.values,
+          {
+            statementTimeoutMs: TOKEN_TREND_SUMMARY_STATEMENT_TIMEOUT_MS,
+          }
+        ),
     },
   ]
   const prioritizedQuerySpecs =
@@ -10789,7 +10914,8 @@ async function loadUsageTokenTrendSummary(searchParams) {
 
   const runnableQuerySpecs = skippedSubqueries.length
     ? prioritizedQuerySpecs.filter(
-        ({ subqueryKey }) => !TOKEN_TREND_SUMMARY_RAW_SUBQUERY_KEYS.includes(subqueryKey)
+        ({ subqueryKey }) =>
+          !TOKEN_TREND_SUMMARY_RAW_SUBQUERY_KEYS.includes(subqueryKey)
       )
     : prioritizedQuerySpecs
   const queryResults = await runTokenTrendSummarySubqueries(runnableQuerySpecs)
@@ -10811,7 +10937,9 @@ async function loadUsageTokenTrendSummary(searchParams) {
     }
 
     if (result.subqueryKey === 'hours') {
-      tokenTrendHoursRows.push(...result.value.rows.map(normalizeTokenTrendHourRow))
+      tokenTrendHoursRows.push(
+        ...result.value.rows.map(normalizeTokenTrendHourRow)
+      )
       continue
     }
     if (result.subqueryKey === 'health') {
@@ -10859,8 +10987,7 @@ async function loadUsageTokenTrendSummary(searchParams) {
 
   return applyTokenTrendSummaryHealthInclusion(searchParams, {
     metadata: buildUsageTokenTrendSummaryMetadata(searchParams, {
-      tokenTrendSummaryRawLaneMaxDays:
-        TOKEN_TREND_SUMMARY_RAW_LANE_MAX_DAYS,
+      tokenTrendSummaryRawLaneMaxDays: TOKEN_TREND_SUMMARY_RAW_LANE_MAX_DAYS,
       tokenTrendSummaryRangeDays,
       tokenTrendSummaryStatementTimeoutMs:
         TOKEN_TREND_SUMMARY_STATEMENT_TIMEOUT_MS,
@@ -10906,7 +11033,12 @@ async function handleCachedUsageSubreport(req, res, scope, load, deps = {}) {
 }
 
 async function handleUsageReport(req, res) {
-  await handleCachedUsageSubreport(req, res, USAGE_REPORT_CACHE_SCOPE, loadUsageReport)
+  await handleCachedUsageSubreport(
+    req,
+    res,
+    USAGE_REPORT_CACHE_SCOPE,
+    loadUsageReport
+  )
 }
 
 async function handleUsageQuotaRangeHistory(req, res) {
@@ -10937,7 +11069,12 @@ async function handleUsageQuotaEstimator(req, res) {
 }
 
 async function handleUsageToolActivity(req, res) {
-  await handleCachedUsageSubreport(req, res, 'usage-tool-activity', loadUsageToolActivity)
+  await handleCachedUsageSubreport(
+    req,
+    res,
+    'usage-tool-activity',
+    loadUsageToolActivity
+  )
 }
 
 async function handleUsageSessionDiagnostics(req, res) {
@@ -10959,7 +11096,12 @@ async function handleUsageTokenTrendSummary(req, res) {
 }
 
 async function handleUsageTokenTrendDay(req, res) {
-  await handleCachedUsageSubreport(req, res, 'usage-token-trend-day', loadUsageTokenTrendDay)
+  await handleCachedUsageSubreport(
+    req,
+    res,
+    'usage-token-trend-day',
+    loadUsageTokenTrendDay
+  )
 }
 
 async function handleUsageQuotas(req, res) {
@@ -11036,9 +11178,14 @@ async function prewarmReportCaches() {
     for (const window of windows) {
       if (reportServiceShuttingDown) break
       try {
-        const searchParams = buildPrewarmUsageSearchParams(window.from, window.to)
-        const status = await prewarmCachedReport(USAGE_REPORT_CACHE_SCOPE, searchParams, () =>
-          loadUsageReport(searchParams)
+        const searchParams = buildPrewarmUsageSearchParams(
+          window.from,
+          window.to
+        )
+        const status = await prewarmCachedReport(
+          USAGE_REPORT_CACHE_SCOPE,
+          searchParams,
+          () => loadUsageReport(searchParams)
         )
         process.stdout.write(
           `[report-service] prewarm usage cache window=${window.name} status=${status} from=${window.from} to=${window.to}\n`
@@ -11144,7 +11291,10 @@ async function handleUpstreamApiProxy(req, res, proxyConfig) {
   }
 
   const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), UPSTREAM_FETCH_TIMEOUT_MS)
+  const timeout = setTimeout(
+    () => controller.abort(),
+    UPSTREAM_FETCH_TIMEOUT_MS
+  )
   let upstreamResponse
   try {
     upstreamResponse = await fetch(proxyTargetUrl(req, proxyConfig), {
@@ -11169,13 +11319,14 @@ async function handleUpstreamApiProxy(req, res, proxyConfig) {
   }
 
   const body = Buffer.from(await upstreamResponse.arrayBuffer())
-  res.writeHead(upstreamResponse.status, responseHeaders(upstreamResponse.headers))
+  res.writeHead(
+    upstreamResponse.status,
+    responseHeaders(upstreamResponse.headers)
+  )
   res.end(body)
 }
 
-async function buildShellHealthPayload({
-  loaders = {},
-} = {}) {
+async function buildShellHealthPayload({ loaders = {} } = {}) {
   const loadReportQueryPressureFn =
     loaders.loadReportQueryPressure ?? loadReportQueryPressure
   const loadPgBouncerHealthFn =
@@ -11327,7 +11478,9 @@ const shouldStartServer =
 
 if (shouldStartServer) {
   server.listen(PORT, '0.0.0.0', () => {
-    process.stdout.write(`dashboard-shell report service listening on ${PORT}\n`)
+    process.stdout.write(
+      `dashboard-shell report service listening on ${PORT}\n`
+    )
     connectRedisCache()
       .then(startReportCachePrewarm)
       .catch((error) => {
@@ -11430,7 +11583,6 @@ export const __responseTestHelpers = {
   acceptsGzipEncoding,
   sendJson,
 }
-
 
 export const __proxySecurityTestHelpers = {
   evaluateUpstreamProxySecret,

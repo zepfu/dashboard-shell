@@ -45,9 +45,7 @@ export function main(argv = process.argv.slice(2), options = {}) {
 
 function buildScaffoldConfig(parsedArgs) {
   const targetDir = path.resolve(parsedArgs.cwd, parsedArgs._[0])
-  const moduleId = normalizeId(
-    parsedArgs.moduleId ?? path.basename(targetDir)
-  )
+  const moduleId = normalizeId(parsedArgs.moduleId ?? path.basename(targetDir))
   const displayName = parsedArgs.name ?? moduleId
   const moduleTitle = toTitle(displayName)
   const basePath = ensureLeadingSlash(
@@ -114,13 +112,33 @@ function scaffoldDashboard(config) {
     JSON.stringify(buildPackageJson({ moduleId }), null, 2)
   )
   writeFile(path.join(targetDir, 'index.html'), buildIndexHtml({ moduleTitle }))
-  writeFile(path.join(targetDir, 'vite.config.ts'), buildViteConfig({ moduleId }))
+  writeFile(
+    path.join(targetDir, 'vite.config.ts'),
+    buildViteConfig({ moduleId })
+  )
   writeFile(path.join(targetDir, 'eslint.config.js'), buildEslintConfig())
   writeFile(path.join(targetDir, 'src/main.tsx'), buildMainTsx())
-  writeFile(path.join(targetDir, 'src/module.ts'), buildModuleTs({ moduleId, displayName, moduleTitle, basePath, apiBase, accentColor, description }))
-  writeFile(path.join(targetDir, 'src/pages/Overview.tsx'), buildOverviewTsx({ moduleTitle }))
+  writeFile(
+    path.join(targetDir, 'src/module.ts'),
+    buildModuleTs({
+      moduleId,
+      displayName,
+      moduleTitle,
+      basePath,
+      apiBase,
+      accentColor,
+      description,
+    })
+  )
+  writeFile(
+    path.join(targetDir, 'src/pages/Overview.tsx'),
+    buildOverviewTsx({ moduleTitle })
+  )
   writeFile(path.join(targetDir, 'src/styles/index.css'), buildIndexCss())
-  writeFile(path.join(targetDir, 'README.md'), buildReadme({ moduleTitle, moduleId }))
+  writeFile(
+    path.join(targetDir, 'README.md'),
+    buildReadme({ moduleTitle, moduleId })
+  )
 
   process.stdout.write(`Created remote dashboard starter at ${targetDir}\n`)
   return 0
@@ -149,7 +167,8 @@ export function parseArgs(argv) {
 
     const token = arg.slice(2)
     const separatorIndex = token.indexOf('=')
-    const rawKey = separatorIndex === -1 ? token : token.slice(0, separatorIndex)
+    const rawKey =
+      separatorIndex === -1 ? token : token.slice(0, separatorIndex)
     const rawValue =
       separatorIndex === -1 ? undefined : token.slice(separatorIndex + 1)
     const key = rawKey.replace(/-([a-z])/g, (_, char) => char.toUpperCase())

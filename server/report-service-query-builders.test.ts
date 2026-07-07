@@ -327,7 +327,9 @@ describe('buildQuotaEstimatorObservationQuery value assertions (S4-6)', () => {
     // JOIN keys: provider, quota_key, expected_reset_at
     expect(query.sql).toContain('rw.provider = o.provider')
     expect(query.sql).toContain('rw.quota_key = o.quota_key')
-    expect(query.sql).toContain('rw.expected_reset_at IS NOT DISTINCT FROM o.expected_reset_at')
+    expect(query.sql).toContain(
+      'rw.expected_reset_at IS NOT DISTINCT FROM o.expected_reset_at'
+    )
   })
 
   test('test_buildQuotaEstimatorObservationQuery_filters_null_quota_types', () => {
@@ -442,9 +444,15 @@ describe('D1-223/224/225 usage identity and billing contracts', () => {
     expect(query.values).toContainEqual(['aawm-read-anthropic'])
     expect(query.values).toContainEqual(['orchestrator'])
     expect(query.values).toContainEqual(['agent_harness'])
-    expect(query.sql).toContain("COALESCE(NULLIF(sh.inbound_model_alias, ''), 'unknown_inbound_model') = ANY(")
-    expect(query.sql).toContain("COALESCE(NULLIF(sh.agent_name, ''), 'unknown_agent_name') = ANY(")
-    expect(query.sql).toContain("COALESCE(NULLIF(sh.agent_id, ''), 'uncaptured_agent_id') = ANY(")
+    expect(query.sql).toContain(
+      "COALESCE(NULLIF(sh.inbound_model_alias, ''), 'unknown_inbound_model') = ANY("
+    )
+    expect(query.sql).toContain(
+      "COALESCE(NULLIF(sh.agent_name, ''), 'unknown_agent_name') = ANY("
+    )
+    expect(query.sql).toContain(
+      "COALESCE(NULLIF(sh.agent_id, ''), 'uncaptured_agent_id') = ANY("
+    )
   })
 
   test('test_buildUsageQuery_decodes_percent_encoded_csv_filter_elements', () => {
@@ -504,9 +512,6 @@ describe('D1-223/224/225 usage identity and billing contracts', () => {
     expect(estimatorQuery.sql).toContain('public.rate_limit_observations')
   })
 })
-
-
-
 
 // ---------------------------------------------------------------------------
 // D1-444 direct column reads vs defensive to_jsonb extraction
@@ -571,7 +576,6 @@ describe('D1-444 direct column reads for confirmed schema columns', () => {
 
     expect(estimatorQuery.sql).not.toMatch(/to_jsonb\(o\)->>/)
     expect(estimatorQuery.sql).not.toMatch(/to_jsonb\(o\)->'/)
-
   })
 
   test('test_rate_limit_intervals_source_and_client_remain_defensive_to_jsonb', () => {
@@ -724,7 +728,6 @@ describe('D1-429 tenant_id authoritative repository dimension contract', () => {
   })
 })
 
-
 // ---------------------------------------------------------------------------
 // D1-212/215/213/178/221/222 session diagnostics contracts
 // ---------------------------------------------------------------------------
@@ -808,7 +811,6 @@ describe('D1-212/215/213/178/221/222 session diagnostics contracts', () => {
     expect(query.sql).toContain('AS alias_route_events')
   })
 
-
   test('test_buildSessionDiagnosticsQuery_projects_grok_side_channel_metadata', () => {
     const query = buildSessionDiagnosticsQuery(
       new URLSearchParams({
@@ -829,14 +831,30 @@ describe('D1-212/215/213/178/221/222 session diagnostics contracts', () => {
     ])
     expect(query.sql).toContain("metadata->>'grok_side_channel'")
     expect(query.sql).toContain("metadata->>'grok_side_channel_endpoint_type'")
-    expect(query.sql).toContain("metadata->>'grok_side_channel_endpoint_path_template'")
-    expect(query.sql).toContain("metadata->>'grok_side_channel_request_content_type'")
-    expect(query.sql).toContain("metadata->>'grok_side_channel_request_body_byte_length'")
-    expect(query.sql).toContain("metadata->>'grok_side_channel_request_body_sha256'")
-    expect(query.sql).toContain("metadata->>'grok_side_channel_request_body_digest_source'")
-    expect(query.sql).toContain("metadata->>'grok_side_channel_request_json_container_type'")
-    expect(query.sql).toContain("metadata->'grok_side_channel_request_top_level_key_types'")
-    expect(query.sql).toContain("metadata->>'grok_side_channel_request_array_length'")
+    expect(query.sql).toContain(
+      "metadata->>'grok_side_channel_endpoint_path_template'"
+    )
+    expect(query.sql).toContain(
+      "metadata->>'grok_side_channel_request_content_type'"
+    )
+    expect(query.sql).toContain(
+      "metadata->>'grok_side_channel_request_body_byte_length'"
+    )
+    expect(query.sql).toContain(
+      "metadata->>'grok_side_channel_request_body_sha256'"
+    )
+    expect(query.sql).toContain(
+      "metadata->>'grok_side_channel_request_body_digest_source'"
+    )
+    expect(query.sql).toContain(
+      "metadata->>'grok_side_channel_request_json_container_type'"
+    )
+    expect(query.sql).toContain(
+      "metadata->'grok_side_channel_request_top_level_key_types'"
+    )
+    expect(query.sql).toContain(
+      "metadata->>'grok_side_channel_request_array_length'"
+    )
     expect(query.sql).toContain('AS grok_side_channel')
     expect(query.sql).toContain("'grok_side_channel'::text")
     expect(query.sql).not.toMatch(/metadata::text/i)
@@ -854,7 +872,9 @@ describe('D1-212/215/213/178/221/222 session diagnostics contracts', () => {
     )
 
     expect(query.sql).toContain('public.aawm_alias_routing_audit')
-    expect(query.sql).toContain('public.session_history_tool_definition_snapshots')
+    expect(query.sql).toContain(
+      'public.session_history_tool_definition_snapshots'
+    )
     expect(query.sql).toContain('alias_route_events')
     expect(query.sql).toContain('tool_definition_snapshot')
     expect(query.sql).toContain('snapshot_hash')
@@ -877,9 +897,7 @@ describe('D1-212/215/213/178/221/222 session diagnostics contracts', () => {
     expect(query.sql).toContain('usage_output_contract_setup_only_detected')
     expect(query.sql).toContain('grok_native_oauth_managed')
     expect(query.sql).toContain('grok_native_entrypoint')
-    expect(query.sql).not.toContain(
-      'IS NOT DISTINCT FROM sh.litellm_call_id'
-    )
+    expect(query.sql).not.toContain('IS NOT DISTINCT FROM sh.litellm_call_id')
     expect(query.sql).not.toContain('IS NOT DISTINCT FROM sh.session_id')
     expect(query.sql).not.toContain(
       "IS NOT DISTINCT FROM NULLIF(sh.trace_id, '')"
@@ -908,18 +926,14 @@ describe('D1-212/215/213/178/221/222 session diagnostics contracts', () => {
     expect(query.sql).toContain(
       "rs.metadata->>'anthropic_auto_agent_audit_events' IS NOT NULL"
     )
-    expect(query.sql).toContain(
-      "NULLIF(aa.litellm_call_id, '') IS NOT NULL"
-    )
+    expect(query.sql).toContain("NULLIF(aa.litellm_call_id, '') IS NOT NULL")
     expect(query.sql).toContain('rs.litellm_call_id IS NOT NULL')
     expect(query.sql).toContain(
       "NULLIF(aa.litellm_call_id, '') = rs.litellm_call_id"
     )
     expect(query.sql).toContain("NULLIF(aa.session_id, '') IS NOT NULL")
     expect(query.sql).toContain('rs.session_id IS NOT NULL')
-    expect(query.sql).toContain(
-      "NULLIF(aa.session_id, '') = rs.session_id"
-    )
+    expect(query.sql).toContain("NULLIF(aa.session_id, '') = rs.session_id")
     expect(query.sql).toContain("NULLIF(aa.trace_id, '') IS NOT NULL")
     expect(query.sql).toContain('rs.trace_id IS NOT NULL')
     expect(query.sql).toContain("NULLIF(aa.trace_id, '') = rs.trace_id")
@@ -956,9 +970,7 @@ describe('D1-212/215/213/178/221/222 session diagnostics contracts', () => {
     expect(query.sql).not.toMatch(
       /IS NOT DISTINCT FROM\s+(rs|sh)\.(litellm_call_id|session_id|trace_id)/
     )
-    expect(query.sql).not.toMatch(
-      /IS NOT DISTINCT FROM\s+NULLIF\(sh\.trace_id/
-    )
+    expect(query.sql).not.toMatch(/IS NOT DISTINCT FROM\s+NULLIF\(sh\.trace_id/)
 
     for (const key of ['litellm_call_id', 'session_id', 'trace_id'] as const) {
       expect(lateralAudit).toContain(`NULLIF(aa.${key}, '') IS NOT NULL`)
@@ -989,7 +1001,6 @@ describe('D1-212/215/213/178/221/222 session diagnostics contracts', () => {
     expect(query.sql).toContain("'anthropic_context_window'::text")
     expect(query.sql).toContain("'context_window'::text")
   })
-
 })
 
 describe('report-service query builders', () => {
@@ -1066,9 +1077,7 @@ describe('report-service query builders', () => {
     expect(query.sql).toContain(
       'AS agent_sleep_wellness_interruption_incident_score'
     )
-    expect(query.sql).toContain(
-      'NULL::double precision AS agent_quality_score'
-    )
+    expect(query.sql).toContain('NULL::double precision AS agent_quality_score')
     expect(query.sql).not.toContain(
       'COALESCE(sh.discovery_inventory_coverage_score, 0)'
     )
@@ -1177,7 +1186,6 @@ describe('report-service query builders', () => {
     expect(query.sql).toContain('reason_bounds AS')
     expect(query.sql).toContain('reason_source AS MATERIALIZED')
   })
-
 
   test('test_parseUsageReportSort_supports_period_start_dotted_desc', () => {
     const { sort, sortDirection } = parseUsageReportSort(
@@ -1395,12 +1403,11 @@ describe('report-service query builders', () => {
     })
   })
 
-
   test('test_buildQuotaQuery_preserves_xai_grok_build_quota_keys_as_distinct_lanes', () => {
     const query = buildQuotaQuery()
 
-    expect(query.sql).toContain("xai_grok_build_weekly_credits:credits")
-    expect(query.sql).toContain("xai_grok_build_monthly_requests:requests")
+    expect(query.sql).toContain('xai_grok_build_weekly_credits:credits')
+    expect(query.sql).toContain('xai_grok_build_monthly_requests:requests')
     expect(query.sql).toContain('MAX(billing.quota_key)')
     expect(query.sql).toContain('MAX(billing.source)')
     expect(query.sql).toContain('MAX(billing.client)')
@@ -1420,9 +1427,7 @@ describe('report-service query builders', () => {
     expect(query.sql).toContain(
       "FILTER (WHERE s.quota_type = 'weekly_overage_included')"
     )
-    expect(query.sql).toContain(
-      "AS weekly_overage_included_remaining_pct"
-    )
+    expect(query.sql).toContain('AS weekly_overage_included_remaining_pct')
   })
 
   test('test_buildQuotaQuery_final_select_projects_remaining_pct_and_billing_identity_per_lane', () => {
@@ -1664,16 +1669,13 @@ describe('report-service query builders', () => {
     ] as const
 
     for (const lane of lanes) {
-      expect(query.sql).toContain(
-        `0::double precision AS ${lane}_usage_tokens`
-      )
+      expect(query.sql).toContain(`0::double precision AS ${lane}_usage_tokens`)
       expect(query.sql).toContain(`'[]'::jsonb AS ${lane}_usage_breakdown`)
     }
 
     expect(query.sql).not.toMatch(/MAX\(usage\.usage_tokens\)/)
     expect(query.sql).not.toMatch(/ARRAY_AGG\(usage\.usage_breakdown\)/)
   })
-
 
   test('test_buildQuotaHistoryQuery_emits_quota_identity_metadata_columns', () => {
     const query = buildQuotaHistoryQuery(new URLSearchParams())
@@ -1683,8 +1685,12 @@ describe('report-service query builders', () => {
     )
     expect(query.sql).toContain('observation_identity AS')
     expect(query.sql).toContain('AND o.provider = n.raw_provider')
-    expect(query.sql).toContain('COALESCE(MAX(n.source), MAX(oi.source)) AS source')
-    expect(query.sql).toContain('COALESCE(MAX(n.client), MAX(oi.client)) AS client')
+    expect(query.sql).toContain(
+      'COALESCE(MAX(n.source), MAX(oi.source)) AS source'
+    )
+    expect(query.sql).toContain(
+      'COALESCE(MAX(n.client), MAX(oi.client)) AS client'
+    )
     expect(query.sql).toContain('AS quota_key')
     expect(query.sql).toContain('AS source')
     expect(query.sql).toContain('AS client')
@@ -1723,22 +1729,19 @@ describe('report-service query builders', () => {
     )
   })
 
-
   test('test_quota_key_interval_cte_helper_is_shared_without_duplicate_literals', () => {
     const velocityQuery = buildQuotaVelocityQuery()
     const historyQuery = buildQuotaHistoryQuery(new URLSearchParams())
-    const historyFallbackQuery = buildQuotaHistoryFallbackQuery(new URLSearchParams())
-    const queries = [
-      velocityQuery,
-      historyQuery,
-      historyFallbackQuery,
-    ]
+    const historyFallbackQuery = buildQuotaHistoryFallbackQuery(
+      new URLSearchParams()
+    )
+    const queries = [velocityQuery, historyQuery, historyFallbackQuery]
 
     for (const query of queries) {
       expect(query.sql.match(/quota_key_gaps AS/g)?.length).toBe(1)
       expect(query.sql.match(/quota_key_interval_hours AS/g)?.length).toBe(1)
       expect(query.sql).toContain(
-        "PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY gap_hours) AS interval_hours"
+        'PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY gap_hours) AS interval_hours'
       )
       expect(query.sql).toContain('WHERE gap_hours >= 1.0')
     }
@@ -1753,7 +1756,9 @@ describe('report-service query builders', () => {
     const quotaQuery = buildQuotaQuery()
     const velocityQuery = buildQuotaVelocityQuery()
     const historyQuery = buildQuotaHistoryQuery(new URLSearchParams())
-    const historyFallbackQuery = buildQuotaHistoryFallbackQuery(new URLSearchParams())
+    const historyFallbackQuery = buildQuotaHistoryFallbackQuery(
+      new URLSearchParams()
+    )
     const rangeHistoryQuery = buildQuotaRangeHistoryQuery(
       new URLSearchParams({ from: '2026-05-01', to: '2026-05-08' })
     )
@@ -1808,7 +1813,7 @@ describe('report-service query builders', () => {
     expect(query.sql).toContain('0::double precision AS velocity_sample_count')
     expect(query.sql).toContain("'[]'::jsonb AS velocity_segments")
     expect(query.sql).toContain("'[]'::jsonb AS velocity_scores")
-    expect(query.sql).toContain("0::double precision AS usage_tokens")
+    expect(query.sql).toContain('0::double precision AS usage_tokens')
     expect(query.sql).toContain("'[]'::json AS usage_breakdown")
     expect(query.sql).toContain('public.rate_limit_intervals')
     expect(query.sql).not.toContain('public.session_history')
@@ -1838,7 +1843,7 @@ describe('report-service query builders', () => {
     expect(query.sql).toContain('0::double precision AS velocity_sample_count')
     expect(query.sql).toContain("'[]'::jsonb AS velocity_segments")
     expect(query.sql).toContain("'[]'::jsonb AS velocity_scores")
-    expect(query.sql).toContain("0::double precision AS usage_tokens")
+    expect(query.sql).toContain('0::double precision AS usage_tokens')
     expect(query.sql).toContain("'[]'::json AS usage_breakdown")
     expect(query.sql).toContain('public.rate_limit_intervals')
     expect(query.sql).not.toContain('public.session_history')
@@ -1911,9 +1916,7 @@ describe('report-service query builders', () => {
       to: '2026-05-08',
     })
 
-    expect(
-      buildDegradedUsageQuotaRangeHistoryReport()
-    ).toMatchObject({
+    expect(buildDegradedUsageQuotaRangeHistoryReport()).toMatchObject({
       metadata: {
         degraded: true,
         degradedReason: 'database_timeout',
@@ -2006,7 +2009,12 @@ describe('report-service query builders', () => {
         degradedReason: 'bounded_raw_lane_policy',
         degradedMessage: expect.stringContaining('skipped'),
         skippedSubqueries: ['hours', 'scores', 'versions', 'modelFirstSeen'],
-        unavailableSubqueries: ['hours', 'scores', 'versions', 'modelFirstSeen'],
+        unavailableSubqueries: [
+          'hours',
+          'scores',
+          'versions',
+          'modelFirstSeen',
+        ],
         tokenTrendSummaryRawLaneMaxDays: 7,
         tokenTrendSummaryRangeDays: 30,
         tokenTrendSummaryStatementTimeoutMs: expect.any(Number),
@@ -2066,7 +2074,6 @@ describe('report-service query builders', () => {
       'modelFirstSeen',
     ])
   })
-
 
   test('test_buildDegradedQuotaReport_returns_bounded_timeout_payload', () => {
     const report = buildDegradedQuotaReport()
@@ -2128,9 +2135,15 @@ describe('report-service query builders', () => {
       new URLSearchParams({ from: '2026-05-01', to: '2026-05-08' })
     )
 
-    expect(query.sql).toContain("WHEN lower(COALESCE(sh.provider, 'unknown')) IN ('google', 'gemini') THEN 'google'")
-    expect(query.sql).toContain("WHEN lower(COALESCE(sh.provider, 'unknown')) = 'nvidia' THEN 'nvidia_nim'")
-    expect(query.sql).toContain("WHEN lower(COALESCE(sh.provider, 'unknown')) LIKE 'local_%' THEN 'local'")
+    expect(query.sql).toContain(
+      "WHEN lower(COALESCE(sh.provider, 'unknown')) IN ('google', 'gemini') THEN 'google'"
+    )
+    expect(query.sql).toContain(
+      "WHEN lower(COALESCE(sh.provider, 'unknown')) = 'nvidia' THEN 'nvidia_nim'"
+    )
+    expect(query.sql).toContain(
+      "WHEN lower(COALESCE(sh.provider, 'unknown')) LIKE 'local_%' THEN 'local'"
+    )
     expect(query.sql).toContain("ELSE COALESCE(sh.provider, 'unknown')")
   })
 
@@ -2151,7 +2164,6 @@ describe('report-service query builders', () => {
       toolActivity: [],
     })
   })
-
 
   test('buildToolActivityQuery_emits_explicit_recent_id_cap_truncation_metadata', () => {
     const query = buildToolActivityQuery(
@@ -2189,7 +2201,9 @@ describe('report-service query builders', () => {
     expect(query.sql).toMatch(
       /FROM window_cap_state cap\s+LEFT JOIN \(\s+SELECT\s+provider,/s
     )
-    expect(query.sql).toContain('ORDER BY activity_rows.provider ASC NULLS LAST')
+    expect(query.sql).toContain(
+      'ORDER BY activity_rows.provider ASC NULLS LAST'
+    )
   })
 
   test('buildUsageQuery_emits_explicit_agent_score_reasons_cap_truncation_metadata', () => {
@@ -2435,10 +2449,14 @@ describe('report-service query builders', () => {
       '2026-05-03',
     ])
     expect(query.sql).toContain('sh.created_at >=')
-    expect(query.sql).toContain("sh.created_at < ($2::date::timestamp AT TIME ZONE 'America/New_York')")
+    expect(query.sql).toContain(
+      "sh.created_at < ($2::date::timestamp AT TIME ZONE 'America/New_York')"
+    )
     expect(query.sql).not.toContain('sh.start_time >=')
     expect(query.sql).not.toContain('sh.start_time <')
-    expect(query.sql).toContain("(sh.created_at AT TIME ZONE 'America/New_York')::date = $4::date")
+    expect(query.sql).toContain(
+      "(sh.created_at AT TIME ZONE 'America/New_York')::date = $4::date"
+    )
     expect(query.metadata).toEqual({
       date: '2026-05-03',
       from: '2026-05-01',
@@ -2516,7 +2534,6 @@ describe('report-service query builders', () => {
     expect(target.searchParams.get('lane')).toBe('type_shape')
   })
 })
-
 
 // ---------------------------------------------------------------------------
 // D1-323 provider alias routing health contracts
@@ -2615,16 +2632,12 @@ describe('D1-323 provider alias routing health contracts', () => {
       report.entries.some(
         (entry: { state_kind?: string }) => entry.state_kind === 'affinity'
       )
-    ).toBe(
-      true
-    )
+    ).toBe(true)
     expect(
       report.entries.some(
         (entry: { state_kind?: string }) => entry.state_kind === 'cooldown'
       )
-    ).toBe(
-      true
-    )
+    ).toBe(true)
     expect(
       report.entries.find(
         (entry: { state_kind?: string; state_source?: string }) =>
@@ -2676,7 +2689,8 @@ describe('D1-338 provider auth health contracts', () => {
         last_success_at: '2026-06-28T19:00:00.000Z',
         source_task: 'grok_oidc_refresh',
         error_class: null,
-        error_message: 'Bearer eyJhbGciOiJIUzI1NiJ9.secret.sig at /home/zepfu/.grok/auth.json',
+        error_message:
+          'Bearer eyJhbGciOiJIUzI1NiJ9.secret.sig at /home/zepfu/.grok/auth.json',
         auth_file_source: '/home/zepfu/.grok/auth.json',
         metadata: {
           auth_file_source: 'auth_file',
@@ -2754,7 +2768,9 @@ describe('D1-417 / D1-422 provider credit lifecycle contracts', () => {
     expect(query.sql).toContain('AS account_hash_short')
     expect(query.sql).toContain("left(COALESCE(cr.account_hash, ''), 8)")
     expect(query.sql).not.toMatch(/\n\s*account_hash,\s*\n/)
-    expect(query.sql).not.toMatch(/\n\s*account_hash_short,\s*\n[\s\S]*\n\s*account_hash,\s*\n/)
+    expect(query.sql).not.toMatch(
+      /\n\s*account_hash_short,\s*\n[\s\S]*\n\s*account_hash,\s*\n/
+    )
     expect(query.sql).toContain('credit_identity')
     expect(query.sql).toContain('operator_annotation')
     expect(query.sql).toContain('source_url')
@@ -2768,7 +2784,9 @@ describe('D1-417 / D1-422 provider credit lifecycle contracts', () => {
     expect(query.sql).toContain('NOT EXISTS')
     expect(query.sql).toContain('NULLIF(BTRIM(COALESCE(detail.credit_identity')
     expect(query.sql).toMatch(/LIMIT \$1;/)
-    expect(query.sql).not.toMatch(/FROM filtered_credit_rows[\s\S]*LIMIT[\s\S]*NOT EXISTS/)
+    expect(query.sql).not.toMatch(
+      /FROM filtered_credit_rows[\s\S]*LIMIT[\s\S]*NOT EXISTS/
+    )
   })
 
   test('test_filterLegacyProviderCreditAggregateRows_keeps_aggregate_when_no_detail_and_drops_when_multiple_detail', () => {
@@ -2816,12 +2834,10 @@ describe('D1-417 / D1-422 provider credit lifecycle contracts', () => {
     ]
     const filtered = filterLegacyProviderCreditAggregateRows(rows)
     expect(
-      filtered.map((r: { credit_identity?: string | null }) => r.credit_identity ?? '')
-    ).toEqual([
-      '',
-      'credit-a',
-      'credit-b',
-    ])
+      filtered.map(
+        (r: { credit_identity?: string | null }) => r.credit_identity ?? ''
+      )
+    ).toEqual(['', 'credit-a', 'credit-b'])
   })
 
   test('test_filterLegacyProviderCreditAggregateRows_drops_empty_identity_when_detail_exists', () => {
@@ -2910,8 +2926,7 @@ describe('D1-417 / D1-422 provider credit lifecycle contracts', () => {
       status: 'available',
       operator_annotation:
         'token=sk-secret-sentinel-should-not-render path=/home/zepfu/.openai',
-      source_url:
-        'https://user:pass@x.com/status/123?utm=1#frag',
+      source_url: 'https://user:pass@x.com/status/123?utm=1#frag',
     })
 
     expect(row.account_hash_short).toBe('8e928548')
@@ -2953,9 +2968,7 @@ describe('D1-417 / D1-422 provider credit lifecycle contracts', () => {
     ])
     expect(report.data_source).toBe('provider_credit_current')
     expect(
-      report.entries.map(
-        (entry: { status?: string }) => entry.status
-      )
+      report.entries.map((entry: { status?: string }) => entry.status)
     ).toEqual(['used', 'expired'])
     expect(report.summaries[0]?.used_count).toBe(1)
     expect(report.summaries[0]?.expired_count).toBe(1)
@@ -2966,23 +2979,23 @@ describe('D1-417 / D1-422 provider credit lifecycle contracts', () => {
 describe('D1-437 usage row serialization', () => {
   test('test_shouldSuppressCacheRefreshFailureDuringShutdown_false_before_shutdown', () => {
     const error = new Error('Cannot use a pool after calling end on the pool')
-    expect(
-      shouldSuppressCacheRefreshFailureDuringShutdown(error, false)
-    ).toBe(false)
+    expect(shouldSuppressCacheRefreshFailureDuringShutdown(error, false)).toBe(
+      false
+    )
   })
 
   test('test_shouldSuppressCacheRefreshFailureDuringShutdown_true_during_shutdown', () => {
     const error = new Error('Cannot use a pool after calling end on the pool')
-    expect(
-      shouldSuppressCacheRefreshFailureDuringShutdown(error, true)
-    ).toBe(true)
+    expect(shouldSuppressCacheRefreshFailureDuringShutdown(error, true)).toBe(
+      true
+    )
   })
 
   test('test_shouldSuppressCacheRefreshFailureDuringShutdown_false_for_other_errors_during_shutdown', () => {
     const error = new Error('unexpected database failure')
-    expect(
-      shouldSuppressCacheRefreshFailureDuringShutdown(error, true)
-    ).toBe(false)
+    expect(shouldSuppressCacheRefreshFailureDuringShutdown(error, true)).toBe(
+      false
+    )
   })
 
   test('test_compactUsageRow_omits_null_undefined_and_empty_string_fields', () => {
@@ -3019,9 +3032,7 @@ describe('D1-437 usage row serialization', () => {
         new URLSearchParams({ include_empty_row_fields: 'yes' })
       )
     ).toBe(true)
-    expect(
-      shouldIncludeEmptyUsageRowFields(new URLSearchParams())
-    ).toBe(false)
+    expect(shouldIncludeEmptyUsageRowFields(new URLSearchParams())).toBe(false)
   })
 
   test('test_buildUsageReportRowSerializationMetadata_defaults_to_compact_rows', () => {

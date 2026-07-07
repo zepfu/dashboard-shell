@@ -1,9 +1,9 @@
 ---
-name: "✨ Feature Request"
+name: '✨ Feature Request'
 about: Suggest an idea for improving Shadcn-Admin
-title: "[Feature Request]: "
+title: '[Feature Request]: '
 labels: enhancement
-assignees: ""
+assignees: ''
 ---
 
 **Is your feature request related to a problem? Please describe.**
