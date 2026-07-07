@@ -24,7 +24,7 @@ import {
 } from '@testing-library/react'
 import { http, HttpResponse } from 'msw'
 import { readFileSync } from 'node:fs'
-import { fileURLToPath } from 'node:url'
+import { resolve } from 'node:path'
 import { vi } from 'vitest'
 import { server } from '../../../test/setup'
 import type {
@@ -3994,18 +3994,17 @@ describe('PhosphorDashboard — Wave 1 fork-review remediation', () => {
 // ---------------------------------------------------------------------------
 
 describe('PhosphorDashboard — D1-450 P1/P3 memoization', () => {
+  const sourcePath = resolve(
+    process.cwd(),
+    'src/features/dashboard/components/phosphor-dashboard.tsx'
+  )
+
   test('D1-450_P1_buildProviderLanes_memoized_in_render_path', () => {
-    const sourcePath = fileURLToPath(
-      new URL('./phosphor-dashboard.tsx', import.meta.url)
-    )
     const source = readFileSync(sourcePath, 'utf8')
     expect(source).toMatch(/useMemo[\s\S]*buildProviderLanes/)
   })
 
   test('D1-450_P3_buildTokenTrendDayEnvelopes_not_tripled_per_render', () => {
-    const sourcePath = fileURLToPath(
-      new URL('./phosphor-dashboard.tsx', import.meta.url)
-    )
     const source = readFileSync(sourcePath, 'utf8')
     const callSites = source.match(/buildTokenTrendDayEnvelopes\s*\(/g) ?? []
     expect(callSites.length).toBeLessThanOrEqual(1)
