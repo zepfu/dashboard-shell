@@ -40,16 +40,16 @@ export function assertProjectModule(
   }
 }
 
-export function createRetryableImporter<T>(
-  importFn: () => Promise<T>
-): () => Promise<T> {
+export function createRetryableImporter<T>(importFn: () => Promise<T>): {
+  load: () => Promise<T>
+  reset: () => void
+} {
   let promise: Promise<T> | undefined
-  return () => {
-    promise ??= importFn().catch((error) => {
+  return {
+    load: () => (promise ??= importFn()),
+    reset: () => {
       promise = undefined
-      return Promise.reject(error)
-    })
-    return promise
+    },
   }
 }
 

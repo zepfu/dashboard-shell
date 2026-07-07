@@ -244,11 +244,14 @@ describe('retryable import cache (runtime utility)', () => {
       return fakeModule
     })
 
-    const retryableImport = createRetryableImporter(importFn)
+    const importer = createRetryableImporter(importFn)
 
-    await expect(retryableImport()).rejects.toThrow('Network error')
+    await expect(importer.load()).rejects.toThrow('Network error')
+    await expect(importer.load()).rejects.toThrow('Network error')
+    expect(callCount).toBe(1)
 
-    const result = await retryableImport()
+    importer.reset()
+    const result = await importer.load()
     expect(result).toBe(fakeModule)
     expect(callCount).toBe(2)
   })
