@@ -41,7 +41,55 @@ proxied through `/hook-api/*` to `AAWM_HOOK_API_TARGET`.
 The same dev stack starts the shell report API on `SHELL_REPORT_PORT`, which
 defaults to `3010`. The browser reads the General dashboard report through
 `/api/shell/reports/usage`; `DATABASE_URL` is only read by that server-side
-service. The dev shell, dev remote, and dev report service all join the external
+service. Usage report grouping and filters support first-class
+`session_history.inbound_model_alias`, `agent_name`, and `agent_id` identity
+fields when the source database exposes them; quota rows keep percentage fields
+stable while exposing normalized billing details under per-lane
+`billing_details` for operator drilldowns.
+
+The default General dashboard cold-load path keeps `/api/shell/reports/usage`
+bounded enough to complete through PgBouncer on the local `session_history`
+dataset. Heavy row-level latency percentiles and detailed score aggregates are
+left for focused drilldowns, while the top agent-score reasons are sampled from
+recent rows so the Ledger hover remains useful. `/api/shell/reports/usage/tool-activity`
+also reads a recent bounded tool-activity window by default, but the browser
+waits for the main usage report before starting the secondary Token Trend,
+Provider Status quota-history, and tool-activity report requests so cold loads
+do not fan out every large payload at once. The tool-activity,
+token-trend-summary, and quota-history routes use their own bounded statement
+timeouts and, if Postgres still cancels a cold query under load, return degraded
+empty payloads with `metadata.degraded=true` instead of surfacing a raw 500.
+Operators can tune those bounds with
+`SHELL_REPORT_AGENT_SCORE_REASON_RECENT_ROW_LIMIT` and
+`SHELL_REPORT_TOOL_ACTIVITY_RECENT_ROW_LIMIT`, and can tune the route timeout
+with `SHELL_REPORT_TOOL_ACTIVITY_STATEMENT_TIMEOUT_MS`,
+`SHELL_REPORT_TOKEN_TREND_SUMMARY_STATEMENT_TIMEOUT_MS`,
+`SHELL_REPORT_TOKEN_TREND_SUMMARY_RAW_LANE_MAX_DAYS` (default `7`), and
+`SHELL_REPORT_QUOTA_HISTORY_STATEMENT_TIMEOUT_MS`. Provider Status p95 latency
+is displayed only when the report has a passive latency sample for the selected
+provider; an empty value means unmeasured in the current health window, not
+zero-millisecond latency.
+
+When `token-trend-summary` ranges exceed the configured raw-lane window, the
+service skips `hours`, `scores`, `versions`, and `modelFirstSeen` raw
+`session_history` lanes and keeps returning `health` as a partial payload so the
+`TREND` section remains visible. Degraded metadata includes
+`skippedSubqueries`, `unavailableSubqueries`,
+`tokenTrendSummaryRawLaneMaxDays`, and `tokenTrendSummaryRangeDays`.
+This bounded raw-lane mode is intended behavior and does not render a section
+`Degraded` badge for `TREND`.
+
+Session-level debugging lives behind the General dashboard `STATUS` section's
+`Diagnostics` tab and is served by
+`/api/shell/reports/usage/session-diagnostics`. That endpoint returns bounded
+recent `session_history` rows with exact-key metadata for route identity, alias
+routing audit events, output-contract evidence, tool-definition snapshots, xAI
+Responses request-shape sanitization, and Claude transcript attribution repair
+state. It intentionally stays separate from the high-level usage report so
+debug-only rows can remain visible without changing Provider Status, Ledger, or
+Token Trend attribution.
+
+The dev shell, dev remote, and dev report service all join the external
 `aawm-tap_default` network used by the aawm-tap model containers. The dev report
 service also joins `aawm_default` so host-style database URLs can be rewritten to
 the internal `aawm-pgbouncer:6432` runtime pooler while development stays

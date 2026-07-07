@@ -18,6 +18,9 @@ services:
       sluice-dashboard-dev:
         condition: service_healthy
     environment:
+      SHELL_CONTAINER_NAME: dashboard-shell-dev
+      SHELL_CONTAINER_ERROR_INTAKE_DIR: /dashboard-shell-analysis
+      SHELL_REPORT_PROXY_SHARED_SECRET: "${SHELL_REPORT_PROXY_SHARED_SECRET:-dashboard-shell-local-proxy-secret}"
       AAWM_DASHBOARD_REMOTE_ENTRY: "http://localhost:${AAWM_DASHBOARD_REMOTE_DEV_PORT:-5176}/remoteEntry.js"
       AAWM_DASHBOARD_REMOTE_ENTRY_TYPE: "module"
       AAWM_OBSERVE_REMOTE_ENTRY: "http://localhost:${AAWM_OBSERVE_REMOTE_DEV_PORT:-5177}/remoteEntry.js"
@@ -39,9 +42,12 @@ services:
     networks:
       - aawm_tap
     volumes:
+      - ./scripts/container-error-intake.sh:/usr/local/bin/container-error-intake.sh:ro
+      - ./.analysis:/dashboard-shell-analysis
       - .:/workspace/dashboard-shell
       - dashboard_shell_dev_node_modules:/workspace/dashboard-shell/node_modules
       - dashboard_shell_dev_pnpm_store:/pnpm/store
+    entrypoint: ["/usr/local/bin/container-error-intake.sh"]
     command:
       - sh
       - -lc
@@ -69,6 +75,9 @@ services:
     restart: unless-stopped
     working_dir: /workspace/dashboard-shell
     environment:
+      SHELL_CONTAINER_NAME: dashboard-shell-reports-dev
+      SHELL_CONTAINER_ERROR_INTAKE_DIR: /dashboard-shell-analysis
+      SHELL_REPORT_PROXY_SHARED_SECRET: "${SHELL_REPORT_PROXY_SHARED_SECRET:-dashboard-shell-local-proxy-secret}"
       AAWM_API_KEY: "${AAWM_API_KEY:-}"
       AAWM_ACCESS_TOKEN: "${AAWM_ACCESS_TOKEN:-}"
       AAWM_API_TARGET: "${AAWM_API_TARGET:-http://aawm-api:8000}"
@@ -113,8 +122,12 @@ services:
       SHELL_REPORT_CACHE_PREWARM: "${SHELL_REPORT_CACHE_PREWARM:-false}"
       SHELL_REPORT_CACHE_PREWARM_INTERVAL_MS: "${SHELL_REPORT_CACHE_PREWARM_INTERVAL_MS:-900000}"
       SHELL_REPORT_CACHE_PREWARM_LOCK_TTL_MS: "${SHELL_REPORT_CACHE_PREWARM_LOCK_TTL_MS:-7200000}"
+      SHELL_REPORT_AGENT_SCORE_REASON_RECENT_ROW_LIMIT: "${SHELL_REPORT_AGENT_SCORE_REASON_RECENT_ROW_LIMIT:-10000}"
+      SHELL_REPORT_TOOL_ACTIVITY_RECENT_ROW_LIMIT: "${SHELL_REPORT_TOOL_ACTIVITY_RECENT_ROW_LIMIT:-10000}"
       SHELL_REPORT_DOCKER_LOG_ROOT: "${SHELL_REPORT_DOCKER_LOG_ROOT:-/host/docker/containers}"
-      SHELL_REPORT_DOCKER_LOG_CONTAINERS: "${SHELL_REPORT_DOCKER_LOG_CONTAINERS:-aawm-litellm,litellm-dev}"
+      SHELL_REPORT_DOCKER_LOG_CONTAINERS: "${SHELL_REPORT_DOCKER_LOG_CONTAINERS:-}"
+      SHELL_REPORT_DOCKER_LOG_EXTERNAL_CONTAINERS: "${SHELL_REPORT_DOCKER_LOG_EXTERNAL_CONTAINERS:-aawm-litellm,litellm-dev}"
+      SHELL_REPORT_ERROR_INTAKE_DIR: "${SHELL_REPORT_ERROR_INTAKE_DIR:-/dashboard-shell-analysis}"
     expose:
       - "${SHELL_REPORT_PORT:-3010}"
     depends_on:
@@ -127,10 +140,13 @@ services:
       - aawm_core
       - aegis_core
     volumes:
+      - ./scripts/container-error-intake.sh:/usr/local/bin/container-error-intake.sh:ro
+      - ./.analysis:/dashboard-shell-analysis
       - .:/workspace/dashboard-shell
       - dashboard_shell_reports_dev_node_modules:/workspace/dashboard-shell/node_modules
       - dashboard_shell_reports_dev_pnpm_store:/pnpm/store
       - /var/lib/docker/containers:/host/docker/containers:ro
+    entrypoint: ["/usr/local/bin/container-error-intake.sh"]
     command:
       - sh
       - -lc
@@ -154,6 +170,10 @@ services:
   dashboard-shell-redis:
     image: redis:7-alpine
     restart: unless-stopped
+    environment:
+      SHELL_CONTAINER_NAME: dashboard-shell-redis
+      SHELL_CONTAINER_ERROR_INTAKE_DIR: /dashboard-shell-analysis
+    entrypoint: ["/usr/local/bin/container-error-intake.sh"]
     command:
       [
         "redis-server",
@@ -166,6 +186,9 @@ services:
         "--maxmemory-policy",
         "allkeys-lru",
       ]
+    volumes:
+      - ./scripts/container-error-intake.sh:/usr/local/bin/container-error-intake.sh:ro
+      - ./.analysis:/dashboard-shell-analysis
     expose:
       - "6379"
     networks:
@@ -183,6 +206,8 @@ services:
     restart: unless-stopped
     working_dir: /workspace/aawm-dashboard
     environment:
+      SHELL_CONTAINER_NAME: dashboard-shell-aawm-dashboard-dev
+      SHELL_CONTAINER_ERROR_INTAKE_DIR: /dashboard-shell-analysis
       AAWM_DASHBOARD_REMOTE_DEV_PORT: "${AAWM_DASHBOARD_REMOTE_DEV_PORT:-5176}"
       CHOKIDAR_USEPOLLING: "${CHOKIDAR_USEPOLLING:-true}"
       WATCHPACK_POLLING: "${WATCHPACK_POLLING:-true}"
@@ -191,9 +216,12 @@ services:
     networks:
       - aawm_tap
     volumes:
+      - ./scripts/container-error-intake.sh:/usr/local/bin/container-error-intake.sh:ro
+      - ./.analysis:/dashboard-shell-analysis
       - ../aawm-dashboard:/workspace/aawm-dashboard
       - aawm_dashboard_dev_node_modules:/workspace/aawm-dashboard/node_modules
       - aawm_dashboard_dev_npm_cache:/root/.npm
+    entrypoint: ["/usr/local/bin/container-error-intake.sh"]
     command:
       - sh
       - -lc
@@ -217,6 +245,8 @@ services:
     restart: unless-stopped
     working_dir: /workspace/aawm-observe-dashboard
     environment:
+      SHELL_CONTAINER_NAME: dashboard-shell-aawm-observe-dashboard-dev
+      SHELL_CONTAINER_ERROR_INTAKE_DIR: /dashboard-shell-analysis
       AAWM_OBSERVE_REMOTE_DEV_PORT: "${AAWM_OBSERVE_REMOTE_DEV_PORT:-5177}"
       CHOKIDAR_USEPOLLING: "${CHOKIDAR_USEPOLLING:-true}"
       WATCHPACK_POLLING: "${WATCHPACK_POLLING:-true}"
@@ -225,9 +255,12 @@ services:
     networks:
       - aawm_tap
     volumes:
+      - ./scripts/container-error-intake.sh:/usr/local/bin/container-error-intake.sh:ro
+      - ./.analysis:/dashboard-shell-analysis
       - ../aawm-observe-dashboard:/workspace/aawm-observe-dashboard
       - aawm_observe_dashboard_dev_node_modules:/workspace/aawm-observe-dashboard/node_modules
       - aawm_observe_dashboard_dev_npm_cache:/root/.npm
+    entrypoint: ["/usr/local/bin/container-error-intake.sh"]
     command:
       - sh
       - -lc
@@ -251,6 +284,8 @@ services:
     restart: unless-stopped
     working_dir: /workspace/aawm-tap-dashboard
     environment:
+      SHELL_CONTAINER_NAME: dashboard-shell-aawm-tap-dashboard-dev
+      SHELL_CONTAINER_ERROR_INTAKE_DIR: /dashboard-shell-analysis
       AAWM_TAP_REMOTE_DEV_PORT: "${AAWM_TAP_REMOTE_DEV_PORT:-5173}"
       CHOKIDAR_USEPOLLING: "${CHOKIDAR_USEPOLLING:-true}"
       VITE_API_KEY: ""
@@ -263,9 +298,12 @@ services:
     networks:
       - aawm_tap
     volumes:
+      - ./scripts/container-error-intake.sh:/usr/local/bin/container-error-intake.sh:ro
+      - ./.analysis:/dashboard-shell-analysis
       - ../aawm-tap-dashboard:/workspace/aawm-tap-dashboard
       - aawm_tap_dashboard_dev_node_modules:/workspace/aawm-tap-dashboard/node_modules
       - aawm_tap_dashboard_dev_npm_cache:/root/.npm
+    entrypoint: ["/usr/local/bin/container-error-intake.sh"]
     command:
       - sh
       - -lc
@@ -289,6 +327,8 @@ services:
     restart: unless-stopped
     working_dir: /workspace/aegis-dashboard
     environment:
+      SHELL_CONTAINER_NAME: dashboard-shell-aegis-dashboard-dev
+      SHELL_CONTAINER_ERROR_INTAKE_DIR: /dashboard-shell-analysis
       AEGIS_REMOTE_DEV_PORT: "${AEGIS_REMOTE_DEV_PORT:-5174}"
       CHOKIDAR_USEPOLLING: "${CHOKIDAR_USEPOLLING:-true}"
       WATCHPACK_POLLING: "${WATCHPACK_POLLING:-true}"
@@ -297,9 +337,12 @@ services:
     networks:
       - aawm_tap
     volumes:
+      - ./scripts/container-error-intake.sh:/usr/local/bin/container-error-intake.sh:ro
+      - ./.analysis:/dashboard-shell-analysis
       - ../aegis-dashboard:/workspace/aegis-dashboard
       - aegis_dashboard_dev_node_modules:/workspace/aegis-dashboard/node_modules
       - aegis_dashboard_dev_npm_cache:/root/.npm
+    entrypoint: ["/usr/local/bin/container-error-intake.sh"]
     command:
       - sh
       - -lc
@@ -323,6 +366,8 @@ services:
     restart: unless-stopped
     working_dir: /workspace/sluice-dashboard
     environment:
+      SHELL_CONTAINER_NAME: dashboard-shell-sluice-dashboard-dev
+      SHELL_CONTAINER_ERROR_INTAKE_DIR: /dashboard-shell-analysis
       CHOKIDAR_USEPOLLING: "${CHOKIDAR_USEPOLLING:-true}"
       SLUICE_REMOTE_DEV_PORT: "${SLUICE_REMOTE_DEV_PORT:-5175}"
       WATCHPACK_POLLING: "${WATCHPACK_POLLING:-true}"
@@ -331,9 +376,12 @@ services:
     networks:
       - aawm_tap
     volumes:
+      - ./scripts/container-error-intake.sh:/usr/local/bin/container-error-intake.sh:ro
+      - ./.analysis:/dashboard-shell-analysis
       - ../sluice-dashboard:/workspace/sluice-dashboard
       - sluice_dashboard_dev_node_modules:/workspace/sluice-dashboard/node_modules
       - sluice_dashboard_dev_npm_cache:/root/.npm
+    entrypoint: ["/usr/local/bin/container-error-intake.sh"]
     command:
       - sh
       - -lc

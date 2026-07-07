@@ -3,6 +3,7 @@
  * Wave 11: extracted from phosphor-dashboard.testkit.ts
  */
 import type {
+  UsageReportQuotaBillingDetail,
   UsageReportQuotaRow,
   UsageReportQuotaUsageBreakdown,
   UsageReportProviderLatencyHealthRow,
@@ -37,6 +38,7 @@ function velocityClassForScore(score: number): string | undefined {
 type QuotaIntervalKind =
   | 'short'
   | 'weekly'
+  | 'weekly_overage_included'
   | 'special'
   | 'short_special'
   | 'monthly'
@@ -191,6 +193,19 @@ function extractInterval(
         velocitySegments: row.short_velocity_segments,
         velocityScores: row.short_velocity_scores,
       }
+
+    case 'weekly_overage_included':
+      if (
+        !row.weekly_overage_included_active ||
+        row.weekly_overage_included_remaining_pct === null
+      )
+        return null
+      return {
+        remainingPct: row.weekly_overage_included_remaining_pct,
+        resetAt: row.weekly_overage_included_reset_at ?? undefined,
+        velocitySegments: row.weekly_overage_included_velocity_segments,
+        velocityScores: row.weekly_overage_included_velocity_scores,
+      }
     case 'weekly':
       if (!row.weekly_active || row.weekly_remaining_pct === null) return null
       return {
@@ -250,7 +265,44 @@ function quotaDurationHours(
   if (interval === 'monthly') return 720
   if (interval === 'wtus') return 5
   if (interval === 'short' || interval === 'short_special') return 5
+  if (interval === 'weekly_overage_included') return 168
   return 168
+}
+
+function quotaUnitFromKey(quotaKey: string | null | undefined): string | null {
+  if (quotaKey === undefined || quotaKey === null) return null
+  if (quotaKey.endsWith(':credits')) return 'credits'
+  if (quotaKey.endsWith(':requests')) return 'requests'
+  return null
+}
+
+function quotaBillingIdentityBits(
+  detail: UsageReportQuotaBillingDetail | undefined,
+  fallbackQuotaKey: string | null
+): string[] | undefined {
+  const quotaKey = detail?.quota_key ?? fallbackQuotaKey
+  const quotaUnit = detail?.quota_unit ?? quotaUnitFromKey(quotaKey)
+  const bits = [quotaKey, detail?.source, detail?.client, quotaUnit].filter(
+    (bit): bit is string => typeof bit === 'string' && bit.trim().length > 0
+  )
+  return bits.length > 0 ? bits : undefined
+}
+
+function quotaIdentityForInterval(
+  row: UsageReportQuotaRow,
+  interval: QuotaIntervalKind
+): string[] | undefined {
+  const provider = row.provider.toLowerCase()
+  const fallbackQuotaKey =
+    provider === 'xai' &&
+    typeof row.model === 'string' &&
+    row.model.startsWith('xai_grok_build_')
+      ? row.model
+      : null
+  return quotaBillingIdentityBits(
+    row.billing_details?.[interval],
+    fallbackQuotaKey
+  )
 }
 
 function resetWindowStartIso(
@@ -589,6 +641,8 @@ export function quotaTypeToPeriodType(
       return '5hr'
     case 'weekly':
       return 'weekly'
+    case 'weekly_overage_included':
+      return 'weekly_overage_included'
     case 'special':
     case 'weekly_special':
       return 'special'
@@ -599,15 +653,6 @@ export function quotaTypeToPeriodType(
   }
 }
 
-/**
- * Creates a QuotaBarGroup for a single (label, interval) pair.
- *
- * Wave 24-PhosphorDash (operator F1b): now wires optional `tipWindow` from
- * interval timestamps and `tipModels` from the usage breakdown array for the
- * same interval. `tipVelocity` is derived locally while spectral segment flags come from backend observations.
- *
- * Returns null if the interval is not active on the given row.
- */
 export function makeQuotaBarGroup(
   label: string,
   row: UsageReportQuotaRow,
@@ -627,6 +672,12 @@ export function makeQuotaBarGroup(
       intervalStart = row.short_interval_start
       intervalEnd = row.short_interval_end
       breakdown = row.short_usage_breakdown
+      break
+
+    case 'weekly_overage_included':
+      intervalStart = row.weekly_overage_included_interval_start
+      intervalEnd = row.weekly_overage_included_interval_end
+      breakdown = row.weekly_overage_included_usage_breakdown
       break
     case 'weekly':
       intervalStart = row.weekly_interval_start
@@ -678,6 +729,7 @@ export function makeQuotaBarGroup(
       iv.resetAt ?? null,
       durationHours
     ),
+    tipIdentity: quotaIdentityForInterval(row, interval),
     tipModels: tipModelsFromBreakdown(breakdown),
     tipRequestTotal: tipRequestTotalFromBreakdown(breakdown),
     tipRecentRequestTotal90m: tipRecentRequestTotal90mFromBreakdown(breakdown),
@@ -716,6 +768,12 @@ export function makeQuotaBarGroupAlways(
       intervalStart = row.short_interval_start
       intervalEnd = row.short_interval_end
       breakdown = row.short_usage_breakdown
+      break
+
+    case 'weekly_overage_included':
+      intervalStart = row.weekly_overage_included_interval_start
+      intervalEnd = row.weekly_overage_included_interval_end
+      breakdown = row.weekly_overage_included_usage_breakdown
       break
     case 'weekly':
       intervalStart = row.weekly_interval_start
@@ -756,6 +814,7 @@ export function makeQuotaBarGroupAlways(
       null,
       durationHours
     ),
+    tipIdentity: quotaIdentityForInterval(row, interval),
     tipModels: tipModelsFromBreakdown(breakdown),
     tipRequestTotal: tipRequestTotalFromBreakdown(breakdown),
     tipRecentRequestTotal90m: tipRecentRequestTotal90mFromBreakdown(breakdown),
@@ -775,6 +834,8 @@ export function quotaTypeToBarPeriodType(
       return '5hr'
     case 'weekly':
       return 'weekly'
+    case 'weekly_overage_included':
+      return 'weekly_overage_included'
     case 'special':
       return 'special'
     case 'monthly':
@@ -784,15 +845,14 @@ export function quotaTypeToBarPeriodType(
   }
 }
 
-/**
- * Maps a normalised quota_type to its canonical lane key suffix.
- */
 export function quotaTypeToLaneKey(quotaType: string): string {
   switch (quotaType.toLowerCase()) {
     case 'short':
       return 'short'
     case 'weekly':
       return 'weekly'
+    case 'weekly_overage_included':
+      return 'weekly_overage_included'
     case 'special':
       return 'special'
     case 'short_special':

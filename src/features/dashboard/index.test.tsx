@@ -1,9 +1,9 @@
 /**
- * Wave 37 cycle-3 — Dashboard index loading skeleton tests (TCG-2).
+ * Wave 37 cycle-3 — Dashboard index cold-load render tests (TCG-2 / D1-226).
  *
  * TCG-2: Verify that when `summaryLoading === true && summaryReport === undefined`,
- *   the dashboard renders `.dashboard-loading-skeleton` instead of the full
- *   layout. When data arrives the skeleton disappears.
+ *   the dashboard keeps PhosphorDashboard mounted so STATUS tabs remain reachable
+ *   while section bodies skeletonize locally.
  *
  * Strategy:
  *   - Polyfill jsdom gaps: window.matchMedia, window.ResizeObserver.
@@ -121,6 +121,17 @@ beforeEach(() => {
           generatedAt: '2026-05-19T00:00:00.000Z',
         },
         toolActivity: [],
+      })
+    ),
+    http.get('/api/shell/reports/usage/session-diagnostics', () =>
+      HttpResponse.json({
+        metadata: {
+          from: '2026-04-19',
+          to: '2026-05-19',
+          limit: 100,
+          generatedAt: '2026-05-19T00:00:00.000Z',
+        },
+        sessionDiagnostics: [],
       })
     )
   )
@@ -280,9 +291,13 @@ async function importDashboard(): Promise<React.ComponentType> {
 // TCG-2: Loading skeleton
 // ---------------------------------------------------------------------------
 
-describe('Dashboard — TCG-2: loading skeleton render path', () => {
-  test('test_dashboard_shows_skeleton_while_loading', async () => {
-    registerTokenTrendSummaryHandler()
+describe('Dashboard — TCG-2: cold-load render path', () => {
+  test('test_dashboard_keeps_status_tabs_reachable_while_loading', async () => {
+    const tokenTrendUrls: string[] = []
+    const toolActivityUrls: string[] = []
+    registerTokenTrendSummaryHandler((url) => {
+      tokenTrendUrls.push(url)
+    })
     // Register a handler that NEVER resolves so the query stays in loading state.
     let resolveUsageRequest: (() => void) | null = null
     server.use(
@@ -308,35 +323,71 @@ describe('Dashboard — TCG-2: loading skeleton render path', () => {
         })
       )
     )
+    server.use(
+      http.get('/api/shell/reports/usage/tool-activity', ({ request }) => {
+        toolActivityUrls.push(request.url)
+        return HttpResponse.json({
+          metadata: {
+            from: '2026-04-19',
+            to: '2026-05-19',
+            generatedAt: '2026-05-19T00:00:00.000Z',
+          },
+          toolActivity: [],
+        })
+      })
+    )
 
     const Dashboard = await importDashboard()
 
     const { container } = renderWithProviders(Dashboard)
 
-    // After initial router mount with a pending query, the skeleton should be
-    // present. The skeleton element has class "dashboard-loading-skeleton" and
-    // aria-busy="true".
     await waitFor(
       () => {
-        expect(
-          container.querySelector('.dashboard-loading-skeleton')
-        ).not.toBeNull()
+        expect(container.querySelector('.phosphor-dashboard')).not.toBeNull()
       },
       { timeout: 5000 }
     )
-    const skeleton = container.querySelector('.dashboard-loading-skeleton')
-    expect(skeleton).not.toBeNull()
-    expect(skeleton?.getAttribute('aria-busy')).toBe('true')
 
-    // The full PhosphorDashboard (class "phosphor-dashboard") should NOT be visible yet.
-    const fullDashboard = container.querySelector('.phosphor-dashboard')
-    expect(fullDashboard).toBeNull()
+    expect(container.querySelector('.dashboard-loading-skeleton')).toBeNull()
+    expect(screen.getByRole('heading', { name: 'STATUS' })).toBeInTheDocument()
+    const statusTabs = screen.getByRole('tablist', { name: 'Status view' })
+    expect(
+      within(statusTabs).getByRole('tab', { name: 'Health' })
+    ).toHaveAttribute('aria-selected', 'true')
+    expect(
+      within(statusTabs).getByRole('tab', { name: 'PgBouncer' })
+    ).toBeInTheDocument()
+    expect(
+      within(statusTabs).getByRole('tab', { name: 'Provider Credits' })
+    ).toBeInTheDocument()
+    expect(
+      within(statusTabs).getByRole('tab', { name: 'Diagnostics' })
+    ).toBeInTheDocument()
+
+    fireEvent.click(
+      within(statusTabs).getByRole('tab', { name: 'Diagnostics' })
+    )
+    await waitFor(
+      () => {
+        expect(
+          screen.getByText('Loading session diagnostics...')
+        ).toBeInTheDocument()
+      },
+      { timeout: 3000 }
+    )
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50))
+    })
+
+    expect(tokenTrendUrls).toHaveLength(0)
+    expect(toolActivityUrls).toHaveLength(0)
 
     // Clean up by resolving the pending request to avoid test interference.
     resolveUsageRequest?.()
   }, 15_000)
 
-  test('test_dashboard_skeleton_disappears_after_data_arrives', async () => {
+  test('test_dashboard_renders_full_sections_after_data_arrives', async () => {
     registerTokenTrendSummaryHandler()
     // Immediately resolve the usage query with data.
     server.use(
@@ -369,14 +420,55 @@ describe('Dashboard — TCG-2: loading skeleton render path', () => {
       { timeout: 3000 }
     )
 
-    // Once data arrives, the skeleton should be gone (the ternary branch
-    // resolves to PhosphorDashboard instead of the skeleton div).
     expect(container.querySelector('.dashboard-loading-skeleton')).toBeNull()
     const recency = screen.getByLabelText('Underlying data recency')
     expect(recency).toBeInTheDocument()
     expect(within(recency).getByText('Session')).toBeInTheDocument()
     expect(within(recency).getByText('Quota')).toBeInTheDocument()
     expect(within(recency).getByText('Health')).toBeInTheDocument()
+  })
+
+  test('test_dashboard_parent_managed_loading_does_not_duplicate_usage_query', async () => {
+    let usageCallCount = 0
+    registerTokenTrendSummaryHandler()
+    server.use(
+      http.get('/api/shell/reports/usage', () => {
+        usageCallCount += 1
+        return new Promise<Response>(() => undefined)
+      })
+    )
+    server.use(
+      http.get('/api/shell/reports/quotas', () =>
+        HttpResponse.json({
+          metadata: {
+            generatedAt: '2026-05-19T00:00:00.000Z',
+            latestRecordAt: null,
+            latestRecordAgeMinutes: null,
+            latestRecordStale: false,
+            staleRecordThresholdMinutes: 60,
+          },
+          quotas: [],
+        })
+      )
+    )
+
+    const Dashboard = await importDashboard()
+    renderWithProviders(Dashboard)
+
+    await waitFor(
+      () => {
+        expect(
+          screen.getByRole('heading', { name: 'STATUS' })
+        ).toBeInTheDocument()
+      },
+      { timeout: 5000 }
+    )
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50))
+    })
+
+    expect(usageCallCount).toBe(1)
   })
 
   test('test_force_refresh_button_adds_cache_bust_to_usage_request', async () => {
@@ -706,9 +798,10 @@ describe('test_usageReportQuotasKey_factory_used_in_both (S4-T5/S4-20)', () => {
     expect(Array.isArray(key)).toBe(true)
     // Key must start with a stable string identifier
     expect(key[0]).toBe('usage-report-quotas')
-    // Key must contain the from and to dates
-    expect(key).toContain('2026-05-14')
-    expect(key).toContain('2026-06-13')
+    // /quotas is live/global today, so normal dashboard and sidebar callers
+    // must share one cache entry instead of splitting by dashboard date range.
+    expect(key).not.toContain('2026-05-14')
+    expect(key).not.toContain('2026-06-13')
   })
 
   test('factory with cacheBust includes it in the key', () => {
@@ -890,8 +983,8 @@ describe('Dashboard — S4-21/S4-22: refresh handlers and cache key discipline',
     await waitFor(
       () => {
         expect(
-          screen.queryByRole('button', { name: /refresh provider data/i })
-        ).not.toBeNull()
+          screen.getByRole('button', { name: /refresh provider data/i })
+        ).not.toBeDisabled()
       },
       { timeout: 5_000 }
     )
@@ -1022,6 +1115,151 @@ describe('Dashboard — S4-21/S4-22: refresh handlers and cache key discipline',
         (k) => typeof k === 'string' && k !== '' && /^\d{13}$/.test(k)
       )
       expect(hasCacheBust).toBe(false)
+    }
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// D1-436: Heavy report query guardrails (no background interval polling)
+// ─────────────────────────────────────────────────────────────────────────────
+
+function getQueryObserverOptions(
+  client: QueryClient,
+  keyPrefix: string
+):
+  | {
+      refetchInterval: unknown
+      refetchIntervalInBackground: unknown
+    }
+  | undefined {
+  const query = client
+    .getQueryCache()
+    .getAll()
+    .find((q) => Array.isArray(q.queryKey) && q.queryKey[0] === keyPrefix)
+  const observers = (
+    query as
+      | { observers?: Array<{ options: Record<string, unknown> }> }
+      | undefined
+  )?.observers
+  const observer = observers?.[0]
+  if (observer === undefined) {
+    return undefined
+  }
+  return {
+    refetchInterval: observer.options.refetchInterval,
+    refetchIntervalInBackground: observer.options.refetchIntervalInBackground,
+  }
+}
+
+describe('Dashboard — D1-436: heavy query polling guardrails', () => {
+  test('test_heavy_report_queries_do_not_poll_in_background', async () => {
+    let quotasCallCount = 0
+    let usageReportUrl: URL | null = null
+    server.use(
+      http.get('/api/shell/reports/usage', ({ request }) => {
+        usageReportUrl = new URL(request.url)
+        return HttpResponse.json(MOCK_REPORT)
+      })
+    )
+    server.use(
+      http.get('/api/shell/reports/quotas', () => {
+        quotasCallCount += 1
+        return HttpResponse.json({
+          metadata: {
+            generatedAt: '2026-05-19T00:00:00Z',
+            latestRecordAt: null,
+            latestRecordAgeMinutes: null,
+            latestRecordStale: false,
+            staleRecordThresholdMinutes: 60,
+          },
+          quotas: [],
+        })
+      })
+    )
+    registerTokenTrendSummaryHandler()
+    registerQuotaRangeHistoryHandler()
+
+    const Dashboard = await importDashboard()
+    const client = makeClient()
+    const rootRoute = createRootRoute({ component: Dashboard })
+    const router = createRouter({
+      routeTree: rootRoute,
+      history: createMemoryHistory({ initialEntries: ['/'] }),
+      context: { queryClient: client },
+    })
+
+    render(
+      <QueryClientProvider client={client}>
+        <DirectionProvider>
+          <SearchProvider>
+            <LayoutProvider>
+              <SidebarProvider>
+                <RouterProvider router={router} />
+              </SidebarProvider>
+            </LayoutProvider>
+          </SearchProvider>
+        </DirectionProvider>
+      </QueryClientProvider>
+    )
+
+    await waitFor(
+      () => {
+        expect(
+          getQueryObserverOptions(client, 'usage-report-phosphor')
+        ).toBeDefined()
+      },
+      { timeout: 5_000 }
+    )
+
+    const phosphorOptions = getQueryObserverOptions(
+      client,
+      'usage-report-phosphor'
+    )
+    expect(phosphorOptions?.refetchIntervalInBackground).toBe(false)
+    expect(usageReportUrl?.searchParams.has('include_empty_row_fields')).toBe(
+      false
+    )
+
+    const queries = client.getQueryCache().getAll()
+    const normalQuotaQueries = queries.filter(
+      (q) =>
+        Array.isArray(q.queryKey) &&
+        q.queryKey.length === 1 &&
+        q.queryKey[0] === 'usage-report-quotas'
+    )
+    const sidebarQuotaQueries = queries.filter(
+      (q) =>
+        Array.isArray(q.queryKey) &&
+        q.queryKey[0] === 'shell-sidebar-quota-remaining'
+    )
+    expect(normalQuotaQueries).toHaveLength(1)
+    expect(sidebarQuotaQueries).toHaveLength(0)
+    expect(quotasCallCount).toBe(1)
+
+    const quotaRangeOptions = getQueryObserverOptions(
+      client,
+      'usage-report-quota-range-history'
+    )
+    if (quotaRangeOptions !== undefined) {
+      expect(quotaRangeOptions.refetchInterval).toBe(false)
+      expect(quotaRangeOptions.refetchIntervalInBackground).toBe(false)
+    }
+
+    const quotaHistoryOptions = getQueryObserverOptions(
+      client,
+      'usage-report-quota-history'
+    )
+    if (quotaHistoryOptions !== undefined) {
+      expect(quotaHistoryOptions.refetchInterval).toBe(false)
+      expect(quotaHistoryOptions.refetchIntervalInBackground).toBe(false)
+    }
+
+    const shellHealthOptions = getQueryObserverOptions(
+      client,
+      'shell-health-pgbouncer'
+    )
+    if (shellHealthOptions !== undefined) {
+      expect(shellHealthOptions.refetchIntervalInBackground).toBe(false)
     }
   })
 })

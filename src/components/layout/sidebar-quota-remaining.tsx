@@ -11,7 +11,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from '@/components/ui/tooltip'
-import { fetchUsageReportQuotas } from '@/features/dashboard/api/usage-report'
+import { usageReportQuotasQueryOptions } from '@/features/dashboard/api/usage-report'
 import {
   colorWithAlpha,
   formatPercent,
@@ -24,12 +24,7 @@ import {
 export function SidebarQuotaRemaining() {
   const { state } = useSidebar()
   const collapsed = state === 'collapsed'
-  const quotaQuery = useQuery({
-    queryKey: ['shell-sidebar-quota-remaining'],
-    queryFn: ({ signal }) => fetchUsageReportQuotas({}, signal),
-    refetchInterval: 60_000,
-    staleTime: 30_000,
-  })
+  const quotaQuery = useQuery(usageReportQuotasQueryOptions({}))
   const items = useMemo(
     () => buildSidebarQuotaItems(quotaQuery.data?.quotas ?? []),
     [quotaQuery.data?.quotas]

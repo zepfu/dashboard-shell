@@ -5,6 +5,10 @@ services:
       context: .
       dockerfile: Dockerfile
     image: dashboard-shell:local
+    environment:
+      SHELL_REPORT_PROXY_SHARED_SECRET: "${SHELL_REPORT_PROXY_SHARED_SECRET:-dashboard-shell-local-proxy-secret}"
+    volumes:
+      - ./.analysis:/dashboard-shell-analysis
     ports:
       - "${DASHBOARD_SHELL_PORT:-3005}:80"
     depends_on:
@@ -32,6 +36,9 @@ services:
       dockerfile: Dockerfile.report-service
     image: dashboard-shell-reports:local
     environment:
+      SHELL_CONTAINER_NAME: dashboard-shell-reports
+      SHELL_CONTAINER_ERROR_INTAKE_DIR: /dashboard-shell-analysis
+      SHELL_REPORT_PROXY_SHARED_SECRET: "${SHELL_REPORT_PROXY_SHARED_SECRET:-dashboard-shell-local-proxy-secret}"
       AAWM_API_KEY: "${AAWM_API_KEY:-}"
       AAWM_ACCESS_TOKEN: "${AAWM_ACCESS_TOKEN:-}"
       AAWM_API_TARGET: "${AAWM_API_TARGET:-http://aawm-api:8000}"
@@ -76,8 +83,12 @@ services:
       SHELL_REPORT_CACHE_PREWARM: "${SHELL_REPORT_CACHE_PREWARM:-false}"
       SHELL_REPORT_CACHE_PREWARM_INTERVAL_MS: "${SHELL_REPORT_CACHE_PREWARM_INTERVAL_MS:-900000}"
       SHELL_REPORT_CACHE_PREWARM_LOCK_TTL_MS: "${SHELL_REPORT_CACHE_PREWARM_LOCK_TTL_MS:-7200000}"
+      SHELL_REPORT_AGENT_SCORE_REASON_RECENT_ROW_LIMIT: "${SHELL_REPORT_AGENT_SCORE_REASON_RECENT_ROW_LIMIT:-10000}"
+      SHELL_REPORT_TOOL_ACTIVITY_RECENT_ROW_LIMIT: "${SHELL_REPORT_TOOL_ACTIVITY_RECENT_ROW_LIMIT:-10000}"
       SHELL_REPORT_DOCKER_LOG_ROOT: "${SHELL_REPORT_DOCKER_LOG_ROOT:-/host/docker/containers}"
-      SHELL_REPORT_DOCKER_LOG_CONTAINERS: "${SHELL_REPORT_DOCKER_LOG_CONTAINERS:-aawm-litellm,litellm-dev}"
+      SHELL_REPORT_DOCKER_LOG_CONTAINERS: "${SHELL_REPORT_DOCKER_LOG_CONTAINERS:-}"
+      SHELL_REPORT_DOCKER_LOG_EXTERNAL_CONTAINERS: "${SHELL_REPORT_DOCKER_LOG_EXTERNAL_CONTAINERS:-aawm-litellm,litellm-dev}"
+      SHELL_REPORT_ERROR_INTAKE_DIR: "${SHELL_REPORT_ERROR_INTAKE_DIR:-/dashboard-shell-analysis}"
     expose:
       - "3010"
     depends_on:
@@ -86,6 +97,7 @@ services:
     volumes:
       - ./server:/app/server:ro
       - /var/lib/docker/containers:/host/docker/containers:ro
+      - ./.analysis:/dashboard-shell-analysis
     healthcheck:
       test:
         [
@@ -108,6 +120,13 @@ services:
   dashboard-shell-redis:
     restart: unless-stopped
     image: redis:7-alpine
+    environment:
+      SHELL_CONTAINER_NAME: dashboard-shell-redis
+      SHELL_CONTAINER_ERROR_INTAKE_DIR: /dashboard-shell-analysis
+    volumes:
+      - ./scripts/container-error-intake.sh:/usr/local/bin/container-error-intake.sh:ro
+      - ./.analysis:/dashboard-shell-analysis
+    entrypoint: ["/usr/local/bin/container-error-intake.sh"]
     command:
       [
         "redis-server",
@@ -136,6 +155,14 @@ services:
     build:
       context: ../aawm-dashboard
       dockerfile: Dockerfile
+    environment:
+      SHELL_CONTAINER_NAME: aawm-dashboard
+      SHELL_CONTAINER_ERROR_INTAKE_DIR: /dashboard-shell-analysis
+    volumes:
+      - ./scripts/container-error-intake.sh:/usr/local/bin/container-error-intake.sh:ro
+      - ./.analysis:/dashboard-shell-analysis
+    entrypoint: ["/usr/local/bin/container-error-intake.sh"]
+    command: ["nginx", "-g", "daemon off;"]
     image: aawm-dashboard-remote:local
     expose:
       - "80"
@@ -153,6 +180,14 @@ services:
     build:
       context: ../aawm-observe-dashboard
       dockerfile: Dockerfile
+    environment:
+      SHELL_CONTAINER_NAME: aawm-observe-dashboard
+      SHELL_CONTAINER_ERROR_INTAKE_DIR: /dashboard-shell-analysis
+    volumes:
+      - ./scripts/container-error-intake.sh:/usr/local/bin/container-error-intake.sh:ro
+      - ./.analysis:/dashboard-shell-analysis
+    entrypoint: ["/usr/local/bin/container-error-intake.sh"]
+    command: ["nginx", "-g", "daemon off;"]
     image: aawm-observe-dashboard-remote:local
     expose:
       - "80"
@@ -170,6 +205,14 @@ services:
     build:
       context: ../aawm-tap-dashboard
       dockerfile: Dockerfile
+    environment:
+      SHELL_CONTAINER_NAME: aawm-tap-dashboard
+      SHELL_CONTAINER_ERROR_INTAKE_DIR: /dashboard-shell-analysis
+    volumes:
+      - ./scripts/container-error-intake.sh:/usr/local/bin/container-error-intake.sh:ro
+      - ./.analysis:/dashboard-shell-analysis
+    entrypoint: ["/usr/local/bin/container-error-intake.sh"]
+    command: ["nginx", "-g", "daemon off;"]
     image: aawm-tap-dashboard:local
     expose:
       - "80"
@@ -187,6 +230,14 @@ services:
     build:
       context: ../aegis-dashboard
       dockerfile: Dockerfile
+    environment:
+      SHELL_CONTAINER_NAME: aegis-dashboard
+      SHELL_CONTAINER_ERROR_INTAKE_DIR: /dashboard-shell-analysis
+    volumes:
+      - ./scripts/container-error-intake.sh:/usr/local/bin/container-error-intake.sh:ro
+      - ./.analysis:/dashboard-shell-analysis
+    entrypoint: ["/usr/local/bin/container-error-intake.sh"]
+    command: ["nginx", "-g", "daemon off;"]
     image: aegis-dashboard-remote:local
     expose:
       - "80"
@@ -204,6 +255,14 @@ services:
     build:
       context: ../sluice-dashboard
       dockerfile: Dockerfile
+    environment:
+      SHELL_CONTAINER_NAME: sluice-dashboard
+      SHELL_CONTAINER_ERROR_INTAKE_DIR: /dashboard-shell-analysis
+    volumes:
+      - ./scripts/container-error-intake.sh:/usr/local/bin/container-error-intake.sh:ro
+      - ./.analysis:/dashboard-shell-analysis
+    entrypoint: ["/usr/local/bin/container-error-intake.sh"]
+    command: ["nginx", "-g", "daemon off;"]
     image: sluice-dashboard-remote:local
     expose:
       - "80"

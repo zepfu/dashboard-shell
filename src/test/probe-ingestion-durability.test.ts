@@ -52,6 +52,44 @@ describe('probe-ingestion-durability', () => {
     })
   })
 
+  test('uses latestEventAt when latestDataAt is missing', () => {
+    const comparison = compareLatestSuccessToSource(
+      {
+        time: Date.parse('2026-06-06T15:10:00.000Z'),
+        iso: '2026-06-06T15:10:00.000Z',
+      },
+      {
+        latestEventAt: '2026-06-06T15:09:00.000Z',
+      }
+    )
+
+    expect(comparison).toMatchObject({
+      status: 'behind_success_traffic',
+      lagSeconds: 60,
+      sourceAt: '2026-06-06T15:09:00.000Z',
+      successAt: '2026-06-06T15:10:00.000Z',
+    })
+  })
+
+  test('uses latestPersistedAt when latestDataAt and latestEventAt are missing', () => {
+    const comparison = compareLatestSuccessToSource(
+      {
+        time: Date.parse('2026-06-06T15:10:00.000Z'),
+        iso: '2026-06-06T15:10:00.000Z',
+      },
+      {
+        latestPersistedAt: '2026-06-06T15:09:10.000Z',
+      }
+    )
+
+    expect(comparison).toMatchObject({
+      status: 'behind_success_traffic',
+      lagSeconds: 50,
+      sourceAt: '2026-06-06T15:09:10.000Z',
+      successAt: '2026-06-06T15:10:00.000Z',
+    })
+  })
+
   test('summarizes red status for dropped records and stale session source', () => {
     const health = {
       databaseEndpoint: {
@@ -94,6 +132,49 @@ describe('probe-ingestion-durability', () => {
       'session_history_drops_observed',
       'session_history_behind_success_traffic',
     ])
+  })
+
+  test('classifies 3xx access logs as http_redirect and excludes them from success/http_error counts', () => {
+    const rows = parseLiteLlmLogText(
+      [
+        '2026-06-06T15:10:00.000Z INFO:     172.30.0.1:58096 - "GET /v1/legacy-endpoint HTTP/1.1" 302 Found',
+        '2026-06-06T15:10:01.000Z INFO:     127.0.0.1:58097 - "GET /v1/chat/completions HTTP/1.1" 200 OK',
+        '2026-06-06T15:10:02.000Z INFO:     172.30.0.1:58098 - "GET /v1/chat/completions HTTP/1.1" 504 Gateway Timeout',
+      ].join('\n'),
+      'aawm-litellm'
+    )
+
+    expect(rows.map((row) => row.type)).toEqual([
+      'http_redirect',
+      'success',
+      'http_error',
+    ])
+
+    const summary = summarizeIngestionDurability(
+      {
+        sourceTables: {
+          tables: [
+            {
+              tableName: 'session_history',
+              latestDataAt: '2026-06-06T15:09:00.000Z',
+            },
+            {
+              tableName: 'rate_limit_observations',
+              latestDataAt: '2026-06-06T15:09:00.000Z',
+            },
+          ],
+        },
+      },
+      rows
+    )
+
+    expect(summary.traffic.successCount).toBe(1)
+    expect(summary.traffic.httpErrorCount).toBe(1)
+    expect(
+      summary.findings.find(
+        (finding) => finding.code === 'no_success_traffic_observed'
+      )
+    ).toBe(undefined)
   })
 
   test('accepts prefixed or mapped source-table health shapes', () => {

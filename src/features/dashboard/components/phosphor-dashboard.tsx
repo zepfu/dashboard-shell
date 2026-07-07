@@ -38,12 +38,17 @@ import {
   fetchUsageReport,
   fetchUsageReportQuotaEstimator,
   fetchUsageReportQuotaHistory,
+  fetchUsageReportSessionDiagnostics,
   usageReportQuotasQueryOptions,
   fetchUsageReportToolActivity,
   fetchUsageReportTokenTrendDay,
   fetchUsageReportTokenTrendSummary,
+  type ShellPgBouncerHealth,
+  type UsageReportProviderCreditLifecycle,
   type UsageReportProviderErrorObservationRow,
   type UsageReportQuotaHistoryRow,
+  type UsageReportQuotaHistoryResponse,
+  type UsageReportQuotaRangeHistoryResponse,
   type UsageReportQuotaRow,
   type UsageReportResponse,
   type UsageReportSummary,
@@ -60,6 +65,7 @@ import {
   computeFleetErrors,
   computeFleetP95,
   providerBrandHex,
+  providerAliases,
 } from '../lib/usage-report-display'
 import { useControllableState } from '../lib/use-controllable-state'
 import { AggregateCard } from './aggregate-card'
@@ -84,7 +90,10 @@ import {
 } from './phosphor-dashboard.testkit'
 import { ProviderCard, type ProviderCardConfig } from './provider-card'
 import { type SlicerFilters, type SlicerOptions } from './slicer-bar'
+import { AawmAliasRoutingPanel } from './status-section/aawm-alias-routing-panel'
 import { PgBouncerHealthPanel } from './status-section/pgbouncer-health-panel'
+import { ProviderAuthHealthPanel } from './status-section/provider-auth-health-panel'
+import { ProviderCreditLifecyclePanel } from './status-section/provider-credit-lifecycle-panel'
 import { ProviderQuotaHistoryBucket } from './status-section/provider-quota-history-bucket'
 import { ProviderStatusLegend } from './status-section/provider-status-legend'
 import { QuotaEstimatorWeightsPanel } from './status-section/quota-estimator-weights-panel'
@@ -94,6 +103,7 @@ import {
   SectionTabs,
   SectionSkeleton,
 } from './status-section/section-chrome'
+import { SessionDiagnosticsPanel } from './status-section/session-diagnostics-panel'
 import {
   TokenTrendChart,
   type LowerLaneMode,
@@ -104,7 +114,22 @@ import {
 // Constants
 // ---------------------------------------------------------------------------
 
-const LIVE_DASHBOARD_REFETCH_INTERVAL_MS = 60_000
+const LIVE_DASHBOARD_LIGHTWEIGHT_REFETCH_INTERVAL_MS = 60_000
+const LIVE_DASHBOARD_HEAVY_REFETCH_INTERVAL_MS = 120_000
+const LIVE_DASHBOARD_HEAVY_REPORT_GC_TIME_MS = 90_000
+
+function resolveProviderHealthColumnCount(viewportWidth: number): number {
+  if (viewportWidth >= 2100) return 8
+  if (viewportWidth >= 1600) return 4
+  return 2
+}
+
+function getProviderHealthColumnCount(): number {
+  if (typeof window === 'undefined') return 4
+  return resolveProviderHealthColumnCount(window.innerWidth)
+}
+
+const STATUS_HEALTH_CARD_OMIT_PROVIDERS = new Set(['google', 'antigravity'])
 
 /**
  * Ordered provider series for TokenTrendChart.
@@ -182,11 +207,57 @@ const PROVIDER_SERIES: ProviderSeries[] = [
   },
 ]
 
+function shouldShowTokenTrendDegradedBadge(
+  metadata?: {
+    degraded?: boolean
+    degradedReason?: string
+    timeout?: boolean
+    timedOutSubqueries?: string[]
+  } | null
+): boolean {
+  if (metadata?.degraded !== true) return false
+  if (metadata.degradedReason !== 'bounded_raw_lane_policy') return true
+  return (
+    metadata.timeout === true || Boolean(metadata.timedOutSubqueries?.length)
+  )
+}
+
+function hasPgBouncerIssue(health?: ShellPgBouncerHealth): boolean {
+  if (health === undefined) return false
+  if (health.error !== undefined && health.error.length > 0) return true
+  if (health.sidecars.length === 0) return false
+  if (health.status !== 'green') return true
+  return health.sidecars.some((sidecar) => sidecar.status !== 'green')
+}
+
+function hasProviderCreditsAvailable(
+  creditLifecycle?: UsageReportProviderCreditLifecycle
+): boolean {
+  if (
+    (creditLifecycle?.summaries ?? []).some(
+      (summary) => summary.available_count > 0
+    )
+  ) {
+    return true
+  }
+  return (creditLifecycle?.entries ?? []).some(
+    (entry) => entry.available_count > 0 || entry.status === 'available'
+  )
+}
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
-export type ProviderSectionView = 'health' | 'quota' | 'weights'
+export type ProviderSectionView =
+  | 'health'
+  | 'pgbouncer'
+  | 'provider-credits'
+  | 'quota'
+  | 'provider-auth'
+  | 'alias-routing'
+  | 'weights'
+  | 'diagnostics'
 
 export interface PhosphorDashboardProps {
   /** ISO date string for the range start (YYYY-MM-DD). */
@@ -257,9 +328,9 @@ export interface PhosphorDashboardProps {
   showComparison?: boolean
   /**
    * Wave 37 SF-1: Pre-fetched quota rows from the parent (index.tsx).
-   * Hoisting the /quotas query to index.tsx with the same queryKey shape
-   * (`['usage-report-quotas', from, to]`) eliminates the duplicate HTTP request
-   * that arose from the key mismatch between index.tsx and PhosphorDashboard.
+   * Hoisting /quotas onto the shared live `usage-report-quotas` query key
+   * eliminates duplicate HTTP requests between the shell sidebar, index.tsx,
+   * and standalone PhosphorDashboard fallback usage.
    * When provided, the internal quotas useQuery is bypassed.
    */
   quotas?: UsageReportQuotaRow[]
@@ -267,10 +338,14 @@ export interface PhosphorDashboardProps {
   quotasFetching?: boolean
   /** Recent quota history rows for Provider Status health-tab quota lanes. */
   quotaHistory?: UsageReportQuotaHistoryRow[]
+  /** Metadata for the recent quota history response. */
+  quotaHistoryMetadata?: UsageReportQuotaHistoryResponse['metadata']
   /** True whenever the recent quota history query is fetching/refetching. */
   quotaHistoryFetching?: boolean
   /** Range-aware quota history rows for the Status / Quota tab. */
   quotaRangeHistory?: UsageReportQuotaHistoryRow[]
+  /** Metadata for the range-aware quota history response. */
+  quotaRangeHistoryMetadata?: UsageReportQuotaRangeHistoryResponse['metadata']
   /** True whenever the range-aware quota history query is fetching/refetching. */
   quotaRangeHistoryFetching?: boolean
   /** Force-refresh the main usage report query. */
@@ -328,8 +403,10 @@ export default function PhosphorDashboard({
   quotas: quotasProp,
   quotasFetching: quotasFetchingProp = false,
   quotaHistory: quotaHistoryProp,
+  quotaHistoryMetadata: quotaHistoryMetadataProp,
   quotaHistoryFetching: quotaHistoryFetchingProp = false,
   quotaRangeHistory: quotaRangeHistoryProp,
+  quotaRangeHistoryMetadata,
   quotaRangeHistoryFetching = false,
   onRefreshReport,
   onRefreshQuotas,
@@ -362,7 +439,9 @@ export default function PhosphorDashboard({
   // request is shared across the whole dashboard. This internal query is ONLY
   // used when PhosphorDashboard is rendered in isolation (e.g. Storybook, tests)
   // without a parent supplying `report` + `reportLoading` props.
-  const internalQueryEnabled = reportProp === undefined
+  const parentManagesReport =
+    reportLoadingProp || reportFetchingProp || onRefreshReport !== undefined
+  const internalQueryEnabled = reportProp === undefined && !parentManagesReport
   const {
     data: internalReport,
     isLoading: internalLoading,
@@ -383,23 +462,28 @@ export default function PhosphorDashboard({
       filters?.environments,
       filters?.models,
     ],
-    queryFn: () =>
-      fetchUsageReport({
-        from: resolvedFrom,
-        to: resolvedTo,
-        grain: resolvedGrain,
-        groupBy: ['provider', 'model', 'repository'],
-        // 15-D.4: pass multi-value filter arrays; empty array = no filter
-        provider: filters?.providers,
-        repository: filters?.repositories,
-        client: filters?.clients,
-        environment: filters?.environments,
-        model: filters?.models,
-      }),
+    queryFn: ({ signal }) =>
+      fetchUsageReport(
+        {
+          from: resolvedFrom,
+          to: resolvedTo,
+          grain: resolvedGrain,
+          groupBy: ['provider', 'model', 'repository'],
+          // 15-D.4: pass multi-value filter arrays; empty array = no filter
+          provider: filters?.providers,
+          repository: filters?.repositories,
+          client: filters?.clients,
+          environment: filters?.environments,
+          model: filters?.models,
+        },
+        signal
+      ),
     // Skip when the parent has already provided the report data.
     enabled: internalQueryEnabled,
-    refetchInterval: LIVE_DASHBOARD_REFETCH_INTERVAL_MS,
-    refetchIntervalInBackground: true,
+    staleTime: LIVE_DASHBOARD_HEAVY_REFETCH_INTERVAL_MS,
+    refetchInterval: LIVE_DASHBOARD_HEAVY_REFETCH_INTERVAL_MS,
+    refetchIntervalInBackground: false,
+    gcTime: LIVE_DASHBOARD_HEAVY_REPORT_GC_TIME_MS,
   })
 
   // Resolve the effective report + loading state: prefer parent-supplied values
@@ -411,18 +495,14 @@ export default function PhosphorDashboard({
   const reportFetching = internalQueryEnabled
     ? internalFetching
     : reportFetchingProp
+  const secondaryReportQueriesEnabled = report !== undefined && !reportLoading
 
-  // 15-C.5 / Wave 37 SF-1: Include resolvedFrom/resolvedTo in the queryKey so
-  // the quotas query re-fetches when the user changes the date range. The
-  // /api/shell/reports/quotas endpoint does not currently accept from/to params
-  // (server-side it is a live snapshot from rate_limit_intervals). This wiring
-  // ensures the query invalidates on period changes, ready for when the API
-  // supports date-scoped quotas.
+  // 15-C.5 / Wave 37 SF-1 / D1-436: /quotas is a live global snapshot today, so
+  // Dashboard, sidebar, and standalone fallback callers share one query key.
   //
   // Wave 37 SF-1: this query is ONLY used when PhosphorDashboard is rendered
   // in isolation (e.g. Storybook, tests) without a parent supplying `quotas`.
-  // index.tsx hoists this query with the same prefix/date shape; the optional
-  // cache-bust element is only populated by explicit refresh.
+  // The optional cache-bust element is only populated by explicit refresh.
   const internalQuotasEnabled = quotasProp === undefined
   const {
     data: quotasData,
@@ -436,6 +516,7 @@ export default function PhosphorDashboard({
     }),
     // Skip when the parent has already provided quota rows.
     enabled: internalQuotasEnabled,
+    refetchIntervalInBackground: false,
   })
   const quotasFetching = internalQuotasEnabled
     ? internalQuotasFetching
@@ -450,9 +531,9 @@ export default function PhosphorDashboard({
     queryKey: ['usage-report-quota-history'],
     queryFn: ({ signal }) => fetchUsageReportQuotaHistory({}, signal),
     enabled: internalQuotaHistoryEnabled && providerSectionView === 'health',
-    staleTime: LIVE_DASHBOARD_REFETCH_INTERVAL_MS,
+    staleTime: LIVE_DASHBOARD_HEAVY_REFETCH_INTERVAL_MS,
     refetchInterval: false,
-    refetchIntervalInBackground: true,
+    refetchIntervalInBackground: false,
   })
   const quotaHistoryFetching = internalQuotaHistoryEnabled
     ? internalQuotaHistoryFetching
@@ -465,10 +546,11 @@ export default function PhosphorDashboard({
   } = useQuery({
     queryKey: ['shell-health-pgbouncer'],
     queryFn: ({ signal }) => fetchShellHealth(signal),
-    enabled: providerSectionView === 'health',
+    enabled:
+      providerSectionView === 'health' || providerSectionView === 'pgbouncer',
     staleTime: 15_000,
-    refetchInterval: LIVE_DASHBOARD_REFETCH_INTERVAL_MS,
-    refetchIntervalInBackground: true,
+    refetchInterval: LIVE_DASHBOARD_LIGHTWEIGHT_REFETCH_INTERVAL_MS,
+    refetchIntervalInBackground: false,
   })
 
   const {
@@ -498,9 +580,47 @@ export default function PhosphorDashboard({
         signal
       ),
     enabled: providerSectionView === 'weights',
-    staleTime: LIVE_DASHBOARD_REFETCH_INTERVAL_MS,
+    staleTime: LIVE_DASHBOARD_HEAVY_REFETCH_INTERVAL_MS,
     refetchInterval: false,
-    refetchIntervalInBackground: true,
+    refetchIntervalInBackground: false,
+  })
+
+  const {
+    data: sessionDiagnosticsData,
+    isFetching: sessionDiagnosticsFetching,
+    isLoading: sessionDiagnosticsLoading,
+    refetch: refetchSessionDiagnostics,
+  } = useQuery({
+    queryKey: [
+      'usage-report-session-diagnostics',
+      resolvedFrom,
+      resolvedTo,
+      filters?.providers,
+      filters?.repositories,
+      filters?.clients,
+      filters?.environments,
+      filters?.models,
+      reportRefreshKey,
+    ],
+    queryFn: ({ signal }) =>
+      fetchUsageReportSessionDiagnostics(
+        {
+          from: resolvedFrom,
+          to: resolvedTo,
+          provider: filters?.providers,
+          repository: filters?.repositories,
+          client: filters?.clients,
+          environment: filters?.environments,
+          model: filters?.models,
+          limit: 100,
+          cacheBust: reportRefreshKey,
+        },
+        signal
+      ),
+    enabled: providerSectionView === 'diagnostics',
+    staleTime: LIVE_DASHBOARD_HEAVY_REFETCH_INTERVAL_MS,
+    refetchInterval: false,
+    refetchIntervalInBackground: false,
   })
 
   const anomalies = useAnomalyDetection(
@@ -568,9 +688,11 @@ export default function PhosphorDashboard({
         },
         signal
       ),
-    staleTime: LIVE_DASHBOARD_REFETCH_INTERVAL_MS,
-    refetchInterval: LIVE_DASHBOARD_REFETCH_INTERVAL_MS,
-    refetchIntervalInBackground: true,
+    staleTime: LIVE_DASHBOARD_HEAVY_REFETCH_INTERVAL_MS,
+    enabled: secondaryReportQueriesEnabled,
+    refetchInterval: LIVE_DASHBOARD_HEAVY_REFETCH_INTERVAL_MS,
+    refetchIntervalInBackground: false,
+    gcTime: LIVE_DASHBOARD_HEAVY_REPORT_GC_TIME_MS,
   })
 
   const tokenTrendVersions = useMemo(
@@ -590,18 +712,22 @@ export default function PhosphorDashboard({
       report?.tokenTrendModelFirstSeen,
     ]
   )
-  const tokenTrendHealthRows = useMemo(
-    () =>
+  const tokenTrendHealthRows = useMemo(() => {
+    if (tokenTrendSummaryData?.metadata.tokenTrendHealthOmitted === true) {
+      return report?.tokenTrendHealth ?? report?.providerLatencyHealth ?? []
+    }
+    return (
       tokenTrendSummaryData?.tokenTrendHealth ??
       report?.tokenTrendHealth ??
       report?.providerLatencyHealth ??
-      [],
-    [
-      tokenTrendSummaryData?.tokenTrendHealth,
-      report?.tokenTrendHealth,
-      report?.providerLatencyHealth,
-    ]
-  )
+      []
+    )
+  }, [
+    tokenTrendSummaryData?.metadata.tokenTrendHealthOmitted,
+    tokenTrendSummaryData?.tokenTrendHealth,
+    report?.tokenTrendHealth,
+    report?.providerLatencyHealth,
+  ])
   const summaryTokenTrendScores = tokenTrendSummaryData?.tokenTrendScores
   const reportTokenTrendScores = report?.tokenTrendScores
   const reportRows = report?.rows
@@ -688,6 +814,25 @@ export default function PhosphorDashboard({
     }
   }, [tokenTrendHoverTarget])
 
+  useEffect(() => {
+    const clearTokenTrendHoverDetail = (): void => {
+      setTokenTrendHoverTarget(null)
+      setTokenTrendDetailRequest(null)
+    }
+
+    const handleVisibilityChange = (): void => {
+      if (document.visibilityState === 'hidden') {
+        clearTokenTrendHoverDetail()
+      }
+    }
+
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
+      clearTokenTrendHoverDetail()
+    }
+  }, [])
+
   const {
     data: tokenTrendDayDetailData,
     isFetching: tokenTrendDayDetailFetching,
@@ -726,13 +871,20 @@ export default function PhosphorDashboard({
     enabled:
       tokenTrendDetailRequest !== null &&
       tokenTrendDetailRequest.scopeKey === tokenTrendScopeKey,
-    staleTime: LIVE_DASHBOARD_REFETCH_INTERVAL_MS,
-    refetchInterval:
-      tokenTrendDetailRequest !== null
-        ? LIVE_DASHBOARD_REFETCH_INTERVAL_MS
-        : false,
-    refetchIntervalInBackground: true,
+    staleTime: LIVE_DASHBOARD_HEAVY_REFETCH_INTERVAL_MS,
+    refetchInterval: false,
+    refetchIntervalInBackground: false,
+    gcTime: LIVE_DASHBOARD_HEAVY_REPORT_GC_TIME_MS,
   })
+  const tokenTrendDetailMatchesScope =
+    tokenTrendDetailRequest !== null &&
+    tokenTrendDetailRequest.scopeKey === tokenTrendScopeKey
+  const activeTokenTrendDayDetailData = tokenTrendDetailMatchesScope
+    ? tokenTrendDayDetailData
+    : undefined
+  const activeTokenTrendDayDetailFetching = tokenTrendDetailMatchesScope
+    ? tokenTrendDayDetailFetching
+    : false
 
   const {
     data: toolActivityData,
@@ -762,12 +914,39 @@ export default function PhosphorDashboard({
         },
         signal
       ),
-    staleTime: LIVE_DASHBOARD_REFETCH_INTERVAL_MS,
-    refetchInterval: LIVE_DASHBOARD_REFETCH_INTERVAL_MS,
-    refetchIntervalInBackground: true,
+    staleTime: LIVE_DASHBOARD_HEAVY_REFETCH_INTERVAL_MS,
+    enabled: secondaryReportQueriesEnabled,
+    refetchInterval: LIVE_DASHBOARD_HEAVY_REFETCH_INTERVAL_MS,
+    refetchIntervalInBackground: false,
+    gcTime: LIVE_DASHBOARD_HEAVY_REPORT_GC_TIME_MS,
   })
 
   const providers = useMemo(() => deriveProviders(), [])
+  const providerHealthCardProviders = useMemo(
+    () =>
+      providers.filter(
+        (provider) => !STATUS_HEALTH_CARD_OMIT_PROVIDERS.has(provider)
+      ),
+    [providers]
+  )
+  const [providerHealthColumnCount, setProviderHealthColumnCount] = useState(
+    () => getProviderHealthColumnCount()
+  )
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined
+
+    const updateProviderHealthColumnCount = (): void => {
+      setProviderHealthColumnCount(
+        resolveProviderHealthColumnCount(window.innerWidth)
+      )
+    }
+
+    updateProviderHealthColumnCount()
+    window.addEventListener('resize', updateProviderHealthColumnCount)
+    return () =>
+      window.removeEventListener('resize', updateProviderHealthColumnCount)
+  }, [])
 
   // Wave 37 SF-1: prefer parent-supplied quotas (dedup fix); fall back to the
   // internal quotasData query result (standalone usage) then report?.quotas.
@@ -794,7 +973,8 @@ export default function PhosphorDashboard({
     for (const row of quotaRangeHistoryProp ??
       report?.quotaRangeHistory ??
       []) {
-      const provider = canonicalProvider(row.provider)
+      const canonical = canonicalProvider(row.provider)
+      const provider = canonical === 'antigravity' ? 'google' : canonical
       const rows = map.get(provider) ?? []
       rows.push(row)
       map.set(provider, rows)
@@ -993,6 +1173,10 @@ export default function PhosphorDashboard({
     // prior-window DB query is skipped entirely, saving a sequential waterfall
     // that previously added 20–30 s to the cold-load experience.
     enabled: !reportLoading && report !== undefined && showComparison,
+    staleTime: LIVE_DASHBOARD_HEAVY_REFETCH_INTERVAL_MS,
+    refetchInterval: false,
+    refetchIntervalInBackground: false,
+    gcTime: LIVE_DASHBOARD_HEAVY_REPORT_GC_TIME_MS,
   })
 
   // Wave 32-Deltas: build prior-window ProviderCurrentStats from priorReport,
@@ -1070,13 +1254,29 @@ export default function PhosphorDashboard({
     await refetchQuotaEstimator()
   }, [refetchQuotaEstimator])
 
+  const refreshSessionDiagnostics = useCallback(async (): Promise<void> => {
+    await refetchSessionDiagnostics()
+  }, [refetchSessionDiagnostics])
+
   const refreshStatusSection = useCallback(async (): Promise<void> => {
+    if (providerSectionView === 'pgbouncer') {
+      await refetchShellHealth()
+      return
+    }
+    if (providerSectionView === 'provider-credits') {
+      await refreshReport()
+      return
+    }
     if (providerSectionView === 'quota') {
       await Promise.all([refreshQuotas(), refreshQuotaRangeHistory()])
       return
     }
     if (providerSectionView === 'weights') {
       await refreshQuotaEstimator()
+      return
+    }
+    if (providerSectionView === 'diagnostics') {
+      await refreshSessionDiagnostics()
       return
     }
     await Promise.all([
@@ -1093,6 +1293,7 @@ export default function PhosphorDashboard({
     refreshQuotaRangeHistory,
     refreshQuotas,
     refreshReport,
+    refreshSessionDiagnostics,
   ])
 
   const refreshTokenSection = useCallback(async (): Promise<void> => {
@@ -1100,7 +1301,7 @@ export default function PhosphorDashboard({
       refreshReport(),
       refetchTokenTrendSummary(),
     ]
-    if (tokenTrendDetailRequest !== null) {
+    if (tokenTrendDetailMatchesScope) {
       refreshes.push(refetchTokenTrendDayDetail())
     }
     await Promise.all(refreshes)
@@ -1108,7 +1309,7 @@ export default function PhosphorDashboard({
     refreshReport,
     refetchTokenTrendSummary,
     refetchTokenTrendDayDetail,
-    tokenTrendDetailRequest,
+    tokenTrendDetailMatchesScope,
   ])
 
   const refreshComparisonSection = useCallback(async (): Promise<void> => {
@@ -1120,18 +1321,42 @@ export default function PhosphorDashboard({
   }, [refreshReport, refetchToolActivity])
 
   const statusUpdating =
-    providerSectionView === 'quota'
-      ? quotasFetching || quotaRangeHistoryFetching
-      : providerSectionView === 'weights'
-        ? quotaEstimatorFetching
-        : reportFetching ||
-          quotasFetching ||
-          quotaHistoryFetching ||
-          shellHealthFetching
+    providerSectionView === 'pgbouncer'
+      ? shellHealthFetching
+      : providerSectionView === 'provider-credits'
+        ? reportFetching
+        : providerSectionView === 'quota'
+          ? quotasFetching || quotaRangeHistoryFetching
+          : providerSectionView === 'weights'
+            ? quotaEstimatorFetching
+            : providerSectionView === 'diagnostics'
+              ? sessionDiagnosticsFetching
+              : reportFetching ||
+                quotasFetching ||
+                quotaHistoryFetching ||
+                shellHealthFetching
   const reportUpdating = reportFetching || toolActivityFetching
   const tokenTrendUpdating =
-    reportFetching || tokenTrendSummaryFetching || tokenTrendDayDetailFetching
+    reportFetching ||
+    tokenTrendSummaryFetching ||
+    activeTokenTrendDayDetailFetching
   const comparisonUpdating = reportFetching || priorReportFetching
+  const quotaHistoryMetadata =
+    quotaHistoryMetadataProp ?? internalQuotaHistoryData?.metadata
+  const statusQuotaDegradedMetadata =
+    quotaRangeHistoryMetadata?.degraded === true
+      ? quotaRangeHistoryMetadata
+      : quotaHistoryMetadata
+  const statusDegraded =
+    providerSectionView === 'quota' &&
+    statusQuotaDegradedMetadata?.degraded === true
+  const tokenTrendDegraded = shouldShowTokenTrendDegradedBadge(
+    tokenTrendSummaryData?.metadata
+  )
+  const pgBouncerIssue = hasPgBouncerIssue(shellHealthData?.pgBouncerSidecars)
+  const providerCreditsAvailable = hasProviderCreditsAvailable(
+    report?.providerCreditLifecycle
+  )
 
   return (
     <div
@@ -1161,8 +1386,33 @@ export default function PhosphorDashboard({
               value={providerSectionView}
               options={[
                 { value: 'health', label: 'Health' },
+                {
+                  value: 'pgbouncer',
+                  label: 'PgBouncer',
+                  indicator: pgBouncerIssue
+                    ? {
+                        label: 'PgBouncer has issues',
+                        title: 'PgBouncer has issues',
+                        className: 'is-red is-flashing',
+                      }
+                    : undefined,
+                },
+                {
+                  value: 'provider-credits',
+                  label: 'Provider Credits',
+                  indicator: providerCreditsAvailable
+                    ? {
+                        label: 'Provider credits available',
+                        title: 'Provider credits available',
+                        className: 'is-green',
+                      }
+                    : undefined,
+                },
                 { value: 'quota', label: 'Quota' },
+                { value: 'provider-auth', label: 'Provider Auth' },
+                { value: 'alias-routing', label: 'Alias Routing' },
                 { value: 'weights', label: 'Weights' },
+                { value: 'diagnostics', label: 'Diagnostics' },
               ]}
               onChange={setProviderSectionView}
             />
@@ -1170,6 +1420,17 @@ export default function PhosphorDashboard({
           accessory={
             <div className='section-title-tools'>
               <ProviderStatusLegend />
+              {statusDegraded ? (
+                <span
+                  className='section-degraded-badge'
+                  title={
+                    statusQuotaDegradedMetadata?.degradedMessage ??
+                    'Provider quota history is degraded.'
+                  }
+                >
+                  Degraded
+                </span>
+              ) : null}
               <SectionRefreshButton
                 label='Refresh provider data'
                 updating={statusUpdating}
@@ -1180,85 +1441,125 @@ export default function PhosphorDashboard({
         >
           STATUS
         </SectionTitle>
-        {reportLoading ? (
+        {reportLoading &&
+        (providerSectionView === 'health' ||
+          providerSectionView === 'provider-credits' ||
+          providerSectionView === 'provider-auth' ||
+          providerSectionView === 'alias-routing') ? (
           <SectionSkeleton height={120} />
+        ) : providerSectionView === 'pgbouncer' ? (
+          <PgBouncerHealthPanel
+            health={shellHealthData?.pgBouncerSidecars}
+            loading={shellHealthFetching}
+          />
+        ) : providerSectionView === 'provider-credits' ? (
+          <ProviderCreditLifecyclePanel
+            creditLifecycle={report?.providerCreditLifecycle}
+          />
         ) : providerSectionView === 'health' ? (
           <>
-            <PgBouncerHealthPanel
-              health={shellHealthData?.pgBouncerSidecars}
-              loading={shellHealthFetching}
-            />
             <div
-              className={`provider-summary ${styles['provider-summary-grid']}`}
+              className={`provider-health-summary ${styles['provider-health-summary-masonry']}`}
             >
-              {providers.map((provider) => {
-                const config: ProviderCardConfig = {
-                  provider,
-                  // Wave 12 Fix 1: use reference brand hex for card header name color
-                  color: providerBrandHex(provider),
-                }
-                const metrics = buildProviderMetrics(
-                  provider,
-                  healthRows,
-                  report?.rows ?? []
-                )
-                const cells = padHealthCells(
-                  healthRows,
-                  provider,
-                  providerErrorObservations
-                )
-                // Wave 41: build structured QuotaLane[] for providers with lane
-                // definitions. Each lane groups
-                // the current bar + prior bars for a single quota type side-by-side.
-                // Providers without lane defs (nvidia_nim, local) are not
-                // rendered in the status grid (no lane defs = no quota bars).
-                const lanes = buildProviderLanes(
-                  provider,
-                  quotaRows,
-                  quotaHistoryRows
-                )
-                const topModels = buildTopModels(
-                  providerStatusUsage,
-                  provider,
-                  healthRows
-                )
+              {Array.from(
+                { length: providerHealthColumnCount },
+                (_, columnIndex) => (
+                  <div
+                    key={`provider-health-column-${columnIndex.toString()}`}
+                    className={`provider-health-summary-column ${styles['provider-health-summary-column']}`}
+                  >
+                    {providerHealthCardProviders.map(
+                      (provider, providerIndex) => {
+                        if (
+                          providerIndex % providerHealthColumnCount !==
+                          columnIndex
+                        ) {
+                          return null
+                        }
 
-                return (
-                  <ProviderCard
-                    key={provider}
-                    config={config}
-                    data={metrics}
-                    healthCells={cells}
-                    quotas={[]}
-                    lanes={lanes.length > 0 ? lanes : undefined}
-                    anomalies={anomalies}
-                    topModels={topModels}
-                    localHealthItems={
-                      provider === 'local' ? (report?.localHealth ?? []) : []
-                    }
-                  />
+                        const config: ProviderCardConfig = {
+                          provider,
+                          // Wave 12 Fix 1: use reference brand hex for card header name color
+                          color: providerBrandHex(provider),
+                        }
+                        const aliases = providerAliases(provider)
+                        const metrics = buildProviderMetrics(
+                          provider,
+                          healthRows,
+                          report?.rows ?? [],
+                          undefined,
+                          aliases
+                        )
+                        const cells = padHealthCells(
+                          healthRows,
+                          provider,
+                          providerErrorObservations,
+                          aliases
+                        )
+                        // Wave 41: build structured QuotaLane[] for providers with lane
+                        // definitions. Each lane groups
+                        // the current bar + prior bars for a single quota type side-by-side.
+                        // Providers without lane defs (nvidia_nim, local) are not
+                        // rendered in the status grid (no lane defs = no quota bars).
+                        const lanes = buildProviderLanes(
+                          provider,
+                          quotaRows,
+                          quotaHistoryRows
+                        )
+                        const topModels = buildTopModels(
+                          providerStatusUsage,
+                          provider,
+                          healthRows,
+                          aliases
+                        )
+
+                        return (
+                          <ProviderCard
+                            key={provider}
+                            config={config}
+                            data={metrics}
+                            healthCells={cells}
+                            quotas={[]}
+                            lanes={lanes.length > 0 ? lanes : undefined}
+                            anomalies={anomalies}
+                            topModels={topModels}
+                            localHealthItems={
+                              provider === 'local'
+                                ? (report?.localHealth ?? [])
+                                : []
+                            }
+                          />
+                        )
+                      }
+                    )}
+                    {columnIndex === providerHealthColumnCount - 1 && (
+                      <AggregateCard
+                        config={aggregateConfig}
+                        data={aggregateMetrics}
+                        healthCells={aggregateHealthCells}
+                        fleetActivity={{
+                          toolCalls: summary?.tool_calls ?? 0,
+                          gitCommits: summary?.git_commit ?? 0,
+                          gitPushes: summary?.git_push ?? 0,
+                          invalidToolCalls: 0,
+                        }}
+                        anomalies={anomalies}
+                      />
+                    )}
+                  </div>
                 )
-              })}
-              {/* D3: AggregateCard as 8th peer — Σ Aggregate Totals in the provider row */}
-              <AggregateCard
-                config={aggregateConfig}
-                data={aggregateMetrics}
-                healthCells={aggregateHealthCells}
-                fleetActivity={{
-                  toolCalls: summary?.tool_calls ?? 0,
-                  gitCommits: summary?.git_commit ?? 0,
-                  gitPushes: summary?.git_push ?? 0,
-                  invalidToolCalls: 0,
-                }}
-                anomalies={anomalies}
-              />
+              )}
             </div>
           </>
+        ) : providerSectionView === 'provider-auth' ? (
+          <ProviderAuthHealthPanel authHealth={report?.providerAuthHealth} />
+        ) : providerSectionView === 'alias-routing' ? (
+          <AawmAliasRoutingPanel routing={report?.providerAliasRouting} />
         ) : providerSectionView === 'quota' ? (
           <div
             className={`provider-summary provider-quota-summary ${styles['provider-summary-grid']}`}
           >
-            {providers.map((provider) => (
+            {providerHealthCardProviders.map((provider) => (
               <ProviderQuotaHistoryBucket
                 key={`quota-${provider}`}
                 provider={provider}
@@ -1268,10 +1569,15 @@ export default function PhosphorDashboard({
               />
             ))}
           </div>
-        ) : (
+        ) : providerSectionView === 'weights' ? (
           <QuotaEstimatorWeightsPanel
             response={quotaEstimatorData}
             loading={quotaEstimatorLoading || quotaEstimatorFetching}
+          />
+        ) : (
+          <SessionDiagnosticsPanel
+            response={sessionDiagnosticsData}
+            loading={sessionDiagnosticsLoading || sessionDiagnosticsFetching}
           />
         )}
       </section>
@@ -1285,11 +1591,24 @@ export default function PhosphorDashboard({
         <SectionTitle
           id='section-tokens-heading'
           accessory={
-            <SectionRefreshButton
-              label='Refresh Token Trend data'
-              updating={tokenTrendUpdating}
-              onRefresh={refreshTokenSection}
-            />
+            <div className='section-title-tools'>
+              {tokenTrendDegraded ? (
+                <span
+                  className='section-degraded-badge'
+                  title={
+                    tokenTrendSummaryData?.metadata.degradedMessage ??
+                    'Token trend summary is degraded.'
+                  }
+                >
+                  Degraded
+                </span>
+              ) : null}
+              <SectionRefreshButton
+                label='Refresh Token Trend data'
+                updating={tokenTrendUpdating}
+                onRefresh={refreshTokenSection}
+              />
+            </div>
           }
         >
           TREND
@@ -1311,8 +1630,8 @@ export default function PhosphorDashboard({
             modelFirstSeen={tokenTrendModelFirstSeen}
             healthRows={tokenTrendHealthRows}
             scoreRows={tokenTrendScoreRows}
-            dayDetail={tokenTrendDayDetailData}
-            detailLoading={tokenTrendDayDetailFetching}
+            dayDetail={activeTokenTrendDayDetailData}
+            detailLoading={activeTokenTrendDayDetailFetching}
             onHourHover={handleTokenTrendHourHover}
             lowerLaneMode={trendLowerLaneMode}
             onLowerLaneModeChange={onTrendLowerLaneModeChange}

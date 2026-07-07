@@ -1,15 +1,30 @@
 import { http, HttpResponse } from 'msw'
+import { expectTypeOf } from 'vitest'
 import { server } from '../../../test/setup'
 import {
+  type UsageReportTokenTrendSummaryResponse,
   fetchUsageReport,
   fetchUsageReportQuotaEstimator,
   fetchUsageReportQuotaHistory,
   fetchUsageReportQuotaRangeHistory,
   fetchUsageReportQuotas,
+  fetchUsageReportSessionDiagnostics,
   fetchUsageReportTokenTrendDay,
   fetchUsageReportTokenTrendSummary,
   fetchUsageReportToolActivity,
+  usageReportQuotasQueryOptions,
+  type UsageReportQuotaHistoryRow,
 } from './usage-report'
+
+test('test_usageReportQuotasQueryOptions_disables_background_polling', () => {
+  const options = usageReportQuotasQueryOptions({
+    from: '2026-05-20',
+    to: '2026-05-21',
+  })
+
+  expect(options.refetchInterval).toBe(60_000)
+  expect(options.refetchIntervalInBackground).toBe(false)
+})
 
 test('test_fetchUsageReportTokenTrendSummary_sends_filters', async () => {
   let requestedUrl: URL | null = null
@@ -39,6 +54,296 @@ test('test_fetchUsageReportTokenTrendSummary_sends_filters', async () => {
   expect(requestedUrl?.searchParams.get('from')).toBe('2026-05-20')
   expect(requestedUrl?.searchParams.get('to')).toBe('2026-05-21')
   expect(requestedUrl?.searchParams.get('model')).toBe('claude-sonnet-4')
+})
+
+test('test_fetchUsageReportTokenTrendSummary_sends_health_opt_in', async () => {
+  let requestedUrl: URL | null = null
+
+  server.use(
+    http.get('/api/shell/reports/usage/token-trend-summary', ({ request }) => {
+      requestedUrl = new URL(request.url)
+      return HttpResponse.json({
+        metadata: {
+          from: '2026-05-20',
+          to: '2026-05-21',
+          includeTokenTrendHealth: true,
+        },
+        tokenTrendHours: [],
+        tokenTrendHealth: [],
+        tokenTrendVersions: [],
+      })
+    })
+  )
+
+  await expect(
+    fetchUsageReportTokenTrendSummary({
+      from: '2026-05-20',
+      to: '2026-05-21',
+      includeHealth: true,
+    })
+  ).resolves.toMatchObject({
+    metadata: { includeTokenTrendHealth: true },
+    tokenTrendHealth: [],
+  })
+
+  expect(requestedUrl?.searchParams.get('include_health')).toBe('1')
+})
+
+test('test_fetchUsageReportTokenTrendSummary_preserves_degraded_metadata', async () => {
+  server.use(
+    http.get('/api/shell/reports/usage/token-trend-summary', () =>
+      HttpResponse.json({
+        metadata: {
+          from: '2026-05-20',
+          to: '2026-05-21',
+          degraded: true,
+          degradedReason: 'database_timeout',
+          degradedMessage: 'Token trend summary exceeded the bounded timeout.',
+          timeout: true,
+          timedOutSubquery: 'health',
+          timedOutSubqueries: ['health'],
+          tokenTrendSummaryStatementTimeoutMs: 15000,
+        },
+        tokenTrendHours: [],
+        tokenTrendHealth: [],
+        tokenTrendScores: [],
+        tokenTrendVersions: [],
+        tokenTrendModelFirstSeen: [],
+      })
+    )
+  )
+
+  await expect(
+    fetchUsageReportTokenTrendSummary({
+      from: '2026-05-20',
+      to: '2026-05-21',
+    })
+  ).resolves.toMatchObject({
+    metadata: {
+      degraded: true,
+      degradedReason: 'database_timeout',
+      timeout: true,
+      timedOutSubquery: 'health',
+      timedOutSubqueries: ['health'],
+      tokenTrendSummaryStatementTimeoutMs: 15000,
+    },
+    tokenTrendHours: [],
+    tokenTrendVersions: [],
+  })
+})
+
+function minimalUsageReportPayload() {
+  return {
+    metadata: {
+      from: '2026-05-20',
+      to: '2026-05-21',
+      grain: 'day',
+      groupBy: ['provider', 'model', 'repository'],
+      limit: 50_000,
+      generatedAt: '2026-05-21T00:00:00.000Z',
+      latestRecordAt: null,
+      latestRecordAgeMinutes: null,
+      latestRecordStale: false,
+      staleRecordThresholdMinutes: 60,
+    },
+    summary: {
+      traces: 0,
+      token_in: 0,
+      token_out: 0,
+      token_cache_input: 0,
+      token_cache_creation: 0,
+      token_reasoning_reported: 0,
+      token_reasoning_estimated: 0,
+      token_total: 0,
+      usd_cost: 0,
+      cache_miss_usd_cost: 0,
+      tool_calls: 0,
+      git_commit: 0,
+      git_push: 0,
+      period_start: '2026-05-20',
+      period_end: '2026-05-21',
+      latest_record_at: null,
+    },
+    trend: [],
+    clients: [],
+    providerLatencyHealth: [],
+    providerErrorObservations: [],
+    providerStatusUsage: [],
+    quotas: [],
+    quotaHistory: [],
+    toolActivity: [],
+    rows: [],
+  }
+}
+
+test('test_fetchUsageReport_uses_compact_rows_by_default', async () => {
+  let requestedUrl: URL | null = null
+
+  server.use(
+    http.get('/api/shell/reports/usage', ({ request }) => {
+      requestedUrl = new URL(request.url)
+      return HttpResponse.json(minimalUsageReportPayload())
+    })
+  )
+
+  await fetchUsageReport({
+    from: '2026-05-20',
+    to: '2026-05-21',
+    grain: 'day',
+  })
+
+  expect(requestedUrl?.searchParams.has('include_empty_row_fields')).toBe(false)
+})
+
+test('test_fetchUsageReport_can_opt_into_full_empty_row_fields', async () => {
+  let requestedUrl: URL | null = null
+
+  server.use(
+    http.get('/api/shell/reports/usage', ({ request }) => {
+      requestedUrl = new URL(request.url)
+      return HttpResponse.json(minimalUsageReportPayload())
+    })
+  )
+
+  await fetchUsageReport({
+    from: '2026-05-20',
+    to: '2026-05-21',
+    grain: 'day',
+    includeEmptyRowFields: true,
+  })
+
+  expect(requestedUrl?.searchParams.get('include_empty_row_fields')).toBe('1')
+})
+
+test('test_fetchUsageReportTokenTrendSummary_supports_partial_degraded_payload', async () => {
+  let requestedUrl: URL | null = null
+  server.use(
+    http.get('/api/shell/reports/usage/token-trend-summary', ({ request }) => {
+      requestedUrl = new URL(request.url)
+      return HttpResponse.json({
+        metadata: {
+          from: '2026-05-20',
+          to: '2026-05-21',
+          degraded: true,
+          degradedReason: 'database_timeout',
+          degradedMessage:
+            'Token trend summary subquery "hours" exceeded timeout; returning partial payload.',
+          timeout: true,
+          timedOutSubquery: 'hours',
+          timedOutSubqueries: ['hours'],
+          tokenTrendSummaryStatementTimeoutMs: 15000,
+        },
+        tokenTrendHours: [],
+        tokenTrendHealth: [{ provider: 'openai', value: 1 }],
+        tokenTrendScores: [{ score_bucket: 0 }],
+        tokenTrendVersions: [{ provider: 'openai', model: 'gpt-5' }],
+        tokenTrendModelFirstSeen: [{ date: '2026-05-20', provider: 'openai' }],
+      })
+    })
+  )
+
+  const response = await fetchUsageReportTokenTrendSummary({
+    from: '2026-05-20',
+    to: '2026-05-21',
+    provider: ['anthropic'],
+  })
+
+  expect(response).toMatchObject({
+    metadata: {
+      degraded: true,
+      degradedReason: 'database_timeout',
+      timeout: true,
+      timedOutSubquery: 'hours',
+      timedOutSubqueries: ['hours'],
+      tokenTrendSummaryStatementTimeoutMs: 15000,
+    },
+    tokenTrendHours: [],
+    tokenTrendHealth: [{ provider: 'openai', value: 1 }],
+    tokenTrendScores: [{ score_bucket: 0 }],
+    tokenTrendVersions: [{ provider: 'openai', model: 'gpt-5' }],
+    tokenTrendModelFirstSeen: [{ date: '2026-05-20', provider: 'openai' }],
+  })
+  expect(requestedUrl?.searchParams.get('provider')).toBe('anthropic')
+})
+
+test('test_fetchUsageReportTokenTrendSummary_preserves_bounded_raw_lane_policy_metadata', async () => {
+  server.use(
+    http.get('/api/shell/reports/usage/token-trend-summary', () =>
+      HttpResponse.json({
+        metadata: {
+          from: '2026-05-01',
+          to: '2026-06-01',
+          degraded: true,
+          degradedReason: 'bounded_raw_lane_policy',
+          degradedMessage:
+            'Token trend summary bounded raw-lane policy skipped lanes for broad range.',
+          skippedSubqueries: ['hours', 'scores', 'versions', 'modelFirstSeen'],
+          unavailableSubqueries: [
+            'hours',
+            'scores',
+            'versions',
+            'modelFirstSeen',
+          ],
+          tokenTrendSummaryRawLaneMaxDays: 7,
+          tokenTrendSummaryRangeDays: 30,
+        },
+        tokenTrendHours: [],
+        tokenTrendHealth: [{ provider: 'openai', value: 1 }],
+        tokenTrendScores: [],
+        tokenTrendVersions: [],
+        tokenTrendModelFirstSeen: [],
+      })
+    )
+  )
+
+  const response = await fetchUsageReportTokenTrendSummary({
+    from: '2026-05-01',
+    to: '2026-06-01',
+  })
+
+  expect(response).toMatchObject({
+    metadata: {
+      degraded: true,
+      degradedReason: 'bounded_raw_lane_policy',
+      skippedSubqueries: ['hours', 'scores', 'versions', 'modelFirstSeen'],
+      unavailableSubqueries: ['hours', 'scores', 'versions', 'modelFirstSeen'],
+      tokenTrendSummaryRawLaneMaxDays: 7,
+      tokenTrendSummaryRangeDays: 30,
+    },
+    tokenTrendHours: [],
+    tokenTrendHealth: [{ provider: 'openai', value: 1 }],
+    tokenTrendVersions: [],
+    tokenTrendModelFirstSeen: [],
+  })
+})
+
+test('test_usageReportTokenTrendSummaryMetadataContract_allows_timeoutFields', () => {
+  expectTypeOf<
+    UsageReportTokenTrendSummaryResponse['metadata']
+  >().toEqualTypeOf<{
+    from: string
+    to: string
+    generatedAt?: string
+    degraded?: boolean
+    degradedReason?: string
+    degradedMessage?: string
+    timeout?: boolean
+    timedOutSubquery?: string
+    timedOutSubqueries?: string[]
+    skippedSubqueries?: string[]
+    unavailableSubqueries?: string[]
+    tokenTrendSummaryRawLaneMaxDays?: number
+    tokenTrendSummaryRangeDays?: number
+    tokenTrendSummaryStatementTimeoutMs?: number
+    cacheBackend?: string
+    cacheFreshUntil?: string | null
+    cacheGeneratedAt?: string | null
+    cacheKeyHash?: string
+    cacheScope?: string
+    cacheStaleUntil?: string | null
+    cacheStatus?: string
+    cacheRefreshing?: boolean
+  }>()
 })
 
 test('test_fetchUsageReportTokenTrendDay_sends_date_filters_and_signal', async () => {
@@ -97,6 +402,401 @@ test('test_fetchUsageReportTokenTrendDay_uses_server_error_message', async () =>
       date: '2026-05-20',
     })
   ).rejects.toThrow('bad day')
+})
+
+test('test_fetchUsageReport_preserves_providerAliasRouting_contract', async () => {
+  const future = new Date(Date.now() + 120_000).toISOString()
+  server.use(
+    http.get('/api/shell/reports/usage', () =>
+      HttpResponse.json({
+        metadata: {
+          from: '2026-05-20',
+          to: '2026-05-21',
+          grain: 'day',
+          groupBy: ['provider', 'model'],
+          limit: 50000,
+          generatedAt: '2026-05-21T00:00:00.000Z',
+          latestRecordAt: null,
+          latestRecordAgeMinutes: null,
+          latestRecordStale: false,
+          staleRecordThresholdMinutes: 60,
+        },
+        summary: {
+          traces: 1,
+          token_in: 1,
+          token_out: 1,
+          token_cache_input: 0,
+          token_cache_creation: 0,
+          token_reasoning_reported: 0,
+          token_reasoning_estimated: 0,
+          token_total: 2,
+          usd_cost: 0,
+          cache_miss_usd_cost: 0,
+          tool_calls: 0,
+          git_commit: 0,
+          git_push: 0,
+        },
+        trend: [],
+        clients: [],
+        providerLatencyHealth: [],
+        providerErrorObservations: [],
+        providerStatusUsage: [],
+        providerAliasRouting: {
+          data_source: 'recent_observed_session_history',
+          freshness_label:
+            'Recent observed routing from session history (not live Redis/DualCache)',
+          generated_at: '2026-05-21T00:00:00.000Z',
+          lookback_hours: 24,
+          families: [
+            { family: 'codex', observed: true },
+            { family: 'anthropic', observed: false },
+          ],
+          entries: [
+            {
+              family: 'codex',
+              alias_label: 'aawm-code',
+              provider: 'openai',
+              model: 'gpt-5',
+              route_family: 'codex_primary',
+              state_kind: 'affinity',
+              state_source: 'durable_cache',
+              observed_at: '2026-05-21T00:00:00.000Z',
+              expires_at: future,
+              remaining_seconds: 120,
+              is_active: true,
+              skipped_candidates: [],
+            },
+          ],
+        },
+        quotas: [],
+        quotaHistory: [],
+        toolActivity: [],
+        rows: [],
+      })
+    )
+  )
+
+  const report = await fetchUsageReport({
+    from: '2026-05-20',
+    to: '2026-05-21',
+    grain: 'day',
+  })
+  expect(report.providerAliasRouting?.entries[0]?.state_kind).toBe('affinity')
+  expect(report.providerAliasRouting?.data_source).toBe(
+    'recent_observed_session_history'
+  )
+})
+
+test('test_fetchUsageReport_preserves_providerAuthHealth_contract', async () => {
+  const future = new Date(Date.now() + 180_000).toISOString()
+  server.use(
+    http.get('/api/shell/reports/usage', () =>
+      HttpResponse.json({
+        metadata: {
+          from: '2026-05-20',
+          to: '2026-05-21',
+          grain: 'day',
+          groupBy: ['provider', 'model'],
+          limit: 50000,
+          generatedAt: '2026-05-21T00:00:00.000Z',
+          latestRecordAt: null,
+          latestRecordAgeMinutes: null,
+          latestRecordStale: false,
+          staleRecordThresholdMinutes: 60,
+        },
+        summary: {
+          traces: 0,
+          token_in: 0,
+          token_out: 0,
+          token_cache_input: 0,
+          token_cache_creation: 0,
+          token_reasoning_reported: 0,
+          token_reasoning_estimated: 0,
+          token_total: 0,
+          usd_cost: 0,
+          cache_miss_usd_cost: 0,
+          tool_calls: 0,
+          git_commit: 0,
+          git_push: 0,
+        },
+        trend: [],
+        clients: [],
+        providerLatencyHealth: [],
+        providerErrorObservations: [],
+        providerStatusUsage: [],
+        providerAuthHealth: {
+          data_source: 'provider_auth_current',
+          freshness_label: 'Current provider credential refresh state',
+          generated_at: '2026-05-21T00:00:00.000Z',
+          entries: [
+            {
+              observed_at: '2026-05-21T00:00:00.000Z',
+              environment: 'production',
+              provider: 'xai',
+              auth_family: 'grok_oidc',
+              status: 'refreshed',
+              attempted: true,
+              refreshed: true,
+              skipped: false,
+              expires_at: future,
+              remaining_seconds: 180,
+              auth_health_state: 'refreshed',
+              source_task: 'grok_oidc_refresh',
+              auth_file_hash_short: 'abcd1234',
+            },
+          ],
+        },
+        quotas: [],
+        quotaHistory: [],
+        toolActivity: [],
+        rows: [],
+      })
+    )
+  )
+
+  const report = await fetchUsageReport({
+    from: '2026-05-20',
+    to: '2026-05-21',
+    grain: 'day',
+  })
+  expect(report.providerAuthHealth?.data_source).toBe('provider_auth_current')
+  expect(report.providerAuthHealth?.entries[0]?.auth_family).toBe('grok_oidc')
+  expect(report.providerAuthHealth?.entries[0]?.auth_health_state).toBe(
+    'refreshed'
+  )
+})
+
+test('test_fetchUsageReport_preserves_providerCreditLifecycle_contract', async () => {
+  server.use(
+    http.get('/api/shell/reports/usage', () =>
+      HttpResponse.json({
+        metadata: {
+          from: '2026-05-20',
+          to: '2026-05-21',
+          grain: 'day',
+          groupBy: ['provider', 'model'],
+          limit: 50000,
+          generatedAt: '2026-05-21T00:00:00.000Z',
+          latestRecordAt: null,
+          latestRecordAgeMinutes: null,
+          latestRecordStale: false,
+          staleRecordThresholdMinutes: 60,
+        },
+        summary: {
+          traces: 0,
+          token_in: 0,
+          token_out: 0,
+          token_cache_input: 0,
+          token_cache_creation: 0,
+          token_reasoning_reported: 0,
+          token_reasoning_estimated: 0,
+          token_total: 0,
+          usd_cost: 0,
+          cache_miss_usd_cost: 0,
+          tool_calls: 0,
+          git_commit: 0,
+          git_push: 0,
+        },
+        trend: [],
+        clients: [],
+        providerLatencyHealth: [],
+        providerErrorObservations: [],
+        providerStatusUsage: [],
+        providerCreditLifecycle: {
+          data_source: 'provider_credit_current',
+          freshness_label: 'Current provider credit lifecycle',
+          generated_at: '2026-05-21T00:00:00.000Z',
+          summaries: [
+            {
+              environment: 'production',
+              provider: 'openai',
+              credit_family: 'codex_rate_limit_reset',
+              label: 'openai codex_rate_limit_reset credits',
+              available_count: 2,
+              used_count: 1,
+              expired_count: 0,
+              total_count: 3,
+            },
+          ],
+          entries: [
+            {
+              observed_at: '2026-05-21T00:00:00.000Z',
+              environment: 'production',
+              provider: 'openai',
+              account_hash_short: '8e928548',
+              credit_family: 'codex_rate_limit_reset',
+              status: 'available',
+              available_count: 1,
+              credit_identity: 'codex-1',
+            },
+          ],
+        },
+        quotas: [],
+        quotaHistory: [],
+        toolActivity: [],
+        rows: [],
+      })
+    )
+  )
+
+  const report = await fetchUsageReport({
+    from: '2026-05-20',
+    to: '2026-05-21',
+    grain: 'day',
+  })
+  expect(report.providerCreditLifecycle?.data_source).toBe(
+    'provider_credit_current'
+  )
+  expect(report.providerCreditLifecycle?.summaries[0]?.available_count).toBe(2)
+  expect(report.providerCreditLifecycle?.entries[0]?.credit_identity).toBe(
+    'codex-1'
+  )
+})
+
+test('test_fetchUsageReportQuotaHistory_preserves_degraded_metadata', async () => {
+  server.use(
+    http.get('/api/shell/reports/usage/quota-history', () =>
+      HttpResponse.json({
+        metadata: {
+          generatedAt: '2026-05-21T00:00:00.000Z',
+          degraded: true,
+          degradedReason: 'database_timeout',
+          degradedMessage: 'Quota history exceeded the bounded timeout.',
+          quotaHistoryStatementTimeoutMs: 15000,
+        },
+        quotaHistory: [],
+      })
+    )
+  )
+
+  await expect(fetchUsageReportQuotaHistory()).resolves.toMatchObject({
+    metadata: {
+      degraded: true,
+      degradedReason: 'database_timeout',
+      quotaHistoryStatementTimeoutMs: 15000,
+    },
+    quotaHistory: [],
+  })
+})
+
+test('test_fetchUsageReportQuotaHistory_preserves_partial_payload', async () => {
+  server.use(
+    http.get('/api/shell/reports/usage/quota-history', () =>
+      HttpResponse.json({
+        metadata: {
+          generatedAt: '2026-06-01T00:00:00.000Z',
+          degraded: true,
+          degradedReason: 'database_timeout',
+          degradedMessage:
+            'Quota history history_enrichment exceeded the bounded database timeout; returning partial payload from base rows.',
+          timeout: true,
+          timedOutSubquery: 'history_enrichment',
+          timedOutSubqueries: ['history_enrichment'],
+          quotaHistoryStatementTimeoutMs: 15000,
+        },
+        quotaHistory: [
+          {
+            provider: 'openai',
+            model: null,
+            quota_type: 'weekly',
+            expected_reset_at: '2026-06-01T00:00:00.000Z',
+            interval_start: '2026-05-25T00:00:00.000Z',
+            interval_end: '2026-06-01T00:00:00.000Z',
+            min_remaining_pct: 10,
+            max_remaining_pct: 100,
+            velocity_segments: [true, false],
+            velocity_scores: [0.4, 0.6],
+            velocity_sample_count: 2,
+            usage_tokens: 1234,
+            usage_breakdown: [
+              {
+                model: 'gpt-5',
+                tokens: 1234,
+                cost: 1.23,
+                traces: 5,
+                recent_traces_90m: 2,
+              },
+            ],
+          },
+        ],
+      })
+    )
+  )
+
+  const report = await fetchUsageReportQuotaHistory()
+  expect(report).toMatchObject({
+    metadata: {
+      degraded: true,
+      degradedReason: 'database_timeout',
+      timeout: true,
+      timedOutSubquery: 'history_enrichment',
+      timedOutSubqueries: ['history_enrichment'],
+      quotaHistoryStatementTimeoutMs: 15000,
+    },
+  })
+  expect(report.quotaHistory).toHaveLength(1)
+  expect(report.quotaHistory?.[0]?.provider).toBe('openai')
+})
+
+test('test_fetchUsageReportQuotaRangeHistory_preserves_partial_payload', async () => {
+  server.use(
+    http.get('/api/shell/reports/usage/quota-range-history', ({ request }) => {
+      const url = new URL(request.url)
+      return HttpResponse.json({
+        metadata: {
+          from: url.searchParams.get('from') ?? '2026-06-01',
+          to: url.searchParams.get('to') ?? '2026-06-08',
+          generatedAt: '2026-06-01T00:00:00.000Z',
+          degraded: true,
+          degradedReason: 'database_timeout',
+          degradedMessage:
+            'Quota range history subquery "history_enrichment" exceeded the bounded database timeout; returning partial payload from base rows.',
+          timeout: true,
+          timedOutSubquery: 'history_enrichment',
+          timedOutSubqueries: ['history_enrichment'],
+          quotaRangeHistoryStatementTimeoutMs: 15000,
+        },
+        quotaRangeHistory: [
+          {
+            provider: 'openai',
+            model: null,
+            quota_type: 'weekly',
+            expected_reset_at: '2026-06-08T00:00:00.000Z',
+            interval_start: '2026-06-01T00:00:00.000Z',
+            interval_end: '2026-06-08T00:00:00.000Z',
+            min_remaining_pct: 10,
+            max_remaining_pct: 100,
+            velocity_segments: [],
+            velocity_scores: [],
+            velocity_sample_count: 0,
+            usage_tokens: 0,
+            usage_breakdown: [],
+          },
+        ],
+      })
+    })
+  )
+
+  const report = await fetchUsageReportQuotaRangeHistory({
+    from: '2026-06-01',
+    to: '2026-06-08',
+    cacheBust: 'manual-1',
+  })
+
+  expect(report).toMatchObject({
+    metadata: {
+      from: '2026-06-01',
+      to: '2026-06-08',
+      degraded: true,
+      degradedReason: 'database_timeout',
+      timeout: true,
+      timedOutSubquery: 'history_enrichment',
+      timedOutSubqueries: ['history_enrichment'],
+      quotaRangeHistoryStatementTimeoutMs: 15000,
+    },
+  })
+  expect(report.quotaRangeHistory).toHaveLength(1)
+  expect(report.quotaRangeHistory[0]?.usage_tokens).toBe(0)
 })
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -394,4 +1094,503 @@ test('test_real_abort_rejects_with_AbortError', async () => {
       err instanceof Error &&
       (err.name === 'AbortError' || err.message.toLowerCase().includes('abort'))
   )
+})
+
+test('test_fetchUsageReportSessionDiagnostics_forwards_grok_side_channel_filters', async () => {
+  let capturedUrl: URL | null = null
+
+  server.use(
+    http.get('/api/shell/reports/usage/session-diagnostics', ({ request }) => {
+      capturedUrl = new URL(request.url)
+      return HttpResponse.json({
+        metadata: {
+          from: '2026-05-20',
+          to: '2026-05-21',
+          limit: 25,
+          generatedAt: '2026-05-21T00:00:00.000Z',
+        },
+        sessionDiagnostics: [
+          {
+            provider: 'xai',
+            model: 'grok-composer-2.5-fast',
+            diagnostic_flags: ['grok_side_channel'],
+            grok_side_channel: {
+              enabled: true,
+              endpoint_type: 'register',
+              endpoint_template: '/grok/v1/sessions/register',
+              content_type: 'application/json',
+              body_byte_length: 128,
+              body_sha256: 'abc123deadbeef',
+              digest_source: 'request_body',
+              json_container_type: 'object',
+              top_level_key_types: { session: 'object' },
+              array_length: null,
+            },
+          },
+        ],
+      })
+    })
+  )
+
+  const response = await fetchUsageReportSessionDiagnostics({
+    from: '2026-05-20',
+    to: '2026-05-21',
+    grok_side_channel: true,
+    grok_side_channel_endpoint_type: ['register'],
+    limit: 25,
+  })
+
+  expect(capturedUrl?.searchParams.get('grok_side_channel')).toBe('true')
+  expect(capturedUrl?.searchParams.get('grok_side_channel_endpoint_type')).toBe(
+    'register'
+  )
+  expect(response.sessionDiagnostics[0]?.grok_side_channel).toMatchObject({
+    endpoint_type: 'register',
+    body_sha256: 'abc123deadbeef',
+    digest_source: 'request_body',
+  })
+  const grok = response.sessionDiagnostics[0]?.grok_side_channel
+  expect(grok).toBeDefined()
+  expect(grok).not.toHaveProperty('request_body')
+  expect(grok).not.toHaveProperty('body_raw')
+  expect(grok).not.toHaveProperty('raw_body')
+  expect(JSON.stringify(grok)).not.toContain('RAW_SECRET')
+})
+
+// ---------------------------------------------------------------------------
+// D1-212/215/213/178/221/222 session diagnostics API contracts
+// ---------------------------------------------------------------------------
+
+describe('D1-212/215/213/178/221/222 session diagnostics API contracts', () => {
+  const diagnosticTypeFields = [
+    'diagnostic_flags',
+    'diagnostic_categories',
+    'grok_oauth',
+    'grok_side_channel',
+    'output_contract',
+    'xai_sanitizer',
+    'transcript_attribution',
+    'tool_definitions',
+    'alias_route_events',
+    'anthropic_context_window',
+  ] as const
+
+  test('test_usage_report_types_expose_session_diagnostics_response_and_row_shapes', async () => {
+    const { readFile } = await import('node:fs/promises')
+    const { dirname, join } = await import('node:path')
+    const { fileURLToPath } = await import('node:url')
+
+    const source = await readFile(
+      join(dirname(fileURLToPath(import.meta.url)), './usage-report.ts'),
+      'utf8'
+    )
+
+    expect(source).toContain(
+      'export interface UsageReportSessionDiagnosticsParams'
+    )
+    expect(source).toContain(
+      'export interface UsageReportSessionDiagnosticsRow'
+    )
+    expect(source).toContain(
+      'export interface UsageReportSessionDiagnosticsResponse'
+    )
+    expect(source).toContain(
+      'export async function fetchUsageReportSessionDiagnostics'
+    )
+
+    for (const field of diagnosticTypeFields) {
+      expect(source).toContain(`${field}?:`)
+    }
+
+    expect(source).toContain('credential_family?:')
+    expect(source).toContain('grok_native_oauth_managed?:')
+    expect(source).toContain('grok_native_entrypoint?:')
+    expect(source).toContain('endpoint_template?:')
+    expect(source).toContain('body_sha256?:')
+    expect(source).toContain('grok_side_channel?:')
+    expect(source).toContain('usage_output_contract_required_final_phrase?:')
+    expect(source).toContain(
+      'usage_output_contract_required_final_phrase_present?:'
+    )
+    expect(source).toContain('usage_output_contract_failure_class?:')
+    expect(source).toContain('usage_output_contract_setup_only_detected?:')
+    expect(source).toContain('xai_responses_request_sanitized?:')
+    expect(source).toContain('xai_responses_sanitized_removed_params?:')
+    expect(source).toContain('xai_responses_sanitized_tool_count?:')
+    expect(source).toContain('xai_responses_sanitized_tool_types?:')
+    expect(source).toContain('xai_tool_choice_without_tools_removed?:')
+    expect(source).toContain('xai_tool_choice_without_tools_removed_reason?:')
+    expect(source).toContain('session_history_transcript_attribution_status?:')
+    expect(source).toContain('session_history_transcript_attribution_source?:')
+    expect(source).toContain('reason?:')
+    expect(source).toContain('match_rule?:')
+    expect(source).toContain('updated_at?:')
+    expect(source).toContain('session_history_transcript_attribution?:')
+    expect(source).toContain('tool_definition_snapshot?:')
+    expect(source).toContain('alias_route_events?:')
+    expect(source).toContain('UsageReportAnthropicContextWindowDiagnostics')
+    expect(source).toContain('anthropic_context_window?:')
+    expect(source).toContain('mode?:')
+  })
+
+  test('test_fetchUsageReportSessionDiagnostics_forwards_filters_and_returns_diagnostic_rows', async () => {
+    let capturedUrl: URL | null = null
+
+    server.use(
+      http.get(
+        '/api/shell/reports/usage/session-diagnostics',
+        ({ request }) => {
+          capturedUrl = new URL(request.url)
+          return HttpResponse.json({
+            metadata: {
+              from: '2026-05-20',
+              to: '2026-05-21',
+              limit: 100,
+              generatedAt: '2026-05-21T00:00:00.000Z',
+            },
+            sessionDiagnostics: [
+              {
+                session_id: 'sess-1',
+                litellm_call_id: 'call-1',
+                provider: 'xai',
+                model: 'grok-composer-2.5-fast',
+                repository: 'dashboard-shell',
+                client: 'grok-build',
+                diagnostic_flags: ['grok_oauth', 'xai_sanitizer'],
+                diagnostic_categories: ['route_identity', 'request_shape'],
+                grok_oauth: {
+                  credential_family: 'xai_grok_oidc',
+                  grok_native_oauth_managed: true,
+                  grok_native_entrypoint: 'openai_responses',
+                },
+                output_contract: {
+                  usage_output_contract_required_final_phrase: 'done',
+                  usage_output_contract_required_final_phrase_present: true,
+                  usage_output_contract_failure_class: null,
+                  usage_output_contract_setup_only_detected: false,
+                },
+                xai_sanitizer: {
+                  xai_responses_request_sanitized: true,
+                  xai_responses_sanitized_removed_params: ['instructions'],
+                  xai_responses_sanitized_tool_count: 2,
+                  xai_responses_sanitized_tool_types: ['web_search'],
+                  xai_tool_choice_without_tools_removed: {
+                    name: 'Bash',
+                    type: 'function',
+                  },
+                  xai_tool_choice_without_tools_removed_reason: 'missing_tools',
+                },
+                transcript_attribution: {
+                  session_history_transcript_attribution_status: 'recoverable',
+                  session_history_transcript_attribution_source:
+                    'd1-229-claude-raw-transcript-attribution',
+                  session_history_transcript_attribution: {
+                    status: 'recoverable',
+                    match_rule: 'transcript_model_event',
+                  },
+                },
+                tool_definitions: {
+                  snapshot_hash: 'abc123',
+                  tool_definition_snapshot: [
+                    { name: 'Bash', type: 'function' },
+                  ],
+                },
+                alias_route_events: [
+                  {
+                    observed_at: '2026-05-20T12:00:00.000Z',
+                    alias_model: 'aawm-code',
+                    provider: 'anthropic',
+                    model: 'claude-sonnet-4-6',
+                    event_type: 'candidate_selected',
+                    redispatch_required: false,
+                  },
+                ],
+                anthropic_context_window: {
+                  mode: 'extended_1m',
+                  requested_tokens: 1000000,
+                  source: 'model_suffix_1m',
+                  beta: 'context-1m-2025-08-07',
+                  classification: { label: 'extended_1m', evidence: 'suffix' },
+                },
+              },
+            ],
+          })
+        }
+      )
+    )
+
+    const response = await fetchUsageReportSessionDiagnostics({
+      from: '2026-05-20',
+      to: '2026-05-21',
+      provider: ['xai', 'anthropic'],
+      model: ['grok-composer-2.5-fast'],
+      repository: ['dashboard-shell'],
+      client: ['grok-build'],
+      limit: 100,
+    } as Parameters<typeof fetchUsageReportSessionDiagnostics>[0])
+
+    expect(capturedUrl?.searchParams.get('from')).toBe('2026-05-20')
+    expect(capturedUrl?.searchParams.get('to')).toBe('2026-05-21')
+    expect(capturedUrl?.searchParams.get('provider')).toBe('xai,anthropic')
+    expect(capturedUrl?.searchParams.get('model')).toBe(
+      'grok-composer-2.5-fast'
+    )
+    expect(capturedUrl?.searchParams.get('repository')).toBe('dashboard-shell')
+    expect(capturedUrl?.searchParams.get('client')).toBe('grok-build')
+    expect(capturedUrl?.searchParams.get('limit')).toBe('100')
+
+    expect(response.sessionDiagnostics[0]).toMatchObject({
+      provider: 'xai',
+      model: 'grok-composer-2.5-fast',
+      diagnostic_flags: ['grok_oauth', 'xai_sanitizer'],
+      grok_oauth: {
+        credential_family: 'xai_grok_oidc',
+        grok_native_oauth_managed: true,
+      },
+      output_contract: {
+        usage_output_contract_required_final_phrase_present: true,
+      },
+      xai_sanitizer: {
+        xai_tool_choice_without_tools_removed_reason: 'missing_tools',
+      },
+      transcript_attribution: {
+        session_history_transcript_attribution_status: 'recoverable',
+      },
+      tool_definitions: {
+        snapshot_hash: 'abc123',
+      },
+      alias_route_events: [
+        {
+          alias_model: 'aawm-code',
+          event_type: 'candidate_selected',
+        },
+      ],
+      anthropic_context_window: {
+        mode: 'extended_1m',
+        requested_tokens: 1000000,
+        source: 'model_suffix_1m',
+        beta: 'context-1m-2025-08-07',
+        classification: { label: 'extended_1m', evidence: 'suffix' },
+      },
+    })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// D1-223/224/225 usage identity and billing contracts
+// ---------------------------------------------------------------------------
+
+describe('D1-223/224/225 usage identity and billing contracts', () => {
+  const usageIdentityDimensions = [
+    'inbound_model_alias',
+    'agent_name',
+    'agent_id',
+  ] as const
+
+  const usageIdentityFilters = [
+    'inbound_model_alias',
+    'agent_name',
+    'agent_id',
+  ] as const
+
+  const billingDetailFields = [
+    'quota_key',
+    'source',
+    'client',
+    'quota_unit',
+    'quota_limit',
+    'quota_used',
+    'quota_remaining',
+    'billing_period_start_at',
+    'billing_period_end_at',
+    'raw_provider_fields',
+    'evidence',
+  ] as const
+
+  test('test_usage_report_types_expose_inbound_model_alias_agent_name_and_agent_id', async () => {
+    const { readFile } = await import('node:fs/promises')
+    const { dirname, join } = await import('node:path')
+    const { fileURLToPath } = await import('node:url')
+
+    const source = await readFile(
+      join(dirname(fileURLToPath(import.meta.url)), './usage-report.ts'),
+      'utf8'
+    )
+
+    for (const dimension of usageIdentityDimensions) {
+      expect(source).toContain(`${dimension}?:`)
+    }
+    for (const filter of usageIdentityFilters) {
+      expect(source).toContain(`${filter}?: readonly string[]`)
+    }
+    expect(source).toContain('inbound_model_alias?: string | null')
+    expect(source).toContain('agent_name?: string | null')
+    expect(source).toContain('agent_id?: string | null')
+  })
+
+  test('test_fetchUsageReport_forwards_inbound_model_alias_agent_name_and_agent_id_filters', async () => {
+    let capturedUrl: URL | null = null
+
+    server.use(
+      http.get('/api/shell/reports/usage', ({ request }) => {
+        capturedUrl = new URL(request.url)
+        return HttpResponse.json({
+          metadata: {
+            from: '2026-05-20',
+            to: '2026-05-21',
+            grain: 'day',
+            groupBy: [
+              'repository',
+              'inbound_model_alias',
+              'agent_name',
+              'agent_id',
+            ],
+            limit: 50_000,
+            generatedAt: '2026-05-21T00:00:00.000Z',
+            latestRecordAt: null,
+            latestRecordAgeMinutes: null,
+            latestRecordStale: false,
+            staleRecordThresholdMinutes: 60,
+          },
+          summary: {
+            traces: 0,
+            token_in: 0,
+            token_out: 0,
+            token_cache_input: 0,
+            token_cache_creation: 0,
+            token_reasoning_reported: 0,
+            token_reasoning_estimated: 0,
+            token_total: 0,
+            usd_cost: 0,
+            cache_miss_usd_cost: 0,
+            tool_calls: 0,
+            git_commit: 0,
+            git_push: 0,
+            period_start: '2026-05-20',
+            period_end: '2026-05-21',
+            latest_record_at: null,
+          },
+          trend: [],
+          clients: [],
+          providerLatencyHealth: [],
+          providerErrorObservations: [],
+          providerStatusUsage: [],
+          quotas: [],
+          quotaHistory: [],
+          toolActivity: [],
+          rows: [],
+        })
+      })
+    )
+
+    await fetchUsageReport({
+      from: '2026-05-20',
+      to: '2026-05-21',
+      grain: 'day',
+      groupBy: ['repository', 'inbound_model_alias', 'agent_name', 'agent_id'],
+      inbound_model_alias: ['aawm-read-anthropic'],
+      agent_name: ['orchestrator'],
+      agent_id: ['agent_harness'],
+    } as Parameters<typeof fetchUsageReport>[0])
+
+    expect(capturedUrl?.searchParams.get('group_by')).toBe(
+      'repository,inbound_model_alias,agent_name,agent_id'
+    )
+    expect(capturedUrl?.searchParams.get('inbound_model_alias')).toBe(
+      'aawm-read-anthropic'
+    )
+    expect(capturedUrl?.searchParams.get('agent_name')).toBe('orchestrator')
+    expect(capturedUrl?.searchParams.get('agent_id')).toBe('agent_harness')
+  })
+
+  test('test_fetchUsageReportToolActivity_forwards_agent_id_filter_and_returns_grouped_rows', async () => {
+    let capturedUrl: URL | null = null
+
+    server.use(
+      http.get('/api/shell/reports/usage/tool-activity', ({ request }) => {
+        capturedUrl = new URL(request.url)
+        return HttpResponse.json({
+          metadata: {
+            from: '2026-05-20',
+            to: '2026-05-21',
+            generatedAt: '2026-05-21T00:00:00.000Z',
+            degraded: true,
+            degradedReason: 'database_timeout',
+            toolActivityRecentRowLimit: 5000,
+          },
+          toolActivity: [
+            {
+              provider: 'anthropic',
+              model: 'claude-sonnet-4-6',
+              agent_names: ['orchestrator'],
+              agent_ids: ['agent_harness'],
+              kind: 'outer',
+              label: 'Bash',
+              calls: 3,
+            },
+          ],
+        })
+      })
+    )
+
+    const response = await fetchUsageReportToolActivity({
+      from: '2026-05-20',
+      to: '2026-05-21',
+      agent_id: ['agent_harness'],
+    } as Parameters<typeof fetchUsageReportToolActivity>[0])
+
+    expect(capturedUrl?.searchParams.get('agent_id')).toBe('agent_harness')
+    expect(response.metadata).toMatchObject({
+      degraded: true,
+      degradedReason: 'database_timeout',
+      toolActivityRecentRowLimit: 5000,
+    })
+    expect(response.toolActivity[0]).toMatchObject({
+      provider: 'anthropic',
+      model: 'claude-sonnet-4-6',
+      agent_names: ['orchestrator'],
+      agent_ids: ['agent_harness'],
+      kind: 'outer',
+      label: 'Bash',
+      calls: 3,
+    })
+  })
+
+  test('test_quota_response_contract_surfaces_billing_detail_fields', async () => {
+    const { readFile } = await import('node:fs/promises')
+    const { dirname, join } = await import('node:path')
+    const { fileURLToPath } = await import('node:url')
+
+    const source = await readFile(
+      join(dirname(fileURLToPath(import.meta.url)), './usage-report.ts'),
+      'utf8'
+    )
+
+    for (const field of billingDetailFields) {
+      expect(source).toContain(`${field}?:`)
+    }
+    expect(source).toContain('raw_provider_fields?: Record<string, unknown>')
+    expect(source).toContain('evidence?: Record<string, unknown>')
+  })
+
+  test('test_usage_report_quota_history_row_accepts_grok_build_identity_fields', () => {
+    const row: UsageReportQuotaHistoryRow = {
+      provider: 'xai',
+      model: 'xai_grok_build_weekly_credits:credits',
+      quota_type: 'weekly',
+      quota_key: 'xai_grok_build_weekly_credits:credits',
+      source: 'grok-build',
+      client: 'grok-build',
+      quota_unit: 'credits',
+      expected_reset_at: '2026-07-01T00:00:00.000Z',
+      interval_start: '2026-06-24T00:00:00.000Z',
+      interval_end: '2026-07-01T00:00:00.000Z',
+      min_remaining_pct: 98,
+      max_remaining_pct: 100,
+      usage_tokens: 0,
+      usage_breakdown: [],
+    }
+    expect(row.quota_key).toBe('xai_grok_build_weekly_credits:credits')
+    expect(row.quota_unit).toBe('credits')
+  })
 })

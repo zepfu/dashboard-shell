@@ -48,10 +48,18 @@ export function buildSidebarQuotaItems(
       color: anthropicColor,
     })
   }
+  if (anthropic?.weekly_overage_included_remaining_pct != null) {
+    items.push({
+      key: 'anthropic-fable-overage',
+      label: 'Anthropic Fable 7d OI',
+      percent: anthropic.weekly_overage_included_remaining_pct,
+      color: anthropicColor,
+    })
+  }
   if (anthropic?.special_remaining_pct != null) {
     items.push({
-      key: 'anthropic-sonnet',
-      label: 'Anthropic Sonnet',
+      key: 'anthropic-sonnet-retired',
+      label: 'Anthropic Retired Sonnet',
       percent: anthropic.special_remaining_pct,
       color: anthropicColor,
     })

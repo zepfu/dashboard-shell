@@ -15,11 +15,11 @@ export function buildProviderMetrics(
   provider: string,
   healthRows: UsageReportProviderLatencyHealthRow[],
   rows: UsageReportRow[],
-  now: Date = new Date()
+  now: Date = new Date(),
+  aliases: readonly string[] = providerAliases(provider)
 ): ProviderMetrics {
   // 15-B.2: expand canonical provider key to all DB aliases
   // (e.g. 'google' → ['google','gemini'] so gemini health rows are included)
-  const aliases = providerAliases(provider)
   const providerHealthRows = healthRows.filter((r) =>
     aliases.includes(r.provider.toLowerCase())
   )
@@ -52,8 +52,8 @@ export function buildProviderMetrics(
   )
   const p95 =
     latestP95Row !== undefined
-      ? (latestP95Row.upstream_p95_ms ?? latestP95Row.total_p95_ms ?? 0)
-      : 0
+      ? (latestP95Row.upstream_p95_ms ?? latestP95Row.total_p95_ms ?? null)
+      : null
 
   // Wave 14-C: rate_limits, capacity from health rows; packet_loss from ping probe.
   const rate_limits = providerHealthRows.reduce(

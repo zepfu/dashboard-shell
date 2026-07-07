@@ -21,6 +21,13 @@ function makeQuotaRow(
     weekly_active: false,
     weekly_usage_tokens: 0,
     weekly_usage_breakdown: [],
+    weekly_overage_included_remaining_pct: null,
+    weekly_overage_included_reset_at: null,
+    weekly_overage_included_interval_start: null,
+    weekly_overage_included_interval_end: null,
+    weekly_overage_included_active: false,
+    weekly_overage_included_usage_tokens: 0,
+    weekly_overage_included_usage_breakdown: [],
     short_remaining_pct: null,
     short_reset_at: null,
     short_interval_start: null,
@@ -127,6 +134,45 @@ describe('buildSidebarQuotaItems — provider row selection (S6-10)', () => {
     const weeklyItem = items.find((i) => i.key === 'anthropic-weekly')
     expect(weeklyItem).toBeDefined()
     expect(weeklyItem?.percent).toBe(30)
+  })
+
+  test('test_sidebar_quota_anthropic_fable_7d_oi_separate_from_retired_sonnet', () => {
+    const rows: UsageReportQuotaRow[] = [
+      makeQuotaRow({
+        provider: 'anthropic',
+        weekly_remaining_pct: 44,
+        weekly_active: true,
+        weekly_overage_included_remaining_pct: 90,
+        weekly_overage_included_active: true,
+        special_remaining_pct: 12,
+        special_active: false,
+      }),
+    ]
+
+    const items = buildSidebarQuotaItems(rows)
+
+    expect(items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          key: 'anthropic-weekly',
+          label: 'Anthropic Weekly',
+          percent: 44,
+        }),
+        expect.objectContaining({
+          key: 'anthropic-fable-overage',
+          label: 'Anthropic Fable 7d OI',
+          percent: 90,
+        }),
+        expect.objectContaining({
+          key: 'anthropic-sonnet-retired',
+          label: 'Anthropic Retired Sonnet',
+          percent: 12,
+        }),
+      ])
+    )
+    expect(
+      items.find((item) => item.key === 'anthropic-sonnet')
+    ).toBeUndefined()
   })
 })
 

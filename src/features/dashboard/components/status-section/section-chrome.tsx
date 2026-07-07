@@ -78,6 +78,18 @@ export function SectionRefreshButton({
   )
 }
 
+export interface SectionTabIndicator {
+  label: string
+  className?: string
+  title?: string
+}
+
+interface SectionTabOption<T extends string> {
+  value: T
+  label: string
+  indicator?: SectionTabIndicator
+}
+
 export function SectionTabs<T extends string>({
   label,
   value,
@@ -86,7 +98,7 @@ export function SectionTabs<T extends string>({
 }: {
   label: string
   value: T
-  options: readonly { value: T; label: string }[]
+  options: readonly SectionTabOption<T>[]
   onChange: (value: T) => void
 }): ReactElement {
   return (
@@ -104,7 +116,21 @@ export function SectionTabs<T extends string>({
               onChange(option.value)
             }}
           >
-            {option.label}
+            <span className='section-tab-label'>{option.label}</span>
+            {option.indicator ? (
+              <span
+                className={['section-tab-indicator', option.indicator.className]
+                  .filter(Boolean)
+                  .join(' ')}
+                title={option.indicator.title ?? option.indicator.label}
+              >
+                <span
+                  className='section-tab-indicator-dot'
+                  aria-hidden='true'
+                />
+                <span className='sr-only'>{option.indicator.label}</span>
+              </span>
+            ) : null}
           </button>
         )
       })}

@@ -37,17 +37,6 @@ export default defineConfig({
       // Uses environment: 'node' so that native Node modules (redis, pg, pgsql-parser) can be imported
       // without bundling failures that occur under jsdom.
       {
-        resolve: {
-          alias: {
-            // Map pgsql-parser to a thin shim that returns the stmts array directly.
-            // The landed W10 server tests expect `parse(sql)` to yield an array
-            // (they do `const { parse } = await import('pgsql-parser'); const tree = await parse(sql); expect(Array.isArray(tree)).toBe(true)`).
-            // Real pgsql-parser returns `{ version, stmts }`; the shim exposes the stmts
-            // list under the `parse` name so the assertions pass while still using the
-            // real parser (syntax errors will throw from the underlying call).
-            'pgsql-parser': path.resolve(__dirname, 'server/pgsql-parser-shim.mjs'),
-          },
-        },
         test: {
           name: 'server',
           environment: 'node',

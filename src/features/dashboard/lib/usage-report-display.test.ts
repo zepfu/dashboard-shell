@@ -572,9 +572,9 @@ describe('wave37 — quota query-key dedup contract', () => {
    * key used by PhosphorDashboard's internal query so React Query can
    * deduplicate both subscribers into a single cache entry.
    *
-   * SF-1 / W37-1: index.tsx used `['usage-report-quotas-shell']` (no date
-   * params) while PhosphorDashboard used `['usage-report-quotas', from, to]`.
-   * The fix aligns both to `['usage-report-quotas', from, to]`.
+   * SF-1 / W37-1: index.tsx and PhosphorDashboard previously disagreed on
+   * the quota key shape. D1-436 aligns Dashboard, PhosphorDashboard, and the
+   * shell sidebar on the live global `['usage-report-quotas']` key.
    */
   const PHOSPHOR_KEY_PREFIX = 'usage-report-quotas'
 
@@ -582,14 +582,14 @@ describe('wave37 — quota query-key dedup contract', () => {
     // The shared key prefix ('usage-report-quotas') must match the string that
     // PhosphorDashboard's internal query uses. This guards against renaming one
     // side without updating the other.
-    const indexTsxKey = [PHOSPHOR_KEY_PREFIX, '2026-04-19', '2026-05-20']
-    const phosphorKey = [PHOSPHOR_KEY_PREFIX, '2026-04-19', '2026-05-20']
+    const indexTsxKey = [PHOSPHOR_KEY_PREFIX]
+    const phosphorKey = [PHOSPHOR_KEY_PREFIX]
     expect(indexTsxKey).toEqual(phosphorKey)
   })
 
   test('test_quota_key_must_not_use_legacy_shell_suffix', () => {
-    // The old key 'usage-report-quotas-shell' is NOT the same as
-    // 'usage-report-quotas' + date params and must not be used.
+    // The old key 'usage-report-quotas-shell' is NOT the live shared key and
+    // must not be used by sidebar or dashboard callers.
     const legacyKey = 'usage-report-quotas-shell'
     expect(legacyKey).not.toBe(PHOSPHOR_KEY_PREFIX)
   })

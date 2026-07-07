@@ -5,15 +5,11 @@ const LIVE_DASHBOARD_QUOTAS_REFETCH_INTERVAL_MS = 60_000
 
 /** Shared React Query key for quota fetches (index + phosphor-dashboard). */
 export function usageReportQuotasKey(
-  from: string,
-  to: string,
+  _from?: string,
+  _to?: string,
   cacheBust?: string
-): readonly [string, string, string, ...string[]] {
-  const key: [string, string, string, ...string[]] = [
-    'usage-report-quotas',
-    from,
-    to,
-  ]
+): readonly [string, ...string[]] {
+  const key: [string, ...string[]] = ['usage-report-quotas']
   if (cacheBust !== undefined) {
     key.push(cacheBust)
   }
@@ -21,8 +17,10 @@ export function usageReportQuotasKey(
 }
 
 export interface UsageReportQuotasQueryOptionsParams {
-  from: string
-  to: string
+  /** Retained for call-site compatibility; /quotas is currently a live global endpoint. */
+  from?: string
+  /** Retained for call-site compatibility; /quotas is currently a live global endpoint. */
+  to?: string
   /** Optional bust token; included in queryKey when set (manual refresh / report refresh). */
   cacheBust?: string
 }
@@ -41,7 +39,7 @@ export function usageReportQuotasQueryOptions({
       fetchUsageReportQuotas({ cacheBust: resolvedCacheBust }, signal),
     staleTime: LIVE_DASHBOARD_QUOTAS_REFETCH_INTERVAL_MS,
     refetchInterval: LIVE_DASHBOARD_QUOTAS_REFETCH_INTERVAL_MS,
-    refetchIntervalInBackground: true,
+    refetchIntervalInBackground: false,
   })
 }
 
@@ -74,6 +72,11 @@ export const usageReportGroupPresets = [
 ] as const
 
 export const usageReportGrains = ['day', 'week', 'month'] as const
+export const usageReportIdentityDimensions = [
+  'inbound_model_alias',
+  'agent_name',
+  'agent_id',
+] as const
 
 export type UsageReportGrain = (typeof usageReportGrains)[number]
 export type UsageReportGroupPreset = (typeof usageReportGroupPresets)[number]
@@ -131,7 +134,9 @@ export function isReportCacheMetadata(
   }
   return true
 }
-export type UsageReportDimension = UsageReportGroupPreset['groupBy'][number]
+export type UsageReportDimension =
+  | UsageReportGroupPreset['groupBy'][number]
+  | (typeof usageReportIdentityDimensions)[number]
 export type UsageReportConfigChangeFilterValue =
   | 'true'
   | 'false'
@@ -146,9 +151,9 @@ export type UsageReportConfigChangeFilterValue =
  * 15-D.1: The server uses parseCsv() on each param, so values are joined as
  * comma-separated strings in the query string (e.g. `provider=openai,anthropic`).
  * The server's filterColumns map accepts: provider, repository, client,
- * environment, model, provider_model. Config-change filters accept true, false,
- * null/unknown/unevaluated, or evaluated. Empty arrays → no filter applied (all
- * values returned).
+ * environment, model, provider_model, inbound_model_alias, agent_name, and
+ * agent_id. Config-change filters accept true, false, null/unknown/unevaluated,
+ * or evaluated. Empty arrays → no filter applied (all values returned).
  *
  * Param names (singular) match the server's filterColumns keys exactly.
  */
@@ -163,6 +168,12 @@ export interface UsageReportFilterParams {
   environment?: readonly string[]
   /** Filter to specific models (empty = all). */
   model?: readonly string[]
+  /** Filter to requested inbound aliases/models captured by session_history. */
+  inbound_model_alias?: readonly string[]
+  /** Filter to display agent names captured by session_history. */
+  agent_name?: readonly string[]
+  /** Filter to opaque agent IDs captured by session/tool activity rows. */
+  agent_id?: readonly string[]
   /** Filter by sessions that changed .pre-commit config. */
   changed_pre_commit_config?: readonly UsageReportConfigChangeFilterValue[]
   /** Filter by sessions that changed .env* files. */
@@ -179,6 +190,7 @@ export interface UsageReportParams extends UsageReportFilterParams {
   grain: UsageReportGrain
   groupBy?: readonly UsageReportDimension[]
   cacheBust?: string
+  includeEmptyRowFields?: boolean
 }
 
 export interface UsageReportAgentScoreReason {
@@ -281,6 +293,18 @@ export interface UsageReportToolActivityParams extends UsageReportFilterParams {
   cacheBust?: string
 }
 
+export interface UsageReportSessionDiagnosticsParams extends UsageReportFilterParams {
+  from: string
+  to: string
+  session_id?: readonly string[]
+  trace_id?: readonly string[]
+  litellm_call_id?: readonly string[]
+  grok_side_channel?: boolean | string | null
+  grok_side_channel_endpoint_type?: readonly string[]
+  limit?: number
+  cacheBust?: string
+}
+
 export interface UsageReportRow
   extends UsageReportLatencyFields, UsageReportConfigChangeFields {
   bucket: string
@@ -289,6 +313,9 @@ export interface UsageReportRow
   repository?: string
   provider?: string
   model?: string
+  inbound_model_alias?: string | null
+  agent_name?: string | null
+  agent_id?: string | null
   provider_model?: string
   weekly_reset_first: string | null
   weekly_reset_last: string | null
@@ -756,9 +783,36 @@ export interface UsageReportProviderStatusUsageRow extends UsageReportLatencyFie
   period_end: string | null
 }
 
+export type UsageReportQuotaBillingLane =
+  | 'weekly'
+  | 'weekly_overage_included'
+  | 'short'
+  | 'special'
+  | 'short_special'
+  | 'monthly'
+  | 'wtus'
+
+export interface UsageReportQuotaBillingDetail {
+  quota_key?: string | null
+  source?: string | null
+  client?: string | null
+  quota_unit?: string | null
+  quota_limit?: number | null
+  quota_used?: number | null
+  quota_remaining?: number | null
+  billing_observed_at?: string | null
+  billing_period_start_at?: string | null
+  billing_period_end_at?: string | null
+  raw_provider_fields?: Record<string, unknown>
+  evidence?: Record<string, unknown>
+}
+
 export interface UsageReportQuotaRow {
   provider: string
   model: string | null
+  billing_details?: Partial<
+    Record<UsageReportQuotaBillingLane, UsageReportQuotaBillingDetail>
+  >
   weekly_remaining_pct: number | null
   weekly_reset_at: string | null
   weekly_interval_start: string | null
@@ -769,6 +823,17 @@ export interface UsageReportQuotaRow {
   weekly_velocity_segments?: boolean[]
   weekly_velocity_scores?: number[]
   weekly_velocity_sample_count?: number
+
+  weekly_overage_included_remaining_pct: number | null
+  weekly_overage_included_reset_at: string | null
+  weekly_overage_included_interval_start: string | null
+  weekly_overage_included_interval_end: string | null
+  weekly_overage_included_active: boolean
+  weekly_overage_included_usage_tokens: number
+  weekly_overage_included_usage_breakdown: UsageReportQuotaUsageBreakdown[]
+  weekly_overage_included_velocity_segments?: boolean[]
+  weekly_overage_included_velocity_scores?: number[]
+  weekly_overage_included_velocity_sample_count?: number
   short_remaining_pct: number | null
   short_reset_at: string | null
   short_interval_start: string | null
@@ -840,9 +905,17 @@ export interface UsageReportQuotaUsageBreakdown {
 export interface UsageReportQuotaHistoryRow {
   provider: string
   model: string | null
+  /** Exact telemetry key when the lane is keyed by quota_key (e.g. Grok Build). */
+  quota_key?: string | null
+  /** Billing/source surface when present on rate_limit_intervals or observations. */
+  source?: string | null
+  /** Client identity when present on ingested quota rows. */
+  client?: string | null
+  /** Unit hint: credits vs requests for Build and similar keys. */
+  quota_unit?: string | null
   /**
    * Quota type after normalisation: 'weekly' | 'special' | 'short' |
-   * 'short_special' | 'monthly' | 'wtus'
+   * 'weekly_overage_included' | 'short_special' | 'monthly' | 'wtus'
    */
   quota_type: string
   /** ISO timestamp of the reset point that ended this window. */
@@ -883,7 +956,255 @@ export interface UsageReportToolActivityRow {
   kind: 'outer' | 'shell'
   /** Tool name (outer rows) or command label (shell rows). */
   label: string
+  /** Distinct display agent names represented by the grouped row. */
+  agent_names?: string[]
+  /** Distinct opaque agent IDs represented by the grouped row. */
+  agent_ids?: string[]
   calls: number
+}
+
+export interface UsageReportAnthropicContextWindowDiagnostics {
+  mode?: string | null
+  requested_tokens?: number | null
+  source?: string | null
+  beta?: string | null
+  classification?: unknown
+}
+
+export interface UsageReportAliasRouteEvent {
+  observed_at?: string | null
+  session_id?: string | null
+  trace_id?: string | null
+  litellm_call_id?: string | null
+  alias_model?: string | null
+  alias_family?: string | null
+  provider?: string | null
+  model?: string | null
+  route_family?: string | null
+  attempt_number?: number | string | null
+  event_type?: string | null
+  failure_class?: string | null
+  cooldown_state?: string | null
+  cooldown_until?: string | null
+  redispatch_required?: boolean | string | null
+  last_resort?: boolean | string | null
+  details?: Record<string, unknown> | null
+}
+
+export interface UsageReportSessionDiagnosticsRow {
+  created_at?: string | null
+  start_time?: string | null
+  end_time?: string | null
+  session_id?: string | null
+  trace_id?: string | null
+  litellm_call_id?: string | null
+  provider?: string | null
+  model?: string | null
+  model_group?: string | null
+  repository?: string | null
+  client?: string | null
+  client_version?: string | null
+  environment?: string | null
+  inbound_model_alias?: string | null
+  agent_name?: string | null
+  agent_id?: string | null
+  diagnostic_flags?: string[]
+  diagnostic_categories?: string[]
+  grok_oauth?: {
+    credential_family?: string | null
+    grok_native_oauth_managed?: boolean | string | null
+    grok_native_entrypoint?: string | null
+    passthrough_route_family?: string | null
+    route_family?: string | null
+    auth_mode?: string | null
+    grok_model_override?: string | null
+  } | null
+  grok_side_channel?: {
+    enabled?: boolean | string | null
+    endpoint_type?: string | null
+    endpoint_template?: string | null
+    content_type?: string | null
+    body_byte_length?: number | null
+    body_sha256?: string | null
+    digest_source?: string | null
+    json_container_type?: string | null
+    top_level_key_types?: unknown
+    array_length?: number | null
+  } | null
+  output_contract?: {
+    usage_output_contract_required_final_phrase?: string | null
+    usage_output_contract_required_final_phrase_present?:
+      | boolean
+      | string
+      | null
+    usage_output_contract_required_final_phrase_source?: string | null
+    usage_output_contract_failure_class?: string | null
+    usage_output_contract_failure_count?: number | null
+    usage_output_contract_setup_only_detected?: boolean | string | null
+    usage_output_contract_setup_only_markers?: unknown
+    usage_output_contract_final_text_chars?: number | null
+    usage_agent_score_reasons?: unknown
+  } | null
+  xai_sanitizer?: {
+    xai_responses_request_sanitized?: boolean | string | null
+    xai_responses_sanitized_removed_params?: string[] | unknown
+    xai_responses_sanitized_tool_count?: number | null
+    xai_responses_sanitized_tool_types?: string[] | unknown
+    xai_responses_sanitized_tools?: unknown
+    xai_tool_choice_without_tools_removed?: unknown
+    xai_tool_choice_without_tools_removed_reason?: string | null
+    request_tags?: unknown
+    openai_passthrough_route_family?: string | null
+    passthrough_route_family?: string | null
+    route_family?: string | null
+    credential_family?: string | null
+  } | null
+  transcript_attribution?: {
+    session_history_transcript_attribution_status?: string | null
+    session_history_transcript_attribution_source?: string | null
+    reason?: string | null
+    match_rule?: string | null
+    updated_at?: string | null
+    session_history_transcript_attribution?: unknown
+  } | null
+  tool_definitions?: {
+    aawm_tool_definition_capture_version?: string | null
+    aawm_tool_definition_capture_source?: string | null
+    aawm_tool_definition_count?: number | null
+    aawm_tool_definition_captured_count?: number | null
+    aawm_tool_definition_sources?: unknown
+    aawm_tool_definition_names?: string[] | unknown
+    aawm_tool_definition_types?: string[] | unknown
+    snapshot_hash?: string | null
+    aawm_tool_definition_snapshot_truncated?: boolean | string | null
+    aawm_tool_definition_snapshot_storage?: string | null
+    aawm_tool_definition_snapshot_storage_key?: string | null
+    tool_definition_snapshot?: unknown
+  } | null
+  alias_route_events?: UsageReportAliasRouteEvent[]
+  anthropic_context_window?: UsageReportAnthropicContextWindowDiagnostics | null
+}
+
+export type UsageReportProviderAliasRoutingStateSource =
+  | 'memory'
+  | 'durable_cache'
+  | 'local_fallback'
+  | 'unknown'
+
+export interface UsageReportProviderAliasRoutingCandidate {
+  provider?: string | null
+  model?: string | null
+  route_family?: string | null
+  reason?: string | null
+}
+
+export interface UsageReportProviderAliasRoutingEntry {
+  family: 'codex' | 'anthropic'
+  alias_label?: string | null
+  provider?: string | null
+  model?: string | null
+  route_family?: string | null
+  state_kind: 'affinity' | 'cooldown'
+  state_source: UsageReportProviderAliasRoutingStateSource
+  observed_at: string
+  expires_at?: string | null
+  cooldown_until?: string | null
+  remaining_seconds?: number | null
+  is_active?: boolean
+  last_resort?: boolean | null
+  selection_reason?: string | null
+  selected?: UsageReportProviderAliasRoutingCandidate | null
+  skipped_candidates?: UsageReportProviderAliasRoutingCandidate[]
+}
+
+export type UsageReportProviderAuthHealthState =
+  | 'refreshed'
+  | 'skipped_valid'
+  | 'skipped_expired'
+  | 'failed'
+  | 'attempted'
+  | 'expired'
+  | 'unknown'
+
+export interface UsageReportProviderAuthHealthEntry {
+  observed_at: string
+  environment: string
+  provider: string
+  auth_family: string
+  credential_scope?: string | null
+  auth_file_hash_short?: string | null
+  status: string
+  attempted: boolean
+  refreshed: boolean
+  skipped: boolean
+  expires_at?: string | null
+  last_success_at?: string | null
+  remaining_seconds?: number | null
+  auth_health_state: UsageReportProviderAuthHealthState
+  source_task?: string | null
+  error_class?: string | null
+  error_message?: string | null
+  auth_file_source?: string | null
+}
+
+export interface UsageReportProviderAuthHealth {
+  data_source: 'provider_auth_current'
+  freshness_label: string
+  generated_at: string
+  entries: UsageReportProviderAuthHealthEntry[]
+}
+
+export type UsageReportProviderCreditLifecycleStatus =
+  | 'available'
+  | 'used'
+  | 'expired'
+  | string
+
+export interface UsageReportProviderCreditLifecycleEntry {
+  observed_at: string
+  environment: string
+  provider: string
+  account_hash_short?: string | null
+  credit_family: string
+  credit_type?: string | null
+  available_count: number
+  expires_at?: string | null
+  source?: string | null
+  credit_identity?: string | null
+  granted_at?: string | null
+  status: UsageReportProviderCreditLifecycleStatus
+  redeem_started_at?: string | null
+  redeemed_at?: string | null
+  operator_annotation?: string | null
+  source_url?: string | null
+}
+
+export interface UsageReportProviderCreditLifecycleSummary {
+  environment: string
+  provider: string
+  credit_family: string
+  label: string
+  available_count: number
+  used_count: number
+  expired_count: number
+  total_count: number
+}
+
+export interface UsageReportProviderCreditLifecycle {
+  data_source: 'provider_credit_current'
+  freshness_label: string
+  generated_at: string
+  summaries: UsageReportProviderCreditLifecycleSummary[]
+  entries: UsageReportProviderCreditLifecycleEntry[]
+}
+
+export interface UsageReportProviderAliasRouting {
+  data_source: 'recent_observed_session_history'
+  freshness_label: string
+  generated_at: string
+  lookback_hours: number
+  families: Array<{ family: 'codex' | 'anthropic'; observed: boolean }>
+  entries: UsageReportProviderAliasRoutingEntry[]
 }
 
 export interface UsageReportResponse {
@@ -912,6 +1233,9 @@ export interface UsageReportResponse {
   dockerLogErrors?: UsageReportDockerLogErrorRow[]
   localHealth?: UsageReportLocalHealthRow[]
   providerStatusUsage: UsageReportProviderStatusUsageRow[]
+  providerAliasRouting?: UsageReportProviderAliasRouting
+  providerAuthHealth?: UsageReportProviderAuthHealth
+  providerCreditLifecycle?: UsageReportProviderCreditLifecycle
   quotas: UsageReportQuotaRow[]
   /** W32: flat list of past reset windows per (provider, quota_type). */
   quotaHistory: UsageReportQuotaHistoryRow[]
@@ -938,6 +1262,13 @@ export interface UsageReportQuotaRangeHistoryResponse {
     from: string
     to: string
     generatedAt?: string
+    degraded?: boolean
+    degradedReason?: string
+    degradedMessage?: string
+    timeout?: boolean
+    timedOutSubquery?: string
+    timedOutSubqueries?: string[]
+    quotaRangeHistoryStatementTimeoutMs?: number
     cacheBackend?: string
     cacheFreshUntil?: string | null
     cacheGeneratedAt?: string | null
@@ -953,6 +1284,13 @@ export interface UsageReportQuotaRangeHistoryResponse {
 export interface UsageReportQuotaHistoryResponse {
   metadata: {
     generatedAt?: string
+    degraded?: boolean
+    degradedReason?: string
+    degradedMessage?: string
+    timeout?: boolean
+    timedOutSubquery?: string
+    timedOutSubqueries?: string[]
+    quotaHistoryStatementTimeoutMs?: number
     cacheBackend?: string
     cacheFreshUntil?: string | null
     cacheGeneratedAt?: string | null
@@ -1075,6 +1413,10 @@ export interface UsageReportToolActivityResponse {
     from: string
     to: string
     generatedAt?: string
+    degraded?: boolean
+    degradedReason?: string
+    degradedMessage?: string
+    toolActivityRecentRowLimit?: number
     cacheBackend?: string
     cacheFreshUntil?: string | null
     cacheGeneratedAt?: string | null
@@ -1085,6 +1427,24 @@ export interface UsageReportToolActivityResponse {
     cacheRefreshing?: boolean
   }
   toolActivity: UsageReportToolActivityRow[]
+}
+
+export interface UsageReportSessionDiagnosticsResponse {
+  metadata: {
+    from: string
+    to: string
+    limit: number
+    generatedAt?: string
+    cacheBackend?: string
+    cacheFreshUntil?: string | null
+    cacheGeneratedAt?: string | null
+    cacheKeyHash?: string
+    cacheScope?: string
+    cacheStaleUntil?: string | null
+    cacheStatus?: string
+    cacheRefreshing?: boolean
+  }
+  sessionDiagnostics: UsageReportSessionDiagnosticsRow[]
 }
 
 export interface UsageReportTokenTrendDayParams extends UsageReportFilterParams {
@@ -1098,6 +1458,7 @@ export interface UsageReportTokenTrendSummaryParams extends UsageReportFilterPar
   from: string
   to: string
   cacheBust?: string
+  includeHealth?: boolean
 }
 
 export interface UsageReportTokenTrendSummaryResponse {
@@ -1105,6 +1466,19 @@ export interface UsageReportTokenTrendSummaryResponse {
     from: string
     to: string
     generatedAt?: string
+    degraded?: boolean
+    degradedReason?: string
+    degradedMessage?: string
+    timeout?: boolean
+    timedOutSubquery?: string
+    timedOutSubqueries?: string[]
+    skippedSubqueries?: string[]
+    unavailableSubqueries?: string[]
+    includeTokenTrendHealth?: boolean
+    tokenTrendHealthOmitted?: boolean
+    tokenTrendSummaryRawLaneMaxDays?: number
+    tokenTrendSummaryRangeDays?: number
+    tokenTrendSummaryStatementTimeoutMs?: number
     cacheBackend?: string
     cacheFreshUntil?: string | null
     cacheGeneratedAt?: string | null
@@ -1186,6 +1560,9 @@ function appendUsageReportFilters(
     'client',
     'environment',
     'model',
+    'inbound_model_alias',
+    'agent_name',
+    'agent_id',
   ] as const
   for (const key of filterKeys) {
     const values = params[key]
@@ -1214,8 +1591,22 @@ function appendUsageReportFilters(
   }
 }
 
+function appendStringArrayParam(
+  searchParams: URLSearchParams,
+  key: string,
+  values: readonly string[] | undefined
+): void {
+  if (values !== undefined && values.length > 0) {
+    searchParams.set(
+      key,
+      values.map((value) => encodeURIComponent(value)).join(',')
+    )
+  }
+}
+
 export async function fetchUsageReport(
-  params: UsageReportParams
+  params: UsageReportParams,
+  signal?: AbortSignal
 ): Promise<UsageReportResponse> {
   // Wave 24-D30: raised limit from 500 to 50000 to fix 30-day undercounting.
   // At 30-day daily grain with provider+model+repository groupBy, row count
@@ -1238,8 +1629,13 @@ export async function fetchUsageReport(
   if (params.cacheBust !== undefined && params.cacheBust !== '') {
     searchParams.set('cache_bust', params.cacheBust)
   }
+  if (params.includeEmptyRowFields === true) {
+    searchParams.set('include_empty_row_fields', '1')
+  }
 
-  const response = await fetch(`/api/shell/reports/usage?${searchParams}`)
+  const response = await fetch(`/api/shell/reports/usage?${searchParams}`, {
+    signal,
+  })
   if (!response.ok) {
     const payload = await response.json().catch(() => null)
     const message =
@@ -1403,6 +1799,62 @@ export async function fetchUsageReportToolActivity(
   return json as UsageReportToolActivityResponse
 }
 
+export async function fetchUsageReportSessionDiagnostics(
+  params: UsageReportSessionDiagnosticsParams,
+  signal?: AbortSignal
+): Promise<UsageReportSessionDiagnosticsResponse> {
+  const searchParams = new URLSearchParams({
+    from: params.from,
+    to: params.to,
+  })
+  appendUsageReportFilters(searchParams, params)
+  appendStringArrayParam(searchParams, 'session_id', params.session_id)
+  appendStringArrayParam(searchParams, 'trace_id', params.trace_id)
+  appendStringArrayParam(
+    searchParams,
+    'litellm_call_id',
+    params.litellm_call_id
+  )
+  if (
+    params.grok_side_channel === true ||
+    params.grok_side_channel === 'true' ||
+    params.grok_side_channel === '1'
+  ) {
+    searchParams.set('grok_side_channel', 'true')
+  }
+  appendStringArrayParam(
+    searchParams,
+    'grok_side_channel_endpoint_type',
+    params.grok_side_channel_endpoint_type
+  )
+  if (params.limit !== undefined) {
+    searchParams.set('limit', String(params.limit))
+  }
+  if (params.cacheBust !== undefined && params.cacheBust !== '') {
+    searchParams.set('cache_bust', params.cacheBust)
+  }
+
+  const response = await fetch(
+    `/api/shell/reports/usage/session-diagnostics?${searchParams}`,
+    { signal }
+  )
+  if (!response.ok) {
+    const payload = await response.json().catch(() => null)
+    const message =
+      typeof payload?.error === 'string'
+        ? payload.error
+        : `Session diagnostics request failed with ${response.status}`
+    throw new Error(message)
+  }
+
+  const json: unknown = await response.json()
+  assertUsageReportSpotCheck(json, {
+    requireSummary: false,
+    firstRowKey: 'sessionDiagnostics',
+  })
+  return json as UsageReportSessionDiagnosticsResponse
+}
+
 export async function fetchUsageReportTokenTrendSummary(
   params: UsageReportTokenTrendSummaryParams,
   signal?: AbortSignal
@@ -1414,6 +1866,9 @@ export async function fetchUsageReportTokenTrendSummary(
   appendUsageReportFilters(searchParams, params)
   if (params.cacheBust !== undefined && params.cacheBust !== '') {
     searchParams.set('cache_bust', params.cacheBust)
+  }
+  if (params.includeHealth === true) {
+    searchParams.set('include_health', '1')
   }
 
   const response = await fetch(

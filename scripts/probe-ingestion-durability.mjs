@@ -178,9 +178,15 @@ function parseLiteLlmLogText(text, container, options = {}) {
     if (statusMatch?.groups) {
       const status = Number(statusMatch.groups.status)
       const path = statusMatch.groups.path
+      let type = 'http_error'
+      if (status >= 200 && status < 300) {
+        type = 'success'
+      } else if (status >= 300 && status < 400) {
+        type = 'http_redirect'
+      }
       if (options.includeHealthChecks || !isHealthCheckPath(path)) {
         rows.push({
-          type: status >= 200 && status < 300 ? 'success' : 'http_error',
+          type,
           container,
           observedAt,
           method: statusMatch.groups.method,
@@ -286,25 +292,27 @@ function normalizeTableName(value) {
 }
 
 function compareLatestSuccessToSource(latestSuccess, sourceTable) {
-  if (!latestSuccess || !sourceTable?.latestDataAt) {
+  const sourceAt =
+    sourceTable?.latestEventAt ??
+    sourceTable?.latestPersistedAt ??
+    sourceTable?.latestDataAt ??
+    null
+
+  if (!latestSuccess || !sourceAt) {
     return {
       status: 'unknown',
       lagSeconds: null,
-      sourceAt: sourceTable?.latestDataAt ?? null,
+      sourceAt,
       successAt: latestSuccess?.iso ?? null,
     }
   }
 
-  const sourceTime = Date.parse(
-    sourceTable.latestEventAt ??
-      sourceTable.latestPersistedAt ??
-      sourceTable.latestDataAt
-  )
+  const sourceTime = Date.parse(sourceAt)
   if (!Number.isFinite(sourceTime)) {
     return {
       status: 'unknown',
       lagSeconds: null,
-      sourceAt: sourceTable.latestDataAt,
+      sourceAt,
       successAt: latestSuccess.iso,
     }
   }
@@ -475,10 +483,10 @@ function renderTextSummary(summary, dockerLogs) {
     `LiteLLM successes: ${summary.traffic.successCount}, latest: ${summary.traffic.latestSuccessAt ?? 'none'}`
   )
   lines.push(
-    `session_history latest: ${summary.sourceTables.sessionHistory?.latestDataAt ?? 'unknown'} (${summary.persistenceComparison.sessionHistory.lagSeconds ?? 'unknown'}s behind latest success)`
+    `session_history latest: ${summary.persistenceComparison.sessionHistory.sourceAt ?? 'unknown'} (${summary.persistenceComparison.sessionHistory.lagSeconds ?? 'unknown'}s behind latest success)`
   )
   lines.push(
-    `rate_limit_observations latest: ${summary.sourceTables.rateLimitObservations?.latestDataAt ?? 'unknown'} (${summary.persistenceComparison.rateLimitObservations.lagSeconds ?? 'unknown'}s behind latest success)`
+    `rate_limit_observations latest: ${summary.persistenceComparison.rateLimitObservations.sourceAt ?? 'unknown'} (${summary.persistenceComparison.rateLimitObservations.lagSeconds ?? 'unknown'}s behind latest success)`
   )
   lines.push(
     `Queue drops: ${summary.durabilitySignals.sessionDropCount}; queue-full signals: ${summary.durabilitySignals.queueFullCount}; large payload warnings: ${summary.durabilitySignals.largePayloadCount}`

@@ -23,6 +23,7 @@ import {
   within,
 } from '@testing-library/react'
 import { http, HttpResponse } from 'msw'
+import { vi } from 'vitest'
 import { server } from '../../../test/setup'
 import type {
   UsageReportQuotaEstimatorResponse,
@@ -32,6 +33,7 @@ import type {
   UsageReportQuotaRow,
   UsageReportQuotaUsageBreakdown,
   UsageReportResponse,
+  UsageReportSessionDiagnosticsResponse,
   ShellHealthResponse,
 } from '../api/usage-report'
 import PhosphorDashboard from './phosphor-dashboard'
@@ -47,6 +49,7 @@ import {
   fmtIntervalCompact,
   buildPriorBarFromHistory,
   buildTopModels,
+  buildProviderQuotaHistoryTabs,
 } from './phosphor-dashboard.testkit'
 
 // ---------------------------------------------------------------------------
@@ -141,6 +144,19 @@ beforeEach(() => {
         },
         estimates: [],
       } satisfies UsageReportQuotaEstimatorResponse)
+    )
+  )
+  server.use(
+    http.get('/api/shell/reports/usage/session-diagnostics', () =>
+      HttpResponse.json({
+        metadata: {
+          from: '2026-04-19',
+          to: '2026-05-19',
+          limit: 100,
+          generatedAt: '2026-05-19T00:00:00.000Z',
+        },
+        sessionDiagnostics: [],
+      } satisfies UsageReportSessionDiagnosticsResponse)
     )
   )
 })
@@ -294,7 +310,381 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
     expect(onRefreshQuotaRangeHistory).toHaveBeenCalledTimes(1)
   })
 
-  test('test_health_tab_renders_pgbouncer_sidecar_health', async () => {
+  test('test_status_health_provider_cards_use_masonry_layout_with_trailing_aggregate', async () => {
+    const originalInnerWidth = window.innerWidth
+    let container: HTMLElement | undefined
+
+    Object.defineProperty(window, 'innerWidth', {
+      configurable: true,
+      value: 2100,
+    })
+
+    try {
+      await act(async () => {
+        const result = render(
+          <Wrapper>
+            <PhosphorDashboard
+              from='2026-05-20'
+              to='2026-05-21'
+              report={MOCK_REPORT}
+              reportLoading={false}
+              showComparison={false}
+              quotas={[]}
+              quotaHistory={[]}
+            />
+          </Wrapper>
+        )
+        container = result.container
+      })
+
+      const providerLayout = container?.querySelector(
+        'section#status .provider-health-summary'
+      ) as HTMLElement | null
+
+      expect(providerLayout).not.toBeNull()
+      expect(providerLayout).toHaveClass('provider-health-summary')
+      expect(providerLayout?.className).not.toContain('provider-summary-grid')
+      expect(providerLayout?.classList.contains('provider-summary')).toBe(false)
+
+      const columns = Array.from(
+        providerLayout?.querySelectorAll('.provider-health-summary-column') ??
+          []
+      )
+      expect(columns).toHaveLength(8)
+      expect(
+        columns.some((column) =>
+          Array.from(column.children).some((child) =>
+            child.classList.contains('provider-card')
+          )
+        )
+      ).toBe(true)
+      expect(
+        columns
+          .flatMap((column) =>
+            Array.from(column.querySelectorAll('.provider-name')).map((node) =>
+              node.textContent?.trim()
+            )
+          )
+          .filter(Boolean)
+      ).toContain('Σ AGGREGATE TOTALS')
+      expect(columns.at(0)?.textContent).not.toContain('Σ AGGREGATE TOTALS')
+      expect(
+        columns.some((column) => column.textContent?.includes('LOCAL'))
+      ).toBe(true)
+      expect(columns.at(-1)?.textContent).toContain('Σ AGGREGATE TOTALS')
+      expect(
+        columns.at(-1)?.querySelector('.provider-card.aggregate')
+      ).not.toBeNull()
+    } finally {
+      Object.defineProperty(window, 'innerWidth', {
+        configurable: true,
+        value: originalInnerWidth,
+      })
+    }
+  })
+
+  test('test_status_health_omits_google_and_antigravity_provider_cards', async () => {
+    const makeGoogleQuotaRow = (): UsageReportQuotaRow => ({
+      provider: 'google',
+      model: 'gemini-2.5-flash-lite',
+      weekly_remaining_pct: null,
+      weekly_reset_at: null,
+      weekly_interval_start: null,
+      weekly_interval_end: null,
+      weekly_active: false,
+      weekly_usage_tokens: 0,
+      weekly_usage_breakdown: [],
+      short_remaining_pct: 55,
+      short_reset_at: '2026-05-24T00:00:00.000Z',
+      short_interval_start: '2026-05-23T00:00:00.000Z',
+      short_interval_end: '2026-05-24T00:00:00.000Z',
+      short_active: true,
+      short_usage_tokens: 1000,
+      short_usage_breakdown: [],
+      special_remaining_pct: null,
+      special_reset_at: null,
+      special_interval_start: null,
+      special_interval_end: null,
+      special_active: false,
+      special_usage_tokens: 0,
+      special_usage_breakdown: [],
+      short_special_remaining_pct: null,
+      short_special_reset_at: null,
+      short_special_interval_start: null,
+      short_special_interval_end: null,
+      short_special_active: false,
+      short_special_usage_tokens: 0,
+      short_special_usage_breakdown: [],
+      monthly_remaining_pct: null,
+      monthly_reset_at: null,
+      monthly_interval_start: null,
+      monthly_interval_end: null,
+      monthly_active: false,
+      monthly_usage_tokens: 0,
+      monthly_usage_breakdown: [],
+      wtus_remaining_pct: null,
+      wtus_reset_at: null,
+      wtus_interval_start: null,
+      wtus_interval_end: null,
+      wtus_active: false,
+      wtus_usage_tokens: 0,
+      wtus_usage_breakdown: [],
+    })
+    const makeAntigravityQuotaRow = (
+      quotaKey: string,
+      remainingPct: number
+    ): UsageReportQuotaRow => ({
+      ...makeGoogleQuotaRow(),
+      provider: 'antigravity',
+      model: quotaKey,
+      short_active: false,
+      short_remaining_pct: null,
+      wtus_remaining_pct: remainingPct,
+      wtus_reset_at: '2026-06-06T00:04:07Z',
+      wtus_interval_start: '2026-06-05T19:04:12Z',
+      wtus_interval_end: '9999-12-31T00:00:00Z',
+      wtus_active: true,
+    })
+    let container: HTMLElement | undefined
+
+    await act(async () => {
+      const result = render(
+        <Wrapper>
+          <PhosphorDashboard
+            from='2026-05-20'
+            to='2026-05-21'
+            report={MOCK_REPORT}
+            reportLoading={false}
+            showComparison={false}
+            quotas={[
+              makeGoogleQuotaRow(),
+              makeAntigravityQuotaRow(
+                'antigravity_code_assist:gemini_pool',
+                88
+              ),
+              makeAntigravityQuotaRow(
+                'antigravity_code_assist:vertex_pool',
+                76
+              ),
+            ]}
+            quotaHistory={[]}
+          />
+        </Wrapper>
+      )
+      container = result.container
+    })
+
+    const status = container?.querySelector('section#status') as HTMLElement
+    const providerNames = Array.from(
+      status.querySelectorAll('.provider-name')
+    ).map((node) => node.textContent?.trim())
+
+    expect(providerNames).not.toContain('GOOGLE')
+    expect(providerNames).not.toContain('ANTIGRAVITY')
+    expect(screen.queryByText(/Antigravity Gemini Pool/i)).toBeNull()
+    expect(screen.queryByText(/flash-lite · 24h/i)).toBeNull()
+  })
+
+  test('test_quota_history_degraded_badge_stays_out_of_health_tab', async () => {
+    await act(async () => {
+      render(
+        <Wrapper>
+          <PhosphorDashboard
+            from='2026-05-20'
+            to='2026-05-21'
+            report={MOCK_REPORT}
+            reportLoading={false}
+            showComparison={false}
+            quotas={[]}
+            quotaHistory={[]}
+            quotaHistoryMetadata={{
+              generatedAt: '2026-05-19T00:00:00.000Z',
+              degraded: true,
+              degradedReason: 'database_timeout',
+              degradedMessage: 'Quota history exceeded the bounded timeout.',
+              quotaHistoryStatementTimeoutMs: 15000,
+            }}
+          />
+        </Wrapper>
+      )
+    })
+
+    expect(screen.getByRole('tab', { name: 'Health' })).toHaveAttribute(
+      'aria-selected',
+      'true'
+    )
+    expect(screen.queryByText('Degraded')).toBeNull()
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Quota' }))
+
+    expect(await screen.findByText('Degraded')).toHaveClass(
+      'section-degraded-badge'
+    )
+  })
+
+  test('test_token_trend_shows_degraded_badge_for_summary_timeout', async () => {
+    server.use(
+      http.get('/api/shell/reports/usage/token-trend-summary', () =>
+        HttpResponse.json({
+          metadata: {
+            from: '2026-05-20',
+            to: '2026-05-21',
+            degraded: true,
+            degradedReason: 'database_timeout',
+            degradedMessage:
+              'Token trend summary exceeded the bounded timeout.',
+            tokenTrendSummaryStatementTimeoutMs: 15000,
+          },
+          tokenTrendHours: [],
+          tokenTrendHealth: [],
+          tokenTrendScores: [],
+          tokenTrendVersions: [],
+          tokenTrendModelFirstSeen: [],
+        })
+      )
+    )
+
+    await act(async () => {
+      render(
+        <Wrapper>
+          <PhosphorDashboard
+            from='2026-05-20'
+            to='2026-05-21'
+            report={MOCK_REPORT}
+            reportLoading={false}
+            showComparison={false}
+            quotas={[]}
+            quotaHistory={[]}
+          />
+        </Wrapper>
+      )
+    })
+
+    expect(await screen.findByText('Degraded')).toHaveClass(
+      'section-degraded-badge'
+    )
+  })
+
+  test('test_token_trend_does_not_show_degraded_badge_for_bounded_raw_lane_policy', async () => {
+    server.use(
+      http.get('/api/shell/reports/usage/token-trend-summary', () =>
+        HttpResponse.json({
+          metadata: {
+            from: '2026-05-20',
+            to: '2026-06-01',
+            degraded: true,
+            degradedReason: 'bounded_raw_lane_policy',
+            degradedMessage:
+              'Token trend summary bounded raw-lane policy skipped lanes "hours", "scores", "versions", "modelFirstSeen" for a 31-day range; max allowed is 7 days.',
+            skippedSubqueries: [
+              'hours',
+              'scores',
+              'versions',
+              'modelFirstSeen',
+            ],
+            unavailableSubqueries: [
+              'hours',
+              'scores',
+              'versions',
+              'modelFirstSeen',
+            ],
+            tokenTrendSummaryRawLaneMaxDays: 7,
+            tokenTrendSummaryRangeDays: 31,
+          },
+          tokenTrendHours: [],
+          tokenTrendHealth: [],
+          tokenTrendScores: [],
+          tokenTrendVersions: [],
+          tokenTrendModelFirstSeen: [],
+        })
+      )
+    )
+
+    await act(async () => {
+      render(
+        <Wrapper>
+          <PhosphorDashboard
+            from='2026-05-20'
+            to='2026-06-01'
+            report={MOCK_REPORT}
+            reportLoading={false}
+            showComparison={false}
+            quotas={[]}
+            quotaHistory={[]}
+          />
+        </Wrapper>
+      )
+    })
+
+    const trendSection = (await screen.findByText('TREND')).closest('section')
+
+    expect(screen.queryByText('Degraded')).toBeNull()
+    expect(trendSection?.querySelector('.section-degraded-badge')).toBeNull()
+  })
+
+  test('test_token_trend_shows_degraded_badge_for_bounded_policy_timeout', async () => {
+    server.use(
+      http.get('/api/shell/reports/usage/token-trend-summary', () =>
+        HttpResponse.json({
+          metadata: {
+            from: '2026-05-20',
+            to: '2026-06-01',
+            degraded: true,
+            degradedReason: 'bounded_raw_lane_policy',
+            degradedMessage:
+              'Token trend summary skipped broad raw lanes and one query timed out.',
+            timeout: true,
+            timedOutSubqueries: ['health'],
+            skippedSubqueries: [
+              'hours',
+              'scores',
+              'versions',
+              'modelFirstSeen',
+            ],
+            unavailableSubqueries: [
+              'health',
+              'hours',
+              'scores',
+              'versions',
+              'modelFirstSeen',
+            ],
+            tokenTrendSummaryRawLaneMaxDays: 7,
+            tokenTrendSummaryRangeDays: 31,
+          },
+          tokenTrendHours: [],
+          tokenTrendHealth: [],
+          tokenTrendScores: [],
+          tokenTrendVersions: [],
+          tokenTrendModelFirstSeen: [],
+        })
+      )
+    )
+
+    await act(async () => {
+      render(
+        <Wrapper>
+          <PhosphorDashboard
+            from='2026-05-20'
+            to='2026-06-01'
+            report={MOCK_REPORT}
+            reportLoading={false}
+            showComparison={false}
+            quotas={[]}
+            quotaHistory={[]}
+          />
+        </Wrapper>
+      )
+    })
+
+    const degradedBadge = await screen.findByText('Degraded')
+    expect(degradedBadge).toHaveClass('section-degraded-badge')
+    expect(degradedBadge).toHaveAttribute(
+      'title',
+      expect.stringContaining('one query timed out')
+    )
+  })
+
+  test('test_pgbouncer_tab_renders_pgbouncer_sidecar_health', async () => {
     server.use(
       http.get('/api/shell/health', () =>
         HttpResponse.json({
@@ -458,6 +848,17 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
         </Wrapper>
       )
     })
+
+    expect(
+      screen.queryByRole('region', { name: /pgbouncer health/i })
+    ).toBeNull()
+    const pgBouncerTab = screen.getByRole('tab', { name: /PgBouncer/ })
+    await waitFor(() => {
+      expect(
+        pgBouncerTab.querySelector('.section-tab-indicator.is-red.is-flashing')
+      ).not.toBeNull()
+    })
+    fireEvent.click(pgBouncerTab)
 
     const aawmCard = (await screen.findByText('AAWM PgBouncer')).closest(
       'article'
@@ -632,7 +1033,27 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
         }),
         quotaHistoryRow({
           provider: 'xai',
+          model: 'xai_grok_build_weekly_credits:credits',
+          quota_type: 'weekly',
+          quota_key: 'xai_grok_build_weekly_credits:credits',
+          quota_unit: 'credits',
+          source: 'grok_billing',
+          client: 'grok-build',
+          expected_reset_at: '2026-06-15T00:00:00.000Z',
+          interval_start: '2026-06-08T00:00:00.000Z',
+          interval_end: '2026-06-15T00:00:00.000Z',
+          min_remaining_pct: 98,
+          usage_tokens: 120,
+          usage_breakdown: [],
+        }),
+        quotaHistoryRow({
+          provider: 'xai',
+          model: 'xai_grok_build_monthly_requests:requests',
           quota_type: 'monthly',
+          quota_key: 'xai_grok_build_monthly_requests:requests',
+          quota_unit: 'requests',
+          source: 'grok_billing',
+          client: 'grok-build',
           expected_reset_at: '2026-06-15T00:00:00.000Z',
           interval_start: '2026-05-16T00:00:00.000Z',
           interval_end: '2026-06-15T00:00:00.000Z',
@@ -711,39 +1132,40 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
     expect(anthropic.queryByRole('tab', { name: /5hr/i })).toBeNull()
     expect(anthropic.queryByText(/800 tok/i)).toBeNull()
 
-    const googleBucket = screen
-      .getByRole('tablist', { name: /google quota bars/i })
-      .closest('article')
-    expect(googleBucket).not.toBeNull()
-    const google = within(googleBucket as HTMLElement)
     expect(
-      google.getByRole('tab', { name: /flash-lite · 24h/i })
-    ).toHaveAttribute('aria-selected', 'true')
+      screen.queryByRole('tablist', { name: /google quota bars/i })
+    ).toBeNull()
     expect(
-      (googleBucket as HTMLElement).querySelector(
-        '.provider-quota-history-label'
-      )
-    ).toHaveTextContent('Flash-Lite')
-    expect(google.getByText(/1K tok · 10 req/i)).toBeInTheDocument()
-    expect(google.queryByText(/0 tok · 0 req/i)).toBeNull()
-    expect(
-      (googleBucket as HTMLElement).querySelectorAll(
-        '.provider-quota-history-row'
-      )
-    ).toHaveLength(1)
-    expect(google.queryByText(/gemini-2\.5-flash-lite/i)).toBeNull()
-    expect(google.queryByText(/gemini-3\.1-flash-lite-preview/i)).toBeNull()
+      screen.queryByRole('tablist', { name: /antigravity quota bars/i })
+    ).toBeNull()
 
     const xaiBucket = screen
       .getByRole('tablist', { name: /xai quota bars/i })
       .closest('article')
     expect(xaiBucket).not.toBeNull()
     const xai = within(xaiBucket as HTMLElement)
-    expect(xai.getByRole('tab', { name: /all models · 30d/i })).toHaveAttribute(
-      'aria-selected',
-      'true'
+    expect(
+      xai.getByRole('tab', { name: /grok build · weekly credits/i })
+    ).toBeInTheDocument()
+    expect(
+      xai.getByRole('tab', { name: /grok build · monthly requests/i })
+    ).toBeInTheDocument()
+    expect(xai.getByText(/120 tok · 0 req · credits/i)).toBeInTheDocument()
+    expect(
+      xai.getByText(
+        /xai_grok_build_weekly_credits:credits · grok_billing · grok-build/i
+      )
+    ).toBeInTheDocument()
+
+    fireEvent.click(
+      xai.getByRole('tab', { name: /grok build · monthly requests/i })
     )
-    expect(xai.getByText(/321 tok · 4 req/i)).toBeInTheDocument()
+    expect(xai.getByText(/321 tok · 4 req · requests/i)).toBeInTheDocument()
+    expect(
+      xai.getByText(
+        /xai_grok_build_monthly_requests:requests · grok_billing · grok-build/i
+      )
+    ).toBeInTheDocument()
   })
 
   test('test_status_quota_tab_shows_provider_range_empty_state', async () => {
@@ -777,6 +1199,12 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
     })
 
     fireEvent.click(screen.getByRole('tab', { name: 'Quota' }))
+
+    expect(screen.queryByText('google')).toBeNull()
+    expect(screen.queryByText('antigravity')).toBeNull()
+    expect(
+      screen.queryByRole('tablist', { name: /google quota bars/i })
+    ).toBeNull()
 
     const openaiBucket = screen.getByText('openai').closest('article')
     expect(openaiBucket).not.toBeNull()
@@ -1012,6 +1440,430 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
     ).toBeGreaterThan(0)
   })
 
+  test('test_status_diagnostics_tab_fetches_session_diagnostics_and_renders_metadata_families', async () => {
+    let seenFrom: string | null = null
+    let seenTo: string | null = null
+    let seenProvider: string | null = null
+    let seenModel: string | null = null
+    let seenRepository: string | null = null
+    let seenClient: string | null = null
+    let seenLimit: string | null = null
+
+    server.use(
+      http.get(
+        '/api/shell/reports/usage/session-diagnostics',
+        ({ request }) => {
+          const url = new URL(request.url)
+          seenFrom = url.searchParams.get('from')
+          seenTo = url.searchParams.get('to')
+          seenProvider = url.searchParams.get('provider')
+          seenModel = url.searchParams.get('model')
+          seenRepository = url.searchParams.get('repository')
+          seenClient = url.searchParams.get('client')
+          seenLimit = url.searchParams.get('limit')
+          return HttpResponse.json({
+            metadata: {
+              from: '2026-05-20',
+              to: '2026-05-21',
+              limit: 100,
+              generatedAt: '2026-05-21T00:00:00.000Z',
+            },
+            sessionDiagnostics: [
+              {
+                created_at: '2026-05-20T12:00:00.000Z',
+                session_id: 'sess-1',
+                trace_id: 'trace-1',
+                litellm_call_id: 'call-1',
+                provider: 'xai',
+                model: 'grok-composer-2.5-fast',
+                repository: 'dashboard-shell',
+                client: 'grok-build',
+                diagnostic_flags: [
+                  'grok_oauth',
+                  'alias_routing',
+                  'output_contract',
+                  'tool_definitions',
+                  'xai_sanitizer',
+                  'transcript_attribution',
+                  'grok_side_channel',
+                ],
+                diagnostic_categories: [
+                  'route_identity',
+                  'route_timeline',
+                  'agent_quality',
+                  'tool_contract',
+                  'request_shape',
+                  'model_attribution',
+                ],
+                grok_oauth: {
+                  credential_family: 'xai_grok_oidc',
+                  grok_native_oauth_managed: true,
+                  grok_native_entrypoint: 'openai_responses',
+                },
+                grok_side_channel: {
+                  enabled: true,
+                  endpoint_type: 'register',
+                  endpoint_template: '/grok/v1/sessions/register',
+                  content_type: 'application/json',
+                  body_byte_length: 256,
+                  body_sha256: 'deadbeefcafebabe',
+                  digest_source: 'request_body',
+                  json_container_type: 'object',
+                  top_level_key_types: { model: 'string', tools: 'array' },
+                  array_length: 3,
+                },
+                output_contract: {
+                  usage_output_contract_required_final_phrase_present: false,
+                  usage_output_contract_failure_class:
+                    'missing_required_final_phrase',
+                  usage_output_contract_setup_only_detected: true,
+                },
+                xai_sanitizer: {
+                  xai_responses_request_sanitized: true,
+                  xai_responses_sanitized_removed_params: [
+                    'instructions',
+                    'tool_choice',
+                  ],
+                  xai_responses_sanitized_tool_count: 2,
+                  xai_responses_sanitized_tool_types: ['function'],
+                  xai_tool_choice_without_tools_removed: {
+                    name: 'Bash',
+                    type: 'function',
+                  },
+                  xai_tool_choice_without_tools_removed_reason: 'missing_tools',
+                  request_tags: [
+                    'xai-tool-choice-without-tools-removed',
+                    'xai-tool-choice-without-tools:function',
+                  ],
+                  xai_responses_sanitized_tools: [
+                    { name: 'Bash', type: 'function' },
+                    { name: 'Read', type: 'function' },
+                  ],
+                  passthrough_route_family: 'grok_cli_chat_proxy',
+                },
+                tool_definitions: {
+                  aawm_tool_definition_capture_version: 'v1',
+                  aawm_tool_definition_count: 3,
+                  aawm_tool_definition_captured_count: 2,
+                  aawm_tool_definition_names: ['Bash', 'Read'],
+                  aawm_tool_definition_types: ['function', 'function'],
+                  snapshot_hash: 'abc123',
+                  aawm_tool_definition_snapshot_truncated: true,
+                  tool_definition_snapshot: [
+                    { name: 'Bash', type: 'function' },
+                    { name: 'Read', type: 'function' },
+                  ],
+                },
+                alias_route_events: [
+                  {
+                    observed_at: '2026-05-20T12:00:00.000Z',
+                    alias_model: 'aawm-code',
+                    provider: 'anthropic',
+                    model: 'claude-sonnet-4-6',
+                    event_type: 'candidate_selected',
+                    attempt_number: 2,
+                    cooldown_state: 'active',
+                    redispatch_required: true,
+                    last_resort: false,
+                  },
+                ],
+                grok_side_channel_request_body_raw:
+                  'RAW_SECRET_BODY_SHOULD_NOT_RENDER',
+                transcript_attribution: {
+                  session_history_transcript_attribution_status:
+                    'unrecoverable',
+                  session_history_transcript_attribution_source:
+                    'd1-229-claude-raw-transcript-attribution',
+                  session_history_transcript_attribution: {
+                    status: 'unrecoverable',
+                    reason: 'no_explicit_transcript_model_event',
+                    match_rule: 'transcript_model_event',
+                    updated_at: '2026-05-20T12:05:00.000Z',
+                  },
+                },
+                anthropic_context_window: {
+                  mode: 'extended_1m',
+                  requested_tokens: 1000000,
+                  source: 'model_suffix_1m',
+                  beta: 'context-1m-2025-08-07',
+                  classification: {
+                    label: 'extended_1m',
+                    evidence: 'model_suffix',
+                  },
+                },
+              },
+            ],
+          } satisfies UsageReportSessionDiagnosticsResponse)
+        }
+      )
+    )
+
+    await act(async () => {
+      render(
+        <Wrapper>
+          <PhosphorDashboard
+            from='2026-05-20'
+            to='2026-05-21'
+            filters={{
+              providers: ['xai'],
+              repositories: ['dashboard-shell'],
+              clients: ['grok-build'],
+              environments: [],
+              models: ['grok-composer-2.5-fast'],
+            }}
+            report={MOCK_REPORT}
+            reportLoading={false}
+            showComparison={false}
+            quotas={[]}
+          />
+        </Wrapper>
+      )
+    })
+
+    expect(screen.queryByText('Session diagnostics')).toBeNull()
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Diagnostics' }))
+
+    await waitFor(() => {
+      expect(
+        screen.getByText('Loading session diagnostics...')
+      ).toBeInTheDocument()
+    })
+    expect(seenFrom).toBe('2026-05-20')
+    expect(seenTo).toBe('2026-05-21')
+    expect(seenProvider).toBe('xai')
+    expect(seenModel).toBe('grok-composer-2.5-fast')
+    expect(seenRepository).toBe('dashboard-shell')
+    expect(seenClient).toBe('grok-build')
+    expect(seenLimit).toBe('100')
+    const diagnosticsCard = (
+      await screen.findByText('grok-composer-2.5-fast')
+    ).closest('article') as HTMLElement
+
+    expect(
+      within(diagnosticsCard).getByText('xai_grok_oidc')
+    ).toBeInTheDocument()
+    expect(
+      within(diagnosticsCard).getByText('missing_required_final_phrase')
+    ).toBeInTheDocument()
+    expect(
+      within(diagnosticsCard).getByText('missing_tools')
+    ).toBeInTheDocument()
+    expect(within(diagnosticsCard).getByText('abc123')).toBeInTheDocument()
+    expect(
+      within(diagnosticsCard).getByText('1 audit events')
+    ).toBeInTheDocument()
+    expect(
+      within(diagnosticsCard).getByText('unrecoverable')
+    ).toBeInTheDocument()
+
+    expect(
+      within(diagnosticsCard).getByText('Requested context window')
+    ).toBeInTheDocument()
+    expect(within(diagnosticsCard).getByText('1M extended')).toBeInTheDocument()
+    expect(
+      within(diagnosticsCard).getByText('model_suffix_1m')
+    ).toBeInTheDocument()
+    expect(
+      within(diagnosticsCard).getByText('context-1m-2025-08-07')
+    ).toBeInTheDocument()
+    expect(within(diagnosticsCard).getByText('1000000')).toBeInTheDocument()
+
+    expect(
+      within(diagnosticsCard).getByText('aawm_tool_definition_captured_count')
+    ).toBeInTheDocument()
+    expect(
+      within(diagnosticsCard).getByText('aawm_tool_definition_count')
+    ).toBeInTheDocument()
+    expect(
+      within(diagnosticsCard).getByText(
+        'aawm_tool_definition_snapshot_truncated'
+      )
+    ).toBeInTheDocument()
+    expect(
+      within(diagnosticsCard).getByText('aawm_tool_definition_names')
+    ).toBeInTheDocument()
+    expect(
+      within(diagnosticsCard).getByText('aawm_tool_definition_types')
+    ).toBeInTheDocument()
+    expect(within(diagnosticsCard).getByText('Bash, Read')).toBeInTheDocument()
+    expect(
+      within(diagnosticsCard).getByText('function, function')
+    ).toBeInTheDocument()
+
+    expect(
+      within(diagnosticsCard).getByText('responses_sanitized_removed_params')
+    ).toBeInTheDocument()
+    expect(
+      within(diagnosticsCard).getByText('tool_choice_without_tools_removed')
+    ).toBeInTheDocument()
+    expect(
+      within(diagnosticsCard).getByText(
+        'tool_choice_without_tools_removed_reason'
+      )
+    ).toBeInTheDocument()
+    expect(
+      within(diagnosticsCard).getByText('request_tags')
+    ).toBeInTheDocument()
+    expect(
+      within(diagnosticsCard).getByText('instructions, tool_choice')
+    ).toBeInTheDocument()
+    expect(
+      within(diagnosticsCard).getByText('{"name":"Bash","type":"function"}')
+    ).toBeInTheDocument()
+    expect(
+      within(diagnosticsCard).getByText(
+        'xai-tool-choice-without-tools-removed, xai-tool-choice-without-tools:function'
+      )
+    ).toBeInTheDocument()
+
+    const sanitizedToolsDetail = within(diagnosticsCard)
+      .getByText('sanitized tools')
+      .closest('details') as HTMLElement
+    fireEvent.click(within(sanitizedToolsDetail).getByText('sanitized tools'))
+    expect(
+      within(sanitizedToolsDetail).getByText(/"name": "Bash"/)
+    ).toBeInTheDocument()
+    expect(
+      within(sanitizedToolsDetail).getByText(/"name": "Read"/)
+    ).toBeInTheDocument()
+
+    const removedToolChoiceDetail = within(diagnosticsCard)
+      .getByText('removed tool choice')
+      .closest('details') as HTMLElement
+    fireEvent.click(
+      within(removedToolChoiceDetail).getByText('removed tool choice')
+    )
+    expect(
+      within(removedToolChoiceDetail).getByText(/"type": "function"/)
+    ).toBeInTheDocument()
+
+    const toolDefinitionSnapshotDetail = within(diagnosticsCard)
+      .getByText('tool definition snapshot')
+      .closest('details') as HTMLElement
+    fireEvent.click(
+      within(toolDefinitionSnapshotDetail).getByText('tool definition snapshot')
+    )
+    expect(
+      within(toolDefinitionSnapshotDetail).getByText(/"name": "Bash"/)
+    ).toBeInTheDocument()
+    expect(
+      within(toolDefinitionSnapshotDetail).getByText(/"name": "Read"/)
+    ).toBeInTheDocument()
+
+    const aliasTimelineRow = within(diagnosticsCard)
+      .getByText('candidate_selected')
+      .closest('.status-diagnostics-timeline-row') as HTMLElement
+    expect(
+      within(aliasTimelineRow).getByText('2026-05-20T12:00:00.000Z')
+    ).toBeInTheDocument()
+    expect(
+      within(aliasTimelineRow).getByText(
+        'aawm-code -> anthropic -> claude-sonnet-4-6'
+      )
+    ).toBeInTheDocument()
+    expect(within(aliasTimelineRow).getByText(/attempt/i)).toBeInTheDocument()
+    expect(within(aliasTimelineRow).getByText(/cooldown/i)).toBeInTheDocument()
+    expect(
+      within(aliasTimelineRow).getByText(/redispatch/i)
+    ).toBeInTheDocument()
+    expect(
+      within(aliasTimelineRow).getByText(/last resort/i)
+    ).toBeInTheDocument()
+
+    fireEvent.click(within(diagnosticsCard).getByText('alias route events'))
+    expect(
+      within(diagnosticsCard).getByText(
+        /"observed_at": "2026-05-20T12:00:00.000Z"/
+      )
+    ).toBeInTheDocument()
+    expect(
+      within(diagnosticsCard).getByText(/"attempt_number": 2/)
+    ).toBeInTheDocument()
+    expect(
+      within(diagnosticsCard).getByText(/"cooldown_state": "active"/)
+    ).toBeInTheDocument()
+    expect(
+      within(diagnosticsCard).getByText(/"redispatch_required": true/)
+    ).toBeInTheDocument()
+    expect(
+      within(diagnosticsCard).getByText(/"last_resort": false/)
+    ).toBeInTheDocument()
+
+    expect(
+      within(diagnosticsCard).getByText('unknown model (unrecoverable)')
+    ).toBeInTheDocument()
+    expect(
+      within(diagnosticsCard).getByText('no_explicit_transcript_model_event')
+    ).toBeInTheDocument()
+    expect(
+      within(diagnosticsCard).getByText('transcript_model_event')
+    ).toBeInTheDocument()
+    expect(
+      within(diagnosticsCard).getByText('2026-05-20T12:05:00.000Z')
+    ).toBeInTheDocument()
+
+    const grokSideChannelBlock = within(diagnosticsCard)
+      .getByText('Grok side-channel')
+      .closest('.status-estimator-block') as HTMLElement
+    expect(grokSideChannelBlock).toBeInTheDocument()
+    expect(
+      within(grokSideChannelBlock).getByText('register')
+    ).toBeInTheDocument()
+    expect(
+      within(grokSideChannelBlock).getByText('/grok/v1/sessions/register')
+    ).toBeInTheDocument()
+    expect(
+      within(grokSideChannelBlock).getByText('application/json')
+    ).toBeInTheDocument()
+    expect(within(grokSideChannelBlock).getByText('256')).toBeInTheDocument()
+    expect(
+      within(grokSideChannelBlock).getByText('request_body')
+    ).toBeInTheDocument()
+    expect(
+      within(grokSideChannelBlock).getByText('deadbeefcafebabe')
+    ).toBeInTheDocument()
+    expect(within(grokSideChannelBlock).getByText('object')).toBeInTheDocument()
+    expect(within(grokSideChannelBlock).getByText('3')).toBeInTheDocument()
+    fireEvent.click(
+      within(grokSideChannelBlock).getByText('top-level key types')
+    )
+    expect(
+      within(grokSideChannelBlock).getByText(/"model": "string"/)
+    ).toBeInTheDocument()
+    expect(
+      within(grokSideChannelBlock).getByText(/"tools": "array"/)
+    ).toBeInTheDocument()
+    expect(
+      within(diagnosticsCard).queryByText('RAW_SECRET_BODY_SHOULD_NOT_RENDER')
+    ).toBeNull()
+    expect(document.body.textContent).not.toContain(
+      'RAW_SECRET_BODY_SHOULD_NOT_RENDER'
+    )
+
+    fireEvent.click(
+      within(diagnosticsCard).getByText('transcript attribution detail')
+    )
+    expect(
+      within(diagnosticsCard).getByText(/"status": "unrecoverable"/)
+    ).toBeInTheDocument()
+    expect(
+      within(diagnosticsCard).getByText(
+        /"reason": "no_explicit_transcript_model_event"/
+      )
+    ).toBeInTheDocument()
+    expect(
+      within(diagnosticsCard).getByText(
+        /"match_rule": "transcript_model_event"/
+      )
+    ).toBeInTheDocument()
+    expect(
+      within(diagnosticsCard).getByText(
+        /"updated_at": "2026-05-20T12:05:00.000Z"/
+      )
+    ).toBeInTheDocument()
+  })
+
   // S1-T4 flake fix: replace the 40ms real-delay race with a deferred-promise
   // handler resolved explicitly so the loading state is stable before releasing.
   test('test_status_weights_tab_loading_and_empty_states', async () => {
@@ -1115,6 +1967,16 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
     expect(healthTab).toHaveAttribute('aria-selected', 'true')
     const quotaTab = screen.getByRole('tab', { name: 'Quota' })
     expect(quotaTab).toHaveAttribute('aria-selected', 'false')
+    const pgBouncerTab = screen.getByRole('tab', { name: 'PgBouncer' })
+    expect(pgBouncerTab).toHaveAttribute('aria-selected', 'false')
+    const providerCreditsTab = screen.getByRole('tab', {
+      name: 'Provider Credits',
+    })
+    expect(providerCreditsTab).toHaveAttribute('aria-selected', 'false')
+    const providerAuthTab = screen.getByRole('tab', { name: 'Provider Auth' })
+    expect(providerAuthTab).toHaveAttribute('aria-selected', 'false')
+    const aliasRoutingTab = screen.getByRole('tab', { name: 'Alias Routing' })
+    expect(aliasRoutingTab).toHaveAttribute('aria-selected', 'false')
     const weightsTab = screen.getByRole('tab', { name: 'Weights' })
     expect(weightsTab).toHaveAttribute('aria-selected', 'false')
 
@@ -1122,6 +1984,22 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
     fireEvent.click(quotaTab)
     expect(quotaTab).toHaveAttribute('aria-selected', 'true')
     expect(healthTab).toHaveAttribute('aria-selected', 'false')
+
+    fireEvent.click(pgBouncerTab)
+    expect(pgBouncerTab).toHaveAttribute('aria-selected', 'true')
+    expect(quotaTab).toHaveAttribute('aria-selected', 'false')
+
+    fireEvent.click(providerCreditsTab)
+    expect(providerCreditsTab).toHaveAttribute('aria-selected', 'true')
+    expect(pgBouncerTab).toHaveAttribute('aria-selected', 'false')
+
+    fireEvent.click(providerAuthTab)
+    expect(providerAuthTab).toHaveAttribute('aria-selected', 'true')
+    expect(providerCreditsTab).toHaveAttribute('aria-selected', 'false')
+
+    fireEvent.click(aliasRoutingTab)
+    expect(aliasRoutingTab).toHaveAttribute('aria-selected', 'true')
+    expect(providerAuthTab).toHaveAttribute('aria-selected', 'false')
 
     // LEDGER section: Model tab selected by default.
     const modelTab = screen.getByRole('tab', { name: 'Model' })
@@ -1266,7 +2144,7 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
       await new Promise((resolve) => setTimeout(resolve, 50))
     })
 
-    // The internal useQuery is gated by `internalQueryEnabled = reportProp === undefined`.
+    // The internal useQuery is gated by parent-managed report loading/fetching.
     // Since we supplied `report`, NO fetch to /api/shell/reports/usage should occur.
     expect(usageCallCount).toBe(0)
   })
@@ -1751,6 +2629,80 @@ describe('Provider health cell classification', () => {
 // ---------------------------------------------------------------------------
 
 describe('PhosphorDashboard — TCG-3: prior-report query skipped when showComparison=false', () => {
+  test('test_parent_managed_loading_without_report_does_not_duplicate_usage_query', async () => {
+    let usageCallCount = 0
+    server.use(
+      http.get('/api/shell/reports/usage', () => {
+        usageCallCount += 1
+        return HttpResponse.json(MOCK_REPORT)
+      })
+    )
+
+    await act(async () => {
+      render(
+        <Wrapper>
+          <PhosphorDashboard
+            from='2026-04-19'
+            to='2026-05-19'
+            reportLoading={true}
+            reportFetching={true}
+            onRefreshReport={async () => undefined}
+            showComparison={false}
+          />
+        </Wrapper>
+      )
+    })
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50))
+    })
+
+    expect(usageCallCount).toBe(0)
+  })
+
+  test('test_status_diagnostics_tab_reachable_while_report_loading', async () => {
+    server.use(
+      http.get('/api/shell/reports/usage/token-trend-summary', () =>
+        HttpResponse.json({
+          metadata: {
+            from: '2026-05-20',
+            to: '2026-05-21',
+          },
+          tokenTrendHours: [],
+          tokenTrendVersions: [],
+        })
+      )
+    )
+
+    await act(async () => {
+      render(
+        <Wrapper>
+          <PhosphorDashboard
+            from='2026-05-20'
+            to='2026-05-21'
+            reportLoading={true}
+            reportFetching={true}
+            onRefreshReport={async () => undefined}
+            showComparison={false}
+            quotas={[]}
+          />
+        </Wrapper>
+      )
+    })
+
+    expect(screen.getByRole('heading', { name: 'STATUS' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('tab', { name: 'Diagnostics' }))
+
+    await waitFor(
+      () => {
+        expect(
+          screen.getByText('Loading session diagnostics...')
+        ).toBeInTheDocument()
+      },
+      { timeout: 3000 }
+    )
+  })
+
   test('test_phosphor_dashboard_no_prior_fetch_when_show_comparison_false', async () => {
     // Track every hit to /api/shell/reports/usage; we'll distinguish
     // current vs prior by counting total calls — with showComparison=false
@@ -1932,6 +2884,11 @@ describe('Wave 40 — quotaTypeToPeriodType', () => {
     expect(quotaTypeToPeriodType('monthly')).toBe('monthly')
   })
 
+  test('test_quota_type_weekly_overage_included_maps_to_weekly_overage_included', () => {
+    expect(quotaTypeToPeriodType('weekly_overage_included')).toBe(
+      'weekly_overage_included'
+    )
+  })
   test('test_quota_type_unknown_defaults_to_weekly', () => {
     expect(quotaTypeToPeriodType('requests')).toBe('weekly')
   })
@@ -2158,6 +3115,13 @@ describe('Wave 41 — buildProviderLanes', () => {
       monthly_active: false,
       monthly_usage_tokens: 0,
       monthly_usage_breakdown: [],
+      weekly_overage_included_remaining_pct: null,
+      weekly_overage_included_reset_at: null,
+      weekly_overage_included_interval_start: null,
+      weekly_overage_included_interval_end: null,
+      weekly_overage_included_active: false,
+      weekly_overage_included_usage_tokens: 0,
+      weekly_overage_included_usage_breakdown: [],
       ...overrides,
     }
   }
@@ -2180,23 +3144,97 @@ describe('Wave 41 — buildProviderLanes', () => {
     }
   }
 
-  test('test_anthropic_has_3_lanes', () => {
+  test('test_anthropic_has_3_lanes_without_weekly_overage_source_rows', () => {
     const quotaRows = [makeAnthropicQuotaRow()]
     const lanes = buildProviderLanes('anthropic', quotaRows, [])
-    // Lanes that have a current bar or prior bars: all 3 have current bars.
     expect(lanes.length).toBe(3)
     const keys = lanes.map((l) => l.laneKey)
     expect(keys).toContain('anthropic/short')
-    expect(keys).toContain('anthropic/special')
     expect(keys).toContain('anthropic/weekly')
+    expect(keys).not.toContain('anthropic/weekly_overage_included')
+    expect(keys).toContain('anthropic/special')
   })
 
-  test('test_anthropic_lane_order_short_special_weekly', () => {
+  test('test_anthropic_lane_order_short_weekly_special_without_overage', () => {
     const quotaRows = [makeAnthropicQuotaRow()]
     const lanes = buildProviderLanes('anthropic', quotaRows, [])
     expect(lanes[0].laneKey).toBe('anthropic/short')
-    expect(lanes[1].laneKey).toBe('anthropic/special')
-    expect(lanes[2].laneKey).toBe('anthropic/weekly')
+    expect(lanes[1].laneKey).toBe('anthropic/weekly')
+    expect(lanes[2].laneKey).toBe('anthropic/special')
+  })
+
+  test('test_anthropic_has_4_lanes_when_weekly_overage_active', () => {
+    const quotaRows = [
+      makeAnthropicQuotaRow({
+        weekly_overage_included_remaining_pct: 90,
+        weekly_overage_included_reset_at: '2026-07-09T15:00:00Z',
+        weekly_overage_included_interval_start: '2026-07-02T15:00:00Z',
+        weekly_overage_included_interval_end: '2026-07-09T15:00:00Z',
+        weekly_overage_included_active: true,
+      }),
+    ]
+    const lanes = buildProviderLanes('anthropic', quotaRows, [])
+    expect(lanes.map((lane) => lane.laneKey)).toEqual([
+      'anthropic/short',
+      'anthropic/weekly',
+      'anthropic/weekly_overage_included',
+      'anthropic/special',
+    ])
+  })
+
+  test('test_anthropic_weekly_overage_lane_does_not_fallback_to_weekly_or_sonnet', () => {
+    const quotaRows = [
+      makeAnthropicQuotaRow({
+        weekly_overage_included_remaining_pct: 90,
+        weekly_overage_included_reset_at: '2026-07-09T15:00:00Z',
+        weekly_overage_included_interval_start: '2026-07-02T15:00:00Z',
+        weekly_overage_included_interval_end: '2026-07-09T15:00:00Z',
+        weekly_overage_included_active: true,
+        weekly_overage_included_usage_tokens: 120,
+        weekly_overage_included_usage_breakdown: [],
+      }),
+    ]
+    const lanes = buildProviderLanes('anthropic', quotaRows, [])
+    const overageLane = lanes.find(
+      (lane) => lane.laneKey === 'anthropic/weekly_overage_included'
+    )
+    expect(overageLane).toBeDefined()
+    expect(overageLane!.currentBar).not.toBeNull()
+    expect(overageLane!.currentBar!.remainingPct).toBe(90)
+    expect(overageLane!.laneLabel).toMatch(/Fable/i)
+  })
+
+  test('test_anthropic_history_rows_keep_weekly_overage_separate_from_weekly_and_special', () => {
+    const quotaRows = [makeAnthropicQuotaRow()]
+    const historyRows = [
+      makeHistoryRow({
+        quota_type: 'weekly',
+        expected_reset_at: '2026-05-14T15:00:00Z',
+        min_remaining_pct: 40,
+      }),
+      makeHistoryRow({
+        quota_type: 'weekly_overage_included',
+        expected_reset_at: '2026-05-21T15:00:00Z',
+        min_remaining_pct: 55,
+      }),
+      makeHistoryRow({
+        quota_type: 'special',
+        expected_reset_at: '2026-05-28T15:00:00Z',
+        min_remaining_pct: 70,
+      }),
+    ]
+    const lanes = buildProviderLanes('anthropic', quotaRows, historyRows)
+    const weeklyLane = lanes.find((lane) => lane.laneKey === 'anthropic/weekly')
+    const overageLane = lanes.find(
+      (lane) => lane.laneKey === 'anthropic/weekly_overage_included'
+    )
+    const specialLane = lanes.find(
+      (lane) => lane.laneKey === 'anthropic/special'
+    )
+    expect(weeklyLane?.priorBars).toHaveLength(1)
+    expect(overageLane?.priorBars).toHaveLength(1)
+    expect(specialLane?.priorBars).toHaveLength(1)
+    expect(overageLane?.priorBars[0].remainingPct).toBe(55)
   })
 
   test('test_anthropic_short_lane_has_current_bar', () => {
@@ -2458,7 +3496,203 @@ describe('Wave 41 — buildProviderLanes', () => {
     expect(lanes[1].priorBars).toHaveLength(1)
   })
 
-  test('test_xai_has_1_monthly_lane', () => {
+  test('test_xai_grok_build_lanes_use_distinct_weekly_credits_and_monthly_requests', () => {
+    const makeXaiRow = (
+      quotaKey: string,
+      quotaType: 'weekly' | 'monthly',
+      remainingPct: number
+    ): UsageReportQuotaRow => ({
+      ...makeAnthropicQuotaRow(),
+      provider: 'xai',
+      model: quotaKey,
+      weekly_remaining_pct: quotaType === 'weekly' ? remainingPct : null,
+      weekly_active: quotaType === 'weekly',
+      weekly_usage_tokens: 0,
+      weekly_usage_breakdown: [],
+      monthly_remaining_pct: quotaType === 'monthly' ? remainingPct : null,
+      monthly_active: quotaType === 'monthly',
+      monthly_usage_tokens: 0,
+      monthly_usage_breakdown: [],
+      short_active: false,
+      special_active: false,
+      short_special_active: false,
+    })
+
+    const lanes = buildProviderLanes(
+      'xai',
+      [
+        makeXaiRow('xai_grok_build_weekly_credits:credits', 'weekly', 99),
+        makeXaiRow('xai_grok_build_monthly_requests:requests', 'monthly', 98),
+      ],
+      []
+    )
+
+    expect(lanes).toHaveLength(2)
+    expect(lanes.map((lane) => lane.laneKey)).toEqual([
+      'xai/grok-build-weekly-credits',
+      'xai/grok-build-monthly-requests',
+    ])
+    expect(lanes[0].currentBar?.remainingPct).toBe(99)
+    expect(lanes[1].currentBar?.remainingPct).toBe(98)
+  })
+
+  test('test_xai_grok_build_history_tabs_keep_weekly_credits_and_monthly_requests_split', () => {
+    const tabs = buildProviderQuotaHistoryTabs('xai', [
+      makeHistoryRow({
+        provider: 'xai',
+        model: 'xai_grok_build_weekly_credits:credits',
+        quota_type: 'weekly',
+        quota_key: 'xai_grok_build_weekly_credits:credits',
+        source: 'grok_billing',
+        client: 'grok-build',
+        quota_unit: 'credits',
+        expected_reset_at: '2026-07-01T00:00:00Z',
+        interval_start: '2026-06-24T00:00:00Z',
+        interval_end: '2026-07-01T00:00:00Z',
+        usage_tokens: 10,
+      }),
+      makeHistoryRow({
+        provider: 'xai',
+        model: 'xai_grok_build_monthly_requests:requests',
+        quota_type: 'monthly',
+        quota_key: 'xai_grok_build_monthly_requests:requests',
+        source: 'grok_billing',
+        client: 'grok-build',
+        quota_unit: 'requests',
+        expected_reset_at: '2026-07-01T00:00:00Z',
+        interval_start: '2026-06-01T00:00:00Z',
+        interval_end: '2026-07-01T00:00:00Z',
+        usage_tokens: 20,
+      }),
+    ])
+
+    expect(tabs.map((tab) => tab.tabKey)).toEqual([
+      'xai/grok-build-weekly-credits',
+      'xai/grok-build-monthly-requests',
+    ])
+    expect(tabs[0].label).toBe('Grok Build · Weekly credits')
+    expect(tabs[0].rows).toHaveLength(1)
+    expect(tabs[0].rows[0].quota_key).toBe(
+      'xai_grok_build_weekly_credits:credits'
+    )
+    expect(tabs[0].rows[0].source).toBe('grok_billing')
+    expect(tabs[0].rows[0].client).toBe('grok-build')
+    expect(tabs[0].rows[0].quota_unit).toBe('credits')
+    expect(tabs[1].label).toBe('Grok Build · Monthly requests')
+    expect(tabs[1].rows).toHaveLength(1)
+    expect(tabs[1].rows[0].quota_key).toBe(
+      'xai_grok_build_monthly_requests:requests'
+    )
+    expect(tabs[1].rows[0].quota_unit).toBe('requests')
+  })
+
+  test('test_google_lanes_include_antigravity_wtus_detail', () => {
+    const makeAntigravityRow = (
+      quotaKey: string,
+      remainingPct: number
+    ): UsageReportQuotaRow => ({
+      ...makeAnthropicQuotaRow(),
+      provider: 'antigravity',
+      model: quotaKey,
+      weekly_active: false,
+      weekly_remaining_pct: null,
+      short_active: false,
+      short_remaining_pct: null,
+      special_active: false,
+      special_remaining_pct: null,
+      short_special_active: false,
+      short_special_remaining_pct: null,
+      monthly_active: false,
+      monthly_remaining_pct: null,
+      wtus_remaining_pct: remainingPct,
+      wtus_reset_at: '2026-06-06T00:04:07Z',
+      wtus_interval_start: '2026-06-05T19:04:12Z',
+      wtus_interval_end: '9999-12-31T00:00:00Z',
+      wtus_active: true,
+      wtus_usage_tokens: 0,
+      wtus_usage_breakdown: [],
+    })
+    const historyRows: UsageReportQuotaHistoryRow[] = [
+      makeHistoryRow({
+        provider: 'antigravity',
+        model: 'antigravity_code_assist:gemini_pool',
+        quota_type: 'wtus',
+        expected_reset_at: '2026-06-05T14:51:55Z',
+        interval_start: '2026-06-05T10:52:21Z',
+        interval_end: '2026-06-05T14:51:55Z',
+        min_remaining_pct: 100,
+      }),
+      makeHistoryRow({
+        provider: 'antigravity',
+        model: 'antigravity_code_assist:vertex_pool',
+        quota_type: 'wtus',
+        expected_reset_at: '2026-06-05T15:52:18Z',
+        interval_start: '2026-06-05T10:52:21Z',
+        interval_end: '2026-06-05T15:52:18Z',
+        min_remaining_pct: 100,
+      }),
+    ]
+
+    const lanes = buildProviderLanes(
+      'google',
+      [
+        makeAntigravityRow('antigravity_code_assist:gemini_pool', 88),
+        makeAntigravityRow('antigravity_code_assist:vertex_pool', 76),
+      ],
+      historyRows
+    )
+
+    expect(lanes.map((lane) => lane.laneKey)).toEqual([
+      'google/antigravity-gemini-pool',
+      'google/antigravity-vertex-pool',
+    ])
+    expect(lanes.map((lane) => lane.laneLabel)).toEqual([
+      'Antigravity Gemini Pool · WTUs',
+      'Antigravity Vertex Pool · WTUs',
+    ])
+    expect(lanes[0].currentBar?.consumedPct).toBe(12)
+    expect(lanes[1].currentBar?.consumedPct).toBe(24)
+    expect(lanes[0].priorBars).toHaveLength(1)
+    expect(lanes[1].priorBars).toHaveLength(1)
+  })
+
+  test('test_google_quota_history_tabs_include_antigravity_wtus_detail', () => {
+    const tabs = buildProviderQuotaHistoryTabs('google', [
+      makeHistoryRow({
+        provider: 'antigravity',
+        model: 'antigravity_code_assist:gemini_pool',
+        quota_type: 'wtus',
+        expected_reset_at: '2026-06-05T14:51:55Z',
+        interval_start: '2026-06-05T10:52:21Z',
+        interval_end: '2026-06-05T14:51:55Z',
+        min_remaining_pct: 88,
+      }),
+      makeHistoryRow({
+        provider: 'antigravity',
+        model: 'antigravity_code_assist:vertex_pool',
+        quota_type: 'wtus',
+        expected_reset_at: '2026-06-05T15:52:18Z',
+        interval_start: '2026-06-05T10:52:21Z',
+        interval_end: '2026-06-05T15:52:18Z',
+        min_remaining_pct: 76,
+      }),
+    ])
+
+    expect(tabs.map((tab) => tab.tabKey)).toContain(
+      'google/antigravity-gemini-pool'
+    )
+    expect(tabs.map((tab) => tab.tabKey)).toContain(
+      'google/antigravity-vertex-pool'
+    )
+    expect(
+      tabs.find((tab) => tab.tabKey === 'google/antigravity-gemini-pool')?.rows
+    ).toHaveLength(1)
+    expect(
+      tabs.find((tab) => tab.tabKey === 'google/antigravity-vertex-pool')?.rows
+    ).toHaveLength(1)
+  })
+
+  test('test_xai_generic_monthly_row_does_not_render_grok_build_lane', () => {
     const xaiRow: UsageReportQuotaRow = {
       ...makeAnthropicQuotaRow(),
       provider: 'xai',
@@ -2477,9 +3711,7 @@ describe('Wave 41 — buildProviderLanes', () => {
       special_active: false,
     }
     const lanes = buildProviderLanes('xai', [xaiRow], [])
-    expect(lanes.length).toBe(1)
-    expect(lanes[0].laneKey).toBe('xai/monthly')
-    expect(lanes[0].laneLabel).toBe('All Models · 30d')
+    expect(lanes).toEqual([])
   })
 
   test('test_openrouter_has_daily_request_lane_with_prior_bars', () => {
@@ -3649,5 +4881,720 @@ describe('S1-T6 — populated report render shows real ledger tokens', () => {
     expect(tokensFallback600).toHaveLength(0)
     expect(tokensOut250.length).toBeGreaterThan(0)
     expect(tokensFallback400).toHaveLength(0)
+  })
+})
+
+describe('PhosphorDashboard — D1-428 STATUS tab split', () => {
+  test('test_health_tab_does_not_render_provider_auth_or_alias_routing_panels', async () => {
+    const future = new Date(Date.now() + 300_000).toISOString()
+    const report: UsageReportResponse = {
+      ...MOCK_REPORT,
+      providerAliasRouting: {
+        data_source: 'recent_observed_session_history',
+        freshness_label: 'Recent observed routing',
+        generated_at: '2026-05-19T00:00:00.000Z',
+        lookback_hours: 24,
+        families: [{ family: 'codex', observed: true }],
+        entries: [
+          {
+            family: 'codex',
+            alias_label: 'aawm-code',
+            provider: 'openai',
+            model: 'gpt-5',
+            route_family: 'codex_primary',
+            state_kind: 'affinity',
+            state_source: 'durable_cache',
+            observed_at: '2026-05-19T00:00:00.000Z',
+            expires_at: future,
+            remaining_seconds: 300,
+            is_active: true,
+            skipped_candidates: [],
+          },
+        ],
+      },
+      providerAuthHealth: {
+        data_source: 'provider_auth_current',
+        freshness_label: 'Current provider credential refresh state',
+        generated_at: '2026-05-19T00:00:00.000Z',
+        entries: [
+          {
+            observed_at: '2026-05-19T00:00:00.000Z',
+            environment: 'production',
+            provider: 'xai',
+            auth_family: 'grok_oidc',
+            status: 'refreshed',
+            attempted: true,
+            refreshed: true,
+            skipped: false,
+            auth_health_state: 'refreshed',
+            source_task: 'grok_oidc_refresh',
+          },
+        ],
+      },
+    }
+
+    await act(async () => {
+      render(
+        <Wrapper>
+          <PhosphorDashboard
+            from='2026-05-20'
+            to='2026-05-21'
+            report={report}
+            reportLoading={false}
+            showComparison={false}
+            quotas={[]}
+            quotaHistory={[]}
+          />
+        </Wrapper>
+      )
+    })
+
+    expect(screen.getByRole('tab', { name: 'Health' })).toHaveAttribute(
+      'aria-selected',
+      'true'
+    )
+    expect(
+      screen.queryByRole('region', { name: /provider auth health/i })
+    ).toBeNull()
+    expect(
+      screen.queryByRole('region', { name: /aawm alias routing health/i })
+    ).toBeNull()
+  })
+})
+
+describe('PhosphorDashboard — D1-323 alias routing health panel', () => {
+  test('test_alias_routing_tab_renders_affinity_and_cooldown_without_secret_sentinel', async () => {
+    const future = new Date(Date.now() + 300_000).toISOString()
+    const report: UsageReportResponse = {
+      ...MOCK_REPORT,
+      providerAliasRouting: {
+        data_source: 'recent_observed_session_history',
+        freshness_label:
+          'Recent observed routing from session history (not live Redis/DualCache)',
+        generated_at: '2026-05-19T00:00:00.000Z',
+        lookback_hours: 24,
+        families: [
+          { family: 'codex', observed: true },
+          { family: 'anthropic', observed: true },
+        ],
+        entries: [
+          {
+            family: 'codex',
+            alias_label: 'aawm-code',
+            provider: 'openai',
+            model: 'gpt-5',
+            route_family: 'codex_primary',
+            state_kind: 'affinity',
+            state_source: 'durable_cache',
+            observed_at: '2026-05-19T00:00:00.000Z',
+            expires_at: future,
+            remaining_seconds: 300,
+            is_active: true,
+            skipped_candidates: [],
+          },
+          {
+            family: 'anthropic',
+            alias_label: 'aawm-code-anthropic',
+            provider: 'anthropic',
+            model: 'claude-opus-4',
+            route_family: 'anthropic_primary',
+            state_kind: 'cooldown',
+            state_source: 'memory',
+            observed_at: '2026-05-19T00:05:00.000Z',
+            cooldown_until: future,
+            remaining_seconds: 240,
+            is_active: true,
+            selection_reason: 'rate_limited',
+            skipped_candidates: [
+              {
+                provider: 'openrouter',
+                model: 'claude',
+                reason: 'cooldown',
+              },
+            ],
+          },
+        ],
+      },
+    }
+
+    await act(async () => {
+      render(
+        <Wrapper>
+          <PhosphorDashboard
+            from='2026-05-20'
+            to='2026-05-21'
+            report={report}
+            reportLoading={false}
+            showComparison={false}
+            quotas={[]}
+            quotaHistory={[]}
+          />
+        </Wrapper>
+      )
+    })
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Alias Routing' }))
+
+    expect(
+      screen.getByRole('region', { name: /aawm alias routing health/i })
+    ).toBeInTheDocument()
+    expect(screen.getByText(/not live Redis\/DualCache/i)).toBeInTheDocument()
+    expect(screen.getByText(/durable cache/i)).toBeInTheDocument()
+    expect(screen.getByText(/process memory/i)).toBeInTheDocument()
+    expect(screen.getByText(/Affinity:/i)).toBeInTheDocument()
+    expect(screen.getByText(/Cooldown:/i)).toBeInTheDocument()
+    expect(
+      screen.queryByText(/sk-secret-sentinel-should-not-render/i)
+    ).toBeNull()
+  })
+})
+
+describe('PhosphorDashboard — D1-338 provider auth health panel', () => {
+  test('test_provider_auth_tab_renders_grok_oidc_refreshed_failed_and_not_observed_without_secret_sentinel', async () => {
+    const future = new Date(Date.now() + 600_000).toISOString()
+    const past = new Date(Date.now() - 60_000).toISOString()
+    const report: UsageReportResponse = {
+      ...MOCK_REPORT,
+      providerAuthHealth: {
+        data_source: 'provider_auth_current',
+        freshness_label:
+          'Current provider credential refresh state from provider_auth_current',
+        generated_at: '2026-05-19T00:00:00.000Z',
+        entries: [
+          {
+            observed_at: '2026-05-19T00:00:00.000Z',
+            environment: 'production',
+            provider: 'xai',
+            auth_family: 'grok_oidc',
+            status: 'refreshed',
+            attempted: true,
+            refreshed: true,
+            skipped: false,
+            expires_at: future,
+            last_success_at: '2026-05-19T00:00:00.000Z',
+            remaining_seconds: 600,
+            auth_health_state: 'refreshed',
+            source_task: 'grok_oidc_refresh',
+            auth_file_hash_short: 'grokoidc1',
+          },
+          {
+            observed_at: '2026-05-19T00:10:00.000Z',
+            environment: 'production',
+            provider: 'xai',
+            auth_family: 'grok_oidc',
+            credential_scope: 'secondary',
+            status: 'failed',
+            attempted: true,
+            refreshed: false,
+            skipped: false,
+            expires_at: past,
+            remaining_seconds: -60,
+            auth_health_state: 'failed',
+            source_task: 'grok_oidc_refresh',
+            error_class: 'refresh_error',
+            error_message: 'sanitized failure only',
+          },
+        ],
+      },
+    }
+
+    await act(async () => {
+      render(
+        <Wrapper>
+          <PhosphorDashboard
+            from='2026-05-20'
+            to='2026-05-21'
+            report={report}
+            reportLoading={false}
+            showComparison={false}
+            quotas={[]}
+            quotaHistory={[]}
+          />
+        </Wrapper>
+      )
+    })
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Provider Auth' }))
+
+    const panel = screen.getByRole('region', { name: /provider auth health/i })
+    expect(panel).toBeInTheDocument()
+    expect(panel.textContent).toMatch(/grok_oidc/i)
+    expect(within(panel).getByText(/refreshed/i)).toBeInTheDocument()
+    expect(within(panel).getByText(/failed/i)).toBeInTheDocument()
+    expect(within(panel).getByText(/refresh_error/i)).toBeInTheDocument()
+    expect(
+      screen.queryByText(/sk-secret-sentinel-should-not-render/i)
+    ).toBeNull()
+    expect(screen.queryByText(/refresh_token/i)).toBeNull()
+  })
+
+  test('test_provider_auth_tab_empty_renders_not_observed', async () => {
+    const report: UsageReportResponse = {
+      ...MOCK_REPORT,
+      providerAuthHealth: {
+        data_source: 'provider_auth_current',
+        freshness_label: 'Current provider credential refresh state',
+        generated_at: '2026-05-19T00:00:00.000Z',
+        entries: [],
+      },
+    }
+
+    await act(async () => {
+      render(
+        <Wrapper>
+          <PhosphorDashboard
+            from='2026-05-20'
+            to='2026-05-21'
+            report={report}
+            reportLoading={false}
+            showComparison={false}
+            quotas={[]}
+            quotaHistory={[]}
+          />
+        </Wrapper>
+      )
+    })
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Provider Auth' }))
+
+    const panel = screen.getByRole('region', { name: /provider auth health/i })
+    expect(within(panel).getByText('not observed')).toBeInTheDocument()
+  })
+})
+
+describe('PhosphorDashboard — D1-417 / D1-422 provider credit lifecycle panel', () => {
+  test('test_provider_credits_tab_renders_codex_summary_rows_and_status_distinction_without_secrets', async () => {
+    const report: UsageReportResponse = {
+      ...MOCK_REPORT,
+      providerCreditLifecycle: {
+        data_source: 'provider_credit_current',
+        freshness_label:
+          'Current provider credit lifecycle from provider_credit_current',
+        generated_at: '2026-05-19T00:00:00.000Z',
+        summaries: [
+          {
+            environment: 'production',
+            provider: 'openai',
+            credit_family: 'codex_rate_limit_reset',
+            label: 'openai codex_rate_limit_reset credits',
+            available_count: 2,
+            used_count: 1,
+            expired_count: 1,
+            total_count: 4,
+          },
+        ],
+        entries: [
+          {
+            observed_at: '2026-05-19T00:00:00.000Z',
+            environment: 'production',
+            provider: 'openai',
+            account_hash_short: '8e928548',
+            credit_family: 'codex_rate_limit_reset',
+            credit_identity: 'codex-available-1',
+            status: 'available',
+            available_count: 1,
+            granted_at: '2026-05-18T00:00:00.000Z',
+            expires_at: '2026-05-20T00:00:00.000Z',
+            operator_annotation: 'safe note',
+            source_url: 'https://x.com/status/1',
+          },
+          {
+            observed_at: '2026-05-19T00:05:00.000Z',
+            environment: 'production',
+            provider: 'openai',
+            account_hash_short: '8e928548',
+            credit_family: 'codex_rate_limit_reset',
+            credit_identity: 'codex-used-1',
+            status: 'used',
+            available_count: 0,
+            redeemed_at: '2026-05-18T12:00:00.000Z',
+          },
+          {
+            observed_at: '2026-05-19T00:10:00.000Z',
+            environment: 'production',
+            provider: 'openai',
+            account_hash_short: '8e928548',
+            credit_family: 'codex_rate_limit_reset',
+            credit_identity: 'codex-expired-1',
+            status: 'expired',
+            available_count: 0,
+            expires_at: '2026-05-17T00:00:00.000Z',
+          },
+        ],
+      },
+    }
+
+    await act(async () => {
+      render(
+        <Wrapper>
+          <PhosphorDashboard
+            from='2026-05-20'
+            to='2026-05-21'
+            report={report}
+            reportLoading={false}
+            showComparison={false}
+            quotas={[]}
+            quotaHistory={[]}
+          />
+        </Wrapper>
+      )
+    })
+
+    expect(
+      screen.queryByRole('region', { name: /provider credit lifecycle/i })
+    ).toBeNull()
+    const providerCreditsTab = screen.getByRole('tab', {
+      name: /Provider Credits/,
+    })
+    expect(
+      providerCreditsTab.querySelector('.section-tab-indicator.is-green')
+    ).not.toBeNull()
+    expect(
+      providerCreditsTab.querySelector('.section-tab-indicator.is-flashing')
+    ).toBeNull()
+    fireEvent.click(providerCreditsTab)
+
+    const panel = screen.getByRole('region', {
+      name: /provider credit lifecycle/i,
+    })
+    expect(panel).toBeInTheDocument()
+    expect(
+      within(panel).getByText(/OpenAI Codex reset credits: 2 available/i)
+    ).toBeInTheDocument()
+    expect(
+      within(panel).getByRole('table', {
+        name: /provider credit lifecycle entries/i,
+      })
+    ).toBeInTheDocument()
+    expect(
+      within(panel).getByRole('columnheader', { name: /credit/i })
+    ).toBeInTheDocument()
+    expect(
+      within(panel).getByRole('rowheader', { name: 'codex-available-1' })
+    ).toBeInTheDocument()
+    expect(
+      within(panel).getByRole('link', {
+        name: /source for openai codex_rate_limit_reset codex-available-1/i,
+      })
+    ).toBeInTheDocument()
+    expect(within(panel).getByText('codex-available-1')).toBeInTheDocument()
+    expect(within(panel).getByText('codex-used-1')).toBeInTheDocument()
+    expect(within(panel).getByText('codex-expired-1')).toBeInTheDocument()
+    expect(within(panel).getByText('used')).toBeInTheDocument()
+    expect(within(panel).getByText('expired')).toBeInTheDocument()
+    expect(screen.queryByText(/8e928548deadbeef/i)).toBeNull()
+    expect(screen.queryByText(/raw_provider_fields/i)).toBeNull()
+    expect(
+      screen.queryByText(/sk-secret-sentinel-should-not-render/i)
+    ).toBeNull()
+  })
+
+  test('test_provider_credits_tab_multiple_summaries_aggregate_headline', async () => {
+    const report: UsageReportResponse = {
+      ...MOCK_REPORT,
+      providerCreditLifecycle: {
+        data_source: 'provider_credit_current',
+        freshness_label: 'Current provider credit lifecycle',
+        generated_at: '2026-05-19T00:00:00.000Z',
+        summaries: [
+          {
+            environment: 'production',
+            provider: 'openai',
+            credit_family: 'codex_rate_limit_reset',
+            label: 'openai codex_rate_limit_reset credits',
+            available_count: 2,
+            used_count: 0,
+            expired_count: 0,
+            total_count: 2,
+          },
+          {
+            environment: 'staging',
+            provider: 'openai',
+            credit_family: 'codex_rate_limit_reset',
+            label: 'openai codex_rate_limit_reset credits',
+            available_count: 1,
+            used_count: 0,
+            expired_count: 0,
+            total_count: 1,
+          },
+        ],
+        entries: [],
+      },
+    }
+
+    await act(async () => {
+      render(
+        <Wrapper>
+          <PhosphorDashboard
+            from='2026-05-20'
+            to='2026-05-21'
+            report={report}
+            reportLoading={false}
+            showComparison={false}
+            quotas={[]}
+            quotaHistory={[]}
+          />
+        </Wrapper>
+      )
+    })
+
+    fireEvent.click(screen.getByRole('tab', { name: /Provider Credits/ }))
+
+    const panel = screen.getByRole('region', {
+      name: /provider credit lifecycle/i,
+    })
+    expect(
+      within(panel).getByText(/OpenAI Codex reset credits: 3 available/i)
+    ).toBeInTheDocument()
+    expect(
+      within(panel).getByText(/production: 2 available/i)
+    ).toBeInTheDocument()
+    expect(within(panel).getByText(/staging: 1 available/i)).toBeInTheDocument()
+    expect(within(panel).getByText('not observed')).toBeInTheDocument()
+  })
+
+  test('test_provider_credits_tab_empty_renders_not_observed', async () => {
+    const report: UsageReportResponse = {
+      ...MOCK_REPORT,
+      providerCreditLifecycle: {
+        data_source: 'provider_credit_current',
+        freshness_label: 'Current provider credit lifecycle',
+        generated_at: '2026-05-19T00:00:00.000Z',
+        summaries: [],
+        entries: [],
+      },
+    }
+
+    await act(async () => {
+      render(
+        <Wrapper>
+          <PhosphorDashboard
+            from='2026-05-20'
+            to='2026-05-21'
+            report={report}
+            reportLoading={false}
+            showComparison={false}
+            quotas={[]}
+            quotaHistory={[]}
+          />
+        </Wrapper>
+      )
+    })
+
+    const providerCreditsTab = screen.getByRole('tab', {
+      name: 'Provider Credits',
+    })
+    expect(
+      providerCreditsTab.querySelector('.section-tab-indicator')
+    ).toBeNull()
+    fireEvent.click(providerCreditsTab)
+
+    const panel = screen.getByRole('region', {
+      name: /provider credit lifecycle/i,
+    })
+    expect(within(panel).getByText('not observed')).toBeInTheDocument()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// D1-436: Token trend hover/detail cleanup on visibility + scope changes
+// ---------------------------------------------------------------------------
+
+describe('PhosphorDashboard — D1-436: token trend hover/detail cleanup', () => {
+  let visibilityState: DocumentVisibilityState = 'visible'
+
+  beforeEach(() => {
+    visibilityState = 'visible'
+    Object.defineProperty(document, 'visibilityState', {
+      configurable: true,
+      get: () => visibilityState,
+    })
+  })
+
+  test('test_token_trend_day_detail_clears_on_document_hidden', async () => {
+    let dayDetailCallCount = 0
+
+    server.use(
+      http.get('/api/shell/reports/usage/token-trend-summary', () =>
+        HttpResponse.json({
+          metadata: {
+            from: '2026-05-20',
+            to: '2026-05-21',
+          },
+          tokenTrendHours: [
+            {
+              day: '2026-05-20',
+              hour: 8,
+              provider: 'openai',
+              traces: 1,
+              token_total: 100,
+              usd_cost: 0,
+            },
+          ],
+          tokenTrendVersions: [],
+        })
+      ),
+      http.get('/api/shell/reports/usage/token-trend-day', () => {
+        dayDetailCallCount += 1
+        return HttpResponse.json({
+          metadata: {
+            date: '2026-05-20',
+            from: '2026-05-20',
+            to: '2026-05-21',
+          },
+          date: '2026-05-20',
+          rows: [],
+        })
+      })
+    )
+
+    let container!: HTMLElement
+    await act(async () => {
+      const renderResult = render(
+        <Wrapper>
+          <PhosphorDashboard
+            from='2026-05-20'
+            to='2026-05-21'
+            report={MOCK_REPORT}
+            reportLoading={false}
+            showComparison={false}
+            quotas={[]}
+          />
+        </Wrapper>
+      )
+      container = renderResult.container
+    })
+
+    await waitFor(() => {
+      expect(
+        container.querySelector('.tt-day-hover-shell[data-day="2026-05-20"]')
+      ).not.toBeNull()
+    })
+
+    const dayHoverShell = container.querySelector(
+      '.tt-day-hover-shell[data-day="2026-05-20"]'
+    ) as HTMLElement
+    fireEvent.pointerEnter(dayHoverShell)
+
+    await waitFor(() => {
+      expect(dayDetailCallCount).toBe(1)
+    })
+
+    await act(async () => {
+      visibilityState = 'hidden'
+      document.dispatchEvent(new Event('visibilitychange'))
+      await new Promise((resolve) => setTimeout(resolve, 200))
+    })
+
+    // Hover/detail state is cleared while hidden; no extra day-detail fetch should
+    // fire until the user hovers again (cached responses may avoid a second HTTP call).
+    expect(dayDetailCallCount).toBe(1)
+
+    fireEvent.pointerEnter(dayHoverShell)
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 175))
+    })
+    expect(dayDetailCallCount).toBeGreaterThanOrEqual(1)
+    expect(dayDetailCallCount).toBeLessThanOrEqual(2)
+  })
+
+  test('test_token_trend_day_detail_does_not_refetch_on_scope_change_without_hover', async () => {
+    let dayDetailCallCount = 0
+
+    server.use(
+      http.get('/api/shell/reports/usage/token-trend-summary', () =>
+        HttpResponse.json({
+          metadata: {
+            from: '2026-05-20',
+            to: '2026-05-22',
+          },
+          tokenTrendHours: [
+            {
+              day: '2026-05-20',
+              hour: 8,
+              provider: 'openai',
+              traces: 1,
+              token_total: 100,
+              usd_cost: 0,
+            },
+          ],
+          tokenTrendVersions: [],
+        })
+      ),
+      http.get('/api/shell/reports/usage/token-trend-day', () => {
+        dayDetailCallCount += 1
+        return HttpResponse.json({
+          metadata: {
+            date: '2026-05-20',
+            from: '2026-05-20',
+            to: '2026-05-22',
+          },
+          date: '2026-05-20',
+          rows: [],
+        })
+      })
+    )
+
+    let container!: HTMLElement
+    let rerender!: (ui: React.ReactElement) => void
+    await act(async () => {
+      const renderResult = render(
+        <Wrapper>
+          <PhosphorDashboard
+            from='2026-05-20'
+            to='2026-05-22'
+            report={MOCK_REPORT}
+            reportLoading={false}
+            showComparison={false}
+            quotas={[]}
+          />
+        </Wrapper>
+      )
+      container = renderResult.container
+      rerender = renderResult.rerender
+    })
+
+    await waitFor(() => {
+      expect(
+        container.querySelector('.tt-day-hover-shell[data-day="2026-05-20"]')
+      ).not.toBeNull()
+    })
+
+    const dayHoverShell = container.querySelector(
+      '.tt-day-hover-shell[data-day="2026-05-20"]'
+    ) as HTMLElement
+    fireEvent.pointerEnter(dayHoverShell)
+
+    await waitFor(() => {
+      expect(dayDetailCallCount).toBe(1)
+    })
+
+    await act(async () => {
+      rerender(
+        <Wrapper>
+          <PhosphorDashboard
+            from='2026-05-21'
+            to='2026-05-22'
+            report={MOCK_REPORT}
+            reportLoading={false}
+            showComparison={false}
+            quotas={[]}
+            filters={{
+              providers: ['openai'],
+              repositories: [],
+              clients: [],
+              environments: [],
+              models: [],
+            }}
+          />
+        </Wrapper>
+      )
+    })
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 200))
+    })
+
+    expect(dayDetailCallCount).toBe(1)
   })
 })

@@ -171,6 +171,22 @@
   opacity: 0.85;
 }
 
+.section-degraded-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 20px;
+  padding: 2px 6px;
+  border: 1px solid color-mix(in srgb, var(--accent-hot) 60%, var(--border));
+  background: color-mix(in srgb, var(--accent-hot) 12%, var(--card-2));
+  color: var(--accent-hot);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
 .section-refresh-icon {
   flex: 0 0 auto;
 }
@@ -570,6 +586,354 @@
   font-size: 9px;
   line-height: 1.25;
   overflow-wrap: anywhere;
+}
+
+.alias-routing-health-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 6px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--card) 82%, transparent);
+}
+
+.alias-routing-panel-head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.2;
+  text-transform: uppercase;
+}
+
+.alias-routing-panel-sub {
+  color: var(--fg-muted);
+  font-size: 9px;
+  font-weight: 500;
+  text-transform: none;
+}
+
+.alias-routing-families {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.alias-routing-family-title {
+  margin-bottom: 4px;
+  color: var(--fg-muted);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.alias-routing-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.alias-routing-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 7px;
+  border: 1px solid var(--border);
+  background: var(--card-2);
+}
+
+.alias-routing-card--affinity {
+  border-left: 3px solid var(--accent-teal);
+}
+
+.alias-routing-card--cooldown {
+  border-left: 3px solid var(--accent-warm);
+}
+
+.alias-routing-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.alias-routing-family {
+  display: block;
+  color: var(--fg-muted);
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.alias-routing-headline {
+  display: block;
+  color: var(--fg);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.alias-routing-status-pill {
+  color: var(--fg-muted);
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.alias-routing-detail-grid {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 2px 8px;
+  font-size: 10px;
+}
+
+.alias-routing-detail-grid span {
+  color: var(--fg-muted);
+}
+
+.alias-routing-skipped {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.alias-routing-skipped-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 9px;
+  color: var(--fg-muted);
+}
+
+.alias-routing-empty {
+  padding: 6px;
+  color: var(--fg-muted);
+  font-size: 10px;
+}
+
+/* D1-417 / D1-422 Provider credit lifecycle (Health tab) */
+.provider-credit-lifecycle-panel {
+  margin-bottom: 1rem;
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--border, #2a2a2a);
+  border-radius: 0.5rem;
+  background: var(--card, #111);
+}
+
+.provider-credit-panel-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+  font-weight: 600;
+}
+
+.provider-credit-panel-sub {
+  font-size: 0.75rem;
+  font-weight: 400;
+  opacity: 0.75;
+}
+
+.provider-credit-summary-block {
+  margin-bottom: 0.65rem;
+}
+
+.provider-credit-summary-line {
+  font-size: 0.85rem;
+}
+
+.provider-credit-summary-line + .provider-credit-summary-line {
+  margin-top: 0.25rem;
+}
+
+.provider-credit-table-caption {
+  caption-side: top;
+  text-align: left;
+  font-size: 0.72rem;
+  opacity: 0.8;
+  margin-bottom: 0.35rem;
+}
+
+.provider-credit-table-wrap {
+  overflow-x: auto;
+}
+
+.provider-credit-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.72rem;
+}
+
+.provider-credit-table th,
+.provider-credit-table td {
+  padding: 0.35rem 0.5rem;
+  border-bottom: 1px solid var(--border, #333);
+  text-align: left;
+  vertical-align: top;
+}
+
+.provider-credit-table th {
+  opacity: 0.75;
+  font-weight: 600;
+}
+
+.provider-credit-status-pill {
+  font-size: 0.68rem;
+  padding: 0.12rem 0.4rem;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.provider-credit-status-pill.is-healthy {
+  background: rgba(34, 197, 94, 0.2);
+  color: #86efac;
+}
+
+.provider-credit-status-pill.is-warn {
+  background: rgba(245, 158, 11, 0.2);
+  color: #fcd34d;
+}
+
+.provider-credit-status-pill.is-bad {
+  background: rgba(239, 68, 68, 0.2);
+  color: #fca5a5;
+}
+
+.provider-credit-status-pill.is-unknown {
+  background: rgba(148, 163, 184, 0.2);
+  color: #cbd5e1;
+}
+
+.provider-credit-annotation {
+  max-width: 14rem;
+  word-break: break-word;
+}
+
+.provider-credit-source-link {
+  color: #93c5fd;
+}
+
+.provider-credit-empty {
+  font-size: 0.8rem;
+  opacity: 0.7;
+  font-style: italic;
+}
+
+/* D1-338 Provider auth health (Health tab) */
+.provider-auth-health-panel {
+  margin-bottom: 1rem;
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--border, #2a2a2a);
+  border-radius: 0.5rem;
+  background: var(--card, #111);
+}
+
+.provider-auth-panel-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+  font-weight: 600;
+}
+
+.provider-auth-panel-sub {
+  font-size: 0.75rem;
+  font-weight: 400;
+  opacity: 0.75;
+}
+
+.provider-auth-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 0.75rem;
+}
+
+.provider-auth-card {
+  padding: 0.65rem 0.75rem;
+  border-radius: 0.4rem;
+  border: 1px solid var(--border, #333);
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.provider-auth-card--failed,
+.provider-auth-card--expired {
+  border-color: rgba(239, 68, 68, 0.45);
+}
+
+.provider-auth-card--skipped_expired,
+.provider-auth-card--attempted {
+  border-color: rgba(245, 158, 11, 0.4);
+}
+
+.provider-auth-card-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.provider-auth-environment {
+  display: block;
+  font-size: 0.7rem;
+  opacity: 0.7;
+  text-transform: uppercase;
+}
+
+.provider-auth-headline {
+  display: block;
+  font-size: 0.85rem;
+}
+
+.provider-auth-status-pill {
+  font-size: 0.7rem;
+  padding: 0.15rem 0.45rem;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.provider-auth-status-pill.is-healthy {
+  background: rgba(34, 197, 94, 0.2);
+  color: #86efac;
+}
+
+.provider-auth-status-pill.is-warn {
+  background: rgba(245, 158, 11, 0.2);
+  color: #fcd34d;
+}
+
+.provider-auth-status-pill.is-bad {
+  background: rgba(239, 68, 68, 0.2);
+  color: #fca5a5;
+}
+
+.provider-auth-status-pill.is-unknown {
+  background: rgba(148, 163, 184, 0.2);
+  color: #cbd5e1;
+}
+
+.provider-auth-detail-grid {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.2rem 0.75rem;
+  font-size: 0.75rem;
+}
+
+.provider-auth-detail-grid span {
+  opacity: 0.65;
+}
+
+.provider-auth-empty {
+  font-size: 0.8rem;
+  opacity: 0.7;
+  font-style: italic;
 }
 
 @media (min-width: 1600px) {
@@ -1671,6 +2035,10 @@
 }
 
 .section-tabs button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
   min-width: 68px;
   padding: 4px 9px;
   border: 1px solid transparent;
@@ -1681,6 +2049,57 @@
   font-weight: 700;
   letter-spacing: 0;
   cursor: pointer;
+}
+
+.section-tab-label {
+  min-width: 0;
+}
+
+.section-tab-indicator {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+}
+
+.section-tab-indicator-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  flex: 0 0 auto;
+}
+
+.section-tab-indicator.is-red .section-tab-indicator-dot {
+  background: var(--accent-hot);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--accent-hot) 50%, black 50%),
+    0 0 8px color-mix(in srgb, var(--accent-hot) 70%, transparent);
+}
+
+.section-tab-indicator.is-green .section-tab-indicator-dot {
+  background: var(--accent-teal);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--accent-teal) 55%, black 45%),
+    0 0 7px color-mix(in srgb, var(--accent-teal) 55%, transparent);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .section-tab-indicator.is-flashing .section-tab-indicator-dot {
+    animation: section-tab-indicator-flash 1.4s ease-in-out infinite;
+  }
+}
+
+@keyframes section-tab-indicator-flash {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+
+  50% {
+    opacity: 0.35;
+    transform: scale(0.78);
+  }
 }
 
 .section-title-main .section-tabs button {
@@ -2187,6 +2606,61 @@
   text-align: center;
   font-family: var(--font-mono);
   font-size: 10px;
+}
+
+.status-diagnostics-grid {
+  grid-template-columns: repeat(1, minmax(0, 1fr));
+}
+
+@media (min-width: 1600px) {
+  .status-diagnostics-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+.status-diagnostics-card {
+  border-top-color: color-mix(in srgb, #38bdf8 55%, var(--border));
+}
+
+.status-diagnostics-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+}
+
+.status-diagnostics-chip {
+  border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  background: color-mix(in srgb, var(--card) 75%, transparent);
+  color: var(--fg-muted);
+  padding: 1px 4px;
+  font-size: 8px;
+  line-height: 1.4;
+  text-transform: uppercase;
+}
+
+.status-diagnostics-details {
+  margin-top: 3px;
+  border-top: 1px solid color-mix(in srgb, var(--border) 45%, transparent);
+  padding-top: 3px;
+}
+
+.status-diagnostics-details summary {
+  cursor: pointer;
+  color: var(--accent-chrome);
+  font-size: 8px;
+  text-transform: uppercase;
+}
+
+.status-diagnostics-details pre {
+  max-height: 180px;
+  overflow: auto;
+  margin: 4px 0 0;
+  border: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
+  background: var(--card);
+  color: var(--fg-muted);
+  padding: 5px;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 /* ─────────────────────────────────────────────────────────────────────────── */

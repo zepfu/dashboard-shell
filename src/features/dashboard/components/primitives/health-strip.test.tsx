@@ -24,13 +24,18 @@ const CELL_COUNT = 288 // 24h * 12 (5-min buckets)
 
 /** Opens lazy health-strip HoverTooltip (auto-resolved tooltip mounts on hover). */
 function openHealthStripTooltip(container: HTMLElement): void {
-  const wrapper = container.querySelector(
-    '.health-strip-wrapper'
-  ) as HTMLElement | null
   const shell = container.querySelector(
     '[aria-hidden="true"]'
   ) as HTMLElement | null
-  const target = wrapper ?? shell?.firstElementChild ?? shell
+  const hoverZone = shell?.firstElementChild as HTMLElement | null
+  const wrapper = container.querySelector(
+    '.health-strip-wrapper'
+  ) as HTMLElement | null
+  const target =
+    (hoverZone?.firstElementChild as HTMLElement | null) ??
+    hoverZone ??
+    wrapper ??
+    shell
   if (target instanceof HTMLElement) {
     fireEvent.pointerEnter(target)
   }
@@ -904,6 +909,39 @@ test('test_health_strip_vertical_hover_zone_restores_pointer_events', () => {
   expect(hoverZone?.style.pointerEvents).toBe('auto')
 })
 
+test('test_health_strip_vertical_auto_tooltip_uses_absolute_shell', () => {
+  const cells: CellDef[] = Array.from({ length: 288 }, () => ({
+    color: 'var(--card-2)',
+  }))
+  cells[287] = {
+    color: 'var(--accent-hot)',
+    category: 'red',
+    bucketStart: new Date(Date.now() - 5 * 60 * 1000).toISOString(),
+    eventCount: 1,
+    events: [
+      {
+        time: new Date(Date.now() - 5 * 60 * 1000).toISOString(),
+        model: 'gpt-5',
+        errorType: 'provider_error',
+        count: 1,
+      },
+    ],
+  }
+
+  const { container } = render(
+    <HealthStrip cells={cells} orientation='vertical' />
+  )
+
+  const shell = container.firstChild as HTMLElement | null
+  expect(shell).not.toBeNull()
+  expect(shell?.style.position).toBe('absolute')
+  expect(shell?.style.pointerEvents).toBe('none')
+
+  const hoverZone = shell?.firstChild as HTMLElement | null
+  expect(hoverZone).not.toBeNull()
+  expect(hoverZone?.style.pointerEvents).toBe('auto')
+})
+
 // ---------------------------------------------------------------------------
 // Wave 3 (adversarial-review-20260612) — FAILING tests, W3 engineer to fix
 // ---------------------------------------------------------------------------
@@ -1158,9 +1196,8 @@ test('test_health_strip_event_count_sums_occurrences', () => {
     <HealthStrip cells={cells} orientation='vertical' />
   )
 
-  // Trigger the tooltip by hovering the strip.
-  const strip = container.firstChild as HTMLElement
-  fireEvent.pointerEnter(strip)
+  // Trigger the tooltip by hovering the strip's active hover zone.
+  openHealthStripTooltip(container)
 
   const tip = document.body.querySelector(
     '.v9-tip[data-state="open"]'

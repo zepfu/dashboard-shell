@@ -58,6 +58,15 @@ Current AAWM notes:
   `/api/aawm-observe`, but its live data service contract is still evolving.
   Set `AAWM_OBSERVE_API_TARGET` when an upstream observe adapter is available.
 
+
+## Report Service Proxy Secret
+
+Sibling API traffic is proxied through `server/report-service.mjs`, which injects backend credentials server-side. Only the shell edge (static nginx in prod or Vite dev proxy) may call the credential-injecting upstream proxy prefixes. Those requests must include the internal header `X-Dashboard-Shell-Proxy-Secret` matching `SHELL_REPORT_PROXY_SHARED_SECRET` on both the shell and report-service containers.
+
+Browser remotes must continue to call only their public `apiBase` paths; they must not send this header or backend secrets. `/api/shell/*` health and report endpoints remain reachable without the proxy secret.
+
+For local compose, the default shared secret is `dashboard-shell-local-proxy-secret`. Change it consistently in `docker-compose.yml`, `docker-compose.dev.yml`, and any host-side Vite process when exposing the report service beyond localhost.
+
 ## Shell Registration
 
 Add the dashboard to the shell in these places:

@@ -593,15 +593,17 @@ export function HealthStrip({
       }
 
       return (
-        <HoverTooltip
-          content={() => resolvedTooltip}
-          variant='health'
-          panelStyle={tooltipPanelStyle}
-        >
-          <div aria-hidden='true' style={shellStyle}>
-            {stripContent}
+        <div aria-hidden='true' style={shellStyle}>
+          <div style={{ pointerEvents: 'auto', height: '100%' }}>
+            <HoverTooltip
+              content={() => resolvedTooltip}
+              variant='health'
+              panelStyle={tooltipPanelStyle}
+            >
+              {stripContent}
+            </HoverTooltip>
           </div>
-        </HoverTooltip>
+        </div>
       )
     }
 

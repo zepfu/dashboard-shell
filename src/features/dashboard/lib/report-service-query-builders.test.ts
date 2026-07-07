@@ -1,46 +1,79 @@
 /**
- * MOVED TO: server/report-service-query-builders.test.ts
- *
- * Wave 10 (S4-8): This test suite was relocated from `src/features/dashboard/lib/`
- * to `server/` because the vitest jsdom frontend project cannot bundle `redis`
- * (a Node.js native module imported by `server/report-service.mjs`).
- *
- * The suite now lives at `server/report-service-query-builders.test.ts` and
- * requires a `server/` vitest project entry (environment: 'node') to run.
- *
- * ENGINEER ACTION REQUIRED:
- *   1. Add a `server/` vitest project entry in `vitest.config.ts`:
- *      ```ts
- *      {
- *        include: ['server/**\/*.test.{ts,mts}'],
- *        environment: 'node',
- *      }
- *      ```
- *   2. Add `pgsql-parser` as a devDependency:
- *      `pnpm add -D pgsql-parser`
- *      This unblocks the SQL parse-validation tests in the moved file.
- *
- * This stub file is intentionally left here to document the migration.
- * It does NOT import from `server/report-service.mjs` (which would fail
- * in the jsdom project due to the `redis` import).
+ * Frontend-owned contract tests for report-service query-builder ownership.
  */
-import { expect, test } from 'vitest'
+import { readdir, readFile } from 'node:fs/promises'
+import { dirname, extname, join, relative } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { describe, expect, test } from 'vitest'
 
-test('test_report_service_query_builders_moved_to_server_directory', () => {
-  /**
-   * This test documents the relocation of the full test suite.
-   *
-   * Full test coverage including:
-   *   - All existing buildUsageQuery/buildQuotaQuery/etc. tests
-   *   - pgsql-parser SQL parse-validation (S4-8)
-   *   - buildQuotaEstimatorObservationQuery value assertions (S4-6)
-   *   - Reportable-filter sweep
-   *
-   * ...is at: server/report-service-query-builders.test.ts
-   *
-   * That file requires:
-   *   - A server/ vitest project (environment: 'node') — ENGINEER ACTION
-   *   - pgsql-parser devDependency — ENGINEER ACTION
-   */
-  expect('server/report-service-query-builders.test.ts').toBeTruthy()
+const REPORT_SERVICE_IMPORT_RE =
+  /(?:^|\n)\s*(?:import|export)\s+[\s\S]*?\s+from\s+['"][^'"]*server\/report-service\.mjs['"]/
+
+async function collectDashboardSourceFiles(baseDir: string): Promise<string[]> {
+  const results: string[] = []
+  const entries = await readdir(baseDir, { withFileTypes: true })
+
+  for (const entry of entries) {
+    if (entry.name.startsWith('.') || entry.name === 'node_modules') {
+      continue
+    }
+
+    const candidate = join(baseDir, entry.name)
+    if (entry.isDirectory()) {
+      const nested = await collectDashboardSourceFiles(candidate)
+      results.push(...nested)
+      continue
+    }
+
+    if (entry.isFile()) {
+      const extension = extname(entry.name)
+      if (extension === '.ts' || extension === '.tsx') {
+        results.push(candidate)
+      }
+    }
+  }
+
+  return results
+}
+
+describe('report-service query-builder test ownership', () => {
+  test('frontend dashboard source does not import the server-only module', async () => {
+    const dashboardRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
+    const files = await collectDashboardSourceFiles(dashboardRoot)
+    const importingFiles = []
+
+    for (const file of files) {
+      const source = await readFile(file, 'utf8')
+      if (REPORT_SERVICE_IMPORT_RE.test(source)) {
+        importingFiles.push(relative(dashboardRoot, file))
+      }
+    }
+
+    expect(importingFiles).toEqual([])
+  })
+
+  test('server suite owns query-builder contract assertions', async () => {
+    const serverSuite = join(
+      dirname(fileURLToPath(import.meta.url)),
+      '..',
+      '..',
+      '..',
+      '..',
+      'server',
+      'report-service-query-builders.test.ts'
+    )
+    const source = await readFile(serverSuite, 'utf8')
+    const hasReportServiceImport = /from ['"]\.\/report-service\.mjs['"]/.test(
+      source
+    )
+    const hasParseValidationDescribe =
+      /describe\(\s*['"][^'"]*parse-validation/i.test(source)
+    const hasParserShapeValidation = /expectParsableSQL/.test(source)
+    const hasCanonicalBuilderCoverage = /buildUsageQuery/.test(source)
+
+    expect(hasReportServiceImport).toBe(true)
+    expect(hasParseValidationDescribe).toBe(true)
+    expect(hasParserShapeValidation).toBe(true)
+    expect(hasCanonicalBuilderCoverage).toBe(true)
+  })
 })

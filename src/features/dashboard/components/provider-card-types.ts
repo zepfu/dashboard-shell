@@ -15,7 +15,7 @@ export interface ProviderMetrics {
   cost_usd: number
   requests: number
   errors: number
-  p95_ms: number
+  p95_ms: number | null
   cache_input: number
   cache_creation: number
   /** Dollar cost of cache misses (from cache_miss_usd_cost API field). */
@@ -75,10 +75,17 @@ export interface QuotaBarGroup {
   segments: QuotaRowConfig[]
   tipWindow?: string
   tipVelocity?: string
+  /** Exact quota identity fields shown in quota-bar tooltips when available. */
+  tipIdentity?: string[]
   tipModels?: QuotaTipModel[]
   tipRequestTotal?: number
   tipRecentRequestTotal90m?: number
-  periodType?: '5hr' | 'weekly' | 'special' | 'monthly'
+  periodType?:
+    | '5hr'
+    | 'weekly'
+    | 'weekly_overage_included'
+    | 'special'
+    | 'monthly'
   /**
    * Time-ago label for prior-reset history bars, e.g. '2d ago', '3h ago'.
    * When absent on a prior bar, reset cell renders '—' (S2-17).

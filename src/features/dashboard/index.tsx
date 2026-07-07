@@ -83,7 +83,9 @@ function defaultDateRange(): { from: string; to: string } {
   }
 }
 
-const LIVE_DASHBOARD_REFETCH_INTERVAL_MS = 60_000
+const LIVE_DASHBOARD_LIGHTWEIGHT_REFETCH_INTERVAL_MS = 60_000
+const LIVE_DASHBOARD_HEAVY_REFETCH_INTERVAL_MS = 120_000
+const LIVE_DASHBOARD_HEAVY_REPORT_GC_TIME_MS = 90_000
 
 interface RecencyBreakoutItem {
   label: string
@@ -265,33 +267,37 @@ export function Dashboard(): ReactElement {
       slicerFilters.models,
       reportCacheBust,
     ],
-    queryFn: () =>
-      fetchUsageReport({
-        from,
-        to,
-        grain,
-        groupBy: ['provider', 'model', 'repository'],
-        provider: slicerFilters.providers,
-        repository: slicerFilters.repositories,
-        client: slicerFilters.clients,
-        environment: slicerFilters.environments,
-        model: slicerFilters.models,
-        cacheBust: reportCacheBust,
-      }),
+    queryFn: ({ signal }) =>
+      fetchUsageReport(
+        {
+          from,
+          to,
+          grain,
+          groupBy: ['provider', 'model', 'repository'],
+          provider: slicerFilters.providers,
+          repository: slicerFilters.repositories,
+          client: slicerFilters.clients,
+          environment: slicerFilters.environments,
+          model: slicerFilters.models,
+          cacheBust: reportCacheBust,
+        },
+        signal
+      ),
     // Keep React Query freshness aligned with the report-service default TTL.
     // The dashboard polls every minute, so new session rows should be eligible
     // for display on the next scheduled refresh.
-    staleTime: LIVE_DASHBOARD_REFETCH_INTERVAL_MS,
-    refetchInterval: LIVE_DASHBOARD_REFETCH_INTERVAL_MS,
-    refetchIntervalInBackground: true,
+    staleTime: LIVE_DASHBOARD_HEAVY_REFETCH_INTERVAL_MS,
+    refetchInterval: LIVE_DASHBOARD_HEAVY_REFETCH_INTERVAL_MS,
+    refetchIntervalInBackground: false,
+    gcTime: LIVE_DASHBOARD_HEAVY_REPORT_GC_TIME_MS,
   })
 
   const { data: shellHealthData } = useQuery({
     queryKey: ['shell-health-pgbouncer'],
     queryFn: ({ signal }) => fetchShellHealth(signal),
     staleTime: 15_000,
-    refetchInterval: LIVE_DASHBOARD_REFETCH_INTERVAL_MS,
-    refetchIntervalInBackground: true,
+    refetchInterval: LIVE_DASHBOARD_LIGHTWEIGHT_REFETCH_INTERVAL_MS,
+    refetchIntervalInBackground: false,
   })
 
   const sessionFreshnessAt = useMemo(
@@ -462,6 +468,7 @@ export function Dashboard(): ReactElement {
       to,
       cacheBust: quotaCacheBust,
     }),
+    refetchIntervalInBackground: false,
   })
 
   const { data: quotaRangeHistoryData, isFetching: quotaRangeHistoryFetching } =
@@ -482,9 +489,9 @@ export function Dashboard(): ReactElement {
           signal
         ),
       enabled: providerSectionView === 'quota',
-      staleTime: LIVE_DASHBOARD_REFETCH_INTERVAL_MS,
+      staleTime: LIVE_DASHBOARD_HEAVY_REFETCH_INTERVAL_MS,
       refetchInterval: false,
-      refetchIntervalInBackground: true,
+      refetchIntervalInBackground: false,
     })
 
   const { data: quotaHistoryData, isFetching: quotaHistoryFetching } = useQuery(
@@ -498,9 +505,9 @@ export function Dashboard(): ReactElement {
           signal
         ),
       enabled: providerSectionView === 'health',
-      staleTime: LIVE_DASHBOARD_REFETCH_INTERVAL_MS,
+      staleTime: LIVE_DASHBOARD_HEAVY_REFETCH_INTERVAL_MS,
       refetchInterval: false,
-      refetchIntervalInBackground: true,
+      refetchIntervalInBackground: false,
     }
   )
 
@@ -555,7 +562,7 @@ export function Dashboard(): ReactElement {
             },
             signal
           ),
-        staleTime: LIVE_DASHBOARD_REFETCH_INTERVAL_MS,
+        staleTime: LIVE_DASHBOARD_HEAVY_REFETCH_INTERVAL_MS,
       })
     }, [from, queryClient, to])
 
@@ -571,7 +578,7 @@ export function Dashboard(): ReactElement {
           },
           signal
         ),
-      staleTime: LIVE_DASHBOARD_REFETCH_INTERVAL_MS,
+      staleTime: LIVE_DASHBOARD_HEAVY_REFETCH_INTERVAL_MS,
     })
   }, [queryClient])
 
@@ -832,88 +839,42 @@ export function Dashboard(): ReactElement {
           {/* 15-D.5: filters + onOptionsReady wired for slicer */}
           {/* Wave 35: onPriorSummaryReady wired to receive prior-period summary for KPI deltas */}
           {/* Wave 36 Fix 1: report + reportLoading hoisted from index.tsx query (dedup). */}
-          {/* Wave 36 Fix 3: skeleton rendered when loading and no data yet (see below). */}
+          {/* D1-226: keep PhosphorDashboard mounted during cold load so STATUS tabs
+              and Diagnostics remain reachable while section bodies skeletonize. */}
           {/* Wave 36 Fix 4: showComparison gates priorReport query to ≥3840px viewports. */}
-          {summaryLoading && summaryReport === undefined ? (
-            <div
-              className='dashboard-loading-skeleton'
-              aria-busy='true'
-              aria-label='Loading dashboard'
-            >
-              {/* Header bar placeholder */}
-              <div
-                className='skeleton-block'
-                style={{ height: '32px', marginBottom: '16px', width: '40%' }}
-              />
-              {/* KPI tile row placeholder (6 tiles) */}
-              <div
-                style={{
-                  display: 'grid',
-                  gridTemplateColumns: 'repeat(6, 1fr)',
-                  gap: '8px',
-                  marginBottom: '16px',
-                }}
-              >
-                {Array.from({ length: 6 }).map((_, i) => (
-                  // Index key is safe: static placeholder, no state or reorder
-                  <div
-                    key={i}
-                    className='skeleton-block'
-                    style={{ height: '64px' }}
-                  />
-                ))}
-              </div>
-              {/* Provider card grid placeholder (~8 cards) */}
-              <div
-                style={{
-                  display: 'grid',
-                  gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))',
-                  gap: '8px',
-                }}
-              >
-                {Array.from({ length: 8 }).map((_, i) => (
-                  // Index key is safe: static placeholder, no state or reorder
-                  <div
-                    key={i}
-                    className='skeleton-block'
-                    style={{ height: '160px' }}
-                  />
-                ))}
-              </div>
-            </div>
-          ) : (
-            <PhosphorDashboard
-              from={from}
-              to={to}
-              grain={grain}
-              searchTerm={searchTerm}
-              filters={slicerFilters}
-              onOptionsReady={handleSlicerOptionsReady}
-              onPriorSummaryReady={handlePriorSummaryReady}
-              onPriorHealthReady={handlePriorHealthReady}
-              report={summaryReport}
-              reportLoading={summaryLoading}
-              showComparison={showComparison}
-              reportRefreshKey={reportCacheBust}
-              quotas={quotasData?.quotas}
-              reportFetching={summaryFetching}
-              quotasFetching={quotasFetching}
-              quotaHistory={quotaHistoryData?.quotaHistory ?? []}
-              quotaHistoryFetching={quotaHistoryFetching}
-              quotaRangeHistory={quotaRangeHistoryData?.quotaRangeHistory ?? []}
-              quotaRangeHistoryFetching={quotaRangeHistoryFetching}
-              onRefreshReport={handleReportRefresh}
-              onRefreshQuotas={handleQuotaRefresh}
-              onRefreshQuotaHistory={handleQuotaHistoryRefresh}
-              onRefreshQuotaRangeHistory={handleQuotaRangeHistoryRefresh}
-              providerSectionView={providerSectionView}
-              onProviderSectionViewChange={setProviderSectionView}
-              trendLowerLaneMode={trendLowerLaneMode}
-              onTrendLowerLaneModeChange={setTrendLowerLaneMode}
-              ledgerView={ledgerView}
-              onLedgerViewChange={setLedgerView}
-            />
-          )}
+          <PhosphorDashboard
+            from={from}
+            to={to}
+            grain={grain}
+            searchTerm={searchTerm}
+            filters={slicerFilters}
+            onOptionsReady={handleSlicerOptionsReady}
+            onPriorSummaryReady={handlePriorSummaryReady}
+            onPriorHealthReady={handlePriorHealthReady}
+            report={summaryReport}
+            reportLoading={summaryLoading}
+            showComparison={showComparison}
+            reportRefreshKey={reportCacheBust}
+            quotas={quotasData?.quotas}
+            reportFetching={summaryFetching}
+            quotasFetching={quotasFetching}
+            quotaHistory={quotaHistoryData?.quotaHistory ?? []}
+            quotaHistoryMetadata={quotaHistoryData?.metadata}
+            quotaHistoryFetching={quotaHistoryFetching}
+            quotaRangeHistory={quotaRangeHistoryData?.quotaRangeHistory ?? []}
+            quotaRangeHistoryMetadata={quotaRangeHistoryData?.metadata}
+            quotaRangeHistoryFetching={quotaRangeHistoryFetching}
+            onRefreshReport={handleReportRefresh}
+            onRefreshQuotas={handleQuotaRefresh}
+            onRefreshQuotaHistory={handleQuotaHistoryRefresh}
+            onRefreshQuotaRangeHistory={handleQuotaRangeHistoryRefresh}
+            providerSectionView={providerSectionView}
+            onProviderSectionViewChange={setProviderSectionView}
+            trendLowerLaneMode={trendLowerLaneMode}
+            onTrendLowerLaneModeChange={setTrendLowerLaneMode}
+            ledgerView={ledgerView}
+            onLedgerViewChange={setLedgerView}
+          />
         </div>
       }
     />

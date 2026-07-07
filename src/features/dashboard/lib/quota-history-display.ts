@@ -12,7 +12,7 @@ import {
   roundToNearest30Min,
 } from './quota-bars/fields'
 import { PROVIDER_LANE_DEFS } from './quota-bars/lane-defs'
-import { canonicalProvider } from './usage-report-display'
+import { canonicalProvider, providerAliases } from './usage-report-display'
 
 const FORMAT_COMPACT_QUANTITY = new Intl.NumberFormat('en-US', {
   notation: 'compact',
@@ -76,17 +76,31 @@ function shouldHideQuotaHistoryLane(
 
 function quotaHistoryRowMatchesLane(
   providerLower: string,
-  def: { quotaType: string; googleClass: string | null; quotaKey?: string },
+  def: {
+    quotaType: string
+    googleClass: string | null
+    quotaKey?: string
+    sourceProvider?: string
+  },
   row: UsageReportQuotaHistoryRow
 ): boolean {
+  const laneProvider = (def.sourceProvider ?? providerLower).toLowerCase()
+  if (!providerAliases(laneProvider).includes(row.provider.toLowerCase())) {
+    return false
+  }
+
   if (quotaTypeToLaneKey(row.quota_type) !== quotaTypeToLaneKey(def.quotaType))
     return false
 
-  if (providerLower === 'antigravity' && def.quotaKey !== undefined) {
+  if (laneProvider === 'antigravity' && def.quotaKey !== undefined) {
     return row.model === def.quotaKey
   }
 
-  if (providerLower === 'google' && def.googleClass !== null) {
+  if (laneProvider === 'xai' && def.quotaKey !== undefined) {
+    return row.model === def.quotaKey || row.quota_key === def.quotaKey
+  }
+
+  if (laneProvider === 'google' && def.googleClass !== null) {
     if (row.model === null) return false
     return classifyGeminiModel(row.model) === def.googleClass
   }
@@ -214,8 +228,9 @@ function aggregateQuotaHistoryRowsByReset(
     const resetKey = quotaHistoryResetGroupKey(row)
     const groupKey = [
       row.provider,
-      modelLabel ?? row.model ?? 'all',
+      modelLabel ?? row.model ?? row.quota_key ?? 'all',
       row.quota_type,
+      row.quota_key ?? '',
       resetKey,
     ].join('|')
     const group = grouped.get(groupKey) ?? []
@@ -238,6 +253,10 @@ function aggregateQuotaHistoryRowsByReset(
         provider: first.provider,
         model: modelLabel ?? first.model,
         quota_type: first.quota_type,
+        quota_key: first.quota_key ?? null,
+        source: first.source ?? null,
+        client: first.client ?? null,
+        quota_unit: first.quota_unit ?? null,
         expected_reset_at: resetAt,
         interval_start: minIso(group.map((row) => row.interval_start)),
         interval_end: resetAt ?? maxIso(group.map((row) => row.interval_end)),
@@ -305,7 +324,7 @@ export function buildProviderQuotaHistoryTabs(
         .filter((row) => quotaHistoryRowMatchesLane(providerLower, def, row))
         .sort(compareQuotaHistoryResetDesc)
       const displayRows =
-        providerLower === 'google'
+        providerLower === 'google' && def.sourceProvider === undefined
           ? aggregateGoogleQuotaHistoryRows(def, laneRows)
           : aggregateQuotaHistoryRowsByReset(laneRows)
       return {

@@ -1,44 +1,80 @@
 import crypto from 'node:crypto'
 
-const REPORT_CACHE_TTL_MS = Math.max(
-  0,
-  Number(process.env.SHELL_REPORT_CACHE_TTL_MS ?? 60 * 1000)
-)
-const REPORT_CACHE_USAGE_TTL_MS = Math.max(
-  0,
-  Number(process.env.SHELL_REPORT_USAGE_CACHE_TTL_MS ?? 10 * 60 * 1000)
-)
-const REPORT_CACHE_STALE_TTL_MS = Math.max(
-  0,
-  Number(process.env.SHELL_REPORT_CACHE_STALE_TTL_MS ?? 24 * 60 * 60 * 1000)
-)
-const REPORT_CACHE_PREFIX =
-  process.env.SHELL_REPORT_CACHE_PREFIX ?? 'dashboard-shell:reports'
-const REPORT_CACHE_VERSION = process.env.SHELL_REPORT_CACHE_VERSION ?? 'v14'
+/** Params excluded from canonical cache identity (#39 / S6-T7). */
+const CACHE_IDENTITY_EXCLUDED_KEYS = new Set(['cache_bust'])
 
 const USAGE_REPORT_CACHE_SCOPES = new Set([
-  'usage',
-  'usage-token-trend-summary-v3',
+  'usage-v2',
+  'usage-token-trend-summary-v6',
   'usage-tool-activity',
   'usage-token-trend-day',
 ])
 
-/** Params excluded from canonical cache identity (#39 / S6-T7). */
-const CACHE_IDENTITY_EXCLUDED_KEYS = new Set(['cache_bust'])
+function resolveReportCacheConfig(env = process.env) {
+  const defaultTtlMs = Math.max(
+    0,
+    Number(env.SHELL_REPORT_CACHE_TTL_MS ?? 60 * 1000)
+  )
+  const usageTtlMs = Math.max(
+    0,
+    Number(env.SHELL_REPORT_USAGE_CACHE_TTL_MS ?? 10 * 60 * 1000)
+  )
+  const staleTtlMs = Math.max(
+    0,
+    Number(env.SHELL_REPORT_CACHE_STALE_TTL_MS ?? 24 * 60 * 60 * 1000)
+  )
+  const prefix = env.SHELL_REPORT_CACHE_PREFIX ?? 'dashboard-shell:reports'
+  const version = env.SHELL_REPORT_CACHE_VERSION ?? 'v14'
+
+  return {
+    defaultTtlMs,
+    usageTtlMs,
+    staleTtlMs,
+    prefix,
+    version,
+    cacheBustExcludedKeys: CACHE_IDENTITY_EXCLUDED_KEYS,
+  }
+}
+
+const defaultReportCacheConfig = resolveReportCacheConfig()
+
+const REPORT_CACHE_TTL_MS = defaultReportCacheConfig.defaultTtlMs
+const REPORT_CACHE_USAGE_TTL_MS = defaultReportCacheConfig.usageTtlMs
+const REPORT_CACHE_STALE_TTL_MS = defaultReportCacheConfig.staleTtlMs
+const REPORT_CACHE_PREFIX = defaultReportCacheConfig.prefix
+const REPORT_CACHE_VERSION = defaultReportCacheConfig.version
+
+function isUsageReportCacheScope(scope) {
+  if (scope === 'quotas' || scope.startsWith('usage-quota')) {
+    return false
+  }
+  if (USAGE_REPORT_CACHE_SCOPES.has(scope)) {
+    return true
+  }
+  if (/^usage-v\d+$/.test(scope)) {
+    return true
+  }
+  if (/^usage-token-trend-summary-v\d+$/.test(scope)) {
+    return true
+  }
+  return false
+}
 
 function resolveReportCacheTtlMs(scope, options = {}) {
+  const config = options.config ?? defaultReportCacheConfig
   if (Number.isFinite(options.cacheTtlMs)) {
     return Math.max(0, Number(options.cacheTtlMs))
   }
-  return USAGE_REPORT_CACHE_SCOPES.has(scope)
-    ? REPORT_CACHE_USAGE_TTL_MS
-    : REPORT_CACHE_TTL_MS
+  return isUsageReportCacheScope(scope)
+    ? config.usageTtlMs
+    : config.defaultTtlMs
 }
 
-function canonicalizeSearchParams(searchParams) {
+function canonicalizeSearchParams(searchParams, config = defaultReportCacheConfig) {
+  const excluded = config.cacheBustExcludedKeys ?? CACHE_IDENTITY_EXCLUDED_KEYS
   const entries = []
   const keys = [...new Set([...searchParams.keys()])]
-    .filter((key) => !CACHE_IDENTITY_EXCLUDED_KEYS.has(key))
+    .filter((key) => !excluded.has(key))
     .sort()
 
   for (const key of keys) {
@@ -50,9 +86,9 @@ function canonicalizeSearchParams(searchParams) {
   return new URLSearchParams(entries).toString()
 }
 
-function buildReportCacheIdentity(scope, searchParams) {
+function buildReportCacheIdentity(scope, searchParams, config = defaultReportCacheConfig) {
   const canonicalParams = searchParams
-    ? canonicalizeSearchParams(searchParams)
+    ? canonicalizeSearchParams(searchParams, config)
     : ''
   const hash = crypto
     .createHash('sha256')
@@ -63,18 +99,23 @@ function buildReportCacheIdentity(scope, searchParams) {
     scope,
     canonicalParams,
     hash,
-    cacheKey: `${REPORT_CACHE_PREFIX}:${REPORT_CACHE_VERSION}:${scope}:${hash}`,
-    lockKey: `${REPORT_CACHE_PREFIX}:${REPORT_CACHE_VERSION}:${scope}:${hash}:lock`,
+    cacheKey: `${config.prefix}:${config.version}:${scope}:${hash}`,
+    lockKey: `${config.prefix}:${config.version}:${scope}:${hash}:lock`,
   }
 }
 
+function buildReportCachePrewarmLockKey(config = defaultReportCacheConfig) {
+  return `${config.prefix}:${config.version}:prewarm:lock`
+}
+
 function buildReportCacheEntry(payload, options = {}) {
+  const config = options.config ?? defaultReportCacheConfig
   const now = Date.now()
   const freshUntil = now + resolveReportCacheTtlMs(options.scope, options)
-  const staleUntil = freshUntil + REPORT_CACHE_STALE_TTL_MS
+  const staleUntil = freshUntil + config.staleTtlMs
 
   return {
-    cacheVersion: REPORT_CACHE_VERSION,
+    cacheVersion: config.version,
     generatedAt: new Date(now).toISOString(),
     freshUntil,
     staleUntil,
@@ -83,8 +124,17 @@ function buildReportCacheEntry(payload, options = {}) {
 }
 
 export {
+  CACHE_IDENTITY_EXCLUDED_KEYS,
+  REPORT_CACHE_PREFIX,
+  REPORT_CACHE_STALE_TTL_MS,
+  REPORT_CACHE_TTL_MS,
+  REPORT_CACHE_USAGE_TTL_MS,
+  REPORT_CACHE_VERSION,
   buildReportCacheEntry,
   buildReportCacheIdentity,
+  buildReportCachePrewarmLockKey,
   canonicalizeSearchParams,
+  isUsageReportCacheScope,
+  resolveReportCacheConfig,
   resolveReportCacheTtlMs,
 }

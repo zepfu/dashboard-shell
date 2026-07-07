@@ -1,0 +1,190 @@
+import type { ReactElement } from 'react'
+import type {
+  UsageReportProviderCreditLifecycle,
+  UsageReportProviderCreditLifecycleEntry,
+} from '../../api/usage-report'
+
+function formatCreditTimestamp(value: string | null | undefined): string {
+  if (!value) return 'n/a'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+  return date.toISOString().replace('T', ' ').slice(0, 16)
+}
+
+function statusLabel(
+  status: UsageReportProviderCreditLifecycleEntry['status']
+): string {
+  const normalized = String(status ?? 'unknown').toLowerCase()
+  if (normalized === 'available') return 'available'
+  if (normalized === 'used') return 'used'
+  if (normalized === 'expired') return 'expired'
+  return normalized || 'unknown'
+}
+
+function statusClass(
+  status: UsageReportProviderCreditLifecycleEntry['status']
+): string {
+  const normalized = String(status ?? 'unknown').toLowerCase()
+  if (normalized === 'available') return 'is-healthy'
+  if (normalized === 'used') return 'is-warn'
+  if (normalized === 'expired') return 'is-bad'
+  return 'is-unknown'
+}
+
+function codexSummaryHeadlines(
+  lifecycle?: UsageReportProviderCreditLifecycle
+): string[] {
+  const summaries = lifecycle?.summaries ?? []
+  const codexSummaries = summaries.filter(
+    (row) =>
+      row.provider === 'openai' &&
+      row.credit_family === 'codex_rate_limit_reset'
+  )
+  if (codexSummaries.length > 0) {
+    const totalAvailable = codexSummaries.reduce(
+      (sum, row) => sum + row.available_count,
+      0
+    )
+    const headlines = [
+      `OpenAI Codex reset credits: ${totalAvailable} available`,
+    ]
+    if (codexSummaries.length > 1) {
+      for (const row of codexSummaries) {
+        headlines.push(`${row.environment}: ${row.available_count} available`)
+      }
+    }
+    return headlines
+  }
+  if (summaries.length === 1) {
+    return [`${summaries[0].label}: ${summaries[0].available_count} available`]
+  }
+  if (summaries.length > 1) {
+    return summaries.map(
+      (row) => `${row.label}: ${row.available_count} available`
+    )
+  }
+  return []
+}
+
+function creditRowAccessibleLabel(
+  entry: UsageReportProviderCreditLifecycleEntry
+): string {
+  const identity = entry.credit_identity ?? 'aggregate credit'
+  return `${entry.provider} ${entry.credit_family} ${identity}`
+}
+
+function CreditLifecycleRow({
+  entry,
+}: {
+  entry: UsageReportProviderCreditLifecycleEntry
+}): ReactElement {
+  const rowLabel = creditRowAccessibleLabel(entry)
+  return (
+    <tr
+      data-provider={entry.provider}
+      data-credit-family={entry.credit_family}
+      data-credit-status={entry.status}
+    >
+      <td>{entry.provider}</td>
+      <td>{entry.environment}</td>
+      <td>{entry.credit_family}</td>
+      <th scope='row'>{entry.credit_identity ?? 'aggregate'}</th>
+      <td>
+        <span
+          className={`provider-credit-status-pill ${statusClass(entry.status)}`}
+        >
+          {statusLabel(entry.status)}
+        </span>
+      </td>
+      <td>{formatCreditTimestamp(entry.granted_at)}</td>
+      <td>{formatCreditTimestamp(entry.expires_at)}</td>
+      <td>{formatCreditTimestamp(entry.observed_at)}</td>
+      <td className='provider-credit-annotation'>
+        {entry.operator_annotation ?? 'n/a'}
+        {entry.source_url ? (
+          <>
+            {' '}
+            <a
+              className='provider-credit-source-link'
+              href={entry.source_url}
+              rel='noreferrer noopener'
+              target='_blank'
+              aria-label={`Source for ${rowLabel}`}
+            >
+              source
+            </a>
+          </>
+        ) : null}
+      </td>
+    </tr>
+  )
+}
+
+export function ProviderCreditLifecyclePanel({
+  creditLifecycle,
+}: {
+  creditLifecycle?: UsageReportProviderCreditLifecycle
+}): ReactElement {
+  const entries = creditLifecycle?.entries ?? []
+  const summaryLines = codexSummaryHeadlines(creditLifecycle)
+
+  return (
+    <section
+      className='provider-credit-lifecycle-panel'
+      aria-label='Provider credit lifecycle'
+    >
+      <div className='provider-credit-panel-head'>
+        <span>Provider credit</span>
+        <span className='provider-credit-panel-sub'>
+          {creditLifecycle?.freshness_label ??
+            'Current provider credit lifecycle from provider_credit_current'}
+        </span>
+      </div>
+      {summaryLines.length > 0 ? (
+        <div className='provider-credit-summary-block'>
+          {summaryLines.map((line) => (
+            <div className='provider-credit-summary-line' key={line}>
+              {line}
+            </div>
+          ))}
+        </div>
+      ) : null}
+      {entries.length > 0 ? (
+        <div className='provider-credit-table-wrap'>
+          <table
+            className='provider-credit-table'
+            aria-label='Provider credit lifecycle entries'
+          >
+            <caption className='provider-credit-table-caption'>
+              Current OpenAI Codex rate-limit reset credits by environment and
+              credit identity
+            </caption>
+            <thead>
+              <tr>
+                <th>provider</th>
+                <th>environment</th>
+                <th>family</th>
+                <th>credit</th>
+                <th>status</th>
+                <th>granted</th>
+                <th>expires</th>
+                <th>observed</th>
+                <th>notes</th>
+              </tr>
+            </thead>
+            <tbody>
+              {entries.map((entry, index) => (
+                <CreditLifecycleRow
+                  key={`${entry.environment}-${entry.provider}-${entry.credit_family}-${entry.credit_identity ?? 'agg'}-${entry.observed_at}-${index.toString()}`}
+                  entry={entry}
+                />
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        <div className='provider-credit-empty'>not observed</div>
+      )}
+    </section>
+  )
+}

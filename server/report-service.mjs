@@ -1,7 +1,9 @@
 import {
   buildReportCacheEntry,
   buildReportCacheIdentity,
+  buildReportCachePrewarmLockKey,
   canonicalizeSearchParams,
+  REPORT_CACHE_VERSION,
   resolveReportCacheTtlMs,
 } from './report-cache-identity.mjs'
 import crypto from 'node:crypto'
@@ -13,19 +15,33 @@ import process from 'node:process'
 import { URL } from 'node:url'
 import { promisify } from 'node:util'
 import { gzip as gzipCallback, gunzip as gunzipCallback } from 'node:zlib'
+import {
+  appendDockerLogErrorsToIntake,
+  extractDockerLogErrorsFromTail,
+  selectNewDockerLogErrors,
+  resolveDockerLogContainerNames,
+  discoverDockerJsonLogSourcesFromConfigs,
+  shouldDiscoverDockerJsonLogSources,
+  splitDockerLogErrorsForDashboardAndIntake,
+  filterDockerLogErrorsForCentralizedIntake,
+  stripAnsi,
+} from './docker-log-error-intake.mjs'
+
 import pg from 'pg'
 
 // Dynamic import for redis so that the module can be imported in environments
-// where the 'redis' package is not installed (e.g. root workspace running the
-// server vitest project after only adding pgsql-parser as a devDep). All
-// call sites already guard on the presence of a usable redisClient; when the
-// package is absent we simply get a null client and cache paths degrade to
-// local/SQL as designed. This keeps the pure query-builder functions
-// importable without requiring a live Redis or the package at test time.
+// where the 'redis' package is not installed (for example, environments that
+// only exercise SQL query-builder and report cache logic). All call sites already
+// guard on the presence of a usable redisClient; when the package is absent we
+// get a null client and cache paths degrade to local/SQL as designed. This keeps
+// query-builder and cache helpers importable without requiring a live Redis at
+// test time.
 let createClient = null
+let RESP_TYPES = null
 try {
   const redisMod = await import('redis')
   createClient = redisMod.createClient
+  RESP_TYPES = redisMod.RESP_TYPES ?? null
 } catch {
   // redis not resolvable; redisClient remains null below.
 }
@@ -34,7 +50,91 @@ const { Pool } = pg
 const gzip = promisify(gzipCallback)
 const gunzip = promisify(gunzipCallback)
 
-const PORT = Number(process.env.SHELL_REPORT_PORT ?? 3010)
+function parseFiniteNumberEnv(name, fallback) {
+  const parsed = Number(process.env[name] ?? fallback)
+  if (!Number.isFinite(parsed)) {
+    const fallbackNumber = Number(fallback)
+    return Number.isFinite(fallbackNumber) ? fallbackNumber : 0
+  }
+  return parsed
+}
+
+function boundedIntegerEnv(
+  name,
+  fallback,
+  { minimum = Number.NEGATIVE_INFINITY, maximum = Number.POSITIVE_INFINITY, floor = true } = {}
+) {
+  const finiteMinimum = Number.isFinite(minimum) ? minimum : Number.NEGATIVE_INFINITY
+  const finiteMaximum = Number.isFinite(maximum) ? maximum : Number.POSITIVE_INFINITY
+  const clamp = (value) => Math.max(finiteMinimum, Math.min(finiteMaximum, value))
+  const parsed = Number(process.env[name] ?? fallback)
+  const resolveFallback = () => {
+    const fallbackNumber = Number(fallback)
+    if (!Number.isFinite(fallbackNumber)) {
+      return Number.isFinite(finiteMinimum) ? finiteMinimum : 0
+    }
+    const normalizedFallback = floor ? Math.floor(fallbackNumber) : fallbackNumber
+    return clamp(normalizedFallback)
+  }
+  if (!Number.isFinite(parsed)) {
+    return resolveFallback()
+  }
+  const normalized = floor ? Math.floor(parsed) : parsed
+  return clamp(normalized)
+}
+
+function positiveIntegerEnv(name, fallback, minimum = 1) {
+  return boundedIntegerEnv(name, fallback, {
+    minimum,
+    maximum: Number.POSITIVE_INFINITY,
+    floor: true,
+  })
+}
+
+const BOOLEAN_ENV_TRUE = new Set(['1', 'true', 'yes', 'on'])
+const BOOLEAN_ENV_FALSE = new Set(['0', 'false', 'no', 'off'])
+
+function parseBooleanEnv(name, fallback) {
+  const raw = process.env[name]
+  if (raw == null || String(raw).trim() === '') {
+    return fallback
+  }
+  const normalized = String(raw).trim().toLowerCase()
+  if (BOOLEAN_ENV_TRUE.has(normalized)) return true
+  if (BOOLEAN_ENV_FALSE.has(normalized)) return false
+  return fallback
+}
+
+function normalizeDatabaseUrl(value) {
+  if (!value) return value
+
+  const hostRewrite = process.env.SHELL_REPORT_DATABASE_HOST_REWRITE
+  if (!hostRewrite) return value
+
+  try {
+    const databaseUrl = new URL(value)
+    const shouldRewrite =
+      databaseUrl.hostname === '127.0.0.1' ||
+      databaseUrl.hostname === 'localhost'
+
+    if (!shouldRewrite) return value
+
+    const portRewrite = process.env.SHELL_REPORT_DATABASE_PORT_REWRITE
+    if (portRewrite) {
+      databaseUrl.port = portRewrite
+    }
+
+    databaseUrl.hostname = hostRewrite
+    return databaseUrl.toString()
+  } catch {
+    return value
+  }
+}
+
+const PORT = boundedIntegerEnv('SHELL_REPORT_PORT', 3010, {
+  minimum: 1,
+  maximum: 65_535,
+})
 const DATABASE_URL = normalizeDatabaseUrl(process.env.DATABASE_URL)
 const UPSTREAM_API_PROXIES = [
   {
@@ -108,6 +208,10 @@ const MAX_LIMIT = 50000
 // of magnitude of MAX_LIMIT and is safe for memory given that client
 // rows are a small aggregate (6 columns per pair).
 const MAX_CLIENT_ROWS = 5000
+const MAX_SESSION_DIAGNOSTICS_ROWS = 500
+const MAX_SESSION_DIAGNOSTICS_CANDIDATE_ROWS = 50000
+const MIN_SESSION_DIAGNOSTICS_CANDIDATE_ROWS = 5000
+const SESSION_DIAGNOSTICS_CANDIDATE_MULTIPLIER = 5000
 // Provider health strips are fixed 24-hour surfaces: 288 buckets × 5 minutes.
 // Report date filters can span days/months, but the status bars should stay a
 // bounded rolling window ending at "now" for live ranges, or the selected `to`
@@ -120,30 +224,98 @@ const HEALTH_WINDOW_HOURS = 24
 // remains 20_000 — operators can lower it via SHELL_REPORT_HEALTH_MAX_ROWS.
 // A >75% capacity warning is emitted at query time to surface truncation risk
 // before it becomes a silent data loss.
-const MAX_HEALTH_ROWS = Math.max(
-  100,
-  Math.min(Number(process.env.SHELL_REPORT_HEALTH_MAX_ROWS ?? 20_000), 20_000)
-)
+const MAX_HEALTH_ROWS = boundedIntegerEnv('SHELL_REPORT_HEALTH_MAX_ROWS', 20_000, {
+  minimum: 100,
+  maximum: 20_000,
+})
 const MAX_PROVIDER_ERROR_ROWS = 2_000
-const MAX_DOCKER_LOG_ERROR_ROWS = Math.max(
-  0,
-  Math.min(Number(process.env.SHELL_REPORT_DOCKER_LOG_ERROR_ROWS ?? 200), 1_000)
+const MAX_DOCKER_LOG_ERROR_ROWS = boundedIntegerEnv(
+  'SHELL_REPORT_DOCKER_LOG_ERROR_ROWS',
+  200,
+  { minimum: 0, maximum: 1_000 }
 )
-const DOCKER_LOG_TAIL_BYTES = Math.max(
-  64 * 1024,
-  Math.min(
-    Number(process.env.SHELL_REPORT_DOCKER_LOG_TAIL_BYTES ?? 4 * 1024 * 1024),
-    32 * 1024 * 1024
-  )
+const DOCKER_LOG_TAIL_BYTES = boundedIntegerEnv(
+  'SHELL_REPORT_DOCKER_LOG_TAIL_BYTES',
+  4 * 1024 * 1024,
+  { minimum: 64 * 1024, maximum: 32 * 1024 * 1024 }
 )
 const DOCKER_LOG_ROOT =
   process.env.SHELL_REPORT_DOCKER_LOG_ROOT ?? '/host/docker/containers'
-const DOCKER_LOG_CONTAINER_NAMES = parseCsv(
-  process.env.SHELL_REPORT_DOCKER_LOG_CONTAINERS ?? 'aawm-litellm,litellm-dev'
+const DOCKER_LOG_CONTAINER_NAMES = resolveDockerLogContainerNames(process.env)
+const DOCKER_LOG_ERROR_INTAKE_DIR = path.resolve(
+  process.env.SHELL_REPORT_ERROR_INTAKE_DIR ??
+    path.join(process.cwd(), '.analysis')
 )
-const LOCAL_HEALTH_TIMEOUT_MS = Math.max(
-  250,
-  Math.min(Number(process.env.SHELL_REPORT_LOCAL_HEALTH_TIMEOUT_MS ?? 900), 5_000)
+const DOCKER_LOG_SCAN_MAX_SOURCES = boundedIntegerEnv(
+  'SHELL_REPORT_DOCKER_LOG_SCAN_MAX_SOURCES',
+  24,
+  { minimum: 1, maximum: 128 }
+)
+const DOCKER_LOG_SCAN_MAX_TOTAL_BYTES = boundedIntegerEnv(
+  'SHELL_REPORT_DOCKER_LOG_SCAN_MAX_TOTAL_BYTES',
+  16 * 1024 * 1024,
+  { minimum: 256 * 1024, maximum: 128 * 1024 * 1024 }
+)
+const DOCKER_LOG_SCAN_CACHE_TTL_MS = boundedIntegerEnv(
+  'SHELL_REPORT_DOCKER_LOG_SCAN_CACHE_TTL_MS',
+  45_000,
+  { minimum: 0, maximum: 10 * 60 * 1000 }
+)
+const DOCKER_LOG_INTAKE_FINGERPRINT_MAX = boundedIntegerEnv(
+  'SHELL_REPORT_DOCKER_LOG_INTAKE_FINGERPRINT_MAX',
+  8_192,
+  { minimum: 256, maximum: 65_536 }
+)
+
+class BoundedDockerLogFingerprintSet {
+  constructor(maxEntries) {
+    this.maxEntries = Math.max(1, Number(maxEntries) || 1)
+    this.keys = new Map()
+  }
+
+  has(key) {
+    return this.keys.has(key)
+  }
+
+  add(key) {
+    const normalized = String(key)
+    if (!normalized) return this
+    if (this.keys.has(normalized)) {
+      this.keys.delete(normalized)
+    }
+    this.keys.set(normalized, true)
+    while (this.keys.size > this.maxEntries) {
+      const oldest = this.keys.keys().next().value
+      this.keys.delete(oldest)
+    }
+    return this
+  }
+
+  get size() {
+    return this.keys.size
+  }
+
+  clear() {
+    this.keys.clear()
+  }
+}
+
+const dockerLogErrorIntakeSeenFingerprints = new BoundedDockerLogFingerprintSet(
+  DOCKER_LOG_INTAKE_FINGERPRINT_MAX
+)
+
+/** @type {{ sources: Array<{ container: string, logPath: string, matchKind?: string }>, cachedAt: number } | null} */
+let dockerLogJsonSourcesCache = null
+
+/** @type {{ sortedRows: unknown[], forDashboard: unknown[], cachedAt: number } | null} */
+let dockerLogErrorsScanCache = null
+/** @type {Map<string, { size: number, mtimeMs: number, tailBytes: number, rows: unknown[] }>} */
+let dockerLogScanSourceCache = new Map()
+let dockerLogTailReadCountForTests = 0
+const LOCAL_HEALTH_TIMEOUT_MS = boundedIntegerEnv(
+  'SHELL_REPORT_LOCAL_HEALTH_TIMEOUT_MS',
+  900,
+  { minimum: 250, maximum: 5_000 }
 )
 const LOCAL_CONTAINER_HEALTH_PROBES = [
   {
@@ -211,116 +383,183 @@ const LOCAL_MODEL_HEALTH_PROBES = [
 }))
 const MAX_PROVIDER_STATUS_ROWS = 500
 const STALE_RECORD_THRESHOLD_MINUTES = 120
-const REPORT_DB_DISABLE_PARALLELISM =
-  (process.env.SHELL_REPORT_DB_DISABLE_PARALLELISM ?? 'true').toLowerCase() !==
-  'false'
-const REPORT_SQL_FANOUT_CONCURRENCY = Math.max(
+const REPORT_DB_DISABLE_PARALLELISM = parseBooleanEnv(
+  'SHELL_REPORT_DB_DISABLE_PARALLELISM',
+  true
+)
+const REPORT_SQL_FANOUT_CONCURRENCY = boundedIntegerEnv(
+  'SHELL_REPORT_SQL_FANOUT_CONCURRENCY',
   1,
-  Math.min(Number(process.env.SHELL_REPORT_SQL_FANOUT_CONCURRENCY ?? 1), 4)
+  { minimum: 1, maximum: 4 }
 )
-const REPORT_DB_STATEMENT_TIMEOUT_MS = Math.max(
-  0,
-  Number(process.env.SHELL_REPORT_DB_STATEMENT_TIMEOUT_MS ?? 120_000)
+const REPORT_DB_STATEMENT_TIMEOUT_MS = boundedIntegerEnv(
+  'SHELL_REPORT_DB_STATEMENT_TIMEOUT_MS',
+  120_000,
+  { minimum: 0, maximum: Number.POSITIVE_INFINITY }
 )
-const REPORT_DB_POOL_MAX = Math.max(
-  1,
-  Math.min(Number(process.env.SHELL_REPORT_DB_POOL_MAX ?? 4), 8)
+const REPORT_DB_POOL_MAX = boundedIntegerEnv('SHELL_REPORT_DB_POOL_MAX', 4, {
+  minimum: 1,
+  maximum: 8,
+})
+const REPORT_DB_CONNECTION_TIMEOUT_MS = boundedIntegerEnv(
+  'SHELL_REPORT_DB_CONNECTION_TIMEOUT_MS',
+  5_000,
+  { minimum: 500, maximum: Number.POSITIVE_INFINITY }
 )
-const REPORT_DB_CONNECTION_TIMEOUT_MS = Math.max(
-  500,
-  Number(process.env.SHELL_REPORT_DB_CONNECTION_TIMEOUT_MS ?? 5_000)
+const HEALTH_DB_STATEMENT_TIMEOUT_MS = boundedIntegerEnv(
+  'SHELL_REPORT_HEALTH_DB_STATEMENT_TIMEOUT_MS',
+  2_000,
+  { minimum: 500, maximum: Number.POSITIVE_INFINITY }
 )
-const HEALTH_DB_STATEMENT_TIMEOUT_MS = Math.max(
-  500,
-  Number(process.env.SHELL_REPORT_HEALTH_DB_STATEMENT_TIMEOUT_MS ?? 2_000)
-)
-const HEALTH_DB_CONNECTION_TIMEOUT_MS = Math.max(
-  500,
-  Number(process.env.SHELL_REPORT_HEALTH_DB_CONNECTION_TIMEOUT_MS ?? 1_000)
-)
-const PGBOUNCER_HEALTH_CACHE_TTL_MS = Math.max(
+const HEALTH_DB_CONNECTION_TIMEOUT_MS = boundedIntegerEnv(
+  'SHELL_REPORT_HEALTH_DB_CONNECTION_TIMEOUT_MS',
   1_000,
-  Number(process.env.SHELL_REPORT_PGBOUNCER_HEALTH_CACHE_TTL_MS ?? 15_000)
+  { minimum: 500, maximum: Number.POSITIVE_INFINITY }
 )
-const PGBOUNCER_ADMIN_QUERY_TIMEOUT_MS = Math.max(
-  500,
-  Number(process.env.SHELL_REPORT_PGBOUNCER_ADMIN_QUERY_TIMEOUT_MS ?? 2_000)
+const PGBOUNCER_HEALTH_CACHE_TTL_MS = boundedIntegerEnv(
+  'SHELL_REPORT_PGBOUNCER_HEALTH_CACHE_TTL_MS',
+  15_000,
+  { minimum: 1_000, maximum: Number.POSITIVE_INFINITY }
 )
-const MATERIALIZED_VIEW_HEALTH_CACHE_TTL_MS = Math.max(
-  1_000,
-  Number(process.env.SHELL_REPORT_MV_HEALTH_CACHE_TTL_MS ?? 30_000)
+const PGBOUNCER_ADMIN_QUERY_TIMEOUT_MS = boundedIntegerEnv(
+  'SHELL_REPORT_PGBOUNCER_ADMIN_QUERY_TIMEOUT_MS',
+  2_000,
+  { minimum: 500, maximum: Number.POSITIVE_INFINITY }
 )
-const QUOTA_MV_STALE_AFTER_MS = Math.max(
-  60_000,
-  Number(process.env.SHELL_REPORT_QUOTA_MV_STALE_AFTER_MS ?? 30 * 60 * 1000)
+const MATERIALIZED_VIEW_HEALTH_CACHE_TTL_MS = boundedIntegerEnv(
+  'SHELL_REPORT_MV_HEALTH_CACHE_TTL_MS',
+  30_000,
+  { minimum: 1_000, maximum: Number.POSITIVE_INFINITY }
 )
-const PROVIDER_HEALTH_MV_STALE_AFTER_MS = Math.max(
-  60_000,
-  Number(process.env.SHELL_REPORT_PROVIDER_HEALTH_MV_STALE_AFTER_MS ?? 60 * 60 * 1000)
+const QUOTA_MV_STALE_AFTER_MS = boundedIntegerEnv(
+  'SHELL_REPORT_QUOTA_MV_STALE_AFTER_MS',
+  30 * 60 * 1000,
+  { minimum: 60_000, maximum: Number.POSITIVE_INFINITY }
 )
-// Keep the generic report cache short for quota-style endpoints that still need
-// near-live semantics. Heavy usage-summary reports get a longer Redis freshness
-// window below so browser polling does not force SQL refreshes every minute.
-// Operators can override via SHELL_REPORT_CACHE_TTL_MS when needed.
-const REPORT_CACHE_TTL_MS = Math.max(
-  0,
-  Number(process.env.SHELL_REPORT_CACHE_TTL_MS ?? 60 * 1000)
-)
-const REPORT_CACHE_USAGE_TTL_MS = Math.max(
-  0,
-  Number(process.env.SHELL_REPORT_USAGE_CACHE_TTL_MS ?? 10 * 60 * 1000)
-)
-const REPORT_CACHE_STALE_TTL_MS = Math.max(
-  0,
-  Number(process.env.SHELL_REPORT_CACHE_STALE_TTL_MS ?? 24 * 60 * 60 * 1000)
+const PROVIDER_HEALTH_MV_STALE_AFTER_MS = boundedIntegerEnv(
+  'SHELL_REPORT_PROVIDER_HEALTH_MV_STALE_AFTER_MS',
+  60 * 60 * 1000,
+  { minimum: 60_000, maximum: Number.POSITIVE_INFINITY }
 )
 const REPORT_CACHE_REDIS_URL = process.env.SHELL_REPORT_REDIS_URL
-const REPORT_CACHE_PREFIX =
-  process.env.SHELL_REPORT_CACHE_PREFIX ?? 'dashboard-shell:reports'
-const REPORT_CACHE_VERSION = process.env.SHELL_REPORT_CACHE_VERSION ?? 'v14'
-const REPORT_CACHE_LOCK_TTL_MS = Math.max(
-  1_000,
-  Number(process.env.SHELL_REPORT_CACHE_LOCK_TTL_MS ?? 30 * 60 * 1000)
+const REPORT_CACHE_LOCK_TTL_MS = boundedIntegerEnv(
+  'SHELL_REPORT_CACHE_LOCK_TTL_MS',
+  30 * 60 * 1000,
+  { minimum: 1_000, maximum: Number.POSITIVE_INFINITY }
 )
-const REPORT_CACHE_LOCK_WAIT_MS = Math.max(
-  0,
-  Number(process.env.SHELL_REPORT_CACHE_LOCK_WAIT_MS ?? 60 * 1000)
+const REPORT_CACHE_LOCK_WAIT_MS = boundedIntegerEnv(
+  'SHELL_REPORT_CACHE_LOCK_WAIT_MS',
+  60 * 1000,
+  { minimum: 0, maximum: Number.POSITIVE_INFINITY }
 )
-const REPORT_CACHE_FOREGROUND_LOCK_WAIT_MS = Math.max(
-  0,
-  Number(process.env.SHELL_REPORT_CACHE_FOREGROUND_LOCK_WAIT_MS ?? 2 * 1000)
+const REPORT_CACHE_FOREGROUND_LOCK_WAIT_MS = boundedIntegerEnv(
+  'SHELL_REPORT_CACHE_FOREGROUND_LOCK_WAIT_MS',
+  2 * 1000,
+  { minimum: 0, maximum: Number.POSITIVE_INFINITY }
 )
-const REPORT_CACHE_LOCK_POLL_MS = Math.max(
-  100,
-  Number(process.env.SHELL_REPORT_CACHE_LOCK_POLL_MS ?? 500)
+const REPORT_CACHE_LOCK_POLL_MS = boundedIntegerEnv(
+  'SHELL_REPORT_CACHE_LOCK_POLL_MS',
+  500,
+  { minimum: 100, maximum: Number.POSITIVE_INFINITY }
 )
-const REPORT_CACHE_PREWARM =
-  (process.env.SHELL_REPORT_CACHE_PREWARM ?? 'false').toLowerCase() !== 'false'
-const REPORT_CACHE_PREWARM_INTERVAL_MS = Math.max(
-  0,
-  Number(process.env.SHELL_REPORT_CACHE_PREWARM_INTERVAL_MS ?? 15 * 60 * 1000)
+const REPORT_CACHE_PREWARM = parseBooleanEnv('SHELL_REPORT_CACHE_PREWARM', false)
+const REPORT_CACHE_PREWARM_INTERVAL_MS = boundedIntegerEnv(
+  'SHELL_REPORT_CACHE_PREWARM_INTERVAL_MS',
+  15 * 60 * 1000,
+  { minimum: 0, maximum: Number.POSITIVE_INFINITY }
 )
-const REPORT_CACHE_PREWARM_LOCK_TTL_MS = Math.max(
-  60_000,
-  Number(process.env.SHELL_REPORT_CACHE_PREWARM_LOCK_TTL_MS ?? 2 * 60 * 60 * 1000)
+const REPORT_CACHE_PREWARM_LOCK_TTL_MS = boundedIntegerEnv(
+  'SHELL_REPORT_CACHE_PREWARM_LOCK_TTL_MS',
+  2 * 60 * 60 * 1000,
+  { minimum: 60_000, maximum: Number.POSITIVE_INFINITY }
 )
 const MAX_REPORT_CACHE_ENTRIES = 20
-const USAGE_REPORT_CACHE_SCOPES = new Set([
-  'usage',
-  'usage-token-trend-summary-v3',
-  'usage-tool-activity',
-  'usage-token-trend-day',
-])
+let reportCacheMaxEntries = MAX_REPORT_CACHE_ENTRIES
+let readRedisCacheEntryTestImpl = null
+let writeRedisCacheEntryTestImpl = null
+let queryReportDatabaseTestImpl = null
+let loadDockerLogErrorsTestImpl = null
+let loadLocalHealthTestImpl = null
+const TOOL_ACTIVITY_RECENT_ROW_LIMIT = positiveIntegerEnv(
+  'SHELL_REPORT_TOOL_ACTIVITY_RECENT_ROW_LIMIT',
+  5_000,
+  250
+)
+const TOOL_ACTIVITY_STATEMENT_TIMEOUT_MS = positiveIntegerEnv(
+  'SHELL_REPORT_TOOL_ACTIVITY_STATEMENT_TIMEOUT_MS',
+  Math.min(REPORT_DB_STATEMENT_TIMEOUT_MS, 30_000),
+  1_000
+)
+const TOKEN_TREND_SUMMARY_STATEMENT_TIMEOUT_MS = positiveIntegerEnv(
+  'SHELL_REPORT_TOKEN_TREND_SUMMARY_STATEMENT_TIMEOUT_MS',
+  Math.min(REPORT_DB_STATEMENT_TIMEOUT_MS, 15_000),
+  1_000
+)
+const TOKEN_TREND_SUMMARY_RAW_LANE_MAX_DAYS = positiveIntegerEnv(
+  'SHELL_REPORT_TOKEN_TREND_SUMMARY_RAW_LANE_MAX_DAYS',
+  7,
+  1
+)
+const QUOTA_HISTORY_STATEMENT_TIMEOUT_MS = positiveIntegerEnv(
+  'SHELL_REPORT_QUOTA_HISTORY_STATEMENT_TIMEOUT_MS',
+  Math.min(REPORT_DB_STATEMENT_TIMEOUT_MS, 15_000),
+  1_000
+)
+const QUOTA_RANGE_HISTORY_STATEMENT_TIMEOUT_MS = positiveIntegerEnv(
+  'SHELL_REPORT_QUOTA_RANGE_HISTORY_STATEMENT_TIMEOUT_MS',
+  QUOTA_HISTORY_STATEMENT_TIMEOUT_MS,
+  1_000
+)
+// Wave 41-QuotaHistory-1:
+// Explicitly bound the quota-history query window to avoid unbounded scans in
+// `rate_limit_intervals` and `session_history` while still keeping enough bars for
+// the active UI path (provider cards + quota detail). These defaults are hard
+// caps when callers do not provide tighter from/to ranges.
+const QUOTA_HISTORY_MAX_LOOKBACK_DAYS = positiveIntegerEnv(
+  'SHELL_REPORT_QUOTA_HISTORY_MAX_LOOKBACK_DAYS',
+  45,
+  1
+)
+const QUOTA_HISTORY_MAX_UPPER_HOURS = positiveIntegerEnv(
+  'SHELL_REPORT_QUOTA_HISTORY_MAX_UPPER_HOURS',
+  72,
+  0
+)
+const QUOTA_HISTORY_MAX_INTERVALS_PER_LANE = boundedIntegerEnv(
+  'SHELL_REPORT_QUOTA_HISTORY_MAX_INTERVALS_PER_LANE',
+  180,
+  { minimum: 24, maximum: 999 }
+)
+const AGENT_SCORE_REASON_RECENT_ROW_LIMIT = positiveIntegerEnv(
+  'SHELL_REPORT_AGENT_SCORE_REASON_RECENT_ROW_LIMIT',
+  10_000,
+  1_000
+)
+export const USAGE_TOKEN_TREND_SUMMARY_SUBQUERY_KEYS = [
+  'hours',
+  'health',
+  'scores',
+  'versions',
+  'modelFirstSeen',
+]
+const TOKEN_TREND_SUMMARY_RAW_SUBQUERY_KEYS = [
+  'hours',
+  'scores',
+  'versions',
+  'modelFirstSeen',
+]
+const USAGE_TOKEN_TREND_SUMMARY_CACHE_SCOPE = 'usage-token-trend-summary-v6'
+const USAGE_QUOTA_HISTORY_CACHE_SCOPE = 'usage-quota-history-v2'
+export const USAGE_REPORT_CACHE_SCOPE = 'usage-v2'
+
 const QUOTA_VELOCITY_SEGMENT_COUNT = 100
 const QUOTA_ESTIMATOR_LAG_MINUTES = [0, 1, 5, 10, 30, 60]
 const QUOTA_ESTIMATOR_MIN_TRAINING_ROWS = 4
 const QUOTA_ESTIMATOR_HIGH_CONFIDENCE_ROWS = 20
-const QUOTA_ESTIMATOR_MAX_INTERVALS_PER_LANE = Math.max(
-  10,
-  Math.min(
-    Number(process.env.SHELL_REPORT_QUOTA_ESTIMATOR_MAX_INTERVALS_PER_LANE ?? 40),
-    500
-  )
+const QUOTA_ESTIMATOR_MAX_INTERVALS_PER_LANE = boundedIntegerEnv(
+  'SHELL_REPORT_QUOTA_ESTIMATOR_MAX_INTERVALS_PER_LANE',
+  40,
+  { minimum: 10, maximum: 500 }
 )
 const QUOTA_ESTIMATOR_ROLLING_HALF_LIFE_HOURS = {
   short: 5,
@@ -329,8 +568,9 @@ const QUOTA_ESTIMATOR_ROLLING_HALF_LIFE_HOURS = {
   special: 72,
   monthly: 168,
 }
-const UPSTREAM_FETCH_TIMEOUT_MS = Number(
-  process.env.SHELL_REPORT_UPSTREAM_TIMEOUT_MS ?? 30_000
+const UPSTREAM_FETCH_TIMEOUT_MS = parseFiniteNumberEnv(
+  'SHELL_REPORT_UPSTREAM_TIMEOUT_MS',
+  30_000
 )
 const HOP_BY_HOP_HEADERS = new Set([
   'connection',
@@ -351,6 +591,45 @@ const CLIENT_AUTH_HEADERS = new Set([
   'x-admin-capability',
   'x-api-key',
 ])
+const REPORT_PROXY_SECRET_HEADER = 'X-Dashboard-Shell-Proxy-Secret'
+const DEFAULT_REPORT_PROXY_SHARED_SECRET = 'dashboard-shell-local-proxy-secret'
+const INTERNAL_PROXY_HEADERS = new Set([REPORT_PROXY_SECRET_HEADER.toLowerCase()])
+
+function resolveReportProxySharedSecret() {
+  const raw = process.env.SHELL_REPORT_PROXY_SHARED_SECRET
+  if (raw != null && String(raw).trim() !== '') {
+    return String(raw).trim()
+  }
+  return DEFAULT_REPORT_PROXY_SHARED_SECRET
+}
+
+function readHeaderValue(headers, headerName) {
+  const lower = headerName.toLowerCase()
+  const direct = headers[headerName] ?? headers[lower]
+  if (direct == null) return undefined
+  return Array.isArray(direct) ? direct[0] : direct
+}
+
+export function evaluateUpstreamProxySecret(headers) {
+  const expected = resolveReportProxySharedSecret()
+  const provided = readHeaderValue(headers, REPORT_PROXY_SECRET_HEADER)
+  if (provided == null || String(provided).trim() === '') {
+    return {
+      ok: false,
+      status: 401,
+      error: 'Missing dashboard shell proxy secret.',
+    }
+  }
+  if (String(provided) !== expected) {
+    return {
+      ok: false,
+      status: 403,
+      error: 'Invalid dashboard shell proxy secret.',
+    }
+  }
+  return { ok: true }
+}
+
 const PGBOUNCER_SIDECARS = [
   {
     key: 'aawm-pgbouncer',
@@ -555,10 +834,15 @@ function summarizeReportSql(sql) {
     .slice(0, 180)
 }
 
-async function queryReportDatabase(sql, values) {
+async function queryReportDatabase(sql, values, options = {}) {
+  if (queryReportDatabaseTestImpl) {
+    return queryReportDatabaseTestImpl(sql, values, options)
+  }
   if (!pool) {
     throw new Error('DATABASE_URL is not configured for the shell report service.')
   }
+  const statementTimeoutMs =
+    options.statementTimeoutMs ?? REPORT_DB_STATEMENT_TIMEOUT_MS
   const queryId = reportQueryMetrics.nextQueryId
   reportQueryMetrics.nextQueryId += 1
   const startedAtMs = Date.now()
@@ -575,7 +859,7 @@ async function queryReportDatabase(sql, values) {
       pool,
       sql,
       values,
-      REPORT_DB_STATEMENT_TIMEOUT_MS
+      statementTimeoutMs
     )
     const durationMs = Date.now() - startedAtMs
     reportQueryMetrics.completed += 1
@@ -625,22 +909,118 @@ end
 return 0
 `
 
-const redisClient = REPORT_CACHE_REDIS_URL && createClient
-  ? createClient({
-      url: REPORT_CACHE_REDIS_URL,
-      socket: {
-        reconnectStrategy: (retries) => Math.min(retries * 100, 5_000),
-      },
-    })
-  : null
+function createRedisCacheClient(redisUrl, clientFactory = createClient, respTypes = RESP_TYPES) {
+  if (!redisUrl || !clientFactory) return null
+
+  const client = clientFactory({
+    url: redisUrl,
+    socket: {
+      reconnectStrategy: (retries) => Math.min(retries * 100, 5_000),
+    },
+  })
+  const blobStringType = respTypes?.BLOB_STRING
+  if (
+    blobStringType == null ||
+    typeof client?.withTypeMapping !== 'function'
+  ) {
+    return client
+  }
+
+  return client.withTypeMapping({
+    [blobStringType]: Buffer,
+  })
+}
+
+const redisClient = createRedisCacheClient(REPORT_CACHE_REDIS_URL)
 let prewarmTimer = null
 let prewarmPromise = null
-let materializedViewHealthCache = null
-let materializedViewHealthPromise = null
-let sourceTableHealthCache = null
-let sourceTableHealthPromise = null
-let pgBouncerHealthCache = null
-let pgBouncerHealthPromise = null
+function createTtlMemoizer(ttlMs, onError) {
+  /** @type {{ expiresAt: number, value: unknown } | null} */
+  let cache = null
+  /** @type {Promise<unknown> | null} */
+  let inFlight = null
+
+  async function load(loader) {
+    const now = Date.now()
+    if (cache && cache.expiresAt > now) {
+      return cache.value
+    }
+    if (inFlight) {
+      return inFlight
+    }
+
+    inFlight = Promise.resolve()
+      .then(() => loader())
+      .then((value) => {
+        cache = {
+          expiresAt: Date.now() + ttlMs,
+          value,
+        }
+        return value
+      })
+      .catch((error) => {
+        const value = onError(error)
+        cache = {
+          expiresAt: Date.now() + ttlMs,
+          value,
+        }
+        return value
+      })
+      .finally(() => {
+        inFlight = null
+      })
+
+    return inFlight
+  }
+
+  function resetForTests() {
+    cache = null
+    inFlight = null
+  }
+
+  return { load, resetForTests }
+}
+
+const materializedViewHealthMemo = createTtlMemoizer(
+  MATERIALIZED_VIEW_HEALTH_CACHE_TTL_MS,
+  (error) => ({
+    status: 'unknown',
+    error: formatError(error),
+    views: [],
+    cronJobs: [],
+  })
+)
+const pgBouncerHealthMemo = createTtlMemoizer(
+  PGBOUNCER_HEALTH_CACHE_TTL_MS,
+  (error) => ({
+    status: 'unknown',
+    error: formatError(error),
+    sidecars: PGBOUNCER_SIDECARS.map((sidecar) =>
+      buildPgBouncerSidecarUnavailable(sidecar, formatError(error))
+    ),
+  })
+)
+const sourceTableHealthMemo = createTtlMemoizer(
+  MATERIALIZED_VIEW_HEALTH_CACHE_TTL_MS,
+  (error) => ({
+    status: 'unknown',
+    error: formatError(error),
+    tables: [],
+  })
+)
+
+let reportServiceShuttingDown = false
+let shutdownForceExitTimer = null
+
+const SHUTDOWN_GRACE_MS = boundedIntegerEnv('SHELL_REPORT_SHUTDOWN_GRACE_MS', 30_000, {
+  minimum: 1_000,
+  maximum: 300_000,
+})
+
+const GENERIC_INTERNAL_SERVER_ERROR_BODY = Object.freeze({
+  error: 'Internal server error',
+})
+
 
 if (redisClient) {
   redisClient.on('error', (error) => {
@@ -722,11 +1102,7 @@ async function cachedReport(scope, load, options = {}) {
     }
 
     setLocalReportCache(identity.cacheKey, redisEntry.entry)
-    refreshReportCache(identity, load, { cacheTtlMs }).catch((error) => {
-      process.stderr.write(
-        `[report-service] WARN: background cache refresh failed for ${identity.scope}:${identity.hash}: ${formatError(error)}\n`
-      )
-    })
+    scheduleBackgroundCacheRefresh(identity, load, { cacheTtlMs }, 'background')
     return maybeDecorateCacheMetadata(
       redisEntry.entry.payload,
       {
@@ -740,40 +1116,19 @@ async function cachedReport(scope, load, options = {}) {
     )
   }
 
-  const localEntry = readLocalReportCache(identity.cacheKey)
-  if (localEntry?.status === 'fresh' || localEntry?.status === 'stale') {
-    if (localEntry.status === 'stale') {
-      refreshReportCache(identity, load, { cacheTtlMs }).catch((error) => {
-        process.stderr.write(
-          `[report-service] WARN: background cache refresh failed for ${identity.scope}:${identity.hash}: ${formatError(error)}\n`
-        )
-      })
-    }
-    return maybeDecorateCacheMetadata(
-      localEntry.entry.payload,
-      {
-        ...identity,
-        backend: 'local',
-        status: localEntry.status === 'fresh' ? 'local_hit' : 'local_stale',
-        refreshing: localEntry.status === 'stale',
-        entry: localEntry.entry,
-      },
-      decorateMetadata
-    )
-  }
-
   if (redisEntry.status === 'error' || redisEntry.status === 'unavailable') {
     const localEntry = readLocalReportCache(identity.cacheKey)
     if (localEntry?.status === 'fresh' || localEntry?.status === 'stale') {
       if (localEntry.status === 'stale') {
-        refreshReportCache(identity, load, {
-          cacheTtlMs,
-          useRedis: false,
-        }).catch((error) => {
-          process.stderr.write(
-            `[report-service] WARN: local cache refresh failed for ${identity.scope}:${identity.hash}: ${formatError(error)}\n`
-          )
-        })
+        scheduleBackgroundCacheRefresh(
+          identity,
+          load,
+          {
+            cacheTtlMs,
+            useRedis: false,
+          },
+          'local'
+        )
       }
       return maybeDecorateCacheMetadata(
         localEntry.entry.payload,
@@ -787,6 +1142,24 @@ async function cachedReport(scope, load, options = {}) {
         decorateMetadata
       )
     }
+  }
+
+  const localEntry = readLocalReportCache(identity.cacheKey)
+  if (localEntry?.status === 'fresh' || localEntry?.status === 'stale') {
+    if (localEntry.status === 'stale') {
+      scheduleBackgroundCacheRefresh(identity, load, { cacheTtlMs }, 'background')
+    }
+    return maybeDecorateCacheMetadata(
+      localEntry.entry.payload,
+      {
+        ...identity,
+        backend: 'local',
+        status: localEntry.status === 'fresh' ? 'local_hit' : 'local_stale',
+        refreshing: localEntry.status === 'stale',
+        entry: localEntry.entry,
+      },
+      decorateMetadata
+    )
   }
 
   const refreshResult = await refreshReportCache(identity, load, {
@@ -805,8 +1178,28 @@ async function cachedReport(scope, load, options = {}) {
   )
 }
 
+export function shouldSuppressCacheRefreshFailureDuringShutdown(
+  error,
+  shuttingDown = reportServiceShuttingDown
+) {
+  if (!shuttingDown) return false
+  const message = formatError(error)
+  return message.includes('Cannot use a pool after calling end on the pool')
+}
 
+function logCacheRefreshFailure(kind, identity, error) {
+  if (shouldSuppressCacheRefreshFailureDuringShutdown(error)) return
+  process.stderr.write(
+    `[report-service] WARN: ${kind} cache refresh failed for ${identity.scope}:${identity.hash}: ${formatError(error)}\n`
+  )
+}
 
+function scheduleBackgroundCacheRefresh(identity, load, options, kind) {
+  if (reportServiceShuttingDown) return
+  refreshReportCache(identity, load, options).catch((error) => {
+    logCacheRefreshFailure(kind, identity, error)
+  })
+}
 
 function readLocalReportCache(cacheKey) {
   const cached = reportCache.get(cacheKey)
@@ -842,21 +1235,57 @@ function classifyCacheEntry(entry) {
   return 'expired'
 }
 
+
+function coerceRedisCacheStoredValue(encoded) {
+  if (encoded == null) return null
+  if (Buffer.isBuffer(encoded)) {
+    if (encoded[0] === 0x1f && encoded[1] === 0x8b) return encoded
+    return Buffer.from(encoded.toString('utf8'), 'base64')
+  }
+  if (encoded instanceof Uint8Array) {
+    const buffer = Buffer.from(encoded)
+    if (buffer[0] === 0x1f && buffer[1] === 0x8b) return buffer
+    return Buffer.from(buffer.toString('utf8'), 'base64')
+  }
+  if (typeof encoded === 'string') {
+    return Buffer.from(encoded, 'base64')
+  }
+  throw new Error('Unsupported Redis report cache payload type')
+}
+
+async function encodeRedisReportCachePayload(entry) {
+  return gzip(Buffer.from(JSON.stringify(entry)))
+}
+
+async function decodeRedisReportCachePayload(encoded) {
+  const compressed = coerceRedisCacheStoredValue(encoded)
+  if (!compressed?.length) {
+    throw new Error('Redis report cache payload is empty')
+  }
+  const json = (await gunzip(compressed)).toString('utf8')
+  return JSON.parse(json)
+}
+
 async function readRedisCacheEntry(identity) {
-  if (!redisClient) return { status: 'unavailable' }
-  if (!redisClient.isReady) return { status: 'unavailable' }
+  if (readRedisCacheEntryTestImpl) {
+    return readRedisCacheEntryTestImpl(identity)
+  }
+  return readRedisCacheEntryFromClient(identity, redisClient)
+}
+
+async function readRedisCacheEntryFromClient(identity, client) {
+  if (!client) return { status: 'unavailable' }
+  if (!client.isReady) return { status: 'unavailable' }
 
   try {
-    const encoded = await redisClient.get(identity.cacheKey)
+    const encoded = await client.get(identity.cacheKey)
     if (!encoded) return { status: 'miss' }
 
-    const entry = JSON.parse(
-      (await gunzip(Buffer.from(encoded, 'base64'))).toString('utf8')
-    )
+    const entry = await decodeRedisReportCachePayload(encoded)
     const status = classifyCacheEntry(entry)
     if (status === 'fresh' || status === 'stale') return { status, entry }
 
-    redisClient.del(identity.cacheKey).catch(() => {})
+    client.del(identity.cacheKey).catch(() => {})
     return { status }
   } catch (error) {
     process.stderr.write(
@@ -867,12 +1296,13 @@ async function readRedisCacheEntry(identity) {
 }
 
 async function writeRedisCacheEntry(identity, entry) {
+  if (writeRedisCacheEntryTestImpl) {
+    return writeRedisCacheEntryTestImpl(identity, entry)
+  }
   if (!redisClient?.isReady) return false
 
   const ttlMs = Math.max(1_000, entry.staleUntil - Date.now())
-  const encoded = (await gzip(Buffer.from(JSON.stringify(entry)))).toString(
-    'base64'
-  )
+  const encoded = await encodeRedisReportCachePayload(entry)
 
   await redisClient.set(identity.cacheKey, encoded, {
     expiration: { type: 'PX', value: ttlMs },
@@ -970,11 +1400,6 @@ async function refreshReportCacheUnshared(identity, load, options) {
       await releaseRedisCacheLock(identity, lockToken)
     }
 
-    const cached = reportCache.get(identity.cacheKey)
-    if (cached?.promise) {
-      delete cached.promise
-      reportCache.set(identity.cacheKey, cached)
-    }
   }
 }
 
@@ -1099,38 +1524,9 @@ async function loadMaterializedViewHealth() {
     }
   }
 
-  const now = Date.now()
-  if (materializedViewHealthCache?.expiresAt > now) {
-    return materializedViewHealthCache.value
-  }
-  if (materializedViewHealthPromise) return materializedViewHealthPromise
-
-  materializedViewHealthPromise = loadMaterializedViewHealthFromDatabase()
-    .then((value) => {
-      materializedViewHealthCache = {
-        expiresAt: Date.now() + MATERIALIZED_VIEW_HEALTH_CACHE_TTL_MS,
-        value,
-      }
-      return value
-    })
-    .catch((error) => {
-      const value = {
-        status: 'unknown',
-        error: formatError(error),
-        views: [],
-        cronJobs: [],
-      }
-      materializedViewHealthCache = {
-        expiresAt: Date.now() + MATERIALIZED_VIEW_HEALTH_CACHE_TTL_MS,
-        value,
-      }
-      return value
-    })
-    .finally(() => {
-      materializedViewHealthPromise = null
-    })
-
-  return materializedViewHealthPromise
+  return materializedViewHealthMemo.load(() =>
+    loadMaterializedViewHealthFromDatabase()
+  )
 }
 
 export function buildReportQueryPressureQuery() {
@@ -1290,39 +1686,7 @@ async function loadReportQueryPressure() {
 }
 
 async function loadPgBouncerHealth() {
-  const now = Date.now()
-  if (pgBouncerHealthCache?.expiresAt > now) {
-    return pgBouncerHealthCache.value
-  }
-  if (pgBouncerHealthPromise) return pgBouncerHealthPromise
-
-  pgBouncerHealthPromise = loadPgBouncerHealthUncached()
-    .then((value) => {
-      pgBouncerHealthCache = {
-        expiresAt: Date.now() + PGBOUNCER_HEALTH_CACHE_TTL_MS,
-        value,
-      }
-      return value
-    })
-    .catch((error) => {
-      const value = {
-        status: 'unknown',
-        error: formatError(error),
-        sidecars: PGBOUNCER_SIDECARS.map((sidecar) =>
-          buildPgBouncerSidecarUnavailable(sidecar, formatError(error))
-        ),
-      }
-      pgBouncerHealthCache = {
-        expiresAt: Date.now() + PGBOUNCER_HEALTH_CACHE_TTL_MS,
-        value,
-      }
-      return value
-    })
-    .finally(() => {
-      pgBouncerHealthPromise = null
-    })
-
-  return pgBouncerHealthPromise
+  return pgBouncerHealthMemo.load(() => loadPgBouncerHealthUncached())
 }
 
 async function loadPgBouncerHealthUncached() {
@@ -1493,6 +1857,41 @@ function normalizeDockerLogConfig(logConfig) {
   }
 }
 
+const pgBouncerAdminPoolsByKey = new Map()
+
+function pgBouncerAdminPoolCacheKey(sidecar) {
+  return JSON.stringify([sidecar.key, sidecar.adminDatabaseUrl])
+}
+
+function getOrCreatePgBouncerAdminPool(sidecar) {
+  const cacheKey = pgBouncerAdminPoolCacheKey(sidecar)
+  let adminPool = pgBouncerAdminPoolsByKey.get(cacheKey)
+  if (!adminPool) {
+    adminPool = new Pool({
+      connectionString: sidecar.adminDatabaseUrl,
+      application_name: 'dashboard-shell-pgbouncer-health',
+      max: 1,
+      idleTimeoutMillis: 1_000,
+      connectionTimeoutMillis: PGBOUNCER_ADMIN_QUERY_TIMEOUT_MS,
+      query_timeout: PGBOUNCER_ADMIN_QUERY_TIMEOUT_MS,
+    })
+    adminPool.on('error', (error) => {
+      process.stderr.write(
+        `[report-service] WARN: idle PgBouncer admin client error for ${sidecar.key}: ${formatError(error)}
+`
+      )
+    })
+    pgBouncerAdminPoolsByKey.set(cacheKey, adminPool)
+  }
+  return adminPool
+}
+
+async function cleanupPgBouncerAdminPools() {
+  const pools = [...pgBouncerAdminPoolsByKey.values()]
+  pgBouncerAdminPoolsByKey.clear()
+  await Promise.all(pools.map((pool) => pool.end().catch(() => {})))
+}
+
 async function loadPgBouncerAdminSummary(sidecar) {
   if (!sidecar.adminDatabaseUrl) {
     return {
@@ -1508,14 +1907,7 @@ async function loadPgBouncerAdminSummary(sidecar) {
     }
   }
 
-  const adminPool = new Pool({
-    connectionString: sidecar.adminDatabaseUrl,
-    application_name: 'dashboard-shell-pgbouncer-health',
-    max: 1,
-    idleTimeoutMillis: 1_000,
-    connectionTimeoutMillis: PGBOUNCER_ADMIN_QUERY_TIMEOUT_MS,
-    query_timeout: PGBOUNCER_ADMIN_QUERY_TIMEOUT_MS,
-  })
+  const adminPool = getOrCreatePgBouncerAdminPool(sidecar)
 
   try {
     const client = await adminPool.connect()
@@ -1553,8 +1945,6 @@ async function loadPgBouncerAdminSummary(sidecar) {
       pools: [],
       stats: [],
     }
-  } finally {
-    await adminPool.end().catch(() => {})
   }
 }
 
@@ -1833,37 +2223,7 @@ async function loadSourceTableHealth() {
     }
   }
 
-  const now = Date.now()
-  if (sourceTableHealthCache?.expiresAt > now) {
-    return sourceTableHealthCache.value
-  }
-  if (sourceTableHealthPromise) return sourceTableHealthPromise
-
-  sourceTableHealthPromise = loadSourceTableHealthFromDatabase()
-    .then((value) => {
-      sourceTableHealthCache = {
-        expiresAt: Date.now() + MATERIALIZED_VIEW_HEALTH_CACHE_TTL_MS,
-        value,
-      }
-      return value
-    })
-    .catch((error) => {
-      const value = {
-        status: 'unknown',
-        error: formatError(error),
-        tables: [],
-      }
-      sourceTableHealthCache = {
-        expiresAt: Date.now() + MATERIALIZED_VIEW_HEALTH_CACHE_TTL_MS,
-        value,
-      }
-      return value
-    })
-    .finally(() => {
-      sourceTableHealthPromise = null
-    })
-
-  return sourceTableHealthPromise
+  return sourceTableHealthMemo.load(() => loadSourceTableHealthFromDatabase())
 }
 
 export function buildSourceTableHealthQuery() {
@@ -2059,38 +2419,58 @@ async function runTasksWithConcurrency(tasks, concurrency) {
   return results
 }
 
+function annotateTokenTrendSummarySubqueryTimeout(error, subqueryKey) {
+  if (!error || typeof error !== 'object') {
+    const wrapped = new Error(formatError(error))
+    wrapped.tokenTrendSummaryTimedOutSubquery = subqueryKey
+    return wrapped
+  }
+
+  error.tokenTrendSummaryTimedOutSubquery = subqueryKey
+  return error
+}
+
+async function runTokenTrendSummarySubqueries(labeledTasks) {
+  const results = new Array(labeledTasks.length)
+  await runTasksWithConcurrency(
+    labeledTasks.map(({ subqueryKey, task }, index) => async () => {
+      try {
+        const value = await task()
+        results[index] = {
+          status: 'fulfilled',
+          subqueryKey,
+          value,
+        }
+      } catch (error) {
+        results[index] = {
+          status: 'rejected',
+          subqueryKey,
+          error: annotateTokenTrendSummarySubqueryTimeout(error, subqueryKey),
+        }
+      }
+    }),
+    REPORT_SQL_FANOUT_CONCURRENCY
+  )
+  return results
+}
+
 function formatError(error) {
   return error instanceof Error && error.message ? error.message : String(error)
 }
 
 function pruneReportCache() {
-  while (reportCache.size > MAX_REPORT_CACHE_ENTRIES) {
-    const oldestKey = reportCache.keys().next().value
-    if (oldestKey === undefined) return
-    reportCache.delete(oldestKey)
+  while (reportCache.size > reportCacheMaxEntries) {
+    let oldestEvictableKey
+    for (const key of reportCache.keys()) {
+      const cached = reportCache.get(key)
+      if (!cached?.promise) {
+        oldestEvictableKey = key
+        break
+      }
+    }
+    if (oldestEvictableKey === undefined) return
+    reportCache.delete(oldestEvictableKey)
   }
-}
-
-function normalizeDatabaseUrl(value) {
-  if (!value) return value
-
-  const hostRewrite = process.env.SHELL_REPORT_DATABASE_HOST_REWRITE
-  if (!hostRewrite) return value
-
-  const databaseUrl = new URL(value)
-  const shouldRewrite =
-    databaseUrl.hostname === '127.0.0.1' ||
-    databaseUrl.hostname === 'localhost'
-
-  if (!shouldRewrite) return value
-
-  const portRewrite = process.env.SHELL_REPORT_DATABASE_PORT_REWRITE
-  if (portRewrite) {
-    databaseUrl.port = portRewrite
-  }
-
-  databaseUrl.hostname = hostRewrite
-  return databaseUrl.toString()
 }
 
 export function buildPgBouncerAdminDatabaseUrl(value) {
@@ -2160,29 +2540,46 @@ function envSecret(...names) {
 
 const DASHBOARD_TIME_ZONE = 'America/New_York'
 const createdAtEastern = "(sh.created_at AT TIME ZONE 'America/New_York')"
-const providerDimension = `
+function providerDimensionExpression(
+  columnExpression = 'sh.provider',
+  { includeAntigravity = false } = {}
+) {
+  const antigravityBranch = includeAntigravity
+    ? `
+    WHEN lower(COALESCE(${columnExpression}, 'unknown')) = 'antigravity' THEN 'antigravity'`
+    : ''
+  return `
 CASE
-    WHEN lower(COALESCE(sh.provider, 'unknown')) IN ('google', 'gemini') THEN 'google'
-    WHEN lower(COALESCE(sh.provider, 'unknown')) IN ('claude', 'anthropic') THEN 'anthropic'
-    WHEN lower(COALESCE(sh.provider, 'unknown')) LIKE 'claude/%' THEN 'anthropic'
-    WHEN lower(COALESCE(sh.provider, 'unknown')) LIKE 'anthropic/%' THEN 'anthropic'
-    WHEN lower(COALESCE(sh.provider, 'unknown')) LIKE 'deepseek/%' THEN 'deepseek'
-    WHEN lower(COALESCE(sh.provider, 'unknown')) IN ('xai', 'x.ai') THEN 'xai'
-    WHEN lower(COALESCE(sh.provider, 'unknown')) LIKE 'xai/%' THEN 'xai'
-    WHEN lower(COALESCE(sh.provider, 'unknown')) = 'nvidia' THEN 'nvidia_nim'
-    WHEN lower(COALESCE(sh.provider, 'unknown')) LIKE 'nvidia_nim/%' THEN 'nvidia_nim'
-    WHEN lower(COALESCE(sh.provider, 'unknown')) LIKE 'nvidia/%' THEN 'nvidia_nim'
-    WHEN lower(COALESCE(sh.provider, 'unknown')) LIKE 'local/%' THEN 'local'
-    WHEN lower(COALESCE(sh.provider, 'unknown')) LIKE 'local_%' THEN 'local'
-    ELSE COALESCE(sh.provider, 'unknown')
+    WHEN lower(COALESCE(${columnExpression}, 'unknown')) IN ('google', 'gemini') THEN 'google'${antigravityBranch}
+    WHEN lower(COALESCE(${columnExpression}, 'unknown')) IN ('claude', 'anthropic') THEN 'anthropic'
+    WHEN lower(COALESCE(${columnExpression}, 'unknown')) LIKE 'claude/%' THEN 'anthropic'
+    WHEN lower(COALESCE(${columnExpression}, 'unknown')) LIKE 'anthropic/%' THEN 'anthropic'
+    WHEN lower(COALESCE(${columnExpression}, 'unknown')) LIKE 'deepseek/%' THEN 'deepseek'
+    WHEN lower(COALESCE(${columnExpression}, 'unknown')) IN ('xai', 'x.ai') THEN 'xai'
+    WHEN lower(COALESCE(${columnExpression}, 'unknown')) LIKE 'xai/%' THEN 'xai'
+    WHEN lower(COALESCE(${columnExpression}, 'unknown')) = 'nvidia' THEN 'nvidia_nim'
+    WHEN lower(COALESCE(${columnExpression}, 'unknown')) LIKE 'nvidia_nim/%' THEN 'nvidia_nim'
+    WHEN lower(COALESCE(${columnExpression}, 'unknown')) LIKE 'nvidia/%' THEN 'nvidia_nim'
+    WHEN lower(COALESCE(${columnExpression}, 'unknown')) LIKE 'local/%' THEN 'local'
+    WHEN lower(COALESCE(${columnExpression}, 'unknown')) LIKE 'local_%' THEN 'local'
+    ELSE COALESCE(${columnExpression}, 'unknown')
 END`
+}
 
-function providerDimensionForAlias(alias = 'sh') {
-  return providerDimension.replaceAll('sh.', `${alias}.`)
+const providerDimension = providerDimensionExpression('sh.provider')
+
+function providerDimensionForAlias(alias = 'sh', options = {}) {
+  return providerDimensionExpression(`${alias}.provider`, options)
 }
 
 const providerDimensionRecent = providerDimensionForAlias('sh_recent')
 const healthProviderDimension = providerDimensionForAlias('h')
+const inboundModelAliasDimension =
+  "COALESCE(NULLIF(sh.inbound_model_alias, ''), 'unknown_inbound_model')"
+const agentNameDimension =
+  "COALESCE(NULLIF(sh.agent_name, ''), 'unknown_agent_name')"
+const agentIdDimension =
+  "COALESCE(NULLIF(sh.agent_id, ''), 'uncaptured_agent_id')"
 
 function sessionHistoryTokenSignalExpression(alias = 'sh') {
   return `(COALESCE(${alias}.input_tokens, 0)
@@ -2199,7 +2596,7 @@ function sessionHistoryCostSignalExpression(alias = 'sh') {
 }
 
 function sessionHistoryMetadataText(alias, key, fallback) {
-  return `lower(btrim(COALESCE(${alias}.metadata->>'${key}', '${fallback}')))`
+  return `lower(btrim(COALESCE(${alias}.metadata->>${sqlTextLiteral(key)}, ${sqlTextLiteral(fallback)})))`
 }
 
 function legacyGrokSideChannelPredicate(alias = 'sh') {
@@ -2236,6 +2633,18 @@ function appendReportableSessionHistoryWhere(whereParts, alias = 'sh') {
   whereParts.push(sessionHistoryReportablePredicate(alias))
 }
 
+function sessionHistoryFastUsageSignalPredicate(alias = 'sh') {
+  return `(
+    ${sessionHistoryTokenSignalExpression(alias)} > 0
+    OR ${sessionHistoryCostSignalExpression(alias)} > 0
+    OR COALESCE(${alias}.tool_call_count, 0) > 0
+)`
+}
+
+function appendFastUsageSignalWhere(whereParts, alias = 'sh') {
+  whereParts.push(sessionHistoryFastUsageSignalPredicate(alias))
+}
+
 const grains = {
   day: `${createdAtEastern}::date`,
   week: `date_trunc('week', ${createdAtEastern})::date`,
@@ -2250,6 +2659,9 @@ const dimensions = {
   repository: "COALESCE(sh.tenant_id, 'unknown')",
   provider: providerDimension,
   model: "COALESCE(sh.model, 'unknown')",
+  inbound_model_alias: inboundModelAliasDimension,
+  agent_name: agentNameDimension,
+  agent_id: agentIdDimension,
   provider_model:
     `${providerDimension} || '/' || COALESCE(sh.model, 'unknown')`,
 }
@@ -2260,6 +2672,9 @@ const filterColumns = {
   repository: "COALESCE(sh.tenant_id, 'unknown')",
   provider: providerDimension,
   model: "COALESCE(sh.model, 'unknown')",
+  inbound_model_alias: inboundModelAliasDimension,
+  agent_name: agentNameDimension,
+  agent_id: agentIdDimension,
   provider_model: dimensions.provider_model,
 }
 
@@ -2276,9 +2691,112 @@ const configChangeFilterColumns = Object.fromEntries(
 
 const sortColumns = {
   period_end: 'period_end',
+  period_start: 'period_start',
   traces: 'traces',
   usd_cost: 'usd_cost',
   token_total: 'token_total',
+}
+
+function parseTruthySearchParam(value) {
+  if (value == null) {
+    return false
+  }
+  const normalized = String(value).trim().toLowerCase()
+  return normalized === '1' || normalized === 'true' || normalized === 'yes'
+}
+
+
+function isEmptyUsageRowFieldValue(value) {
+  return value === null || value === undefined || value === ''
+}
+
+export function compactUsageRow(row) {
+  if (!row || typeof row !== 'object') {
+    return row
+  }
+
+  const compacted = {}
+  for (const [key, value] of Object.entries(row)) {
+    if (!isEmptyUsageRowFieldValue(value)) {
+      compacted[key] = value
+    }
+  }
+  return compacted
+}
+
+export function shouldIncludeEmptyUsageRowFields(searchParams) {
+  return parseTruthySearchParam(searchParams.get('include_empty_row_fields'))
+}
+
+export function buildUsageReportRowSerializationMetadata(searchParams) {
+  const includeEmptyRowFields = shouldIncludeEmptyUsageRowFields(searchParams)
+  return {
+    compactRows: !includeEmptyRowFields,
+    rowNullFieldsOmitted: !includeEmptyRowFields,
+    includeEmptyRowFields,
+  }
+}
+
+function serializeUsageReportRows(rows, searchParams) {
+  if (shouldIncludeEmptyUsageRowFields(searchParams)) {
+    return rows
+  }
+  return rows.map(compactUsageRow)
+}
+
+export function shouldIncludeTokenTrendHealth(searchParams) {
+  return parseTruthySearchParam(searchParams.get('include_health'))
+}
+
+export function applyTokenTrendSummaryHealthInclusion(searchParams, report) {
+  if (shouldIncludeTokenTrendHealth(searchParams)) {
+    return {
+      ...report,
+      metadata: {
+        ...report.metadata,
+        includeTokenTrendHealth: true,
+      },
+    }
+  }
+
+  return {
+    ...report,
+    metadata: {
+      ...report.metadata,
+      includeTokenTrendHealth: false,
+      tokenTrendHealthOmitted: true,
+    },
+    tokenTrendHealth: [],
+  }
+}
+
+export function parseUsageReportSort(searchParams) {
+  const rawSort = searchParams.get('sort') ?? 'period_end'
+  let sortKey = rawSort
+  let directionParam = searchParams.get('direction')
+  const dotIndex = rawSort.lastIndexOf('.')
+
+  if (dotIndex > 0) {
+    const maybeColumn = rawSort.slice(0, dotIndex)
+    const maybeDirection = rawSort.slice(dotIndex + 1).toLowerCase()
+    if (
+      sortColumns[maybeColumn] &&
+      (maybeDirection === 'asc' || maybeDirection === 'desc')
+    ) {
+      sortKey = maybeColumn
+      directionParam = maybeDirection
+    }
+  }
+
+  const sort = sortColumns[sortKey]
+  if (!sort) {
+    throw new Error(`Unsupported sort: ${rawSort}`)
+  }
+
+  const sortDirection =
+    directionParam?.toLowerCase() === 'asc' ? 'ASC' : 'DESC'
+
+  return { sort, sortDirection, sortKey: rawSort }
 }
 const startTimeDateRangeWhere = [
   "sh.start_time >= ($1::date::timestamp AT TIME ZONE 'America/New_York')",
@@ -2336,61 +2854,50 @@ const agentRiskScoreColumns = [
   'stall_risk_score',
 ]
 
-function buildLatencyMetricSelects(column, alias) {
+function buildFastLatencyMetricSelects(column, alias) {
   return [
-    `percentile_cont(0.50) WITHIN GROUP (ORDER BY sh.${column})
-        FILTER (WHERE sh.${column} IS NOT NULL) AS ${alias}_p50_ms`,
-    `percentile_cont(0.95) WITHIN GROUP (ORDER BY sh.${column})
-        FILTER (WHERE sh.${column} IS NOT NULL) AS ${alias}_p95_ms`,
-    `percentile_cont(0.99) WITHIN GROUP (ORDER BY sh.${column})
-        FILTER (WHERE sh.${column} IS NOT NULL) AS ${alias}_p99_ms`,
+    `NULL::double precision AS ${alias}_p50_ms`,
+    `NULL::double precision AS ${alias}_p95_ms`,
+    `NULL::double precision AS ${alias}_p99_ms`,
     `COUNT(sh.${column})::double precision AS ${alias}_count`,
   ]
 }
 
-const latencyMetricSelectParts = [
+const fastUsageLatencyMetricSelectParts = [
   'COUNT(*)::double precision AS latency_sample_rows',
-  ...buildLatencyMetricSelects('litellm_pre_send_ms', 'litellm_pre_send'),
-  ...buildLatencyMetricSelects(
+  ...buildFastLatencyMetricSelects('litellm_pre_send_ms', 'litellm_pre_send'),
+  ...buildFastLatencyMetricSelects(
     'litellm_post_response_ms',
     'litellm_post_response'
   ),
-  ...buildLatencyMetricSelects('litellm_processing_ms', 'litellm_processing'),
-  ...buildLatencyMetricSelects(
+  ...buildFastLatencyMetricSelects('litellm_processing_ms', 'litellm_processing'),
+  ...buildFastLatencyMetricSelects(
     'llm_upstream_time_to_first_byte_ms',
     'llm_upstream_time_to_first_byte'
   ),
-  ...buildLatencyMetricSelects(
+  ...buildFastLatencyMetricSelects(
     'llm_upstream_elapsed_ms',
     'llm_upstream_elapsed'
   ),
-  ...buildLatencyMetricSelects('llm_upstream_stream_ms', 'llm_upstream_stream'),
-  ...buildLatencyMetricSelects('ttft_ms', 'ttft'),
-  ...buildLatencyMetricSelects(
+  ...buildFastLatencyMetricSelects('llm_upstream_stream_ms', 'llm_upstream_stream'),
+  ...buildFastLatencyMetricSelects('ttft_ms', 'ttft'),
+  ...buildFastLatencyMetricSelects(
     'total_server_elapsed_ms',
     'total_server_elapsed'
   ),
-  ...buildLatencyMetricSelects(
+  ...buildFastLatencyMetricSelects(
     'latency_unclassified_ms',
     'latency_unclassified'
   ),
-  ...buildLatencyMetricSelects(
+  ...buildFastLatencyMetricSelects(
     'previous_response_to_current_request_ms',
     'previous_response_to_current_request'
   ),
-  `percentile_cont(0.50) WITHIN GROUP (
-        ORDER BY (COALESCE(sh.output_tokens, 0) / NULLIF(sh.llm_upstream_elapsed_ms / 1000.0, 0))
-    ) FILTER (WHERE sh.llm_upstream_elapsed_ms > 0) AS llm_upstream_output_tokens_per_second_p50`,
-  `percentile_cont(0.95) WITHIN GROUP (
-        ORDER BY (COALESCE(sh.output_tokens, 0) / NULLIF(sh.llm_upstream_elapsed_ms / 1000.0, 0))
-    ) FILTER (WHERE sh.llm_upstream_elapsed_ms > 0) AS llm_upstream_output_tokens_per_second_p95`,
+  `NULL::double precision AS llm_upstream_output_tokens_per_second_p50`,
+  `NULL::double precision AS llm_upstream_output_tokens_per_second_p95`,
   `COUNT(*) FILTER (WHERE sh.llm_upstream_elapsed_ms > 0)::double precision AS llm_upstream_output_tokens_per_second_count`,
-  `percentile_cont(0.50) WITHIN GROUP (
-        ORDER BY (COALESCE(sh.output_tokens, 0) / NULLIF(sh.llm_upstream_stream_ms / 1000.0, 0))
-    ) FILTER (WHERE sh.llm_upstream_stream_ms > 0) AS llm_stream_output_tokens_per_second_p50`,
-  `percentile_cont(0.95) WITHIN GROUP (
-        ORDER BY (COALESCE(sh.output_tokens, 0) / NULLIF(sh.llm_upstream_stream_ms / 1000.0, 0))
-    ) FILTER (WHERE sh.llm_upstream_stream_ms > 0) AS llm_stream_output_tokens_per_second_p95`,
+  `NULL::double precision AS llm_stream_output_tokens_per_second_p50`,
+  `NULL::double precision AS llm_stream_output_tokens_per_second_p95`,
   `COUNT(*) FILTER (WHERE sh.llm_upstream_stream_ms > 0)::double precision AS llm_stream_output_tokens_per_second_count`,
 ]
 
@@ -2494,6 +3001,26 @@ const agentScoreSelectParts = [
       'gemini-cli', COUNT(*) FILTER (WHERE sh.is_compact_summary IS TRUE AND sh.compact_summary_source = 'gemini-cli')
   ) AS agent_compact_summary_source_counts`,
 ]
+
+function fastUsageAgentScoreSelect(part) {
+  const alias = part.match(/\sAS\s+([a-z0-9_]+)\s*$/i)?.[1]
+  if (!alias) return part
+  if (alias === 'agent_score_rows') {
+    return 'COUNT(*)::double precision AS agent_score_rows'
+  }
+  if (alias === 'agent_compact_summary_source_counts') {
+    return `jsonb_build_object(
+      'claude-code', NULL,
+      'codex', NULL,
+      'gemini-cli', NULL
+  ) AS agent_compact_summary_source_counts`
+  }
+  return `NULL::double precision AS ${alias}`
+}
+
+const fastUsageAgentScoreSelectParts = agentScoreSelectParts.map(
+  fastUsageAgentScoreSelect
+)
 
 const configChangeAnyEvaluated = configChangeFlagColumns
   .map((column) => `sh.${column} IS NOT NULL`)
@@ -2616,13 +3143,146 @@ const usageFilteredColumns = [
   'agent_score_reasons',
   ...configChangeFlagColumns,
 ]
+const usageFilteredColumnSelects = [
+  ...usageFilteredColumns.map((column) => `        sh.${column}`),
+  "        NULLIF(sh.inbound_model_alias, '') AS inbound_model_alias",
+  "        NULLIF(sh.agent_name, '') AS agent_name",
+  "        NULLIF(sh.agent_id, '') AS agent_id",
+]
 
-function sendJson(res, status, body) {
+function acceptsGzipEncoding(req) {
+  const raw = req?.headers?.['accept-encoding']
+  if (!raw || typeof raw !== 'string') {
+    return false
+  }
+  return raw.split(',').some((part) => {
+    const segments = part.trim().split(';').map((segment) => segment.trim())
+    const token = segments[0]?.toLowerCase()
+    if (token !== 'gzip') {
+      return false
+    }
+    let quality = 1
+    for (let index = 1; index < segments.length; index += 1) {
+      const match = segments[index].match(/^q=(.+)$/i)
+      if (!match) {
+        continue
+      }
+      const parsed = Number.parseFloat(match[1].trim())
+      if (Number.isFinite(parsed)) {
+        quality = parsed
+      }
+      break
+    }
+    return quality > 0
+  })
+}
+
+function isHttpResponseCommitted(res) {
+  if (!res) return true
+  return Boolean(res.headersSent || res.writableEnded || res.destroyed)
+}
+
+function logUnhandledRequestError(error) {
+  process.stderr.write(
+    `[report-service] WARN: unhandled request error: ${formatError(error)}\n`
+  )
+}
+
+async function respondWithGenericServerError(req, res, error) {
+  logUnhandledRequestError(error)
+  if (isHttpResponseCommitted(res)) {
+    return
+  }
+  await sendJson(req, res, 500, GENERIC_INTERNAL_SERVER_ERROR_BODY)
+}
+
+function resolveBoundedShutdownGraceMs(graceMs = SHUTDOWN_GRACE_MS) {
+  const parsed = Number(graceMs)
+  if (!Number.isFinite(parsed)) {
+    return SHUTDOWN_GRACE_MS
+  }
+  return Math.max(1_000, Math.min(300_000, Math.floor(parsed)))
+}
+
+function scheduleShutdownForceExit(
+  server,
+  graceMs,
+  {
+    setTimeoutFn = setTimeout,
+    exitFn = (code) => process.exit(code),
+  } = {}
+) {
+  const boundedGraceMs = resolveBoundedShutdownGraceMs(graceMs)
+  const timer = setTimeoutFn(() => {
+    server?.closeAllConnections?.()
+    exitFn(1)
+  }, boundedGraceMs)
+  if (timer && typeof timer.unref === 'function') {
+    timer.unref()
+  }
+  return { timer, boundedGraceMs }
+}
+
+function closeHttpServer(server) {
+  return new Promise((resolve) => {
+    server.close(() => resolve())
+    server.closeIdleConnections?.()
+  })
+}
+
+function beginHttpServerShutdown(server, onClosed) {
+  server.close(onClosed)
+  server.closeIdleConnections?.()
+}
+
+async function runBoundedShutdownSequence(
+  server,
+  {
+    graceMs = SHUTDOWN_GRACE_MS,
+    runCleanup = async () => {},
+    exitFn = (code) => process.exit(code),
+    setForceExitTimer = (timer) => {
+      shutdownForceExitTimer = timer
+    },
+    clearForceExitTimer = () => {
+      if (shutdownForceExitTimer) {
+        clearTimeout(shutdownForceExitTimer)
+        shutdownForceExitTimer = null
+      }
+    },
+  } = {}
+) {
+  const { timer } = scheduleShutdownForceExit(server, graceMs, { exitFn })
+  setForceExitTimer(timer)
+
+  try {
+    await closeHttpServer(server)
+    await runCleanup()
+    clearForceExitTimer()
+    exitFn(0)
+  } catch (error) {
+    clearForceExitTimer()
+    throw error
+  }
+}
+
+async function sendJson(req, res, status, body) {
   const payload = JSON.stringify(body)
-  res.writeHead(status, {
+  const headers = {
     'content-type': 'application/json; charset=utf-8',
     'cache-control': 'no-store',
-  })
+  }
+  if (acceptsGzipEncoding(req)) {
+    const compressed = await gzip(Buffer.from(payload, 'utf8'))
+    res.writeHead(status, {
+      ...headers,
+      'content-encoding': 'gzip',
+      vary: 'Accept-Encoding',
+    })
+    res.end(compressed)
+    return
+  }
+  res.writeHead(status, headers)
   res.end(payload)
 }
 
@@ -2631,11 +3291,7 @@ function parseDateParam(value, fallback) {
   if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
     return parseDateOnlyParam(value)
   }
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) {
-    throw new Error(`Invalid date: ${value}`)
-  }
-  return date.toISOString()
+  throw new Error('A valid date=YYYY-MM-DD parameter is required.')
 }
 
 function parseDateOnlyParam(value) {
@@ -2712,13 +3368,29 @@ function parseSearchDateOnly(value, fallback) {
   if (!value) return fallback()
   return parseDateOnlyParam(value)
 }
+function calculateTokenTrendRangeDays(searchParams) {
+  const fromDate = parseSearchDateOnly(searchParams.get('from'), defaultFromDate)
+  const toDate = parseSearchDateOnly(searchParams.get('to'), defaultToDate)
+  const fromMs = new Date(`${fromDate}T00:00:00.000Z`).getTime()
+  const toMs = new Date(`${toDate}T00:00:00.000Z`).getTime()
+  if (!Number.isFinite(fromMs) || !Number.isFinite(toMs)) {
+    return 0
+  }
+  return Math.max(0, Math.floor((toMs - fromMs) / (24 * 60 * 60 * 1000)))
+}
 
 function defaultFromDate() {
   return addDaysToDateString(formatDashboardDate(new Date()), -6)
 }
 
 function defaultToDate() {
-  return addDaysToDateString(formatDashboardDate(new Date()), 1)
+  return resolveDefaultToDateString()
+}
+
+// The report API treats `to` as an exclusive dashboard-date upper bound.
+// Omitting it means "through today" by using tomorrow in America/New_York.
+export function resolveDefaultToDateString(referenceDate = new Date()) {
+  return addDaysToDateString(formatDashboardDate(referenceDate), 1)
 }
 
 function resolveHealthWindow(from, to) {
@@ -2745,7 +3417,15 @@ function parseCsv(value) {
   if (!value) return []
   return value
     .split(',')
-    .map((item) => item.trim())
+    .map((item) => {
+      const trimmed = item.trim()
+      if (!trimmed) return ''
+      try {
+        return decodeURIComponent(trimmed)
+      } catch {
+        return trimmed
+      }
+    })
     .filter(Boolean)
 }
 
@@ -2753,6 +3433,22 @@ function parseLimit(value) {
   const parsed = Number(value ?? 200)
   if (!Number.isFinite(parsed) || parsed < 1) return 200
   return Math.min(Math.floor(parsed), MAX_LIMIT)
+}
+
+function parseSessionDiagnosticsLimit(value) {
+  const parsed = Number(value ?? 100)
+  if (!Number.isFinite(parsed) || parsed < 1) return 100
+  return Math.min(Math.floor(parsed), MAX_SESSION_DIAGNOSTICS_ROWS)
+}
+
+function sessionDiagnosticsCandidateLimit(limit) {
+  return Math.min(
+    Math.max(
+      limit * SESSION_DIAGNOSTICS_CANDIDATE_MULTIPLIER,
+      MIN_SESSION_DIAGNOSTICS_CANDIDATE_ROWS
+    ),
+    MAX_SESSION_DIAGNOSTICS_CANDIDATE_ROWS
+  )
 }
 
 function parseGroupBy(value) {
@@ -2876,8 +3572,7 @@ function normalizeLatencyAggregateFields(row) {
   )
 }
 
-function normalizeRow(row) {
-  const numericKeys = [
+const normalizeRowNumericKeys = [
     'min_weekly_pct',
     'max_weekly_pct',
     'min_short_pct',
@@ -3025,11 +3720,27 @@ function normalizeRow(row) {
     'agent_compact_summary_resume_contexts',
     'agent_compact_summary_verify_contexts',
     ...configChangeAggregateNumericKeys,
-  ]
+]
 
+function normalizeRow(row) {
   const normalized = { ...row }
-  for (const key of numericKeys) {
+  for (const key of normalizeRowNumericKeys) {
     normalized[key] = normalizeNumber(normalized[key])
+  }
+  normalized.agent_score_reasons_bounded_min_id = normalizeNumber(
+    normalized.agent_score_reasons_bounded_min_id
+  )
+  normalized.agent_score_reasons_bounded_max_id = normalizeNumber(
+    normalized.agent_score_reasons_bounded_max_id
+  )
+  normalized.agent_score_reasons_recent_row_limit =
+    normalizeNumber(normalized.agent_score_reasons_recent_row_limit) ??
+    AGENT_SCORE_REASON_RECENT_ROW_LIMIT
+  if (normalized.agent_score_reasons_recent_id_cap_active == null) {
+    normalized.agent_score_reasons_recent_id_cap_active = true
+  }
+  if (normalized.agent_score_reasons_recent_id_cap_truncates_requested_window == null) {
+    normalized.agent_score_reasons_recent_id_cap_truncates_requested_window = false
   }
   return normalized
 }
@@ -3039,16 +3750,137 @@ function buildFilteredWhere(searchParams, options = {}) {
   const to = parseDateParam(searchParams.get('to'), defaultToDate)
   const values = options.values ?? []
   const whereParts = []
+  const excludedFilterKeys = new Set(options.excludeFilterKeys ?? [])
 
   if (options.includeDateRange !== false) {
     appendStartTimeDateRangeWhere(whereParts, values, from, to)
   }
-  appendReportableSessionHistoryWhere(whereParts)
+  if (options.fastUsageSignal) {
+    appendFastUsageSignalWhere(whereParts)
+  } else {
+    appendReportableSessionHistoryWhere(whereParts)
+  }
 
   for (const key of Object.keys(filterColumns)) {
+    if (excludedFilterKeys.has(key)) continue
     appendMultiValueFilter(searchParams, key, whereParts, values)
   }
   appendConfigChangeFilters(searchParams, whereParts)
+
+  return { from, to, values, whereParts }
+}
+
+function appendSessionDiagnosticsFilter(searchParams, key, whereParts, values) {
+  const selected = parseCsv(searchParams.get(key))
+  if (!selected.length) return
+
+  const column =
+    key === 'client'
+      ? "COALESCE(sh.client_name, 'unknown')"
+      : key === 'environment'
+        ? "COALESCE(sh.litellm_environment, 'unknown')"
+        : filterColumns[key]
+  values.push(selected)
+  whereParts.push(`${column} = ANY($${values.length}::text[])`)
+}
+
+
+function grokSideChannelMetadataPresentClause(columnPrefix = 'sh.') {
+  const p = columnPrefix
+  return `(
+    lower(COALESCE(${p}metadata->>'grok_side_channel', '')) = 'true'
+    OR ${p}metadata->>'grok_side_channel_endpoint_type' IS NOT NULL
+    OR ${p}metadata->>'grok_side_channel_endpoint_path_template' IS NOT NULL
+    OR ${p}metadata->>'grok_side_channel_request_content_type' IS NOT NULL
+    OR ${p}metadata->>'grok_side_channel_request_body_byte_length' IS NOT NULL
+    OR ${p}metadata->>'grok_side_channel_request_body_sha256' IS NOT NULL
+    OR ${p}metadata->>'grok_side_channel_request_body_digest_source' IS NOT NULL
+    OR ${p}metadata->>'grok_side_channel_request_json_container_type' IS NOT NULL
+    OR ${p}metadata ? 'grok_side_channel_request_top_level_key_types'
+    OR ${p}metadata->>'grok_side_channel_request_array_length' IS NOT NULL
+  )`
+}
+
+function appendGrokSideChannelDiagnosticsFilters(searchParams, whereParts, values) {
+  const grokSideChannel = parseCsv(searchParams.get('grok_side_channel'))
+  if (
+    grokSideChannel.some((value) =>
+      ['true', '1', 'yes'].includes(value.toLowerCase())
+    )
+  ) {
+    whereParts.push(grokSideChannelMetadataPresentClause('sh.'))
+  }
+
+  const endpointTypes = parseCsv(
+    searchParams.get('grok_side_channel_endpoint_type')
+  )
+  if (endpointTypes.length) {
+    values.push(endpointTypes)
+    whereParts.push(
+      `sh.metadata->>'grok_side_channel_endpoint_type' = ANY($${values.length}::text[])`
+    )
+  }
+}
+
+function sessionDiagnosticsMetadataPresentClause(columnPrefix = '') {
+  const p = columnPrefix
+  return `(
+    ${p}metadata->>'credential_family' IS NOT NULL
+    OR ${p}metadata->>'grok_native_oauth_managed' IS NOT NULL
+    OR ${p}metadata->>'grok_native_entrypoint' IS NOT NULL
+    OR ${p}metadata->>'usage_output_contract_required_final_phrase' IS NOT NULL
+    OR ${p}metadata->>'usage_output_contract_required_final_phrase_present' IS NOT NULL
+    OR ${p}metadata->>'usage_output_contract_failure_class' IS NOT NULL
+    OR ${p}metadata->>'usage_output_contract_setup_only_detected' IS NOT NULL
+    OR ${p}metadata->>'aawm_tool_definition_capture_version' IS NOT NULL
+    OR ${p}metadata->>'aawm_tool_definition_snapshot_hash' IS NOT NULL
+    OR ${p}metadata->>'aawm_tool_definition_snapshot' IS NOT NULL
+    OR ${p}metadata->>'xai_responses_request_sanitized' IS NOT NULL
+    OR ${p}metadata->>'xai_responses_sanitized_removed_params' IS NOT NULL
+    OR ${p}metadata->>'xai_responses_sanitized_tool_count' IS NOT NULL
+    OR ${p}metadata->>'xai_responses_sanitized_tool_types' IS NOT NULL
+    OR ${p}metadata->>'xai_tool_choice_without_tools_removed' IS NOT NULL
+    OR ${p}metadata->>'xai_tool_choice_without_tools_removed_reason' IS NOT NULL
+    OR ${p}metadata->>'session_history_transcript_attribution_status' IS NOT NULL
+    OR ${p}metadata->>'session_history_transcript_attribution_source' IS NOT NULL
+    OR ${p}metadata->>'session_history_transcript_attribution' IS NOT NULL
+    OR ${p}metadata->>'aawm_alias_routing_audit_events' IS NOT NULL
+    OR ${p}metadata->>'codex_auto_agent_audit_events' IS NOT NULL
+    OR ${p}metadata->>'anthropic_auto_agent_audit_events' IS NOT NULL
+    OR ${p}metadata->>'anthropic_context_window_mode' IS NOT NULL
+    OR ${p}metadata->>'anthropic_context_window_requested_tokens' IS NOT NULL
+    OR ${p}metadata->>'anthropic_context_window_source' IS NOT NULL
+    OR ${p}metadata->>'anthropic_context_window_beta' IS NOT NULL
+    OR ${p}metadata->>'anthropic_context_window_classification' IS NOT NULL
+    OR ${grokSideChannelMetadataPresentClause(p)}
+  )`
+}
+
+function buildSessionDiagnosticsWhere(searchParams) {
+  const from = parseDateParam(searchParams.get('from'), defaultFromDate)
+  const to = parseDateParam(searchParams.get('to'), defaultToDate)
+  const values = []
+  const whereParts = []
+
+  appendCreatedAtDateRangeWhere(whereParts, values, from, to)
+  for (const key of ['provider', 'model', 'repository', 'client', 'environment']) {
+    appendSessionDiagnosticsFilter(searchParams, key, whereParts, values)
+  }
+
+  for (const key of ['session_id', 'trace_id', 'litellm_call_id']) {
+    const selected = parseCsv(searchParams.get(key))
+    if (!selected.length) continue
+    values.push(selected)
+    if (key === 'session_id') {
+      whereParts.push(`sh.session_id::text = ANY($${values.length}::text[])`)
+    } else if (key === 'litellm_call_id') {
+      whereParts.push(`sh.litellm_call_id::text = ANY($${values.length}::text[])`)
+    } else {
+      whereParts.push(`NULLIF(sh.trace_id, '') = ANY($${values.length}::text[])`)
+    }
+  }
+
+  appendGrokSideChannelDiagnosticsFilters(searchParams, whereParts, values)
 
   return { from, to, values, whereParts }
 }
@@ -3071,7 +3903,9 @@ function buildTokenTrendFilteredWhere(searchParams) {
 }
 
 function buildSummaryQuery(searchParams) {
-  const { values, whereParts } = buildFilteredWhere(searchParams)
+  const { values, whereParts } = buildFilteredWhere(searchParams, {
+    fastUsageSignal: true,
+  })
 
   const sql = `
 SELECT
@@ -3110,7 +3944,9 @@ function buildTrendQuery(searchParams) {
     throw new Error(`Unsupported grain: ${grain}`)
   }
 
-  const { values, whereParts } = buildFilteredWhere(searchParams)
+  const { values, whereParts } = buildFilteredWhere(searchParams, {
+    fastUsageSignal: true,
+  })
   const bucketExpression = grains[grain]
 
   const sql = `
@@ -3475,9 +4311,9 @@ ORDER BY
   return { sql, values }
 }
 
-function buildTokenTrendDayDetailQuery(searchParams) {
+export function buildTokenTrendDayDetailQuery(searchParams) {
   const date = parseDateOnlyParam(searchParams.get('date'))
-  const { from, to, values, whereParts } = buildFilteredWhere(searchParams)
+  const { from, to, values, whereParts } = buildTokenTrendFilteredWhere(searchParams)
   values.push(date)
   const dayExpression = `${createdAtEastern}::date`
   const hourExpression = `EXTRACT(hour FROM ${createdAtEastern})::int`
@@ -3523,7 +4359,9 @@ ORDER BY
 }
 
 function buildClientUsageQuery(searchParams) {
-  const { values, whereParts } = buildFilteredWhere(searchParams)
+  const { values, whereParts } = buildFilteredWhere(searchParams, {
+    fastUsageSignal: true,
+  })
   values.push(MAX_CLIENT_ROWS)
 
   const sql = `
@@ -3794,7 +4632,9 @@ LIMIT $1;
 // buildClientUsageQuery and buildSummaryQuery, keyed on start_time for
 // consistency with the rest of the providerStatusUsage surface.
 function buildProviderStatusUsageQuery(searchParams) {
-  const { values, whereParts } = buildFilteredWhere(searchParams)
+  const { values, whereParts } = buildFilteredWhere(searchParams, {
+    fastUsageSignal: true,
+  })
   values.push(MAX_PROVIDER_STATUS_ROWS)
 
   const sql = `
@@ -3812,7 +4652,7 @@ SELECT
     SUM(COALESCE(sh.tool_call_count, 0))::double precision AS tool_calls,
     SUM(COALESCE(sh.git_commit_count, 0))::double precision AS git_commit,
     SUM(COALESCE(sh.git_push_count, 0))::double precision AS git_push,
-    ${latencyMetricSelectParts.join(',\n    ')},
+    ${fastUsageLatencyMetricSelectParts.join(',\n    ')},
     MIN(COALESCE(sh.start_time, sh.created_at)) AS period_start,
     MAX(COALESCE(sh.end_time, sh.start_time, sh.created_at)) AS period_end
 FROM public.session_history sh
@@ -3829,31 +4669,25 @@ LIMIT $${values.length};
   return { sql, values }
 }
 
-export function buildQuotaQuery() {
-  const sql = `
-WITH normalized AS (
-    SELECT
-        CASE
-            WHEN lower(COALESCE(ri.provider, 'unknown')) IN ('google', 'gemini') THEN 'google'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) = 'antigravity' THEN 'antigravity'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) IN ('claude', 'anthropic') THEN 'anthropic'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'claude/%' THEN 'anthropic'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'anthropic/%' THEN 'anthropic'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'deepseek/%' THEN 'deepseek'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) IN ('xai', 'x.ai') THEN 'xai'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'xai/%' THEN 'xai'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) = 'nvidia' THEN 'nvidia_nim'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'nvidia_nim/%' THEN 'nvidia_nim'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'nvidia/%' THEN 'nvidia_nim'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'local/%' THEN 'local'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'local_%' THEN 'local'
-            ELSE COALESCE(ri.provider, 'unknown')
-        END AS provider,
+const rateLimitProviderDimension = providerDimensionExpression('ri.provider', {
+  includeAntigravity: true,
+})
+const rateLimitRangeProviderDimension = providerDimensionExpression('ri.provider')
+
+const XAI_GROK_BUILD_WEEKLY_CREDITS_KEY = 'xai_grok_build_weekly_credits:credits'
+const XAI_GROK_BUILD_MONTHLY_REQUESTS_KEY = 'xai_grok_build_monthly_requests:requests'
+
+const RATE_LIMIT_NORMALIZED_MODEL_CASE = `
         CASE
             WHEN lower(COALESCE(ri.provider, 'unknown')) = 'antigravity'
               AND ri.quota_key IN (
                   'antigravity_code_assist:gemini_pool',
                   'antigravity_code_assist:vertex_pool'
+              )
+            THEN ri.quota_key
+            WHEN ri.quota_key IN (
+                  '${XAI_GROK_BUILD_WEEKLY_CREDITS_KEY}',
+                  '${XAI_GROK_BUILD_MONTHLY_REQUESTS_KEY}'
               )
             THEN ri.quota_key
             WHEN ri.quota_type IN ('monthly', 'requests')
@@ -3863,8 +4697,12 @@ WITH normalized AS (
               )
             THEN NULL
             ELSE NULLIF(ri.model, '')
-        END AS model,
+        END`
+
+const RATE_LIMIT_NORMALIZED_QUOTA_TYPE_CASE = `
         CASE
+            WHEN ri.quota_key = '${XAI_GROK_BUILD_WEEKLY_CREDITS_KEY}' THEN 'weekly'
+            WHEN ri.quota_key = '${XAI_GROK_BUILD_MONTHLY_REQUESTS_KEY}' THEN 'monthly'
             WHEN ri.quota_type = 'requests'
               AND (
                   lower(COALESCE(ri.provider, 'unknown')) LIKE 'xai/%'
@@ -3875,7 +4713,101 @@ WITH normalized AS (
             WHEN ri.quota_type = 'short_special' THEN 'short_special'
             WHEN ri.quota_type = 'requests' THEN 'short'
             ELSE ri.quota_type
-        END AS quota_type,
+        END`
+
+const QUOTA_KEY_INTERVAL_QUOTA_TYPES_SQL =
+  "('weekly', 'weekly_overage_included', 'weekly_special', 'short', 'short_special', 'requests', 'monthly', 'wtus')"
+const QUOTA_LANE_TYPES = [
+  'weekly',
+  'weekly_overage_included',
+  'short',
+  'special',
+  'short_special',
+  'monthly',
+  'wtus',
+]
+
+function buildQuotaLaneAggregateSelectSql() {
+  return QUOTA_LANE_TYPES.map((quotaType) => {
+    const predicate = `s.quota_type = '${quotaType}'`
+    return [
+      `    MAX(s.remaining_pct) FILTER (WHERE ${predicate})::double precision AS ${quotaType}_remaining_pct`,
+      `    MAX(s.expected_reset_at) FILTER (WHERE ${predicate}) AS ${quotaType}_reset_at`,
+      `    MAX(s.interval_start) FILTER (WHERE ${predicate}) AS ${quotaType}_interval_start`,
+      `    MAX(s.interval_end) FILTER (WHERE ${predicate}) AS ${quotaType}_interval_end`,
+      `    MAX(s.active::int) FILTER (WHERE ${predicate})::double precision AS ${quotaType}_active`,
+      `    0::double precision AS ${quotaType}_usage_tokens`,
+      `    '[]'::jsonb AS ${quotaType}_usage_breakdown`,
+      `    MAX(billing.quota_limit) FILTER (WHERE ${predicate})::double precision AS ${quotaType}_quota_limit`,
+      `    MAX(billing.quota_used) FILTER (WHERE ${predicate})::double precision AS ${quotaType}_quota_used`,
+      `    MAX(billing.quota_remaining) FILTER (WHERE ${predicate})::double precision AS ${quotaType}_quota_remaining`,
+      `    MAX(billing.billing_observed_at) FILTER (WHERE ${predicate}) AS ${quotaType}_billing_observed_at`,
+      `    MAX(billing.billing_period_start_at) FILTER (WHERE ${predicate}) AS ${quotaType}_billing_period_start_at`,
+      `    MAX(billing.billing_period_end_at) FILTER (WHERE ${predicate}) AS ${quotaType}_billing_period_end_at`,
+      `    MAX(billing.quota_key) FILTER (WHERE ${predicate}) AS ${quotaType}_quota_key`,
+      `    MAX(billing.source) FILTER (WHERE ${predicate}) AS ${quotaType}_source`,
+      `    MAX(billing.client) FILTER (WHERE ${predicate}) AS ${quotaType}_client`,
+      `    MAX(billing.quota_unit) FILTER (WHERE ${predicate}) AS ${quotaType}_quota_unit`,
+      `    (ARRAY_AGG(billing.raw_provider_fields) FILTER (WHERE ${predicate}))[1] AS ${quotaType}_raw_provider_fields`,
+      `    (ARRAY_AGG(billing.evidence) FILTER (WHERE ${predicate}))[1] AS ${quotaType}_evidence`,
+    ].join(',\n')
+  }).join(',\n\n')
+}
+
+function buildQuotaKeyIntervalHoursCteSql({ requireQuotaKey = false } = {}) {
+  const quotaKeyFilter = requireQuotaKey
+    ? `
+          AND quota_key IS NOT NULL`
+    : ''
+  return `
+quota_key_gaps AS (
+    SELECT
+        provider,
+        quota_key,
+        quota_type,
+        EXTRACT(EPOCH FROM (
+            expected_reset_at
+            - LAG(expected_reset_at) OVER (
+                PARTITION BY provider, quota_key
+                ORDER BY expected_reset_at
+            )
+        )) / 3600.0 AS gap_hours
+    FROM (
+        SELECT DISTINCT provider, quota_key, quota_type, expected_reset_at
+        FROM public.rate_limit_intervals
+        WHERE quota_type IN ${QUOTA_KEY_INTERVAL_QUOTA_TYPES_SQL}
+          AND expected_reset_at IS NOT NULL${quotaKeyFilter}
+    ) distinct_resets
+),
+quota_key_interval_hours AS (
+    SELECT
+        provider,
+        quota_key,
+        quota_type,
+        PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY gap_hours) AS interval_hours,
+        COUNT(*) AS gap_count
+    FROM quota_key_gaps
+    WHERE gap_hours >= 1.0
+    GROUP BY provider, quota_key, quota_type
+),`
+}
+
+function quotaObservationIntervalBoundsSql(intervalStartExpr, expectedResetExpr) {
+  return `
+     AND o.observed_at >= ${intervalStartExpr} - INTERVAL '5 minutes'
+     AND o.observed_at <= ${expectedResetExpr} + INTERVAL '5 minutes'`
+}
+
+export function buildQuotaQuery() {
+  const sql = `
+WITH normalized AS (
+    SELECT
+        ri.provider AS raw_provider,
+        ri.quota_type AS raw_quota_type,
+        ri.quota_key,
+        ${rateLimitProviderDimension} AS provider,
+        ${RATE_LIMIT_NORMALIZED_MODEL_CASE} AS model,
+        ${RATE_LIMIT_NORMALIZED_QUOTA_TYPE_CASE} AS quota_type,
         ri.expected_reset_at,
         ri.remaining_pct,
         ri.fromDate AS interval_start,
@@ -3885,7 +4817,7 @@ WITH normalized AS (
             ELSE false
         END AS active
     FROM public.rate_limit_intervals ri
-    WHERE ri.quota_type IN ('weekly', 'short', 'weekly_special', 'short_special', 'requests', 'monthly', 'wtus')
+    WHERE ri.quota_type IN ('weekly', 'weekly_overage_included', 'short', 'weekly_special', 'short_special', 'requests', 'monthly', 'wtus')
 ),
 ranked AS (
     SELECT
@@ -3906,6 +4838,9 @@ selected_with_fallbacks AS (
     FROM selected
     UNION ALL
     SELECT
+        weekly.raw_provider,
+        'weekly_special' AS raw_quota_type,
+        NULL::text AS quota_key,
         weekly.provider,
         weekly.model,
         'special' AS quota_type,
@@ -3928,6 +4863,9 @@ selected_with_fallbacks AS (
       )
     UNION ALL
     SELECT
+        short.raw_provider,
+        'short_special' AS raw_quota_type,
+        NULL::text AS quota_key,
         short.provider,
         short.model,
         'short_special' AS quota_type,
@@ -3949,65 +4887,62 @@ selected_with_fallbacks AS (
             AND short_special.quota_type = 'short_special'
       )
 ),
-usage_by_type AS (
-    SELECT
-        provider,
-        model,
-        quota_type,
-        0::double precision AS usage_tokens,
-        '[]'::jsonb AS usage_breakdown
-    FROM selected_with_fallbacks
+billing_by_type AS (
+    SELECT DISTINCT ON (s.provider, COALESCE(s.model, ''), s.quota_type)
+        s.provider,
+        s.model,
+        s.quota_type,
+        s.quota_key,
+        NULLIF(TRIM(BOTH FROM COALESCE(o.source, '')), '') AS source,
+        NULLIF(TRIM(BOTH FROM COALESCE(o.client, '')), '') AS client,
+        CASE
+            WHEN s.quota_key = '${XAI_GROK_BUILD_WEEKLY_CREDITS_KEY}' THEN 'credits'
+            WHEN s.quota_key = '${XAI_GROK_BUILD_MONTHLY_REQUESTS_KEY}' THEN 'requests'
+            WHEN s.quota_key LIKE '%:credits' THEN 'credits'
+            WHEN s.quota_key LIKE '%:requests' THEN 'requests'
+            ELSE NULL
+        END AS quota_unit,
+        o.observed_at AS billing_observed_at,
+        o.quota_limit AS quota_limit,
+        o.quota_used AS quota_used,
+        o.quota_remaining AS quota_remaining,
+        o.billing_period_start_at AS billing_period_start_at,
+        o.billing_period_end_at AS billing_period_end_at,
+        COALESCE(o.raw_provider_fields, '{}'::jsonb) AS raw_provider_fields,
+        COALESCE(o.evidence, '{}'::jsonb) AS evidence
+    FROM selected_with_fallbacks s
+    JOIN public.rate_limit_observations o
+      ON o.provider = s.raw_provider
+     AND o.quota_key IS NOT DISTINCT FROM s.quota_key
+     AND (
+          s.expected_reset_at IS NULL
+          OR o.expected_reset_at IS NOT DISTINCT FROM s.expected_reset_at
+     )
+    WHERE s.quota_key IS NOT NULL
+      AND o.observed_at IS NOT NULL
+      AND (
+          s.expected_reset_at IS NULL
+          OR s.interval_start IS NULL
+          OR (
+              o.observed_at >= s.interval_start - INTERVAL '5 minutes'
+              AND o.observed_at <= s.expected_reset_at + INTERVAL '5 minutes'
+          )
+      )
+    ORDER BY
+        s.provider,
+        COALESCE(s.model, ''),
+        s.quota_type,
+        o.observed_at DESC
 )
 SELECT
     s.provider,
     s.model,
-    MAX(s.remaining_pct) FILTER (WHERE s.quota_type = 'weekly')::double precision AS weekly_remaining_pct,
-    MAX(s.expected_reset_at) FILTER (WHERE s.quota_type = 'weekly') AS weekly_reset_at,
-    MAX(s.interval_start) FILTER (WHERE s.quota_type = 'weekly') AS weekly_interval_start,
-    MAX(s.interval_end) FILTER (WHERE s.quota_type = 'weekly') AS weekly_interval_end,
-    MAX(s.active::int) FILTER (WHERE s.quota_type = 'weekly')::double precision AS weekly_active,
-    MAX(usage.usage_tokens) FILTER (WHERE s.quota_type = 'weekly')::double precision AS weekly_usage_tokens,
-    (ARRAY_AGG(usage.usage_breakdown) FILTER (WHERE s.quota_type = 'weekly'))[1] AS weekly_usage_breakdown,
-    MAX(s.remaining_pct) FILTER (WHERE s.quota_type = 'short')::double precision AS short_remaining_pct,
-    MAX(s.expected_reset_at) FILTER (WHERE s.quota_type = 'short') AS short_reset_at,
-    MAX(s.interval_start) FILTER (WHERE s.quota_type = 'short') AS short_interval_start,
-    MAX(s.interval_end) FILTER (WHERE s.quota_type = 'short') AS short_interval_end,
-    MAX(s.active::int) FILTER (WHERE s.quota_type = 'short')::double precision AS short_active,
-    MAX(usage.usage_tokens) FILTER (WHERE s.quota_type = 'short')::double precision AS short_usage_tokens,
-    (ARRAY_AGG(usage.usage_breakdown) FILTER (WHERE s.quota_type = 'short'))[1] AS short_usage_breakdown,
-    MAX(s.remaining_pct) FILTER (WHERE s.quota_type = 'special')::double precision AS special_remaining_pct,
-    MAX(s.expected_reset_at) FILTER (WHERE s.quota_type = 'special') AS special_reset_at,
-    MAX(s.interval_start) FILTER (WHERE s.quota_type = 'special') AS special_interval_start,
-    MAX(s.interval_end) FILTER (WHERE s.quota_type = 'special') AS special_interval_end,
-    MAX(s.active::int) FILTER (WHERE s.quota_type = 'special')::double precision AS special_active,
-    MAX(usage.usage_tokens) FILTER (WHERE s.quota_type = 'special')::double precision AS special_usage_tokens,
-    (ARRAY_AGG(usage.usage_breakdown) FILTER (WHERE s.quota_type = 'special'))[1] AS special_usage_breakdown,
-    MAX(s.remaining_pct) FILTER (WHERE s.quota_type = 'short_special')::double precision AS short_special_remaining_pct,
-    MAX(s.expected_reset_at) FILTER (WHERE s.quota_type = 'short_special') AS short_special_reset_at,
-    MAX(s.interval_start) FILTER (WHERE s.quota_type = 'short_special') AS short_special_interval_start,
-    MAX(s.interval_end) FILTER (WHERE s.quota_type = 'short_special') AS short_special_interval_end,
-    MAX(s.active::int) FILTER (WHERE s.quota_type = 'short_special')::double precision AS short_special_active,
-    MAX(usage.usage_tokens) FILTER (WHERE s.quota_type = 'short_special')::double precision AS short_special_usage_tokens,
-    (ARRAY_AGG(usage.usage_breakdown) FILTER (WHERE s.quota_type = 'short_special'))[1] AS short_special_usage_breakdown,
-    MAX(s.remaining_pct) FILTER (WHERE s.quota_type = 'monthly')::double precision AS monthly_remaining_pct,
-    MAX(s.expected_reset_at) FILTER (WHERE s.quota_type = 'monthly') AS monthly_reset_at,
-    MAX(s.interval_start) FILTER (WHERE s.quota_type = 'monthly') AS monthly_interval_start,
-    MAX(s.interval_end) FILTER (WHERE s.quota_type = 'monthly') AS monthly_interval_end,
-    MAX(s.active::int) FILTER (WHERE s.quota_type = 'monthly')::double precision AS monthly_active,
-    MAX(usage.usage_tokens) FILTER (WHERE s.quota_type = 'monthly')::double precision AS monthly_usage_tokens,
-    (ARRAY_AGG(usage.usage_breakdown) FILTER (WHERE s.quota_type = 'monthly'))[1] AS monthly_usage_breakdown,
-    MAX(s.remaining_pct) FILTER (WHERE s.quota_type = 'wtus')::double precision AS wtus_remaining_pct,
-    MAX(s.expected_reset_at) FILTER (WHERE s.quota_type = 'wtus') AS wtus_reset_at,
-    MAX(s.interval_start) FILTER (WHERE s.quota_type = 'wtus') AS wtus_interval_start,
-    MAX(s.interval_end) FILTER (WHERE s.quota_type = 'wtus') AS wtus_interval_end,
-    MAX(s.active::int) FILTER (WHERE s.quota_type = 'wtus')::double precision AS wtus_active,
-    MAX(usage.usage_tokens) FILTER (WHERE s.quota_type = 'wtus')::double precision AS wtus_usage_tokens,
-    (ARRAY_AGG(usage.usage_breakdown) FILTER (WHERE s.quota_type = 'wtus'))[1] AS wtus_usage_breakdown
+${buildQuotaLaneAggregateSelectSql()}
 FROM selected_with_fallbacks s
-LEFT JOIN usage_by_type usage
-  ON usage.provider = s.provider
- AND usage.model IS NOT DISTINCT FROM s.model
- AND usage.quota_type = s.quota_type
+LEFT JOIN billing_by_type billing
+  ON billing.provider = s.provider
+ AND billing.model IS NOT DISTINCT FROM s.model
+ AND billing.quota_type = s.quota_type
 GROUP BY s.provider, s.model
 ORDER BY s.provider ASC, s.model ASC NULLS FIRST;
 `
@@ -4016,86 +4951,16 @@ ORDER BY s.provider ASC, s.model ASC NULLS FIRST;
 }
 
 
-function buildQuotaVelocityQuery() {
+export function buildQuotaVelocityQuery() {
   const sql = `
 WITH
-quota_key_gaps AS (
-    SELECT
-        provider,
-        quota_key,
-        quota_type,
-        EXTRACT(EPOCH FROM (
-            expected_reset_at
-            - LAG(expected_reset_at) OVER (
-                PARTITION BY provider, quota_key
-                ORDER BY expected_reset_at
-            )
-        )) / 3600.0 AS gap_hours
-    FROM (
-        SELECT DISTINCT provider, quota_key, quota_type, expected_reset_at
-        FROM public.rate_limit_intervals
-        WHERE quota_type IN ('weekly', 'weekly_special', 'short', 'short_special', 'requests', 'monthly', 'wtus')
-          AND expected_reset_at IS NOT NULL
-          AND quota_key IS NOT NULL
-    ) distinct_resets
-),
-quota_key_interval_hours AS (
-    SELECT
-        provider,
-        quota_key,
-        quota_type,
-        PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY gap_hours) AS interval_hours,
-        COUNT(*) AS gap_count
-    FROM quota_key_gaps
-    WHERE gap_hours >= 1.0
-    GROUP BY provider, quota_key, quota_type
-),
+${buildQuotaKeyIntervalHoursCteSql({ requireQuotaKey: true })}
 normalized AS (
     SELECT
         ri.provider AS raw_provider,
-        CASE
-            WHEN lower(COALESCE(ri.provider, 'unknown')) IN ('google', 'gemini') THEN 'google'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) = 'antigravity' THEN 'antigravity'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) IN ('claude', 'anthropic') THEN 'anthropic'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'claude/%' THEN 'anthropic'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'anthropic/%' THEN 'anthropic'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'deepseek/%' THEN 'deepseek'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) IN ('xai', 'x.ai') THEN 'xai'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'xai/%' THEN 'xai'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) = 'nvidia' THEN 'nvidia_nim'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'nvidia_nim/%' THEN 'nvidia_nim'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'nvidia/%' THEN 'nvidia_nim'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'local/%' THEN 'local'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'local_%' THEN 'local'
-            ELSE COALESCE(ri.provider, 'unknown')
-        END AS provider,
-        CASE
-            WHEN lower(COALESCE(ri.provider, 'unknown')) = 'antigravity'
-              AND ri.quota_key IN (
-                  'antigravity_code_assist:gemini_pool',
-                  'antigravity_code_assist:vertex_pool'
-              )
-            THEN ri.quota_key
-            WHEN ri.quota_type IN ('monthly', 'requests')
-              AND (
-                  lower(COALESCE(ri.provider, 'unknown')) LIKE 'xai/%'
-                  OR lower(COALESCE(ri.provider, 'unknown')) IN ('xai', 'x.ai')
-              )
-            THEN NULL
-            ELSE NULLIF(ri.model, '')
-        END AS model,
-        CASE
-            WHEN ri.quota_type = 'requests'
-              AND (
-                  lower(COALESCE(ri.provider, 'unknown')) LIKE 'xai/%'
-                  OR lower(COALESCE(ri.provider, 'unknown')) IN ('xai', 'x.ai')
-              )
-            THEN 'monthly'
-            WHEN ri.quota_type = 'weekly_special' THEN 'special'
-            WHEN ri.quota_type = 'short_special' THEN 'short_special'
-            WHEN ri.quota_type = 'requests' THEN 'short'
-            ELSE ri.quota_type
-        END AS quota_type,
+        ${rateLimitProviderDimension} AS provider,
+        ${RATE_LIMIT_NORMALIZED_MODEL_CASE} AS model,
+        ${RATE_LIMIT_NORMALIZED_QUOTA_TYPE_CASE} AS quota_type,
         ri.quota_type AS raw_quota_type,
         ri.quota_key,
         ri.expected_reset_at,
@@ -4107,7 +4972,7 @@ normalized AS (
             ELSE false
         END AS active
     FROM public.rate_limit_intervals ri
-    WHERE ri.quota_type IN ('weekly', 'short', 'weekly_special', 'short_special', 'requests', 'monthly', 'wtus')
+    WHERE ri.quota_type IN ('weekly', 'weekly_overage_included', 'short', 'weekly_special', 'short_special', 'requests', 'monthly', 'wtus')
 ),
 ranked AS (
     SELECT
@@ -4187,7 +5052,7 @@ selected_with_duration AS (
                 WHEN s.provider = 'antigravity' AND s.raw_quota_type = 'wtus' THEN 5.0
                 WHEN s.quota_type = 'monthly' THEN 720.0
                 WHEN s.quota_type IN ('short', 'short_special') THEN 5.0
-                WHEN s.quota_type IN ('weekly', 'special') THEN 168.0
+                WHEN s.quota_type IN ('weekly', 'weekly_overage_included', 'special') THEN 168.0
                 ELSE 168.0
             END
         ) AS interval_hours
@@ -4214,7 +5079,8 @@ observations AS (
      AND o.remaining_pct IS NOT NULL
      AND o.remaining_pct >= 0
      AND o.observed_at IS NOT NULL
-     AND o.observed_at <= now() + INTERVAL '5 minutes'
+     AND o.observed_at >= s.interval_start - INTERVAL '5 minutes'
+     AND o.observed_at <= s.expected_reset_at + INTERVAL '5 minutes'
     GROUP BY s.provider, s.model, s.quota_type, s.interval_hours, o.observed_at
 ),
 ordered_observations AS (
@@ -4286,7 +5152,7 @@ ORDER BY s.provider ASC, s.model ASC NULLS FIRST, s.quota_type ASC;
   return { sql, values: [] }
 }
 
-function buildQuotaHistoryQuery(_searchParams) {
+export function buildQuotaHistoryQuery(_searchParams) {
   // Wave 40: lookback is interval-multiplier-driven (1.5× the reset period),
   // not dashboard date-range-driven. The from/to search params are intentionally
   // ignored — each (provider, quota_key) pair looks back exactly 1.5× its own
@@ -4319,89 +5185,25 @@ WITH
 -- otherwise, when a key has many same-window duplicates, the median falls
 -- in the near-zero bucket and the computed interval collapses to ~0 h
 -- (floored to 1 h), producing a ~1.5 h lookback for a weekly key.
-quota_key_gaps AS (
-    SELECT
-        provider,
-        quota_key,
-        quota_type,
-        EXTRACT(EPOCH FROM (
-            expected_reset_at
-            - LAG(expected_reset_at) OVER (
-                PARTITION BY provider, quota_key
-                ORDER BY expected_reset_at
-            )
-        )) / 3600.0 AS gap_hours
-    FROM (
-        SELECT DISTINCT provider, quota_key, quota_type, expected_reset_at
-        FROM public.rate_limit_intervals
-        WHERE quota_type IN ('weekly', 'weekly_special', 'short', 'short_special', 'requests', 'monthly', 'wtus')
-          AND expected_reset_at IS NOT NULL
-    ) distinct_resets
-),
--- Step 2: aggregate to the median gap per (provider, quota_key).
--- Only gaps >= 1 h are considered — this excludes sub-minute noise from
--- rapid duplicate observations within the same reset window.
--- We also track gap_count so the caller can require >= 2 qualifying samples
--- before trusting the median (fewer samples → fall back to quota_type default).
-quota_key_interval_hours AS (
-    SELECT
-        provider,
-        quota_key,
-        quota_type,
-        PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY gap_hours) AS interval_hours,
-        COUNT(*) AS gap_count
-    FROM quota_key_gaps
-    WHERE gap_hours >= 1.0   -- skip first-row NULLs and sub-minute noise gaps
-    GROUP BY provider, quota_key, quota_type
-),
+${buildQuotaKeyIntervalHoursCteSql()}
 normalized AS (
     SELECT
         ri.provider AS raw_provider,
         ri.quota_type AS raw_quota_type,
         ri.quota_key,
+        ${rateLimitProviderDimension} AS provider,
+        ${RATE_LIMIT_NORMALIZED_MODEL_CASE} AS model,
+        ${RATE_LIMIT_NORMALIZED_QUOTA_TYPE_CASE} AS quota_type,
+        ri.quota_key AS normalized_quota_key,
+        NULLIF(TRIM(BOTH FROM COALESCE(to_jsonb(ri)->>'source', '')), '') AS source,
+        NULLIF(TRIM(BOTH FROM COALESCE(to_jsonb(ri)->>'client', '')), '') AS client,
         CASE
-            WHEN lower(COALESCE(ri.provider, 'unknown')) IN ('google', 'gemini') THEN 'google'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) = 'antigravity' THEN 'antigravity'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) IN ('claude', 'anthropic') THEN 'anthropic'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'claude/%' THEN 'anthropic'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'anthropic/%' THEN 'anthropic'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'deepseek/%' THEN 'deepseek'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) IN ('xai', 'x.ai') THEN 'xai'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'xai/%' THEN 'xai'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) = 'nvidia' THEN 'nvidia_nim'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'nvidia_nim/%' THEN 'nvidia_nim'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'nvidia/%' THEN 'nvidia_nim'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'local/%' THEN 'local'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'local_%' THEN 'local'
-            ELSE COALESCE(ri.provider, 'unknown')
-        END AS provider,
-        CASE
-            WHEN lower(COALESCE(ri.provider, 'unknown')) = 'antigravity'
-              AND ri.quota_key IN (
-                  'antigravity_code_assist:gemini_pool',
-                  'antigravity_code_assist:vertex_pool'
-              )
-            THEN ri.quota_key
-            WHEN ri.quota_type IN ('monthly', 'requests')
-              AND (
-                  lower(COALESCE(ri.provider, 'unknown')) LIKE 'xai/%'
-                  OR lower(COALESCE(ri.provider, 'unknown')) IN ('xai', 'x.ai')
-              )
-            THEN NULL
-            ELSE NULLIF(ri.model, '')
-        END AS model,
-        CASE
-            WHEN ri.quota_type = 'requests'
-              AND (
-                  lower(COALESCE(ri.provider, 'unknown')) LIKE 'xai/%'
-                  OR lower(COALESCE(ri.provider, 'unknown')) IN ('xai', 'x.ai')
-              )
-            THEN 'monthly'
-            WHEN ri.quota_type = 'weekly_special' THEN 'special'
-            WHEN ri.quota_type = 'short_special' THEN 'short_special'
-            WHEN ri.quota_type = 'requests' THEN 'short'
-            ELSE ri.quota_type
-        END AS quota_type,
+            WHEN ri.quota_key = '${XAI_GROK_BUILD_WEEKLY_CREDITS_KEY}' THEN 'credits'
+            WHEN ri.quota_key = '${XAI_GROK_BUILD_MONTHLY_REQUESTS_KEY}' THEN 'requests'
+            WHEN ri.quota_key LIKE '%:credits' THEN 'credits'
+            WHEN ri.quota_key LIKE '%:requests' THEN 'requests'
+            ELSE NULL
+        END AS quota_unit,
         ri.expected_reset_at,
         ri.remaining_pct,
         ri.fromDate AS interval_start,
@@ -4416,30 +5218,43 @@ normalized AS (
         --      a key whose median was dominated by sub-minute noise gaps).
         -- The CASE WHEN gap_count >= 2 guard ensures we never use a median
         -- derived from a single data point, which could be an outlier.
-        COALESCE(
-            CASE WHEN kh.gap_count >= 2 THEN kh.interval_hours END,
-            CASE
-                WHEN ri.quota_type = 'requests'
-                  AND lower(COALESCE(ri.provider, 'unknown')) NOT LIKE 'xai/%'
-                  AND lower(COALESCE(ri.provider, 'unknown')) NOT IN ('xai', 'x.ai')
-                THEN 24.0
-                WHEN ri.quota_type = 'wtus' THEN 5.0
-                WHEN ri.quota_type IN ('short', 'short_special') THEN 5.0
-                WHEN ri.quota_type IN ('weekly', 'weekly_special') THEN 168.0
-                WHEN ri.quota_type = 'requests'
-                  AND (
-                      lower(COALESCE(ri.provider, 'unknown')) LIKE 'xai/%'
-                      OR lower(COALESCE(ri.provider, 'unknown')) IN ('xai', 'x.ai')
-                  )
-                THEN 720.0
-                WHEN ri.quota_type = 'monthly'                    THEN 720.0
-                ELSE                                                   168.0
-            END
+        LEAST(
+            GREATEST(
+                COALESCE(
+                    CASE WHEN kh.gap_count >= 2 THEN kh.interval_hours END,
+                    CASE
+                        WHEN ri.quota_type = 'requests'
+                          AND lower(COALESCE(ri.provider, 'unknown')) NOT LIKE 'xai/%'
+                          AND lower(COALESCE(ri.provider, 'unknown')) NOT IN ('xai', 'x.ai')
+                        THEN 24.0
+                        WHEN ri.quota_type = 'wtus' THEN 5.0
+                        WHEN ri.quota_type IN ('short', 'short_special') THEN 5.0
+                        WHEN ri.quota_type IN ('weekly', 'weekly_overage_included', 'weekly_special') THEN 168.0
+                        WHEN ri.quota_type = 'requests'
+                          AND (
+                              lower(COALESCE(ri.provider, 'unknown')) LIKE 'xai/%'
+                              OR lower(COALESCE(ri.provider, 'unknown')) IN ('xai', 'x.ai')
+                          )
+                        THEN 720.0
+                        WHEN ri.quota_type = 'monthly'                    THEN 720.0
+                        ELSE                                                   168.0
+                    END
+                ),
+                1.0
+            ),
+            ${QUOTA_HISTORY_MAX_LOOKBACK_DAYS} * 24.0
         ) AS interval_hours
     FROM public.rate_limit_intervals ri
     LEFT JOIN quota_key_interval_hours kh
            ON kh.provider  = ri.provider
           AND kh.quota_key = ri.quota_key
+    WHERE ri.quota_type IN ('weekly', 'weekly_overage_included', 'weekly_special', 'short', 'short_special', 'requests', 'monthly', 'wtus')
+      AND ri.expected_reset_at IS NOT NULL
+),
+scoped_normalized AS (
+    SELECT
+        n.*
+    FROM normalized n
     -- 1.5× per-row interval lookback: each bar window is sized to 1.5× its own
     -- actual reset cadence, regardless of quota_type label.  Examples:
     --   Anthropic short (5 h)  → look back  7.5 h
@@ -4458,52 +5273,38 @@ normalized AS (
     --   OpenAI/Anthropic weekly → upper +14 d
     --   Google short (24 h)     → upper +48 h
     --   xAI monthly (30 d)      → upper +60 d
-    WHERE ri.quota_type IN ('weekly', 'weekly_special', 'short', 'short_special', 'requests', 'monthly', 'wtus')
-      AND ri.expected_reset_at IS NOT NULL
-      AND ri.expected_reset_at >= now() - (
-              COALESCE(
-                  CASE WHEN kh.gap_count >= 2 THEN kh.interval_hours END,
-                  CASE
-                      WHEN ri.quota_type = 'requests'
-                        AND lower(COALESCE(ri.provider, 'unknown')) NOT LIKE 'xai/%'
-                        AND lower(COALESCE(ri.provider, 'unknown')) NOT IN ('xai', 'x.ai')
-                      THEN 24.0
-                      WHEN ri.quota_type = 'wtus' THEN 5.0
-                      WHEN ri.quota_type IN ('short', 'short_special') THEN 5.0
-                      WHEN ri.quota_type IN ('weekly', 'weekly_special') THEN 168.0
-                      WHEN ri.quota_type = 'requests'
-                        AND (
-                            lower(COALESCE(ri.provider, 'unknown')) LIKE 'xai/%'
-                            OR lower(COALESCE(ri.provider, 'unknown')) IN ('xai', 'x.ai')
-                        )
-                      THEN 720.0
-                      WHEN ri.quota_type = 'monthly'                    THEN 720.0
-                      ELSE                                                   168.0
-                  END
-              ) * 1.5 * INTERVAL '1 hour'
+    WHERE n.expected_reset_at >= now() - (n.interval_hours * 1.5 * INTERVAL '1 hour')
+      AND n.expected_reset_at < now() + (
+              LEAST(n.interval_hours * 2.0, ${QUOTA_HISTORY_MAX_UPPER_HOURS}::double precision)
+              * INTERVAL '1 hour'
           )
-      AND ri.expected_reset_at < now() + (
-              COALESCE(
-                  CASE WHEN kh.gap_count >= 2 THEN kh.interval_hours END,
-                  CASE
-                      WHEN ri.quota_type = 'requests'
-                        AND lower(COALESCE(ri.provider, 'unknown')) NOT LIKE 'xai/%'
-                        AND lower(COALESCE(ri.provider, 'unknown')) NOT IN ('xai', 'x.ai')
-                      THEN 24.0
-                      WHEN ri.quota_type = 'wtus' THEN 5.0
-                      WHEN ri.quota_type IN ('short', 'short_special') THEN 5.0
-                      WHEN ri.quota_type IN ('weekly', 'weekly_special') THEN 168.0
-                      WHEN ri.quota_type = 'requests'
-                        AND (
-                            lower(COALESCE(ri.provider, 'unknown')) LIKE 'xai/%'
-                            OR lower(COALESCE(ri.provider, 'unknown')) IN ('xai', 'x.ai')
-                        )
-                      THEN 720.0
-                      WHEN ri.quota_type = 'monthly'                    THEN 720.0
-                      ELSE                                                   168.0
-                  END
-              ) * 2.0 * INTERVAL '1 hour'
-          )
+),
+bounded_normalized AS (
+    SELECT
+        n.*,
+        ROW_NUMBER() OVER (
+            PARTITION BY n.provider, COALESCE(n.model, ''), n.quota_type, COALESCE(n.normalized_quota_key, '')
+            ORDER BY n.expected_reset_at DESC
+        ) AS interval_rank
+    FROM scoped_normalized n
+),
+observation_identity AS (
+    SELECT DISTINCT ON (n.raw_provider, n.quota_key, n.expected_reset_at)
+        n.raw_provider,
+        n.quota_key,
+        n.expected_reset_at,
+        NULLIF(TRIM(BOTH FROM COALESCE(o.source, '')), '') AS source,
+        NULLIF(TRIM(BOTH FROM COALESCE(o.client, '')), '') AS client
+    FROM bounded_normalized n
+    JOIN public.rate_limit_observations o
+      ON n.quota_key IS NOT NULL
+     AND n.expected_reset_at IS NOT NULL
+     AND o.provider = n.raw_provider
+     AND o.quota_key = n.quota_key
+     AND o.expected_reset_at IS NOT DISTINCT FROM n.expected_reset_at
+     AND o.observed_at IS NOT NULL${quotaObservationIntervalBoundsSql('n.interval_start', 'n.expected_reset_at')}
+    WHERE n.interval_rank <= ${QUOTA_HISTORY_MAX_INTERVALS_PER_LANE}
+    ORDER BY n.raw_provider, n.quota_key, n.expected_reset_at, o.observed_at DESC
 ),
 history_observations AS (
     SELECT
@@ -4514,7 +5315,7 @@ history_observations AS (
         MAX(n.interval_hours)::double precision AS interval_hours,
         o.observed_at,
         MAX(GREATEST(0, LEAST(100, 100 - o.remaining_pct))) AS consumed_pct
-    FROM normalized n
+    FROM bounded_normalized n
     JOIN public.rate_limit_observations o
       ON n.quota_key IS NOT NULL
      AND n.expected_reset_at IS NOT NULL
@@ -4523,9 +5324,8 @@ history_observations AS (
      AND o.expected_reset_at IS NOT DISTINCT FROM n.expected_reset_at
      AND o.remaining_pct IS NOT NULL
      AND o.remaining_pct >= 0
-     AND o.observed_at IS NOT NULL
-     AND o.observed_at >= n.interval_start - INTERVAL '5 minutes'
-     AND o.observed_at <= n.expected_reset_at + INTERVAL '5 minutes'
+     AND o.observed_at IS NOT NULL${quotaObservationIntervalBoundsSql('n.interval_start', 'n.expected_reset_at')}
+     AND n.interval_rank <= ${QUOTA_HISTORY_MAX_INTERVALS_PER_LANE}
     GROUP BY n.provider, n.model, n.quota_type, n.expected_reset_at, o.observed_at
 ),
 ordered_history_observations AS (
@@ -4585,7 +5385,8 @@ history_velocity_arrays AS (
         jsonb_agg(LEAST(COALESCE(velocity.velocity_score, 0), 10000.0) ORDER BY segment.segment_index) AS velocity_scores
     FROM (
         SELECT DISTINCT provider, model, quota_type, expected_reset_at
-        FROM normalized
+        FROM bounded_normalized
+       WHERE interval_rank <= ${QUOTA_HISTORY_MAX_INTERVALS_PER_LANE}
     ) lanes
     CROSS JOIN generate_series(0, ${QUOTA_VELOCITY_SEGMENT_COUNT - 1}) AS segment(segment_index)
     LEFT JOIN history_velocity_segments velocity
@@ -4603,15 +5404,35 @@ history_velocity_arrays AS (
 ),
 window_bounds AS (
     SELECT
-        provider,
-        model,
-        quota_type,
-        expected_reset_at,
-        MIN(interval_start) AS interval_start,
-        MIN(remaining_pct)::double precision AS min_remaining_pct,
-        MAX(remaining_pct)::double precision AS max_remaining_pct
-    FROM normalized
-    GROUP BY provider, model, quota_type, expected_reset_at
+        n.provider,
+        n.model,
+        n.quota_type,
+        MAX(n.normalized_quota_key) AS quota_key,
+        COALESCE(MAX(n.source), MAX(oi.source)) AS source,
+        COALESCE(MAX(n.client), MAX(oi.client)) AS client,
+        MAX(n.quota_unit) AS quota_unit,
+        n.expected_reset_at,
+        MIN(n.interval_start) AS interval_start,
+        MIN(n.remaining_pct)::double precision AS min_remaining_pct,
+        MAX(n.remaining_pct)::double precision AS max_remaining_pct
+    FROM bounded_normalized n
+    LEFT JOIN observation_identity oi
+           ON oi.raw_provider = n.raw_provider
+          AND oi.quota_key = n.quota_key
+          AND oi.expected_reset_at IS NOT DISTINCT FROM n.expected_reset_at
+   WHERE n.interval_rank <= ${QUOTA_HISTORY_MAX_INTERVALS_PER_LANE}
+    GROUP BY n.provider, n.model, n.quota_type, n.expected_reset_at
+),
+recent_traces_90m AS (
+    SELECT
+        ${providerDimensionRecent} AS provider,
+        COALESCE(sh_recent.model, 'unknown') AS sh_model,
+        COUNT(*)::double precision AS recent_traces_90m
+    FROM public.session_history sh_recent
+    WHERE COALESCE(sh_recent.start_time, sh_recent.created_at) >= now() - INTERVAL '90 minutes'
+      AND COALESCE(sh_recent.start_time, sh_recent.created_at) < now()
+      AND ${sessionHistoryReportablePredicate('sh_recent')}
+    GROUP BY ${providerDimensionRecent}, COALESCE(sh_recent.model, 'unknown')
 ),
 per_model_usage AS (
     SELECT
@@ -4630,37 +5451,11 @@ per_model_usage AS (
         )::double precision AS tokens,
         SUM(COALESCE(sh.response_cost_usd, 0))::double precision AS cost,
         COUNT(*)::double precision AS traces,
-        (
-            SELECT COUNT(*)::double precision
-            FROM public.session_history sh_recent
-            WHERE COALESCE(sh_recent.start_time, sh_recent.created_at) >= now() - INTERVAL '90 minutes'
-              AND COALESCE(sh_recent.start_time, sh_recent.created_at) < now()
-              AND ${sessionHistoryReportablePredicate('sh_recent')}
-              AND ${providerDimensionRecent} = wb.provider
-              AND COALESCE(sh_recent.model, 'unknown') = COALESCE(sh.model, 'unknown')
-              AND (wb.model IS NULL OR sh_recent.model = wb.model)
-        ) AS recent_traces_90m
+        COALESCE(recent.recent_traces_90m, 0)::double precision AS recent_traces_90m
     FROM window_bounds wb
     JOIN public.session_history sh
       ON wb.provider <> 'antigravity'
-     AND (
-              CASE
-                  WHEN lower(COALESCE(sh.provider, 'unknown')) IN ('google', 'gemini') THEN 'google'
-                  WHEN lower(COALESCE(sh.provider, 'unknown')) = 'antigravity' THEN 'antigravity'
-                  WHEN lower(COALESCE(sh.provider, 'unknown')) IN ('claude', 'anthropic') THEN 'anthropic'
-                  WHEN lower(COALESCE(sh.provider, 'unknown')) LIKE 'claude/%' THEN 'anthropic'
-                  WHEN lower(COALESCE(sh.provider, 'unknown')) LIKE 'anthropic/%' THEN 'anthropic'
-                  WHEN lower(COALESCE(sh.provider, 'unknown')) LIKE 'deepseek/%' THEN 'deepseek'
-                  WHEN lower(COALESCE(sh.provider, 'unknown')) IN ('xai', 'x.ai') THEN 'xai'
-                  WHEN lower(COALESCE(sh.provider, 'unknown')) LIKE 'xai/%' THEN 'xai'
-                  WHEN lower(COALESCE(sh.provider, 'unknown')) = 'nvidia' THEN 'nvidia_nim'
-                  WHEN lower(COALESCE(sh.provider, 'unknown')) LIKE 'nvidia_nim/%' THEN 'nvidia_nim'
-                  WHEN lower(COALESCE(sh.provider, 'unknown')) LIKE 'nvidia/%' THEN 'nvidia_nim'
-                  WHEN lower(COALESCE(sh.provider, 'unknown')) LIKE 'local/%' THEN 'local'
-                  WHEN lower(COALESCE(sh.provider, 'unknown')) LIKE 'local_%' THEN 'local'
-                  ELSE COALESCE(sh.provider, 'unknown')
-              END
-          ) = wb.provider
+     AND ${providerDimensionForAlias('sh', { includeAntigravity: true })} = wb.provider
       -- Wave 35-C2 (⚠-7): use start_time (with created_at fallback) to match
       -- the live quota query (buildQuotaQuery), which also anchors on
       -- sh.start_time. Using created_at here caused sessions near quota-reset
@@ -4670,12 +5465,20 @@ per_model_usage AS (
       AND COALESCE(sh.start_time, sh.created_at) < wb.expected_reset_at
       AND ${sessionHistoryReportablePredicate()}
       AND (wb.model IS NULL OR sh.model = wb.model)
-    GROUP BY wb.provider, wb.model, wb.quota_type, wb.expected_reset_at, COALESCE(sh.model, 'unknown'), sh.model
+    LEFT JOIN recent_traces_90m recent
+      ON recent.provider = wb.provider
+     AND recent.sh_model = COALESCE(sh.model, 'unknown')
+     AND (wb.model IS NULL OR recent.sh_model = wb.model)
+    GROUP BY wb.provider, wb.model, wb.quota_type, wb.expected_reset_at, COALESCE(sh.model, 'unknown'), recent.recent_traces_90m
 )
 SELECT
     wb.provider,
     wb.model,
     wb.quota_type,
+    wb.quota_key,
+    wb.source,
+    wb.client,
+    wb.quota_unit,
     wb.expected_reset_at,
     wb.interval_start,
     wb.expected_reset_at AS interval_end,
@@ -4713,6 +5516,10 @@ GROUP BY
     wb.provider,
     wb.model,
     wb.quota_type,
+    wb.quota_key,
+    wb.source,
+    wb.client,
+    wb.quota_unit,
     wb.expected_reset_at,
     wb.interval_start,
     wb.min_remaining_pct,
@@ -4726,6 +5533,321 @@ ORDER BY wb.expected_reset_at DESC;
   return { sql, values: [] }
 }
 
+export function buildQuotaHistoryFallbackQuery(_searchParams) {
+  const sql = `
+WITH
+${buildQuotaKeyIntervalHoursCteSql()}
+normalized AS (
+    SELECT
+        ri.provider AS raw_provider,
+        ri.quota_type AS raw_quota_type,
+        ri.quota_key,
+        ${rateLimitProviderDimension} AS provider,
+        ${RATE_LIMIT_NORMALIZED_MODEL_CASE} AS model,
+        ${RATE_LIMIT_NORMALIZED_QUOTA_TYPE_CASE} AS quota_type,
+        ri.quota_key AS normalized_quota_key,
+        NULLIF(TRIM(BOTH FROM COALESCE(to_jsonb(ri)->>'source', '')), '') AS source,
+        NULLIF(TRIM(BOTH FROM COALESCE(to_jsonb(ri)->>'client', '')), '') AS client,
+        CASE
+            WHEN ri.quota_key = '${XAI_GROK_BUILD_WEEKLY_CREDITS_KEY}' THEN 'credits'
+            WHEN ri.quota_key = '${XAI_GROK_BUILD_MONTHLY_REQUESTS_KEY}' THEN 'requests'
+            WHEN ri.quota_key LIKE '%:credits' THEN 'credits'
+            WHEN ri.quota_key LIKE '%:requests' THEN 'requests'
+            ELSE NULL
+        END AS quota_unit,
+        ri.expected_reset_at,
+        ri.fromDate AS interval_start,
+        LEAST(
+            GREATEST(
+                COALESCE(
+                    CASE WHEN kh.gap_count >= 2 THEN kh.interval_hours END,
+                    CASE
+                        WHEN ri.quota_type = 'requests'
+                          AND lower(COALESCE(ri.provider, 'unknown')) NOT LIKE 'xai/%'
+                          AND lower(COALESCE(ri.provider, 'unknown')) NOT IN ('xai', 'x.ai')
+                        THEN 24.0
+                        WHEN ri.quota_type = 'wtus' THEN 5.0
+                        WHEN ri.quota_type IN ('short', 'short_special') THEN 5.0
+                        WHEN ri.quota_type IN ('weekly', 'weekly_overage_included', 'weekly_special') THEN 168.0
+                        WHEN ri.quota_type = 'requests'
+                          AND (
+                              lower(COALESCE(ri.provider, 'unknown')) LIKE 'xai/%'
+                              OR lower(COALESCE(ri.provider, 'unknown')) IN ('xai', 'x.ai')
+                          )
+                        THEN 720.0
+                        WHEN ri.quota_type = 'monthly'                    THEN 720.0
+                        ELSE                                                   168.0
+                    END
+                ),
+                1.0
+            ),
+            ${QUOTA_HISTORY_MAX_LOOKBACK_DAYS} * 24.0
+        ) AS interval_hours,
+        LEAST(
+            COALESCE(
+                ri.remaining_pct,
+                100
+            ),
+            100
+        ) AS remaining_pct
+    FROM public.rate_limit_intervals ri
+    LEFT JOIN quota_key_interval_hours kh
+           ON kh.provider  = ri.provider
+          AND kh.quota_key = ri.quota_key
+    WHERE ri.quota_type IN ('weekly', 'weekly_overage_included', 'weekly_special', 'short', 'short_special', 'requests', 'monthly', 'wtus')
+      AND ri.expected_reset_at IS NOT NULL
+      AND ri.expected_reset_at >= now() - (
+            LEAST(
+                GREATEST(
+                    COALESCE(
+                        CASE WHEN kh.gap_count >= 2 THEN kh.interval_hours END,
+                        CASE
+                            WHEN ri.quota_type = 'requests'
+                              AND lower(COALESCE(ri.provider, 'unknown')) NOT LIKE 'xai/%'
+                              AND lower(COALESCE(ri.provider, 'unknown')) NOT IN ('xai', 'x.ai')
+                            THEN 24.0
+                            WHEN ri.quota_type = 'wtus' THEN 5.0
+                            WHEN ri.quota_type IN ('short', 'short_special') THEN 5.0
+                            WHEN ri.quota_type IN ('weekly', 'weekly_overage_included', 'weekly_special') THEN 168.0
+                            WHEN ri.quota_type = 'requests'
+                              AND (
+                                  lower(COALESCE(ri.provider, 'unknown')) LIKE 'xai/%'
+                                  OR lower(COALESCE(ri.provider, 'unknown')) IN ('xai', 'x.ai')
+                              )
+                            THEN 720.0
+                            WHEN ri.quota_type = 'monthly'                    THEN 720.0
+                            ELSE                                                   168.0
+                        END
+                    ),
+                    1.0
+                ),
+                ${QUOTA_HISTORY_MAX_LOOKBACK_DAYS} * 24.0
+            ) * 1.5 * INTERVAL '1 hour'
+        )
+      AND ri.expected_reset_at < now() + (
+            LEAST(
+                LEAST(
+                    GREATEST(
+                        COALESCE(
+                            CASE WHEN kh.gap_count >= 2 THEN kh.interval_hours END,
+                            CASE
+                                WHEN ri.quota_type = 'requests'
+                                  AND lower(COALESCE(ri.provider, 'unknown')) NOT LIKE 'xai/%'
+                                  AND lower(COALESCE(ri.provider, 'unknown')) NOT IN ('xai', 'x.ai')
+                                THEN 24.0
+                                WHEN ri.quota_type = 'wtus' THEN 5.0
+                                WHEN ri.quota_type IN ('short', 'short_special') THEN 5.0
+                                WHEN ri.quota_type IN ('weekly', 'weekly_overage_included', 'weekly_special') THEN 168.0
+                                WHEN ri.quota_type = 'requests'
+                                  AND (
+                                      lower(COALESCE(ri.provider, 'unknown')) LIKE 'xai/%'
+                                      OR lower(COALESCE(ri.provider, 'unknown')) IN ('xai', 'x.ai')
+                                  )
+                                THEN 720.0
+                                WHEN ri.quota_type = 'monthly'                    THEN 720.0
+                                ELSE                                                   168.0
+                            END
+                        ),
+                        1.0
+                    ),
+                    ${QUOTA_HISTORY_MAX_LOOKBACK_DAYS} * 24.0
+                ),
+                ${QUOTA_HISTORY_MAX_UPPER_HOURS}::double precision
+            ) * 2.0 * INTERVAL '1 hour'
+        )
+),
+scoped_intervals AS (
+    SELECT
+        raw_provider,
+        provider,
+        model,
+        quota_type,
+        normalized_quota_key,
+        source,
+        client,
+        quota_unit,
+        expected_reset_at,
+        interval_start,
+        remaining_pct,
+        interval_hours,
+        ROW_NUMBER() OVER (
+            PARTITION BY provider, COALESCE(model, ''), quota_type, COALESCE(normalized_quota_key, '')
+            ORDER BY expected_reset_at DESC
+    ) AS interval_rank
+    FROM normalized
+),
+observation_identity AS (
+    SELECT DISTINCT ON (n.raw_provider, n.normalized_quota_key, n.expected_reset_at)
+        n.raw_provider,
+        n.normalized_quota_key,
+        n.expected_reset_at,
+        NULLIF(TRIM(BOTH FROM COALESCE(o.source, '')), '') AS source,
+        NULLIF(TRIM(BOTH FROM COALESCE(o.client, '')), '') AS client
+    FROM scoped_intervals n
+    JOIN public.rate_limit_observations o
+      ON n.normalized_quota_key IN (
+          '${XAI_GROK_BUILD_WEEKLY_CREDITS_KEY}',
+          '${XAI_GROK_BUILD_MONTHLY_REQUESTS_KEY}'
+      )
+     AND n.expected_reset_at IS NOT NULL
+     AND o.provider = n.raw_provider
+     AND o.quota_key = n.normalized_quota_key
+     AND o.expected_reset_at IS NOT DISTINCT FROM n.expected_reset_at
+     AND o.observed_at IS NOT NULL${quotaObservationIntervalBoundsSql('n.interval_start', 'n.expected_reset_at')}
+    WHERE n.interval_rank <= ${QUOTA_HISTORY_MAX_INTERVALS_PER_LANE}
+    ORDER BY n.raw_provider, n.normalized_quota_key, n.expected_reset_at, o.observed_at DESC
+),
+bounded_intervals AS (
+    SELECT
+        n.provider,
+        n.model,
+        n.quota_type,
+        MAX(n.normalized_quota_key) AS quota_key,
+        COALESCE(MAX(n.source), MAX(oi.source)) AS source,
+        COALESCE(MAX(n.client), MAX(oi.client)) AS client,
+        MAX(n.quota_unit) AS quota_unit,
+        n.expected_reset_at,
+        MIN(n.interval_start) AS interval_start,
+        MIN(n.remaining_pct)::double precision AS min_remaining_pct,
+        MAX(n.remaining_pct)::double precision AS max_remaining_pct
+    FROM scoped_intervals n
+    LEFT JOIN observation_identity oi
+           ON oi.raw_provider = n.raw_provider
+          AND oi.normalized_quota_key = n.normalized_quota_key
+          AND oi.expected_reset_at IS NOT DISTINCT FROM n.expected_reset_at
+    WHERE n.interval_rank <= ${QUOTA_HISTORY_MAX_INTERVALS_PER_LANE}
+    GROUP BY n.provider, n.model, n.quota_type, n.expected_reset_at
+)
+SELECT
+    provider,
+    model,
+    quota_type,
+    quota_key,
+    source,
+    client,
+    quota_unit,
+    expected_reset_at,
+    interval_start,
+    expected_reset_at AS interval_end,
+    min_remaining_pct,
+    max_remaining_pct,
+    0::double precision AS velocity_sample_count,
+    '[]'::jsonb AS velocity_segments,
+    '[]'::jsonb AS velocity_scores,
+    0::double precision AS usage_tokens,
+    '[]'::json AS usage_breakdown
+FROM bounded_intervals
+ORDER BY provider ASC, expected_reset_at DESC, quota_type ASC;
+`
+
+  return { sql, values: [] }
+}
+
+export function buildQuotaRangeHistoryFallbackQuery(searchParams) {
+  const from = parseSearchDateOnly(searchParams.get('from'), defaultFromDate)
+  const to = parseSearchDateOnly(searchParams.get('to'), defaultToDate)
+
+  const sql = `
+WITH normalized AS (
+    SELECT
+        ri.provider AS raw_provider,
+        ${rateLimitProviderDimension} AS provider,
+        ${RATE_LIMIT_NORMALIZED_MODEL_CASE} AS model,
+        ${RATE_LIMIT_NORMALIZED_QUOTA_TYPE_CASE} AS quota_type,
+        ri.quota_key AS normalized_quota_key,
+        NULLIF(TRIM(BOTH FROM COALESCE(to_jsonb(ri)->>'source', '')), '') AS source,
+        NULLIF(TRIM(BOTH FROM COALESCE(to_jsonb(ri)->>'client', '')), '') AS client,
+        CASE
+            WHEN ri.quota_key = '${XAI_GROK_BUILD_WEEKLY_CREDITS_KEY}' THEN 'credits'
+            WHEN ri.quota_key = '${XAI_GROK_BUILD_MONTHLY_REQUESTS_KEY}' THEN 'requests'
+            WHEN ri.quota_key LIKE '%:credits' THEN 'credits'
+            WHEN ri.quota_key LIKE '%:requests' THEN 'requests'
+            ELSE NULL
+        END AS quota_unit,
+        ri.expected_reset_at,
+        ri.fromDate AS interval_start,
+        ri.toDate AS interval_end,
+        ri.remaining_pct
+    FROM public.rate_limit_intervals ri
+    WHERE ri.quota_type IN ('weekly', 'weekly_overage_included', 'weekly_special', 'short', 'short_special', 'requests', 'monthly', 'wtus')
+      AND ri.expected_reset_at IS NOT NULL
+      AND ri.fromDate < ($2::date::timestamp AT TIME ZONE 'America/New_York')
+      AND ri.expected_reset_at >= ($1::date::timestamp AT TIME ZONE 'America/New_York')
+      AND NOT (
+          ri.quota_type IN ('short', 'short_special')
+          AND (
+              lower(COALESCE(ri.provider, 'unknown')) IN ('openai', 'anthropic', 'claude')
+              OR lower(COALESCE(ri.provider, 'unknown')) LIKE 'claude/%'
+              OR lower(COALESCE(ri.provider, 'unknown')) LIKE 'anthropic/%'
+          )
+      )
+),
+observation_identity AS (
+    SELECT DISTINCT ON (n.raw_provider, n.normalized_quota_key, n.expected_reset_at)
+        n.raw_provider,
+        n.normalized_quota_key,
+        n.expected_reset_at,
+        NULLIF(TRIM(BOTH FROM COALESCE(o.source, '')), '') AS source,
+        NULLIF(TRIM(BOTH FROM COALESCE(o.client, '')), '') AS client
+    FROM normalized n
+    JOIN public.rate_limit_observations o
+      ON n.normalized_quota_key IN (
+          '${XAI_GROK_BUILD_WEEKLY_CREDITS_KEY}',
+          '${XAI_GROK_BUILD_MONTHLY_REQUESTS_KEY}'
+      )
+     AND n.expected_reset_at IS NOT NULL
+     AND o.provider = n.raw_provider
+     AND o.quota_key = n.normalized_quota_key
+     AND o.expected_reset_at IS NOT DISTINCT FROM n.expected_reset_at
+     AND o.observed_at IS NOT NULL${quotaObservationIntervalBoundsSql('n.interval_start', 'n.expected_reset_at')}
+    ORDER BY n.raw_provider, n.normalized_quota_key, n.expected_reset_at, o.observed_at DESC
+),
+window_bounds AS (
+    SELECT
+        n.provider,
+        n.model,
+        n.quota_type,
+        MAX(n.normalized_quota_key) AS quota_key,
+        COALESCE(MAX(n.source), MAX(oi.source)) AS source,
+        COALESCE(MAX(n.client), MAX(oi.client)) AS client,
+        MAX(n.quota_unit) AS quota_unit,
+        n.expected_reset_at,
+        MIN(n.interval_start) AS interval_start,
+        MAX(n.interval_end) AS interval_end,
+        MIN(n.remaining_pct)::double precision AS min_remaining_pct,
+        MAX(n.remaining_pct)::double precision AS max_remaining_pct
+    FROM normalized n
+    LEFT JOIN observation_identity oi
+           ON oi.raw_provider = n.raw_provider
+          AND oi.normalized_quota_key = n.normalized_quota_key
+          AND oi.expected_reset_at IS NOT DISTINCT FROM n.expected_reset_at
+    GROUP BY n.provider, n.model, n.quota_type, n.expected_reset_at
+)
+SELECT
+    provider,
+    model,
+    quota_type,
+    quota_key,
+    source,
+    client,
+    quota_unit,
+    expected_reset_at,
+    interval_start,
+    interval_end,
+    min_remaining_pct,
+    max_remaining_pct,
+    0::double precision AS velocity_sample_count,
+    '[]'::jsonb AS velocity_segments,
+    '[]'::jsonb AS velocity_scores,
+    0::double precision AS usage_tokens,
+    '[]'::json AS usage_breakdown
+FROM window_bounds
+ORDER BY provider ASC, expected_reset_at DESC, quota_type ASC;
+`
+
+  return { sql, values: [from, to] }
+}
+
 export function buildQuotaRangeHistoryQuery(searchParams) {
   const from = parseSearchDateOnly(searchParams.get('from'), defaultFromDate)
   const to = parseSearchDateOnly(searchParams.get('to'), defaultToDate)
@@ -4733,54 +5855,26 @@ export function buildQuotaRangeHistoryQuery(searchParams) {
   const sql = `
 WITH normalized AS (
     SELECT
+        ri.provider AS raw_provider,
+        ${rateLimitRangeProviderDimension} AS provider,
+        ${RATE_LIMIT_NORMALIZED_MODEL_CASE} AS model,
+        ${RATE_LIMIT_NORMALIZED_QUOTA_TYPE_CASE} AS quota_type,
+        ri.quota_key AS normalized_quota_key,
+        NULLIF(TRIM(BOTH FROM COALESCE(to_jsonb(ri)->>'source', '')), '') AS source,
+        NULLIF(TRIM(BOTH FROM COALESCE(to_jsonb(ri)->>'client', '')), '') AS client,
         CASE
-            WHEN lower(COALESCE(ri.provider, 'unknown')) IN ('google', 'gemini') THEN 'google'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) IN ('claude', 'anthropic') THEN 'anthropic'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'claude/%' THEN 'anthropic'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'anthropic/%' THEN 'anthropic'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'deepseek/%' THEN 'deepseek'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) IN ('xai', 'x.ai') THEN 'xai'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'xai/%' THEN 'xai'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) = 'nvidia' THEN 'nvidia_nim'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'nvidia_nim/%' THEN 'nvidia_nim'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'nvidia/%' THEN 'nvidia_nim'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'local/%' THEN 'local'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'local_%' THEN 'local'
-            ELSE COALESCE(ri.provider, 'unknown')
-        END AS provider,
-        CASE
-            WHEN lower(COALESCE(ri.provider, 'unknown')) = 'antigravity'
-              AND ri.quota_key IN (
-                  'antigravity_code_assist:gemini_pool',
-                  'antigravity_code_assist:vertex_pool'
-              )
-            THEN ri.quota_key
-            WHEN ri.quota_type IN ('monthly', 'requests')
-              AND (
-                  lower(COALESCE(ri.provider, 'unknown')) LIKE 'xai/%'
-                  OR lower(COALESCE(ri.provider, 'unknown')) IN ('xai', 'x.ai')
-              )
-            THEN NULL
-            ELSE NULLIF(ri.model, '')
-        END AS model,
-        CASE
-            WHEN ri.quota_type = 'requests'
-              AND (
-                  lower(COALESCE(ri.provider, 'unknown')) LIKE 'xai/%'
-                  OR lower(COALESCE(ri.provider, 'unknown')) IN ('xai', 'x.ai')
-              )
-            THEN 'monthly'
-            WHEN ri.quota_type = 'weekly_special' THEN 'special'
-            WHEN ri.quota_type = 'short_special' THEN 'short_special'
-            WHEN ri.quota_type = 'requests' THEN 'short'
-            ELSE ri.quota_type
-        END AS quota_type,
+            WHEN ri.quota_key = '${XAI_GROK_BUILD_WEEKLY_CREDITS_KEY}' THEN 'credits'
+            WHEN ri.quota_key = '${XAI_GROK_BUILD_MONTHLY_REQUESTS_KEY}' THEN 'requests'
+            WHEN ri.quota_key LIKE '%:credits' THEN 'credits'
+            WHEN ri.quota_key LIKE '%:requests' THEN 'requests'
+            ELSE NULL
+        END AS quota_unit,
         ri.expected_reset_at,
         ri.fromDate AS interval_start,
         ri.toDate AS interval_end,
         ri.remaining_pct
     FROM public.rate_limit_intervals ri
-    WHERE ri.quota_type IN ('weekly', 'weekly_special', 'short', 'short_special', 'requests', 'monthly', 'wtus')
+    WHERE ri.quota_type IN ('weekly', 'weekly_overage_included', 'weekly_special', 'short', 'short_special', 'requests', 'monthly', 'wtus')
       AND ri.expected_reset_at IS NOT NULL
       AND ri.fromDate < ($2::date::timestamp AT TIME ZONE 'America/New_York')
       AND ri.expected_reset_at >= ($1::date::timestamp AT TIME ZONE 'America/New_York')
@@ -4797,18 +5891,43 @@ WITH normalized AS (
           )
       )
 ),
+observation_identity AS (
+    SELECT DISTINCT ON (n.raw_provider, n.normalized_quota_key, n.expected_reset_at)
+        n.raw_provider,
+        n.normalized_quota_key,
+        n.expected_reset_at,
+        NULLIF(TRIM(BOTH FROM COALESCE(o.source, '')), '') AS source,
+        NULLIF(TRIM(BOTH FROM COALESCE(o.client, '')), '') AS client
+    FROM normalized n
+    JOIN public.rate_limit_observations o
+      ON n.normalized_quota_key IS NOT NULL
+     AND n.expected_reset_at IS NOT NULL
+     AND o.provider = n.raw_provider
+     AND o.quota_key = n.normalized_quota_key
+     AND o.expected_reset_at IS NOT DISTINCT FROM n.expected_reset_at
+     AND o.observed_at IS NOT NULL${quotaObservationIntervalBoundsSql('n.interval_start', 'n.expected_reset_at')}
+    ORDER BY n.raw_provider, n.normalized_quota_key, n.expected_reset_at, o.observed_at DESC
+),
 window_bounds AS (
     SELECT
-        provider,
-        model,
-        quota_type,
-        expected_reset_at,
-        MIN(interval_start) AS interval_start,
-        MAX(interval_end) AS interval_end,
-        MIN(remaining_pct)::double precision AS min_remaining_pct,
-        MAX(remaining_pct)::double precision AS max_remaining_pct
-    FROM normalized
-    GROUP BY provider, model, quota_type, expected_reset_at
+        n.provider,
+        n.model,
+        n.quota_type,
+        MAX(n.normalized_quota_key) AS quota_key,
+        COALESCE(MAX(n.source), MAX(oi.source)) AS source,
+        COALESCE(MAX(n.client), MAX(oi.client)) AS client,
+        MAX(n.quota_unit) AS quota_unit,
+        n.expected_reset_at,
+        MIN(n.interval_start) AS interval_start,
+        MAX(n.interval_end) AS interval_end,
+        MIN(n.remaining_pct)::double precision AS min_remaining_pct,
+        MAX(n.remaining_pct)::double precision AS max_remaining_pct
+    FROM normalized n
+    LEFT JOIN observation_identity oi
+           ON oi.raw_provider = n.raw_provider
+          AND oi.normalized_quota_key = n.normalized_quota_key
+          AND oi.expected_reset_at IS NOT DISTINCT FROM n.expected_reset_at
+    GROUP BY n.provider, n.model, n.quota_type, n.expected_reset_at
 ),
 per_model_usage AS (
     SELECT
@@ -4841,6 +5960,10 @@ SELECT
     wb.provider,
     wb.model,
     wb.quota_type,
+    wb.quota_key,
+    wb.source,
+    wb.client,
+    wb.quota_unit,
     wb.expected_reset_at,
     wb.interval_start,
     wb.expected_reset_at AS interval_end,
@@ -4873,6 +5996,10 @@ GROUP BY
     wb.provider,
     wb.model,
     wb.quota_type,
+    wb.quota_key,
+    wb.source,
+    wb.client,
+    wb.quota_unit,
     wb.expected_reset_at,
     wb.interval_start,
     wb.interval_end,
@@ -4954,7 +6081,14 @@ observations AS (
         o.quota_type AS raw_observation_quota_type,
         o.expected_reset_at,
         o.observed_at,
-        MAX(GREATEST(0, LEAST(100, 100 - o.remaining_pct)))::double precision AS consumed_pct
+        MAX(GREATEST(0, LEAST(100, 100 - o.remaining_pct)))::double precision AS consumed_pct,
+        MAX(o.quota_limit) AS quota_limit,
+        MAX(o.quota_used) AS quota_used,
+        MAX(o.quota_remaining) AS quota_remaining,
+        MAX(o.billing_period_start_at) AS billing_period_start_at,
+        MAX(o.billing_period_end_at) AS billing_period_end_at,
+        (ARRAY_AGG(COALESCE(o.raw_provider_fields, '{}'::jsonb) ORDER BY o.observed_at DESC))[1] AS raw_provider_fields,
+        (ARRAY_AGG(COALESCE(o.evidence, '{}'::jsonb) ORDER BY o.observed_at DESC))[1] AS evidence
     FROM public.rate_limit_observations o
     WHERE o.provider IN ('anthropic', 'openai')
       AND o.quota_key IN (
@@ -4990,7 +6124,14 @@ SELECT
     rw.reset_start_at,
     COALESCE(rw.reset_end_at, o.expected_reset_at) AS reset_end_at,
     o.observed_at,
-    o.consumed_pct
+    o.consumed_pct,
+    o.quota_limit,
+    o.quota_used,
+    o.quota_remaining,
+    o.billing_period_start_at,
+    o.billing_period_end_at,
+    o.raw_provider_fields,
+    o.evidence
 FROM observations o
 LEFT JOIN reset_windows rw
        ON rw.provider = o.provider
@@ -5073,49 +6214,71 @@ function buildFreshnessQuery() {
 //   kind='shell' — one row per (provider, model, cmd_label) for command rows
 // Both are filtered to the caller's from/to date window via session_history.created_at.
 export function buildToolActivityQuery(searchParams) {
-  const from = parseDateParam(searchParams.get('from'), defaultFromDate)
-  const to = parseDateParam(searchParams.get('to'), defaultToDate)
-  const values = [from, to]
+  const { values, whereParts } = buildFilteredWhere(searchParams, {
+    excludeFilterKeys: ['agent_id'],
+  })
+  values.push(TOOL_ACTIVITY_RECENT_ROW_LIMIT)
+  const recentRowLimitIndex = values.length
+  const agentIdFilterValues = parseCsv(searchParams.get('agent_id'))
+  let agentIdFilterClause = ''
+  if (agentIdFilterValues.length > 0) {
+    values.push(agentIdFilterValues)
+    agentIdFilterClause = `
+      AND COALESCE(ra.activity_agent_id, NULLIF(sh.agent_id, ''), 'uncaptured_agent_id') = ANY($${values.length}::text[])`
+  }
 
-  // Inline the same provider-normalisation CASE that providerDimension uses,
-  // but referenced against sh.provider (the authoritative join column).
-  const providerExpr = `
-CASE
-    WHEN lower(COALESCE(sh.provider, 'unknown')) IN ('google', 'gemini') THEN 'google'
-    WHEN lower(COALESCE(sh.provider, 'unknown')) IN ('claude', 'anthropic') THEN 'anthropic'
-    WHEN lower(COALESCE(sh.provider, 'unknown')) LIKE 'claude/%' THEN 'anthropic'
-    WHEN lower(COALESCE(sh.provider, 'unknown')) LIKE 'anthropic/%' THEN 'anthropic'
-    WHEN lower(COALESCE(sh.provider, 'unknown')) LIKE 'deepseek/%' THEN 'deepseek'
-    WHEN lower(COALESCE(sh.provider, 'unknown')) IN ('xai', 'x.ai') THEN 'xai'
-    WHEN lower(COALESCE(sh.provider, 'unknown')) LIKE 'xai/%' THEN 'xai'
-    WHEN lower(COALESCE(sh.provider, 'unknown')) = 'nvidia' THEN 'nvidia_nim'
-    WHEN lower(COALESCE(sh.provider, 'unknown')) LIKE 'nvidia_nim/%' THEN 'nvidia_nim'
-    WHEN lower(COALESCE(sh.provider, 'unknown')) LIKE 'nvidia/%' THEN 'nvidia_nim'
-    WHEN lower(COALESCE(sh.provider, 'unknown')) LIKE 'local/%' THEN 'local'
-    WHEN lower(COALESCE(sh.provider, 'unknown')) LIKE 'local_%' THEN 'local'
-    ELSE COALESCE(sh.provider, 'unknown')
-END`
+  const providerExpr = providerDimensionExpression('sh.provider')
 
   const sql = `
-WITH filtered_sessions AS MATERIALIZED (
+WITH bounds AS (
     SELECT
-        sh.litellm_call_id,
-        ${providerExpr} AS provider,
-        COALESCE(sh.model, 'unknown') AS model
-    FROM public.session_history sh
-    WHERE ${startTimeDateRangeWhere.join('\n      AND ')}
-      AND ${sessionHistoryReportablePredicate()}
+        GREATEST(COALESCE(MAX(id), 0) - $${recentRowLimitIndex}::bigint, 0) AS min_id,
+        COALESCE(MAX(id), 0) AS max_id,
+        $${recentRowLimitIndex}::bigint AS recent_row_limit
+    FROM public.session_history_tool_activity
+),
+window_cap_state AS (
+    SELECT
+        b.min_id AS tool_activity_bounded_min_id,
+        b.max_id AS tool_activity_bounded_max_id,
+        b.recent_row_limit AS tool_activity_recent_row_limit,
+        true AS tool_activity_recent_id_cap_active,
+        EXISTS (
+            SELECT 1
+            FROM public.session_history_tool_activity a
+            WHERE a.created_at >= ($1::date::timestamp AT TIME ZONE 'America/New_York')
+              AND a.created_at < ($2::date::timestamp AT TIME ZONE 'America/New_York')
+              AND a.id <= b.min_id
+        ) AS tool_activity_recent_id_cap_truncates_requested_window
+    FROM bounds b
+),
+recent_activity AS MATERIALIZED (
+    SELECT
+        a.litellm_call_id,
+        COALESCE(a.tool_kind, 'other') AS tool_kind,
+        a.tool_name,
+        a.command_text,
+        NULLIF(a.agent_id, '') AS activity_agent_id
+    FROM public.session_history_tool_activity a
+    CROSS JOIN bounds b
+    WHERE a.id > b.min_id
+      AND a.created_at >= ($1::date::timestamp AT TIME ZONE 'America/New_York')
+      AND a.created_at < ($2::date::timestamp AT TIME ZONE 'America/New_York')
 ),
 tool_rows AS MATERIALIZED (
     SELECT
-        fs.provider,
-        fs.model,
-        COALESCE(a.tool_kind, 'other') AS tool_kind,
-        a.tool_name,
-        a.command_text
-    FROM filtered_sessions fs
-    JOIN public.session_history_tool_activity a
-      ON a.litellm_call_id = fs.litellm_call_id
+        ${providerExpr} AS provider,
+        COALESCE(sh.model, 'unknown') AS model,
+        NULLIF(sh.agent_name, '') AS agent_name,
+        COALESCE(ra.activity_agent_id, NULLIF(sh.agent_id, '')) AS agent_id,
+        ra.tool_kind,
+        ra.tool_name,
+        ra.command_text
+    FROM recent_activity ra
+    JOIN public.session_history sh
+      ON sh.litellm_call_id = ra.litellm_call_id
+    WHERE ${whereParts.join('\n      AND ')}
+${agentIdFilterClause}
 ),
 outer_counts AS (
     SELECT
@@ -5123,6 +6286,8 @@ outer_counts AS (
         model,
         tool_kind,
         tool_name,
+        jsonb_agg(DISTINCT agent_name) FILTER (WHERE agent_name IS NOT NULL) AS agent_names,
+        jsonb_agg(DISTINCT agent_id) FILTER (WHERE agent_id IS NOT NULL) AS agent_ids,
         COUNT(*)::bigint AS calls
     FROM tool_rows
     GROUP BY
@@ -5154,6 +6319,8 @@ shell_labels AS (
                 ELSE lower(split_part(trim(command_text), ' ', 1))
             END
         ) AS cmd_label,
+        jsonb_agg(DISTINCT agent_name) FILTER (WHERE agent_name IS NOT NULL) AS agent_names,
+        jsonb_agg(DISTINCT agent_id) FILTER (WHERE agent_id IS NOT NULL) AS agent_ids,
         COUNT(*)::bigint AS calls
     FROM tool_rows
     WHERE tool_kind = 'command'
@@ -5186,24 +6353,53 @@ shell_labels AS (
         )
 )
 SELECT
-    provider,
-    model,
-    'outer' AS kind,
-    tool_name AS label,
-    calls
-FROM outer_counts
-UNION ALL
-SELECT
-    provider,
-    model,
-    'shell' AS kind,
-    cmd_label AS label,
-    calls
-FROM shell_labels
-ORDER BY provider ASC, model ASC, kind ASC, calls DESC;
+    activity_rows.provider,
+    activity_rows.model,
+    activity_rows.kind,
+    activity_rows.label,
+    activity_rows.agent_names,
+    activity_rows.agent_ids,
+    activity_rows.calls,
+    cap.tool_activity_bounded_min_id,
+    cap.tool_activity_bounded_max_id,
+    cap.tool_activity_recent_row_limit,
+    cap.tool_activity_recent_id_cap_active,
+    cap.tool_activity_recent_id_cap_truncates_requested_window
+FROM window_cap_state cap
+LEFT JOIN (
+    SELECT
+        provider,
+        model,
+        'outer' AS kind,
+        tool_name AS label,
+        COALESCE(agent_names, '[]'::jsonb) AS agent_names,
+        COALESCE(agent_ids, '[]'::jsonb) AS agent_ids,
+        calls
+    FROM outer_counts
+    UNION ALL
+    SELECT
+        provider,
+        model,
+        'shell' AS kind,
+        cmd_label AS label,
+        COALESCE(agent_names, '[]'::jsonb) AS agent_names,
+        COALESCE(agent_ids, '[]'::jsonb) AS agent_ids,
+        calls
+    FROM shell_labels
+) activity_rows ON true
+ORDER BY activity_rows.provider ASC NULLS LAST, activity_rows.model ASC NULLS LAST, activity_rows.kind ASC NULLS LAST, activity_rows.calls DESC NULLS LAST;
 `
 
-  return { sql, values }
+  return {
+    sql,
+    values,
+    metadata: {
+      from: parseDateParam(searchParams.get('from'), defaultFromDate),
+      to: parseDateParam(searchParams.get('to'), defaultToDate),
+      toolActivityRecentRowLimit: TOOL_ACTIVITY_RECENT_ROW_LIMIT,
+      toolActivityRecentIdCapActive: true,
+    },
+  }
 }
 
 function normalizeToolActivityRow(row) {
@@ -5212,17 +6408,1682 @@ function normalizeToolActivityRow(row) {
     model: row.model ?? 'unknown',
     kind: row.kind,
     label: row.label,
+    agent_names: normalizeStringArray(row.agent_names),
+    agent_ids: normalizeStringArray(row.agent_ids),
     calls: normalizeNumber(row.calls) ?? 0,
+    tool_activity_bounded_min_id: normalizeNumber(row.tool_activity_bounded_min_id),
+    tool_activity_bounded_max_id: normalizeNumber(row.tool_activity_bounded_max_id),
+    tool_activity_recent_row_limit:
+      normalizeNumber(row.tool_activity_recent_row_limit) ??
+      TOOL_ACTIVITY_RECENT_ROW_LIMIT,
+    tool_activity_recent_id_cap_active: row.tool_activity_recent_id_cap_active ?? true,
+    tool_activity_recent_id_cap_truncates_requested_window:
+      row.tool_activity_recent_id_cap_truncates_requested_window ?? false,
+  }
+}
+
+function buildUsageToolActivityMetadata(searchParams, extra = {}) {
+  return {
+    from: parseDateParam(searchParams.get('from'), defaultFromDate),
+    to: parseDateParam(searchParams.get('to'), defaultToDate),
+    generatedAt: new Date().toISOString(),
+    toolActivityRecentRowLimit: TOOL_ACTIVITY_RECENT_ROW_LIMIT,
+    toolActivityRecentIdCapActive: true,
+    ...extra,
+  }
+}
+
+export function buildDegradedUsageToolActivityReport(searchParams) {
+  return {
+    metadata: buildUsageToolActivityMetadata(searchParams, {
+      degraded: true,
+      degradedReason: 'database_timeout',
+      degradedMessage:
+        'Tool activity exceeded the bounded database timeout; showing an empty degraded report.',
+    }),
+    toolActivity: [],
+  }
+}
+
+function buildUsageQuotaHistoryMetadata(extra = {}) {
+  return {
+    generatedAt: new Date().toISOString(),
+    ...extra,
+  }
+}
+
+function buildUsageQuotaRangeHistoryMetadata(searchParams, extra = {}) {
+  return {
+    from: parseDateParam(searchParams.get('from'), defaultFromDate),
+    to: parseDateParam(searchParams.get('to'), defaultToDate),
+    generatedAt: new Date().toISOString(),
+    ...extra,
+  }
+}
+
+export function buildDegradedUsageQuotaRangeHistoryReport({
+  searchParams = new URLSearchParams(),
+  timedOutSubqueries = [],
+  quotaRangeHistory = [],
+  degradedMessage,
+} = {}) {
+  const normalizedTimedOutSubqueries = Array.from(
+    new Set(
+      (timedOutSubqueries ?? []).filter(
+        (subqueryKey) => typeof subqueryKey === 'string' && subqueryKey !== ''
+      )
+    )
+  )
+  const timedOutSubquery = normalizedTimedOutSubqueries[0]
+  const timedOutSubqueryMessage = timedOutSubquery
+    ? `subquery "${timedOutSubquery}"`
+    : null
+
+  return {
+    metadata: buildUsageQuotaRangeHistoryMetadata(searchParams, {
+      degraded: true,
+      degradedReason: 'database_timeout',
+      degradedMessage:
+        degradedMessage ??
+        (timedOutSubquery
+          ? `Quota range history ${timedOutSubqueryMessage} exceeded the bounded database timeout; returning partial payload from base rows.`
+          : 'Quota range history exceeded the bounded database timeout; returning partial payload from base rows.'),
+      timeout: true,
+      timedOutSubquery,
+      timedOutSubqueries: normalizedTimedOutSubqueries,
+      quotaRangeHistoryStatementTimeoutMs:
+        QUOTA_RANGE_HISTORY_STATEMENT_TIMEOUT_MS,
+    }),
+    quotaRangeHistory,
+  }
+}
+
+
+export function buildDegradedQuotaReport() {
+  return {
+    metadata: {
+      ...buildFreshnessMetadata(null),
+      degraded: true,
+      degradedReason: 'database_timeout',
+      degradedMessage:
+        'Quota report exceeded the bounded database timeout; showing an empty degraded report.',
+      staleRecordThresholdMinutes: STALE_RECORD_THRESHOLD_MINUTES,
+      quotaReportStatementTimeoutMs: REPORT_DB_STATEMENT_TIMEOUT_MS,
+    },
+    quotas: [],
+  }
+}
+
+export function buildDegradedUsageQuotaHistoryReport({
+  timedOutSubqueries = [],
+  quotaHistory = [],
+  degradedMessage,
+} = {}) {
+  const normalizedTimedOutSubqueries = Array.from(
+    new Set(
+      (timedOutSubqueries ?? []).filter(
+        (subqueryKey) => typeof subqueryKey === 'string' && subqueryKey !== ''
+      )
+    )
+  )
+  const timedOutSubquery = normalizedTimedOutSubqueries[0]
+  const timedOutSubqueryMessage = timedOutSubquery
+    ? `subquery "${timedOutSubquery}"`
+    : null
+
+  return {
+    metadata: buildUsageQuotaHistoryMetadata({
+      degraded: true,
+      degradedReason: 'database_timeout',
+      degradedMessage:
+        degradedMessage ??
+        (timedOutSubquery
+          ? `Quota history ${timedOutSubqueryMessage} exceeded the bounded database timeout; returning partial payload from base rows.`
+          : 'Quota history exceeded the bounded database timeout; returning partial payload from base rows.'),
+      timeout: true,
+      timedOutSubquery,
+      timedOutSubqueries: normalizedTimedOutSubqueries,
+      quotaHistoryStatementTimeoutMs: QUOTA_HISTORY_STATEMENT_TIMEOUT_MS,
+    }),
+    quotaHistory,
+  }
+}
+
+function buildUsageTokenTrendSummaryMetadata(searchParams, extra = {}) {
+  return {
+    from: parseDateParam(searchParams.get('from'), defaultFromDate),
+    to: parseDateParam(searchParams.get('to'), defaultToDate),
+    generatedAt: new Date().toISOString(),
+    ...extra,
+  }
+}
+
+export function buildDegradedUsageTokenTrendSummaryReport(
+  searchParams,
+  {
+    timedOutSubqueries = [],
+    skippedSubqueries = [],
+    unavailableSubqueries = [],
+    tokenTrendHours = [],
+    tokenTrendHealth = [],
+    tokenTrendScores = [],
+    tokenTrendVersions = [],
+    tokenTrendModelFirstSeen = [],
+    tokenTrendSummaryRangeDays,
+    tokenTrendSummaryRawLaneMaxDays,
+  } = {}
+) {
+  const normalizedTimedOutSubqueries = Array.from(
+    new Set(
+      (timedOutSubqueries ?? []).filter((subqueryKey) =>
+        USAGE_TOKEN_TREND_SUMMARY_SUBQUERY_KEYS.includes(subqueryKey)
+      )
+    )
+  )
+  const normalizedSkippedSubqueries = Array.from(
+    new Set(
+      (skippedSubqueries ?? []).filter((subqueryKey) =>
+        TOKEN_TREND_SUMMARY_RAW_SUBQUERY_KEYS.includes(subqueryKey)
+      )
+    )
+  )
+  const normalizedUnavailableSubqueries = Array.from(
+    new Set([
+      ...normalizedTimedOutSubqueries,
+      ...normalizedSkippedSubqueries,
+      ...unavailableSubqueries,
+    ])
+  )
+  const timedOutSubquery = normalizedTimedOutSubqueries[0]
+  const timedOutSubqueryMessage =
+    normalizedTimedOutSubqueries.length === 1
+      ? `subquery "${timedOutSubquery}"`
+      : `subqueries ${normalizedTimedOutSubqueries.map((key) => `"${key}"`).join(', ')}`
+  const hasTimedOutSubqueries = normalizedTimedOutSubqueries.length > 0
+  const hasSkippedSubqueries = normalizedSkippedSubqueries.length > 0
+  const hasUnavailableSubqueries = normalizedUnavailableSubqueries.length > 0
+  const isLegacyTimeoutOnly =
+    !hasTimedOutSubqueries && !hasSkippedSubqueries && !hasUnavailableSubqueries
+  const skippedSubqueryMessage =
+    normalizedSkippedSubqueries.length > 0
+      ? `bounded raw-lane policy skipped ${normalizedSkippedSubqueries.map((key) => `"${key}"`).join(', ')} ${normalizedSkippedSubqueries.length > 1 ? 'lane queries' : 'lane query'} for a ${tokenTrendSummaryRangeDays ?? 'unknown'}-day range; max allowed is ${tokenTrendSummaryRawLaneMaxDays ?? 'unknown'} days`
+      : null
+  const degradedMessage =
+    hasTimedOutSubqueries && skippedSubqueryMessage
+      ? `Token trend summary ${timedOutSubqueryMessage} exceeded the bounded database timeout; ${skippedSubqueryMessage}; returning partial payload from successful subqueries.`
+      : hasTimedOutSubqueries
+        ? `Token trend summary ${timedOutSubqueryMessage} exceeded the bounded database timeout; returning partial payload from successful subqueries.`
+        : skippedSubqueryMessage
+          ? `Token trend summary ${skippedSubqueryMessage}; returning partial payload from successful subqueries.`
+          : `Token trend summary exceeded the bounded database timeout; returning partial payload from successful subqueries.`
+
+  return {
+    metadata: buildUsageTokenTrendSummaryMetadata(searchParams, {
+      degraded: true,
+      degradedReason: hasTimedOutSubqueries
+        ? 'database_timeout'
+        : hasSkippedSubqueries
+          ? 'bounded_raw_lane_policy'
+          : 'database_timeout',
+      degradedMessage,
+      timeout: hasTimedOutSubqueries || isLegacyTimeoutOnly ? true : undefined,
+      timedOutSubquery,
+      timedOutSubqueries: normalizedTimedOutSubqueries,
+      skippedSubqueries: normalizedSkippedSubqueries,
+      unavailableSubqueries: normalizedUnavailableSubqueries,
+      tokenTrendSummaryRangeDays,
+      tokenTrendSummaryRawLaneMaxDays,
+      tokenTrendSummaryStatementTimeoutMs:
+        TOKEN_TREND_SUMMARY_STATEMENT_TIMEOUT_MS,
+    }),
+    tokenTrendHours,
+    tokenTrendHealth,
+    tokenTrendScores,
+    tokenTrendVersions,
+    tokenTrendModelFirstSeen,
+  }
+}
+
+const PROVIDER_ALIAS_ROUTING_RECENT_LIMIT = 400
+const PROVIDER_ALIAS_ROUTING_LOOKBACK_HOURS = 24
+const PROVIDER_ALIAS_ROUTING_FAMILY_PREFIXES = {
+  codex: 'codex_auto_agent_',
+  anthropic: 'anthropic_auto_agent_',
+}
+
+export function buildProviderAliasRoutingQuery(_searchParams) {
+  const values = [
+    PROVIDER_ALIAS_ROUTING_RECENT_LIMIT,
+    PROVIDER_ALIAS_ROUTING_LOOKBACK_HOURS,
+  ]
+  const sql = `
+WITH recent_alias_sessions AS MATERIALIZED (
+    SELECT
+        sh.created_at,
+        sh.litellm_call_id::text AS litellm_call_id,
+        ${providerDimension} AS provider,
+        COALESCE(sh.model, 'unknown') AS model,
+        NULLIF(sh.inbound_model_alias, '') AS inbound_model_alias,
+        COALESCE(sh.metadata, '{}'::jsonb) AS metadata
+    FROM public.session_history sh
+    WHERE sh.created_at >= NOW() - ($2::integer * INTERVAL '1 hour')
+      AND (
+        sh.metadata ? 'codex_auto_agent_alias'
+        OR sh.metadata ? 'anthropic_auto_agent_alias'
+        OR sh.metadata ? 'aawm_alias_routing_audit_events'
+        OR sh.metadata ? 'requested_model_alias'
+        OR sh.metadata ? 'codex_auto_agent_affinity_state_source'
+        OR sh.metadata ? 'anthropic_auto_agent_affinity_state_source'
+        OR sh.metadata ? 'codex_auto_agent_cooldown_state_source'
+        OR sh.metadata ? 'anthropic_auto_agent_cooldown_state_source'
+        OR sh.metadata ? 'codex_auto_agent_selected_provider'
+        OR sh.metadata ? 'anthropic_auto_agent_selected_provider'
+        OR sh.metadata ? 'codex_auto_agent_skipped_candidates'
+        OR sh.metadata ? 'anthropic_auto_agent_skipped_candidates'
+        OR sh.metadata ? 'model_alias_label'
+      )
+    ORDER BY sh.created_at DESC
+    LIMIT $1
+),
+audit_events AS (
+    SELECT
+        rs.litellm_call_id,
+        jsonb_agg(
+            jsonb_strip_nulls(
+                jsonb_build_object(
+                    'observed_at', aa.observed_at,
+                    'alias_family', aa.alias_family,
+                    'provider', aa.provider,
+                    'model', aa.model,
+                    'route_family', aa.route_family,
+                    'event_type', aa.event_type,
+                    'failure_class', aa.failure_class,
+                    'cooldown_state', COALESCE(aa.candidate_status, aa.event_type),
+                    'cooldown_until', aa.cooldown_until,
+                    'cooldown_state_source', aa.metadata->>'cooldown_state_source'
+                )
+            )
+            ORDER BY aa.observed_at
+        ) AS alias_route_events
+    FROM recent_alias_sessions rs
+    JOIN public.aawm_alias_routing_audit aa
+      ON rs.litellm_call_id IS NOT NULL
+     AND aa.litellm_call_id = rs.litellm_call_id
+    GROUP BY rs.litellm_call_id
+),
+projected_alias_sessions AS (
+    SELECT
+        rs.created_at,
+        rs.provider,
+        rs.model,
+        rs.inbound_model_alias,
+        jsonb_strip_nulls(jsonb_build_object(
+            'requested_model_alias', NULLIF(rs.metadata->>'requested_model_alias', ''),
+            'model_alias_label', NULLIF(rs.metadata->>'model_alias_label', ''),
+            'codex_auto_agent_alias', NULLIF(rs.metadata->>'codex_auto_agent_alias', ''),
+            'anthropic_auto_agent_alias', NULLIF(rs.metadata->>'anthropic_auto_agent_alias', ''),
+            'codex_auto_agent_affinity_state_source', NULLIF(rs.metadata->>'codex_auto_agent_affinity_state_source', ''),
+            'codex_auto_agent_cooldown_state_source', NULLIF(rs.metadata->>'codex_auto_agent_cooldown_state_source', ''),
+            'codex_auto_agent_selected_provider', NULLIF(rs.metadata->>'codex_auto_agent_selected_provider', ''),
+            'codex_auto_agent_selected_model', NULLIF(rs.metadata->>'codex_auto_agent_selected_model', ''),
+            'codex_auto_agent_selected_route_family', NULLIF(rs.metadata->>'codex_auto_agent_selected_route_family', ''),
+            'codex_auto_agent_selected_last_resort', NULLIF(rs.metadata->>'codex_auto_agent_selected_last_resort', ''),
+            'codex_auto_agent_selection_reason', NULLIF(rs.metadata->>'codex_auto_agent_selection_reason', ''),
+            'anthropic_auto_agent_affinity_state_source', NULLIF(rs.metadata->>'anthropic_auto_agent_affinity_state_source', ''),
+            'anthropic_auto_agent_cooldown_state_source', NULLIF(rs.metadata->>'anthropic_auto_agent_cooldown_state_source', ''),
+            'anthropic_auto_agent_selected_provider', NULLIF(rs.metadata->>'anthropic_auto_agent_selected_provider', ''),
+            'anthropic_auto_agent_selected_model', NULLIF(rs.metadata->>'anthropic_auto_agent_selected_model', ''),
+            'anthropic_auto_agent_selected_route_family', NULLIF(rs.metadata->>'anthropic_auto_agent_selected_route_family', ''),
+            'anthropic_auto_agent_selected_last_resort', NULLIF(rs.metadata->>'anthropic_auto_agent_selected_last_resort', ''),
+            'anthropic_auto_agent_selection_reason', NULLIF(rs.metadata->>'anthropic_auto_agent_selection_reason', ''),
+            'codex_auto_agent_skipped_candidates', rs.metadata->'codex_auto_agent_skipped_candidates',
+            'anthropic_auto_agent_skipped_candidates', rs.metadata->'anthropic_auto_agent_skipped_candidates'
+        )) AS metadata,
+        COALESCE(
+            audit.alias_route_events,
+            rs.metadata->'aawm_alias_routing_audit_events',
+            rs.metadata->'codex_auto_agent_audit_events',
+            rs.metadata->'anthropic_auto_agent_audit_events',
+            '[]'::jsonb
+        ) AS alias_route_events
+    FROM recent_alias_sessions rs
+    LEFT JOIN audit_events audit
+      ON audit.litellm_call_id = rs.litellm_call_id
+)
+SELECT
+    created_at,
+    provider,
+    model,
+    inbound_model_alias,
+    metadata,
+    alias_route_events
+FROM projected_alias_sessions
+ORDER BY created_at DESC;
+`
+
+  return {
+    sql,
+    values,
+    metadata: {
+      lookbackHours: PROVIDER_ALIAS_ROUTING_LOOKBACK_HOURS,
+      limit: PROVIDER_ALIAS_ROUTING_RECENT_LIMIT,
+      dataSource: 'recent_observed_session_history',
+    },
+  }
+}
+
+function nullIfEmptyProviderAliasRouting(value) {
+  if (value === null || value === undefined) return null
+  const text = String(value).trim()
+  return text ? text : null
+}
+
+function parseProviderAliasRoutingTimestamp(value) {
+  if (value === null || value === undefined || value === '') return null
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    const millis = value > 1_000_000_000_000 ? value : value * 1000
+    const date = new Date(millis)
+    return Number.isNaN(date.getTime()) ? null : date.toISOString()
+  }
+  const text = String(value).trim()
+  if (!text) return null
+  if (/^-?\d+(\.\d+)?$/.test(text)) {
+    const numeric = Number(text)
+    if (!Number.isFinite(numeric)) return null
+    const millis = numeric > 1_000_000_000_000 ? numeric : numeric * 1000
+    const date = new Date(millis)
+    return Number.isNaN(date.getTime()) ? null : date.toISOString()
+  }
+  const date = new Date(text)
+  return Number.isNaN(date.getTime()) ? null : date.toISOString()
+}
+
+function normalizeProviderAliasRoutingStateSource(value) {
+  const normalized = String(value ?? '')
+    .trim()
+    .toLowerCase()
+  if (
+    normalized === 'memory' ||
+    normalized === 'durable_cache' ||
+    normalized === 'local_fallback'
+  ) {
+    return normalized
+  }
+  return 'unknown'
+}
+
+function providerAliasRoutingRemainingSeconds(expiresAtIso) {
+  if (!expiresAtIso) return null
+  const expiresMs = Date.parse(expiresAtIso)
+  if (!Number.isFinite(expiresMs)) return null
+  return Math.max(0, Math.round((expiresMs - Date.now()) / 1000))
+}
+
+function providerAliasRoutingIsActive(expiresAtIso, cooldownUntilIso) {
+  const target = cooldownUntilIso ?? expiresAtIso
+  if (!target) return false
+  const expiresMs = Date.parse(target)
+  if (!Number.isFinite(expiresMs)) return false
+  return expiresMs > Date.now()
+}
+
+function providerAliasRoutingMetadataValue(metadata, family, suffix) {
+  const prefix = PROVIDER_ALIAS_ROUTING_FAMILY_PREFIXES[family]
+  if (!prefix) return null
+  return metadata[`${prefix}${suffix}`] ?? null
+}
+
+function providerAliasRoutingFamilyFromMetadata(metadata) {
+  if (
+    metadata.codex_auto_agent_alias != null ||
+    metadata.codex_auto_agent_selected_provider != null ||
+    metadata.codex_auto_agent_affinity_state_source != null ||
+    metadata.codex_auto_agent_cooldown_state_source != null
+  ) {
+    return 'codex'
+  }
+  if (
+    metadata.anthropic_auto_agent_alias != null ||
+    metadata.anthropic_auto_agent_selected_provider != null ||
+    metadata.anthropic_auto_agent_affinity_state_source != null ||
+    metadata.anthropic_auto_agent_cooldown_state_source != null
+  ) {
+    return 'anthropic'
+  }
+  const aliasLabel = String(
+    metadata.requested_model_alias ??
+      metadata.model_alias_label ??
+      ''
+  ).toLowerCase()
+  if (aliasLabel.includes('anthropic')) return 'anthropic'
+  if (aliasLabel.startsWith('aawm')) return 'codex'
+  return null
+}
+
+function sanitizeProviderAliasRoutingCandidate(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const record = value
+  const candidate = {
+    provider: nullIfEmptyProviderAliasRouting(record.provider),
+    model: nullIfEmptyProviderAliasRouting(record.model),
+    route_family: nullIfEmptyProviderAliasRouting(
+      record.route_family ?? record.routeFamily
+    ),
+    reason: nullIfEmptyProviderAliasRouting(
+      record.reason ?? record.skip_reason ?? record.failure_class
+    ),
+  }
+  if (
+    candidate.provider == null &&
+    candidate.model == null &&
+    candidate.route_family == null &&
+    candidate.reason == null
+  ) {
+    return null
+  }
+  return candidate
+}
+
+function sanitizeProviderAliasRoutingCandidateList(value) {
+  if (!Array.isArray(value)) return []
+  return value
+    .map((entry) => sanitizeProviderAliasRoutingCandidate(entry))
+    .filter((entry) => entry != null)
+    .slice(0, 8)
+}
+
+function buildProviderAliasRoutingAffinityEntry(
+  family,
+  metadata,
+  row,
+  observedAt
+) {
+  const provider = nullIfEmptyProviderAliasRouting(
+    providerAliasRoutingMetadataValue(metadata, family, 'selected_provider') ??
+      row.provider
+  )
+  const model = nullIfEmptyProviderAliasRouting(
+    providerAliasRoutingMetadataValue(metadata, family, 'selected_model') ??
+      row.model
+  )
+  const routeFamily = nullIfEmptyProviderAliasRouting(
+    providerAliasRoutingMetadataValue(metadata, family, 'selected_route_family')
+  )
+  const selectionReason = nullIfEmptyProviderAliasRouting(
+    providerAliasRoutingMetadataValue(metadata, family, 'selection_reason')
+  )
+  const stateSource = normalizeProviderAliasRoutingStateSource(
+    providerAliasRoutingMetadataValue(metadata, family, 'affinity_state_source')
+  )
+  const lastResortRaw = providerAliasRoutingMetadataValue(
+    metadata,
+    family,
+    'selected_last_resort'
+  )
+  const lastResort =
+    lastResortRaw == null
+      ? null
+      : ['true', '1', 'yes'].includes(String(lastResortRaw).toLowerCase())
+  const expiresAt = parseProviderAliasRoutingTimestamp(
+    metadata[`${family}_auto_agent_affinity_expires_at`] ??
+      providerAliasRoutingMetadataValue(metadata, family, 'affinity_expires_at')
+  )
+  const remainingSeconds = providerAliasRoutingRemainingSeconds(expiresAt)
+  const isActive =
+    expiresAt != null
+      ? providerAliasRoutingIsActive(expiresAt, null)
+      : stateSource === 'memory' || stateSource === 'durable_cache'
+  const skipped = sanitizeProviderAliasRoutingCandidateList(
+    providerAliasRoutingMetadataValue(metadata, family, 'skipped_candidates')
+  )
+  if (provider == null && model == null && routeFamily == null) {
+    return null
+  }
+  return {
+    family,
+    alias_label: nullIfEmptyProviderAliasRouting(
+      providerAliasRoutingMetadataValue(metadata, family, 'alias') ??
+        metadata.requested_model_alias ??
+        metadata.model_alias_label ??
+        row.inbound_model_alias
+    ),
+    provider,
+    model,
+    route_family: routeFamily,
+    state_kind: 'affinity',
+    state_source: stateSource,
+    observed_at: observedAt,
+    expires_at: expiresAt,
+    cooldown_until: null,
+    remaining_seconds: remainingSeconds,
+    is_active: isActive,
+    last_resort: lastResort,
+    selection_reason: selectionReason,
+    selected: sanitizeProviderAliasRoutingCandidate({
+      provider,
+      model,
+      route_family: routeFamily,
+      reason: selectionReason,
+    }),
+    skipped_candidates: skipped,
+  }
+}
+
+function buildProviderAliasRoutingCooldownEntries(
+  row,
+  metadata,
+  family,
+  observedAt,
+  auditEvents
+) {
+  const entries = []
+  const cooldownSource = normalizeProviderAliasRoutingStateSource(
+    providerAliasRoutingMetadataValue(metadata, family, 'cooldown_state_source')
+  )
+  const auditList = Array.isArray(auditEvents) ? auditEvents : []
+  for (const event of auditList.slice(-12)) {
+    if (!event || typeof event !== 'object') continue
+    const eventFamily = nullIfEmptyProviderAliasRouting(event.alias_family)
+    if (eventFamily && eventFamily !== family) continue
+    const cooldownUntil = parseProviderAliasRoutingTimestamp(
+      event.cooldown_until ?? event.expires_at
+    )
+    const cooldownState = nullIfEmptyProviderAliasRouting(
+      event.cooldown_state ?? event.event_type
+    )
+    if (cooldownUntil == null && cooldownState == null) continue
+    const provider = nullIfEmptyProviderAliasRouting(
+      event.provider ?? row.provider
+    )
+    const model = nullIfEmptyProviderAliasRouting(event.model ?? row.model)
+    const routeFamily = nullIfEmptyProviderAliasRouting(event.route_family)
+    const remainingSeconds = providerAliasRoutingRemainingSeconds(cooldownUntil)
+    const isActive = providerAliasRoutingIsActive(null, cooldownUntil)
+    if (!isActive && cooldownUntil != null) continue
+    entries.push({
+      family,
+      alias_label: nullIfEmptyProviderAliasRouting(
+        providerAliasRoutingMetadataValue(metadata, family, 'alias') ??
+          metadata.requested_model_alias ??
+          metadata.model_alias_label ??
+          row.inbound_model_alias
+      ),
+      provider,
+      model,
+      route_family: routeFamily,
+      state_kind: 'cooldown',
+      state_source: normalizeProviderAliasRoutingStateSource(
+        event.cooldown_state_source ?? cooldownSource
+      ),
+      observed_at:
+        parseProviderAliasRoutingTimestamp(event.observed_at) ?? observedAt,
+      expires_at: cooldownUntil,
+      cooldown_until: cooldownUntil,
+      remaining_seconds: remainingSeconds,
+      is_active: isActive,
+      last_resort: null,
+      selection_reason: nullIfEmptyProviderAliasRouting(
+        event.failure_class ?? event.event_type
+      ),
+      selected: null,
+      skipped_candidates: [
+        sanitizeProviderAliasRoutingCandidate({
+          provider,
+          model,
+          route_family: routeFamily,
+          reason: event.failure_class ?? event.event_type,
+        }),
+      ].filter((entry) => entry != null),
+    })
+  }
+  const skipped = sanitizeProviderAliasRoutingCandidateList(
+    providerAliasRoutingMetadataValue(metadata, family, 'skipped_candidates')
+  )
+  for (const candidate of skipped) {
+    entries.push({
+      family,
+      alias_label: nullIfEmptyProviderAliasRouting(
+        providerAliasRoutingMetadataValue(metadata, family, 'alias') ??
+          metadata.requested_model_alias ??
+          metadata.model_alias_label ??
+          row.inbound_model_alias
+      ),
+      provider: candidate.provider,
+      model: candidate.model,
+      route_family: candidate.route_family,
+      state_kind: 'cooldown',
+      state_source: cooldownSource,
+      observed_at: observedAt,
+      expires_at: null,
+      cooldown_until: null,
+      remaining_seconds: null,
+      is_active: false,
+      last_resort: null,
+      selection_reason: candidate.reason,
+      selected: null,
+      skipped_candidates: [candidate],
+    })
+  }
+  return entries
+}
+
+export function normalizeProviderAliasRoutingReport(rows, options = {}) {
+  const generatedAt =
+    options.generatedAt ?? new Date().toISOString()
+  const affinityBest = new Map()
+  const cooldownBest = new Map()
+  const familiesSeen = new Set()
+
+  for (const row of rows) {
+    const metadata = normalizeJsonRecord(row.metadata) ?? {}
+    const observedAt =
+      parseProviderAliasRoutingTimestamp(row.created_at) ?? generatedAt
+    const family = providerAliasRoutingFamilyFromMetadata(metadata)
+    if (!family) continue
+    familiesSeen.add(family)
+
+    const affinity = buildProviderAliasRoutingAffinityEntry(
+      family,
+      metadata,
+      row,
+      observedAt
+    )
+    if (affinity) {
+      const key = affinity.family
+      const prior = affinityBest.get(key)
+      if (
+        !prior ||
+        Date.parse(affinity.observed_at) > Date.parse(prior.observed_at)
+      ) {
+        affinityBest.set(key, affinity)
+      }
+    }
+
+    const cooldowns = buildProviderAliasRoutingCooldownEntries(
+      row,
+      metadata,
+      family,
+      observedAt,
+      row.alias_route_events
+    )
+    for (const entry of cooldowns) {
+      if (entry.state_kind !== 'cooldown') continue
+      const key = [
+        entry.family,
+        entry.provider ?? '',
+        entry.model ?? '',
+        entry.route_family ?? '',
+      ].join('|')
+      const prior = cooldownBest.get(key)
+      if (
+        !prior ||
+        Date.parse(entry.observed_at) > Date.parse(prior.observed_at)
+      ) {
+        cooldownBest.set(key, entry)
+      }
+    }
+  }
+
+  const deduped = []
+  for (const family of ['codex', 'anthropic']) {
+    const affinity = affinityBest.get(family)
+    if (affinity) deduped.push(affinity)
+    deduped.push(
+      ...[...cooldownBest.values()]
+        .filter((entry) => entry.family === family)
+        .sort(
+          (left, right) =>
+            Date.parse(right.observed_at) - Date.parse(left.observed_at)
+        )
+        .slice(0, 6)
+    )
+  }
+
+  return {
+    data_source: 'recent_observed_session_history',
+    freshness_label:
+      'Recent observed routing from session history (not live Redis/DualCache)',
+    generated_at: generatedAt,
+    lookback_hours: PROVIDER_ALIAS_ROUTING_LOOKBACK_HOURS,
+    families: ['codex', 'anthropic'].map((family) => ({
+      family,
+      observed: familiesSeen.has(family),
+    })),
+    entries: deduped,
+  }
+}
+
+const PROVIDER_AUTH_HEALTH_ROW_LIMIT = 200
+const PROVIDER_AUTH_BLOCKED_METADATA_KEYS = new Set([
+  'auth_file',
+  'auth_file_path',
+  'refresh_token',
+  'access_token',
+  'id_token',
+  'api_key',
+  'authorization',
+  'client_secret',
+  'raw_auth',
+  'raw_auth_json',
+  'token',
+  'tokens',
+])
+
+export function buildProviderAuthHealthQuery(_searchParams) {
+  const sql = `
+SELECT
+    observed_at,
+    COALESCE(environment, 'unknown') AS environment,
+    provider,
+    auth_family,
+    credential_scope,
+    NULLIF(left(COALESCE(auth_file_hash, ''), 8), '') AS auth_file_hash_short,
+    status,
+    attempted,
+    refreshed,
+    skipped,
+    expires_at,
+    last_success_at,
+    source_task,
+    error_class,
+    error_message,
+    NULLIF(metadata->>'auth_file_source', '') AS auth_file_source
+FROM public.provider_auth_current
+ORDER BY
+    provider ASC,
+    auth_family ASC,
+    environment ASC,
+    observed_at DESC
+LIMIT $1;
+`
+  return {
+    sql,
+    values: [PROVIDER_AUTH_HEALTH_ROW_LIMIT],
+    metadata: {
+      limit: PROVIDER_AUTH_HEALTH_ROW_LIMIT,
+      dataSource: 'provider_auth_current',
+    },
+  }
+}
+
+function nullIfEmptyProviderAuth(value) {
+  if (value === null || value === undefined) return null
+  const text = String(value).trim()
+  return text ? text : null
+}
+
+function parseProviderAuthTimestamp(value) {
+  if (value === null || value === undefined || value === '') return null
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    return value.toISOString()
+  }
+  const text = String(value).trim()
+  if (!text) return null
+  const date = new Date(text)
+  return Number.isNaN(date.getTime()) ? null : date.toISOString()
+}
+
+function providerAuthRemainingSeconds(expiresAtIso, nowMs = Date.now()) {
+  if (!expiresAtIso) return null
+  const expiresMs = Date.parse(expiresAtIso)
+  if (!Number.isFinite(expiresMs)) return null
+  return Math.round((expiresMs - nowMs) / 1000)
+}
+
+function shortProviderAuthFileHash(value) {
+  const normalized = nullIfEmptyProviderAuth(value)
+  if (!normalized) return null
+  if (normalized.length <= 12) return normalized
+  return normalized.slice(0, 8)
+}
+
+function sanitizeProviderAuthErrorMessage(value) {
+  const normalized = nullIfEmptyProviderAuth(value)
+  if (!normalized) return null
+  let message = normalized
+  message = message.replace(
+    /(?:Bearer\s+)?[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g,
+    '[redacted-token]'
+  )
+  message = message.replace(
+    /(?:api[_-]?key|token|secret|password)\s*[:=]\s*\S+/gi,
+    '[redacted-credential]'
+  )
+  message = message.replace(/\/(?:home|Users|tmp|var)[^\s]*/g, '[redacted-path]')
+  if (message.length > 240) {
+    message = `${message.slice(0, 237)}...`
+  }
+  return message
+}
+
+function sanitizeProviderAuthSource(value) {
+  const source = nullIfEmptyProviderAuth(value)
+  if (!source) return null
+  if (PROVIDER_AUTH_BLOCKED_METADATA_KEYS.has(source.toLowerCase())) {
+    return null
+  }
+  if (/^\/(?:home|Users|tmp|var)\b/.test(source)) {
+    return null
+  }
+  return source.length > 120 ? `${source.slice(0, 117)}...` : source
+}
+
+export function classifyProviderAuthHealthState(row, options = {}) {
+  const nowMs = options.nowMs ?? Date.now()
+  const status = String(row.status ?? '')
+    .trim()
+    .toLowerCase()
+  const expiresAt = parseProviderAuthTimestamp(row.expires_at)
+  const expiresInFuture =
+    expiresAt != null && Number.isFinite(Date.parse(expiresAt))
+      ? Date.parse(expiresAt) > nowMs
+      : false
+
+  if (status === 'failed' || row.error_class) {
+    return 'failed'
+  }
+  if (status === 'refreshed' || row.refreshed) {
+    if (expiresAt != null && !expiresInFuture) return 'expired'
+    return 'refreshed'
+  }
+  if (status === 'skipped' || row.skipped) {
+    if (!expiresAt || !expiresInFuture) return 'skipped_expired'
+    return 'skipped_valid'
+  }
+  if (status === 'attempted' || row.attempted) {
+    return 'attempted'
+  }
+  if (expiresAt != null && !expiresInFuture) {
+    return 'expired'
+  }
+  return 'unknown'
+}
+
+export function normalizeProviderAuthHealthRow(row, options = {}) {
+  const observedAt =
+    parseProviderAuthTimestamp(row.observed_at) ??
+    options.generatedAt ??
+    new Date().toISOString()
+  const expiresAt = parseProviderAuthTimestamp(row.expires_at)
+  const lastSuccessAt = parseProviderAuthTimestamp(row.last_success_at)
+  const remainingSeconds = providerAuthRemainingSeconds(
+    expiresAt,
+    options.nowMs
+  )
+  const authHealthState = classifyProviderAuthHealthState(row, options)
+  return {
+    observed_at: observedAt,
+    environment: nullIfEmptyProviderAuth(row.environment) ?? 'unknown',
+    provider: nullIfEmptyProviderAuth(row.provider) ?? 'unknown',
+    auth_family: nullIfEmptyProviderAuth(row.auth_family) ?? 'unknown',
+    credential_scope: nullIfEmptyProviderAuth(row.credential_scope),
+    auth_file_hash_short:
+      shortProviderAuthFileHash(row.auth_file_hash_short) ??
+      shortProviderAuthFileHash(row.auth_file_hash),
+    status: nullIfEmptyProviderAuth(row.status) ?? 'unknown',
+    attempted: Boolean(row.attempted),
+    refreshed: Boolean(row.refreshed),
+    skipped: Boolean(row.skipped),
+    expires_at: expiresAt,
+    last_success_at: lastSuccessAt,
+    remaining_seconds: remainingSeconds,
+    auth_health_state: authHealthState,
+    source_task: nullIfEmptyProviderAuth(row.source_task),
+    error_class: nullIfEmptyProviderAuth(row.error_class),
+    error_message: sanitizeProviderAuthErrorMessage(row.error_message),
+    auth_file_source: sanitizeProviderAuthSource(
+      row.auth_file_source ??
+        (normalizeJsonRecord(row.metadata) ?? {}).auth_file_source
+    ),
+  }
+}
+
+export function normalizeProviderAuthHealthReport(rows, options = {}) {
+  const generatedAt =
+    options.generatedAt ?? new Date().toISOString()
+  const nowMs = options.nowMs ?? Date.now()
+  const entries = rows.map((row) =>
+    normalizeProviderAuthHealthRow(row, { generatedAt, nowMs })
+  )
+  return {
+    data_source: 'provider_auth_current',
+    freshness_label:
+      'Current provider credential refresh state from provider_auth_current',
+    generated_at: generatedAt,
+    entries,
+  }
+}
+
+
+const PROVIDER_CREDIT_LIFECYCLE_ROW_LIMIT = 500
+
+export function buildProviderCreditLifecycleQuery(_searchParams) {
+  const sql = `
+WITH filtered_credit_rows AS (
+  SELECT
+    cr.observed_at,
+    COALESCE(cr.environment, 'unknown') AS environment,
+    cr.provider,
+    NULLIF(left(COALESCE(cr.account_hash, ''), 8), '') AS account_hash_short,
+    cr.credit_family,
+    cr.credit_type,
+    cr.available_count,
+    cr.expires_at,
+    cr.source,
+    cr.credit_identity,
+    cr.granted_at,
+    cr.status,
+    cr.redeem_started_at,
+    cr.redeemed_at,
+    cr.operator_annotation,
+    cr.source_url
+  FROM public.provider_credit_current cr
+  WHERE cr.provider = 'openai'
+    AND cr.credit_family = 'codex_rate_limit_reset'
+    AND (
+      NULLIF(BTRIM(COALESCE(cr.credit_identity, '')), '') IS NOT NULL
+      OR NOT EXISTS (
+        SELECT 1
+        FROM public.provider_credit_current detail
+        WHERE NULLIF(BTRIM(COALESCE(detail.credit_identity, '')), '') IS NOT NULL
+          AND COALESCE(detail.environment, 'unknown') = COALESCE(cr.environment, 'unknown')
+          AND detail.provider = cr.provider
+          AND COALESCE(detail.account_hash, '') = COALESCE(cr.account_hash, '')
+          AND COALESCE(detail.credit_family, '') = COALESCE(cr.credit_family, '')
+          AND COALESCE(detail.source, '') = COALESCE(cr.source, '')
+      )
+    )
+)
+SELECT
+    observed_at,
+    environment,
+    provider,
+    account_hash_short,
+    credit_family,
+    credit_type,
+    available_count,
+    expires_at,
+    source,
+    credit_identity,
+    granted_at,
+    status,
+    redeem_started_at,
+    redeemed_at,
+    operator_annotation,
+    source_url
+FROM filtered_credit_rows
+ORDER BY
+    observed_at DESC,
+    granted_at DESC NULLS LAST,
+    credit_identity ASC NULLS LAST
+LIMIT $1;
+`
+  return {
+    sql,
+    values: [PROVIDER_CREDIT_LIFECYCLE_ROW_LIMIT],
+    metadata: {
+      limit: PROVIDER_CREDIT_LIFECYCLE_ROW_LIMIT,
+      dataSource: 'provider_credit_current',
+    },
+  }
+}
+
+function nullIfEmptyProviderCredit(value) {
+  if (value === null || value === undefined) return null
+  const text = String(value).trim()
+  return text ? text : null
+}
+
+function parseProviderCreditTimestamp(value) {
+  if (value === null || value === undefined || value === '') return null
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    return value.toISOString()
+  }
+  const text = String(value).trim()
+  if (!text) return null
+  const date = new Date(text)
+  return Number.isNaN(date.getTime()) ? null : date.toISOString()
+}
+
+function shortProviderCreditAccountHash(value) {
+  const normalized = nullIfEmptyProviderCredit(value)
+  if (!normalized) return null
+  if (normalized.length <= 12) return normalized
+  return normalized.slice(0, 8)
+}
+
+function resolveProviderCreditAccountHashShort(row) {
+  return (
+    nullIfEmptyProviderCredit(row.account_hash_short) ??
+    shortProviderCreditAccountHash(row.account_hash)
+  )
+}
+
+function sanitizeProviderCreditOperatorAnnotation(value) {
+  const normalized = nullIfEmptyProviderCredit(value)
+  if (!normalized) return null
+  let message = normalized
+  message = message.replace(
+    /(?:Bearer\s+)?[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g,
+    '[redacted-token]'
+  )
+  message = message.replace(
+    /(?:api[_-]?key|token|secret|password)\s*[:=]\s*\S+/gi,
+    '[redacted-credential]'
+  )
+  message = message.replace(/\/(?:home|Users|tmp|var)[^\s]*/g, '[redacted-path]')
+  if (message.length > 240) {
+    message = `${message.slice(0, 237)}...`
+  }
+  return message
+}
+
+function sanitizeProviderCreditSource(value) {
+  const source = nullIfEmptyProviderCredit(value)
+  if (!source) return null
+  if (source.length > 120) {
+    return `${source.slice(0, 117)}...`
+  }
+  return source
+}
+
+function sanitizeProviderCreditSourceUrl(value) {
+  const normalized = nullIfEmptyProviderCredit(value)
+  if (!normalized) return null
+  try {
+    const parsed = new URL(normalized)
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return null
+    }
+    parsed.username = ''
+    parsed.password = ''
+    parsed.search = ''
+    parsed.hash = ''
+    return parsed.toString()
+  } catch {
+    return null
+  }
+}
+
+function normalizeProviderCreditStatus(value) {
+  const status = String(value ?? '')
+    .trim()
+    .toLowerCase()
+  if (!status) return 'unknown'
+  if (status === 'available' || status === 'used' || status === 'expired') {
+    return status
+  }
+  return status
+}
+
+function providerCreditLegacyGroupKey(row) {
+  return [
+    nullIfEmptyProviderCredit(row.environment) ?? 'unknown',
+    nullIfEmptyProviderCredit(row.provider) ?? 'unknown',
+    resolveProviderCreditAccountHashShort(row) ?? '',
+    nullIfEmptyProviderCredit(row.credit_family) ?? 'unknown',
+    nullIfEmptyProviderCredit(row.source) ?? '',
+  ].join('|')
+}
+
+export function filterLegacyProviderCreditAggregateRows(rows) {
+  const detailGroups = new Set()
+  for (const row of rows) {
+    if (nullIfEmptyProviderCredit(row.credit_identity)) {
+      detailGroups.add(providerCreditLegacyGroupKey(row))
+    }
+  }
+  if (detailGroups.size === 0) {
+    return rows
+  }
+  return rows.filter((row) => {
+    if (nullIfEmptyProviderCredit(row.credit_identity)) {
+      return true
+    }
+    return !detailGroups.has(providerCreditLegacyGroupKey(row))
+  })
+}
+
+function providerCreditAvailableUnits(row) {
+  const status = normalizeProviderCreditStatus(row.status)
+  if (status !== 'available') return 0
+  const count = Number(row.available_count)
+  if (Number.isFinite(count) && count >= 0) {
+    return count
+  }
+  return 1
+}
+
+export function buildProviderCreditLifecycleSummaries(entries) {
+  const summariesByKey = new Map()
+  for (const entry of entries) {
+    const key = [
+      entry.environment,
+      entry.provider,
+      entry.credit_family,
+    ].join('|')
+    const existing = summariesByKey.get(key) ?? {
+      environment: entry.environment,
+      provider: entry.provider,
+      credit_family: entry.credit_family,
+      label: `${entry.provider} ${entry.credit_family} credits`,
+      available_count: 0,
+      used_count: 0,
+      expired_count: 0,
+      total_count: 0,
+    }
+    existing.total_count += 1
+    const status = normalizeProviderCreditStatus(entry.status)
+    if (status === 'available') {
+      existing.available_count += providerCreditAvailableUnits(entry)
+    } else if (status === 'used') {
+      existing.used_count += 1
+    } else if (status === 'expired') {
+      existing.expired_count += 1
+    }
+    summariesByKey.set(key, existing)
+  }
+  return [...summariesByKey.values()].sort((left, right) =>
+    `${left.provider}:${left.credit_family}`.localeCompare(
+      `${right.provider}:${right.credit_family}`
+    )
+  )
+}
+
+export function normalizeProviderCreditLifecycleRow(row, options = {}) {
+  const observedAt =
+    parseProviderCreditTimestamp(row.observed_at) ??
+    options.generatedAt ??
+    new Date().toISOString()
+  const status = normalizeProviderCreditStatus(row.status)
+  const availableCountRaw = Number(row.available_count)
+  const availableCount =
+    Number.isFinite(availableCountRaw) && availableCountRaw >= 0
+      ? availableCountRaw
+      : status === 'available'
+        ? 1
+        : 0
+  return {
+    observed_at: observedAt,
+    environment: nullIfEmptyProviderCredit(row.environment) ?? 'unknown',
+    provider: nullIfEmptyProviderCredit(row.provider) ?? 'unknown',
+    account_hash_short: resolveProviderCreditAccountHashShort(row),
+    credit_family: nullIfEmptyProviderCredit(row.credit_family) ?? 'unknown',
+    credit_type: nullIfEmptyProviderCredit(row.credit_type),
+    available_count: availableCount,
+    expires_at: parseProviderCreditTimestamp(row.expires_at),
+    source: sanitizeProviderCreditSource(row.source),
+    credit_identity: nullIfEmptyProviderCredit(row.credit_identity),
+    granted_at: parseProviderCreditTimestamp(row.granted_at),
+    status,
+    redeem_started_at: parseProviderCreditTimestamp(row.redeem_started_at),
+    redeemed_at: parseProviderCreditTimestamp(row.redeemed_at),
+    operator_annotation: sanitizeProviderCreditOperatorAnnotation(
+      row.operator_annotation
+    ),
+    source_url: sanitizeProviderCreditSourceUrl(row.source_url),
+  }
+}
+
+export function normalizeProviderCreditLifecycleReport(rows, options = {}) {
+  const generatedAt =
+    options.generatedAt ?? new Date().toISOString()
+  const filteredRows = filterLegacyProviderCreditAggregateRows(rows)
+  const entries = filteredRows.map((row) =>
+    normalizeProviderCreditLifecycleRow(row, { generatedAt })
+  )
+  const summaries = buildProviderCreditLifecycleSummaries(entries)
+  return {
+    data_source: 'provider_credit_current',
+    freshness_label:
+      'Current provider credit lifecycle from provider_credit_current',
+    generated_at: generatedAt,
+    summaries,
+    entries,
+  }
+}
+
+export function buildSessionDiagnosticsQuery(searchParams) {
+  const { from, to, values, whereParts } =
+    buildSessionDiagnosticsWhere(searchParams)
+  const limit = parseSessionDiagnosticsLimit(searchParams.get('limit'))
+  const candidateLimit = sessionDiagnosticsCandidateLimit(limit)
+  values.push(candidateLimit)
+  const candidateLimitPlaceholder = `$${values.length.toString()}`
+  values.push(limit)
+  const limitPlaceholder = `$${values.length.toString()}`
+
+  const sql = `
+WITH candidate_sessions AS MATERIALIZED (
+    SELECT
+        sh.created_at,
+        sh.start_time,
+        sh.end_time,
+        sh.session_id::text AS session_id,
+        NULLIF(sh.trace_id, '') AS trace_id,
+        sh.litellm_call_id::text AS litellm_call_id,
+        ${providerDimension} AS provider,
+        COALESCE(sh.model, 'unknown') AS model,
+        NULLIF(sh.model_group, '') AS model_group,
+        COALESCE(sh.tenant_id, 'unknown') AS repository,
+        COALESCE(sh.client_name, 'unknown') AS client,
+        COALESCE(sh.client_version, '0.0.0') AS client_version,
+        COALESCE(sh.litellm_environment, 'unknown') AS environment,
+        NULLIF(sh.inbound_model_alias, '') AS inbound_model_alias,
+        NULLIF(sh.agent_name, '') AS agent_name,
+        NULLIF(sh.agent_id, '') AS agent_id,
+        COALESCE(sh.metadata, '{}'::jsonb) AS metadata,
+        COALESCE(sh.agent_score_reasons, '{}'::jsonb) AS agent_score_reasons
+    FROM public.session_history sh
+    WHERE ${whereParts.join('\n      AND ')}
+    ORDER BY sh.created_at DESC
+    LIMIT ${candidateLimitPlaceholder}
+),
+recent_sessions AS MATERIALIZED (
+    SELECT *
+    FROM candidate_sessions
+    WHERE ${sessionDiagnosticsMetadataPresentClause()}
+    ORDER BY created_at DESC
+    LIMIT ${limitPlaceholder}
+),
+diagnostic_rows AS (
+    SELECT
+        rs.*,
+        alias_audit.alias_route_events,
+        tool_snapshots.tool_definition_snapshot
+    FROM recent_sessions rs
+    LEFT JOIN LATERAL (
+        SELECT
+            jsonb_agg(
+                jsonb_strip_nulls(
+                    jsonb_build_object(
+                        'observed_at', to_jsonb(aa)->>'observed_at',
+                        'session_id', to_jsonb(aa)->>'session_id',
+                        'trace_id', to_jsonb(aa)->>'trace_id',
+                        'litellm_call_id', to_jsonb(aa)->>'litellm_call_id',
+                        'alias_model', to_jsonb(aa)->>'alias_model',
+                        'alias_family', to_jsonb(aa)->>'alias_family',
+                        'provider', to_jsonb(aa)->>'provider',
+                        'model', to_jsonb(aa)->>'model',
+                        'route_family', to_jsonb(aa)->>'route_family',
+                        'attempt_number', to_jsonb(aa)->>'attempt_number',
+                        'event_type', to_jsonb(aa)->>'event_type',
+                        'failure_class', to_jsonb(aa)->>'failure_class',
+                        'cooldown_state', to_jsonb(aa)->>'cooldown_state',
+                        'cooldown_until', to_jsonb(aa)->>'cooldown_until',
+                        'redispatch_required', to_jsonb(aa)->>'redispatch_required',
+                        'last_resort', to_jsonb(aa)->>'last_resort',
+                        'details', to_jsonb(aa)->'details'
+                    )
+                )
+                ORDER BY observed_at
+            ) AS alias_route_events
+        FROM public.aawm_alias_routing_audit aa
+        WHERE (
+            rs.metadata->>'aawm_alias_routing_audit_events' IS NOT NULL
+            OR rs.metadata->>'codex_auto_agent_audit_events' IS NOT NULL
+            OR rs.metadata->>'anthropic_auto_agent_audit_events' IS NOT NULL
+        )
+          AND (
+              (
+                  NULLIF(aa.litellm_call_id, '') IS NOT NULL
+                  AND rs.litellm_call_id IS NOT NULL
+                  AND NULLIF(aa.litellm_call_id, '') = rs.litellm_call_id
+              )
+              OR (
+                  NULLIF(aa.session_id, '') IS NOT NULL
+                  AND rs.session_id IS NOT NULL
+                  AND NULLIF(aa.session_id, '') = rs.session_id
+              )
+              OR (
+                  NULLIF(aa.trace_id, '') IS NOT NULL
+                  AND rs.trace_id IS NOT NULL
+                  AND NULLIF(aa.trace_id, '') = rs.trace_id
+              )
+          )
+    ) alias_audit ON TRUE
+    LEFT JOIN LATERAL (
+        SELECT
+            jsonb_agg(
+                jsonb_strip_nulls(
+                    jsonb_build_object(
+                        'snapshot_hash', to_jsonb(td)->>'snapshot_hash',
+                        'session_id', to_jsonb(td)->>'session_id',
+                        'first_litellm_call_id', to_jsonb(td)->>'first_litellm_call_id',
+                        'first_trace_id', to_jsonb(td)->>'first_trace_id',
+                        'snapshot_storage_key', to_jsonb(td)->>'snapshot_storage_key',
+                        'metadata', to_jsonb(td)->'metadata',
+                        'sanitized_snapshot', to_jsonb(td)->'sanitized_snapshot'
+                    )
+                )
+                ORDER BY COALESCE(to_jsonb(td)->>'created_at', to_jsonb(td)->>'updated_at') DESC NULLS LAST
+            ) AS tool_definition_snapshot
+        FROM public.session_history_tool_definition_snapshots td
+        WHERE (
+            rs.metadata->>'aawm_tool_definition_capture_version' IS NOT NULL
+            OR rs.metadata->>'aawm_tool_definition_snapshot_hash' IS NOT NULL
+            OR rs.metadata->>'aawm_tool_definition_snapshot' IS NOT NULL
+        )
+          AND rs.session_id IS NOT NULL
+          AND NULLIF(td.session_id, '') = rs.session_id
+          AND (
+              NULLIF(rs.metadata->>'aawm_tool_definition_snapshot_hash', '') IS NULL
+              OR NULLIF(td.snapshot_hash, '') = rs.metadata->>'aawm_tool_definition_snapshot_hash'
+          )
+    ) tool_snapshots ON TRUE
+)
+SELECT
+    created_at,
+    start_time,
+    end_time,
+    session_id,
+    trace_id,
+    litellm_call_id,
+    provider,
+    model,
+    model_group,
+    repository,
+    client,
+    client_version,
+    environment,
+    inbound_model_alias,
+    agent_name,
+    agent_id,
+    ARRAY_REMOVE(ARRAY[
+        CASE WHEN metadata->>'credential_family' IS NOT NULL
+             OR metadata->>'grok_native_oauth_managed' IS NOT NULL
+             OR metadata->>'grok_native_entrypoint' IS NOT NULL
+             THEN 'grok_oauth'::text END,
+        CASE WHEN alias_route_events IS NOT NULL
+             OR metadata->>'aawm_alias_routing_audit_events' IS NOT NULL
+             OR metadata->>'codex_auto_agent_audit_events' IS NOT NULL
+             OR metadata->>'anthropic_auto_agent_audit_events' IS NOT NULL
+             THEN 'alias_routing'::text END,
+        CASE WHEN metadata->>'usage_output_contract_required_final_phrase' IS NOT NULL
+             OR metadata->>'usage_output_contract_required_final_phrase_present' IS NOT NULL
+             OR metadata->>'usage_output_contract_failure_class' IS NOT NULL
+             OR metadata->>'usage_output_contract_setup_only_detected' IS NOT NULL
+             THEN 'output_contract'::text END,
+        CASE WHEN metadata->>'aawm_tool_definition_capture_version' IS NOT NULL
+             OR metadata->>'aawm_tool_definition_snapshot_hash' IS NOT NULL
+             OR metadata->>'aawm_tool_definition_snapshot' IS NOT NULL
+             THEN 'tool_definitions'::text END,
+        CASE WHEN metadata->>'xai_responses_request_sanitized' IS NOT NULL
+             OR metadata->>'xai_responses_sanitized_removed_params' IS NOT NULL
+             OR metadata->>'xai_tool_choice_without_tools_removed' IS NOT NULL
+             OR metadata->>'xai_tool_choice_without_tools_removed_reason' IS NOT NULL
+             THEN 'xai_sanitizer'::text END,
+        CASE WHEN metadata->>'session_history_transcript_attribution_status' IS NOT NULL
+             OR metadata->>'session_history_transcript_attribution_source' IS NOT NULL
+             OR metadata->>'session_history_transcript_attribution' IS NOT NULL
+             THEN 'transcript_attribution'::text END,
+        CASE WHEN lower(COALESCE(metadata->>'grok_side_channel', '')) = 'true'
+             OR metadata->>'grok_side_channel_endpoint_type' IS NOT NULL
+             OR metadata->>'grok_side_channel_endpoint_path_template' IS NOT NULL
+             OR metadata->>'grok_side_channel_request_body_sha256' IS NOT NULL
+             THEN 'grok_side_channel'::text END,
+        CASE WHEN metadata->>'anthropic_context_window_mode' IS NOT NULL
+             OR metadata->>'anthropic_context_window_requested_tokens' IS NOT NULL
+             OR metadata->>'anthropic_context_window_source' IS NOT NULL
+             OR metadata->>'anthropic_context_window_beta' IS NOT NULL
+             OR metadata->>'anthropic_context_window_classification' IS NOT NULL
+             THEN 'anthropic_context_window'::text END
+    ], NULL) AS diagnostic_flags,
+    ARRAY_REMOVE(ARRAY[
+        CASE WHEN metadata->>'credential_family' IS NOT NULL
+             OR metadata->>'grok_native_oauth_managed' IS NOT NULL
+             THEN 'route_identity'::text END,
+        CASE WHEN alias_route_events IS NOT NULL
+             OR metadata->>'aawm_alias_routing_audit_events' IS NOT NULL
+             THEN 'route_timeline'::text END,
+        CASE WHEN metadata->>'usage_output_contract_required_final_phrase_present' IS NOT NULL
+             OR metadata->>'usage_output_contract_failure_class' IS NOT NULL
+             THEN 'agent_quality'::text END,
+        CASE WHEN metadata->>'aawm_tool_definition_snapshot_hash' IS NOT NULL
+             OR metadata->>'aawm_tool_definition_snapshot' IS NOT NULL
+             THEN 'tool_contract'::text END,
+        CASE WHEN metadata->>'xai_responses_request_sanitized' IS NOT NULL
+             OR metadata->>'xai_tool_choice_without_tools_removed' IS NOT NULL
+             THEN 'request_shape'::text END,
+        CASE WHEN lower(COALESCE(metadata->>'grok_side_channel', '')) = 'true'
+             OR metadata->>'grok_side_channel_endpoint_type' IS NOT NULL
+             OR metadata->>'grok_side_channel_endpoint_path_template' IS NOT NULL
+             OR metadata->>'grok_side_channel_request_body_sha256' IS NOT NULL
+             THEN 'request_shape'::text END,
+        CASE WHEN metadata->>'session_history_transcript_attribution_status' IS NOT NULL
+             THEN 'model_attribution'::text END,
+        CASE WHEN metadata->>'anthropic_context_window_mode' IS NOT NULL
+             OR metadata->>'anthropic_context_window_requested_tokens' IS NOT NULL
+             OR metadata->>'anthropic_context_window_source' IS NOT NULL
+             OR metadata->>'anthropic_context_window_beta' IS NOT NULL
+             OR metadata->>'anthropic_context_window_classification' IS NOT NULL
+             THEN 'context_window'::text END
+    ], NULL) AS diagnostic_categories,
+    jsonb_strip_nulls(jsonb_build_object(
+        'credential_family', NULLIF(metadata->>'credential_family', ''),
+        'grok_native_oauth_managed',
+            CASE WHEN metadata ? 'grok_native_oauth_managed'
+                 THEN lower(COALESCE(metadata->>'grok_native_oauth_managed', '')) = 'true'
+            END,
+        'grok_native_entrypoint', NULLIF(metadata->>'grok_native_entrypoint', ''),
+        'passthrough_route_family', NULLIF(metadata->>'passthrough_route_family', ''),
+        'route_family', NULLIF(metadata->>'route_family', ''),
+        'auth_mode', NULLIF(metadata->>'auth_mode', ''),
+        'grok_model_override', NULLIF(metadata->>'grok_model_override', '')
+    )) AS grok_oauth,
+    jsonb_strip_nulls(jsonb_build_object(
+        'enabled',
+            CASE WHEN metadata ? 'grok_side_channel'
+                 THEN lower(COALESCE(metadata->>'grok_side_channel', '')) = 'true'
+            END,
+        'endpoint_type', NULLIF(metadata->>'grok_side_channel_endpoint_type', ''),
+        'endpoint_template', NULLIF(metadata->>'grok_side_channel_endpoint_path_template', ''),
+        'content_type', NULLIF(metadata->>'grok_side_channel_request_content_type', ''),
+        'body_byte_length',
+            CASE WHEN COALESCE(metadata->>'grok_side_channel_request_body_byte_length', '') ~ '^-?[0-9]+$'
+                 THEN (metadata->>'grok_side_channel_request_body_byte_length')::integer
+            END,
+        'body_sha256', NULLIF(metadata->>'grok_side_channel_request_body_sha256', ''),
+        'digest_source', NULLIF(metadata->>'grok_side_channel_request_body_digest_source', ''),
+        'json_container_type', NULLIF(metadata->>'grok_side_channel_request_json_container_type', ''),
+        'top_level_key_types', metadata->'grok_side_channel_request_top_level_key_types',
+        'array_length',
+            CASE WHEN COALESCE(metadata->>'grok_side_channel_request_array_length', '') ~ '^-?[0-9]+$'
+                 THEN (metadata->>'grok_side_channel_request_array_length')::integer
+            END
+    )) AS grok_side_channel,
+    jsonb_strip_nulls(jsonb_build_object(
+        'usage_output_contract_required_final_phrase', NULLIF(metadata->>'usage_output_contract_required_final_phrase', ''),
+        'usage_output_contract_required_final_phrase_present',
+            CASE WHEN metadata ? 'usage_output_contract_required_final_phrase_present'
+                 THEN lower(COALESCE(metadata->>'usage_output_contract_required_final_phrase_present', '')) = 'true'
+            END,
+        'usage_output_contract_required_final_phrase_source', NULLIF(metadata->>'usage_output_contract_required_final_phrase_source', ''),
+        'usage_output_contract_failure_class', NULLIF(metadata->>'usage_output_contract_failure_class', ''),
+        'usage_output_contract_failure_count',
+            CASE WHEN COALESCE(metadata->>'usage_output_contract_failure_count', '') ~ '^-?[0-9]+$'
+                 THEN (metadata->>'usage_output_contract_failure_count')::integer
+            END,
+        'usage_output_contract_setup_only_detected',
+            CASE WHEN metadata ? 'usage_output_contract_setup_only_detected'
+                 THEN lower(COALESCE(metadata->>'usage_output_contract_setup_only_detected', '')) = 'true'
+            END,
+        'usage_output_contract_setup_only_markers', metadata->'usage_output_contract_setup_only_markers',
+        'usage_output_contract_final_text_chars',
+            CASE WHEN COALESCE(metadata->>'usage_output_contract_final_text_chars', '') ~ '^-?[0-9]+$'
+                 THEN (metadata->>'usage_output_contract_final_text_chars')::integer
+            END,
+        'usage_agent_score_reasons', COALESCE(metadata->'usage_agent_score_reasons', agent_score_reasons)
+    )) AS output_contract,
+    jsonb_strip_nulls(jsonb_build_object(
+        'xai_responses_request_sanitized',
+            CASE WHEN metadata ? 'xai_responses_request_sanitized'
+                 THEN lower(COALESCE(metadata->>'xai_responses_request_sanitized', '')) = 'true'
+            END,
+        'xai_responses_sanitized_removed_params', metadata->'xai_responses_sanitized_removed_params',
+        'xai_responses_sanitized_tool_count',
+            CASE WHEN COALESCE(metadata->>'xai_responses_sanitized_tool_count', '') ~ '^-?[0-9]+$'
+                 THEN (metadata->>'xai_responses_sanitized_tool_count')::integer
+            END,
+        'xai_responses_sanitized_tool_types', metadata->'xai_responses_sanitized_tool_types',
+        'xai_responses_sanitized_tools', metadata->'xai_responses_sanitized_tools',
+        'xai_tool_choice_without_tools_removed', COALESCE(metadata->'xai_tool_choice_without_tools_removed', to_jsonb(NULLIF(metadata->>'xai_tool_choice_without_tools_removed', ''))),
+        'xai_tool_choice_without_tools_removed_reason', NULLIF(metadata->>'xai_tool_choice_without_tools_removed_reason', ''),
+        'request_tags', metadata->'request_tags',
+        'openai_passthrough_route_family', NULLIF(metadata->>'openai_passthrough_route_family', ''),
+        'passthrough_route_family', NULLIF(metadata->>'passthrough_route_family', ''),
+        'route_family', NULLIF(metadata->>'route_family', ''),
+        'credential_family', NULLIF(metadata->>'credential_family', '')
+    )) AS xai_sanitizer,
+    jsonb_strip_nulls(jsonb_build_object(
+        'session_history_transcript_attribution_status', NULLIF(metadata->>'session_history_transcript_attribution_status', ''),
+        'session_history_transcript_attribution_source', NULLIF(metadata->>'session_history_transcript_attribution_source', ''),
+        'reason', NULLIF(metadata->'session_history_transcript_attribution'->>'reason', ''),
+        'match_rule', NULLIF(metadata->'session_history_transcript_attribution'->>'match_rule', ''),
+        'updated_at', NULLIF(metadata->'session_history_transcript_attribution'->>'updated_at', ''),
+        'session_history_transcript_attribution', COALESCE(metadata->'session_history_transcript_attribution', to_jsonb(NULLIF(metadata->>'session_history_transcript_attribution', '')))
+    )) AS transcript_attribution,
+    jsonb_strip_nulls(jsonb_build_object(
+        'aawm_tool_definition_capture_version', NULLIF(metadata->>'aawm_tool_definition_capture_version', ''),
+        'aawm_tool_definition_capture_source', NULLIF(metadata->>'aawm_tool_definition_capture_source', ''),
+        'aawm_tool_definition_count',
+            CASE WHEN COALESCE(metadata->>'aawm_tool_definition_count', '') ~ '^-?[0-9]+$'
+                 THEN (metadata->>'aawm_tool_definition_count')::integer
+            END,
+        'aawm_tool_definition_captured_count',
+            CASE WHEN COALESCE(metadata->>'aawm_tool_definition_captured_count', '') ~ '^-?[0-9]+$'
+                 THEN (metadata->>'aawm_tool_definition_captured_count')::integer
+            END,
+        'aawm_tool_definition_sources', metadata->'aawm_tool_definition_sources',
+        'aawm_tool_definition_names', metadata->'aawm_tool_definition_names',
+        'aawm_tool_definition_types', metadata->'aawm_tool_definition_types',
+        'snapshot_hash', NULLIF(metadata->>'aawm_tool_definition_snapshot_hash', ''),
+        'aawm_tool_definition_snapshot_truncated',
+            CASE WHEN metadata ? 'aawm_tool_definition_snapshot_truncated'
+                 THEN lower(COALESCE(metadata->>'aawm_tool_definition_snapshot_truncated', '')) = 'true'
+            END,
+        'aawm_tool_definition_snapshot_storage', NULLIF(metadata->>'aawm_tool_definition_snapshot_storage', ''),
+        'aawm_tool_definition_snapshot_storage_key', NULLIF(metadata->>'aawm_tool_definition_snapshot_storage_key', ''),
+        'tool_definition_snapshot', COALESCE(tool_definition_snapshot, metadata->'aawm_tool_definition_snapshot')
+    )) AS tool_definitions,
+    jsonb_strip_nulls(jsonb_build_object(
+        'mode', NULLIF(metadata->>'anthropic_context_window_mode', ''),
+        'requested_tokens',
+            CASE WHEN COALESCE(metadata->>'anthropic_context_window_requested_tokens', '') ~ '^-?[0-9]+$'
+                 THEN (metadata->>'anthropic_context_window_requested_tokens')::bigint
+            END,
+        'source', NULLIF(metadata->>'anthropic_context_window_source', ''),
+        'beta', NULLIF(metadata->>'anthropic_context_window_beta', ''),
+        'classification', COALESCE(
+            metadata->'anthropic_context_window_classification',
+            to_jsonb(NULLIF(metadata->>'anthropic_context_window_classification', ''))
+        )
+    )) AS anthropic_context_window,
+    COALESCE(
+        alias_route_events,
+        metadata->'aawm_alias_routing_audit_events',
+        metadata->'codex_auto_agent_audit_events',
+        metadata->'anthropic_auto_agent_audit_events',
+        '[]'::jsonb
+    ) AS alias_route_events
+FROM diagnostic_rows
+ORDER BY created_at DESC;
+`
+
+  return { sql, values, metadata: { from, to, limit, candidateLimit } }
+}
+
+
+function normalizeAnthropicContextWindow(value) {
+  const record = normalizeJsonRecord(value)
+  const mode =
+    typeof record.mode === 'string' && record.mode.trim() !== ''
+      ? record.mode.trim()
+      : null
+  const source =
+    typeof record.source === 'string' && record.source.trim() !== ''
+      ? record.source.trim()
+      : null
+  const beta =
+    typeof record.beta === 'string' && record.beta.trim() !== ''
+      ? record.beta.trim()
+      : null
+  const requestedTokens = normalizeNumber(record.requested_tokens)
+  const classification =
+    record.classification === undefined || record.classification === null
+      ? null
+      : record.classification
+  if (
+    mode == null &&
+    source == null &&
+    beta == null &&
+    requestedTokens == null &&
+    classification == null
+  ) {
+    return null
+  }
+  return {
+    mode,
+    requested_tokens: requestedTokens,
+    source,
+    beta,
+    classification,
+  }
+}
+
+function normalizeSessionDiagnosticsRow(row) {
+  return {
+    created_at: row.created_at ?? null,
+    start_time: row.start_time ?? null,
+    end_time: row.end_time ?? null,
+    session_id: row.session_id ?? null,
+    trace_id: row.trace_id ?? null,
+    litellm_call_id: row.litellm_call_id ?? null,
+    provider: row.provider ?? 'unknown',
+    model: row.model ?? 'unknown',
+    model_group: row.model_group ?? null,
+    repository: row.repository ?? 'unknown',
+    client: row.client ?? 'unknown',
+    client_version: row.client_version ?? '0.0.0',
+    environment: row.environment ?? 'unknown',
+    inbound_model_alias: row.inbound_model_alias ?? null,
+    agent_name: row.agent_name ?? null,
+    agent_id: row.agent_id ?? null,
+    diagnostic_flags: normalizeStringArray(row.diagnostic_flags),
+    diagnostic_categories: normalizeStringArray(row.diagnostic_categories),
+    grok_oauth: normalizeJsonRecord(row.grok_oauth),
+    grok_side_channel: normalizeJsonRecord(row.grok_side_channel),
+    output_contract: normalizeJsonRecord(row.output_contract),
+    xai_sanitizer: normalizeJsonRecord(row.xai_sanitizer),
+    transcript_attribution: normalizeJsonRecord(row.transcript_attribution),
+    tool_definitions: normalizeJsonRecord(row.tool_definitions),
+    anthropic_context_window: normalizeAnthropicContextWindow(
+      row.anthropic_context_window
+    ),
+    alias_route_events: Array.isArray(row.alias_route_events)
+      ? row.alias_route_events
+      : [],
   }
 }
 
 async function loadQuotaReport(options = {}) {
-  return cachedReport('quotas', loadQuotaReportFromDatabase, {
+  return cachedReport('quotas', loadQuotaReportWithDatabaseTimeoutHandling, {
     decorateMetadata: options.decorateMetadata,
     lockWaitMs: 10_000,
     refreshStaleInForeground: true,
     searchParams: options.searchParams,
   })
+}
+
+async function loadQuotaReportWithDatabaseTimeoutHandling() {
+  try {
+    return await loadQuotaReportFromDatabase()
+  } catch (error) {
+    if (isDatabaseTimeoutError(error)) {
+      return buildDegradedQuotaReport()
+    }
+    throw error
+  }
 }
 
 async function loadQuotaReportFromDatabase() {
@@ -5566,6 +8427,94 @@ function normalizeUsageBreakdown(value) {
   }))
 }
 
+function normalizeStringArray(value) {
+  const source = (() => {
+    if (Array.isArray(value)) return value
+    if (typeof value === 'string') {
+      try {
+        const parsed = JSON.parse(value)
+        return Array.isArray(parsed) ? parsed : [value]
+      } catch {
+        return [value]
+      }
+    }
+    return []
+  })()
+
+  return source
+    .filter((entry) => typeof entry === 'string')
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+}
+
+function normalizeJsonRecord(value) {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    return value
+  }
+  if (typeof value === 'string' && value.trim() !== '') {
+    try {
+      const parsed = JSON.parse(value)
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return parsed
+      }
+    } catch {
+      return {}
+    }
+  }
+  return {}
+}
+
+function hasRecordEntries(value) {
+  return value && typeof value === 'object' && Object.keys(value).length > 0
+}
+
+function normalizeQuotaBillingDetail(row, prefix) {
+  const rawProviderFields = normalizeJsonRecord(
+    row[`${prefix}_raw_provider_fields`]
+  )
+  const evidence = normalizeJsonRecord(row[`${prefix}_evidence`])
+  const detail = {
+    quota_key: row[`${prefix}_quota_key`] ?? null,
+    source: row[`${prefix}_source`] ?? null,
+    client: row[`${prefix}_client`] ?? null,
+    quota_unit: row[`${prefix}_quota_unit`] ?? null,
+    quota_limit: normalizeNumber(row[`${prefix}_quota_limit`]),
+    quota_used: normalizeNumber(row[`${prefix}_quota_used`]),
+    quota_remaining: normalizeNumber(row[`${prefix}_quota_remaining`]),
+    billing_observed_at: row[`${prefix}_billing_observed_at`] ?? null,
+    billing_period_start_at: row[`${prefix}_billing_period_start_at`] ?? null,
+    billing_period_end_at: row[`${prefix}_billing_period_end_at`] ?? null,
+    raw_provider_fields: rawProviderFields,
+    evidence,
+  }
+  const hasBillingValue =
+    detail.quota_key !== null ||
+    detail.source !== null ||
+    detail.client !== null ||
+    detail.quota_unit !== null ||
+    detail.quota_limit !== null ||
+    detail.quota_used !== null ||
+    detail.quota_remaining !== null ||
+    detail.billing_observed_at !== null ||
+    detail.billing_period_start_at !== null ||
+    detail.billing_period_end_at !== null ||
+    hasRecordEntries(rawProviderFields) ||
+    hasRecordEntries(evidence)
+
+  return hasBillingValue ? detail : null
+}
+
+function normalizeQuotaBillingDetails(row) {
+  const details = {}
+  for (const quotaType of QUOTA_LANE_TYPES) {
+    const detail = normalizeQuotaBillingDetail(row, quotaType)
+    if (detail !== null) {
+      details[quotaType] = detail
+    }
+  }
+  return details
+}
+
 
 function normalizeQuotaVelocityScores(value) {
   if (!Array.isArray(value)) return []
@@ -5601,14 +8550,7 @@ function buildQuotaVelocityRowsByLane(rows) {
 
 function attachQuotaVelocityRows(row, quotaVelocityRowsByLane) {
   const merged = { ...row }
-  for (const quotaType of [
-    'weekly',
-    'short',
-    'special',
-    'short_special',
-    'monthly',
-    'wtus',
-  ]) {
+  for (const quotaType of QUOTA_LANE_TYPES) {
     const velocityRow = quotaVelocityRowsByLane.get(
       quotaVelocityLaneKey(row.provider, row.model, quotaType)
     )
@@ -5621,111 +8563,45 @@ function attachQuotaVelocityRows(row, quotaVelocityRowsByLane) {
   return merged
 }
 
-function normalizeQuotaRow(row) {
+function normalizeQuotaLaneFields(row, quotaType) {
+  return {
+    [`${quotaType}_remaining_pct`]: normalizeNumber(
+      row[`${quotaType}_remaining_pct`]
+    ),
+    [`${quotaType}_reset_at`]: row[`${quotaType}_reset_at`] ?? null,
+    [`${quotaType}_interval_start`]:
+      row[`${quotaType}_interval_start`] ?? null,
+    [`${quotaType}_interval_end`]: row[`${quotaType}_interval_end`] ?? null,
+    [`${quotaType}_active`]: Boolean(
+      normalizeNumber(row[`${quotaType}_active`])
+    ),
+    [`${quotaType}_usage_tokens`]:
+      normalizeNumber(row[`${quotaType}_usage_tokens`]) ?? 0,
+    [`${quotaType}_usage_breakdown`]: normalizeUsageBreakdown(
+      row[`${quotaType}_usage_breakdown`]
+    ),
+    [`${quotaType}_velocity_segments`]: normalizeQuotaVelocitySegments(
+      row[`${quotaType}_velocity_segments`]
+    ),
+    [`${quotaType}_velocity_scores`]: normalizeQuotaVelocityScores(
+      row[`${quotaType}_velocity_scores`]
+    ),
+    [`${quotaType}_velocity_sample_count`]:
+      normalizeNumber(row[`${quotaType}_velocity_sample_count`]) ?? 0,
+  }
+}
+
+export function normalizeQuotaRow(row) {
   return {
     provider: row.provider,
     model: row.model ?? null,
-    weekly_remaining_pct: normalizeNumber(row.weekly_remaining_pct),
-    weekly_reset_at: row.weekly_reset_at ?? null,
-    weekly_interval_start: row.weekly_interval_start ?? null,
-    weekly_interval_end: row.weekly_interval_end ?? null,
-    weekly_active: Boolean(normalizeNumber(row.weekly_active)),
-    weekly_usage_tokens: normalizeNumber(row.weekly_usage_tokens) ?? 0,
-    weekly_usage_breakdown: normalizeUsageBreakdown(
-      row.weekly_usage_breakdown
+    billing_details: normalizeQuotaBillingDetails(row),
+    ...Object.assign(
+      {},
+      ...QUOTA_LANE_TYPES.map((quotaType) =>
+        normalizeQuotaLaneFields(row, quotaType)
+      )
     ),
-    weekly_velocity_segments: normalizeQuotaVelocitySegments(
-      row.weekly_velocity_segments
-    ),
-    weekly_velocity_scores: normalizeQuotaVelocityScores(
-      row.weekly_velocity_scores
-    ),
-    weekly_velocity_sample_count:
-      normalizeNumber(row.weekly_velocity_sample_count) ?? 0,
-    short_remaining_pct: normalizeNumber(row.short_remaining_pct),
-    short_reset_at: row.short_reset_at ?? null,
-    short_interval_start: row.short_interval_start ?? null,
-    short_interval_end: row.short_interval_end ?? null,
-    short_active: Boolean(normalizeNumber(row.short_active)),
-    short_usage_tokens: normalizeNumber(row.short_usage_tokens) ?? 0,
-    short_usage_breakdown: normalizeUsageBreakdown(row.short_usage_breakdown),
-    short_velocity_segments: normalizeQuotaVelocitySegments(
-      row.short_velocity_segments
-    ),
-    short_velocity_scores: normalizeQuotaVelocityScores(
-      row.short_velocity_scores
-    ),
-    short_velocity_sample_count:
-      normalizeNumber(row.short_velocity_sample_count) ?? 0,
-    special_remaining_pct: normalizeNumber(row.special_remaining_pct),
-    special_reset_at: row.special_reset_at ?? null,
-    special_interval_start: row.special_interval_start ?? null,
-    special_interval_end: row.special_interval_end ?? null,
-    special_active: Boolean(normalizeNumber(row.special_active)),
-    special_usage_tokens: normalizeNumber(row.special_usage_tokens) ?? 0,
-    special_usage_breakdown: normalizeUsageBreakdown(
-      row.special_usage_breakdown
-    ),
-    special_velocity_segments: normalizeQuotaVelocitySegments(
-      row.special_velocity_segments
-    ),
-    special_velocity_scores: normalizeQuotaVelocityScores(
-      row.special_velocity_scores
-    ),
-    special_velocity_sample_count:
-      normalizeNumber(row.special_velocity_sample_count) ?? 0,
-    short_special_remaining_pct: normalizeNumber(
-      row.short_special_remaining_pct
-    ),
-    short_special_reset_at: row.short_special_reset_at ?? null,
-    short_special_interval_start: row.short_special_interval_start ?? null,
-    short_special_interval_end: row.short_special_interval_end ?? null,
-    short_special_active: Boolean(normalizeNumber(row.short_special_active)),
-    short_special_usage_tokens:
-      normalizeNumber(row.short_special_usage_tokens) ?? 0,
-    short_special_usage_breakdown: normalizeUsageBreakdown(
-      row.short_special_usage_breakdown
-    ),
-    short_special_velocity_segments: normalizeQuotaVelocitySegments(
-      row.short_special_velocity_segments
-    ),
-    short_special_velocity_scores: normalizeQuotaVelocityScores(
-      row.short_special_velocity_scores
-    ),
-    short_special_velocity_sample_count:
-      normalizeNumber(row.short_special_velocity_sample_count) ?? 0,
-    monthly_remaining_pct: normalizeNumber(row.monthly_remaining_pct),
-    monthly_reset_at: row.monthly_reset_at ?? null,
-    monthly_interval_start: row.monthly_interval_start ?? null,
-    monthly_interval_end: row.monthly_interval_end ?? null,
-    monthly_active: Boolean(normalizeNumber(row.monthly_active)),
-    monthly_usage_tokens: normalizeNumber(row.monthly_usage_tokens) ?? 0,
-    monthly_usage_breakdown: normalizeUsageBreakdown(
-      row.monthly_usage_breakdown
-    ),
-    monthly_velocity_segments: normalizeQuotaVelocitySegments(
-      row.monthly_velocity_segments
-    ),
-    monthly_velocity_scores: normalizeQuotaVelocityScores(
-      row.monthly_velocity_scores
-    ),
-    monthly_velocity_sample_count:
-      normalizeNumber(row.monthly_velocity_sample_count) ?? 0,
-    wtus_remaining_pct: normalizeNumber(row.wtus_remaining_pct),
-    wtus_reset_at: row.wtus_reset_at ?? null,
-    wtus_interval_start: row.wtus_interval_start ?? null,
-    wtus_interval_end: row.wtus_interval_end ?? null,
-    wtus_active: Boolean(normalizeNumber(row.wtus_active)),
-    wtus_usage_tokens: normalizeNumber(row.wtus_usage_tokens) ?? 0,
-    wtus_usage_breakdown: normalizeUsageBreakdown(row.wtus_usage_breakdown),
-    wtus_velocity_segments: normalizeQuotaVelocitySegments(
-      row.wtus_velocity_segments
-    ),
-    wtus_velocity_scores: normalizeQuotaVelocityScores(
-      row.wtus_velocity_scores
-    ),
-    wtus_velocity_sample_count:
-      normalizeNumber(row.wtus_velocity_sample_count) ?? 0,
   }
 }
 
@@ -5734,6 +8610,10 @@ function normalizeQuotaHistoryRow(row) {
     provider: row.provider ?? 'unknown',
     model: row.model ?? null,
     quota_type: row.quota_type ?? 'unknown',
+    quota_key: row.quota_key ?? null,
+    source: row.source ?? null,
+    client: row.client ?? null,
+    quota_unit: row.quota_unit ?? null,
     expected_reset_at: row.expected_reset_at ?? null,
     interval_start: row.interval_start ?? null,
     interval_end: row.interval_end ?? null,
@@ -5755,39 +8635,6 @@ function normalizeQuotaHistoryRow(row) {
   }
 }
 
-function normalizeQuotaEstimatorDatasetRow(row) {
-  return {
-    lag_minutes: normalizeNumber(row.lag_minutes) ?? 0,
-    provider: row.provider ?? 'unknown',
-    quota_key: row.quota_key ?? 'unknown',
-    quota_type: row.quota_type ?? 'unknown',
-    quota_lane: row.quota_lane ?? 'unknown',
-    raw_observation_quota_type: row.raw_observation_quota_type ?? null,
-    raw_interval_quota_type: row.raw_interval_quota_type ?? null,
-    expected_reset_at: row.expected_reset_at ?? null,
-    reset_start_at: row.reset_start_at ?? null,
-    reset_end_at: row.reset_end_at ?? null,
-    interval_start_at: row.interval_start_at ?? null,
-    interval_end_at: row.interval_end_at ?? null,
-    previous_consumed_pct: normalizeNumber(row.previous_consumed_pct),
-    current_consumed_pct: normalizeNumber(row.current_consumed_pct),
-    delta_pct: normalizeNumber(row.delta_pct),
-    is_reset_boundary: Boolean(row.is_reset_boundary),
-    is_capped_at_100: Boolean(row.is_capped_at_100),
-    trainable: Boolean(row.trainable),
-    exclude_reason: row.exclude_reason ?? null,
-    model_family: row.model_family ?? 'no_usage',
-    traces: normalizeNumber(row.traces) ?? 0,
-    uncached_input_tokens: normalizeNumber(row.uncached_input_tokens) ?? 0,
-    output_tokens: normalizeNumber(row.output_tokens) ?? 0,
-    cache_read_tokens: normalizeNumber(row.cache_read_tokens) ?? 0,
-    cache_create_tokens: normalizeNumber(row.cache_create_tokens) ?? 0,
-    reasoning_tokens: normalizeNumber(row.reasoning_tokens) ?? 0,
-    usd_cost: normalizeNumber(row.usd_cost) ?? 0,
-    tool_calls: normalizeNumber(row.tool_calls) ?? 0,
-  }
-}
-
 function normalizeQuotaEstimatorObservationRow(row) {
   return {
     provider: row.provider ?? 'unknown',
@@ -5802,6 +8649,13 @@ function normalizeQuotaEstimatorObservationRow(row) {
     reset_end_at: row.reset_end_at ?? null,
     observed_at: row.observed_at ?? null,
     consumed_pct: normalizeNumber(row.consumed_pct),
+    quota_limit: normalizeNumber(row.quota_limit),
+    quota_used: normalizeNumber(row.quota_used),
+    quota_remaining: normalizeNumber(row.quota_remaining),
+    billing_period_start_at: row.billing_period_start_at ?? null,
+    billing_period_end_at: row.billing_period_end_at ?? null,
+    raw_provider_fields: normalizeJsonRecord(row.raw_provider_fields),
+    evidence: normalizeJsonRecord(row.evidence),
   }
 }
 
@@ -6665,11 +9519,15 @@ function joinUrlPath(basePath, requestPath) {
   return `${normalizedBase}${normalizedRequest}`
 }
 
-function proxyHeaders(req, proxyConfig) {
+export function proxyHeaders(req, proxyConfig) {
   const headers = {}
   for (const [key, value] of Object.entries(req.headers)) {
     const lowerKey = key.toLowerCase()
-    if (HOP_BY_HOP_HEADERS.has(lowerKey) || CLIENT_AUTH_HEADERS.has(lowerKey)) {
+    if (
+      HOP_BY_HOP_HEADERS.has(lowerKey) ||
+      CLIENT_AUTH_HEADERS.has(lowerKey) ||
+      INTERNAL_PROXY_HEADERS.has(lowerKey)
+    ) {
       continue
     }
     if (Array.isArray(value)) {
@@ -6726,17 +9584,11 @@ export function buildUsageQuery(searchParams) {
   const from = parseDateParam(searchParams.get('from'), defaultFromDate)
   const to = parseDateParam(searchParams.get('to'), defaultToDate)
   const limit = parseLimit(searchParams.get('limit'))
-  const sort = sortColumns[searchParams.get('sort') ?? 'period_end']
-  if (!sort) {
-    throw new Error(`Unsupported sort: ${searchParams.get('sort')}`)
-  }
-
-  const sortDirection =
-    searchParams.get('direction')?.toLowerCase() === 'asc' ? 'ASC' : 'DESC'
+  const { sort, sortDirection } = parseUsageReportSort(searchParams)
 
   const values = [from, to]
   const whereParts = [...startTimeDateRangeWhere]
-  appendReportableSessionHistoryWhere(whereParts)
+  appendFastUsageSignalWhere(whereParts)
 
   for (const key of Object.keys(filterColumns)) {
     appendMultiValueFilter(searchParams, key, whereParts, values)
@@ -6757,14 +9609,10 @@ export function buildUsageQuery(searchParams) {
     (column) =>
       `base.${column} IS NOT DISTINCT FROM reason_summary.${column}`
   )
-  const filteredColumnSelects = usageFilteredColumns.map(
-    (column) => `        sh.${column}`
-  )
-
   const sql = `
 WITH filtered AS (
     SELECT
-${filteredColumnSelects.join(',\n')}
+${usageFilteredColumnSelects.join(',\n')}
     FROM public.session_history sh
     WHERE ${whereParts.join('\n      AND ')}
 ),
@@ -6837,15 +9685,49 @@ SELECT
     ROUND(CAST(SUM(COALESCE(sh.llm_upstream_elapsed_ms, 0)) AS numeric), 2)::double precision AS llm_upstream_elapsed_total_ms,
     ROUND(CAST(AVG(sh.llm_upstream_elapsed_ms) AS numeric), 2)::double precision AS llm_upstream_elapsed_average_ms,
 
-    ${latencyMetricSelectParts.join(',\n    ')},
+    ${fastUsageLatencyMetricSelectParts.join(',\n    ')},
 
-    ${agentScoreSelectParts.join(',\n    ')},
+    ${fastUsageAgentScoreSelectParts.join(',\n    ')},
 
     MIN(sh.start_time) AS period_start,
     MAX(sh.end_time) AS period_end
 FROM filtered sh
 GROUP BY
     ${groupParts.join(',\n    ')}
+),
+reason_bounds AS (
+    SELECT
+        GREATEST(COALESCE(MAX(id), 0) - ${AGENT_SCORE_REASON_RECENT_ROW_LIMIT}::bigint, 0) AS min_id,
+        COALESCE(MAX(id), 0) AS max_id,
+        ${AGENT_SCORE_REASON_RECENT_ROW_LIMIT}::bigint AS recent_row_limit
+    FROM public.session_history
+),
+reason_cap_state AS (
+    SELECT
+        rb.min_id AS agent_score_reasons_bounded_min_id,
+        rb.max_id AS agent_score_reasons_bounded_max_id,
+        rb.recent_row_limit AS agent_score_reasons_recent_row_limit,
+        true AS agent_score_reasons_recent_id_cap_active,
+        EXISTS (
+            SELECT 1
+            FROM public.session_history sh_window
+            WHERE sh_window.created_at >= ($1::date::timestamp AT TIME ZONE 'America/New_York')
+              AND sh_window.created_at < ($2::date::timestamp AT TIME ZONE 'America/New_York')
+              AND sh_window.id <= rb.min_id
+              AND sh_window.agent_score_reasons IS NOT NULL
+              AND sh_window.agent_score_reasons <> '{}'::jsonb
+        ) AS agent_score_reasons_recent_id_cap_truncates_requested_window
+    FROM reason_bounds rb
+),
+reason_source AS MATERIALIZED (
+    SELECT
+${usageFilteredColumnSelects.join(',\n')}
+    FROM public.session_history sh
+    CROSS JOIN reason_bounds rb
+    WHERE sh.id > rb.min_id
+      AND ${whereParts.join('\n      AND ')}
+      AND sh.agent_score_reasons IS NOT NULL
+      AND sh.agent_score_reasons <> '{}'::jsonb
 ),
 reason_counts AS (
 SELECT
@@ -6865,7 +9747,7 @@ SELECT
         ELSE NULL
     END AS reason,
     COUNT(*)::double precision AS reason_count
-FROM filtered sh
+FROM reason_source sh
 CROSS JOIN LATERAL jsonb_each(
     CASE
         WHEN jsonb_typeof(sh.agent_score_reasons) = 'object'
@@ -6884,9 +9766,7 @@ CROSS JOIN LATERAL jsonb_array_elements(
         ELSE '[]'::jsonb
     END
 ) AS reason_value(value)
-WHERE sh.agent_score_reasons IS NOT NULL
-  AND sh.agent_score_reasons <> '{}'::jsonb
-  AND (
+WHERE (
       jsonb_typeof(reason_value.value) = 'string'
       OR (
           jsonb_typeof(reason_value.value) = 'object'
@@ -6943,19 +9823,90 @@ GROUP BY
 )
 SELECT
     base.*,
-    COALESCE(reason_summary.agent_score_reasons_top, '[]'::jsonb) AS agent_score_reasons_top
+    COALESCE(reason_summary.agent_score_reasons_top, '[]'::jsonb) AS agent_score_reasons_top,
+    cap.agent_score_reasons_bounded_min_id,
+    cap.agent_score_reasons_bounded_max_id,
+    cap.agent_score_reasons_recent_row_limit,
+    cap.agent_score_reasons_recent_id_cap_active,
+    cap.agent_score_reasons_recent_id_cap_truncates_requested_window
 FROM base
+CROSS JOIN reason_cap_state cap
 LEFT JOIN reason_summary
   ON ${reasonJoinParts.join('\n  AND ')}
 ORDER BY ${sort} ${sortDirection}
 LIMIT $${values.length};
 `
 
-  return { sql, values, metadata: { from, to, grain, groupBy, limit } }
+  return {
+    sql,
+    values,
+    metadata: {
+      from,
+      to,
+      grain,
+      groupBy,
+      limit,
+      agentScoreReasonsRecentRowLimit: AGENT_SCORE_REASON_RECENT_ROW_LIMIT,
+      agentScoreReasonsRecentIdCapActive: true,
+    },
+  }
+}
+
+
+function capDockerJsonLogSourcesForScan(sources, options = {}) {
+  const list = Array.isArray(sources) ? sources : []
+  const maxSources = Number(options.maxSources ?? DOCKER_LOG_SCAN_MAX_SOURCES)
+  const maxTotalBytes = Number(
+    options.maxTotalBytes ?? DOCKER_LOG_SCAN_MAX_TOTAL_BYTES
+  )
+  const perFileDefault = Number(options.perFileTailBytes ?? DOCKER_LOG_TAIL_BYTES)
+  const cappedSources = list.slice(0, Math.max(0, maxSources))
+  let remainingBytes = Math.max(0, maxTotalBytes)
+  const selected = []
+  for (const source of cappedSources) {
+    if (remainingBytes <= 0) break
+    const tailBytes = Math.min(perFileDefault, remainingBytes)
+    if (tailBytes <= 0) break
+    selected.push({ ...source, tailBytes })
+    remainingBytes -= tailBytes
+  }
+  return selected
+}
+
+function isDockerLogScanCacheFresh(cachedAt, ttlMs = DOCKER_LOG_SCAN_CACHE_TTL_MS) {
+  const ttl = Number(ttlMs)
+  if (!Number.isFinite(ttl) || ttl <= 0) return false
+  return Date.now() - Number(cachedAt) < ttl
+}
+
+function resetDockerLogScanCachesForTests() {
+  dockerLogJsonSourcesCache = null
+  dockerLogErrorsScanCache = null
+  dockerLogScanSourceCache = new Map()
+  dockerLogTailReadCountForTests = 0
+}
+
+function computeDockerLogSourceCacheKey(source = {}) {
+  return `${source.container ?? ''}|${source.logPath ?? ''}`
+}
+
+function filterDockerLogRowsByCutoff(rows, cutoffMs) {
+  return (Array.isArray(rows) ? rows : []).filter((row) => {
+    const observedAt = Date.parse(row?.observed_at ?? '')
+    return Number.isFinite(observedAt) && observedAt >= cutoffMs
+  })
 }
 
 async function findDockerJsonLogSources() {
-  if (!DOCKER_LOG_CONTAINER_NAMES.length || MAX_DOCKER_LOG_ERROR_ROWS <= 0) {
+  if (
+    dockerLogJsonSourcesCache &&
+    isDockerLogScanCacheFresh(dockerLogJsonSourcesCache.cachedAt)
+  ) {
+    return dockerLogJsonSourcesCache.sources
+  }
+
+  if (!shouldDiscoverDockerJsonLogSources(DOCKER_LOG_CONTAINER_NAMES)) {
+    dockerLogJsonSourcesCache = { sources: [], cachedAt: Date.now() }
     return []
   }
 
@@ -6968,11 +9919,11 @@ async function findDockerJsonLogSources() {
         `[report-service] WARN: unable to scan Docker log root ${DOCKER_LOG_ROOT}: ${formatError(error)}\n`
       )
     }
+    dockerLogJsonSourcesCache = { sources: [], cachedAt: Date.now() }
     return []
   }
 
-  const wanted = new Set(DOCKER_LOG_CONTAINER_NAMES)
-  const sources = []
+  const configs = []
   for (const entry of entries) {
     if (!entry.isDirectory()) continue
     const containerDir = path.join(DOCKER_LOG_ROOT, entry.name)
@@ -6984,24 +9935,24 @@ async function findDockerJsonLogSources() {
     } catch {
       continue
     }
-
-    const containerName = String(config?.Name ?? '').replace(/^\//, '')
-    if (!wanted.has(containerName)) continue
-
-    sources.push({
-      container: containerName,
-      logPath: path.join(containerDir, `${entry.name}-json.log`),
-    })
+    configs.push({ containerDir, entryId: entry.name, config })
   }
+
+  const sources = discoverDockerJsonLogSourcesFromConfigs(
+    configs,
+    DOCKER_LOG_CONTAINER_NAMES
+  )
+  dockerLogJsonSourcesCache = { sources, cachedAt: Date.now() }
   return sources
 }
 
-async function readFileTail(filePath, maxBytes) {
+async function readFileTail(filePath, maxBytes, stats) {
+  dockerLogTailReadCountForTests += 1
   const handle = await open(filePath, 'r')
   try {
-    const stats = await handle.stat()
-    const length = Math.min(stats.size, maxBytes)
-    const offset = Math.max(0, stats.size - length)
+    const fileStats = stats ?? (await handle.stat())
+    const length = Math.min(fileStats.size, maxBytes)
+    const offset = Math.max(0, fileStats.size - length)
     const buffer = Buffer.alloc(length)
     await handle.read(buffer, 0, length, offset)
     return { text: buffer.toString('utf8'), truncated: offset > 0 }
@@ -7010,62 +9961,79 @@ async function readFileTail(filePath, maxBytes) {
   }
 }
 
-function stripAnsi(value) {
-  return value.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, '')
-}
-
-function compactLogMessage(value) {
-  return stripAnsi(value).replace(/\s+/g, ' ').trim().slice(0, 280)
-}
-
-function inferLogProvider(message) {
-  const lower = message.toLowerCase()
-  if (lower.includes('anthropic') || lower.includes('claude')) return 'anthropic'
-  if (lower.includes('openrouter')) return 'openrouter'
-  if (lower.includes('openai') || lower.includes('gpt-')) return 'openai'
-  if (lower.includes('google') || lower.includes('gemini')) return 'google'
-  if (lower.includes('xai') || lower.includes('grok')) return 'xai'
-  if (lower.includes('nvidia') || lower.includes('nim')) return 'nvidia_nim'
-  if (lower.includes('local')) return 'local'
-  return 'unknown'
-}
-
-function inferLogLevel(message) {
-  const lower = message.toLowerCase()
-  if (/\bcritical\b|\bfatal\b/.test(lower)) return 'critical'
-  if (/\berror\b|\bexception\b|\btraceback\b|\bfailed\b/.test(lower)) {
-    return 'error'
+async function readDockerLogFileStats(filePath) {
+  const handle = await open(filePath, 'r')
+  try {
+    return await handle.stat()
+  } finally {
+    await handle.close()
   }
-  if (/\bwarn(?:ing)?\b/.test(lower)) return 'warning'
-  return 'error'
 }
 
-function inferLogStatusCode(message) {
-  const match = message.match(/(?<!\d)(4\d{2}|5\d{2})(?!\d)/)
-  return match ? Number(match[1]) : null
-}
 
-function isActionableErrorLog(message) {
-  const lower = message.toLowerCase()
-  if (/health\/(?:liveliness|readiness)|"get \/health\b/.test(lower)) {
-    return false
+async function persistDockerLogErrorsToIntake(rows) {
+  const fresh = selectNewDockerLogErrors(rows, dockerLogErrorIntakeSeenFingerprints)
+  if (!fresh.length) return
+  try {
+    const result = await appendDockerLogErrorsToIntake({
+      intakeDir: DOCKER_LOG_ERROR_INTAKE_DIR,
+      rows: fresh,
+      seenFingerprints: dockerLogErrorIntakeSeenFingerprints,
+    })
+    if (result.appended > 0) {
+      process.stderr.write(
+        `[report-service] INFO: appended ${result.appended} docker log error row(s) to ${DOCKER_LOG_ERROR_INTAKE_DIR}\n`
+      )
+    }
+  } catch (error) {
+    process.stderr.write(
+      `[report-service] WARN: unable to append docker log errors to intake: ${formatError(error)}\n`
+    )
   }
-  if (/\b(?:4\d{2}|5\d{2})\b/.test(lower)) return true
-  return /\b(?:critical|fatal|error|exception|traceback|failed|timeout|rate limit|overloaded)\b/.test(
-    lower
-  )
 }
 
-async function loadDockerLogErrors() {
-  const sources = await findDockerJsonLogSources()
-  if (!sources.length) return []
+async function scanDockerLogErrorsFromSources(sources) {
+  if (!sources?.length) return []
 
   const cutoffMs = Date.now() - 90 * 60 * 1000
   const rows = []
-  for (const source of sources) {
+  const scanSources = capDockerJsonLogSourcesForScan(sources)
+  const nextSourceCache = new Map()
+
+  for (const source of scanSources) {
+    const sourceCacheKey = computeDockerLogSourceCacheKey(source)
+    const tailBytes = source.tailBytes ?? DOCKER_LOG_TAIL_BYTES
+
+    let stats
+    try {
+      stats = await readDockerLogFileStats(source.logPath)
+    } catch (error) {
+      process.stderr.write(
+        `[report-service] WARN: unable to read Docker log metadata ${source.container}: ${formatError(error)}\n`
+      )
+      continue
+    }
+
+    const cached = dockerLogScanSourceCache.get(sourceCacheKey)
+    const unchanged =
+      cached &&
+      cached.tailBytes === tailBytes &&
+      cached.size === stats.size &&
+      cached.mtimeMs === stats.mtimeMs
+
+    if (unchanged) {
+      rows.push(...filterDockerLogRowsByCutoff(cached.rows, cutoffMs))
+      nextSourceCache.set(sourceCacheKey, cached)
+      continue
+    }
+
     let tail
     try {
-      tail = await readFileTail(source.logPath, DOCKER_LOG_TAIL_BYTES)
+      tail = await readFileTail(
+        source.logPath,
+        tailBytes,
+        stats
+      )
     } catch (error) {
       process.stderr.write(
         `[report-service] WARN: unable to read Docker log ${source.container}: ${formatError(error)}\n`
@@ -7073,38 +10041,76 @@ async function loadDockerLogErrors() {
       continue
     }
 
-    const lines = tail.text.split('\n')
-    if (tail.truncated) lines.shift()
-    for (const line of lines) {
-      if (!line.trim()) continue
-      let parsed
-      try {
-        parsed = JSON.parse(line)
-      } catch {
-        continue
-      }
-
-      const observedAt = Date.parse(parsed?.time ?? '')
-      if (!Number.isFinite(observedAt) || observedAt < cutoffMs) continue
-
-      const message = compactLogMessage(String(parsed?.log ?? ''))
-      if (!message || !isActionableErrorLog(message)) continue
-
-      rows.push({
-        observed_at: new Date(observedAt).toISOString(),
-        container: source.container,
-        stream: String(parsed?.stream ?? 'unknown'),
-        provider: inferLogProvider(message),
-        status_code: inferLogStatusCode(message),
-        level: inferLogLevel(message),
-        message,
-      })
-    }
+    const extracted = extractDockerLogErrorsFromTail({
+      tailText: tail.text,
+      truncated: tail.truncated,
+      container: source.container,
+      cutoffMs,
+      source: {
+        sourceIdentity: 'docker-json-log',
+        sourcePath: source.logPath,
+      },
+    })
+    rows.push(...extracted)
+    nextSourceCache.set(sourceCacheKey, {
+      rows: extracted,
+      size: stats.size,
+      mtimeMs: stats.mtimeMs,
+      tailBytes,
+    })
   }
 
-  return rows
-    .sort((a, b) => String(b.observed_at).localeCompare(String(a.observed_at)))
-    .slice(0, MAX_DOCKER_LOG_ERROR_ROWS)
+  dockerLogScanSourceCache = nextSourceCache
+
+  return rows.sort((a, b) =>
+    String(b.observed_at).localeCompare(String(a.observed_at))
+  )
+}
+
+async function loadDockerLogErrors() {
+  if (loadDockerLogErrorsTestImpl) {
+    return loadDockerLogErrorsTestImpl()
+  }
+
+  if (
+    dockerLogErrorsScanCache &&
+    isDockerLogScanCacheFresh(dockerLogErrorsScanCache.cachedAt)
+  ) {
+    const forCentralizedIntake = filterDockerLogErrorsForCentralizedIntake(
+      dockerLogErrorsScanCache.sortedRows,
+      { env: process.env }
+    )
+    await persistDockerLogErrorsToIntake(forCentralizedIntake)
+    return dockerLogErrorsScanCache.forDashboard
+  }
+
+  const sources = await findDockerJsonLogSources()
+  if (!sources.length) {
+    dockerLogErrorsScanCache = {
+      sortedRows: [],
+      forDashboard: [],
+      cachedAt: Date.now(),
+    }
+    return []
+  }
+
+  const sorted = await scanDockerLogErrorsFromSources(sources)
+
+  const { forDashboard } = splitDockerLogErrorsForDashboardAndIntake(
+    sorted,
+    MAX_DOCKER_LOG_ERROR_ROWS
+  )
+  dockerLogErrorsScanCache = {
+    sortedRows: sorted,
+    forDashboard,
+    cachedAt: Date.now(),
+  }
+
+  const forCentralizedIntake = filterDockerLogErrorsForCentralizedIntake(sorted, {
+    env: process.env,
+  })
+  await persistDockerLogErrorsToIntake(forCentralizedIntake)
+  return forDashboard
 }
 
 function compactProbeMessage(value) {
@@ -7160,12 +10166,24 @@ async function probeHttpHealth(probe, checkedAt) {
   }
 }
 
+export function classifyRedisPingProbeResponse(accumulated) {
+  const text = String(accumulated ?? '')
+  const newlineIdx = text.indexOf('\r\n')
+  if (newlineIdx < 0) return null
+  const line = text.slice(0, newlineIdx)
+  return {
+    status: line === '+PONG' ? 'green' : 'yellow',
+    detail: line,
+  }
+}
+
 function probeRedisHealth(probe, checkedAt) {
   const startedAt = Date.now()
 
   return new Promise((resolve) => {
     let settled = false
     let timeout
+    let accumulated = ''
     const socket = net.createConnection({
       host: probe.host,
       port: probe.port,
@@ -7198,14 +10216,19 @@ function probeRedisHealth(probe, checkedAt) {
     socket.once('error', (error) => {
       finish('red', error.message)
     })
-    socket.once('data', (buffer) => {
-      const response = buffer.toString('utf8').trim()
-      finish(response.startsWith('+PONG') ? 'green' : 'yellow', response)
+    socket.on('data', (buffer) => {
+      accumulated += buffer.toString('utf8')
+      const classified = classifyRedisPingProbeResponse(accumulated)
+      if (!classified) return
+      finish(classified.status, classified.detail)
     })
   })
 }
 
 async function loadLocalHealth() {
+  if (loadLocalHealthTestImpl) {
+    return loadLocalHealthTestImpl()
+  }
   const checkedAt = new Date().toISOString()
   const probes = [
     ...LOCAL_CONTAINER_HEALTH_PROBES.map((probe) => ({
@@ -7227,6 +10250,102 @@ async function loadLocalHealth() {
   )
 }
 
+const USAGE_REPORT_OPTIONAL_FANOUT_SECTION_KEYS = [
+  'provider_alias_routing',
+  'provider_auth_health',
+  'provider_credit_lifecycle',
+  'docker_log_errors',
+  'local_health',
+]
+
+const USAGE_REPORT_OPTIONAL_FANOUT_SECTION_KEY_SET = new Set(
+  USAGE_REPORT_OPTIONAL_FANOUT_SECTION_KEYS
+)
+
+function buildEmptyUsageReportProviderAliasRoutingReport(options = {}) {
+  return normalizeProviderAliasRoutingReport([], options)
+}
+
+function buildEmptyUsageReportProviderAuthHealthReport(options = {}) {
+  return normalizeProviderAuthHealthReport([], options)
+}
+
+function buildEmptyUsageReportProviderCreditLifecycleReport(options = {}) {
+  return normalizeProviderCreditLifecycleReport([], options)
+}
+
+export function buildUsageReportAuxiliaryDegradedMetadata(
+  unavailableAuxiliarySections = []
+) {
+  const normalizedSections = Array.from(
+    new Set(
+      (unavailableAuxiliarySections ?? []).filter(
+        (sectionKey) =>
+          typeof sectionKey === 'string' &&
+          USAGE_REPORT_OPTIONAL_FANOUT_SECTION_KEY_SET.has(sectionKey)
+      )
+    )
+  )
+  if (!normalizedSections.length) {
+    return {}
+  }
+  const sectionList = normalizedSections.map((key) => `"${key}"`).join(', ')
+  return {
+    degraded: true,
+    degradedReason: 'auxiliary_fanout_failure',
+    unavailableAuxiliarySections: normalizedSections,
+    degradedMessage:
+      normalizedSections.length === 1
+        ? `Usage report auxiliary section ${sectionList} is unavailable; returning empty fallback payload.`
+        : `Usage report auxiliary sections ${sectionList} are unavailable; returning empty fallback payloads.`,
+  }
+}
+
+async function runUsageReportFanoutTasks(labeledTasks, concurrency) {
+  const results = new Array(labeledTasks.length)
+  await runTasksWithConcurrency(
+    labeledTasks.map(({ taskKey, task }, index) => async () => {
+      try {
+        const value = await task()
+        results[index] = {
+          status: 'fulfilled',
+          taskKey,
+          value,
+        }
+      } catch (error) {
+        results[index] = {
+          status: 'rejected',
+          taskKey,
+          error,
+        }
+      }
+    }),
+    concurrency
+  )
+
+  const unavailableAuxiliarySections = []
+  for (const result of results) {
+    if (result.status === 'fulfilled') continue
+    if (USAGE_REPORT_OPTIONAL_FANOUT_SECTION_KEY_SET.has(result.taskKey)) {
+      unavailableAuxiliarySections.push(result.taskKey)
+      continue
+    }
+    throw result.error
+  }
+
+  return {
+    results,
+    unavailableAuxiliarySections,
+  }
+}
+
+function resolveUsageReportFanoutValue(results, taskKey, fallback) {
+  const match = results.find(
+    (result) => result.taskKey === taskKey && result.status === 'fulfilled'
+  )
+  return match?.value ?? fallback
+}
+
 async function loadUsageReport(searchParams) {
   const { sql, values, metadata } = buildUsageQuery(searchParams)
   const summaryQuery = buildSummaryQuery(searchParams)
@@ -7236,45 +10355,161 @@ async function loadUsageReport(searchParams) {
   const providerErrorObservationQuery =
     buildProviderErrorObservationQuery(searchParams)
   const providerStatusUsageQuery = buildProviderStatusUsageQuery(searchParams)
+  const providerAliasRoutingQuery = buildProviderAliasRoutingQuery(searchParams)
+  const providerAuthHealthQuery = buildProviderAuthHealthQuery(searchParams)
+  const providerCreditLifecycleQuery =
+    buildProviderCreditLifecycleQuery(searchParams)
 
-  const [
-    result,
-    summaryResult,
-    trendResult,
-    clientUsageResult,
-    providerLatencyHealthResult,
-    providerErrorObservationResult,
-    providerStatusUsageResult,
-    dockerLogErrors,
-    localHealth,
-  ] = await runTasksWithConcurrency(
-    [
-      () => queryReportDatabase(sql, values),
-      () => queryReportDatabase(summaryQuery.sql, summaryQuery.values),
-      () => queryReportDatabase(trendQuery.sql, trendQuery.values),
-      () => queryReportDatabase(clientUsageQuery.sql, clientUsageQuery.values),
-      () =>
+  const fanoutTasks = [
+    {
+      taskKey: 'usage_rows',
+      task: () =>
+        queryReportDatabase(sql, values, { usageReportTaskKey: 'usage_rows' }),
+    },
+    {
+      taskKey: 'summary',
+      task: () =>
+        queryReportDatabase(summaryQuery.sql, summaryQuery.values, {
+          usageReportTaskKey: 'summary',
+        }),
+    },
+    {
+      taskKey: 'trend',
+      task: () =>
+        queryReportDatabase(trendQuery.sql, trendQuery.values, {
+          usageReportTaskKey: 'trend',
+        }),
+    },
+    {
+      taskKey: 'client_usage',
+      task: () =>
+        queryReportDatabase(clientUsageQuery.sql, clientUsageQuery.values, {
+          usageReportTaskKey: 'client_usage',
+        }),
+    },
+    {
+      taskKey: 'provider_latency_health',
+      task: () =>
         queryReportDatabase(
           providerLatencyHealthQuery.sql,
-          providerLatencyHealthQuery.values
+          providerLatencyHealthQuery.values,
+          { usageReportTaskKey: 'provider_latency_health' }
         ),
-      () =>
+    },
+    {
+      taskKey: 'provider_error_observations',
+      task: () =>
         queryReportDatabase(
           providerErrorObservationQuery.sql,
-          providerErrorObservationQuery.values
+          providerErrorObservationQuery.values,
+          { usageReportTaskKey: 'provider_error_observations' }
         ),
-      () =>
+    },
+    {
+      taskKey: 'provider_status_usage',
+      task: () =>
         queryReportDatabase(
           providerStatusUsageQuery.sql,
-          providerStatusUsageQuery.values
+          providerStatusUsageQuery.values,
+          { usageReportTaskKey: 'provider_status_usage' }
         ),
-      () => loadDockerLogErrors(),
-      () => loadLocalHealth(),
-    ],
-    REPORT_SQL_FANOUT_CONCURRENCY
+    },
+    {
+      taskKey: 'provider_alias_routing',
+      task: () =>
+        queryReportDatabase(
+          providerAliasRoutingQuery.sql,
+          providerAliasRoutingQuery.values,
+          { usageReportTaskKey: 'provider_alias_routing' }
+        ),
+    },
+    {
+      taskKey: 'provider_auth_health',
+      task: () =>
+        queryReportDatabase(
+          providerAuthHealthQuery.sql,
+          providerAuthHealthQuery.values,
+          { usageReportTaskKey: 'provider_auth_health' }
+        ),
+    },
+    {
+      taskKey: 'provider_credit_lifecycle',
+      task: () =>
+        queryReportDatabase(
+          providerCreditLifecycleQuery.sql,
+          providerCreditLifecycleQuery.values,
+          { usageReportTaskKey: 'provider_credit_lifecycle' }
+        ),
+    },
+    {
+      taskKey: 'docker_log_errors',
+      task: () => loadDockerLogErrors(),
+    },
+    {
+      taskKey: 'local_health',
+      task: () => loadLocalHealth(),
+    },
+  ]
+
+  const { results: fanoutResults, unavailableAuxiliarySections } =
+    await runUsageReportFanoutTasks(fanoutTasks, REPORT_SQL_FANOUT_CONCURRENCY)
+
+  const result = resolveUsageReportFanoutValue(fanoutResults, 'usage_rows', {
+    rows: [],
+  })
+  const summaryResult = resolveUsageReportFanoutValue(fanoutResults, 'summary', {
+    rows: [],
+  })
+  const trendResult = resolveUsageReportFanoutValue(fanoutResults, 'trend', {
+    rows: [],
+  })
+  const clientUsageResult = resolveUsageReportFanoutValue(
+    fanoutResults,
+    'client_usage',
+    { rows: [] }
+  )
+  const providerLatencyHealthResult = resolveUsageReportFanoutValue(
+    fanoutResults,
+    'provider_latency_health',
+    { rows: [] }
+  )
+  const providerErrorObservationResult = resolveUsageReportFanoutValue(
+    fanoutResults,
+    'provider_error_observations',
+    { rows: [] }
+  )
+  const providerStatusUsageResult = resolveUsageReportFanoutValue(
+    fanoutResults,
+    'provider_status_usage',
+    { rows: [] }
+  )
+  const providerAliasRoutingResult = resolveUsageReportFanoutValue(
+    fanoutResults,
+    'provider_alias_routing',
+    { rows: [] }
+  )
+  const providerAuthHealthResult = resolveUsageReportFanoutValue(
+    fanoutResults,
+    'provider_auth_health',
+    { rows: [] }
+  )
+  const providerCreditLifecycleResult = resolveUsageReportFanoutValue(
+    fanoutResults,
+    'provider_credit_lifecycle',
+    { rows: [] }
+  )
+  const dockerLogErrors = resolveUsageReportFanoutValue(
+    fanoutResults,
+    'docker_log_errors',
+    []
+  )
+  const localHealth = resolveUsageReportFanoutValue(
+    fanoutResults,
+    'local_health',
+    []
   )
 
-  const rows = result.rows.map(normalizeRow)
+  const rows = serializeUsageReportRows(result.rows.map(normalizeRow), searchParams)
   const summary = normalizeSummary(firstRow(summaryResult))
 
   // Wave 35-C2 (⚠-8): warn when health rows approach MAX_HEALTH_ROWS cap.
@@ -7290,10 +10525,23 @@ async function loadUsageReport(searchParams) {
     )
   }
 
+  const firstUsageRow = result.rows[0]
+  const agentScoreReasonsCapTruncatesRequestedWindow =
+    firstUsageRow?.agent_score_reasons_recent_id_cap_truncates_requested_window ??
+    false
+
+  const auxiliaryDegradedMetadata = buildUsageReportAuxiliaryDegradedMetadata(
+    unavailableAuxiliarySections
+  )
+
   return {
     metadata: {
       ...metadata,
       staleRecordThresholdMinutes: STALE_RECORD_THRESHOLD_MINUTES,
+      ...buildUsageReportRowSerializationMetadata(searchParams),
+      agentScoreReasonsRecentIdCapTruncatesRequestedWindow:
+        agentScoreReasonsCapTruncatesRequestedWindow,
+      ...auxiliaryDegradedMetadata,
     },
     summary,
     trend: trendResult.rows.map(normalizeTrendRow),
@@ -7309,6 +10557,23 @@ async function loadUsageReport(searchParams) {
     providerStatusUsage: providerStatusUsageResult.rows.map(
       normalizeProviderStatusUsageRow
     ),
+    providerAliasRouting: unavailableAuxiliarySections.includes(
+      'provider_alias_routing'
+    )
+      ? buildEmptyUsageReportProviderAliasRoutingReport()
+      : normalizeProviderAliasRoutingReport(providerAliasRoutingResult.rows),
+    providerAuthHealth: unavailableAuxiliarySections.includes(
+      'provider_auth_health'
+    )
+      ? buildEmptyUsageReportProviderAuthHealthReport()
+      : normalizeProviderAuthHealthReport(providerAuthHealthResult.rows),
+    providerCreditLifecycle: unavailableAuxiliarySections.includes(
+      'provider_credit_lifecycle'
+    )
+      ? buildEmptyUsageReportProviderCreditLifecycleReport()
+      : normalizeProviderCreditLifecycleReport(
+          providerCreditLifecycleResult.rows
+        ),
     quotas: [],
     quotaHistory: [],
     toolActivity: [],
@@ -7318,25 +10583,84 @@ async function loadUsageReport(searchParams) {
 
 async function loadUsageQuotaHistory(searchParams) {
   const query = buildQuotaHistoryQuery(searchParams)
-  const result = await queryReportDatabase(query.sql, query.values)
-  return {
-    metadata: {
-      generatedAt: new Date().toISOString(),
-    },
-    quotaHistory: result.rows.map(normalizeQuotaHistoryRow),
+  try {
+    const result = await queryReportDatabase(query.sql, query.values, {
+      statementTimeoutMs: QUOTA_HISTORY_STATEMENT_TIMEOUT_MS,
+    })
+    return {
+      metadata: buildUsageQuotaHistoryMetadata({
+        quotaHistoryStatementTimeoutMs: QUOTA_HISTORY_STATEMENT_TIMEOUT_MS,
+      }),
+      quotaHistory: result.rows.map(normalizeQuotaHistoryRow),
+    }
+  } catch (error) {
+    if (isDatabaseTimeoutError(error)) {
+      const fallbackQuery = buildQuotaHistoryFallbackQuery(searchParams)
+      try {
+        const fallbackResult = await queryReportDatabase(
+          fallbackQuery.sql,
+          fallbackQuery.values,
+          {
+            statementTimeoutMs: QUOTA_HISTORY_STATEMENT_TIMEOUT_MS,
+          }
+        )
+        return buildDegradedUsageQuotaHistoryReport({
+          timedOutSubqueries: ['history_enrichment'],
+          quotaHistory: fallbackResult.rows.map(normalizeQuotaHistoryRow),
+        })
+      } catch (fallbackError) {
+        if (isDatabaseTimeoutError(fallbackError)) {
+          return buildDegradedUsageQuotaHistoryReport({
+            timedOutSubqueries: ['history_base', 'history_enrichment'],
+          })
+        }
+        throw fallbackError
+      }
+    }
+    throw error
   }
 }
 
 async function loadUsageQuotaRangeHistory(searchParams) {
   const query = buildQuotaRangeHistoryQuery(searchParams)
-  const result = await queryReportDatabase(query.sql, query.values)
-  return {
-    metadata: {
-      from: parseSearchDateOnly(searchParams.get('from'), defaultFromDate),
-      to: parseSearchDateOnly(searchParams.get('to'), defaultToDate),
-      generatedAt: new Date().toISOString(),
-    },
-    quotaRangeHistory: result.rows.map(normalizeQuotaHistoryRow),
+  try {
+    const result = await queryReportDatabase(query.sql, query.values, {
+      statementTimeoutMs: QUOTA_RANGE_HISTORY_STATEMENT_TIMEOUT_MS,
+    })
+    return {
+      metadata: buildUsageQuotaRangeHistoryMetadata(searchParams, {
+        quotaRangeHistoryStatementTimeoutMs:
+          QUOTA_RANGE_HISTORY_STATEMENT_TIMEOUT_MS,
+      }),
+      quotaRangeHistory: result.rows.map(normalizeQuotaHistoryRow),
+    }
+  } catch (error) {
+    if (isDatabaseTimeoutError(error)) {
+      const fallbackQuery = buildQuotaRangeHistoryFallbackQuery(searchParams)
+      try {
+        const fallbackResult = await queryReportDatabase(
+          fallbackQuery.sql,
+          fallbackQuery.values,
+          {
+            statementTimeoutMs: QUOTA_RANGE_HISTORY_STATEMENT_TIMEOUT_MS,
+          }
+        )
+        return buildDegradedUsageQuotaRangeHistoryReport({
+          searchParams,
+          timedOutSubqueries: ['history_enrichment'],
+          quotaRangeHistory: fallbackResult.rows.map(normalizeQuotaHistoryRow),
+        })
+      } catch (fallbackError) {
+        if (isDatabaseTimeoutError(fallbackError)) {
+          return buildDegradedUsageQuotaRangeHistoryReport({
+            searchParams,
+            timedOutSubqueries: ['history_base', 'history_enrichment'],
+          })
+        }
+        throw fallbackError
+      }
+    }
+    throw error
   }
 }
 
@@ -7365,59 +10689,188 @@ async function loadUsageQuotaEstimator(searchParams) {
 
 async function loadUsageToolActivity(searchParams) {
   const query = buildToolActivityQuery(searchParams)
+  try {
+    const result = await queryReportDatabase(query.sql, query.values, {
+      statementTimeoutMs: TOOL_ACTIVITY_STATEMENT_TIMEOUT_MS,
+    })
+    const firstRow = result.rows[0]
+    const capTruncatesRequestedWindow =
+      firstRow?.tool_activity_recent_id_cap_truncates_requested_window ?? false
+    return {
+      metadata: buildUsageToolActivityMetadata(searchParams, {
+        ...query.metadata,
+        toolActivityRecentIdCapTruncatesRequestedWindow: capTruncatesRequestedWindow,
+      }),
+      toolActivity: result.rows
+        .filter((row) => row.kind != null)
+        .map(normalizeToolActivityRow),
+    }
+  } catch (error) {
+    if (isDatabaseTimeoutError(error)) {
+      return buildDegradedUsageToolActivityReport(searchParams)
+    }
+    throw error
+  }
+}
+
+async function loadUsageSessionDiagnostics(searchParams) {
+  const query = buildSessionDiagnosticsQuery(searchParams)
   const result = await queryReportDatabase(query.sql, query.values)
   return {
     metadata: {
-      from: parseDateParam(searchParams.get('from'), defaultFromDate),
-      to: parseDateParam(searchParams.get('to'), defaultToDate),
+      ...query.metadata,
       generatedAt: new Date().toISOString(),
     },
-    toolActivity: result.rows.map(normalizeToolActivityRow),
+    sessionDiagnostics: result.rows.map(normalizeSessionDiagnosticsRow),
   }
 }
 
 async function loadUsageTokenTrendSummary(searchParams) {
+  const includeTokenTrendHealth = shouldIncludeTokenTrendHealth(searchParams)
   const hoursQuery = buildTokenTrendHoursQuery(searchParams)
   const healthQuery = buildTokenTrendHealthQuery(searchParams)
   const scoreQuery = buildTokenTrendScoreQuery(searchParams)
   const versionsQuery = buildTokenTrendVersionIntervalsQuery(searchParams)
   const modelFirstSeenQuery = buildTokenTrendModelFirstSeenQuery(searchParams)
-  const [
-    hoursResult,
-    healthResult,
-    scoreResult,
-    versionsResult,
-    modelFirstSeenResult,
-  ] = await runTasksWithConcurrency(
-    [
-      () => queryReportDatabase(hoursQuery.sql, hoursQuery.values),
-      () => queryReportDatabase(healthQuery.sql, healthQuery.values),
-      () => queryReportDatabase(scoreQuery.sql, scoreQuery.values),
-      () => queryReportDatabase(versionsQuery.sql, versionsQuery.values),
-      () =>
-        queryReportDatabase(
-          modelFirstSeenQuery.sql,
-          modelFirstSeenQuery.values
-        ),
-    ],
-    REPORT_SQL_FANOUT_CONCURRENCY
-  )
-
-  return {
-    metadata: {
-      from: parseDateParam(searchParams.get('from'), defaultFromDate),
-      to: parseDateParam(searchParams.get('to'), defaultToDate),
+  const tokenTrendSummaryRangeDays = calculateTokenTrendRangeDays(searchParams)
+  const skipRawLanes =
+    tokenTrendSummaryRangeDays > TOKEN_TREND_SUMMARY_RAW_LANE_MAX_DAYS
+  const skippedSubqueries = skipRawLanes
+    ? [...TOKEN_TREND_SUMMARY_RAW_SUBQUERY_KEYS]
+    : []
+  const querySpecs = [
+    {
+      subqueryKey: 'hours',
+      task: () =>
+        queryReportDatabase(hoursQuery.sql, hoursQuery.values, {
+          statementTimeoutMs: TOKEN_TREND_SUMMARY_STATEMENT_TIMEOUT_MS,
+        }),
     },
-    tokenTrendHours: hoursResult.rows.map(normalizeTokenTrendHourRow),
-    tokenTrendHealth: healthResult.rows.map(normalizeProviderLatencyHealthRow),
-    tokenTrendScores: scoreResult.rows.map(normalizeTokenTrendScoreRow),
-    tokenTrendVersions: versionsResult.rows.map(
-      normalizeTokenTrendVersionIntervalRow
-    ),
-    tokenTrendModelFirstSeen: modelFirstSeenResult.rows.map(
-      normalizeTokenTrendModelFirstSeenRow
-    ),
+    ...(includeTokenTrendHealth
+      ? [
+          {
+            subqueryKey: 'health',
+            task: () =>
+              queryReportDatabase(healthQuery.sql, healthQuery.values, {
+                statementTimeoutMs: TOKEN_TREND_SUMMARY_STATEMENT_TIMEOUT_MS,
+              }),
+          },
+        ]
+      : []),
+    {
+      subqueryKey: 'scores',
+      task: () =>
+        queryReportDatabase(scoreQuery.sql, scoreQuery.values, {
+          statementTimeoutMs: TOKEN_TREND_SUMMARY_STATEMENT_TIMEOUT_MS,
+        }),
+    },
+    {
+      subqueryKey: 'versions',
+      task: () =>
+        queryReportDatabase(versionsQuery.sql, versionsQuery.values, {
+          statementTimeoutMs: TOKEN_TREND_SUMMARY_STATEMENT_TIMEOUT_MS,
+        }),
+    },
+    {
+      subqueryKey: 'modelFirstSeen',
+      task: () =>
+        queryReportDatabase(modelFirstSeenQuery.sql, modelFirstSeenQuery.values, {
+          statementTimeoutMs: TOKEN_TREND_SUMMARY_STATEMENT_TIMEOUT_MS,
+        }),
+    },
+  ]
+  const prioritizedQuerySpecs =
+    REPORT_SQL_FANOUT_CONCURRENCY === 1
+      ? [
+          ...querySpecs.filter(({ subqueryKey }) => subqueryKey !== 'hours'),
+          ...querySpecs.filter(({ subqueryKey }) => subqueryKey === 'hours'),
+        ]
+      : querySpecs
+
+  const runnableQuerySpecs = skippedSubqueries.length
+    ? prioritizedQuerySpecs.filter(
+        ({ subqueryKey }) => !TOKEN_TREND_SUMMARY_RAW_SUBQUERY_KEYS.includes(subqueryKey)
+      )
+    : prioritizedQuerySpecs
+  const queryResults = await runTokenTrendSummarySubqueries(runnableQuerySpecs)
+
+  const tokenTrendHoursRows = []
+  const tokenTrendHealthRows = []
+  const tokenTrendScoresRows = []
+  const tokenTrendVersionsRows = []
+  const tokenTrendModelFirstSeenRows = []
+  const timedOutSubqueries = []
+
+  for (const result of queryResults) {
+    if (result.status !== 'fulfilled') {
+      if (!isDatabaseTimeoutError(result.error)) {
+        throw result.error
+      }
+      timedOutSubqueries.push(result.subqueryKey)
+      continue
+    }
+
+    if (result.subqueryKey === 'hours') {
+      tokenTrendHoursRows.push(...result.value.rows.map(normalizeTokenTrendHourRow))
+      continue
+    }
+    if (result.subqueryKey === 'health') {
+      tokenTrendHealthRows.push(
+        ...result.value.rows.map(normalizeProviderLatencyHealthRow)
+      )
+      continue
+    }
+    if (result.subqueryKey === 'scores') {
+      tokenTrendScoresRows.push(
+        ...result.value.rows.map(normalizeTokenTrendScoreRow)
+      )
+      continue
+    }
+    if (result.subqueryKey === 'versions') {
+      tokenTrendVersionsRows.push(
+        ...result.value.rows.map(normalizeTokenTrendVersionIntervalRow)
+      )
+      continue
+    }
+    if (result.subqueryKey === 'modelFirstSeen') {
+      tokenTrendModelFirstSeenRows.push(
+        ...result.value.rows.map(normalizeTokenTrendModelFirstSeenRow)
+      )
+    }
   }
+
+  if (timedOutSubqueries.length > 0 || skippedSubqueries.length > 0) {
+    return applyTokenTrendSummaryHealthInclusion(
+      searchParams,
+      buildDegradedUsageTokenTrendSummaryReport(searchParams, {
+        skippedSubqueries,
+        unavailableSubqueries: skippedSubqueries,
+        tokenTrendSummaryRangeDays,
+        tokenTrendSummaryRawLaneMaxDays: TOKEN_TREND_SUMMARY_RAW_LANE_MAX_DAYS,
+        timedOutSubqueries,
+        tokenTrendHours: tokenTrendHoursRows,
+        tokenTrendHealth: tokenTrendHealthRows,
+        tokenTrendScores: tokenTrendScoresRows,
+        tokenTrendVersions: tokenTrendVersionsRows,
+        tokenTrendModelFirstSeen: tokenTrendModelFirstSeenRows,
+      })
+    )
+  }
+
+  return applyTokenTrendSummaryHealthInclusion(searchParams, {
+    metadata: buildUsageTokenTrendSummaryMetadata(searchParams, {
+      tokenTrendSummaryRawLaneMaxDays:
+        TOKEN_TREND_SUMMARY_RAW_LANE_MAX_DAYS,
+      tokenTrendSummaryRangeDays,
+      tokenTrendSummaryStatementTimeoutMs:
+        TOKEN_TREND_SUMMARY_STATEMENT_TIMEOUT_MS,
+    }),
+    tokenTrendHours: tokenTrendHoursRows,
+    tokenTrendHealth: tokenTrendHealthRows,
+    tokenTrendScores: tokenTrendScoresRows,
+    tokenTrendVersions: tokenTrendVersionsRows,
+    tokenTrendModelFirstSeen: tokenTrendModelFirstSeenRows,
+  })
 }
 
 async function loadUsageTokenTrendDay(searchParams) {
@@ -7431,152 +10884,95 @@ async function loadUsageTokenTrendDay(searchParams) {
   }
 }
 
-async function handleUsageReport(req, res) {
-  if (!pool) {
-    sendJson(res, 503, {
+async function handleCachedUsageSubreport(req, res, scope, load, deps = {}) {
+  const poolRef = deps.pool !== undefined ? deps.pool : pool
+  const cachedReportFn = deps.cachedReport ?? cachedReport
+  const sendJsonFn = deps.sendJson ?? sendJson
+
+  if (!poolRef) {
+    await sendJsonFn(req, res, 503, {
       error: 'DATABASE_URL is not configured for the shell report service.',
     })
     return
   }
 
   const requestUrl = new URL(req.url, `http://${req.headers.host}`)
-  const body = await cachedReport('usage', () => loadUsageReport(requestUrl.searchParams), {
-    searchParams: requestUrl.searchParams,
+  const searchParams = requestUrl.searchParams
+  const body = await cachedReportFn(scope, () => load(searchParams), {
+    searchParams,
   })
 
-  sendJson(res, 200, body)
+  await sendJsonFn(req, res, 200, body)
+}
+
+async function handleUsageReport(req, res) {
+  await handleCachedUsageSubreport(req, res, USAGE_REPORT_CACHE_SCOPE, loadUsageReport)
 }
 
 async function handleUsageQuotaRangeHistory(req, res) {
-  if (!pool) {
-    sendJson(res, 503, {
-      error: 'DATABASE_URL is not configured for the shell report service.',
-    })
-    return
-  }
-
-  const requestUrl = new URL(req.url, `http://${req.headers.host}`)
-  const body = await cachedReport(
+  await handleCachedUsageSubreport(
+    req,
+    res,
     'usage-quota-range-history',
-    () => loadUsageQuotaRangeHistory(requestUrl.searchParams),
-    {
-      searchParams: requestUrl.searchParams,
-    }
+    loadUsageQuotaRangeHistory
   )
-
-  sendJson(res, 200, body)
 }
 
 async function handleUsageQuotaHistory(req, res) {
-  if (!pool) {
-    sendJson(res, 503, {
-      error: 'DATABASE_URL is not configured for the shell report service.',
-    })
-    return
-  }
-
-  const requestUrl = new URL(req.url, `http://${req.headers.host}`)
-  const body = await cachedReport(
-    'usage-quota-history',
-    () => loadUsageQuotaHistory(requestUrl.searchParams),
-    {
-      searchParams: requestUrl.searchParams,
-    }
+  await handleCachedUsageSubreport(
+    req,
+    res,
+    USAGE_QUOTA_HISTORY_CACHE_SCOPE,
+    loadUsageQuotaHistory
   )
-
-  sendJson(res, 200, body)
 }
 
 async function handleUsageQuotaEstimator(req, res) {
-  if (!pool) {
-    sendJson(res, 503, {
-      error: 'DATABASE_URL is not configured for the shell report service.',
-    })
-    return
-  }
-
-  const requestUrl = new URL(req.url, `http://${req.headers.host}`)
-  const body = await cachedReport(
+  await handleCachedUsageSubreport(
+    req,
+    res,
     'usage-quota-estimator-v1',
-    () => loadUsageQuotaEstimator(requestUrl.searchParams),
-    {
-      searchParams: requestUrl.searchParams,
-    }
+    loadUsageQuotaEstimator
   )
-
-  sendJson(res, 200, body)
 }
 
 async function handleUsageToolActivity(req, res) {
-  if (!pool) {
-    sendJson(res, 503, {
-      error: 'DATABASE_URL is not configured for the shell report service.',
-    })
-    return
-  }
+  await handleCachedUsageSubreport(req, res, 'usage-tool-activity', loadUsageToolActivity)
+}
 
-  const requestUrl = new URL(req.url, `http://${req.headers.host}`)
-  const body = await cachedReport(
-    'usage-tool-activity',
-    () => loadUsageToolActivity(requestUrl.searchParams),
-    {
-      searchParams: requestUrl.searchParams,
-    }
+async function handleUsageSessionDiagnostics(req, res) {
+  await handleCachedUsageSubreport(
+    req,
+    res,
+    'usage-session-diagnostics-v1',
+    loadUsageSessionDiagnostics
   )
-
-  sendJson(res, 200, body)
 }
 
 async function handleUsageTokenTrendSummary(req, res) {
-  if (!pool) {
-    sendJson(res, 503, {
-      error: 'DATABASE_URL is not configured for the shell report service.',
-    })
-    return
-  }
-
-  const requestUrl = new URL(req.url, `http://${req.headers.host}`)
-  const body = await cachedReport(
-    'usage-token-trend-summary-v3',
-    () => loadUsageTokenTrendSummary(requestUrl.searchParams),
-    {
-      searchParams: requestUrl.searchParams,
-    }
+  await handleCachedUsageSubreport(
+    req,
+    res,
+    USAGE_TOKEN_TREND_SUMMARY_CACHE_SCOPE,
+    loadUsageTokenTrendSummary
   )
-
-  sendJson(res, 200, body)
 }
 
 async function handleUsageTokenTrendDay(req, res) {
-  if (!pool) {
-    sendJson(res, 503, {
-      error: 'DATABASE_URL is not configured for the shell report service.',
-    })
-    return
-  }
-
-  const requestUrl = new URL(req.url, `http://${req.headers.host}`)
-  const body = await cachedReport(
-    'usage-token-trend-day',
-    () => loadUsageTokenTrendDay(requestUrl.searchParams),
-    {
-      searchParams: requestUrl.searchParams,
-    }
-  )
-
-  sendJson(res, 200, body)
+  await handleCachedUsageSubreport(req, res, 'usage-token-trend-day', loadUsageTokenTrendDay)
 }
 
 async function handleUsageQuotas(req, res) {
   if (!pool) {
-    sendJson(res, 503, {
+    await sendJson(req, res, 503, {
       error: 'DATABASE_URL is not configured for the shell report service.',
     })
     return
   }
 
   const requestUrl = new URL(req.url, `http://${req.headers.host}`)
-  sendJson(
+  await sendJson(
+    req,
     res,
     200,
     await loadQuotaReport({ searchParams: requestUrl.searchParams })
@@ -7584,10 +10980,17 @@ async function handleUsageQuotas(req, res) {
 }
 
 function startReportCachePrewarm() {
-  if (!pool || !redisClient || !REPORT_CACHE_PREWARM || prewarmTimer) return
+  if (
+    reportServiceShuttingDown ||
+    !pool ||
+    !redisClient ||
+    !REPORT_CACHE_PREWARM ||
+    prewarmTimer
+  )
+    return
 
   const run = () => {
-    if (prewarmPromise) return
+    if (prewarmPromise || reportServiceShuttingDown) return
     prewarmPromise = prewarmReportCaches()
       .catch((error) => {
         process.stderr.write(
@@ -7609,9 +11012,9 @@ function startReportCachePrewarm() {
 }
 
 async function prewarmReportCaches() {
-  if (!redisClient?.isReady) return
+  if (!redisClient?.isReady || reportServiceShuttingDown) return
 
-  const lockKey = `${REPORT_CACHE_PREFIX}:${REPORT_CACHE_VERSION}:prewarm:lock`
+  const lockKey = buildReportCachePrewarmLockKey()
   const lockToken = await acquireRedisNamedLock(
     lockKey,
     REPORT_CACHE_PREWARM_LOCK_TTL_MS,
@@ -7631,18 +11034,21 @@ async function prewarmReportCaches() {
     )
 
     for (const window of windows) {
+      if (reportServiceShuttingDown) break
       try {
         const searchParams = buildPrewarmUsageSearchParams(window.from, window.to)
-        const status = await prewarmCachedReport('usage', searchParams, () =>
+        const status = await prewarmCachedReport(USAGE_REPORT_CACHE_SCOPE, searchParams, () =>
           loadUsageReport(searchParams)
         )
         process.stdout.write(
           `[report-service] prewarm usage cache window=${window.name} status=${status} from=${window.from} to=${window.to}\n`
         )
       } catch (error) {
-        process.stderr.write(
-          `[report-service] WARN: prewarm usage cache failed window=${window.name} from=${window.from} to=${window.to}: ${formatError(error)}\n`
-        )
+        if (!shouldSuppressCacheRefreshFailureDuringShutdown(error)) {
+          process.stderr.write(
+            `[report-service] WARN: prewarm usage cache failed window=${window.name} from=${window.from} to=${window.to}: ${formatError(error)}\n`
+          )
+        }
         break
       }
     }
@@ -7651,15 +11057,17 @@ async function prewarmReportCaches() {
       const quotaStatus = await prewarmCachedReport(
         'quotas',
         undefined,
-        loadQuotaReportFromDatabase
+        loadQuotaReportWithDatabaseTimeoutHandling
       )
       process.stdout.write(
         `[report-service] prewarm quota cache status=${quotaStatus}\n`
       )
     } catch (error) {
-      process.stderr.write(
-        `[report-service] WARN: prewarm quota cache failed: ${formatError(error)}\n`
-      )
+      if (!shouldSuppressCacheRefreshFailureDuringShutdown(error)) {
+        process.stderr.write(
+          `[report-service] WARN: prewarm quota cache failed: ${formatError(error)}\n`
+        )
+      }
     }
   } finally {
     await releaseRedisNamedLock(lockKey, lockToken, 'prewarm')
@@ -7727,6 +11135,14 @@ export function findUpstreamApiProxy(pathname) {
 }
 
 async function handleUpstreamApiProxy(req, res, proxyConfig) {
+  const upstreamSecretCheck = evaluateUpstreamProxySecret(req.headers)
+  if (!upstreamSecretCheck.ok) {
+    await sendJson(req, res, upstreamSecretCheck.status, {
+      error: upstreamSecretCheck.error,
+    })
+    return
+  }
+
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), UPSTREAM_FETCH_TIMEOUT_MS)
   let upstreamResponse
@@ -7742,7 +11158,7 @@ async function handleUpstreamApiProxy(req, res, proxyConfig) {
     })
   } catch (error) {
     if (error instanceof Error && error.name === 'AbortError') {
-      sendJson(res, 504, {
+      await sendJson(req, res, 504, {
         error: `${proxyConfig.displayName} upstream timed out after ${UPSTREAM_FETCH_TIMEOUT_MS}ms.`,
       })
       return
@@ -7757,38 +11173,65 @@ async function handleUpstreamApiProxy(req, res, proxyConfig) {
   res.end(body)
 }
 
+async function buildShellHealthPayload({
+  loaders = {},
+} = {}) {
+  const loadReportQueryPressureFn =
+    loaders.loadReportQueryPressure ?? loadReportQueryPressure
+  const loadPgBouncerHealthFn =
+    loaders.loadPgBouncerHealth ?? loadPgBouncerHealth
+  const loadSourceTableHealthFn =
+    loaders.loadSourceTableHealth ?? loadSourceTableHealth
+  const loadMaterializedViewHealthFn =
+    loaders.loadMaterializedViewHealth ?? loadMaterializedViewHealth
+
+  const [
+    reportQueryPressure,
+    pgBouncerSidecars,
+    sourceTables,
+    materializedViews,
+  ] = await Promise.all([
+    loadReportQueryPressureFn(),
+    loadPgBouncerHealthFn(),
+    loadSourceTableHealthFn(),
+    loadMaterializedViewHealthFn(),
+  ])
+
+  return {
+    ok: true,
+    databaseConfigured: Boolean(pool),
+    databaseEndpoint: describeDatabaseUrl(DATABASE_URL),
+    databasePool: pool
+      ? {
+          max: REPORT_DB_POOL_MAX,
+          total: pool.totalCount,
+          idle: pool.idleCount,
+          waiting: pool.waitingCount,
+          sqlFanoutConcurrency: REPORT_SQL_FANOUT_CONCURRENCY,
+        }
+      : null,
+    healthDatabasePool: healthPool
+      ? {
+          max: 1,
+          total: healthPool.totalCount,
+          idle: healthPool.idleCount,
+          waiting: healthPool.waitingCount,
+        }
+      : null,
+    redisConfigured: Boolean(redisClient),
+    redisReady: Boolean(redisClient?.isReady),
+    reportQueryPressure,
+    pgBouncerSidecars,
+    sourceTables,
+    materializedViews,
+  }
+}
+
 async function handleRequest(req, res) {
   const requestUrl = new URL(req.url, `http://${req.headers.host}`)
 
   if (req.method === 'GET' && requestUrl.pathname === '/api/shell/health') {
-    sendJson(res, 200, {
-      ok: true,
-      databaseConfigured: Boolean(pool),
-      databaseEndpoint: describeDatabaseUrl(DATABASE_URL),
-      databasePool: pool
-        ? {
-            max: REPORT_DB_POOL_MAX,
-            total: pool.totalCount,
-            idle: pool.idleCount,
-            waiting: pool.waitingCount,
-            sqlFanoutConcurrency: REPORT_SQL_FANOUT_CONCURRENCY,
-          }
-        : null,
-      healthDatabasePool: healthPool
-        ? {
-            max: 1,
-            total: healthPool.totalCount,
-            idle: healthPool.idleCount,
-            waiting: healthPool.waitingCount,
-          }
-        : null,
-      redisConfigured: Boolean(redisClient),
-      redisReady: Boolean(redisClient?.isReady),
-      reportQueryPressure: await loadReportQueryPressure(),
-      pgBouncerSidecars: await loadPgBouncerHealth(),
-      sourceTables: await loadSourceTableHealth(),
-      materializedViews: await loadMaterializedViewHealth(),
-    })
+    await sendJson(req, res, 200, await buildShellHealthPayload())
     return
   }
 
@@ -7842,6 +11285,14 @@ async function handleRequest(req, res) {
 
   if (
     req.method === 'GET' &&
+    requestUrl.pathname === '/api/shell/reports/usage/session-diagnostics'
+  ) {
+    await handleUsageSessionDiagnostics(req, res)
+    return
+  }
+
+  if (
+    req.method === 'GET' &&
     requestUrl.pathname === '/api/shell/reports/usage/token-trend-day'
   ) {
     await handleUsageTokenTrendDay(req, res)
@@ -7862,17 +11313,13 @@ async function handleRequest(req, res) {
     return
   }
 
-  sendJson(res, 404, { error: 'Not found' })
+  await sendJson(req, res, 404, { error: 'Not found' })
 }
 
 const server = http.createServer((req, res) => {
-  handleRequest(req, res).catch((error) => {
-    const message =
-      error instanceof Error && error.message ? error.message : 'Unexpected error'
-    sendJson(res, 500, {
-      error: message,
-    })
-  })
+  void handleRequest(req, res).catch((error) =>
+    respondWithGenericServerError(req, res, error)
+  )
 })
 
 const shouldStartServer =
@@ -7892,16 +11339,33 @@ if (shouldStartServer) {
 }
 
 async function shutdown() {
+  if (reportServiceShuttingDown) {
+    return
+  }
+  reportServiceShuttingDown = true
+
   if (prewarmTimer) {
     clearInterval(prewarmTimer)
     prewarmTimer = null
   }
-  if (redisClient?.isOpen) {
-    await redisClient.quit()
-  }
-  await healthPool?.end()
-  await pool?.end()
-  server.close(() => process.exit(0))
+
+  await runBoundedShutdownSequence(server, {
+    graceMs: SHUTDOWN_GRACE_MS,
+    async runCleanup() {
+      try {
+        if (redisClient?.isOpen) {
+          await redisClient.quit()
+        }
+        await cleanupPgBouncerAdminPools()
+        await healthPool?.end()
+        await pool?.end()
+      } catch (error) {
+        process.stderr.write(
+          `[report-service] WARN: shutdown cleanup failed: ${formatError(error)}\n`
+        )
+      }
+    },
+  })
 }
 
 if (shouldStartServer) {
@@ -7913,10 +11377,183 @@ if (shouldStartServer) {
   })
 }
 
+export const __ttlMemoizerTestHelpers = {
+  createTtlMemoizer,
+  resetHealthLoaderCachesForTests() {
+    materializedViewHealthMemo.resetForTests()
+    pgBouncerHealthMemo.resetForTests()
+    sourceTableHealthMemo.resetForTests()
+  },
+}
+
+export const __reportCacheInternals = {
+  resetReportCache() {
+    reportCache.clear()
+  },
+  getReportCacheEntry(cacheKey) {
+    return reportCache.get(cacheKey)
+  },
+  setMaxReportCacheEntriesForTests(maxEntries) {
+    reportCacheMaxEntries = Math.max(
+      1,
+      Number(maxEntries) || MAX_REPORT_CACHE_ENTRIES
+    )
+  },
+  resetMaxReportCacheEntriesForTests() {
+    reportCacheMaxEntries = MAX_REPORT_CACHE_ENTRIES
+  },
+  setReadRedisCacheEntryImpl(impl) {
+    readRedisCacheEntryTestImpl = impl
+  },
+  setWriteRedisCacheEntryImpl(impl) {
+    writeRedisCacheEntryTestImpl = impl
+  },
+  encodeRedisReportCachePayload,
+  decodeRedisReportCachePayload,
+  readRedisCacheEntry,
+  readRedisCacheEntryFromClient,
+  writeRedisCacheEntry,
+  createRedisCacheClient,
+  cachedReport,
+  refreshReportCache,
+  readLocalReportCache,
+  setLocalReportCache,
+  pruneReportCache,
+}
+
+export const __localHealthTestHelpers = {
+  classifyRedisPingProbeResponse,
+  probeRedisHealth,
+}
+
+export const __responseTestHelpers = {
+  acceptsGzipEncoding,
+  sendJson,
+}
+
+
+export const __proxySecurityTestHelpers = {
+  evaluateUpstreamProxySecret,
+  resolveReportProxySharedSecret,
+  REPORT_PROXY_SECRET_HEADER,
+  DEFAULT_REPORT_PROXY_SHARED_SECRET,
+  proxyHeaders,
+}
+
+export const __envTestHelpers = {
+  boundedIntegerEnv,
+  positiveIntegerEnv,
+  parseBooleanEnv,
+  parseFiniteNumberEnv,
+  normalizeDatabaseUrl,
+  parseDateParam,
+  resolveDefaultToDateString,
+  addDaysToDateString,
+  formatDashboardDate,
+  providerDimensionExpression,
+  providerDimensionForAlias,
+  sessionHistoryMetadataText,
+}
+
 export {
   buildReportCacheEntry,
   buildReportCacheIdentity,
+  buildReportCachePrewarmLockKey,
   canonicalizeSearchParams,
+  REPORT_CACHE_PREFIX,
+  REPORT_CACHE_VERSION,
+  resolveReportCacheConfig,
   resolveReportCacheTtlMs,
 } from './report-cache-identity.mjs'
+export {
+  resolveDockerLogContainerNames,
+  extractDockerLogErrorsFromTail,
+  selectNewDockerLogErrors,
+  capDockerLogErrorsForDashboard,
+  inferLogLevel,
+  isActionableErrorLog,
+} from './docker-log-error-intake.mjs'
 export { classifyCacheEntry }
+
+export const __dockerLogScanTestHelpers = {
+  capDockerJsonLogSourcesForScan,
+  isDockerLogScanCacheFresh,
+  scanDockerLogErrorsFromSources,
+  loadDockerLogErrors,
+  resetDockerLogScanCachesForTests,
+  resetDockerLogErrorIntakeSeenFingerprintsForTests() {
+    dockerLogErrorIntakeSeenFingerprints.clear()
+  },
+  dockerLogErrorIntakeSeenFingerprintsSizeForTests() {
+    return dockerLogErrorIntakeSeenFingerprints.size
+  },
+  seedDockerLogErrorIntakeFingerprintsForTests(keys) {
+    for (const key of keys ?? []) {
+      dockerLogErrorIntakeSeenFingerprints.add(key)
+    }
+  },
+  DOCKER_LOG_SCAN_MAX_SOURCES,
+  DOCKER_LOG_SCAN_MAX_TOTAL_BYTES,
+  DOCKER_LOG_INTAKE_FINGERPRINT_MAX,
+  getDockerLogTailReadCountForTests() {
+    return dockerLogTailReadCountForTests
+  },
+}
+
+export const __cachedUsageSubreportTestHelpers = {
+  handleCachedUsageSubreport,
+}
+
+export const __usageReportTestHelpers = {
+  loadUsageReport,
+  runUsageReportFanoutTasks,
+  buildUsageReportAuxiliaryDegradedMetadata,
+  USAGE_REPORT_OPTIONAL_FANOUT_SECTION_KEYS,
+  normalizeRow,
+  AGENT_SCORE_REASON_RECENT_ROW_LIMIT,
+  setQueryReportDatabaseTestImpl(impl) {
+    queryReportDatabaseTestImpl = impl
+  },
+  resetQueryReportDatabaseTestImpl() {
+    queryReportDatabaseTestImpl = null
+  },
+  setLoadDockerLogErrorsTestImpl(impl) {
+    loadDockerLogErrorsTestImpl = impl
+  },
+  resetLoadDockerLogErrorsTestImpl() {
+    loadDockerLogErrorsTestImpl = null
+  },
+  setLoadLocalHealthTestImpl(impl) {
+    loadLocalHealthTestImpl = impl
+  },
+  resetLoadLocalHealthTestImpl() {
+    loadLocalHealthTestImpl = null
+  },
+}
+
+export { buildShellHealthPayload }
+
+export const __shellHealthTestHelpers = {
+  buildShellHealthPayload,
+}
+
+export const __pgBouncerAdminTestHelpers = {
+  cleanupPgBouncerAdminPools,
+  getOrCreatePgBouncerAdminPool,
+  getPgBouncerAdminPoolCacheSize() {
+    return pgBouncerAdminPoolsByKey.size
+  },
+  loadPgBouncerAdminSummaryForTests: loadPgBouncerAdminSummary,
+}
+
+export const __serverRuntimeTestHelpers = {
+  GENERIC_INTERNAL_SERVER_ERROR_BODY,
+  isHttpResponseCommitted,
+  logUnhandledRequestError,
+  respondWithGenericServerError,
+  resolveBoundedShutdownGraceMs,
+  scheduleShutdownForceExit,
+  beginHttpServerShutdown,
+  closeHttpServer,
+  runBoundedShutdownSequence,
+}

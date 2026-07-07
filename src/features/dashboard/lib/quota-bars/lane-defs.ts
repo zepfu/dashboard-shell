@@ -9,6 +9,7 @@ export interface LaneDef {
   quotaType: string
   googleClass: string | null
   quotaKey?: string
+  sourceProvider?: string
 }
 
 const ANTHROPIC_LANE_DEFS: LaneDef[] = [
@@ -19,15 +20,21 @@ const ANTHROPIC_LANE_DEFS: LaneDef[] = [
     googleClass: null,
   },
   {
-    laneKey: 'anthropic/special',
-    laneLabel: 'Sonnet · 7d',
-    quotaType: 'special',
-    googleClass: null,
-  },
-  {
     laneKey: 'anthropic/weekly',
     laneLabel: 'All Models · 7d',
     quotaType: 'weekly',
+    googleClass: null,
+  },
+  {
+    laneKey: 'anthropic/weekly_overage_included',
+    laneLabel: 'Fable · 7d overage-included',
+    quotaType: 'weekly_overage_included',
+    googleClass: null,
+  },
+  {
+    laneKey: 'anthropic/special',
+    laneLabel: 'Retired Sonnet · 7d',
+    quotaType: 'special',
     googleClass: null,
   },
 ]
@@ -59,6 +66,23 @@ const OPENAI_LANE_DEFS: LaneDef[] = [
   },
 ]
 
+const ANTIGRAVITY_LANE_DEFS: LaneDef[] = [
+  {
+    laneKey: 'antigravity/gemini-pool',
+    laneLabel: 'Gemini Pool · WTUs',
+    quotaType: 'wtus',
+    googleClass: null,
+    quotaKey: 'antigravity_code_assist:gemini_pool',
+  },
+  {
+    laneKey: 'antigravity/vertex-pool',
+    laneLabel: 'Vertex Pool · WTUs',
+    quotaType: 'wtus',
+    googleClass: null,
+    quotaKey: 'antigravity_code_assist:vertex_pool',
+  },
+]
+
 const GOOGLE_LANE_DEFS: LaneDef[] = [
   // flash-lite MUST be checked before flash (substring containment).
   {
@@ -79,31 +103,43 @@ const GOOGLE_LANE_DEFS: LaneDef[] = [
     quotaType: 'short',
     googleClass: 'gemini-pro',
   },
-]
-
-const ANTIGRAVITY_LANE_DEFS: LaneDef[] = [
   {
-    laneKey: 'antigravity/gemini-pool',
-    laneLabel: 'Gemini Pool · WTUs',
+    laneKey: 'google/antigravity-gemini-pool',
+    laneLabel: 'Antigravity Gemini Pool · WTUs',
     quotaType: 'wtus',
     googleClass: null,
     quotaKey: 'antigravity_code_assist:gemini_pool',
+    sourceProvider: 'antigravity',
   },
   {
-    laneKey: 'antigravity/vertex-pool',
-    laneLabel: 'Vertex Pool · WTUs',
+    laneKey: 'google/antigravity-vertex-pool',
+    laneLabel: 'Antigravity Vertex Pool · WTUs',
     quotaType: 'wtus',
     googleClass: null,
     quotaKey: 'antigravity_code_assist:vertex_pool',
+    sourceProvider: 'antigravity',
   },
 ]
 
+export const XAI_GROK_BUILD_WEEKLY_CREDITS_KEY =
+  'xai_grok_build_weekly_credits:credits' as const
+export const XAI_GROK_BUILD_MONTHLY_REQUESTS_KEY =
+  'xai_grok_build_monthly_requests:requests' as const
+
 const XAI_LANE_DEFS: LaneDef[] = [
   {
-    laneKey: 'xai/monthly',
-    laneLabel: 'All Models · 30d',
+    laneKey: 'xai/grok-build-weekly-credits',
+    laneLabel: 'Grok Build · Weekly credits',
+    quotaType: 'weekly',
+    googleClass: null,
+    quotaKey: XAI_GROK_BUILD_WEEKLY_CREDITS_KEY,
+  },
+  {
+    laneKey: 'xai/grok-build-monthly-requests',
+    laneLabel: 'Grok Build · Monthly requests',
     quotaType: 'monthly',
     googleClass: null,
+    quotaKey: XAI_GROK_BUILD_MONTHLY_REQUESTS_KEY,
   },
 ]
 
