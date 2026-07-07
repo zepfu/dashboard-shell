@@ -4,10 +4,12 @@ on:
   push:
     branches:
       - main
+      - develop
 
   pull_request:
     branches:
       - main
+      - develop
 
 jobs:
   install-lint-build:
@@ -22,8 +24,16 @@ jobs:
         with:
           node-version: 20
 
-      - name: Install pnpm
-        run: npm install -g pnpm
+      - name: Read pinned pnpm version from packageManager
+        id: pinned_pnpm
+        run: |
+          VERSION=$(node -p "require('./package.json').packageManager.split('@')[1]")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Setup pinned pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ steps.pinned_pnpm.outputs.version }}
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -33,9 +43,28 @@ jobs:
 
       # - name: Analyze unused files and dependencies
       #   run: pnpm knip
+      #   # Intentionally kept manual for now: knip reports many intentional/scope-dependent findings
+      #   # (sibling remote imports, exported APIs, and shared typings). Add back only after cleanup.
 
       - name: Run Prettier check
         run: pnpm format:check
 
       - name: Build the project
         run: pnpm build
+
+      - name: Run Vitest suite
+        run: pnpm test
+
+      - name: Build shell Docker image
+        run: docker build --pull --tag dashboard-shell-ci-shell --file Dockerfile .
+
+      - name: Build report-service Docker image
+        run: docker build --pull --tag dashboard-shell-ci-report --file Dockerfile.report-service .
+
+      - name: Validate nginx config
+        run: |
+          docker run --rm \
+            -e SHELL_REPORT_PROXY_SHARED_SECRET=dashboard-shell-local-proxy-secret \
+            --entrypoint /bin/sh \
+            dashboard-shell-ci-shell \
+            -c "/docker-entrypoint.sh nginx -t"
