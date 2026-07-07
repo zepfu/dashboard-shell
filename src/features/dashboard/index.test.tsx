@@ -1191,9 +1191,10 @@ describe('test_usageReportQuotasKey_factory_used_in_both (S4-T5/S4-20)', () => {
     expect(key).not.toContain('2026-06-13')
   })
 
-  test('factory with cacheBust includes it in the key', () => {
+  test('factory ignores cacheBust in key for dedupe', () => {
     const key = usageReportQuotasKey('2026-05-14', '2026-06-13', 'bust-123')
-    expect(key).toContain('bust-123')
+    expect(key).toEqual(['usage-report-quotas'])
+    expect(key).not.toContain('bust-123')
   })
 
   test('factory without cacheBust does not include undefined', () => {
