@@ -240,10 +240,9 @@ describe('ProviderCreditLifecyclePanel — C7 caption', () => {
     }
     render(<ProviderCreditLifecyclePanel creditLifecycle={creditLifecycle} />)
     const caption = screen.getByText(
-      /Current OpenAI Codex rate-limit reset credits/i
+      /Current provider credits by environment, family, and credit identity/i
     )
     expect(caption).toBeInTheDocument()
-    // RED: caption must not hardcode Codex when table includes non-openai rows.
     expect(caption.textContent?.toLowerCase()).not.toContain('codex')
   })
 })

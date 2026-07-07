@@ -16,7 +16,7 @@
  * - TOKEN CACHE and REASONING sub-sections removed.
  * - F8: .t-model spans in quota tooltip use providerBrandHex() color.
  */
-import { Component, type ComponentProps } from 'react'
+import React, { type ReactElement } from 'react'
 import { fireEvent, render, screen } from '@testing-library/react'
 import { providerBrandHex } from '../lib/usage-report-display'
 import {
@@ -1289,18 +1289,15 @@ test('test_provider_card_topmodels_negative_anomaly_case', () => {
   expect(resetBadge3).not.toBeNull()
 })
 
-/** P-1 / E-3 — ProviderCardInner must not re-render when props are stable (not vacuous innerHTML). */
+/** P-1 — memo'd ProviderCard must not re-render when props are referentially stable. */
 test('test_provider_card_memo_no_rerender_on_stable_props', () => {
-  class ProviderCardRenderProbe extends Component<
-    ComponentProps<typeof ProviderCard>
-  > {
-    static providerCardRenders = 0
-    render() {
-      ProviderCardRenderProbe.providerCardRenders += 1
-      return <ProviderCard {...this.props} />
-    }
+  const innerRenderProbe = vi.fn((): ReactElement | null => null)
+  function MemoInnerProbe(): ReactElement | null {
+    innerRenderProbe()
+    return null
   }
-  ProviderCardRenderProbe.providerCardRenders = 0
+  const stableExtraPane = React.createElement(MemoInnerProbe)
+
   const stableAnomalies: AnomalyFlags = {
     earlyReset: new Map<string, { prior: string; current: string }>(),
     cacheStale: false,
@@ -1311,13 +1308,28 @@ test('test_provider_card_memo_no_rerender_on_stable_props', () => {
     healthCells: mockHealthCells,
     quotas: mockQuotas,
     anomalies: stableAnomalies,
+    extraPaneLeft: stableExtraPane,
   }
-  const { rerender } = render(<ProviderCardRenderProbe {...probeProps} />)
-  expect(ProviderCardRenderProbe.providerCardRenders).toBe(1)
-  rerender(<ProviderCardRenderProbe {...probeProps} />)
-  // RED: memo bails only if ProviderCardInner skips; parent Probe still runs twice,
-  // so this asserts inner memo — Engineer should spy ProviderCardInner or stabilize callsite.
-  expect(ProviderCardRenderProbe.providerCardRenders).toBe(1)
+
+  class ParentHarness extends React.Component {
+    state = { tick: 0 }
+    render() {
+      return (
+        <>
+          <button type='button' onClick={() => this.setState({ tick: 1 })}>
+            bump
+          </button>
+          <ProviderCard {...probeProps} />
+        </>
+      )
+    }
+  }
+
+  innerRenderProbe.mockClear()
+  render(<ParentHarness />)
+  expect(innerRenderProbe).toHaveBeenCalledTimes(1)
+  fireEvent.click(screen.getByRole('button', { name: 'bump' }))
+  expect(innerRenderProbe).toHaveBeenCalledTimes(1)
 })
 
 /** G-3 / A-2 — earlyReset Map-only contract (no Set union at runtime). */
