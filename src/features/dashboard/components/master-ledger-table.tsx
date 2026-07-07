@@ -109,13 +109,31 @@ function MasterLedgerTableInner({
     () => new Set()
   )
 
+  const errorObservationsByModelKey = useMemo(() => {
+    const map = new Map<string, ProviderErrorObservation[]>()
+    for (const observation of errorObservations) {
+      const key = `${canonicalProvider(observation.provider)}::${observation.model.toLowerCase()}`
+      const existing = map.get(key) ?? []
+      existing.push(observation)
+      map.set(key, existing)
+    }
+    for (const [, list] of map) {
+      list.sort((a, b) => {
+        const aMs = a.observed_at ? new Date(a.observed_at).getTime() : 0
+        const bMs = b.observed_at ? new Date(b.observed_at).getTime() : 0
+        return bMs - aMs
+      })
+    }
+    return map
+  }, [errorObservations])
+
   const repositoryEntryMap = useMemo(() => {
     const repositoryMap = new Map<string, RepositoryModelEntry[]>()
     for (const sourceRow of rows) {
       const providerKey = canonicalProvider(sourceRow.provider)
+      const family = modelFamilyForRow(providerKey, sourceRow.model)
       for (const repoRow of sourceRow.repositoryChildren ?? []) {
         const repository = repoRow.model
-        const family = modelFamilyForRow(providerKey, sourceRow.model)
         const entries = repositoryMap.get(repository) ?? []
         entries.push({
           repository,
@@ -236,30 +254,10 @@ function MasterLedgerTableInner({
             familyMap.set(definition.key, existing)
           }
 
-          const orderedFamilyGroups =
-            sorting.length === 0
-              ? [
-                  ...definitions,
-                  ...(definitions.some(
-                    (definition) =>
-                      definition.key === OTHER_FAMILY_DEFINITION.key
-                  )
-                    ? []
-                    : [OTHER_FAMILY_DEFINITION]),
-                ]
-                  .map((definition) => familyMap.get(definition.key))
-                  .filter(
-                    (
-                      value
-                    ): value is {
-                      definition: ModelFamilyDefinition
-                      entries: RepositoryModelEntry[]
-                    } => value !== undefined
-                  )
-              : [...familyMap.values()]
+          const familyGroups = [...familyMap.values()]
 
           const familyRows = sortLedgerRows(
-            orderedFamilyGroups.map(({ definition, entries: familyEntries }) =>
+            familyGroups.map(({ definition, entries: familyEntries }) =>
               aggregateRows(
                 familyEntries.map((entry) => entry.repoRow),
                 {
@@ -318,7 +316,7 @@ function MasterLedgerTableInner({
 
     for (const providerRow of sortedProviderEntries) {
       result.push(providerRow)
-      if (!expandedProvidersModel.has(providerRow.providerKey)) continue
+      if (!expandedProvidersModel.has(providerRow.ledgerId)) continue
 
       const providerRows = providerMap.get(providerRow.providerKey) ?? []
       const definitions = familyDefinitionsForProvider(
@@ -369,29 +367,10 @@ function MasterLedgerTableInner({
         familyRows.set(definition.key, existing)
       }
 
-      const orderedFamilyGroups =
-        sorting.length === 0
-          ? [
-              ...definitions,
-              ...(definitions.some(
-                (definition) => definition.key === OTHER_FAMILY_DEFINITION.key
-              )
-                ? []
-                : [OTHER_FAMILY_DEFINITION]),
-            ]
-              .map((definition) => familyRows.get(definition.key))
-              .filter(
-                (
-                  value
-                ): value is {
-                  definition: ModelFamilyDefinition
-                  rows: ModelRow[]
-                } => value !== undefined
-              )
-          : [...familyRows.values()]
+      const familyGroups = [...familyRows.values()]
 
       const sortedFamilies = sortLedgerRows(
-        orderedFamilyGroups.map(({ definition, rows: familyModelRows }) =>
+        familyGroups.map(({ definition, rows: familyModelRows }) =>
           aggregateRows(familyModelRows, {
             ledgerLevel: 'family',
             ledgerId: `family:${providerRow.providerKey}:${definition.key}`,
@@ -612,74 +591,63 @@ function MasterLedgerTableInner({
                         cell.getContext()
                       ) as ReactElement | string
                     } else if (colId === 'error_pct') {
-                      // C7: err% severity color
-                      cellColor = errorPctColor(orig.error_pct)
                       const pct = orig.error_pct
-                      const rowProviderKey = orig.providerKey
-                      const rowModelKey = orig.model.toLowerCase()
-                      const repoScopeKey = orig.repositoryKey
-                      // Q8 (Wave 31): filter observations by canonical providerKey + model;
-                      // repository-view model rows annotate tooltip with repo scope (S2-3).
-                      const rowObs =
-                        pct > 0 && orig.ledgerLevel === 'model'
-                          ? errorObservations
-                              .filter(
-                                (o) =>
-                                  canonicalProvider(o.provider) ===
-                                    rowProviderKey &&
-                                  o.model.toLowerCase() === rowModelKey
-                              )
-                              .sort((a, b) => {
-                                const aMs = a.observed_at
-                                  ? new Date(a.observed_at).getTime()
-                                  : 0
-                                const bMs = b.observed_at
-                                  ? new Date(b.observed_at).getTime()
-                                  : 0
-                                return bMs - aMs
-                              })
-                              .slice(0, MAX_ERROR_HOVER_ROWS)
-                          : []
+                      cellColor =
+                        pct !== undefined
+                          ? errorPctColor(pct)
+                          : 'var(--fg-muted)'
                       const baseLabel = flexRender(
                         cell.column.columnDef.cell,
                         cell.getContext()
                       ) as ReactElement | string
-                      if (pct > 0 && rowObs.length > 0) {
-                        const tooltipContent = (
-                          <div>
-                            <div
-                              className='v9-tip-head'
-                              style={{ marginBottom: '4px' }}
-                            >
-                              {rowObs.length} most recent error
-                              {rowObs.length === 1 ? '' : 's'}
-                              {repoScopeKey !== undefined
-                                ? ` (scoped to: ${repoScopeKey})`
-                                : ''}
-                              :
-                            </div>
-                            {rowObs.map((e, idx) => (
-                              <div
-                                key={`${e.observed_at ?? 'null'}-${(e.status_code ?? 0).toString()}-${e.error_class}-${idx.toString()}`}
-                                style={{
-                                  fontSize: '9px',
-                                  padding: '1px 0',
-                                  lineHeight: 1.5,
-                                  color: 'var(--fg, #e2e8f0)',
-                                }}
-                              >
-                                {formatObservedAgo(e.observed_at)}
-                                {' · '}
-                                {e.status_code !== null
-                                  ? e.status_code.toString()
-                                  : '???'}{' '}
-                                {e.error_class} ({e.error_code})
-                              </div>
-                            ))}
-                          </div>
-                        )
+                      if (
+                        pct !== undefined &&
+                        pct > 0 &&
+                        orig.ledgerLevel === 'model'
+                      ) {
+                        const obsKey = `${orig.providerKey}::${orig.model.toLowerCase()}`
                         cellContent = (
-                          <HoverTooltip content={() => tooltipContent}>
+                          <HoverTooltip
+                            content={() => {
+                              const rowObs = (
+                                errorObservationsByModelKey.get(obsKey) ?? []
+                              ).slice(0, MAX_ERROR_HOVER_ROWS)
+                              if (rowObs.length === 0) return null
+                              return (
+                                <div>
+                                  <div
+                                    className='v9-tip-head'
+                                    style={{ marginBottom: '4px' }}
+                                  >
+                                    {rowObs.length} most recent error
+                                    {rowObs.length === 1 ? '' : 's'}
+                                    {orig.repositoryKey !== undefined
+                                      ? ' (model-wide on repo row)'
+                                      : ''}
+                                    :
+                                  </div>
+                                  {rowObs.map((e, idx) => (
+                                    <div
+                                      key={`${e.observed_at ?? 'null'}-${(e.status_code ?? 0).toString()}-${e.error_class}-${idx.toString()}`}
+                                      style={{
+                                        fontSize: '9px',
+                                        padding: '1px 0',
+                                        lineHeight: 1.5,
+                                        color: 'var(--fg, #e2e8f0)',
+                                      }}
+                                    >
+                                      {formatObservedAgo(e.observed_at)}
+                                      {' · '}
+                                      {e.status_code !== null
+                                        ? e.status_code.toString()
+                                        : '???'}{' '}
+                                      {e.error_class} ({e.error_code})
+                                    </div>
+                                  ))}
+                                </div>
+                              )
+                            }}
+                          >
                             {baseLabel}
                           </HoverTooltip>
                         )
@@ -719,276 +687,311 @@ function MasterLedgerTableInner({
                           : '—'
                       const ta = orig.toolActivity
                       if (ta !== undefined && ta.totalCalls > 0) {
-                        const leftLayout = buildToolHoverLeftColumns(
-                          ta.leftRows
-                        )
-                        const leftColumns = leftLayout.columns
-                        const displayLeftColumns = [...leftColumns].reverse()
-                        const leftHiddenCount =
-                          leftLayout.hiddenRowCount +
-                          (ta.leftTruncated
-                            ? Math.max(0, ta.leftTotalCount - LEFT_COL_CAP)
-                            : 0)
-                        const shellDisplayCap =
-                          leftLayout.rowsPerColumn * TOOL_HOVER_MAX_SIDE_COLUMNS
-                        const displayedShellRows = ta.shellRows.slice(
-                          0,
-                          shellDisplayCap
-                        )
-                        const shellHiddenCount = Math.max(
-                          0,
-                          ta.shellTotalCount - displayedShellRows.length
-                        )
-                        const shellColumns = chunkToolHoverRows(
-                          displayedShellRows,
-                          leftLayout.rowsPerColumn
-                        )
-                        const leftColumnCount = Math.max(1, leftColumns.length)
-                        const shellColumnCount = Math.max(
-                          1,
-                          shellColumns.length
-                        )
-                        const tooltipWidthPx = Math.max(
-                          340,
-                          (leftColumnCount + shellColumnCount) *
-                            TOOL_HOVER_COLUMN_WIDTH_PX +
-                            TOOL_HOVER_GROUP_GAP_PX
-                        )
-
-                        const tooltipContent = (
-                          <div
-                            style={{
-                              display: 'grid',
-                              gridTemplateColumns: `minmax(0, ${leftColumnCount.toString()}fr) minmax(0, ${shellColumnCount.toString()}fr)`,
-                              columnGap: `${TOOL_HOVER_GROUP_GAP_PX.toString()}px`,
-                              minWidth: 0,
-                              width: '100%',
-                            }}
-                          >
-                            <div style={{ minWidth: 0 }}>
-                              <div
-                                className='v9-tip-head'
-                                style={{ marginBottom: '4px' }}
-                              >
-                                {orig.ledgerLabel} — tool breakdown
-                              </div>
-                              <div
-                                style={{
-                                  fontSize: '9px',
-                                  color: 'var(--accent-chrome, #94a3b8)',
-                                  fontWeight: 700,
-                                  letterSpacing: '0.04em',
-                                  marginBottom: '2px',
-                                  textTransform: 'uppercase',
-                                }}
-                              >
-                                Tools
-                              </div>
-                              <div
-                                style={{
-                                  display: 'grid',
-                                  gridTemplateColumns: `repeat(${leftColumnCount.toString()}, minmax(0, 1fr))`,
-                                  columnGap: '8px',
-                                  alignItems: 'start',
-                                }}
-                              >
-                                {displayLeftColumns.map((column, columnIdx) => (
-                                  <div
-                                    key={`tools-${column.label}-${column.sourceIndex.toString()}`}
-                                    data-tool-left-column='true'
-                                    data-source-index={column.sourceIndex}
-                                    style={{ minWidth: 0 }}
-                                  >
-                                    {column.entries.map((entry, entryIdx) => (
-                                      <div
-                                        key={`${entry.row.label}-${entryIdx.toString()}`}
-                                      >
-                                        <div
-                                          style={{
-                                            display: 'flex',
-                                            justifyContent: 'space-between',
-                                            gap: '4px',
-                                            fontSize: '9px',
-                                            color: 'var(--fg, #e2e8f0)',
-                                            padding: '1px 0',
-                                            lineHeight: 1.5,
-                                            minWidth: 0,
-                                          }}
-                                        >
-                                          <span
-                                            style={{
-                                              flex: '1 1 auto',
-                                              minWidth: 0,
-                                              overflow: 'hidden',
-                                              textOverflow: 'ellipsis',
-                                              whiteSpace: 'nowrap',
-                                            }}
-                                          >
-                                            {entry.row.label}
-                                          </span>
-                                          <span
-                                            style={{
-                                              flex: '0 0 auto',
-                                              whiteSpace: 'nowrap',
-                                            }}
-                                          >
-                                            {numFmt(entry.row.calls)}
-                                            {'  '}
-                                            {entry.row.pct.toFixed(0)}%
-                                          </span>
-                                        </div>
-                                        {entry.subRows.length > 0 && (
-                                          <div
-                                            style={{
-                                              paddingLeft: '8px',
-                                              fontSize: '8px',
-                                              color: 'var(--fg-muted, #94a3b8)',
-                                            }}
-                                          >
-                                            {entry.subRows.map(
-                                              (sr, srIdx, arr) => {
-                                                const isLastVisible =
-                                                  entry.hiddenSubRowCount ===
-                                                    0 &&
-                                                  srIdx === arr.length - 1
-                                                const prefix = isLastVisible
-                                                  ? '└─'
-                                                  : '├─'
-                                                return (
-                                                  <div
-                                                    key={`${sr.label}-${srIdx.toString()}`}
-                                                    style={{
-                                                      padding: '0.5px 0',
-                                                      overflow: 'hidden',
-                                                      textOverflow: 'ellipsis',
-                                                      whiteSpace: 'nowrap',
-                                                    }}
-                                                  >
-                                                    {prefix} {sr.label}{' '}
-                                                    {numFmt(sr.calls)}
-                                                  </div>
-                                                )
-                                              }
-                                            )}
-                                            {entry.hiddenSubRowCount > 0 && (
-                                              <div>
-                                                {`+${entry.hiddenSubRowCount.toString()} more`}
-                                              </div>
-                                            )}
-                                          </div>
-                                        )}
-                                      </div>
-                                    ))}
-                                    {columnIdx === 0 && leftHiddenCount > 0 && (
-                                      <div
-                                        style={{
-                                          fontSize: '9px',
-                                          color: 'var(--fg-muted, #94a3b8)',
-                                          fontStyle: 'italic',
-                                          padding: '1px 0',
-                                        }}
-                                      >
-                                        {`+${leftHiddenCount.toString()} more`}
-                                      </div>
-                                    )}
-                                  </div>
-                                ))}
-                              </div>
-                            </div>
-
-                            <div style={{ minWidth: 0 }}>
-                              <div
-                                className='v9-tip-head'
-                                style={{ marginBottom: '4px' }}
-                              >
-                                &nbsp;
-                              </div>
-                              <div
-                                style={{
-                                  fontSize: '9px',
-                                  color: 'var(--accent-chrome, #94a3b8)',
-                                  fontWeight: 700,
-                                  letterSpacing: '0.04em',
-                                  marginBottom: '2px',
-                                  textTransform: 'uppercase',
-                                }}
-                              >
-                                {`Shell (${numFmt(ta.shellTotalCalls)} calls)`}
-                              </div>
-                              <div
-                                style={{
-                                  display: 'grid',
-                                  gridTemplateColumns: `repeat(${shellColumnCount.toString()}, minmax(0, 1fr))`,
-                                  columnGap: '8px',
-                                  alignItems: 'start',
-                                }}
-                              >
-                                {shellColumns.map((columnRows, columnIdx) => (
-                                  <div
-                                    key={`shell-${columnIdx.toString()}`}
-                                    style={{ minWidth: 0 }}
-                                  >
-                                    {columnRows.map((sr) => (
-                                      <div
-                                        key={sr.label}
-                                        style={{
-                                          display: 'flex',
-                                          justifyContent: 'space-between',
-                                          gap: '4px',
-                                          fontSize: '9px',
-                                          color: 'var(--fg, #e2e8f0)',
-                                          padding: '1px 0',
-                                          lineHeight: 1.5,
-                                          minWidth: 0,
-                                        }}
-                                      >
-                                        <span
-                                          style={{
-                                            flex: '1 1 auto',
-                                            minWidth: 0,
-                                            overflow: 'hidden',
-                                            textOverflow: 'ellipsis',
-                                            whiteSpace: 'nowrap',
-                                          }}
-                                        >
-                                          {sr.label}
-                                        </span>
-                                        <span
-                                          style={{
-                                            flex: '0 0 auto',
-                                            whiteSpace: 'nowrap',
-                                          }}
-                                        >
-                                          {numFmt(sr.calls)}
-                                        </span>
-                                      </div>
-                                    ))}
-                                    {columnIdx === shellColumns.length - 1 &&
-                                      shellHiddenCount > 0 && (
-                                        <div
-                                          style={{
-                                            fontSize: '9px',
-                                            color: 'var(--fg-muted, #94a3b8)',
-                                            fontStyle: 'italic',
-                                            padding: '1px 0',
-                                          }}
-                                        >
-                                          {`+${shellHiddenCount.toString()} more`}
-                                        </div>
-                                      )}
-                                  </div>
-                                ))}
-                              </div>
-                            </div>
-                          </div>
-                        )
                         cellContent = (
                           <HoverTooltip
                             variant='quota-bar'
-                            content={() => tooltipContent}
+                            content={() => {
+                              const leftLayout = buildToolHoverLeftColumns(
+                                ta.leftRows
+                              )
+                              const leftColumns = leftLayout.columns
+                              const displayLeftColumns = [
+                                ...leftColumns,
+                              ].reverse()
+                              const leftHiddenCount =
+                                leftLayout.hiddenRowCount +
+                                (ta.leftTruncated
+                                  ? Math.max(
+                                      0,
+                                      ta.leftTotalCount - LEFT_COL_CAP
+                                    )
+                                  : 0)
+                              const shellDisplayCap =
+                                leftLayout.rowsPerColumn *
+                                TOOL_HOVER_MAX_SIDE_COLUMNS
+                              const displayedShellRows = ta.shellRows.slice(
+                                0,
+                                shellDisplayCap
+                              )
+                              const shellHiddenCount = Math.max(
+                                0,
+                                ta.shellTotalCount - displayedShellRows.length
+                              )
+                              const shellColumns = chunkToolHoverRows(
+                                displayedShellRows,
+                                leftLayout.rowsPerColumn
+                              )
+                              const leftColumnCount = Math.max(
+                                1,
+                                leftColumns.length
+                              )
+                              const shellColumnCount = Math.max(
+                                1,
+                                shellColumns.length
+                              )
+                              const tooltipWidthPx = Math.max(
+                                340,
+                                (leftColumnCount + shellColumnCount) *
+                                  TOOL_HOVER_COLUMN_WIDTH_PX +
+                                  TOOL_HOVER_GROUP_GAP_PX
+                              )
+                              return (
+                                <div
+                                  style={{
+                                    display: 'grid',
+                                    gridTemplateColumns: `minmax(0, ${leftColumnCount.toString()}fr) minmax(0, ${shellColumnCount.toString()}fr)`,
+                                    columnGap: `${TOOL_HOVER_GROUP_GAP_PX.toString()}px`,
+                                    minWidth: 0,
+                                    width: '100%',
+                                    maxWidth: 'calc(100vw - 16px)',
+                                    minWidth: `min(${tooltipWidthPx.toString()}px, calc(100vw - 16px))`,
+                                  }}
+                                >
+                                  <div style={{ minWidth: 0 }}>
+                                    <div
+                                      className='v9-tip-head'
+                                      style={{ marginBottom: '4px' }}
+                                    >
+                                      {orig.ledgerLabel} — tool breakdown
+                                    </div>
+                                    <div
+                                      style={{
+                                        fontSize: '9px',
+                                        color: 'var(--accent-chrome, #94a3b8)',
+                                        fontWeight: 700,
+                                        letterSpacing: '0.04em',
+                                        marginBottom: '2px',
+                                        textTransform: 'uppercase',
+                                      }}
+                                    >
+                                      Tools
+                                    </div>
+                                    <div
+                                      style={{
+                                        display: 'grid',
+                                        gridTemplateColumns: `repeat(${leftColumnCount.toString()}, minmax(0, 1fr))`,
+                                        columnGap: '8px',
+                                        alignItems: 'start',
+                                      }}
+                                    >
+                                      {displayLeftColumns.map(
+                                        (column, columnIdx) => (
+                                          <div
+                                            key={`tools-${column.label}-${column.sourceIndex.toString()}`}
+                                            data-tool-left-column='true'
+                                            data-source-index={
+                                              column.sourceIndex
+                                            }
+                                            style={{ minWidth: 0 }}
+                                          >
+                                            {column.entries.map(
+                                              (entry, entryIdx) => (
+                                                <div
+                                                  key={`${entry.row.label}-${entryIdx.toString()}`}
+                                                >
+                                                  <div
+                                                    style={{
+                                                      display: 'flex',
+                                                      justifyContent:
+                                                        'space-between',
+                                                      gap: '4px',
+                                                      fontSize: '9px',
+                                                      color:
+                                                        'var(--fg, #e2e8f0)',
+                                                      padding: '1px 0',
+                                                      lineHeight: 1.5,
+                                                      minWidth: 0,
+                                                    }}
+                                                  >
+                                                    <span
+                                                      style={{
+                                                        flex: '1 1 auto',
+                                                        minWidth: 0,
+                                                        overflow: 'hidden',
+                                                        textOverflow:
+                                                          'ellipsis',
+                                                        whiteSpace: 'nowrap',
+                                                      }}
+                                                    >
+                                                      {entry.row.label}
+                                                    </span>
+                                                    <span
+                                                      style={{
+                                                        flex: '0 0 auto',
+                                                        whiteSpace: 'nowrap',
+                                                      }}
+                                                    >
+                                                      {numFmt(entry.row.calls)}
+                                                      {'  '}
+                                                      {entry.row.pct.toFixed(0)}
+                                                      %
+                                                    </span>
+                                                  </div>
+                                                  {entry.subRows.length > 0 && (
+                                                    <div
+                                                      style={{
+                                                        paddingLeft: '8px',
+                                                        fontSize: '8px',
+                                                        color:
+                                                          'var(--fg-muted, #94a3b8)',
+                                                      }}
+                                                    >
+                                                      {entry.subRows.map(
+                                                        (sr, srIdx, arr) => {
+                                                          const isLastVisible =
+                                                            entry.hiddenSubRowCount ===
+                                                              0 &&
+                                                            srIdx ===
+                                                              arr.length - 1
+                                                          const prefix =
+                                                            isLastVisible
+                                                              ? '└─'
+                                                              : '├─'
+                                                          return (
+                                                            <div
+                                                              key={`${sr.label}-${srIdx.toString()}`}
+                                                              style={{
+                                                                padding:
+                                                                  '0.5px 0',
+                                                                overflow:
+                                                                  'hidden',
+                                                                textOverflow:
+                                                                  'ellipsis',
+                                                                whiteSpace:
+                                                                  'nowrap',
+                                                              }}
+                                                            >
+                                                              {prefix}{' '}
+                                                              {sr.label}{' '}
+                                                              {numFmt(sr.calls)}
+                                                            </div>
+                                                          )
+                                                        }
+                                                      )}
+                                                      {entry.hiddenSubRowCount >
+                                                        0 && (
+                                                        <div>
+                                                          {`+${entry.hiddenSubRowCount.toString()} more`}
+                                                        </div>
+                                                      )}
+                                                    </div>
+                                                  )}
+                                                </div>
+                                              )
+                                            )}
+                                            {columnIdx === 0 &&
+                                              leftHiddenCount > 0 && (
+                                                <div
+                                                  style={{
+                                                    fontSize: '9px',
+                                                    color:
+                                                      'var(--fg-muted, #94a3b8)',
+                                                    fontStyle: 'italic',
+                                                    padding: '1px 0',
+                                                  }}
+                                                >
+                                                  {`+${leftHiddenCount.toString()} more`}
+                                                </div>
+                                              )}
+                                          </div>
+                                        )
+                                      )}
+                                    </div>
+                                  </div>
+                                  <div style={{ minWidth: 0 }}>
+                                    <div
+                                      className='v9-tip-head'
+                                      style={{ marginBottom: '4px' }}
+                                    >
+                                      &nbsp;
+                                    </div>
+                                    <div
+                                      style={{
+                                        fontSize: '9px',
+                                        color: 'var(--accent-chrome, #94a3b8)',
+                                        fontWeight: 700,
+                                        letterSpacing: '0.04em',
+                                        marginBottom: '2px',
+                                        textTransform: 'uppercase',
+                                      }}
+                                    >
+                                      {`Shell (${numFmt(ta.shellTotalCalls)} calls)`}
+                                    </div>
+                                    <div
+                                      style={{
+                                        display: 'grid',
+                                        gridTemplateColumns: `repeat(${shellColumnCount.toString()}, minmax(0, 1fr))`,
+                                        columnGap: '8px',
+                                        alignItems: 'start',
+                                      }}
+                                    >
+                                      {shellColumns.map(
+                                        (columnRows, columnIdx) => (
+                                          <div
+                                            key={`shell-${columnIdx.toString()}`}
+                                            style={{ minWidth: 0 }}
+                                          >
+                                            {columnRows.map((sr) => (
+                                              <div
+                                                key={sr.label}
+                                                style={{
+                                                  display: 'flex',
+                                                  justifyContent:
+                                                    'space-between',
+                                                  gap: '4px',
+                                                  fontSize: '9px',
+                                                  color: 'var(--fg, #e2e8f0)',
+                                                  padding: '1px 0',
+                                                  lineHeight: 1.5,
+                                                  minWidth: 0,
+                                                }}
+                                              >
+                                                <span
+                                                  style={{
+                                                    flex: '1 1 auto',
+                                                    minWidth: 0,
+                                                    overflow: 'hidden',
+                                                    textOverflow: 'ellipsis',
+                                                    whiteSpace: 'nowrap',
+                                                  }}
+                                                >
+                                                  {sr.label}
+                                                </span>
+                                                <span
+                                                  style={{
+                                                    flex: '0 0 auto',
+                                                    whiteSpace: 'nowrap',
+                                                  }}
+                                                >
+                                                  {numFmt(sr.calls)}
+                                                </span>
+                                              </div>
+                                            ))}
+                                            {columnIdx ===
+                                              shellColumns.length - 1 &&
+                                              shellHiddenCount > 0 && (
+                                                <div
+                                                  style={{
+                                                    fontSize: '9px',
+                                                    color:
+                                                      'var(--fg-muted, #94a3b8)',
+                                                    fontStyle: 'italic',
+                                                    padding: '1px 0',
+                                                  }}
+                                                >
+                                                  {`+${shellHiddenCount.toString()} more`}
+                                                </div>
+                                              )}
+                                          </div>
+                                        )
+                                      )}
+                                    </div>
+                                  </div>
+                                </div>
+                              )
+                            }}
                             panelStyle={{
                               maxWidth: 'calc(100vw - 16px)',
-                              width: `min(${tooltipWidthPx.toString()}px, calc(100vw - 16px))`,
                             }}
                           >
                             {toolLabel}
@@ -1009,7 +1012,7 @@ function MasterLedgerTableInner({
                       const isExpanded = isProviderRow
                         ? ledgerView === 'repository'
                           ? expandedProvidersRepository.has(orig.ledgerId)
-                          : expandedProvidersModel.has(orig.providerKey)
+                          : expandedProvidersModel.has(orig.ledgerId)
                         : isFamilyRow
                           ? expandedFamilies.has(orig.ledgerId)
                           : isModelRow
@@ -1042,10 +1045,10 @@ function MasterLedgerTableInner({
                           } else {
                             setExpandedProvidersModel((current) => {
                               const next = new Set(current)
-                              if (next.has(orig.providerKey)) {
-                                next.delete(orig.providerKey)
+                              if (next.has(orig.ledgerId)) {
+                                next.delete(orig.ledgerId)
                               } else {
-                                next.add(orig.providerKey)
+                                next.add(orig.ledgerId)
                               }
                               return next
                             })

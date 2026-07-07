@@ -192,6 +192,32 @@ export function familyDefinitionsForProvider(
   )
 }
 
+/** Curated family order for default (unsorted) ledger display — fork-review C4. */
+export function compareFamilyLedgerLabels(
+  providerKey: string,
+  leftLabel: string,
+  rightLabel: string
+): number {
+  const definitions = MODEL_FAMILY_DEFINITIONS[providerKey]
+  if (definitions === undefined) {
+    return leftLabel.localeCompare(rightLabel, undefined, {
+      sensitivity: 'base',
+    })
+  }
+  const rank = (label: string): number => {
+    const idx = definitions.findIndex(
+      (definition) => definition.label === label
+    )
+    if (idx >= 0) return idx
+    if (label === OTHER_FAMILY_DEFINITION.label) return definitions.length
+    return definitions.length + 1
+  }
+  const leftRank = rank(leftLabel)
+  const rightRank = rank(rightLabel)
+  if (leftRank !== rightRank) return leftRank - rightRank
+  return leftLabel.localeCompare(rightLabel, undefined, { sensitivity: 'base' })
+}
+
 export function modelFamilyForRow(
   provider: string,
   model: string

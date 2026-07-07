@@ -35,8 +35,10 @@ export function providerDisplayName(provider: string): string {
  * Wave 26 (F#13): quota_pct removed from severity computation.
  */
 export function rowSeverityColor(row: ModelRow): string {
-  if (row.error_pct >= 2) return 'var(--accent-hot)'
-  if (row.error_pct >= 0.5) return 'var(--accent-warm)'
+  const err = row.error_pct
+  if (err === undefined) return 'var(--accent-cool)'
+  if (err >= 2) return 'var(--accent-hot)'
+  if (err >= 0.5) return 'var(--accent-warm)'
   if (row.cost_usd >= 1) return 'var(--accent-teal)'
   return 'var(--accent-cool)'
 }
