@@ -3,7 +3,10 @@ import {
   combineAgentQualitySummaries,
   type AgentQualitySummary,
 } from '../lib/agent-quality'
+import { cachePctFromTokens } from '../lib/ledger-math'
+import { combineLatencySummaries } from '../lib/model-latency-summary'
 import {
+  compareFamilyLedgerLabels,
   formatLedgerModelDisplayName,
   type ModelFamilyDefinition,
 } from './master-ledger-model-meta'
@@ -48,42 +51,29 @@ export interface ModelRow {
   requests: number
   p50_ms: number
   p95_ms: number
-  error_pct: number
+  /** Raw rate; round only at display. Undefined = no error data (repository leaves). */
+  error_pct?: number
   cost_usd: number
-  // 4K-only optional fields
   cache_pct?: number
   queue?: number
   resets?: number
-  // Wave 26 — new cache/reasoning columns (operator F#12)
-  /** Percentage of total row USD cost attributed to cache miss premium
-   *  (cache_miss_usd_cost / usd_cost × 100). Range 0–100. */
   cache_miss_pct?: number
-  /** Dollar cost attributed to cache misses. */
   cache_miss_usd_cost?: number
-  /** Reasoning tokens as reported by the provider. */
   reasoning_reported?: number
-  /** Reasoning tokens estimated (may be approximate). */
   reasoning_estimated?: number
-  // Wave 30 operator reorder — total cache tokens (cache_input + cache_creation)
-  /** Total cache tokens used: token_cache_input + token_cache_creation. */
   cache_toks?: number
-  // 5K-only optional fields
   tool?: number
   git_commits?: number
   git_pushes?: number
   inval?: number
-  // Sparkline data (numeric series parallel to sparkBuckets when bucket-aligned)
   spark?: number[]
-  /** ISO date (or bucket key) per spark point; enables bucket-aligned aggregation. */
   sparkBuckets?: string[]
-  // W33: pre-processed tool activity for TOOL cell hover tooltip
   toolActivity?: import('./master-ledger-tool-activity').ModelToolActivity
-  /** Deterministic session-history agent-quality score rollup. */
   agentQuality?: AgentQualitySummary
-  /** Millisecond timing split and throughput rollup from session_history. */
   latencySummary?: ModelLatencySummary
-  /** Display-only repository children for exact model drilldown. */
   repositoryChildren?: ModelRow[]
+  /** When true, Toks In/Out used a synthetic 60/40 split (no usage row coverage). */
+  tokensDirectionEstimated?: boolean
 }
 
 export type LedgerLevel = 'provider' | 'family' | 'model' | 'repository'
@@ -113,123 +103,59 @@ export interface RepositoryModelEntry {
 // Aggregation helpers
 // ---------------------------------------------------------------------------
 
+function sumSparkIndexAligned(rows: readonly ModelRow[]): number[] | undefined {
+  const maxLength = Math.max(0, ...rows.map((row) => row.spark?.length ?? 0))
+  if (maxLength === 0) return undefined
+  return Array.from({ length: maxLength }, (_value, index) =>
+    rows.reduce((sum, row) => sum + (row.spark?.[index] ?? 0), 0)
+  )
+}
+
 function sumSpark(rows: readonly ModelRow[]): number[] | undefined {
   const hasBucketAxis = rows.some(
     (row) => (row.sparkBuckets?.length ?? 0) > 0 && (row.spark?.length ?? 0) > 0
   )
   if (hasBucketAxis) {
     const bucketTotals = new Map<string, number>()
+    const bucketlessRows: ModelRow[] = []
     for (const row of rows) {
       const buckets = row.sparkBuckets ?? []
       const values = row.spark ?? []
+      if (buckets.length === 0 && values.length > 0) {
+        bucketlessRows.push(row)
+        continue
+      }
       for (let i = 0; i < values.length; i++) {
         const bucket = buckets[i]
         if (bucket === undefined) continue
         bucketTotals.set(bucket, (bucketTotals.get(bucket) ?? 0) + values[i])
       }
     }
-    if (bucketTotals.size === 0) return undefined
-    const orderedBuckets = [...bucketTotals.keys()].sort()
-    return orderedBuckets.map((bucket) => bucketTotals.get(bucket) ?? 0)
+    if (bucketTotals.size > 0) {
+      const orderedBuckets = [...bucketTotals.keys()].sort()
+      const bucketAligned = orderedBuckets.map(
+        (bucket) => bucketTotals.get(bucket) ?? 0
+      )
+      const indexAligned = sumSparkIndexAligned(bucketlessRows)
+      if (indexAligned === undefined) return bucketAligned
+      const maxLength = Math.max(bucketAligned.length, indexAligned.length)
+      return Array.from({ length: maxLength }, (_v, index) => {
+        const fromBuckets =
+          index < bucketAligned.length ? bucketAligned[index] : 0
+        const fromIndex =
+          index < indexAligned.length ? (indexAligned[index] ?? 0) : 0
+        return fromBuckets + fromIndex
+      })
+    }
+    return sumSparkIndexAligned(bucketlessRows)
   }
 
-  const maxLength = Math.max(0, ...rows.map((row) => row.spark?.length ?? 0))
-  if (maxLength === 0) return undefined
-
-  return Array.from({ length: maxLength }, (_value, index) =>
-    rows.reduce((sum, row) => sum + (row.spark?.[index] ?? 0), 0)
-  )
+  return sumSparkIndexAligned(rows)
 }
 
 export { sumSpark as _sumSparkForTest }
 
-function maxNullable(values: readonly (number | null | undefined)[]) {
-  const present = values.filter((value): value is number => value != null)
-  return present.length > 0 ? Math.max(...present) : null
-}
-
-function sumNullable(values: readonly (number | null | undefined)[]) {
-  const present = values.filter((value): value is number => value != null)
-  return present.length > 0
-    ? present.reduce((sum, value) => sum + value, 0)
-    : null
-}
-
-function combineModelLatencySummaries(
-  rows: readonly ModelRow[]
-): ModelLatencySummary | undefined {
-  const summaries = rows
-    .map((row) => row.latencySummary)
-    .filter((summary): summary is ModelLatencySummary => summary !== undefined)
-  if (summaries.length === 0) return undefined
-
-  return {
-    sampleRows: summaries.reduce((sum, summary) => sum + summary.sampleRows, 0),
-    totalServerP50Ms: maxNullable(
-      summaries.map((summary) => summary.totalServerP50Ms)
-    ),
-    totalServerP95Ms: maxNullable(
-      summaries.map((summary) => summary.totalServerP95Ms)
-    ),
-    totalServerCount: sumNullable(
-      summaries.map((summary) => summary.totalServerCount)
-    ),
-    upstreamElapsedP50Ms: maxNullable(
-      summaries.map((summary) => summary.upstreamElapsedP50Ms)
-    ),
-    upstreamElapsedP95Ms: maxNullable(
-      summaries.map((summary) => summary.upstreamElapsedP95Ms)
-    ),
-    upstreamElapsedCount: sumNullable(
-      summaries.map((summary) => summary.upstreamElapsedCount)
-    ),
-    ttftP95Ms: maxNullable(summaries.map((summary) => summary.ttftP95Ms)),
-    ttftCount: sumNullable(summaries.map((summary) => summary.ttftCount)),
-    litellmProcessingP95Ms: maxNullable(
-      summaries.map((summary) => summary.litellmProcessingP95Ms)
-    ),
-    litellmProcessingCount: sumNullable(
-      summaries.map((summary) => summary.litellmProcessingCount)
-    ),
-    upstreamStreamP95Ms: maxNullable(
-      summaries.map((summary) => summary.upstreamStreamP95Ms)
-    ),
-    upstreamStreamCount: sumNullable(
-      summaries.map((summary) => summary.upstreamStreamCount)
-    ),
-    unclassifiedP95Ms: maxNullable(
-      summaries.map((summary) => summary.unclassifiedP95Ms)
-    ),
-    unclassifiedCount: sumNullable(
-      summaries.map((summary) => summary.unclassifiedCount)
-    ),
-    previousResponseGapP95Ms: maxNullable(
-      summaries.map((summary) => summary.previousResponseGapP95Ms)
-    ),
-    previousResponseGapCount: sumNullable(
-      summaries.map((summary) => summary.previousResponseGapCount)
-    ),
-    upstreamOutputTokensPerSecondP50: maxNullable(
-      summaries.map((summary) => summary.upstreamOutputTokensPerSecondP50)
-    ),
-    upstreamOutputTokensPerSecondP95: maxNullable(
-      summaries.map((summary) => summary.upstreamOutputTokensPerSecondP95)
-    ),
-    upstreamOutputTokensPerSecondCount: sumNullable(
-      summaries.map((summary) => summary.upstreamOutputTokensPerSecondCount)
-    ),
-    streamOutputTokensPerSecondP50: maxNullable(
-      summaries.map((summary) => summary.streamOutputTokensPerSecondP50)
-    ),
-    streamOutputTokensPerSecondP95: maxNullable(
-      summaries.map((summary) => summary.streamOutputTokensPerSecondP95)
-    ),
-    streamOutputTokensPerSecondCount: sumNullable(
-      summaries.map((summary) => summary.streamOutputTokensPerSecondCount)
-    ),
-  }
-}
-
+// G2: cost_usd and cache_miss_usd_cost are summed as IEEE doubles; rounding at display only.
 export function aggregateRows(
   rows: readonly ModelRow[],
   overrides: Pick<
@@ -248,8 +174,13 @@ export function aggregateRows(
   const requests = rows.reduce((sum, row) => sum + row.requests, 0)
   const cost = rows.reduce((sum, row) => sum + row.cost_usd, 0)
   const cacheToks = rows.reduce((sum, row) => sum + (row.cache_toks ?? 0), 0)
-  const weightedErrorTotal = rows.reduce(
-    (sum, row) => sum + row.error_pct * row.requests,
+  const errorRows = rows.filter((row) => row.error_pct !== undefined)
+  const errorRequestTotal = errorRows.reduce(
+    (sum, row) => sum + row.requests,
+    0
+  )
+  const weightedErrorTotal = errorRows.reduce(
+    (sum, row) => sum + (row.error_pct ?? 0) * row.requests,
     0
   )
   const optionalSum = (
@@ -270,10 +201,10 @@ export function aggregateRows(
     (sum, row) => sum + (row.cache_miss_usd_cost ?? 0),
     0
   )
-  // queue/resets: summed across children; explicit zero contributes (not suppressed).
   const queueSum = optionalSum((row) => row.queue, true)
   const resetsSum = optionalSum((row) => row.resets, true)
 
+  // C9: p50_ms / p95_ms use max of child rollups (conservative upper bound, not a true group percentile).
   return {
     model: overrides.ledgerLabel,
     provider: overrides.providerKey,
@@ -283,19 +214,14 @@ export function aggregateRows(
     p50_ms: Math.max(0, ...rows.map((row) => row.p50_ms)),
     p95_ms: Math.max(0, ...rows.map((row) => row.p95_ms)),
     error_pct:
-      requests > 0 ? Math.round((weightedErrorTotal / requests) * 10) / 10 : 0,
-    cost_usd: cost,
-    cache_pct:
-      cacheToks > 0 && rows.some((row) => row.tokens_in > 0)
-        ? Math.round(
-            (cacheToks /
-              Math.max(
-                1,
-                rows.reduce((sum, row) => sum + row.tokens_in, 0)
-              )) *
-              1000
-          ) / 10
+      errorRequestTotal > 0
+        ? Math.round((weightedErrorTotal / errorRequestTotal) * 10) / 10
         : undefined,
+    cost_usd: cost,
+    cache_pct: cachePctFromTokens(
+      cacheToks,
+      rows.reduce((sum, row) => sum + row.tokens_in, 0)
+    ),
     cache_miss_pct: (() => {
       const defined = rows.filter((row) => row.cache_miss_pct !== undefined)
       if (defined.length === 0) return undefined
@@ -325,7 +251,9 @@ export function aggregateRows(
     agentQuality: combineAgentQualitySummaries(
       rows.map((row) => row.agentQuality)
     ),
-    latencySummary: combineModelLatencySummaries(rows),
+    latencySummary: combineLatencySummaries(
+      rows.map((row) => row.latencySummary)
+    ),
     ...overrides,
   }
 }
@@ -439,11 +367,23 @@ export function sortLedgerRows<T extends LedgerDisplayRow>(
   sorting: import('@tanstack/react-table').SortingState
 ): T[] {
   if (sorting.length === 0) {
-    return [...rows].sort((left, right) =>
-      left.ledgerLabel.localeCompare(right.ledgerLabel, undefined, {
+    return [...rows].sort((left, right) => {
+      if (
+        left.ledgerLevel === 'family' &&
+        right.ledgerLevel === 'family' &&
+        left.providerKey === right.providerKey
+      ) {
+        const familyOrder = compareFamilyLedgerLabels(
+          left.providerKey,
+          left.ledgerLabel,
+          right.ledgerLabel
+        )
+        if (familyOrder !== 0) return familyOrder
+      }
+      return left.ledgerLabel.localeCompare(right.ledgerLabel, undefined, {
         sensitivity: 'base',
       })
-    )
+    })
   }
   return [...rows].sort((left, right) => {
     for (const sort of sorting) {

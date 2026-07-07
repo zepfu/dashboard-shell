@@ -2,9 +2,8 @@
  * TanStack column definitions for MasterLedgerTable (W11 split).
  */
 import { createColumnHelper } from '@tanstack/react-table'
-import { agentQualityIssueSortValue } from '../lib/agent-quality'
 import { numFmt } from '../lib/format-utils'
-import { formatModelDisplayName, formatUsd } from '../lib/usage-report-display'
+import { formatUsd } from '../lib/usage-report-display'
 import type { LedgerDisplayRow } from './master-ledger-aggregation'
 import {
   fmtOrDash,
@@ -19,11 +18,11 @@ import { ReasoningTokenValue } from './primitives/reasoning-token-value'
 
 const helper = createColumnHelper<LedgerDisplayRow>()
 
-// Cols 1–5: identity + volume
+// Cols 1–5: identity + volume (model cell body owned by master-ledger-table tbody)
 const baseVolumeColumns = [
   helper.accessor('model', {
     header: 'Model',
-    cell: (info) => formatModelDisplayName(info.getValue() as string),
+    cell: () => null,
   }),
   helper.accessor('provider', {
     header: 'Provider',
@@ -74,8 +73,7 @@ const cacheMissDollarAndReasoningColumns = [
     cell: (info) =>
       fmtOrDash(info.getValue() as number | null | undefined, formatUsd),
   }),
-  // Consolidated Reasoning column: reported + estimated in one cell.
-  // sortingFn uses combined value (reported + estimated).
+  // Sorting uses compareLedgerValues in master-ledger-aggregation (manual sort path).
   helper.accessor(
     (row) => (row.reasoning_reported ?? 0) + (row.reasoning_estimated ?? 0),
     {
@@ -96,9 +94,6 @@ const agentQualityColumn = [
     id: 'agent_quality',
     header: 'Score',
     enableSorting: true,
-    sortingFn: (rowA, rowB) =>
-      agentQualityIssueSortValue(rowA.original.agentQuality) -
-      agentQualityIssueSortValue(rowB.original.agentQuality),
     cell: ({ row }) => renderAgentQualityCell(row.original.agentQuality),
   }),
 ]
@@ -117,7 +112,8 @@ const latencyCostColumns = [
   }),
   helper.accessor('error_pct', {
     header: 'Err%',
-    cell: (info) => `${numFmt(info.getValue() as number, 1)}%`,
+    cell: (info) =>
+      fmtOrDash(info.getValue() as number | null | undefined, formatPercent),
   }),
   helper.accessor('cost_usd', {
     header: 'Cost',

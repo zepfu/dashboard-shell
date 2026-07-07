@@ -21,6 +21,11 @@ import {
   combineAgentQualitySummaries,
   type AgentQualitySummary,
 } from './agent-quality'
+import { cacheMissPctFromUsd, cachePctFromTokens } from './ledger-math'
+import {
+  latencySummaryFromReportRow,
+  mergeLatencySummaries,
+} from './model-latency-summary'
 import { CANONICAL_PROVIDERS } from './provider-identity'
 import { keyFor } from './quota-bars/fields'
 import { canonicalProvider, providerAliases } from './usage-report-display'
@@ -49,156 +54,6 @@ export function canonicalRepositoryName(
   repository: string | null | undefined
 ): string {
   return (repository ?? '(unknown)').replace(/\s+\(memory\)$/i, '')
-}
-
-function latencySummaryFromReportRow(
-  row: UsageReportRow | UsageReportProviderStatusUsageRow
-): ModelLatencySummary | undefined {
-  const summary: ModelLatencySummary = {
-    sampleRows: row.latency_sample_rows ?? row.traces ?? 0,
-    totalServerP50Ms: row.total_server_elapsed_p50_ms,
-    totalServerP95Ms: row.total_server_elapsed_p95_ms,
-    totalServerCount: row.total_server_elapsed_count,
-    upstreamElapsedP50Ms: row.llm_upstream_elapsed_p50_ms,
-    upstreamElapsedP95Ms: row.llm_upstream_elapsed_p95_ms,
-    upstreamElapsedCount: row.llm_upstream_elapsed_count,
-    ttftP95Ms: row.ttft_p95_ms,
-    ttftCount: row.ttft_count,
-    litellmProcessingP95Ms: row.litellm_processing_p95_ms,
-    litellmProcessingCount: row.litellm_processing_count,
-    upstreamStreamP95Ms: row.llm_upstream_stream_p95_ms,
-    upstreamStreamCount: row.llm_upstream_stream_count,
-    unclassifiedP95Ms: row.latency_unclassified_p95_ms,
-    unclassifiedCount: row.latency_unclassified_count,
-    previousResponseGapP95Ms: row.previous_response_to_current_request_p95_ms,
-    previousResponseGapCount: row.previous_response_to_current_request_count,
-    upstreamOutputTokensPerSecondP50:
-      row.llm_upstream_output_tokens_per_second_p50,
-    upstreamOutputTokensPerSecondP95:
-      row.llm_upstream_output_tokens_per_second_p95,
-    upstreamOutputTokensPerSecondCount:
-      row.llm_upstream_output_tokens_per_second_count,
-    streamOutputTokensPerSecondP50: row.llm_stream_output_tokens_per_second_p50,
-    streamOutputTokensPerSecondP95: row.llm_stream_output_tokens_per_second_p95,
-    streamOutputTokensPerSecondCount:
-      row.llm_stream_output_tokens_per_second_count,
-  }
-  const hasLatencyCoverage =
-    (summary.totalServerCount ?? 0) > 0 ||
-    (summary.upstreamElapsedCount ?? 0) > 0 ||
-    (summary.ttftCount ?? 0) > 0 ||
-    (summary.litellmProcessingCount ?? 0) > 0
-  return hasLatencyCoverage ? summary : undefined
-}
-
-function maxOptionalNumber(
-  left: number | null | undefined,
-  right: number | null | undefined
-): number | null {
-  if (left == null) return right ?? null
-  if (right == null) return left
-  return Math.max(left, right)
-}
-
-function sumOptionalNumber(
-  left: number | null | undefined,
-  right: number | null | undefined
-): number | null {
-  if (left == null && right == null) return null
-  return (left ?? 0) + (right ?? 0)
-}
-
-function mergeLatencySummaries(
-  left: ModelLatencySummary | undefined,
-  right: ModelLatencySummary | undefined
-): ModelLatencySummary | undefined {
-  if (left === undefined) return right
-  if (right === undefined) return left
-  return {
-    sampleRows: left.sampleRows + right.sampleRows,
-    totalServerP50Ms: maxOptionalNumber(
-      left.totalServerP50Ms,
-      right.totalServerP50Ms
-    ),
-    totalServerP95Ms: maxOptionalNumber(
-      left.totalServerP95Ms,
-      right.totalServerP95Ms
-    ),
-    totalServerCount: sumOptionalNumber(
-      left.totalServerCount,
-      right.totalServerCount
-    ),
-    upstreamElapsedP50Ms: maxOptionalNumber(
-      left.upstreamElapsedP50Ms,
-      right.upstreamElapsedP50Ms
-    ),
-    upstreamElapsedP95Ms: maxOptionalNumber(
-      left.upstreamElapsedP95Ms,
-      right.upstreamElapsedP95Ms
-    ),
-    upstreamElapsedCount: sumOptionalNumber(
-      left.upstreamElapsedCount,
-      right.upstreamElapsedCount
-    ),
-    ttftP95Ms: maxOptionalNumber(left.ttftP95Ms, right.ttftP95Ms),
-    ttftCount: sumOptionalNumber(left.ttftCount, right.ttftCount),
-    litellmProcessingP95Ms: maxOptionalNumber(
-      left.litellmProcessingP95Ms,
-      right.litellmProcessingP95Ms
-    ),
-    litellmProcessingCount: sumOptionalNumber(
-      left.litellmProcessingCount,
-      right.litellmProcessingCount
-    ),
-    upstreamStreamP95Ms: maxOptionalNumber(
-      left.upstreamStreamP95Ms,
-      right.upstreamStreamP95Ms
-    ),
-    upstreamStreamCount: sumOptionalNumber(
-      left.upstreamStreamCount,
-      right.upstreamStreamCount
-    ),
-    unclassifiedP95Ms: maxOptionalNumber(
-      left.unclassifiedP95Ms,
-      right.unclassifiedP95Ms
-    ),
-    unclassifiedCount: sumOptionalNumber(
-      left.unclassifiedCount,
-      right.unclassifiedCount
-    ),
-    previousResponseGapP95Ms: maxOptionalNumber(
-      left.previousResponseGapP95Ms,
-      right.previousResponseGapP95Ms
-    ),
-    previousResponseGapCount: sumOptionalNumber(
-      left.previousResponseGapCount,
-      right.previousResponseGapCount
-    ),
-    upstreamOutputTokensPerSecondP50: maxOptionalNumber(
-      left.upstreamOutputTokensPerSecondP50,
-      right.upstreamOutputTokensPerSecondP50
-    ),
-    upstreamOutputTokensPerSecondP95: maxOptionalNumber(
-      left.upstreamOutputTokensPerSecondP95,
-      right.upstreamOutputTokensPerSecondP95
-    ),
-    upstreamOutputTokensPerSecondCount: sumOptionalNumber(
-      left.upstreamOutputTokensPerSecondCount,
-      right.upstreamOutputTokensPerSecondCount
-    ),
-    streamOutputTokensPerSecondP50: maxOptionalNumber(
-      left.streamOutputTokensPerSecondP50,
-      right.streamOutputTokensPerSecondP50
-    ),
-    streamOutputTokensPerSecondP95: maxOptionalNumber(
-      left.streamOutputTokensPerSecondP95,
-      right.streamOutputTokensPerSecondP95
-    ),
-    streamOutputTokensPerSecondCount: sumOptionalNumber(
-      left.streamOutputTokensPerSecondCount,
-      right.streamOutputTokensPerSecondCount
-    ),
-  }
 }
 
 function ledgerP50Ms(
@@ -314,18 +169,34 @@ export function buildModelRows(
   const sortedTrendRows = [...trendRows].sort((a, b) =>
     a.bucket < b.bucket ? -1 : a.bucket > b.bucket ? 1 : 0
   )
-  const sparkByKey = new Map<string, number[]>()
+  const bucketTokensByModelKey = new Map<string, Map<string, number>>()
   for (const t of sortedTrendRows) {
     const m = (t.model ?? '').toLowerCase()
     const p = canonicalProvider(t.provider ?? '')
     if (!p || !m) continue
     const sparkKey = keyFor(t.provider ?? '', t.model ?? '')
-    const arr = sparkByKey.get(sparkKey) ?? []
-    arr.push(t.token_total)
-    sparkByKey.set(sparkKey, arr)
+    const bucketMap = bucketTokensByModelKey.get(sparkKey) ?? new Map()
+    bucketMap.set(t.bucket, (bucketMap.get(t.bucket) ?? 0) + t.token_total)
+    bucketTokensByModelKey.set(sparkKey, bucketMap)
+  }
+  const sparkByKey = new Map<string, number[]>()
+  const sparkBucketsByKey = new Map<string, string[]>()
+  for (const [sparkKey, bucketMap] of bucketTokensByModelKey) {
+    const sortedBuckets = [...bucketMap.entries()].sort(([a], [b]) =>
+      a < b ? -1 : a > b ? 1 : 0
+    )
+    sparkBucketsByKey.set(
+      sparkKey,
+      sortedBuckets.map(([bucket]) => bucket)
+    )
+    sparkByKey.set(
+      sparkKey,
+      sortedBuckets.map(([, tokens]) => tokens)
+    )
   }
 
   const sparkByRepositoryKey = new Map<string, number[]>()
+  const sparkBucketsByRepositoryKey = new Map<string, string[]>()
   const bucketTokensByRepositoryKey = new Map<string, Map<string, number>>()
   for (const t of trendRows) {
     const p = canonicalProvider(t.provider ?? '')
@@ -340,6 +211,10 @@ export function buildModelRows(
   for (const [key, bucketMap] of bucketTokensByRepositoryKey) {
     const sortedBuckets = [...bucketMap.entries()].sort(([a], [b]) =>
       a < b ? -1 : a > b ? 1 : 0
+    )
+    sparkBucketsByRepositoryKey.set(
+      key,
+      sortedBuckets.map(([bucket]) => bucket)
     )
     sparkByRepositoryKey.set(
       key,
@@ -358,16 +233,10 @@ export function buildModelRows(
     const existing = repoMap.get(repo)
     const cacheTokens =
       (r.token_cache_input ?? 0) + (r.token_cache_creation ?? 0)
-    const cachePct =
-      (r.token_in ?? 0) > 0
-        ? Math.round((cacheTokens / Math.max(1, r.token_in ?? 0)) * 1000) / 10
-        : undefined
+    const cachePct = cachePctFromTokens(cacheTokens, r.token_in ?? 0)
     const cacheMissUsd = r.cache_miss_usd_cost ?? 0
     const cost = r.usd_cost ?? 0
-    const cacheMissPct =
-      cacheMissUsd > 0 && cost > 0
-        ? Math.round((cacheMissUsd / cost) * 1000) / 10
-        : undefined
+    const cacheMissPct = cacheMissPctFromUsd(cacheMissUsd, cost)
     const agentQuality = agentQualityFromFlatRow(r)
     const latencySummary = latencySummaryFromReportRow(r)
 
@@ -380,14 +249,16 @@ export function buildModelRows(
         requests: r.traces ?? 0,
         p50_ms: ledgerP50Ms(latencySummary, r.llm_upstream_elapsed_average_ms),
         p95_ms: ledgerP95Ms(latencySummary, r.llm_upstream_elapsed_average_ms),
-        error_pct: 0,
+        // C3: no repo-granular error source — omit error_pct (renders —), not 0.0%.
+        error_pct: undefined,
         cost_usd: cost,
         cache_pct: cachePct,
         cache_miss_pct: cacheMissPct,
         cache_miss_usd_cost: cacheMissUsd > 0 ? cacheMissUsd : undefined,
         reasoning_reported: r.token_reasoning_reported ?? 0,
         reasoning_estimated: r.token_reasoning_estimated ?? 0,
-        cache_toks: cacheTokens > 0 ? cacheTokens : undefined,
+        // G1: leaf cache_toks keeps 0 when usage row exists (aggregate suppresses 0 → —).
+        cache_toks: cacheTokens > 0 ? cacheTokens : 0,
         tool: r.tool_calls ?? undefined,
         git_commits: r.git_commit ?? undefined,
         git_pushes: r.git_push ?? undefined,
@@ -396,6 +267,7 @@ export function buildModelRows(
         spark: sparkByRepositoryKey.get(`${modelKey}::${repo}`) ?? [
           r.token_total ?? 0,
         ],
+        sparkBuckets: sparkBucketsByRepositoryKey.get(`${modelKey}::${repo}`),
       })
     } else {
       existing.tokens_in += r.token_in ?? 0
@@ -428,22 +300,21 @@ export function buildModelRows(
         existing.agentQuality,
         agentQuality,
       ])
-      existing.spark = sparkByRepositoryKey.get(`${modelKey}::${repo}`) ?? [
-        ...((existing.spark ?? []).length > 0 ? (existing.spark ?? []) : []),
+      const repoSparkKey = `${modelKey}::${repo}`
+      existing.spark = sparkByRepositoryKey.get(repoSparkKey) ?? [
+        ...(existing.spark ?? []),
         r.token_total ?? 0,
       ]
-      existing.cache_pct =
-        existing.tokens_in > 0 && (existing.cache_toks ?? 0) > 0
-          ? Math.round(
-              ((existing.cache_toks ?? 0) / existing.tokens_in) * 1000
-            ) / 10
-          : undefined
-      existing.cache_miss_pct =
-        (existing.cache_miss_usd_cost ?? 0) > 0 && existing.cost_usd > 0
-          ? Math.round(
-              ((existing.cache_miss_usd_cost ?? 0) / existing.cost_usd) * 1000
-            ) / 10
-          : undefined
+      existing.sparkBuckets =
+        sparkBucketsByRepositoryKey.get(repoSparkKey) ?? existing.sparkBuckets
+      existing.cache_pct = cachePctFromTokens(
+        existing.cache_toks ?? 0,
+        existing.tokens_in
+      )
+      existing.cache_miss_pct = cacheMissPctFromUsd(
+        existing.cache_miss_usd_cost ?? 0,
+        existing.cost_usd
+      )
     }
     repositoryChildrenByKey.set(modelKey, repoMap)
   }
@@ -511,39 +382,29 @@ export function buildModelRows(
     const key = keyFor(row.provider, row.model)
     const health = healthByKey.get(key)
     const latencySummary = latencySummaryFromReportRow(row)
+    // C7: requests from health latency rollup when present, else providerStatusUsage traces.
     const requests = health?.requests ?? row.traces
     const errors = health?.errors ?? 0
     const errorPct = requests > 0 ? (errors / requests) * 100 : 0
-    // 15-B.3: use real per-direction tokens from report.rows; fall back to
-    // 60/40 split only when the usage rows don't have coverage for this model
-    // (e.g. providerStatusUsage has data but report.rows cap was hit)
     const tokenAgg = tokensByKey.get(key)
+    const tokensDirectionEstimated = tokenAgg === undefined
     const tokens_in = tokenAgg?.token_in ?? Math.round(row.token_total * 0.6)
     const tokens_out = tokenAgg?.token_out ?? Math.round(row.token_total * 0.4)
 
-    // 20-PhosphorDash Fix ⚠-W19-2: compute cache_pct from aggregated cache
-    // tokens. Formula: (cache_input + cache_creation) / token_in × 100.
-    // Returns null (rendered as '—') when token_in is zero or data unavailable.
-    let cache_pct: number | null = null
-    if (tokenAgg !== undefined && tokenAgg.token_in > 0) {
-      const cacheTokens = tokenAgg.cache_input + tokenAgg.cache_creation
-      cache_pct = Math.round((cacheTokens / tokenAgg.token_in) * 1000) / 10
-    }
-
-    // 26-Bundle (operator F#12): derive cache_miss_pct + populate new fields.
-    // cache_miss_pct: best-effort — use cache_miss_usd / usd_cost * 100 when
-    // both are positive; otherwise undefined so table shows '—'.
+    const cacheTokensAgg =
+      tokenAgg !== undefined
+        ? tokenAgg.cache_input + tokenAgg.cache_creation
+        : 0
+    const cache_pct =
+      tokenAgg !== undefined
+        ? cachePctFromTokens(cacheTokensAgg, tokenAgg.token_in)
+        : undefined
     const cache_miss_usd_cost =
       tokenAgg !== undefined ? tokenAgg.cache_miss_usd : undefined
-    let cache_miss_pct: number | undefined
-    if (
-      cache_miss_usd_cost !== undefined &&
-      cache_miss_usd_cost > 0 &&
-      row.usd_cost > 0
-    ) {
-      cache_miss_pct =
-        Math.round((cache_miss_usd_cost / row.usd_cost) * 1000) / 10
-    }
+    const cache_miss_pct = cacheMissPctFromUsd(
+      cache_miss_usd_cost ?? 0,
+      row.usd_cost
+    )
     const reasoning_reported =
       tokenAgg !== undefined ? tokenAgg.reasoning_reported : undefined
     const reasoning_estimated =
@@ -558,19 +419,18 @@ export function buildModelRows(
       ? buildToolActivity(toolActivityByKey.get(key) ?? [])
       : undefined
 
+    const sparkKey = keyFor(row.provider, row.model)
     return {
       model: row.model,
       provider: row.provider,
       tokens_in,
       tokens_out,
       requests,
-      p50_ms: ledgerP50Ms(latencySummary, health?.p50), // 15-B.4: wired upstream_p50_ms
+      p50_ms: ledgerP50Ms(latencySummary, health?.p50),
       p95_ms: ledgerP95Ms(latencySummary, health?.p95),
-      error_pct: Math.round(errorPct * 10) / 10,
+      error_pct: errorPct,
       cost_usd: row.usd_cost,
-      // quota_pct removed — Wave 26 operator F#13
-      cache_pct: cache_pct ?? undefined, // 20-PhosphorDash: null → undefined for optional field
-      // 26-Bundle (operator F#12): cache miss + reasoning fields
+      cache_pct,
       cache_miss_pct,
       cache_miss_usd_cost:
         cache_miss_usd_cost !== undefined ? cache_miss_usd_cost : undefined,
@@ -578,14 +438,15 @@ export function buildModelRows(
         reasoning_reported !== undefined ? reasoning_reported : undefined,
       reasoning_estimated:
         reasoning_estimated !== undefined ? reasoning_estimated : undefined,
-      // Wave 30 operator reorder: total cache tokens for new Cache toks column
       cache_toks:
         tokenAgg !== undefined
-          ? tokenAgg.cache_input + tokenAgg.cache_creation
+          ? cacheTokensAgg > 0
+            ? cacheTokensAgg
+            : 0
           : undefined,
-      spark: sparkByKey.get(keyFor(row.provider, row.model)) ?? [
-        row.token_total,
-      ],
+      tokensDirectionEstimated,
+      spark: sparkByKey.get(sparkKey) ?? [row.token_total],
+      sparkBuckets: sparkBucketsByKey.get(sparkKey),
       tool: rowToolActivity?.totalCalls,
       toolActivity: rowToolActivity,
       agentQuality: tokenAgg?.agentQuality,
