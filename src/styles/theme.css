@@ -38,8 +38,11 @@ body::before {
   --accent-chrome: #f59e0b;
   --accent-cool: #3b82f6;
   --accent-teal: #14b8a6;
+  /* SD-4: --accent-warm intentionally matches --accent-chrome (amber); --chart-4 aliases warm while live charts use PROVIDER_SERIES, not raw --chart-N. */
   --accent-warm: #f59e0b;
   --accent-hot: #ef4444;
+  /* Health-strip / legend no-data blue (mockup #3a82f3; not identical to --accent-cool). */
+  --accent-strip-miss: #3a82f3;
   --radius: 0;
 
   /* Shadcn semantic tokens mapped to Phosphor */
@@ -77,8 +80,8 @@ body::before {
 
 @theme inline {
   --font-sans: 'Inter', system-ui, sans-serif;
-  --font-inter: 'Inter', 'sans-serif';
-  --font-manrope: 'Manrope', 'sans-serif';
+  --font-inter: 'Inter', sans-serif;
+  --font-manrope: 'Manrope', sans-serif;
   --font-mono: 'IBM Plex Mono', monospace;
   --font-serif: 'Playfair Display', serif;
 
