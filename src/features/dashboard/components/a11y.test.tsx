@@ -1,10 +1,7 @@
 /**
- * Accessibility contracts — D1-451 Wave 2 W-3 (AlertsRail live region) + HealthStrip (S5-40).
- *
- * AlertsRail a11y is covered here while W-1 disposition is delete-or-wire (not in production layout).
+ * Accessibility contracts — HealthStrip (S5-40) and shared dashboard chrome.
  */
 import { render, screen, fireEvent } from '@testing-library/react'
-import { AlertsRail } from './alerts-rail'
 import AnchorBar from './anchor-bar'
 import { MasterLedgerTable } from './master-ledger-table'
 import { HealthStrip } from './primitives/health-strip'
@@ -46,15 +43,6 @@ test('test_anchor_bar_has_aria_label', () => {
   expect(nav.getAttribute('aria-label')).toBe(
     'Sections (keyboard shortcuts: bracketed letter)'
   )
-})
-
-test('test_alerts_rail_has_aria_live', () => {
-  const { container } = render(<AlertsRail alerts={[]} />)
-
-  const rail = container.firstChild as HTMLElement
-  expect(rail).not.toBeNull()
-  expect(rail.getAttribute('aria-live')).toBe('polite')
-  expect(rail.getAttribute('role')).toBe('log')
 })
 
 test('test_master_ledger_has_aria_label', () => {

@@ -97,7 +97,6 @@ import { AawmAliasRoutingPanel } from './status-section/aawm-alias-routing-panel
 import { PgBouncerHealthPanel } from './status-section/pgbouncer-health-panel'
 import { ProviderAuthHealthPanel } from './status-section/provider-auth-health-panel'
 import { ProviderCreditLifecyclePanel } from './status-section/provider-credit-lifecycle-panel'
-import { ProviderQuotaHistoryBucket } from './status-section/provider-quota-history-bucket'
 import { ProviderStatusLegend } from './status-section/provider-status-legend'
 import { QuotaEstimatorWeightsPanel } from './status-section/quota-estimator-weights-panel'
 import {
@@ -507,7 +506,7 @@ export default function PhosphorDashboard({
   quotaHistory: quotaHistoryProp,
   quotaHistoryMetadata: quotaHistoryMetadataProp,
   quotaHistoryFetching: quotaHistoryFetchingProp = false,
-  quotaRangeHistory: quotaRangeHistoryProp,
+  quotaRangeHistory: _quotaRangeHistoryProp,
   quotaRangeHistoryMetadata,
   quotaRangeHistoryFetching = false,
   onRefreshReport,
@@ -1136,27 +1135,6 @@ export default function PhosphorDashboard({
     return columns
   }, [providerHealthCardRows, providerHealthColumnCount])
 
-  const quotaRangeHistoryByProvider = useMemo(() => {
-    const map = new Map<string, UsageReportQuotaHistoryRow[]>()
-    for (const row of quotaRangeHistoryProp ??
-      report?.quotaRangeHistory ??
-      []) {
-      const canonical = canonicalProvider(row.provider)
-      const provider = canonical === 'antigravity' ? 'google' : canonical
-      const rows = map.get(provider) ?? []
-      rows.push(row)
-      map.set(provider, rows)
-    }
-    for (const rows of map.values()) {
-      rows.sort((a, b) =>
-        String(b.expected_reset_at ?? '').localeCompare(
-          String(a.expected_reset_at ?? '')
-        )
-      )
-    }
-    return map
-  }, [quotaRangeHistoryProp, report?.quotaRangeHistory])
-
   const modelRows = useMemo(
     () =>
       buildModelRows(
@@ -1692,19 +1670,13 @@ export default function PhosphorDashboard({
         ) : providerSectionView === 'alias-routing' ? (
           <AawmAliasRoutingPanel routing={report?.providerAliasRouting} />
         ) : providerSectionView === 'quota' ? (
-          <div
-            className={`provider-summary provider-quota-summary ${styles['provider-summary-grid']}`}
+          <p
+            className='status-quota-display-deprecated'
+            data-testid='status-quota-display-deprecated'
           >
-            {providerHealthCardProviders.map((provider) => (
-              <ProviderQuotaHistoryBucket
-                key={`quota-${provider}`}
-                provider={provider}
-                rows={quotaRangeHistoryByProvider.get(provider) ?? []}
-                rangeFrom={resolvedFrom}
-                rangeTo={resolvedTo}
-              />
-            ))}
-          </div>
+            Provider quota range history is not displayed here (deprecated
+            quota-history UI removed).
+          </p>
         ) : providerSectionView === 'weights' ? (
           <QuotaEstimatorWeightsPanel
             response={quotaEstimatorData}
