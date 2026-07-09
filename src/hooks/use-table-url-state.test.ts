@@ -231,3 +231,36 @@ describe('D1-451 Wave 5 — useTableUrlState edges', () => {
     expect(result.current.columnFilters).toHaveLength(0)
   })
 })
+
+// ---------------------------------------------------------------------------
+// Wave 10 — defaultPage > 1 pagination (P12-F2)
+// ---------------------------------------------------------------------------
+
+describe('Wave 10 — useTableUrlState defaultPage > 1 (P12-F2)', () => {
+  test('test_default_page_gt_one_allows_lower_pages', () => {
+    const searchRef = { current: { page: 3 } }
+    const navigate = makeNavigate(searchRef)
+
+    const { result } = renderHook(() =>
+      useTableUrlState({
+        search: searchRef.current,
+        navigate,
+        pagination: { defaultPage: 3 },
+      })
+    )
+
+    expect(result.current.pagination.pageIndex).toBe(2)
+
+    act(() => {
+      result.current.onPaginationChange({ pageIndex: 0, pageSize: 10 })
+    })
+
+    expect(searchRef.current.page).toBe(1)
+
+    act(() => {
+      result.current.onPaginationChange({ pageIndex: 1, pageSize: 10 })
+    })
+
+    expect(searchRef.current.page).toBe(2)
+  })
+})
