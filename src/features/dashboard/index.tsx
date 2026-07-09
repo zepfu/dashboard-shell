@@ -177,6 +177,9 @@ function buildUsageReportQueryFn({
         client: slicerFilters.clients,
         environment: slicerFilters.environments,
         model: slicerFilters.models,
+        includeQuotas: false,
+        includeQuotaHistory: false,
+        includeToolActivity: false,
         cacheBust,
       },
       signal
