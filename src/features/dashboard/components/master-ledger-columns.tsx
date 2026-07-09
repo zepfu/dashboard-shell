@@ -2,6 +2,7 @@
  * TanStack column definitions for MasterLedgerTable (W11 split).
  */
 import { createColumnHelper } from '@tanstack/react-table'
+import { agentQualityIssueSortValue } from '../lib/agent-quality'
 import { numFmt } from '../lib/format-utils'
 import { formatUsd } from '../lib/usage-report-display'
 import type { LedgerDisplayRow } from './master-ledger-aggregation'
@@ -90,10 +91,11 @@ const cacheMissDollarAndReasoningColumns = [
 ]
 
 const agentQualityColumn = [
-  helper.display({
+  helper.accessor((row) => agentQualityIssueSortValue(row.agentQuality), {
     id: 'agent_quality',
     header: 'Score',
     enableSorting: true,
+    sortDescFirst: false,
     cell: ({ row }) => renderAgentQualityCell(row.original.agentQuality),
   }),
 ]

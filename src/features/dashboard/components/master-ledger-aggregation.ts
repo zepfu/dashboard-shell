@@ -222,20 +222,10 @@ export function aggregateRows(
       cacheToks,
       rows.reduce((sum, row) => sum + row.tokens_in, 0)
     ),
-    cache_miss_pct: (() => {
-      const defined = rows.filter((row) => row.cache_miss_pct !== undefined)
-      if (defined.length === 0) return undefined
-      const definedRequests = defined.reduce(
-        (sum, row) => sum + row.requests,
-        0
-      )
-      if (definedRequests <= 0) return undefined
-      const weighted = defined.reduce(
-        (sum, row) => sum + (row.cache_miss_pct ?? 0) * row.requests,
-        0
-      )
-      return Math.round((weighted / definedRequests) * 10) / 10
-    })(),
+    cache_miss_pct:
+      cacheMissUsdDefined && cost > 0 && cacheMissUsdSum > 0
+        ? (cacheMissUsdSum / cost) * 100
+        : undefined,
     cache_miss_usd_cost: cacheMissUsdDefined ? cacheMissUsdSum : undefined,
     reasoning_reported: optionalSum((row) => row.reasoning_reported, true),
     reasoning_estimated: optionalSum((row) => row.reasoning_estimated, true),
@@ -379,6 +369,14 @@ export function sortLedgerRows<T extends LedgerDisplayRow>(
           right.ledgerLabel
         )
         if (familyOrder !== 0) return familyOrder
+      }
+      if (left.ledgerLevel === 'model' && right.ledgerLevel === 'model') {
+        return left.ledgerLabel.localeCompare(right.ledgerLabel, undefined, {
+          sensitivity: 'base',
+        })
+      }
+      if (left.ledgerLevel === 'provider' && right.ledgerLevel === 'provider') {
+        return 0
       }
       return left.ledgerLabel.localeCompare(right.ledgerLabel, undefined, {
         sensitivity: 'base',
