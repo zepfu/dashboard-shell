@@ -4,26 +4,13 @@ import type {
   UsageReportProviderCreditLifecycleEntry,
 } from '../../api/usage-report'
 import { formatStatusTimestamp } from '../../lib/status-formatters'
+import { STATUS_PILL_FALLBACK, StatusPanel, statusPill } from './section-chrome'
 
-function statusLabel(
-  status: UsageReportProviderCreditLifecycleEntry['status']
-): string {
-  const normalized = String(status ?? 'unknown').toLowerCase()
-  if (normalized === 'available') return 'available'
-  if (normalized === 'used') return 'used'
-  if (normalized === 'expired') return 'expired'
-  return normalized || 'unknown'
-}
-
-function statusClass(
-  status: UsageReportProviderCreditLifecycleEntry['status']
-): string {
-  const normalized = String(status ?? 'unknown').toLowerCase()
-  if (normalized === 'available') return 'is-healthy'
-  if (normalized === 'used') return 'is-warn'
-  if (normalized === 'expired') return 'is-bad'
-  return 'is-unknown'
-}
+const CREDIT_STATUS_PILL = {
+  available: { label: 'available', className: 'is-healthy' },
+  used: { label: 'used', className: 'is-warn' },
+  expired: { label: 'expired', className: 'is-bad' },
+} as const
 
 function codexSummaryHeadlines(
   lifecycle?: UsageReportProviderCreditLifecycle
@@ -102,6 +89,12 @@ function CreditLifecycleRow({
   entry: UsageReportProviderCreditLifecycleEntry
 }): ReactElement {
   const rowLabel = creditRowAccessibleLabel(entry)
+  const pill = statusPill(
+    CREDIT_STATUS_PILL,
+    entry.status,
+    STATUS_PILL_FALLBACK
+  )
+
   return (
     <tr
       data-provider={entry.provider}
@@ -113,11 +106,7 @@ function CreditLifecycleRow({
       <td>{entry.credit_family}</td>
       <th scope='row'>{entry.credit_identity ?? 'aggregate'}</th>
       <td>
-        <span
-          className={`provider-credit-status-pill ${statusClass(entry.status)}`}
-        >
-          {statusLabel(entry.status)}
-        </span>
+        <span className={`status-pill ${pill.className}`}>{pill.label}</span>
       </td>
       <td>{formatStatusTimestamp(entry.granted_at)}</td>
       <td>{formatStatusTimestamp(entry.expires_at)}</td>
@@ -150,63 +139,67 @@ export function ProviderCreditLifecyclePanel({
 }): ReactElement {
   const entries = creditLifecycle?.entries ?? []
   const summaryLines = codexSummaryHeadlines(creditLifecycle)
+  const subLabel =
+    creditLifecycle?.freshness_label ??
+    'Current provider credit lifecycle from provider_credit_current'
+  const headPill =
+    entries.length > 0
+      ? statusPill(CREDIT_STATUS_PILL, entries[0].status, STATUS_PILL_FALLBACK)
+      : statusPill(CREDIT_STATUS_PILL, 'available', STATUS_PILL_FALLBACK)
 
   return (
-    <section
+    <StatusPanel
       className='provider-credit-lifecycle-panel'
-      aria-label='Provider credit lifecycle'
+      ariaLabel='Provider credit lifecycle'
+      title='Provider credit'
+      subLabel={subLabel}
+      headPill={headPill}
+      emptyMessage={entries.length === 0 ? 'not observed' : undefined}
     >
-      <div className='provider-credit-panel-head'>
-        <span>Provider credit</span>
-        <span className='provider-credit-panel-sub'>
-          {creditLifecycle?.freshness_label ??
-            'Current provider credit lifecycle from provider_credit_current'}
-        </span>
-      </div>
-      {summaryLines.length > 0 ? (
-        <div className='provider-credit-summary-block'>
-          {summaryLines.map((line) => (
-            <div className='provider-credit-summary-line' key={line}>
-              {line}
-            </div>
-          ))}
-        </div>
-      ) : null}
       {entries.length > 0 ? (
-        <div className='provider-credit-table-wrap'>
-          <table
-            className='provider-credit-table'
-            aria-label='Provider credit lifecycle entries'
-          >
-            <caption className='provider-credit-table-caption'>
-              {creditTableCaption(entries)}
-            </caption>
-            <thead>
-              <tr>
-                <th>provider</th>
-                <th>environment</th>
-                <th>family</th>
-                <th>credit</th>
-                <th>status</th>
-                <th>granted</th>
-                <th>expires</th>
-                <th>observed</th>
-                <th>notes</th>
-              </tr>
-            </thead>
-            <tbody>
-              {entries.map((entry) => (
-                <CreditLifecycleRow
-                  key={creditLifecycleEntryKey(entry)}
-                  entry={entry}
-                />
+        <>
+          {summaryLines.length > 0 ? (
+            <div className='provider-credit-summary-block'>
+              {summaryLines.map((line) => (
+                <div className='provider-credit-summary-line' key={line}>
+                  {line}
+                </div>
               ))}
-            </tbody>
-          </table>
-        </div>
-      ) : (
-        <div className='provider-credit-empty'>not observed</div>
-      )}
-    </section>
+            </div>
+          ) : null}
+          <div className='provider-credit-table-wrap'>
+            <table
+              className='provider-credit-table'
+              aria-label='Provider credit lifecycle entries'
+            >
+              <caption className='provider-credit-table-caption'>
+                {creditTableCaption(entries)}
+              </caption>
+              <thead>
+                <tr>
+                  <th>provider</th>
+                  <th>environment</th>
+                  <th>family</th>
+                  <th>credit</th>
+                  <th>status</th>
+                  <th>granted</th>
+                  <th>expires</th>
+                  <th>observed</th>
+                  <th>notes</th>
+                </tr>
+              </thead>
+              <tbody>
+                {entries.map((entry) => (
+                  <CreditLifecycleRow
+                    key={creditLifecycleEntryKey(entry)}
+                    entry={entry}
+                  />
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      ) : undefined}
+    </StatusPanel>
   )
 }

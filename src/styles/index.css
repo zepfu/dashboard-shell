@@ -404,6 +404,84 @@
   margin-top: 12px;
 }
 
+/* Wave 5 — shared status panel chrome */
+.status-panel-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.2;
+  text-transform: uppercase;
+}
+
+.status-panel-head-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.status-panel-sub {
+  color: var(--fg-muted);
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: none;
+}
+
+.status-panel-loading {
+  color: var(--fg-muted);
+  font-size: 9px;
+  font-weight: 600;
+}
+
+.status-panel-empty {
+  color: var(--fg-muted);
+  font-size: 10px;
+  font-style: italic;
+}
+
+.status-pill {
+  flex: 0 0 auto;
+  padding: 2px 5px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--card) 72%, transparent);
+  color: var(--fg-muted);
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.status-pill.is-healthy {
+  border-color: color-mix(in srgb, var(--accent-teal) 58%, var(--border));
+  color: var(--accent-teal);
+  background: rgba(34, 197, 94, 0.12);
+}
+
+.status-pill.is-warn {
+  border-color: color-mix(in srgb, var(--accent-warm) 58%, var(--border));
+  color: var(--accent-warm);
+  background: rgba(245, 158, 11, 0.12);
+}
+
+.status-pill.is-bad {
+  border-color: color-mix(in srgb, var(--accent-hot) 58%, var(--border));
+  color: var(--accent-hot);
+  background: rgba(239, 68, 68, 0.12);
+}
+
+.status-pill.is-unknown {
+  border-color: color-mix(in srgb, var(--border) 90%, transparent);
+  color: var(--fg-muted);
+  background: rgba(148, 163, 184, 0.12);
+}
+
 .pgbouncer-health-panel {
   display: flex;
   flex-direction: column;
@@ -449,15 +527,15 @@
   background: var(--card-2);
 }
 
-.pgbouncer-card.is-green {
+.pgbouncer-card.is-healthy {
   border-left: 3px solid var(--accent-teal);
 }
 
-.pgbouncer-card.is-yellow {
+.pgbouncer-card.is-warn {
   border-left: 3px solid var(--accent-warm);
 }
 
-.pgbouncer-card.is-red {
+.pgbouncer-card.is-bad {
   border-left: 3px solid var(--accent-hot);
 }
 
