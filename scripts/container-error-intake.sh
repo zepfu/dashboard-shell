@@ -1,8 +1,9 @@
 #!/bin/sh
 # PID 1 wrapper: forward signals, tee child stdout/stderr, append actionable errors to JSONL.
 # P13-F20: open fifos read-write in the wrapper so a dead/slow reader cannot wedge
-# the child, and run error classification fire-and-forget off the hot path so a
-# slow classifier never back-pressures child stdout/stderr.
+# the child. Classification runs in a SINGLE serialized ordered consumer per stream
+# (not fire-and-forget subshells) so JSONL emit order and bounded-tail dedupe hold.
+# Child is launched in its own process group; group-kill uses a dash-portable form.
 set -u
 
 CONTAINER_NAME="${SHELL_CONTAINER_NAME:-unknown}"
@@ -390,13 +391,26 @@ fifo_err=""
 out_hold_fd=8
 err_hold_fd=9
 
-# Prefer process-group delivery so nested children (e.g. `sleep` under `sh -c`)
-# receive the signal. Fall back to the direct child pid when setpgid is not
-# available (very old shells / restricted environments).
+# Dash-portable process-group signal. dash rejects both
+#   kill -TERM -- "-$pid"   (Illegal number: -)
+#   kill -s TERM "-$pid"    (Illegal option -N)
+# but accepts:
+#   kill -TERM "-$pid"
+#   kill -s TERM -- "-$pid"
+# Prefer the short form; fall back to the direct child pid.
+signal_process_group() {
+  sig="$1"
+  pid="$2"
+  [ -n "$pid" ] || return 0
+  kill -"$sig" "-$pid" 2>/dev/null && return 0
+  kill -s "$sig" -- "-$pid" 2>/dev/null && return 0
+  kill -"$sig" "$pid" 2>/dev/null || true
+}
+
 forward_signal() {
   sig="$1"
   if [ -n "$child_pid" ]; then
-    kill -"$sig" -- "-$child_pid" 2>/dev/null || kill -"$sig" "$child_pid" 2>/dev/null || true
+    signal_process_group "$sig" "$child_pid"
   fi
 }
 
@@ -423,6 +437,28 @@ close_hold_fd() {
   fi
 }
 
+# Drop a hold FD (and nudge the child) when its hot-path reader dies while the
+# child is still running. Without this, hold-open alone can leave the child
+# writing into a held-open fifo forever — PID 1 then wedges on wait.
+release_hold_if_reader_dead() {
+  reader_pid="$1"
+  hold_fd_var="$2"
+  eval "hold_fd=\$$hold_fd_var"
+  [ -n "$reader_pid" ] || return 0
+  [ -n "$hold_fd" ] || return 0
+  # Reader still alive → nothing to do.
+  if kill -0 "$reader_pid" 2>/dev/null; then
+    return 0
+  fi
+  # Reader is dead. If the child is still alive, release the hold so the child
+  # observes a real zero-reader condition (SIGPIPE / EPIPE).
+  if [ -n "$child_pid" ] && kill -0 "$child_pid" 2>/dev/null; then
+    close_hold_fd "$hold_fd"
+    eval "$hold_fd_var="
+    signal_process_group TERM "$child_pid"
+  fi
+}
+
 cleanup() {
   if [ -n "$out_reader_pid" ] && kill -0 "$out_reader_pid" 2>/dev/null; then
     kill "$out_reader_pid" 2>/dev/null || true
@@ -431,7 +467,7 @@ cleanup() {
     kill "$err_reader_pid" 2>/dev/null || true
   fi
   if [ -n "$child_pid" ] && kill -0 "$child_pid" 2>/dev/null; then
-    kill -TERM -- "-$child_pid" 2>/dev/null || kill -TERM "$child_pid" 2>/dev/null || true
+    signal_process_group TERM "$child_pid"
   fi
   close_hold_fd "$out_hold_fd"
   close_hold_fd "$err_hold_fd"
@@ -477,22 +513,20 @@ fi
 eval "exec ${out_hold_fd}<>\"$fifo_out\""
 eval "exec ${err_hold_fd}<>\"$fifo_err\""
 
-# Hot path: forward every complete line immediately. Classification is fire-
-# and-forget so a slow/dead classifier cannot back-pressure the child. The
-# `|| [ -n "$line" ]` branch flushes a trailing partial line so a complete
-# first line is never dropped on a boundary-aligned truncation/EOF.
+# Serialized ordered consumer per stream: forward every complete line, then
+# classify/append in the SAME loop (no fire-and-forget subshells). Order and
+# dedupe are preserved because append_error_record runs sequentially. The child
+# is insulated by the fifo + hold-open so a slow classifier only fills the pipe
+# buffer rather than wedging forever on a dead reader.
+#
+# `|| [ -n "$line" ]` flushes a trailing partial line so a complete first line is
+# never dropped on a boundary-aligned truncation/EOF.
 (
-  # Drop inherited hold FDs so this reader is not also a writer of the fifo.
   eval "exec ${out_hold_fd}>&- ${err_hold_fd}>&-" 2>/dev/null || true
   while IFS= read -r line || [ -n "$line" ]; do
     printf '%s\n' "$line"
-    (
-      eval "exec ${out_hold_fd}>&- ${err_hold_fd}>&-" 2>/dev/null || true
-      append_error_record stdout "$line"
-    ) >/dev/null 2>&1 &
+    append_error_record stdout "$line"
   done < "$fifo_out"
-  # Drain in-flight classifiers started by this reader before exiting.
-  wait 2>/dev/null || true
 ) &
 out_reader_pid=$!
 
@@ -500,18 +534,14 @@ out_reader_pid=$!
   eval "exec ${out_hold_fd}>&- ${err_hold_fd}>&-" 2>/dev/null || true
   while IFS= read -r line || [ -n "$line" ]; do
     printf '%s\n' "$line" >&2
-    (
-      eval "exec ${out_hold_fd}>&- ${err_hold_fd}>&-" 2>/dev/null || true
-      append_error_record stderr "$line"
-    ) >/dev/null 2>&1 &
+    append_error_record stderr "$line"
   done < "$fifo_err"
-  wait 2>/dev/null || true
 ) &
 err_reader_pid=$!
 
-# Child must not inherit hold FDs either (would keep writers alive after exit
-# of the redirected fds, delaying reader EOF). Prefer a new session/process
-# group so forward_signal can reach nested grandchildren (sleep under sh -c).
+# Child must not inherit hold FDs (would keep writers alive after exit of the
+# redirected fds, delaying reader EOF). Prefer a new session/process group so
+# forward_signal can reach nested grandchildren (sleep under sh -c).
 (
   eval "exec ${out_hold_fd}>&- ${err_hold_fd}>&-" 2>/dev/null || true
   if command -v setsid >/dev/null 2>&1; then
@@ -521,6 +551,21 @@ err_reader_pid=$!
 ) >"$fifo_out" 2>"$fifo_err" &
 child_pid=$!
 
+# Poll child + readers. If a reader dies while the child is still alive, drop the
+# matching hold FD so the child gets SIGPIPE instead of writing into a held-open
+# fifo forever. This is the P13-F20 "never wedge when the reader dies" guarantee
+# and it lives in PID 1 (no sibling supervisors that the boundary test would
+# accidentally kill alongside the real readers).
+#
+# CRITICAL: do NOT call `wait $child_pid` inside the poll loop — wait blocks
+# until the child exits and would prevent us from ever noticing a dead reader.
+# Poll with kill -0 + short sleep; reap with wait only after the child is gone.
+while kill -0 "$child_pid" 2>/dev/null; do
+  release_hold_if_reader_dead "$out_reader_pid" out_hold_fd
+  release_hold_if_reader_dead "$err_reader_pid" err_hold_fd
+  sleep 0.05 2>/dev/null || sleep 1
+done
+
 wait "$child_pid"
 status=$?
 if [ "$status" -ge 128 ] && [ -n "$child_pid" ] && kill -0 "$child_pid" 2>/dev/null; then
@@ -528,7 +573,7 @@ if [ "$status" -ge 128 ] && [ -n "$child_pid" ] && kill -0 "$child_pid" 2>/dev/n
   status=$?
 fi
 
-# Child is done. Drop the held opens so readers observe EOF and drain any
+# Child is done. Drop any remaining held opens so readers observe EOF and drain
 # remaining complete lines (including classification of the final line).
 close_hold_fd "$out_hold_fd"
 out_hold_fd=""
