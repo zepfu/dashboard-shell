@@ -48,7 +48,8 @@ describe('remote dashboard doc contracts (preserved)', () => {
   })
 
   test('test_static_nginx_csp_allows_same_origin_remote_and_api_loading', () => {
-    const nginx = readProjectFile('nginx.conf')
+    // Wave 11 (P13-F03) deleted plain nginx.conf; only the template remains.
+    const nginx = readProjectFile('nginx.conf.template')
 
     expect(nginx).toContain('add_header Content-Security-Policy')
     expect(nginx).toContain("script-src 'self'")
