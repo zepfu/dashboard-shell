@@ -39,6 +39,8 @@
  *   (Engineer C to audit and migrate; the exact count is ~20 per plan spec S2-T4.)
  */
 import { fireEvent, render } from '@testing-library/react'
+import { readFile } from 'node:fs/promises'
+import { join } from 'node:path'
 import { describe, expect, test } from 'vitest'
 import { HoverTooltip } from './hover-tooltip'
 
@@ -194,24 +196,22 @@ describe('lazy hover-tooltip content contract (S3-26 / #91)', () => {
     expect(callCount).toBeGreaterThanOrEqual(1)
   })
 
-  test('test_lazy_tooltip_backward_compat_plain_node_content_accepted', () => {
-    /**
-     * Engineer C may choose to accept BOTH `content: ReactNode` (old) and
-     * `content: () => ReactNode` (new render prop) to allow gradual consumer
-     * migration.  If they do, a plain ReactNode must still render after hover.
-     *
-     * If the API accepts ONLY the render-prop form, this test should be updated
-     * to match.  Leaving it here as a discussion point — update to match the
-     * engineer's implementation decision.
-     *
-     * Note: if content is always a function, callers must be updated; the plan
-     * states "every consumer (provider-card, master-ledger, health-strip,
-     * sidebar, quota-interval-bar) updates" so it is acceptable to require the
-     * render-prop form exclusively.
-     */
+  test('test_lazy_tooltip_render_prop_only', async () => {
+    const source = await readFile(
+      join(
+        process.cwd(),
+        'src/features/dashboard/components/primitives/hover-tooltip.tsx'
+      ),
+      'utf8'
+    )
+
+    expect(source).toMatch(/content:\s*HoverTooltipContent/)
+    expect(source).not.toMatch(/content\?:\s*ReactNode/)
+    expect(source).not.toMatch(/content:\s*ReactNode/)
+
     const { container } = render(
       <HoverTooltip
-        content={() => <span data-testid='compat-content'>compat</span>}
+        content={() => <span data-testid='render-prop-only'>ok</span>}
       >
         <button type='button'>Hover target</button>
       </HoverTooltip>
@@ -220,9 +220,9 @@ describe('lazy hover-tooltip content contract (S3-26 / #91)', () => {
     const trigger = container.firstChild as HTMLElement
     fireEvent.pointerEnter(trigger)
 
-    const el = document.body.querySelector('[data-testid="compat-content"]')
+    const el = document.body.querySelector('[data-testid="render-prop-only"]')
     expect(el).not.toBeNull()
-    expect(el?.textContent).toBe('compat')
+    expect(el?.textContent).toBe('ok')
   })
 })
 
