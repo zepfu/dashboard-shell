@@ -154,7 +154,6 @@ export function ProviderCreditLifecyclePanel({
       title='Provider credit'
       subLabel={subLabel}
       headPill={headPill}
-      emptyMessage={entries.length === 0 ? 'not observed' : undefined}
     >
       {summaryLines.length > 0 ? (
         <div className='provider-credit-summary-block'>
@@ -163,6 +162,11 @@ export function ProviderCreditLifecyclePanel({
               {line}
             </div>
           ))}
+        </div>
+      ) : null}
+      {entries.length === 0 ? (
+        <div className='status-panel-empty' role='status'>
+          not observed
         </div>
       ) : null}
       {entries.length > 0 ? (
