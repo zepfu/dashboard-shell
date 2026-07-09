@@ -38,25 +38,35 @@ function formatEstimatorNumber(
   return value.toFixed(decimals)
 }
 
-function formatEstimatorStatusLabel(status: string): string {
-  switch (status) {
-    case 'high_confidence':
-      return 'high_confidence'
-    case 'directional_only':
-      return 'directional_only'
-    case 'not_identifiable':
-      return 'not_identifiable'
-    case 'evaluated':
-      return 'evaluated'
-    case 'not_enough_holdout_data':
-      return 'holdout pending'
-    case 'anomalous':
-      return 'anomalous'
-    case 'consistent':
-      return 'consistent'
-    default:
-      return status
+function humanizeEstimatorStatus(status: string): string {
+  if (status == null || status === '') return '—'
+
+  const normalized = status.toLowerCase().trim()
+
+  const lookup: Record<string, string> = {
+    high_confidence: 'High confidence',
+    directional_only: 'Directional only',
+    not_identifiable: 'Not identifiable',
+    evaluated: 'Evaluated',
+    not_enough_holdout_data: 'Not enough holdout data',
+    anomalous: 'Anomalous',
+    consistent: 'Consistent',
   }
+
+  if (lookup[normalized] !== undefined) {
+    return lookup[normalized]
+  }
+
+  // Sentence-style: first word only, remaining words stay lowercase.
+  // Unknown e.g. foo_bar → "Foo bar".
+  const words = normalized.split('_')
+  if (words.length === 0 || words[0] === '') return normalized
+  const [first, ...rest] = words
+  return [`${first[0].toUpperCase()}${first.slice(1)}`, ...rest].join(' ')
+}
+
+function formatEstimatorStatusLabel(status: string): string {
+  return humanizeEstimatorStatus(status)
 }
 
 function quotaEstimatorLaneLabel(

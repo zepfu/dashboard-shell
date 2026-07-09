@@ -90,7 +90,9 @@ function lerp(lo: number, hi: number, t: number): number {
 
 function rgba(r: number, g: number, b: number, a: number): string {
   const alpha = Math.round(a * 100) / 100
-  return `rgba(${r.toString()},${g.toString()},${b.toString()},${alpha.toString()})`
+  // Space-separated channels match jsdom CSSStyleDeclaration serialization so
+  // pure resolveHealthCategoryStyle output equals element.style.background.
+  return `rgba(${r.toString()}, ${g.toString()}, ${b.toString()}, ${alpha.toString()})`
 }
 
 function categoryToColor(
@@ -127,6 +129,10 @@ function categoryToColor(
       return { background: undefined, extraClass: 'cat-miss' }
   }
 }
+
+// Pure helper exported for semantic category→style assertions (P08-F04).
+// eslint-disable-next-line react-refresh/only-export-components -- pure style resolver, not a component
+export const resolveHealthCategoryStyle = categoryToColor
 
 function deriveCellStyle(
   cell: CellDef,
@@ -583,11 +589,7 @@ export const HealthStrip = memo(function HealthStrip({
             content={() =>
               tooltipContent !== undefined
                 ? tooltipContent
-                : resolveTooltipContent(
-                    undefined,
-                    tooltipSourceCells,
-                    nowProp ?? new Date()
-                  )
+                : resolveTooltipContent(undefined, tooltipSourceCells, now)
             }
             variant='health'
             panelStyle={tooltipPanelStyle}
