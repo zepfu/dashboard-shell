@@ -3,7 +3,7 @@
  * and must not drop a complete first actionable line on the stdout boundary path.
  */
 import { execFile } from 'node:child_process'
-import { mkdtemp, readFile, readdir } from 'node:fs/promises'
+import { mkdtemp, readFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'

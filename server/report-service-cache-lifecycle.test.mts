@@ -226,15 +226,19 @@ describe('Redis report cache binary gzip storage', () => {
     expect(mappedTypes).toEqual({ 36: Buffer })
   })
 
-  test('encodeRedisReportCachePayload returns a gzip Buffer for Redis set', async () => {
+  test('encodeRedisReportCachePayload returns explicit base64 text for Redis set', async () => {
     const entry = freshLocalEntry({ rows: [1, 2, 3] })
     const encoded = await encodeRedisReportCachePayload(entry)
 
-    expect(Buffer.isBuffer(encoded)).toBe(true)
+    expect(typeof encoded).toBe('string')
     expect(encoded.length).toBeGreaterThan(0)
+    // Decoded base64 should be a gzip payload (magic 1f 8b).
+    const binary = Buffer.from(String(encoded), 'base64')
+    expect(binary[0]).toBe(0x1f)
+    expect(binary[1]).toBe(0x8b)
   })
 
-  test('decodeRedisReportCachePayload reads binary gzip payloads', async () => {
+  test('decodeRedisReportCachePayload reads base64-encoded gzip payloads', async () => {
     const entry = freshLocalEntry({ metric: 'binary' })
     const encoded = await encodeRedisReportCachePayload(entry)
     const decoded = await decodeRedisReportCachePayload(encoded)
@@ -292,7 +296,7 @@ describe('Redis report cache binary gzip storage', () => {
     expect(requestedKey).toBe(identity.cacheKey)
   })
 
-  test('writeRedisCacheEntry passes gzip Buffer through write seam', async () => {
+  test('writeRedisCacheEntry passes base64 gzip string through write seam', async () => {
     const identity = testIdentity('write-buffer')
     const entry = freshLocalEntry({ id: 'write' })
     let storedValue: unknown = null
@@ -304,7 +308,7 @@ describe('Redis report cache binary gzip storage', () => {
 
     const ok = await writeRedisCacheEntry(identity, entry)
     expect(ok).toBe(true)
-    expect(Buffer.isBuffer(storedValue)).toBe(true)
+    expect(typeof storedValue).toBe('string')
     expect(await decodeRedisReportCachePayload(storedValue)).toEqual(entry)
   })
 })

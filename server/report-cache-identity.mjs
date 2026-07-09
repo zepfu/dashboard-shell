@@ -89,14 +89,24 @@ function canonicalizeSearchParams(
   return new URLSearchParams(entries).toString()
 }
 
+/** Scopes whose SQL deliberately ignores request params (or only uses a fixed set). */
+const PARAM_INDEPENDENT_CACHE_SCOPES = new Set([
+  'usage-quota-history',
+  'usage-quota-history-v2',
+])
+
 function buildReportCacheIdentity(
   scope,
   searchParams,
   config = defaultReportCacheConfig
 ) {
-  const canonicalParams = searchParams
-    ? canonicalizeSearchParams(searchParams, config)
-    : ''
+  // usage-quota-history lookback is per-lane / interval-driven and ignores
+  // from/to (and other request params). Key the cache on an empty param set so
+  // distinct date ranges do not thrash identical results.
+  const canonicalParams =
+    searchParams && !PARAM_INDEPENDENT_CACHE_SCOPES.has(scope)
+      ? canonicalizeSearchParams(searchParams, config)
+      : ''
   const hash = crypto
     .createHash('sha256')
     .update(`${scope}\n${canonicalParams}`)

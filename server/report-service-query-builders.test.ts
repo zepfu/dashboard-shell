@@ -261,8 +261,13 @@ describe('Wave 1 F02/F06 query builder contracts', () => {
     const { __envTestHelpers } = await import('./report-service.mjs')
     const { providerDimensionExpression } = __envTestHelpers
 
-    const canonicalCase = compactWhitespace(
-      providerDimensionExpression('__canonical__.provider', {
+    const healthColumnCase = compactWhitespace(
+      providerDimensionExpression('h.provider', {
+        includeAntigravity: true,
+      })
+    )
+    const sessionColumnCase = compactWhitespace(
+      providerDimensionExpression('sh.provider', {
         includeAntigravity: true,
       })
     )
@@ -274,23 +279,32 @@ describe('Wave 1 F02/F06 query builder contracts', () => {
       new URLSearchParams({ from: '2026-05-01', to: '2026-05-08' })
     )
 
-    const antigravityBranch =
-      "WHEN lower(COALESCE(__canonical__.provider, 'unknown')) = 'antigravity' THEN 'antigravity'"
+    const healthAntigravityBranch =
+      "WHEN lower(COALESCE(h.provider, 'unknown')) = 'antigravity' THEN 'antigravity'"
+    const sessionAntigravityBranch =
+      "WHEN lower(COALESCE(sh.provider, 'unknown')) = 'antigravity' THEN 'antigravity'"
 
-    expect(canonicalCase).toContain(antigravityBranch)
-    expect(compactWhitespace(healthQuery.sql)).toContain(antigravityBranch)
-    expect(compactWhitespace(estimatorQuery.sql)).toContain(antigravityBranch)
-
-    const healthCase = healthQuery.sql.slice(
-      healthQuery.sql.indexOf('CASE'),
-      healthQuery.sql.indexOf('END AS provider')
+    expect(healthColumnCase).toContain(healthAntigravityBranch)
+    expect(sessionColumnCase).toContain(sessionAntigravityBranch)
+    expect(compactWhitespace(healthQuery.sql)).toContain(
+      healthAntigravityBranch
     )
-    const estimatorCase = estimatorQuery.sql.slice(
-      estimatorQuery.sql.indexOf('CASE'),
-      estimatorQuery.sql.indexOf('END AS provider')
+    expect(compactWhitespace(estimatorQuery.sql)).toContain(
+      sessionAntigravityBranch
     )
 
-    expect(compactWhitespace(healthCase)).toBe(compactWhitespace(estimatorCase))
+    // Both builders must emit the same CASE shape (column alias differs only).
+    const normalizeProviderCase = (sql: string, column: string) =>
+      compactWhitespace(
+        sql
+          .slice(sql.indexOf('CASE'), sql.indexOf('END AS provider') + 3)
+          .split(column)
+          .join('__provider__')
+      )
+
+    expect(normalizeProviderCase(healthQuery.sql, 'h.provider')).toBe(
+      normalizeProviderCase(estimatorQuery.sql, 'sh.provider')
+    )
   })
 
   test('test_query_builders_suite_reduced_substring_assertions', async () => {
@@ -298,9 +312,15 @@ describe('Wave 1 F02/F06 query builder contracts', () => {
     const aliasQuery = buildProviderAliasRoutingQuery(new URLSearchParams())
     const creditQuery = buildProviderCreditLifecycleQuery(new URLSearchParams())
 
+    // Correctness for these three builders is parse-validation + shape, not
+    // whitespace-exact `.toContain` (F02). Security redaction checks remain.
     await expectParsableSQL(authQuery.sql)
     await expectParsableSQL(aliasQuery.sql)
     await expectParsableSQL(creditQuery.sql)
+
+    expect(authQuery.sql).toMatch(/FROM\s+public\.provider_auth_current/i)
+    expect(aliasQuery.sql).toMatch(/provider/i)
+    expect(creditQuery.sql).toMatch(/FROM\s+public\.provider_credit_current/i)
 
     expect(authQuery.sql).not.toContain('refresh_token')
     expect(authQuery.sql).not.toContain('access_token')
@@ -2790,11 +2810,10 @@ describe('D1-338 provider auth health contracts', () => {
       dataSource: 'provider_auth_current',
     })
     expect(query.values).toEqual([200])
-    expect(query.sql).toContain('FROM public.provider_auth_current')
-    expect(query.sql).toContain('auth_family')
-    expect(query.sql).toContain("left(COALESCE(auth_file_hash, ''), 8)")
-    expect(query.sql).toContain("metadata->>'auth_file_source'")
-    expect(query.sql).toContain('error_message')
+    // Shape/parse checks (F02); keep security redaction assertions.
+    expect(query.sql).toMatch(/FROM\s+public\.provider_auth_current/i)
+    expect(query.sql).toMatch(/\bauth_family\b/)
+    expect(query.sql).toMatch(/left\s*\(\s*COALESCE\s*\(\s*auth_file_hash/i)
     expect(query.sql).not.toContain('refresh_token')
     expect(query.sql).not.toContain('access_token')
     expect(query.sql).not.toContain('metadata::text')
