@@ -1,4 +1,13 @@
+import { loadFixture } from '@/lib/load-fixture'
+import { taskSchema, type Task } from './schema'
 import tasksData from './tasks.json'
 
-/** Raw JSON rows; date fields remain ISO strings (C5 info — table schema uses title/status only). */
-export const tasks = tasksData
+function parseTask(row: (typeof tasksData)[number]): Task {
+  const parsed = taskSchema.safeParse(row)
+  if (!parsed.success) {
+    throw new Error(parsed.error.message)
+  }
+  return parsed.data
+}
+
+export const tasks: Task[] = loadFixture(tasksData, parseTask, 'tasks')

@@ -1,3 +1,4 @@
+import { loadFixture } from '@/lib/load-fixture'
 import type { User, UserStatus, UserRole } from './schema'
 import usersData from './users.json'
 
@@ -40,4 +41,4 @@ function parseUser(u: (typeof usersData)[number]): User {
   }
 }
 
-export const users: User[] = usersData.map(parseUser)
+export const users: User[] = loadFixture(usersData, parseUser, 'users')
