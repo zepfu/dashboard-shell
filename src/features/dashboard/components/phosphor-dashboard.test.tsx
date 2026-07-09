@@ -1163,8 +1163,8 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
     expect(seenTo).toBe('2026-05-21')
     expect(screen.getByText(/Retired Sonnet · 7d/i)).toBeInTheDocument()
     expect(screen.getByText(/codex-spark · 7d/i)).toBeInTheDocument()
-    expect(screen.getAllByText('directional_only').length).toBeGreaterThan(0)
-    expect(screen.getAllByText('not_identifiable').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('Directional only').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('Not identifiable').length).toBeGreaterThan(0)
     expect(screen.getAllByText(/cache-read ratios/i).length).toBeGreaterThan(0)
     expect(
       screen.getByText(/workload \(uncached \+ output/i)
