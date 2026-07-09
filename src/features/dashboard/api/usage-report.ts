@@ -1845,7 +1845,10 @@ function assertUsageReportRows(rows: unknown): void {
   if (rows.length === 0) {
     return
   }
-  assertUsageReportRowShape(rows[0], 0)
+  const bound = Math.min(rows.length, USAGE_REPORT_DEFAULT_LIMIT)
+  for (let index = 0; index < bound; index++) {
+    assertUsageReportRowShape(rows[index], index)
+  }
 }
 
 function assertUsageReportTopLevelObjects(
