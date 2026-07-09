@@ -343,28 +343,57 @@ describe('D1-450 live dashboard alert summary exports (W2)', () => {
   })
 })
 
-describe('D1-450 C8 success_pct guard', () => {
-  test('buildDashboardAlertSummary clamps status_probe_success_pct above 100', () => {
-    const now = new Date('2026-06-13T12:00:00Z')
-    const summary = buildDashboardAlertSummary({
-      anomalies: emptyAnomalies,
-      providerLatencyHealth: [
-        makeLatencyHealthRow({
-          bucket_start: '2026-06-13T11:45:00Z',
-          provider: 'anthropic',
-          model: 'claude',
-          status_probe_count: 10,
-          status_probe_success_pct: 150,
-        }),
-      ],
-      now,
-    })
-    const pingIssue = summary.issues.find((i) => i.head.includes('failed ping'))
-    expect(pingIssue).toBeDefined()
-    const count = Number(pingIssue?.head.match(/^(\d+)/)?.[1] ?? -1)
-    expect(count).toBeGreaterThanOrEqual(0)
-    expect(count).not.toBeLessThan(0)
+/** P03-F03 / Wave 2: invalid success_pct must not emit a zero-failure ping error. */
+test('test_no_zero_failed_ping_alert_on_bad_success_pct', () => {
+  const now = new Date('2026-06-13T12:00:00Z')
+  const summary = buildDashboardAlertSummary({
+    anomalies: emptyAnomalies,
+    providerLatencyHealth: [
+      makeLatencyHealthRow({
+        bucket_start: '2026-06-13T11:45:00Z',
+        provider: 'anthropic',
+        model: 'claude',
+        status_probe_count: 10,
+        status_probe_success_pct: 150,
+      }),
+    ],
+    now,
   })
+  const pingIssues = summary.issues.filter((i) =>
+    i.head.includes('failed ping')
+  )
+  expect(pingIssues).toHaveLength(0)
+})
+
+/** P03-F04 / Wave 2: wtus-only active lane at 100% used raises a quota alert. */
+test('test_wtus_lane_raises_quota_alert', () => {
+  const row = makeQuotaRow({
+    provider: 'anthropic',
+    model: 'claude-sonnet-4',
+    short_active: false,
+    weekly_active: false,
+    special_active: false,
+    short_special_active: false,
+    monthly_active: false,
+    wtus_active: true,
+    wtus_remaining_pct: 0,
+  })
+
+  const summary = buildDashboardAlertSummary({
+    anomalies: emptyAnomalies,
+    quotas: [row],
+    now: new Date('2026-05-23T12:00:00.000Z'),
+  })
+
+  expect(summary.severity).toBe('warning')
+  expect(
+    summary.issues.some(
+      (issue) =>
+        issue.severity === 'warning' &&
+        issue.head.toLowerCase().includes('anthropic') &&
+        (issue.head.includes('exhausted') || issue.head.includes('100%'))
+    )
+  ).toBe(true)
 })
 
 test('test_probe_failure_sums_dns_tcp_when_status_probes_ran (S4-T10)', () => {
