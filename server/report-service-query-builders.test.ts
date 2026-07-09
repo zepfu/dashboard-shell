@@ -1187,6 +1187,38 @@ describe('report-service query builders', () => {
     expect(query.sql).toContain('reason_source AS MATERIALIZED')
   })
 
+  test('aggregate_and_trend_use_same_eligibility', async () => {
+    const params = new URLSearchParams({
+      from: '2026-05-01',
+      to: '2026-05-08',
+      grain: 'day',
+      group_by: 'provider,model',
+      limit: '50000',
+    })
+
+    const reportService = (await import('./report-service.mjs')) as Record<
+      string,
+      ((searchParams: URLSearchParams) => { sql: string }) | undefined
+    >
+    const aggregateBuilderNames = [
+      'buildSummaryQuery',
+      'buildTrendQuery',
+      'buildClientUsageQuery',
+      'buildUsageQuery',
+      'buildProviderStatusUsageQuery',
+    ] as const
+
+    for (const name of aggregateBuilderNames) {
+      const builder =
+        name === 'buildUsageQuery' ? buildUsageQuery : reportService[name]
+      expect(
+        builder,
+        `${name} must be available for aggregate eligibility tests`
+      ).toBeTypeOf('function')
+      expectReportableSessionHistoryFilter(builder!(params).sql)
+    }
+  })
+
   test('test_parseUsageReportSort_supports_period_start_dotted_desc', () => {
     const { sort, sortDirection } = parseUsageReportSort(
       new URLSearchParams({

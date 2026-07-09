@@ -559,9 +559,19 @@ test('D1-451_G1_delta_tok_increase_uses_neutral_or_non_hot_color', () => {
  * G-2: prior=0 on Δ p95 must not show the generic "new" label (latency semantics).
  */
 test('D1-451_G2_prior_zero_p95_delta_not_labeled_new', () => {
-  const label = formatDeltaPctWithPrior(120, 0, null)
+  const label = formatDeltaPctWithPrior(120, 0, null, 'p95')
   expect(label).not.toBe('new')
   expect(label.length).toBeGreaterThan(0)
+})
+
+// ---------------------------------------------------------------------------
+// Fork-review Wave 3 — P07-F01 money-as-ms (RED)
+// ---------------------------------------------------------------------------
+
+test('cost_from_zero_prior_renders_new_not_ms', () => {
+  const label = formatDeltaPctWithPrior(42, 0, null, 'cost')
+  expect(label).toBe('new')
+  expect(label).not.toMatch(/ms/i)
 })
 
 test('D1-451_E3_sparkline_trendBuckets_fixture_satisfies_TrendBucket_type', () => {

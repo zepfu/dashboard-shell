@@ -1745,19 +1745,30 @@ test('test_aggregateRows_math', async () => {
   expect(result.error_pct).toBeCloseTo(3.4, 1)
   expect(result.error_pct).not.toBe(3.67) // arithmetic mean — wrong
 
-  // c) cache_miss_pct is requests-weighted (post-fix); pre-fix it was
-  //    cost-weighted or arithmetic. After fix it must be weighted by requests.
-  // Cost-weighted: (20*1.0 + 5*2.0 + 0) / 3.5 = 30/3.5 ≈ 8.6% (wrong).
-  // Requests-weighted: (20*100 + 5*200 + 0*50) / 350 = 3000/350 ≈ 8.6%
-  // The current implementation derives cache_miss_pct from cost ratio which
-  // will differ when the unit cost rates differ between rows — verify it is
-  // NOT an arithmetic mean of the per-row percentages.
-  if (result.cache_miss_pct !== undefined) {
-    expect(result.cache_miss_pct).not.toBeCloseTo(
-      (20 + 5 + 0) / 3, // arithmetic mean ≈ 8.3
-      0
-    )
-  }
+  // c) cache_miss_pct roll-up: ratio of sums ΣcacheMissUsd / Σcost (not request-weighted mean of row %).
+  const cheapHigh = makeRow({
+    model: 'cheap',
+    requests: 1000,
+    cost_usd: 1.0,
+    cache_miss_pct: 10,
+    cache_miss_usd_cost: 0.1,
+  })
+  const expensiveLow = makeRow({
+    model: 'expensive',
+    requests: 1,
+    cost_usd: 100.0,
+    cache_miss_pct: 50,
+    cache_miss_usd_cost: 50.0,
+  })
+  const ratioResult = aggregateRowsFn([cheapHigh, expensiveLow], {
+    ...overrides,
+    childCount: 2,
+    exactModelCount: 2,
+  })
+  const expectedCacheMissPct = ((0.1 + 50.0) / (1.0 + 100.0)) * 100
+  expect(ratioResult.cache_miss_pct).toBeCloseTo(expectedCacheMissPct, 4)
+  const requestWeightedMean = (10 * 1000 + 50 * 1) / (1000 + 1)
+  expect(ratioResult.cache_miss_pct).not.toBeCloseTo(requestWeightedMean, 1)
 
   // d) optionalSum semantics:
   //    reasoning_reported: rowA=500, rowB=0 (zero — keepZero=true must keep it)
@@ -1775,6 +1786,229 @@ test('test_aggregateRows_math', async () => {
   //    Test the key case: queue must be 3 (rowA=3 + rowB=0 + rowC=0)
   expect(result.queue).toBe(3)
   expect(result.resets).toBe(1)
+})
+
+/**
+ * P05-F01 — Score column must reorder provider rows when the header is clicked.
+ * RED: agent_quality uses helper.display without accessorFn → TanStack getCanSort() false.
+ */
+test('score_header_click_reorders_rows', () => {
+  const lowQualityRow = makeRow({
+    model: 'low-score-model',
+    provider: 'openai',
+    tokens_in: 100,
+    agentQuality: {
+      totalRows: 10,
+      quality: {
+        score: 0.2,
+        evaluated: 10,
+        scoredEvaluated: 10,
+        possible: 10,
+        issueCount: 8,
+      },
+      instruction: {
+        score: 0.2,
+        evaluated: 10,
+        scoredEvaluated: 10,
+        possible: 10,
+        issueCount: 0,
+      },
+      tool: {
+        score: 0.2,
+        evaluated: 10,
+        scoredEvaluated: 10,
+        possible: 10,
+        issueCount: 0,
+      },
+      contract: {
+        score: 0.2,
+        evaluated: 10,
+        scoredEvaluated: 10,
+        possible: 10,
+        issueCount: 0,
+      },
+      progress: {
+        score: 0.2,
+        evaluated: 10,
+        scoredEvaluated: 10,
+        possible: 10,
+        issueCount: 0,
+      },
+      risk: {
+        score: 0.9,
+        evaluated: 10,
+        scoredEvaluated: 10,
+        possible: 10,
+        issueCount: 5,
+      },
+      discoveryInventoryCoverage: {
+        score: 0,
+        evaluated: 0,
+        scoredEvaluated: 0,
+        possible: 0,
+        issueCount: 0,
+      },
+      discoveryInventoryMissingCount: 0,
+      terminalCompletion: {
+        score: 1,
+        evaluated: 0,
+        scoredEvaluated: 0,
+        possible: 0,
+        issueCount: 0,
+      },
+      emptyCompletionFailures: 0,
+      invalidToolCallErrors: 0,
+      destructiveCheckoutFailures: 0,
+      largePayloadRisks: 0,
+      readOnlyPolicyViolations: 0,
+      reasons: [],
+    },
+  })
+  const highQualityRow = makeRow({
+    model: 'high-score-model',
+    provider: 'anthropic',
+    tokens_in: 200,
+    agentQuality: {
+      totalRows: 10,
+      quality: {
+        score: 0.99,
+        evaluated: 10,
+        scoredEvaluated: 10,
+        possible: 10,
+        issueCount: 0,
+      },
+      instruction: {
+        score: 0.99,
+        evaluated: 10,
+        scoredEvaluated: 10,
+        possible: 10,
+        issueCount: 0,
+      },
+      tool: {
+        score: 0.99,
+        evaluated: 10,
+        scoredEvaluated: 10,
+        possible: 10,
+        issueCount: 0,
+      },
+      contract: {
+        score: 0.99,
+        evaluated: 10,
+        scoredEvaluated: 10,
+        possible: 10,
+        issueCount: 0,
+      },
+      progress: {
+        score: 0.99,
+        evaluated: 10,
+        scoredEvaluated: 10,
+        possible: 10,
+        issueCount: 0,
+      },
+      risk: {
+        score: 0.01,
+        evaluated: 10,
+        scoredEvaluated: 10,
+        possible: 10,
+        issueCount: 0,
+      },
+      discoveryInventoryCoverage: {
+        score: 1,
+        evaluated: 10,
+        scoredEvaluated: 10,
+        possible: 10,
+        issueCount: 0,
+      },
+      discoveryInventoryMissingCount: 0,
+      terminalCompletion: {
+        score: 1,
+        evaluated: 10,
+        scoredEvaluated: 10,
+        possible: 10,
+        issueCount: 0,
+      },
+      emptyCompletionFailures: 0,
+      invalidToolCallErrors: 0,
+      destructiveCheckoutFailures: 0,
+      largePayloadRisks: 0,
+      readOnlyPolicyViolations: 0,
+      reasons: [],
+    },
+  })
+
+  render(<MasterLedgerTable rows={[lowQualityRow, highQualityRow]} />)
+
+  const scoreHeader = screen.getByRole('columnheader', { name: /^score$/i })
+  expect(scoreHeader.getAttribute('data-sortable')).toBe('true')
+
+  const providerBefore = Array.from(document.querySelectorAll('tbody tr')).map(
+    (row) => row.textContent ?? ''
+  )
+  expect(providerBefore[0]).toContain('OpenAI')
+  expect(providerBefore[1]).toContain('Anthropic')
+
+  fireEvent.click(scoreHeader)
+
+  const providerAfter = Array.from(document.querySelectorAll('tbody tr')).map(
+    (row) => row.textContent ?? ''
+  )
+  expect(providerAfter[0]).toContain('Anthropic')
+  expect(providerAfter[1]).toContain('OpenAI')
+})
+
+/**
+ * P05-F02 — aggregate cache_miss_pct equals ΣcacheMissUsd / Σcost (exact), not request-weighted mean.
+ */
+test('cache_miss_pct_is_ratio_of_sums', async () => {
+  const mod = await import('./master-ledger-aggregation')
+  const aggregateRowsFn = (mod as Record<string, unknown>)[
+    '_aggregateRowsForTest'
+  ] as (
+    rows: ModelRow[],
+    overrides: {
+      ledgerLevel: 'provider'
+      ledgerId: string
+      ledgerLabel: string
+      providerKey: string
+      childCount: number
+      exactModelCount: number
+      isExpandable: boolean
+    }
+  ) => { cache_miss_pct?: number }
+
+  if (aggregateRowsFn === undefined) {
+    throw new Error(
+      'cache_miss_pct_is_ratio_of_sums: _aggregateRowsForTest is not exported.'
+    )
+  }
+
+  const cheapHigh = makeRow({
+    model: 'cheap',
+    requests: 1000,
+    cost_usd: 1.0,
+    cache_miss_pct: 10,
+    cache_miss_usd_cost: 0.1,
+  })
+  const expensiveLow = makeRow({
+    model: 'expensive',
+    requests: 1,
+    cost_usd: 100.0,
+    cache_miss_pct: 50,
+    cache_miss_usd_cost: 50.0,
+  })
+
+  const aggregated = aggregateRowsFn([cheapHigh, expensiveLow], {
+    ledgerLevel: 'provider',
+    ledgerId: 'provider:test',
+    ledgerLabel: 'Test',
+    providerKey: 'test',
+    childCount: 2,
+    exactModelCount: 2,
+    isExpandable: true,
+  })
+
+  const expected = ((0.1 + 50.0) / (1.0 + 100.0)) * 100
+  expect(aggregated.cache_miss_pct).toBeCloseTo(expected, 6)
 })
 
 /**

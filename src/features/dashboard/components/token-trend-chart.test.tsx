@@ -2456,3 +2456,30 @@ test('D1-451_E2_token_scale_ticks_match_bar_heights_unconditional', async () => 
   const ratio = nearestTick!.value / smallDayTotal
   expect(ratio).toBeLessThan(4)
 })
+
+// ---------------------------------------------------------------------------
+// Fork-review Wave 3 — P06-F01 score-mode string keys (RED)
+// ---------------------------------------------------------------------------
+
+test('score_mode_string_keys_return_rows', async () => {
+  const { buildTrendSignalRows } = await import('./token-trend-chart')
+
+  const { rows } = buildTrendSignalRows({
+    mode: 'score',
+    dayEnvelopes: buildTokenTrendDayEnvelopes([
+      {
+        day: '2026-05-20',
+        hour: 8,
+        provider: 'anthropic',
+        traces: 1,
+        token_total: 100,
+        usd_cost: 0,
+      },
+    ]),
+    healthRows: [],
+    scoreRows: [...trendScoreRows],
+    selectedMetrics: ['quality', 'tool'],
+  })
+
+  expect(rows.length).toBeGreaterThan(0)
+})
