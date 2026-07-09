@@ -59,10 +59,15 @@ import {
   type UsageReportGrain,
 } from '../api/usage-report'
 import { useAnomalyDetection } from '../hooks/use-anomaly-detection'
+import { computePriorReportWindow } from '../lib/dashboard-date-range'
 import {
   buildTokenTrendDayEnvelopes,
   normalizeTrendData,
 } from '../lib/trend-utils'
+import {
+  usageFilterKeyParts,
+  usageFilterParams,
+} from '../lib/usage-filter-params'
 import {
   canonicalProvider,
   computeFleetErrors,
@@ -116,15 +121,15 @@ import {
 // Constants
 // ---------------------------------------------------------------------------
 
-/** Masonry column breakpoints — keep in sync with `phosphor-dashboard.module.css`. */
-const PROVIDER_HEALTH_MASONRY_BREAKPOINTS = {
+/** Provider-health column breakpoints — keep in sync with `phosphor-dashboard.module.css`. */
+const PROVIDER_HEALTH_COLUMN_BREAKPOINTS = {
   cols8: 2100,
   cols4: 1600,
 } as const
 
 function resolveProviderHealthColumnCount(viewportWidth: number): number {
-  if (viewportWidth >= PROVIDER_HEALTH_MASONRY_BREAKPOINTS.cols8) return 8
-  if (viewportWidth >= PROVIDER_HEALTH_MASONRY_BREAKPOINTS.cols4) return 4
+  if (viewportWidth >= PROVIDER_HEALTH_COLUMN_BREAKPOINTS.cols8) return 8
+  if (viewportWidth >= PROVIDER_HEALTH_COLUMN_BREAKPOINTS.cols4) return 4
   return 2
 }
 
@@ -259,7 +264,7 @@ type ProviderHealthCardRow = {
   localHealthItems: UsageReportResponse['localHealth']
 }
 
-const ProviderHealthMasonry = memo(function ProviderHealthMasonry({
+const ProviderHealthColumns = memo(function ProviderHealthColumns({
   columns,
   columnCount,
   aggregateConfig,
@@ -267,7 +272,7 @@ const ProviderHealthMasonry = memo(function ProviderHealthMasonry({
   aggregateHealthCells,
   fleetActivity,
   anomalies,
-  masonryClassName,
+  columnLayoutClassName,
   columnClassName,
 }: {
   columns: ProviderHealthCardRow[][]
@@ -282,12 +287,12 @@ const ProviderHealthMasonry = memo(function ProviderHealthMasonry({
     invalidToolCalls: number
   }
   anomalies: ReturnType<typeof useAnomalyDetection>
-  masonryClassName: string
+  columnLayoutClassName: string
   columnClassName: string
 }): ReactElement {
   return (
     <div
-      className={`provider-health-summary ${masonryClassName}`}
+      className={`provider-health-summary ${columnLayoutClassName}`}
       style={{ ['--provider-health-columns' as string]: columnCount }}
     >
       {columns.map((cards, columnIndex) => (
@@ -497,8 +502,8 @@ export default function PhosphorDashboard({
   onPriorSummaryReady,
   onPriorHealthReady,
   report: reportProp,
-  reportLoading: reportLoadingProp = false,
-  reportFetching: reportFetchingProp = false,
+  reportLoading: reportLoadingProp,
+  reportFetching: reportFetchingProp,
   reportRefreshKey,
   showComparison = false,
   quotas: quotasProp,
@@ -536,18 +541,30 @@ export default function PhosphorDashboard({
     onLedgerViewChange
   )
 
-  // Wave 36 Fix 1: the /usage query is hoisted to index.tsx so a single HTTP
-  // request is shared across the whole dashboard. This internal query is ONLY
-  // used when PhosphorDashboard is rendered in isolation (e.g. Storybook, tests)
-  // without a parent supplying `report` + `reportLoading` props.
-  const parentManagesReport =
-    reportLoadingProp || reportFetchingProp || onRefreshReport !== undefined
-  const internalQueryEnabled = reportProp === undefined && !parentManagesReport
+  // Wave 36 Fix 1 / P04-F04: the /usage query is hoisted to index.tsx so a
+  // single HTTP request is shared across the whole dashboard. Gate the
+  // internal query on a single explicit signal: parent owns the report when
+  // `report` is provided or `onRefreshReport` is wired. Explicit
+  // reportLoading/reportFetching props also count as ownership so a parent
+  // that omits the refresh callback during cold load does not re-trigger a
+  // duplicate /usage fetch. Standalone Storybook/tests omit all of these.
+  // P04-F07: shared filter fan-out (filterKeyParts keys the cache; filterParams
+  // maps the same five arrays onto singular API names).
+  const filterParams = usageFilterParams(filters)
+  const filterKeyParts = usageFilterKeyParts(filters)
+  const internalQueryEnabled =
+    reportProp === undefined &&
+    onRefreshReport === undefined &&
+    reportLoadingProp === undefined &&
+    reportFetchingProp === undefined
   const {
     data: internalReport,
     isLoading: internalLoading,
     isFetching: internalFetching,
     refetch: refetchInternalReport,
+    // P04-F07: filter dimensions serialized via filterKeyParts; filterParams is
+    // the same five arrays under singular API names.
+    // eslint-disable-next-line @tanstack/query/exhaustive-deps
   } = useQuery({
     // 15-D.4: Include filter arrays directly in queryKey so React Query creates
     // a distinct cache entry for every unique slicer selection. Arrays are
@@ -557,11 +574,7 @@ export default function PhosphorDashboard({
       resolvedFrom,
       resolvedTo,
       resolvedGrain,
-      filters?.providers,
-      filters?.repositories,
-      filters?.clients,
-      filters?.environments,
-      filters?.models,
+      ...filterKeyParts,
     ],
     queryFn: ({ signal }) =>
       fetchUsageReport(
@@ -571,11 +584,7 @@ export default function PhosphorDashboard({
           grain: resolvedGrain,
           groupBy: ['provider', 'model', 'repository'],
           // 15-D.4: pass multi-value filter arrays; empty array = no filter
-          provider: filters?.providers,
-          repository: filters?.repositories,
-          client: filters?.clients,
-          environment: filters?.environments,
-          model: filters?.models,
+          ...filterParams,
         },
         signal
       ),
@@ -589,13 +598,15 @@ export default function PhosphorDashboard({
 
   // Resolve the effective report + loading state: prefer parent-supplied values
   // (Fix 1 dedup); fall back to the internal query for standalone usage.
+  // When parent owns the report, use the parent loading/fetching props even if
+  // reportProp is still undefined during a cold load.
   const report = reportProp ?? internalReport
   const reportLoading = internalQueryEnabled
     ? internalLoading
-    : reportLoadingProp
+    : (reportLoadingProp ?? false)
   const reportFetching = internalQueryEnabled
     ? internalFetching
-    : reportFetchingProp
+    : (reportFetchingProp ?? false)
   const secondaryReportQueriesEnabled = report !== undefined && !reportLoading
 
   // 15-C.5 / Wave 37 SF-1 / D1-436: /quotas is a live global snapshot today, so
@@ -684,16 +695,14 @@ export default function PhosphorDashboard({
     isFetching: sessionDiagnosticsFetching,
     isLoading: sessionDiagnosticsLoading,
     refetch: refetchSessionDiagnostics,
+    // P04-F07: filter dimensions serialized via filterKeyParts.
+    // eslint-disable-next-line @tanstack/query/exhaustive-deps
   } = useQuery({
     queryKey: [
       'usage-report-session-diagnostics',
       resolvedFrom,
       resolvedTo,
-      filters?.providers,
-      filters?.repositories,
-      filters?.clients,
-      filters?.environments,
-      filters?.models,
+      ...filterKeyParts,
       reportRefreshKey,
     ],
     queryFn: ({ signal }) =>
@@ -701,11 +710,7 @@ export default function PhosphorDashboard({
         {
           from: resolvedFrom,
           to: resolvedTo,
-          provider: filters?.providers,
-          repository: filters?.repositories,
-          client: filters?.clients,
-          environment: filters?.environments,
-          model: filters?.models,
+          ...filterParams,
           limit: 100,
           cacheBust: reportRefreshKey,
         },
@@ -731,16 +736,19 @@ export default function PhosphorDashboard({
     [report?.trend]
   )
 
+  // P04-F07: depend on the five slicer arrays from filters (stable identities)
+  // rather than the per-render filterParams object, so React Compiler can
+  // preserve the memoization.
   const tokenTrendScopeKey = useMemo(
     () =>
       JSON.stringify({
         from: resolvedFrom,
         to: resolvedTo,
-        providers: filters?.providers ?? [],
-        repositories: filters?.repositories ?? [],
-        clients: filters?.clients ?? [],
-        environments: filters?.environments ?? [],
-        models: filters?.models ?? [],
+        providers: filters?.providers,
+        repositories: filters?.repositories,
+        clients: filters?.clients,
+        environments: filters?.environments,
+        models: filters?.models,
       }),
     [
       resolvedFrom,
@@ -770,11 +778,7 @@ export default function PhosphorDashboard({
         {
           from: resolvedFrom,
           to: resolvedTo,
-          provider: filters?.providers,
-          repository: filters?.repositories,
-          client: filters?.clients,
-          environment: filters?.environments,
-          model: filters?.models,
+          ...filterParams,
           cacheBust: reportRefreshKey,
         },
         signal
@@ -934,11 +938,7 @@ export default function PhosphorDashboard({
           from: resolvedFrom,
           to: resolvedTo,
           date: tokenTrendDetailRequest.day,
-          provider: filters?.providers,
-          repository: filters?.repositories,
-          client: filters?.clients,
-          environment: filters?.environments,
-          model: filters?.models,
+          ...filterParams,
         },
         signal
       )
@@ -980,27 +980,21 @@ export default function PhosphorDashboard({
     data: toolActivityData,
     isFetching: toolActivityFetching,
     refetch: refetchToolActivity,
+    // P04-F07: filter dimensions serialized via filterKeyParts.
+    // eslint-disable-next-line @tanstack/query/exhaustive-deps
   } = useQuery({
     queryKey: [
       'usage-report-tool-activity',
       resolvedFrom,
       resolvedTo,
-      filters?.providers,
-      filters?.repositories,
-      filters?.clients,
-      filters?.environments,
-      filters?.models,
+      ...filterKeyParts,
     ],
     queryFn: ({ signal }) =>
       fetchUsageReportToolActivity(
         {
           from: resolvedFrom,
           to: resolvedTo,
-          provider: filters?.providers,
-          repository: filters?.repositories,
-          client: filters?.clients,
-          environment: filters?.environments,
-          model: filters?.models,
+          ...filterParams,
         },
         signal
       ),
@@ -1269,25 +1263,14 @@ export default function PhosphorDashboard({
     ]
   )
 
-  const periodDays = useMemo(
-    () =>
-      Math.max(
-        1,
-        Math.round(
-          (new Date(resolvedTo).getTime() - new Date(resolvedFrom).getTime()) /
-            86_400_000
-        )
-      ),
+  // P04-F06: DST-safe prior window via Eastern calendar-day string arithmetic.
+  // index.tsx owns the lightweight prior-summary query for KPI strip deltas at
+  // all viewports; this full prior query remains gated on showComparison for
+  // ComparisonPanel + prior-health (p95/errors) deltas.
+  const { periodDays, priorFrom, priorTo } = useMemo(
+    () => computePriorReportWindow(resolvedFrom, resolvedTo),
     [resolvedFrom, resolvedTo]
   )
-
-  // Wave 32-Deltas: prior-window bounds — same span length, shifted back by
-  // periodDays. priorTo = resolvedFrom; priorFrom = resolvedFrom − periodDays.
-  const priorTo = resolvedFrom
-  const priorFrom = useMemo(() => {
-    const ms = new Date(resolvedFrom).getTime() - periodDays * 86_400_000
-    return new Date(ms).toISOString().slice(0, 10)
-  }, [resolvedFrom, periodDays])
 
   // Wave 32-Deltas: second useQuery for the prior window. Disabled until the
   // current report has loaded to avoid a redundant fetch on the initial render.
@@ -1297,17 +1280,15 @@ export default function PhosphorDashboard({
     data: priorReport,
     isFetching: priorReportFetching,
     refetch: refetchPriorReport,
+    // P04-F07: filter dimensions serialized via filterKeyParts.
+    // eslint-disable-next-line @tanstack/query/exhaustive-deps
   } = useQuery({
     queryKey: [
       'usage-report-phosphor-prior',
       priorFrom,
       priorTo,
       resolvedGrain,
-      filters?.providers,
-      filters?.repositories,
-      filters?.clients,
-      filters?.environments,
-      filters?.models,
+      ...filterKeyParts,
       showComparison,
     ],
     queryFn: ({ signal }) =>
@@ -1317,18 +1298,13 @@ export default function PhosphorDashboard({
           to: priorTo,
           grain: resolvedGrain,
           groupBy: ['provider', 'model', 'repository'],
-          provider: filters?.providers,
-          repository: filters?.repositories,
-          client: filters?.clients,
-          environment: filters?.environments,
-          model: filters?.models,
+          ...filterParams,
         },
         signal
       ),
-    // Only fire once the current report is available AND the ComparisonPanel is
-    // visible (viewport ≥3840px). At 2275 and 5120 the panel is hidden so the
-    // prior-window DB query is skipped entirely, saving a sequential waterfall
-    // that previously added 20–30 s to the cold-load experience.
+    // Full prior report (ComparisonPanel + prior-health) only when the panel is
+    // visible (viewport ≥3840px). Summary KPI deltas come from index.tsx's
+    // lightweight prior-summary query, which fires at all viewports.
     enabled: !reportLoading && report !== undefined && showComparison,
     staleTime: LIVE_DASHBOARD_HEAVY_REFETCH_INTERVAL_MS,
     refetchInterval: false,
@@ -1654,7 +1630,7 @@ export default function PhosphorDashboard({
             creditLifecycle={report?.providerCreditLifecycle}
           />
         ) : providerSectionView === 'health' ? (
-          <ProviderHealthMasonry
+          <ProviderHealthColumns
             columns={providerHealthCardColumns}
             columnCount={providerHealthColumnCount}
             aggregateConfig={aggregateConfig}
@@ -1662,7 +1638,7 @@ export default function PhosphorDashboard({
             aggregateHealthCells={aggregateHealthCells}
             fleetActivity={fleetActivity}
             anomalies={anomalies}
-            masonryClassName={styles['provider-health-summary-masonry']}
+            columnLayoutClassName={styles['provider-health-summary-columns']}
             columnClassName={styles['provider-health-summary-column']}
           />
         ) : providerSectionView === 'provider-auth' ? (
