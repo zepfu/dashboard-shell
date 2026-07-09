@@ -5,7 +5,13 @@
  * (C7, I3, E4), session-diagnostics (P1, I2, E3, E4), pgbouncer (G2, G3, A4),
  * provider-quota-history-bucket (I4, I7), quota-estimator-weights (G5, I6, A3).
  */
-import { fireEvent, render, screen, within } from '@testing-library/react'
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  within,
+} from '@testing-library/react'
 import { describe, expect, test, vi } from 'vitest'
 import type {
   ShellPgBouncerHealth,
@@ -29,6 +35,9 @@ import { ProviderCreditLifecyclePanel } from './provider-credit-lifecycle-panel'
 import { ProviderQuotaHistoryBucket } from './provider-quota-history-bucket'
 import { QuotaEstimatorWeightsPanel } from './quota-estimator-weights-panel'
 import { SessionDiagnosticsPanel } from './session-diagnostics-panel'
+
+const SHARED_STATUS_PANEL_HEAD = 'status-panel-head'
+const SHARED_STATUS_PILL_PREFIX = 'status-pill'
 
 // ---------------------------------------------------------------------------
 // Fixtures (fields from usage-report.ts only)
@@ -485,5 +494,139 @@ describe('QuotaEstimatorWeightsPanel — G5 status label consistency', () => {
     const status = screen.getByRole('status')
     // RED: either all statuses humanized or all verbatim — not mixed (G5).
     expect(status.textContent).toBe('foo_bar')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Wave 5 — P08-F01/F09 shared StatusPanel chrome across six panels
+// ---------------------------------------------------------------------------
+
+describe('status-panels — all_six_use_shared_chrome', () => {
+  test('all_six_use_shared_chrome', () => {
+    const cases: Array<{
+      name: string
+      render: () => void
+    }> = [
+      {
+        name: 'PgBouncerHealthPanel',
+        render: () =>
+          render(
+            <PgBouncerHealthPanel
+              health={{
+                status: 'green',
+                sidecars: [makePgSidecar()],
+              }}
+              loading={false}
+            />
+          ),
+      },
+      {
+        name: 'ProviderAuthHealthPanel',
+        render: () =>
+          render(
+            <ProviderAuthHealthPanel
+              authHealth={{
+                data_source: 'provider_auth_current',
+                freshness_label: 'fresh',
+                generated_at: '2026-05-20T10:00:00Z',
+                entries: [makeAuthEntry()],
+              }}
+            />
+          ),
+      },
+      {
+        name: 'ProviderCreditLifecyclePanel',
+        render: () =>
+          render(
+            <ProviderCreditLifecyclePanel
+              creditLifecycle={{
+                data_source: 'provider_credit_current',
+                freshness_label: 'fresh',
+                generated_at: '2026-05-20T10:00:00Z',
+                summaries: [],
+                entries: [makeCreditEntry()],
+              }}
+            />
+          ),
+      },
+      {
+        name: 'AawmAliasRoutingPanel',
+        render: () =>
+          render(
+            <AawmAliasRoutingPanel
+              routing={{
+                freshness_label: 'fresh',
+                generated_at: '2026-05-20T10:00:00Z',
+                lookback_hours: 24,
+                families: [{ family: 'codex', observed: true }],
+                entries: [makeAliasEntry()],
+              }}
+            />
+          ),
+      },
+      {
+        name: 'QuotaEstimatorWeightsPanel',
+        render: () =>
+          render(
+            <QuotaEstimatorWeightsPanel
+              response={{
+                metadata: {
+                  from: '2026-05-20',
+                  to: '2026-05-21',
+                  phase: '0-2',
+                  lagCandidatesMinutes: [30],
+                  estimatorVersion: 'v1',
+                },
+                phase0Audit: {
+                  source_database: 'db',
+                  usage_event_shape: {},
+                  quota_pct_interval_shape: {},
+                  provider_lane_policy: {},
+                  known_missing_fields: [],
+                },
+                estimates: [makeEstimatorEstimate()],
+              }}
+              loading={false}
+            />
+          ),
+      },
+      {
+        name: 'SessionDiagnosticsPanel',
+        render: () =>
+          render(
+            <SessionDiagnosticsPanel
+              response={{
+                metadata: { from: '2026-05-20', to: '2026-05-21', limit: 10 },
+                sessionDiagnostics: [makeDiagnosticsRow()],
+              }}
+              loading={false}
+            />
+          ),
+      },
+    ]
+
+    for (const panelCase of cases) {
+      panelCase.render()
+
+      const scoped = document.body
+      expect(
+        scoped.querySelector(`.${SHARED_STATUS_PANEL_HEAD}`),
+        `${panelCase.name} must use shared status-panel-head`
+      ).not.toBeNull()
+
+      const pill = scoped.querySelector(
+        `[class*="${SHARED_STATUS_PILL_PREFIX}"]`
+      )
+      expect(
+        pill,
+        `${panelCase.name} must expose a pill with normalized status-pill vocabulary`
+      ).not.toBeNull()
+      const pillClass = pill?.className ?? ''
+      expect(pillClass).toMatch(
+        /\bis-(healthy|warn|bad|unknown|green|yellow|red)\b/
+      )
+
+      cleanup()
+    }
   })
 })

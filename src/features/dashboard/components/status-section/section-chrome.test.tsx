@@ -1,14 +1,19 @@
 /**
  * Wave 4 (D1-451) — section-chrome: I1, A1, A6, W1.
  *
- * RED: StatusPanel + statusPill shared chrome; SectionTitle styles in CSS;
- * skeleton view list generated from ProviderSectionView union.
+ * Wave 5 fork-review: rendered-output assertions for StatusPanel / statusPill.
  */
 import { render, screen } from '@testing-library/react'
 import fs from 'node:fs'
 import path from 'node:path'
 import { describe, expect, test } from 'vitest'
-import { SectionSkeleton, SectionTabs, SectionTitle } from './section-chrome'
+import {
+  SectionSkeleton,
+  SectionTabs,
+  SectionTitle,
+  StatusPanel,
+  statusPill,
+} from './section-chrome'
 
 describe('section-chrome — A1 StatusPanel / statusPill exports', () => {
   test('test_status_panel_and_status_pill_exported_from_section_chrome', async () => {
@@ -19,18 +24,45 @@ describe('section-chrome — A1 StatusPanel / statusPill exports', () => {
   })
 })
 
-describe('section-chrome — A6 SectionTitle styles in CSS not inline', () => {
-  test('test_section_title_tsx_does_not_inline_font_size_color', () => {
-    const source = fs.readFileSync(
-      path.resolve(
-        'src/features/dashboard/components/status-section/section-chrome.tsx'
-      ),
-      'utf8'
+describe('section-chrome — renders_title_and_pill_from_props', () => {
+  const AUTH_PILL_MAP = {
+    refreshed: { label: 'refreshed', className: 'is-healthy' },
+    failed: { label: 'failed', className: 'is-bad' },
+  } as const
+
+  test('renders_title_and_pill_from_props', () => {
+    render(
+      <StatusPanel title='Provider auth' subLabel='fresh'>
+        <span
+          className={`status-pill ${statusPill(AUTH_PILL_MAP, 'refreshed', { label: 'unknown', className: 'is-unknown' }).className}`}
+        >
+          {
+            statusPill(AUTH_PILL_MAP, 'refreshed', {
+              label: 'unknown',
+              className: 'is-unknown',
+            }).label
+          }
+        </span>
+      </StatusPanel>
     )
-    expect(source).not.toMatch(/fontSize:\s*['"]clamp/)
-    expect(source).not.toMatch(/color:\s*['"]var\(--accent-chrome\)/)
+
+    expect(screen.getByText('Provider auth')).toBeInTheDocument()
+    expect(screen.getByText('fresh')).toBeInTheDocument()
+    const pill = screen.getByText('refreshed')
+    expect(pill).toHaveClass('is-healthy')
   })
 
+  test('statusPill_maps_unknown_status_to_fallback', () => {
+    const mapped = statusPill(AUTH_PILL_MAP, 'mystery', {
+      label: 'unknown',
+      className: 'is-unknown',
+    })
+    expect(mapped.label).toBe('unknown')
+    expect(mapped.className).toBe('is-unknown')
+  })
+})
+
+describe('section-chrome — A6 SectionTitle styles in CSS not inline', () => {
   test('test_section_title_renders_with_css_class_only', () => {
     render(<SectionTitle id='status-title'>Status</SectionTitle>)
     const h2 = screen.getByRole('heading', { name: 'Status' })
@@ -48,7 +80,6 @@ describe('section-chrome — W1 skeleton view list not hand-enumerated', () => {
     const handList =
       /providerSectionView\s*===\s*'health'[\s\S]*providerSectionView\s*===\s*'alias-routing'/
     expect(handList.test(source)).toBe(true)
-    // RED: engineer should replace the 4-way OR with a generated REPORT_LOADING_VIEWS set.
     expect(source).toMatch(
       /REPORT_LOADING_VIEWS|reportLoadingViews|skeletonViewKeys/
     )
@@ -56,8 +87,7 @@ describe('section-chrome — W1 skeleton view list not hand-enumerated', () => {
 })
 
 describe('section-chrome — I1 StatusPanel wrapper behavior', () => {
-  test('test_status_panel_renders_head_sub_and_loading_slot', async () => {
-    const { StatusPanel } = await import('./section-chrome')
+  test('test_status_panel_renders_head_sub_and_loading_slot', () => {
     render(
       <StatusPanel
         title='Provider auth'

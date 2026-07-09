@@ -4043,3 +4043,48 @@ describe('PhosphorDashboard — D1-450 P1/P3 memoization', () => {
     expect(source).toMatch(/useMemo[\s\S]*buildTokenTrendDayEnvelopes/)
   })
 })
+
+// ---------------------------------------------------------------------------
+// Fork-review Wave 3 — P04-F01 masonry CSS var (RED)
+// ---------------------------------------------------------------------------
+
+describe('PhosphorDashboard — provider health masonry CSS var', () => {
+  test('masonry_root_sets_column_count_css_var', async () => {
+    const originalInnerWidth = window.innerWidth
+    Object.defineProperty(window, 'innerWidth', {
+      configurable: true,
+      value: 2100,
+    })
+
+    try {
+      await act(async () => {
+        render(
+          <Wrapper>
+            <PhosphorDashboard
+              from='2026-05-20'
+              to='2026-05-21'
+              report={MOCK_REPORT}
+              reportLoading={false}
+              showComparison={false}
+              quotas={[]}
+              quotaHistory={[]}
+            />
+          </Wrapper>
+        )
+      })
+
+      const masonryRoot = document.querySelector(
+        'section#status .provider-health-summary'
+      ) as HTMLElement | null
+      expect(masonryRoot).not.toBeNull()
+      expect(
+        masonryRoot!.style.getPropertyValue('--provider-health-columns')
+      ).toBe('8')
+    } finally {
+      Object.defineProperty(window, 'innerWidth', {
+        configurable: true,
+        value: originalInnerWidth,
+      })
+    }
+  })
+})

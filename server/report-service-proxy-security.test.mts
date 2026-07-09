@@ -47,24 +47,61 @@ describe('report-service upstream proxy secret guard', () => {
     expect(result).toEqual({ ok: true })
   })
 
-  test('uses local default secret when env is unset', async () => {
+  test('rejects_when_secret_unset', async () => {
     delete process.env.SHELL_REPORT_PROXY_SHARED_SECRET
     vi.resetModules()
     const { __proxySecurityTestHelpers } = await import('./report-service.mjs')
     const {
       evaluateUpstreamProxySecret,
-      resolveReportProxySharedSecret,
       REPORT_PROXY_SECRET_HEADER,
       DEFAULT_REPORT_PROXY_SHARED_SECRET,
     } = __proxySecurityTestHelpers
-    expect(resolveReportProxySharedSecret()).toBe(
-      DEFAULT_REPORT_PROXY_SHARED_SECRET
-    )
+
     expect(
       evaluateUpstreamProxySecret({
         [REPORT_PROXY_SECRET_HEADER]: DEFAULT_REPORT_PROXY_SHARED_SECRET,
       })
-    ).toEqual({ ok: true })
+    ).not.toEqual({ ok: true })
+    expect(
+      evaluateUpstreamProxySecret({
+        [REPORT_PROXY_SECRET_HEADER]: 'any-provided-secret',
+      })
+    ).not.toEqual({ ok: true })
+  })
+
+  test('uses_constant_time_compare', async () => {
+    const expected = 'abcdefghijklmnopqr'
+    const wrongEqualLength = 'zyxwvutsrqponmlkjih'
+    expect(wrongEqualLength.length).toBe(expected.length)
+    vi.stubEnv('SHELL_REPORT_PROXY_SHARED_SECRET', expected)
+    const { __proxySecurityTestHelpers } = await import('./report-service.mjs')
+    const { evaluateUpstreamProxySecret, REPORT_PROXY_SECRET_HEADER } =
+      __proxySecurityTestHelpers
+    const result = evaluateUpstreamProxySecret({
+      [REPORT_PROXY_SECRET_HEADER]: wrongEqualLength,
+    })
+    expect(result).toEqual({
+      ok: false,
+      status: 403,
+      error: 'Invalid dashboard shell proxy secret.',
+    })
+  })
+
+  test('warns_loudly_when_default_in_effect', async () => {
+    delete process.env.SHELL_REPORT_PROXY_SHARED_SECRET
+    vi.resetModules()
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const { __proxySecurityTestHelpers } = await import('./report-service.mjs')
+    const { evaluateUpstreamProxySecret } = __proxySecurityTestHelpers
+    evaluateUpstreamProxySecret({})
+    expect(warnSpy).toHaveBeenCalled()
+    const combined = warnSpy.mock.calls.flat().join(' ').toLowerCase()
+    expect(
+      combined.includes('secret') ||
+        combined.includes('proxy') ||
+        combined.includes('default')
+    ).toBe(true)
+    warnSpy.mockRestore()
   })
 })
 
