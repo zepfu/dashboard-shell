@@ -1,9 +1,5 @@
 /// <reference types="vite/client" />
 
-declare module 'react-is' {
-  export function isValidElementType(type: unknown): boolean
-}
-
 type ProjectModule = import('./shell/types').ProjectModule
 
 declare module 'aawm-tap-dashboard/module' {
