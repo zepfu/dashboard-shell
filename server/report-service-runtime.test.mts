@@ -163,7 +163,7 @@ describe('report-service bounded shutdown', () => {
     expect(close).toHaveBeenCalledTimes(1)
     expect(closeIdleConnections).toHaveBeenCalledTimes(1)
 
-    closeCallback()
+    closeCallback!()
     await expect(closePromise).resolves.toBeUndefined()
   })
 

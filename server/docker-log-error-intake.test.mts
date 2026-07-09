@@ -27,10 +27,31 @@ import {
   resolveRepoComposeProjectMarkers,
 } from './docker-log-error-intake.mjs'
 
+type DockerLogErrorRow = {
+  observed_at?: string | null
+  container?: string
+  stream?: string
+  level?: string
+  status_code?: number | null
+  provider?: string
+  message?: string
+  source_identity?: string | null
+  source_path?: string | null
+  fingerprint?: string
+}
+
 const execFileAsync = promisify(execFile)
 
+type ErrnoError = Error & { code?: string }
+
+function errnoError(message: string, code: string): ErrnoError {
+  const error = new Error(message) as ErrnoError
+  error.code = code
+  return error
+}
+
 describe('docker-log-error-intake', () => {
-  let tmpDirs = []
+  let tmpDirs: string[] = []
 
   afterEach(async () => {
     await Promise.all(
@@ -364,11 +385,11 @@ describe('docker-log-error-intake', () => {
     const filePath = '/tmp/d1-445-stale-lock.jsonl'
     const lockDir = `${filePath}.intake.lock`
     let lockExists = true
-    let staleTarget = null
+    let staleTarget: string | null = null
     let staleExists = false
-    const mkdirCalls = []
-    const rmCalls = []
-    const renameCalls = []
+    const mkdirCalls: string[] = []
+    const rmCalls: string[] = []
+    const renameCalls: Array<[string, string]> = []
 
     const mkdirFn = vi.fn(async (dir) => {
       mkdirCalls.push(dir)
@@ -377,9 +398,7 @@ describe('docker-log-error-intake', () => {
         lockExists = true
         return
       }
-      const error = new Error('lock exists')
-      error.code = 'EEXIST'
-      throw error
+      throw errnoError('lock exists', 'EEXIST')
     })
 
     const statFn = vi.fn(async () => ({ mtimeMs: 1 }))
@@ -387,7 +406,7 @@ describe('docker-log-error-intake', () => {
     const renameFn = vi.fn(async (source, target) => {
       renameCalls.push([source, target])
       if (!lockExists || source !== lockDir) {
-        const error = new Error('missing lock')
+        const error = new Error('missing lock') as NodeJS.ErrnoException
         error.code = 'ENOENT'
         throw error
       }
@@ -403,7 +422,9 @@ describe('docker-log-error-intake', () => {
         return
       }
       if (target === lockDir && lockExists) {
-        const error = new Error('fresh lock removed during cleanup')
+        const error = new Error(
+          'fresh lock removed during cleanup'
+        ) as NodeJS.ErrnoException
         error.code = 'EWOULDBLOCK'
         throw error
       }
@@ -454,9 +475,7 @@ describe('docker-log-error-intake', () => {
       expect(dir).toBe(lockDir)
       mkdirAttempts += 1
       if (mkdirAttempts === 1) {
-        const error = new Error('lock exists')
-        error.code = 'EEXIST'
-        throw error
+        throw errnoError('lock exists', 'EEXIST')
       }
     })
 
@@ -492,7 +511,7 @@ describe('docker-log-error-intake', () => {
         { time: '2026-06-28T21:31:54.000Z', stream: 'stdout', log: msg },
         'dashboard-shell-dev'
       )
-      expect(row?.status_code ?? null, msg).toBeNull()
+      expect(row?.status_code ?? null, String(msg)).toBeNull()
     }
   })
 
@@ -504,12 +523,12 @@ describe('docker-log-error-intake', () => {
       ['request failed with HTTP/1.1 404 and status 502', 502],
       ['ERROR upstream gateway failure 502', 502],
     ]
-    for (const [msg, expected] of cases) {
+    for (const [msg, expected] of cases as Array<[string, number]>) {
       const row = buildDockerLogErrorRow(
         { time: '2026-06-28T21:26:28.000Z', stream: 'stderr', log: msg },
         'dashboard-shell-dev'
       )
-      expect(row?.status_code, msg).toBe(expected)
+      expect(row?.status_code, String(msg)).toBe(expected)
     }
   })
 
@@ -541,7 +560,7 @@ describe('docker-log-error-intake', () => {
           { time: '2026-06-28T21:31:54.000Z', stream: 'stdout', log: msg },
           'dashboard-shell-dev'
         ),
-        msg
+        String(msg)
       ).toBeNull()
     }
   })
@@ -561,7 +580,7 @@ describe('docker-log-error-intake', () => {
     })
     expect(first).toHaveLength(1)
 
-    const seen = new Set()
+    const seen = new Set<string>()
     const freshOnce = selectNewDockerLogErrors(first, seen)
     const freshTwice = selectNewDockerLogErrors(first, seen)
     expect(freshOnce).toHaveLength(1)
@@ -586,7 +605,7 @@ describe('docker-log-error-intake', () => {
       fingerprint: 'abc123',
     }
 
-    const seen = new Set()
+    const seen = new Set<string>()
     await appendDockerLogErrorsToIntake({
       intakeDir,
       rows: selectNewDockerLogErrors([row], seen),
@@ -623,7 +642,10 @@ describe('docker-log-error-intake', () => {
 
     const capped = capDockerLogErrorsForDashboard(rows, 2)
     expect(capped).toHaveLength(2)
-    expect(capped.map((row) => row.fingerprint)).toEqual(['fp-0', 'fp-1'])
+    expect(capped.map((row: DockerLogErrorRow) => row.fingerprint)).toEqual([
+      'fp-0',
+      'fp-1',
+    ])
     expect(rows).toHaveLength(5)
   })
 
@@ -774,7 +796,7 @@ describe('docker-log-error-intake', () => {
     expect(split.forDashboard).toEqual([])
     expect(split.forIntake).toHaveLength(3)
 
-    const seen = new Set()
+    const seen = new Set<string>()
     const fresh = selectNewDockerLogErrors(split.forIntake, seen)
     expect(fresh).toHaveLength(3)
     expect(
@@ -785,7 +807,7 @@ describe('docker-log-error-intake', () => {
   test('existing JSONL fingerprint suppresses append and marks seen', async () => {
     const intakeDir = await mkdtemp(path.join(os.tmpdir(), 'd1-424-persist-'))
     tmpDirs.push(intakeDir)
-    const row = {
+    const row: DockerLogErrorRow = {
       observed_at: '2026-06-28T18:41:00.000Z',
       container: 'unknown-upstream',
       stream: 'stderr',
@@ -800,7 +822,7 @@ describe('docker-log-error-intake', () => {
 
     const filePath = path.join(
       intakeDir,
-      `${safeContainerErrorIntakeBasename(row.container)}-error.jsonl`
+      `${safeContainerErrorIntakeBasename(row.container!)}-error.jsonl`
     )
     await appendFile(
       filePath,
@@ -808,7 +830,7 @@ describe('docker-log-error-intake', () => {
       'utf8'
     )
 
-    const seen = new Set()
+    const seen = new Set<string>()
     const result = await appendDockerLogErrorsToIntake({
       intakeDir,
       rows: [row],
@@ -825,7 +847,7 @@ describe('docker-log-error-intake', () => {
   test('mixed existing and new rows appends only the new row once', async () => {
     const intakeDir = await mkdtemp(path.join(os.tmpdir(), 'd1-424-mixed-'))
     tmpDirs.push(intakeDir)
-    const existing = {
+    const existing: DockerLogErrorRow = {
       observed_at: '2026-06-28T18:41:00.000Z',
       container: 'unknown-upstream',
       stream: 'stderr',
@@ -838,7 +860,7 @@ describe('docker-log-error-intake', () => {
     }
     existing.fingerprint = buildDockerLogErrorFingerprint(existing)
 
-    const fresh = {
+    const fresh: DockerLogErrorRow = {
       observed_at: '2026-06-28T18:42:00.000Z',
       container: 'unknown-upstream',
       stream: 'stderr',
@@ -853,7 +875,7 @@ describe('docker-log-error-intake', () => {
 
     const filePath = path.join(
       intakeDir,
-      `${safeContainerErrorIntakeBasename(existing.container)}-error.jsonl`
+      `${safeContainerErrorIntakeBasename(String(existing.container))}-error.jsonl`
     )
     await appendFile(
       filePath,
@@ -861,7 +883,7 @@ describe('docker-log-error-intake', () => {
       'utf8'
     )
 
-    const seen = new Set()
+    const seen = new Set<string>()
     const result = await appendDockerLogErrorsToIntake({
       intakeDir,
       rows: [existing, fresh],
@@ -904,7 +926,7 @@ describe('docker-log-error-intake', () => {
     tmpDirs.push(intakeDir)
     const filePath = path.join(intakeDir, 'unknown-upstream-error.jsonl')
 
-    const old = {
+    const old: DockerLogErrorRow = {
       observed_at: '2026-06-28T18:00:00.000Z',
       container: 'unknown-upstream',
       stream: 'stderr',
@@ -913,7 +935,7 @@ describe('docker-log-error-intake', () => {
       provider: 'openai',
       message: `legacy-${'x'.repeat(1_200)}`,
     }
-    const firstRecent = {
+    const firstRecent: DockerLogErrorRow = {
       observed_at: '2026-06-28T18:01:00.000Z',
       container: 'unknown-upstream',
       stream: 'stderr',
@@ -922,7 +944,7 @@ describe('docker-log-error-intake', () => {
       provider: 'openai',
       message: 'recent-a',
     }
-    const secondRecent = {
+    const secondRecent: DockerLogErrorRow = {
       observed_at: '2026-06-28T18:02:00.000Z',
       container: 'unknown-upstream',
       stream: 'stderr',
@@ -958,6 +980,7 @@ describe('docker-log-error-intake', () => {
     )
     const set = await loadPersistedDockerLogErrorFingerprintsFromJsonl(
       filePath,
+      undefined,
       {
         maxBytes: readWindowBytes,
         maxLines: 2,
@@ -988,9 +1011,9 @@ describe('docker-log-error-intake', () => {
       fingerprint: 'retry-fp',
     }
 
-    const seen = new Set()
+    const seen = new Set<string>()
     let appendAttempts = 0
-    const failingAppend = async (...args) => {
+    const failingAppend = async (...args: Parameters<typeof appendFile>) => {
       appendAttempts += 1
       if (appendAttempts === 1) {
         throw new Error('disk full')
@@ -1080,7 +1103,9 @@ describe('docker-log-error-intake', () => {
         SHELL_REPORT_DOCKER_LOG_EXTERNAL_CONTAINERS: 'aawm-litellm,litellm-dev',
       },
     })
-    expect(filtered.map((r) => r.container)).toEqual(['other-thing'])
+    expect(filtered.map((r: DockerLogErrorRow) => r.container)).toEqual([
+      'other-thing',
+    ])
     expect(isRepoOwnedDockerLogContainerName('dashboard-shell-redis')).toBe(
       true
     )
@@ -1118,10 +1143,9 @@ describe('docker-log-error-intake', () => {
       String(b.observed_at).localeCompare(String(a.observed_at))
     )
     const split = splitDockerLogErrorsForDashboardAndIntake(sorted, 10)
-    expect(split.forDashboard.map((r) => r.container)).toEqual([
-      'mystery-service',
-      'aawm-litellm',
-    ])
+    expect(
+      split.forDashboard.map((r: DockerLogErrorRow) => r.container)
+    ).toEqual(['mystery-service', 'aawm-litellm'])
     const forIntake = filterDockerLogErrorsForCentralizedIntake(
       split.forIntake,
       {
@@ -1131,9 +1155,11 @@ describe('docker-log-error-intake', () => {
         },
       }
     )
-    expect(forIntake.map((r) => r.container)).toEqual(['mystery-service'])
+    expect(forIntake.map((r: DockerLogErrorRow) => r.container)).toEqual([
+      'mystery-service',
+    ])
 
-    const seen = new Set()
+    const seen = new Set<string>()
     const result = await appendDockerLogErrorsToIntake({
       intakeDir,
       rows: selectNewDockerLogErrors(forIntake, seen),
