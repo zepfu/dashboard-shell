@@ -387,7 +387,6 @@ export function buildModelRows(
     const errors = health?.errors ?? 0
     const errorPct = requests > 0 ? (errors / requests) * 100 : 0
     const tokenAgg = tokensByKey.get(key)
-    const tokensDirectionEstimated = tokenAgg === undefined
     const tokens_in = tokenAgg?.token_in ?? Math.round(row.token_total * 0.6)
     const tokens_out = tokenAgg?.token_out ?? Math.round(row.token_total * 0.4)
 
@@ -444,7 +443,6 @@ export function buildModelRows(
             ? cacheTokensAgg
             : 0
           : undefined,
-      tokensDirectionEstimated,
       spark: sparkByKey.get(sparkKey) ?? [row.token_total],
       sparkBuckets: sparkBucketsByKey.get(sparkKey),
       tool: rowToolActivity?.totalCalls,

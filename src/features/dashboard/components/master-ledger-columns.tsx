@@ -101,14 +101,16 @@ const agentQualityColumn = [
 ]
 
 // Cols 9–12: latency + error + cost group
+// P05-F04: p50/p95 headers mark (max) — group rollups use max of child
+// percentiles unless count-weighted latencySummary is available.
 const latencyCostColumns = [
   helper.accessor('p50_ms', {
-    header: 'p50ms',
+    header: 'p50ms (max)',
     cell: ({ row, getValue }) =>
       renderLatencyCell(getValue() as number, row.original.latencySummary),
   }),
   helper.accessor('p95_ms', {
-    header: 'p95ms',
+    header: 'p95ms (max)',
     cell: ({ row, getValue }) =>
       renderLatencyCell(getValue() as number, row.original.latencySummary),
   }),
@@ -133,7 +135,7 @@ const cacheMissPctColumn = [
   }),
 ]
 
-// Cols 14–16: 4K-only columns
+// Cols 14+: 4K-only Cache% (Queue/Resets removed — P05-F06)
 const fourKColumns = [
   helper.accessor('cache_pct', {
     id: 'cache_pct',
@@ -145,28 +147,11 @@ const fourKColumns = [
         (v) => `${numFmt(v, 1)}%`
       ),
   }),
-  helper.accessor('queue', {
-    id: 'queue',
-    header: 'Queue',
-    meta: { className: 'col-4k-only' },
-    cell: (info) =>
-      fmtOrDash(info.getValue() as number | null | undefined, numFmt),
-  }),
-  helper.accessor('resets', {
-    id: 'resets',
-    header: 'Resets',
-    meta: { className: 'col-4k-only' },
-    cell: (info) =>
-      fmtOrDash(info.getValue() as number | null | undefined, numFmt),
-  }),
 ]
 
-// Cols 17–20: extended columns (5K-only except TOOL, which is always visible).
+// Extended columns (5K-only except TOOL, which is always visible).
 // W33/W36-fix: TOOL column has no responsive-class guard — it is always visible.
-// The col-5k-only guard was the primary reason the TOOL column never appeared:
-// display:none below 5120px meant virtually no user ever saw it. The column is
-// intentionally ungated so it shows on 1080p/1440p/4K displays alongside the
-// rest of the base ledger. GIT/INVAL columns remain col-5k-only (rarely needed).
+// INVAL removed (P05-F06). GIT columns remain col-5k-only.
 const extendedColumns = [
   helper.accessor('tool', {
     id: 'tool',
@@ -189,13 +174,6 @@ const extendedColumns = [
     cell: (info) =>
       fmtOrDash(info.getValue() as number | null | undefined, numFmt),
   }),
-  helper.accessor('inval', {
-    id: 'inval',
-    header: 'INVAL',
-    meta: { className: 'col-5k-only' },
-    cell: (info) =>
-      fmtOrDash(info.getValue() as number | null | undefined, numFmt),
-  }),
 ]
 
 // Col 21: sparkline — last per Wave 30 operator spec
@@ -211,18 +189,18 @@ const sparklineColumn = [
   },
 ]
 
-// Wave 30 column order, revised after removing $/1k columns:
+// Wave 30 column order, revised after removing $/1k + dead Queue/Resets/INVAL:
 //   baseVolumeColumns (1–5: Model, Provider, Requests, Toks In, Toks Out)
 //   → cacheToksColumn (6: Cache toks)
 //   → cacheMissDollarAndReasoningColumns (7–8: Cache Miss $, Reasoning)
-//   → latencyCostColumns (9–12: p50ms, p95ms, Err%, Cost)
+//   → latencyCostColumns (9–12: p50ms (max), p95ms (max), Err%, Cost)
 //   → cacheMissPctColumn (13: Cache Miss %)
-//   → fourKColumns (14–16: Cache%, Queue, Resets; col-4k-only)
-//   → fiveKColumns (17: TOOL [always visible]; 18–20: GIT commits, GIT pushes,
-//                   INVAL [col-5k-only])
-//   → sparklineColumn (21: Tokens Trend)
+//   → fourKColumns (14: Cache%; col-4k-only)
+//   → extendedColumns (15: TOOL [always visible]; 16–17: GIT commits/pushes
+//                      [col-5k-only])
+//   → sparklineColumn (18: Tokens Trend)
 // W36-fix: TOOL column ungated — col-5k-only removed so it renders at all
-// viewport widths. GIT commits, GIT pushes, INVAL remain col-5k-only.
+// viewport widths.
 export const masterLedgerAllColumns = [
   ...baseVolumeColumns,
   ...cacheToksColumn,

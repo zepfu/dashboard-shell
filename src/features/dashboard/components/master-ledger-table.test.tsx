@@ -47,6 +47,21 @@ function openLazyHoverTooltipsIn(container: HTMLElement): void {
 
 /** Default ledger row shape; override only fields a test cares about. */
 function makeRow(overrides: Partial<ModelRow> = {}): ModelRow {
+  // P05-F06: strip dead queue/resets/inval if a caller still passes them via
+  // structural excess (Wave 4 membership assertion).
+  const {
+    queue: _q,
+    resets: _r,
+    inval: _i,
+    ...rest
+  } = overrides as Partial<ModelRow> & {
+    queue?: number
+    resets?: number
+    inval?: number
+  }
+  void _q
+  void _r
+  void _i
   return {
     model: 'claude-3',
     provider: 'anthropic',
@@ -61,7 +76,7 @@ function makeRow(overrides: Partial<ModelRow> = {}): ModelRow {
     cache_miss_usd_cost: 0.01,
     reasoning_reported: 500,
     reasoning_estimated: 600,
-    ...overrides,
+    ...rest,
   }
 }
 
@@ -1492,11 +1507,9 @@ test('test_tool_column_header_present_and_not_5k_only', () => {
 
   // The TOOL td cells should also lack col-5k-only class (cell inherits from column meta).
   const toolCells = container.querySelectorAll('tbody td.col-5k-only')
-  // GIT commits, GIT pushes, INVAL still use col-5k-only (3 cols × 3 rows = 9 cells).
-  // TOOL cells must NOT be among them — verify no col-5k-only cell contains a
-  // numeric tool count. For rows without tool data, TOOL renders '—' plain text.
-  // This is a structural guard: if tool had col-5k-only, the header itself would too.
-  expect(toolCells.length).toBe(9) // 3 5k-only columns × 3 rows = 9 cells
+  // P05-F06: INVAL removed. GIT commits + GIT pushes remain col-5k-only
+  // (2 cols × 3 rows = 6 cells). TOOL stays ungated.
+  expect(toolCells.length).toBe(6) // 2 5k-only columns × 3 rows = 6 cells
 })
 
 test('test_tool_cell_renders_fmtCompact_value', () => {
@@ -1699,8 +1712,6 @@ test('test_aggregateRows_math', async () => {
     cache_miss_usd_cost: 0.2,
     reasoning_reported: 500,
     reasoning_estimated: 0,
-    queue: 3,
-    resets: 1,
   })
   const rowB = makeRow({
     model: 'b',
@@ -1715,8 +1726,6 @@ test('test_aggregateRows_math', async () => {
     cache_miss_usd_cost: 0,
     reasoning_reported: 0,
     reasoning_estimated: 0,
-    queue: 0,
-    resets: 0,
   })
   const rowC = makeRow({
     model: 'c',
@@ -1731,8 +1740,6 @@ test('test_aggregateRows_math', async () => {
     cache_miss_usd_cost: undefined,
     reasoning_reported: undefined,
     reasoning_estimated: undefined,
-    queue: 0,
-    resets: 0,
   })
 
   const result = aggregateRowsFn([rowA, rowB, rowC], overrides)
@@ -1780,12 +1787,9 @@ test('test_aggregateRows_math', async () => {
   //    undefined when all values sum to 0 — check rowA's 0.20 is captured.
   expect(result.cache_miss_usd_cost).toBeCloseTo(0.2, 4)
 
-  // e) queue/resets must be summed and not suppressed to undefined.
-  //    Current optionalSum with keepZero=false: sum(3,0,0) > 0 → 3 (OK for queue)
-  //    but sum(1,0,0) → 1 for resets (also OK). This only fails when ALL are 0.
-  //    Test the key case: queue must be 3 (rowA=3 + rowB=0 + rowC=0)
-  expect(result.queue).toBe(3)
-  expect(result.resets).toBe(1)
+  // e) P05-F06: queue/resets removed from ModelRow + aggregation (dead columns).
+  expect(result.queue).toBeUndefined()
+  expect(result.resets).toBeUndefined()
 })
 
 /**

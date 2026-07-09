@@ -159,195 +159,63 @@ function MasterLedgerTableInner({
     return providerMap
   }, [rows])
 
-  const displayRows = useMemo(() => {
-    if (ledgerView === 'repository') {
-      const repositoryMap = repositoryEntryMap
-
-      const result: LedgerDisplayRow[] = []
-      const repositoryRows = sortLedgerRows(
-        [...repositoryMap.entries()].map(([repository, entries]) =>
-          aggregateRows(
-            entries.map((entry) => entry.repoRow),
-            {
-              ledgerLevel: 'repository',
-              ledgerId: `repository-root:${repository}`,
-              ledgerLabel: repository,
-              providerKey: 'repository',
-              repositoryKey: repository,
-              childCount: entries.length,
-              exactModelCount: entries.length,
-              isExpandable: entries.length > 0,
-            }
-          )
-        ),
-        sorting
-      )
-
-      for (const repositoryRow of repositoryRows) {
-        result.push(repositoryRow)
-        if (!expandedRepositories.has(repositoryRow.ledgerId)) continue
-
-        const entries =
-          repositoryMap.get(repositoryRow.repositoryKey ?? '') ?? []
-        const providerMap = new Map<string, RepositoryModelEntry[]>()
-        for (const entry of entries) {
-          const providerEntries = providerMap.get(entry.providerKey) ?? []
-          providerEntries.push(entry)
-          providerMap.set(entry.providerKey, providerEntries)
-        }
-
-        const providerRows = sortLedgerRows(
-          [...providerMap.entries()].map(([providerKey, providerEntries]) =>
-            aggregateRows(
-              providerEntries.map((entry) => entry.repoRow),
-              {
-                ledgerLevel: 'provider',
-                ledgerId: `repository-provider:${repositoryRow.repositoryKey}:${providerKey}`,
-                ledgerLabel: providerDisplayName(providerKey),
-                providerKey,
-                repositoryKey: repositoryRow.repositoryKey,
-                childCount: providerEntries.length,
-                exactModelCount: providerEntries.length,
-                isExpandable: providerEntries.length > 0,
-              }
-            )
-          ),
-          sorting
-        )
-
-        for (const providerRow of providerRows) {
-          result.push(providerRow)
-          if (!expandedProvidersRepository.has(providerRow.ledgerId)) continue
-
-          const providerEntries = providerMap.get(providerRow.providerKey) ?? []
-          const definitions = familyDefinitionsForProvider(
-            providerRow.providerKey,
-            providerEntries.map((entry) => entry.sourceRow)
-          )
-
-          if (definitions === undefined) {
-            result.push(
-              ...sortLedgerRows(
-                providerEntries.map((entry) =>
-                  toRepositoryPerspectiveModelRow(entry)
-                ),
-                sorting
-              )
-            )
-            continue
-          }
-
-          const familyMap = new Map<
-            string,
-            {
-              definition: ModelFamilyDefinition
-              entries: RepositoryModelEntry[]
-            }
-          >()
-          for (const entry of providerEntries) {
-            const definition = entry.family ?? OTHER_FAMILY_DEFINITION
-            const existing = familyMap.get(definition.key) ?? {
-              definition,
-              entries: [],
-            }
-            existing.entries.push(entry)
-            familyMap.set(definition.key, existing)
-          }
-
-          const familyGroups = [...familyMap.values()]
-
-          const familyRows = sortLedgerRows(
-            familyGroups.map(({ definition, entries: familyEntries }) =>
-              aggregateRows(
-                familyEntries.map((entry) => entry.repoRow),
-                {
-                  ledgerLevel: 'family',
-                  ledgerId: `repository-family:${repositoryRow.repositoryKey}:${providerRow.providerKey}:${definition.key}`,
-                  ledgerLabel: definition.label,
-                  providerKey: providerRow.providerKey,
-                  familyKey: definition.key,
-                  repositoryKey: repositoryRow.repositoryKey,
-                  childCount: familyEntries.length,
-                  exactModelCount: familyEntries.length,
-                  isExpandable: familyEntries.length > 0,
-                }
-              )
-            ),
-            sorting
-          )
-
-          for (const familyRow of familyRows) {
-            result.push(familyRow)
-            if (!expandedFamilies.has(familyRow.ledgerId)) continue
-            const exactEntries =
-              familyMap.get(familyRow.familyKey ?? '')?.entries ?? []
-            result.push(
-              ...sortLedgerRows(
-                exactEntries.map((entry) =>
-                  toRepositoryPerspectiveModelRow(entry, familyRow.familyKey)
-                ),
-                sorting
-              )
-            )
-          }
-        }
-      }
-
-      return result
+  /**
+   * Expansion-independent aggregation tree for model view (P05-F03).
+   * Provider/family aggregates are computed once per rows/sorting change so
+   * toggling one provider's expansion does not re-run aggregateRows for
+   * unrelated collapsed groups.
+   */
+  const modelLedgerTree = useMemo(() => {
+    type ModelNode = {
+      row: LedgerDisplayRow
+      repositoryChildren: LedgerDisplayRow[]
+    }
+    type FamilyNode = {
+      row: LedgerDisplayRow
+      models: ModelNode[]
+    }
+    type ProviderNode = {
+      row: LedgerDisplayRow
+      directModels?: ModelNode[]
+      families?: FamilyNode[]
     }
 
-    const providerMap = modelProviderMap
+    const providerNodes: ProviderNode[] = []
+    for (const [providerKey, providerRows] of modelProviderMap.entries()) {
+      const providerRow = aggregateRows(providerRows, {
+        ledgerLevel: 'provider',
+        ledgerId: `provider:${providerKey}`,
+        ledgerLabel: providerDisplayName(providerKey),
+        providerKey,
+        childCount: providerRows.length,
+        exactModelCount: providerRows.length,
+        isExpandable: providerRows.length > 0,
+      })
 
-    const result: LedgerDisplayRow[] = []
-    const sortedProviderEntries = sortLedgerRows(
-      [...providerMap.entries()].map(([providerKey, providerRows]) =>
-        aggregateRows(providerRows, {
-          ledgerLevel: 'provider',
-          ledgerId: `provider:${providerKey}`,
-          ledgerLabel: providerDisplayName(providerKey),
-          providerKey,
-          childCount: providerRows.length,
-          exactModelCount: providerRows.length,
-          isExpandable: providerRows.length > 0,
-        })
-      ),
-      sorting
-    )
-
-    for (const providerRow of sortedProviderEntries) {
-      result.push(providerRow)
-      if (!expandedProvidersModel.has(providerRow.ledgerId)) continue
-
-      const providerRows = providerMap.get(providerRow.providerKey) ?? []
       const definitions = familyDefinitionsForProvider(
-        providerRow.providerKey,
+        providerKey,
         providerRows
       )
 
       if (definitions === undefined) {
-        const exactRows = sortLedgerRows(
-          providerRows.map((row) =>
-            toModelDisplayRow(row, providerRow.providerKey)
-          ),
+        const models: ModelNode[] = sortLedgerRows(
+          providerRows.map((row) => toModelDisplayRow(row, providerKey)),
           sorting
-        )
-        for (const exactRow of exactRows) {
-          result.push(exactRow)
-          if (!expandedModels.has(exactRow.ledgerId)) continue
-          result.push(
-            ...sortLedgerRows(
-              (exactRow.repositoryChildren ?? []).map((repoRow) =>
-                toRepositoryDisplayRow(
-                  repoRow,
-                  providerRow.providerKey,
-                  exactRow.familyKey,
-                  exactRow.model
-                )
-              ),
-              sorting
-            )
-          )
-        }
+        ).map((modelRow) => ({
+          row: modelRow,
+          repositoryChildren: sortLedgerRows(
+            (modelRow.repositoryChildren ?? []).map((repoRow) =>
+              toRepositoryDisplayRow(
+                repoRow,
+                providerKey,
+                modelRow.familyKey,
+                modelRow.model
+              )
+            ),
+            sorting
+          ),
+        }))
+        providerNodes.push({ row: providerRow, directModels: models })
         continue
       }
 
@@ -357,8 +225,7 @@ function MasterLedgerTableInner({
       >()
       for (const row of providerRows) {
         const definition =
-          modelFamilyForRow(providerRow.providerKey, row.model) ??
-          OTHER_FAMILY_DEFINITION
+          modelFamilyForRow(providerKey, row.model) ?? OTHER_FAMILY_DEFINITION
         const existing = familyRows.get(definition.key) ?? {
           definition,
           rows: [],
@@ -367,15 +234,13 @@ function MasterLedgerTableInner({
         familyRows.set(definition.key, existing)
       }
 
-      const familyGroups = [...familyRows.values()]
-
-      const sortedFamilies = sortLedgerRows(
-        familyGroups.map(({ definition, rows: familyModelRows }) =>
+      const families: FamilyNode[] = sortLedgerRows(
+        [...familyRows.values()].map(({ definition, rows: familyModelRows }) =>
           aggregateRows(familyModelRows, {
             ledgerLevel: 'family',
-            ledgerId: `family:${providerRow.providerKey}:${definition.key}`,
+            ledgerId: `family:${providerKey}:${definition.key}`,
             ledgerLabel: definition.label,
-            providerKey: providerRow.providerKey,
+            providerKey,
             familyKey: definition.key,
             childCount: familyModelRows.length,
             exactModelCount: familyModelRows.length,
@@ -383,47 +248,254 @@ function MasterLedgerTableInner({
           })
         ),
         sorting
-      )
-
-      for (const familyRow of sortedFamilies) {
-        result.push(familyRow)
-        if (!expandedFamilies.has(familyRow.ledgerId)) continue
-
+      ).map((familyRow) => {
         const exactRows =
           familyRows.get(familyRow.familyKey ?? '')?.rows ??
           familyRows.get(OTHER_FAMILY_DEFINITION.key)?.rows ??
           []
-        const modelRows = sortLedgerRows(
+        const models: ModelNode[] = sortLedgerRows(
           exactRows.map((row) =>
-            toModelDisplayRow(row, providerRow.providerKey, familyRow.familyKey)
+            toModelDisplayRow(row, providerKey, familyRow.familyKey)
           ),
           sorting
+        ).map((modelRow) => ({
+          row: modelRow,
+          repositoryChildren: sortLedgerRows(
+            (modelRow.repositoryChildren ?? []).map((repoRow) =>
+              toRepositoryDisplayRow(
+                repoRow,
+                providerKey,
+                familyRow.familyKey,
+                modelRow.model
+              )
+            ),
+            sorting
+          ),
+        }))
+        return { row: familyRow, models }
+      })
+
+      providerNodes.push({ row: providerRow, families })
+    }
+
+    const sortedProviderRows = sortLedgerRows(
+      providerNodes.map((node) => node.row),
+      sorting
+    )
+    const nodeById = new Map(providerNodes.map((n) => [n.row.ledgerId, n]))
+    return sortedProviderRows
+      .map((row) => nodeById.get(row.ledgerId))
+      .filter((node): node is ProviderNode => node !== undefined)
+  }, [modelProviderMap, sorting])
+
+  /**
+   * Expansion-independent aggregation tree for repository view (P05-F03).
+   */
+  const repositoryLedgerTree = useMemo(() => {
+    type ModelNode = {
+      row: LedgerDisplayRow
+    }
+    type FamilyNode = {
+      row: LedgerDisplayRow
+      models: ModelNode[]
+    }
+    type ProviderNode = {
+      row: LedgerDisplayRow
+      directModels?: ModelNode[]
+      families?: FamilyNode[]
+    }
+    type RepositoryNode = {
+      row: LedgerDisplayRow
+      providers: ProviderNode[]
+    }
+
+    const repositoryNodes: RepositoryNode[] = []
+    for (const [repository, entries] of repositoryEntryMap.entries()) {
+      const repositoryRow = aggregateRows(
+        entries.map((entry) => entry.repoRow),
+        {
+          ledgerLevel: 'repository',
+          ledgerId: `repository-root:${repository}`,
+          ledgerLabel: repository,
+          providerKey: 'repository',
+          repositoryKey: repository,
+          childCount: entries.length,
+          exactModelCount: entries.length,
+          isExpandable: entries.length > 0,
+        }
+      )
+
+      const providerMap = new Map<string, RepositoryModelEntry[]>()
+      for (const entry of entries) {
+        const providerEntries = providerMap.get(entry.providerKey) ?? []
+        providerEntries.push(entry)
+        providerMap.set(entry.providerKey, providerEntries)
+      }
+
+      const providers: ProviderNode[] = []
+      for (const [providerKey, providerEntries] of providerMap.entries()) {
+        const providerRow = aggregateRows(
+          providerEntries.map((entry) => entry.repoRow),
+          {
+            ledgerLevel: 'provider',
+            ledgerId: `repository-provider:${repository}:${providerKey}`,
+            ledgerLabel: providerDisplayName(providerKey),
+            providerKey,
+            repositoryKey: repository,
+            childCount: providerEntries.length,
+            exactModelCount: providerEntries.length,
+            isExpandable: providerEntries.length > 0,
+          }
         )
-        for (const modelRow of modelRows) {
-          result.push(modelRow)
-          if (!expandedModels.has(modelRow.ledgerId)) continue
-          result.push(
-            ...sortLedgerRows(
-              (modelRow.repositoryChildren ?? []).map((repoRow) =>
-                toRepositoryDisplayRow(
-                  repoRow,
-                  providerRow.providerKey,
-                  familyRow.familyKey,
-                  modelRow.model
-                )
-              ),
-              sorting
-            )
-          )
+
+        const definitions = familyDefinitionsForProvider(
+          providerKey,
+          providerEntries.map((entry) => entry.sourceRow)
+        )
+
+        if (definitions === undefined) {
+          const models: ModelNode[] = sortLedgerRows(
+            providerEntries.map((entry) =>
+              toRepositoryPerspectiveModelRow(entry)
+            ),
+            sorting
+          ).map((row) => ({ row }))
+          providers.push({ row: providerRow, directModels: models })
+          continue
+        }
+
+        const familyMap = new Map<
+          string,
+          {
+            definition: ModelFamilyDefinition
+            entries: RepositoryModelEntry[]
+          }
+        >()
+        for (const entry of providerEntries) {
+          const definition = entry.family ?? OTHER_FAMILY_DEFINITION
+          const existing = familyMap.get(definition.key) ?? {
+            definition,
+            entries: [],
+          }
+          existing.entries.push(entry)
+          familyMap.set(definition.key, existing)
+        }
+
+        const families: FamilyNode[] = sortLedgerRows(
+          [...familyMap.values()].map(
+            ({ definition, entries: familyEntries }) =>
+              aggregateRows(
+                familyEntries.map((entry) => entry.repoRow),
+                {
+                  ledgerLevel: 'family',
+                  ledgerId: `repository-family:${repository}:${providerKey}:${definition.key}`,
+                  ledgerLabel: definition.label,
+                  providerKey,
+                  familyKey: definition.key,
+                  repositoryKey: repository,
+                  childCount: familyEntries.length,
+                  exactModelCount: familyEntries.length,
+                  isExpandable: familyEntries.length > 0,
+                }
+              )
+          ),
+          sorting
+        ).map((familyRow) => {
+          const exactEntries =
+            familyMap.get(familyRow.familyKey ?? '')?.entries ?? []
+          const models: ModelNode[] = sortLedgerRows(
+            exactEntries.map((entry) =>
+              toRepositoryPerspectiveModelRow(entry, familyRow.familyKey)
+            ),
+            sorting
+          ).map((row) => ({ row }))
+          return { row: familyRow, models }
+        })
+
+        providers.push({ row: providerRow, families })
+      }
+
+      const sortedProviderRows = sortLedgerRows(
+        providers.map((p) => p.row),
+        sorting
+      )
+      const providerById = new Map(providers.map((p) => [p.row.ledgerId, p]))
+      repositoryNodes.push({
+        row: repositoryRow,
+        providers: sortedProviderRows
+          .map((row) => providerById.get(row.ledgerId))
+          .filter((node): node is ProviderNode => node !== undefined),
+      })
+    }
+
+    const sortedRepoRows = sortLedgerRows(
+      repositoryNodes.map((n) => n.row),
+      sorting
+    )
+    const repoById = new Map(repositoryNodes.map((n) => [n.row.ledgerId, n]))
+    return sortedRepoRows
+      .map((row) => repoById.get(row.ledgerId))
+      .filter((node): node is RepositoryNode => node !== undefined)
+  }, [repositoryEntryMap, sorting])
+
+  // Cheap flatten: expansion Sets only control which pre-aggregated nodes are
+  // emitted — no aggregateRows calls here (P05-F03).
+  const displayRows = useMemo(() => {
+    if (ledgerView === 'repository') {
+      const result: LedgerDisplayRow[] = []
+      for (const repositoryNode of repositoryLedgerTree) {
+        result.push(repositoryNode.row)
+        if (!expandedRepositories.has(repositoryNode.row.ledgerId)) continue
+
+        for (const providerNode of repositoryNode.providers) {
+          result.push(providerNode.row)
+          if (!expandedProvidersRepository.has(providerNode.row.ledgerId)) {
+            continue
+          }
+
+          if (providerNode.directModels !== undefined) {
+            result.push(...providerNode.directModels.map((m) => m.row))
+            continue
+          }
+
+          for (const familyNode of providerNode.families ?? []) {
+            result.push(familyNode.row)
+            if (!expandedFamilies.has(familyNode.row.ledgerId)) continue
+            result.push(...familyNode.models.map((m) => m.row))
+          }
+        }
+      }
+      return result
+    }
+
+    const result: LedgerDisplayRow[] = []
+    for (const providerNode of modelLedgerTree) {
+      result.push(providerNode.row)
+      if (!expandedProvidersModel.has(providerNode.row.ledgerId)) continue
+
+      if (providerNode.directModels !== undefined) {
+        for (const modelNode of providerNode.directModels) {
+          result.push(modelNode.row)
+          if (!expandedModels.has(modelNode.row.ledgerId)) continue
+          result.push(...modelNode.repositoryChildren)
+        }
+        continue
+      }
+
+      for (const familyNode of providerNode.families ?? []) {
+        result.push(familyNode.row)
+        if (!expandedFamilies.has(familyNode.row.ledgerId)) continue
+        for (const modelNode of familyNode.models) {
+          result.push(modelNode.row)
+          if (!expandedModels.has(modelNode.row.ledgerId)) continue
+          result.push(...modelNode.repositoryChildren)
         }
       }
     }
-
     return result
   }, [
-    repositoryEntryMap,
-    modelProviderMap,
-    sorting,
+    repositoryLedgerTree,
+    modelLedgerTree,
     ledgerView,
     expandedProvidersModel,
     expandedProvidersRepository,

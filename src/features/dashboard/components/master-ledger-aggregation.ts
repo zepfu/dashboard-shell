@@ -55,8 +55,6 @@ export interface ModelRow {
   error_pct?: number
   cost_usd: number
   cache_pct?: number
-  queue?: number
-  resets?: number
   cache_miss_pct?: number
   cache_miss_usd_cost?: number
   reasoning_reported?: number
@@ -65,15 +63,12 @@ export interface ModelRow {
   tool?: number
   git_commits?: number
   git_pushes?: number
-  inval?: number
   spark?: number[]
   sparkBuckets?: string[]
   toolActivity?: import('./master-ledger-tool-activity').ModelToolActivity
   agentQuality?: AgentQualitySummary
   latencySummary?: ModelLatencySummary
   repositoryChildren?: ModelRow[]
-  /** When true, Toks In/Out used a synthetic 60/40 split (no usage row coverage). */
-  tokensDirectionEstimated?: boolean
 }
 
 export type LedgerLevel = 'provider' | 'family' | 'model' | 'repository'
@@ -111,49 +106,63 @@ function sumSparkIndexAligned(rows: readonly ModelRow[]): number[] | undefined {
   )
 }
 
+/**
+ * Sum sparklines. When any child carries a date-bucket axis, only bucket-aligned
+ * values contribute — bucketless rows must not be index-merged into day slots
+ * (P05-F05). Bucketless-only groups still fall back to index alignment.
+ */
 function sumSpark(rows: readonly ModelRow[]): number[] | undefined {
   const hasBucketAxis = rows.some(
     (row) => (row.sparkBuckets?.length ?? 0) > 0 && (row.spark?.length ?? 0) > 0
   )
   if (hasBucketAxis) {
     const bucketTotals = new Map<string, number>()
-    const bucketlessRows: ModelRow[] = []
     for (const row of rows) {
       const buckets = row.sparkBuckets ?? []
       const values = row.spark ?? []
-      if (buckets.length === 0 && values.length > 0) {
-        bucketlessRows.push(row)
-        continue
-      }
+      // P05-F05: skip bucketless rows rather than index-merging into day slots.
+      if (buckets.length === 0) continue
       for (let i = 0; i < values.length; i++) {
         const bucket = buckets[i]
         if (bucket === undefined) continue
         bucketTotals.set(bucket, (bucketTotals.get(bucket) ?? 0) + values[i])
       }
     }
-    if (bucketTotals.size > 0) {
-      const orderedBuckets = [...bucketTotals.keys()].sort()
-      const bucketAligned = orderedBuckets.map(
-        (bucket) => bucketTotals.get(bucket) ?? 0
-      )
-      const indexAligned = sumSparkIndexAligned(bucketlessRows)
-      if (indexAligned === undefined) return bucketAligned
-      const maxLength = Math.max(bucketAligned.length, indexAligned.length)
-      return Array.from({ length: maxLength }, (_v, index) => {
-        const fromBuckets =
-          index < bucketAligned.length ? bucketAligned[index] : 0
-        const fromIndex =
-          index < indexAligned.length ? (indexAligned[index] ?? 0) : 0
-        return fromBuckets + fromIndex
-      })
-    }
-    return sumSparkIndexAligned(bucketlessRows)
+    if (bucketTotals.size === 0) return undefined
+    const orderedBuckets = [...bucketTotals.keys()].sort()
+    return orderedBuckets.map((bucket) => bucketTotals.get(bucket) ?? 0)
   }
 
   return sumSparkIndexAligned(rows)
 }
 
 export { sumSpark as _sumSparkForTest }
+
+/**
+ * Count-weighted p50/p95 from child latencySummary when every contributing
+ * child has both a percentile and a positive sample count; otherwise fall back
+ * to the conservative max of child rollups (P05-F04).
+ */
+function countWeightedLatencyMs(
+  rows: readonly ModelRow[],
+  pickMs: (summary: ModelLatencySummary) => number | null | undefined,
+  pickCount: (summary: ModelLatencySummary) => number | null | undefined,
+  fallbackField: 'p50_ms' | 'p95_ms'
+): number {
+  let weightedSum = 0
+  let totalCount = 0
+  for (const row of rows) {
+    const summary = row.latencySummary
+    if (summary === undefined) continue
+    const ms = pickMs(summary)
+    const count = pickCount(summary)
+    if (ms == null || count == null || count <= 0) continue
+    weightedSum += ms * count
+    totalCount += count
+  }
+  if (totalCount > 0) return weightedSum / totalCount
+  return Math.max(0, ...rows.map((row) => row[fallbackField]))
+}
 
 // G2: cost_usd and cache_miss_usd_cost are summed as IEEE doubles; rounding at display only.
 export function aggregateRows(
@@ -201,18 +210,43 @@ export function aggregateRows(
     (sum, row) => sum + (row.cache_miss_usd_cost ?? 0),
     0
   )
-  const queueSum = optionalSum((row) => row.queue, true)
-  const resetsSum = optionalSum((row) => row.resets, true)
 
-  // C9: p50_ms / p95_ms use max of child rollups (conservative upper bound, not a true group percentile).
+  // P05-F04: prefer count-weighted latencySummary percentiles when available.
+  const p50_ms = countWeightedLatencyMs(
+    rows,
+    (s) => s.totalServerP50Ms,
+    (s) => s.totalServerCount,
+    'p50_ms'
+  )
+  const p95_ms = countWeightedLatencyMs(
+    rows,
+    (s) => s.totalServerP95Ms,
+    (s) => s.totalServerCount,
+    'p95_ms'
+  )
+
+  const combinedLatency = combineLatencySummaries(
+    rows.map((row) => row.latencySummary)
+  )
+  // Overlay count-weighted server totals so latencySummary stays consistent with
+  // the scalar p50_ms/p95_ms fields (P05-F04).
+  const latencySummary =
+    combinedLatency === undefined
+      ? undefined
+      : {
+          ...combinedLatency,
+          totalServerP50Ms: p50_ms,
+          totalServerP95Ms: p95_ms,
+        }
+
   return {
     model: overrides.ledgerLabel,
     provider: overrides.providerKey,
     tokens_in: rows.reduce((sum, row) => sum + row.tokens_in, 0),
     tokens_out: rows.reduce((sum, row) => sum + row.tokens_out, 0),
     requests,
-    p50_ms: Math.max(0, ...rows.map((row) => row.p50_ms)),
-    p95_ms: Math.max(0, ...rows.map((row) => row.p95_ms)),
+    p50_ms,
+    p95_ms,
     error_pct:
       errorRequestTotal > 0
         ? Math.round((weightedErrorTotal / errorRequestTotal) * 10) / 10
@@ -230,20 +264,15 @@ export function aggregateRows(
     reasoning_reported: optionalSum((row) => row.reasoning_reported, true),
     reasoning_estimated: optionalSum((row) => row.reasoning_estimated, true),
     cache_toks: cacheToks > 0 ? cacheToks : undefined,
-    queue: queueSum,
-    resets: resetsSum,
     tool: optionalSum((row) => row.tool),
     git_commits: optionalSum((row) => row.git_commits),
     git_pushes: optionalSum((row) => row.git_pushes),
-    inval: optionalSum((row) => row.inval),
     spark: sumSpark(rows),
     toolActivity: undefined,
     agentQuality: combineAgentQualitySummaries(
       rows.map((row) => row.agentQuality)
     ),
-    latencySummary: combineLatencySummaries(
-      rows.map((row) => row.latencySummary)
-    ),
+    latencySummary,
     ...overrides,
   }
 }
