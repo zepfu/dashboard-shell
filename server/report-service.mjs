@@ -630,13 +630,24 @@ const DEFAULT_REPORT_PROXY_SHARED_SECRET = 'dashboard-shell-local-proxy-secret'
 const INTERNAL_PROXY_HEADERS = new Set([
   REPORT_PROXY_SECRET_HEADER.toLowerCase(),
 ])
+let upstreamProxySecretStartupWarningEmitted = false
 
 function resolveReportProxySharedSecret() {
   const raw = process.env.SHELL_REPORT_PROXY_SHARED_SECRET
   if (raw != null && String(raw).trim() !== '') {
     return String(raw).trim()
   }
-  return DEFAULT_REPORT_PROXY_SHARED_SECRET
+  return null
+}
+
+function emitUpstreamProxySecretMisconfigurationWarning() {
+  if (upstreamProxySecretStartupWarningEmitted) {
+    return
+  }
+  upstreamProxySecretStartupWarningEmitted = true
+  console.warn(
+    '[dashboard-shell] SHELL_REPORT_PROXY_SHARED_SECRET is not set; upstream API proxy routes are disabled (fail-closed). Do not rely on the hardcoded default secret.'
+  )
 }
 
 function readHeaderValue(headers, headerName) {
@@ -646,8 +657,26 @@ function readHeaderValue(headers, headerName) {
   return Array.isArray(direct) ? direct[0] : direct
 }
 
+function proxySecretsMatch(expected, provided) {
+  const expectedBuf = Buffer.from(String(expected), 'utf8')
+  const providedBuf = Buffer.from(String(provided), 'utf8')
+  if (expectedBuf.length !== providedBuf.length) {
+    return false
+  }
+  return crypto.timingSafeEqual(expectedBuf, providedBuf)
+}
+
 export function evaluateUpstreamProxySecret(headers) {
   const expected = resolveReportProxySharedSecret()
+  if (expected == null) {
+    emitUpstreamProxySecretMisconfigurationWarning()
+    return {
+      ok: false,
+      status: 503,
+      error:
+        'Upstream API proxy is unavailable because SHELL_REPORT_PROXY_SHARED_SECRET is not configured.',
+    }
+  }
   const provided = readHeaderValue(headers, REPORT_PROXY_SECRET_HEADER)
   if (provided == null || String(provided).trim() === '') {
     return {
@@ -656,7 +685,7 @@ export function evaluateUpstreamProxySecret(headers) {
       error: 'Missing dashboard shell proxy secret.',
     }
   }
-  if (String(provided) !== expected) {
+  if (!proxySecretsMatch(expected, String(provided).trim())) {
     return {
       ok: false,
       status: 403,
@@ -2696,17 +2725,8 @@ function appendReportableSessionHistoryWhere(whereParts, alias = 'sh') {
   whereParts.push(sessionHistoryReportablePredicate(alias))
 }
 
-function sessionHistoryFastUsageSignalPredicate(alias = 'sh') {
-  return `(
-    ${sessionHistoryTokenSignalExpression(alias)} > 0
-    OR ${sessionHistoryCostSignalExpression(alias)} > 0
-    OR COALESCE(${alias}.tool_call_count, 0) > 0
-)`
-}
-
-function appendFastUsageSignalWhere(whereParts, alias = 'sh') {
-  whereParts.push(sessionHistoryFastUsageSignalPredicate(alias))
-}
+// Canonical row eligibility for all usage aggregates and token-trend/health surfaces:
+// sessionHistoryReportablePredicate (metadata exclusions + legacy grok side-channel).
 
 const grains = {
   day: `${createdAtEastern}::date`,
@@ -3829,11 +3849,7 @@ function buildFilteredWhere(searchParams, options = {}) {
   if (options.includeDateRange !== false) {
     appendStartTimeDateRangeWhere(whereParts, values, from, to)
   }
-  if (options.fastUsageSignal) {
-    appendFastUsageSignalWhere(whereParts)
-  } else {
-    appendReportableSessionHistoryWhere(whereParts)
-  }
+  appendReportableSessionHistoryWhere(whereParts)
 
   for (const key of Object.keys(filterColumns)) {
     if (excludedFilterKeys.has(key)) continue
@@ -3989,10 +4005,8 @@ function buildTokenTrendFilteredWhere(searchParams) {
   return { from, to, values, whereParts }
 }
 
-function buildSummaryQuery(searchParams) {
-  const { values, whereParts } = buildFilteredWhere(searchParams, {
-    fastUsageSignal: true,
-  })
+export function buildSummaryQuery(searchParams) {
+  const { values, whereParts } = buildFilteredWhere(searchParams)
 
   const sql = `
 SELECT
@@ -4025,15 +4039,13 @@ WHERE ${whereParts.join('\n  AND ')};
   return { sql, values }
 }
 
-function buildTrendQuery(searchParams) {
+export function buildTrendQuery(searchParams) {
   const grain = searchParams.get('grain') ?? 'day'
   if (!grains[grain]) {
     throw new Error(`Unsupported grain: ${grain}`)
   }
 
-  const { values, whereParts } = buildFilteredWhere(searchParams, {
-    fastUsageSignal: true,
-  })
+  const { values, whereParts } = buildFilteredWhere(searchParams)
   const bucketExpression = grains[grain]
 
   const sql = `
@@ -4452,10 +4464,8 @@ ORDER BY
   return { sql, values, metadata: { date, from, to } }
 }
 
-function buildClientUsageQuery(searchParams) {
-  const { values, whereParts } = buildFilteredWhere(searchParams, {
-    fastUsageSignal: true,
-  })
+export function buildClientUsageQuery(searchParams) {
+  const { values, whereParts } = buildFilteredWhere(searchParams)
   values.push(MAX_CLIENT_ROWS)
 
   const sql = `
@@ -4731,10 +4741,8 @@ LIMIT $1;
 // (operator F#11). Now uses the same parameterised from/to pattern as
 // buildClientUsageQuery and buildSummaryQuery, keyed on start_time for
 // consistency with the rest of the providerStatusUsage surface.
-function buildProviderStatusUsageQuery(searchParams) {
-  const { values, whereParts } = buildFilteredWhere(searchParams, {
-    fastUsageSignal: true,
-  })
+export function buildProviderStatusUsageQuery(searchParams) {
+  const { values, whereParts } = buildFilteredWhere(searchParams)
   values.push(MAX_PROVIDER_STATUS_ROWS)
 
   const sql = `
@@ -9708,7 +9716,7 @@ export function buildUsageQuery(searchParams) {
 
   const values = [from, to]
   const whereParts = [...startTimeDateRangeWhere]
-  appendFastUsageSignalWhere(whereParts)
+  appendReportableSessionHistoryWhere(whereParts)
 
   for (const key of Object.keys(filterColumns)) {
     appendMultiValueFilter(searchParams, key, whereParts, values)
