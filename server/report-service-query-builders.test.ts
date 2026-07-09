@@ -1196,10 +1196,14 @@ describe('report-service query builders', () => {
       limit: '50000',
     })
 
-    const reportService = (await import('./report-service.mjs')) as Record<
-      string,
-      ((searchParams: URLSearchParams) => { sql: string }) | undefined
-    >
+    const reportService = (await import('./report-service.mjs')) as {
+      buildSummaryQuery?: (searchParams: URLSearchParams) => { sql: string }
+      buildTrendQuery?: (searchParams: URLSearchParams) => { sql: string }
+      buildClientUsageQuery?: (searchParams: URLSearchParams) => { sql: string }
+      buildProviderStatusUsageQuery?: (searchParams: URLSearchParams) => {
+        sql: string
+      }
+    }
     const aggregateBuilderNames = [
       'buildSummaryQuery',
       'buildTrendQuery',
