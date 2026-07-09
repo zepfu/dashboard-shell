@@ -14,8 +14,12 @@ FROM nginx:1.27-alpine
 
 COPY --from=build /app/dist /usr/share/nginx/html
 COPY nginx.conf.template /etc/nginx/templates/default.conf.template
+# Escape " \ in SHELL_REPORT_PROXY_SHARED_SECRET before envsubst fills the template (P13-F04).
+# Numbered 15- so it runs before the stock 20-envsubst-on-templates.sh hook.
+COPY scripts/15-escape-nginx-proxy-secret.sh /docker-entrypoint.d/15-escape-nginx-proxy-secret.sh
 COPY scripts/container-error-intake.sh /usr/local/bin/container-error-intake.sh
-RUN chmod +x /usr/local/bin/container-error-intake.sh
+RUN chmod +x /usr/local/bin/container-error-intake.sh \
+  /docker-entrypoint.d/15-escape-nginx-proxy-secret.sh
 
 # Runtime boundary note (D1-446):
 # The shell image intentionally runs as root for now.

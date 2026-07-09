@@ -71,3 +71,12 @@ jobs:
             --entrypoint /bin/sh \
             dashboard-shell-ci-shell \
             -c "/docker-entrypoint.sh nginx -t"
+
+      # Prove the nginx template safely quotes secrets containing " and ; (P13-F04).
+      - name: Validate nginx config with special-character secret
+        run: |
+          docker run --rm \
+            -e 'SHELL_REPORT_PROXY_SHARED_SECRET=a"b;c' \
+            --entrypoint /bin/sh \
+            dashboard-shell-ci-shell \
+            -c "/docker-entrypoint.sh nginx -t"
