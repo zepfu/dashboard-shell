@@ -118,6 +118,7 @@ const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}/
  * @returns A short display string suitable for an 8–9 px monospaced label.
  */
 export function formatBucketLabel(rawLabel: string): string {
+  if (rawLabel.startsWith('pad:')) return ''
   if (!ISO_DATE_RE.test(rawLabel)) return rawLabel
 
   // Parse the date portion only to avoid timezone edge cases.

@@ -20,7 +20,6 @@ export {
   formatTipWindow,
   fmtIntervalCompact,
   formatTipVelocity,
-  quotaTypeToPeriodType,
   makeQuotaBarGroup,
   tipModelsFromBreakdownGoogleAggregated,
   tipModelsFromBreakdownSingleLabel,

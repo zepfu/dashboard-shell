@@ -621,35 +621,6 @@ export function formatTimeAgo(roundedDate: Date): string {
   return formatRelativeTimeFromAbsMs(absDiffMs, false)
 }
 
-/**
- * Maps a quota_type string to the QuotaBarGroup periodType used for stacked
- * lane grouping in provider-card.tsx.
- *
- * Wave 40 item #3: returns '5hr' for short/short_special, 'weekly' for weekly,
- * 'special' for special/weekly_special, 'monthly' for monthly.
- */
-export function quotaTypeToPeriodType(
-  quotaType: string
-): QuotaBarGroup['periodType'] {
-  switch (quotaType.toLowerCase()) {
-    case 'short':
-    case 'short_special':
-    case 'wtus':
-      return '5hr'
-    case 'weekly':
-      return 'weekly'
-    case 'weekly_overage_included':
-      return 'weekly_overage_included'
-    case 'special':
-    case 'weekly_special':
-      return 'special'
-    case 'monthly':
-      return 'monthly'
-    default:
-      return 'weekly'
-  }
-}
-
 export function makeQuotaBarGroup(
   label: string,
   row: UsageReportQuotaRow,
