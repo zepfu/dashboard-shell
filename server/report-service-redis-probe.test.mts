@@ -108,3 +108,71 @@ describe('probeRedisHealth', () => {
     expect(result.detail).toBe('ECONNREFUSED')
   })
 })
+
+describe('Wave 1 F07 Redis cache payload without type mapping', () => {
+  test('test_redis_payload_roundtrips_without_type_mapping', async () => {
+    const { __reportCacheInternals } = await import('./report-service.mjs')
+    const {
+      encodeRedisReportCachePayload,
+      decodeRedisReportCachePayload,
+      readRedisCacheEntryFromClient,
+      createRedisCacheClient,
+    } = __reportCacheInternals
+    const { buildReportCacheEntry, buildReportCacheIdentity } =
+      await import('./report-cache-identity.mjs')
+
+    const unmappedClient = createRedisCacheClient(
+      'redis://cache.example:6379',
+      (options: unknown) => ({
+        url: (options as { url?: string }).url,
+        isReady: true,
+        async get() {
+          return null
+        },
+      }),
+      {}
+    )
+    expect(unmappedClient).not.toBeNull()
+    expect(
+      typeof (unmappedClient as { withTypeMapping?: unknown }).withTypeMapping
+    ).toBe('undefined')
+
+    const identity = buildReportCacheIdentity(
+      'redis-roundtrip-test',
+      new URLSearchParams()
+    )
+    const entry = buildReportCacheEntry(
+      { metric: 'roundtrip' },
+      { scope: 'redis-roundtrip-test', cacheTtlMs: 60_000 }
+    )
+    const encoded = await encodeRedisReportCachePayload(entry)
+
+    let storedOnWire: unknown = null
+    const redisWithoutMapping = {
+      isReady: true,
+      async get() {
+        return storedOnWire
+      },
+      async set(_key: string, value: unknown) {
+        storedOnWire = value
+      },
+    }
+
+    await redisWithoutMapping.set(identity.cacheKey, encoded)
+    expect(typeof storedOnWire === 'string').toBe(true)
+
+    const readBack = await readRedisCacheEntryFromClient(
+      identity,
+      redisWithoutMapping
+    )
+    expect(readBack).toMatchObject({
+      status: 'fresh',
+      entry,
+    })
+
+    const legacyBinaryString = encoded.toString('latin1')
+    await expect(
+      decodeRedisReportCachePayload(legacyBinaryString)
+    ).resolves.toEqual(entry)
+  })
+})

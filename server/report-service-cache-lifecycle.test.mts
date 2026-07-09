@@ -308,3 +308,34 @@ describe('Redis report cache binary gzip storage', () => {
     expect(await decodeRedisReportCachePayload(storedValue)).toEqual(entry)
   })
 })
+
+describe('Wave 1 F04 usage-quota-history cache identity', () => {
+  const USAGE_QUOTA_HISTORY_SCOPE = 'usage-quota-history-v2'
+
+  test('test_quota_history_cache_key_ignores_from_to', () => {
+    const historyA = buildReportCacheIdentity(
+      USAGE_QUOTA_HISTORY_SCOPE,
+      new URLSearchParams({ from: '2026-01-01', to: '2026-01-31' })
+    )
+    const historyB = buildReportCacheIdentity(
+      USAGE_QUOTA_HISTORY_SCOPE,
+      new URLSearchParams({ from: '2026-06-01', to: '2026-06-30' })
+    )
+
+    expect(historyA.hash).toBe(historyB.hash)
+    expect(historyA.cacheKey).toBe(historyB.cacheKey)
+    expect(historyA.canonicalParams).toBe('')
+
+    const rangeA = buildReportCacheIdentity(
+      'usage-quota-range-history',
+      new URLSearchParams({ from: '2026-01-01', to: '2026-01-31' })
+    )
+    const rangeB = buildReportCacheIdentity(
+      'usage-quota-range-history',
+      new URLSearchParams({ from: '2026-06-01', to: '2026-06-30' })
+    )
+
+    expect(rangeA.hash).not.toBe(rangeB.hash)
+    expect(rangeA.canonicalParams).not.toBe(rangeB.canonicalParams)
+  })
+})

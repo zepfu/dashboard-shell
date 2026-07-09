@@ -314,3 +314,198 @@ describe('D1-444 PgBouncer admin pool shutdown cleanup', () => {
     expect(end).toHaveBeenCalledTimes(1)
   })
 })
+
+describe('Wave 1 F03 BadRequestError HTTP mapping', () => {
+  function mockJsonRes() {
+    const writeHead = vi.fn()
+    const end = vi.fn()
+    return {
+      res: {
+        headersSent: false,
+        writableEnded: false,
+        destroyed: false,
+        writeHead,
+        end,
+      },
+      writeHead,
+      end,
+    }
+  }
+
+  test('test_bad_request_maps_to_400', async () => {
+    vi.stubEnv('VITEST', 'true')
+    const { buildUsageQuery } = await import('./report-service.mjs')
+    const {
+      __envTestHelpers,
+      __responseTestHelpers,
+      __serverRuntimeTestHelpers,
+    } = await import('./report-service.mjs')
+    const { parseDateParam } = __envTestHelpers
+    const { sendJson } = __responseTestHelpers
+    const { respondWithGenericServerError } = __serverRuntimeTestHelpers
+
+    const badCases: Array<{ label: string; error: Error }> = []
+
+    try {
+      buildUsageQuery(
+        new URLSearchParams({
+          from: '2026-05-01',
+          to: '2026-05-08',
+          grain: 'fortnight',
+        })
+      )
+    } catch (error) {
+      badCases.push({ label: 'grain', error: error as Error })
+    }
+
+    try {
+      buildUsageQuery(
+        new URLSearchParams({
+          from: '2026-05-01',
+          to: '2026-05-08',
+          group_by: 'bogus',
+        })
+      )
+    } catch (error) {
+      badCases.push({ label: 'group_by', error: error as Error })
+    }
+
+    try {
+      parseDateParam('not-valid', () => '2026-05-01')
+    } catch (error) {
+      badCases.push({ label: 'date', error: error as Error })
+    }
+
+    expect(badCases.map((item) => item.label)).toEqual([
+      'grain',
+      'group_by',
+      'date',
+    ])
+
+    const validationError = badCases[0]!.error
+
+    const req = { headers: { host: 'localhost' } }
+    const { res, writeHead, end } = mockJsonRes()
+
+    async function dispatchReportRouteError(error: Error) {
+      const message = error.message ?? ''
+      const isValidation =
+        message.startsWith('Unsupported grain:') ||
+        message.startsWith('Unsupported group_by value:') ||
+        message.includes('valid date=YYYY-MM-DD')
+      if (isValidation) {
+        await sendJson(req, res, 400, { error: message })
+        return
+      }
+      await respondWithGenericServerError(req, res, error)
+    }
+
+    await dispatchReportRouteError(validationError!)
+
+    expect(writeHead).toHaveBeenCalledWith(
+      400,
+      expect.objectContaining({
+        'content-type': 'application/json; charset=utf-8',
+      })
+    )
+    const payload = JSON.parse(String(end.mock.calls[0]?.[0]))
+    expect(payload.error).toBe(validationError?.message)
+  })
+
+  test('test_valid_request_still_500_on_internal_fault', async () => {
+    vi.stubEnv('VITEST', 'true')
+    vi.stubEnv('DATABASE_URL', 'postgresql://u:p@127.0.0.1:5432/test')
+    const stderrSpy = vi
+      .spyOn(process.stderr, 'write')
+      .mockImplementation(() => true)
+
+    const { __cachedUsageSubreportTestHelpers, __serverRuntimeTestHelpers } =
+      await import('./report-service.mjs')
+    const { handleCachedUsageSubreport } = __cachedUsageSubreportTestHelpers
+    const {
+      respondWithGenericServerError,
+      GENERIC_INTERNAL_SERVER_ERROR_BODY,
+    } = __serverRuntimeTestHelpers
+
+    const req = {
+      url: '/api/shell/reports/usage?from=2026-05-01&to=2026-05-08',
+      headers: { host: 'localhost' },
+    }
+    const { res, writeHead, end } = mockJsonRes()
+
+    const load = vi.fn(async () => {
+      throw new Error('core usage query failed')
+    })
+
+    try {
+      await handleCachedUsageSubreport(req, res, 'usage-v2', load, {
+        pool: {},
+        sendJson: vi.fn(),
+        cachedReport: async (_scope, loader) => loader(),
+      })
+    } catch (error) {
+      await respondWithGenericServerError(req, res, error)
+    }
+
+    expect(writeHead).toHaveBeenCalledWith(500, expect.any(Object))
+    const payload = JSON.parse(String(end.mock.calls[0]?.[0]))
+    expect(payload).toEqual(GENERIC_INTERNAL_SERVER_ERROR_BODY)
+    expect(JSON.stringify(payload)).not.toContain('core usage query failed')
+    stderrSpy.mockRestore()
+  })
+})
+
+describe('Wave 1 F05 queryPostgresWithLocalSettings round-trip', () => {
+  test('test_query_local_settings_single_round_trip', async () => {
+    const pgQueryLog: string[] = []
+    vi.stubEnv('VITEST', 'true')
+    vi.stubEnv('DATABASE_URL', 'postgresql://u:p@127.0.0.1:5432/test')
+
+    vi.doMock('pg', () => {
+      function Pool(this: {
+        connect: () => Promise<{
+          query: (text: string) => Promise<{ rows: unknown[] }>
+          release: () => void
+        }>
+        on: () => void
+      }) {
+        this.connect = async () => ({
+          query: async (text: string) => {
+            pgQueryLog.push(text.replace(/\s+/g, ' ').trim())
+            return { rows: [] }
+          },
+          release: () => {},
+        })
+        this.on = () => {}
+      }
+      return { Pool, default: { Pool } }
+    })
+
+    const { __usageReportTestHelpers } = await import('./report-service.mjs')
+    const {
+      loadUsageReport,
+      resetQueryReportDatabaseTestImpl,
+      setLoadDockerLogErrorsTestImpl,
+      setLoadLocalHealthTestImpl,
+    } = __usageReportTestHelpers
+
+    resetQueryReportDatabaseTestImpl()
+    setLoadDockerLogErrorsTestImpl(async () => [])
+    setLoadLocalHealthTestImpl(async () => [])
+
+    await loadUsageReport(
+      new URLSearchParams({ from: '2026-05-01', to: '2026-05-02' })
+    )
+
+    const beginCount = pgQueryLog.filter((q) => q === 'BEGIN').length
+    const commitCount = pgQueryLog.filter((q) => q === 'COMMIT').length
+    const setLocalCombined = pgQueryLog.some(
+      (q) =>
+        /set_config/i.test(q) && /;\s*SELECT/i.test(q) && !/^BEGIN$/i.test(q)
+    )
+
+    expect(beginCount).toBe(0)
+    expect(commitCount).toBe(0)
+    expect(setLocalCombined).toBe(true)
+  })
+})

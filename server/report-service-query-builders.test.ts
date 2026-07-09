@@ -226,6 +226,105 @@ describe('SQL parse-validation (pgsql-parser) (S4-8)', () => {
   })
 })
 
+describe('Wave 1 F01 complex builder parse-validation', () => {
+  test('test_expectParsableSQL_covers_complex_builders', async () => {
+    const params = new URLSearchParams({
+      from: '2026-05-01',
+      to: '2026-05-08',
+      provider: 'anthropic',
+    })
+    const dayDetailParams = new URLSearchParams({
+      from: '2026-05-01',
+      to: '2026-05-08',
+      date: '2026-05-03',
+      provider: 'anthropic',
+    })
+
+    const builders = [
+      buildSessionDiagnosticsQuery(params),
+      buildProviderAliasRoutingQuery(new URLSearchParams()),
+      buildProviderAuthHealthQuery(new URLSearchParams()),
+      buildProviderCreditLifecycleQuery(new URLSearchParams()),
+      buildQuotaVelocityQuery(),
+      buildQuotaHistoryFallbackQuery(new URLSearchParams()),
+      buildTokenTrendDayDetailQuery(dayDetailParams),
+    ]
+
+    for (const query of builders) {
+      await expectParsableSQL(query.sql)
+    }
+  })
+})
+
+describe('Wave 1 F02/F06 query builder contracts', () => {
+  test('test_provider_case_single_source', async () => {
+    const { __envTestHelpers } = await import('./report-service.mjs')
+    const { providerDimensionExpression } = __envTestHelpers
+
+    const canonicalCase = compactWhitespace(
+      providerDimensionExpression('__canonical__.provider', {
+        includeAntigravity: true,
+      })
+    )
+
+    const healthQuery = buildTokenTrendHealthQuery(
+      new URLSearchParams({ from: '2026-05-01', to: '2026-05-08' })
+    )
+    const estimatorQuery = buildQuotaEstimatorUsageBucketQuery(
+      new URLSearchParams({ from: '2026-05-01', to: '2026-05-08' })
+    )
+
+    const antigravityBranch =
+      "WHEN lower(COALESCE(__canonical__.provider, 'unknown')) = 'antigravity' THEN 'antigravity'"
+
+    expect(canonicalCase).toContain(antigravityBranch)
+    expect(compactWhitespace(healthQuery.sql)).toContain(antigravityBranch)
+    expect(compactWhitespace(estimatorQuery.sql)).toContain(antigravityBranch)
+
+    const healthCase = healthQuery.sql.slice(
+      healthQuery.sql.indexOf('CASE'),
+      healthQuery.sql.indexOf('END AS provider')
+    )
+    const estimatorCase = estimatorQuery.sql.slice(
+      estimatorQuery.sql.indexOf('CASE'),
+      estimatorQuery.sql.indexOf('END AS provider')
+    )
+
+    expect(compactWhitespace(healthCase)).toBe(compactWhitespace(estimatorCase))
+  })
+
+  test('test_query_builders_suite_reduced_substring_assertions', async () => {
+    const authQuery = buildProviderAuthHealthQuery(new URLSearchParams())
+    const aliasQuery = buildProviderAliasRoutingQuery(new URLSearchParams())
+    const creditQuery = buildProviderCreditLifecycleQuery(new URLSearchParams())
+
+    await expectParsableSQL(authQuery.sql)
+    await expectParsableSQL(aliasQuery.sql)
+    await expectParsableSQL(creditQuery.sql)
+
+    expect(authQuery.sql).not.toContain('refresh_token')
+    expect(authQuery.sql).not.toContain('access_token')
+    expect(aliasQuery.sql).not.toContain('api_key')
+    expect(creditQuery.sql).not.toContain('raw_auth_json')
+
+    const fs = await import('node:fs')
+    const { fileURLToPath } = await import('node:url')
+    const testFile = fileURLToPath(import.meta.url)
+    const src = fs.readFileSync(testFile, 'utf8')
+    const authDescribe = src.slice(
+      src.indexOf("describe('D1-338 provider auth health contracts'"),
+      src.indexOf(
+        '// ---------------------------------------------------------------------------',
+        src.indexOf("describe('D1-338 provider auth health contracts'")
+      ) + 1
+    )
+    const brittleContains = (
+      authDescribe.match(/expect\(query\.sql\)\.toContain/g) ?? []
+    ).length
+    expect(brittleContains).toBeLessThanOrEqual(3)
+  })
+})
+
 // ---------------------------------------------------------------------------
 // S4-6: buildQuotaEstimatorObservationQuery value assertions
 //
