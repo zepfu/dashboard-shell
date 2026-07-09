@@ -40,7 +40,6 @@ import {
   type UsageReportGrain,
   type UsageReportProviderLatencyHealthRow,
   type UsageReportQuotaRow,
-  type UsageReportSummary,
   type UsageReportQuotaHistoryResponse,
   type UsageReportQuotaRangeHistoryResponse,
 } from './api/usage-report'
@@ -63,12 +62,17 @@ import {
 import type { LowerLaneMode } from './components/token-trend-chart'
 import { useDashboardAlertSummary } from './hooks/use-alerts-from-anomalies'
 import { useAnomalyDetection } from './hooks/use-anomaly-detection'
+import { computePriorReportWindow } from './lib/dashboard-date-range'
 import {
   formatDashboardFreshness,
   formatRecencyValue,
   maxIsoTimestamp,
   selectSessionFreshnessTimestamp,
 } from './lib/freshness'
+import {
+  usageFilterKeyParts,
+  usageFilterParams,
+} from './lib/usage-filter-params'
 import {
   addDaysToDateString,
   computeFleetErrors,
@@ -140,11 +144,7 @@ function buildUsageReportQueryKey(
     from,
     to,
     grain,
-    slicerFilters.providers,
-    slicerFilters.repositories,
-    slicerFilters.clients,
-    slicerFilters.environments,
-    slicerFilters.models,
+    ...usageFilterKeyParts(slicerFilters),
   ]
   if (cacheBust !== undefined) {
     key.push(cacheBust)
@@ -172,11 +172,7 @@ function buildUsageReportQueryFn({
         to,
         grain,
         groupBy: ['provider', 'model', 'repository'],
-        provider: slicerFilters.providers,
-        repository: slicerFilters.repositories,
-        client: slicerFilters.clients,
-        environment: slicerFilters.environments,
-        model: slicerFilters.models,
+        ...usageFilterParams(slicerFilters),
         includeQuotas: false,
         includeQuotaHistory: false,
         includeToolActivity: false,
@@ -523,23 +519,48 @@ export function Dashboard(): ReactElement {
     [summaryReport?.summary, fleetP95Ms, fleetErrors]
   )
 
-  // Wave 35 (wave35-data-flow-audit ⚠-5): receive the prior-period summary from
-  // PhosphorDashboard (which owns the priorReport query) so we can compute signed
-  // % deltas for the KPI strip without duplicating the query in index.tsx.
-  const [priorSummary, setPriorSummary] = useState<
-    UsageReportSummary | undefined
-  >(undefined)
-  const handlePriorSummaryReady = useCallback(
-    (summary: UsageReportSummary | undefined): void => {
-      setPriorSummary(summary)
-    },
-    []
+  // P04-F03: lightweight prior-summary query fires at ALL viewports so the four
+  // summary KPI deltas (cost/requests/token_in/token_out) render below 4K.
+  // p95/errors stay gated on showComparison via PhosphorDashboard's full prior
+  // report + onPriorHealthReady (health rows not present in UsageReportSummary).
+  const { priorFrom, priorTo } = useMemo(
+    () => computePriorReportWindow(from, to),
+    [from, to]
   )
+  const { data: priorSummaryReport } = useQuery({
+    queryKey: [
+      'usage-report-prior-summary',
+      priorFrom,
+      priorTo,
+      grain,
+      ...usageFilterKeyParts(slicerFilters),
+    ],
+    queryFn: ({ signal }) =>
+      fetchUsageReport(
+        {
+          from: priorFrom,
+          to: priorTo,
+          grain,
+          groupBy: ['provider', 'model', 'repository'],
+          ...usageFilterParams(slicerFilters),
+          includeQuotas: false,
+          includeQuotaHistory: false,
+          includeToolActivity: false,
+        },
+        signal
+      ),
+    enabled: !summaryLoading && summaryReport !== undefined,
+    staleTime: LIVE_DASHBOARD_HEAVY_REFETCH_INTERVAL_MS,
+    refetchInterval: false,
+    refetchIntervalInBackground: false,
+    gcTime: LIVE_DASHBOARD_HEAVY_REPORT_GC_TIME_MS,
+  })
+  const priorSummary = priorSummaryReport?.summary
 
   // Wave 37 SF-4: receive prior-window fleet P95 and fleet errors from
-  // PhosphorDashboard so all 6 KPI tiles can show a delta arrow.
+  // PhosphorDashboard so p95/errors KPI tiles can show a delta arrow at ≥3840px.
   // `p95_ms` and `errors` are derived from health rows (not present in
-  // UsageReportSummary), so they are passed via a dedicated callback.
+  // UsageReportSummary), so they remain gated on showComparison.
   const [priorHealth, setPriorHealth] = useState<
     { priorP95: number; priorErrors: number } | undefined
   >(undefined)
@@ -550,21 +571,12 @@ export function Dashboard(): ReactElement {
     []
   )
 
-  // W38-3: Viewport gating note — kpiDeltas only populates when priorSummary is
-  // defined, which only happens at ≥3840px viewports. The `showComparison` flag
-  // (derived from a matchMedia for min-width: 3840px) gates the priorReport query
-  // inside PhosphorDashboard; at narrower viewports the query is disabled, so
-  // onPriorSummaryReady never fires and priorSummary stays undefined. As a result
-  // all 6 delta arrows always render "—" at 2K viewports. This is intentional —
-  // the ComparisonPanel that consumes prior data is only mounted at ≥3840px, so
-  // there is no need to pay for the prior-period API call at smaller viewports.
-  //
   // Compute signed-fractional deltas for each KPI key (format: 0.124 = +12.4%).
   // Uses computeDeltaPct (returns signed %, e.g. 12.4) divided by 100 so the
   // KpiStrip's renderDelta (which multiplies by 100) displays the correct value.
-  // Returns undefined for a key when prior data is unavailable or prior is zero.
-  // Wave 37 SF-4: p95_ms and errors deltas now wired via priorHealth from
-  // PhosphorDashboard's onPriorHealthReady callback.
+  // Summary deltas (cost/requests/token_in/token_out) come from the lightweight
+  // prior-summary query above (all viewports). p95/errors only when
+  // showComparison enables PhosphorDashboard's full prior report.
   const kpiDeltas = useMemo((): Partial<
     Record<keyof KpiSummaryShape, number>
   > => {
@@ -577,7 +589,7 @@ export function Dashboard(): ReactElement {
       token_in: computeDeltaPct(kpiSummary.token_in, priorSummary.token_in),
       token_out: computeDeltaPct(kpiSummary.token_out, priorSummary.token_out),
       // p95_ms and errors: derived from prior health rows (not in UsageReportSummary).
-      // Available only when showComparison is true (priorReport query fires at ≥3840px).
+      // Available only when showComparison is true (full priorReport at ≥3840px).
       p95_ms:
         priorHealth !== undefined && priorHealth.priorP95 !== 0
           ? computeDeltaPct(kpiSummary.p95_ms, priorHealth.priorP95)
@@ -898,9 +910,8 @@ export function Dashboard(): ReactElement {
           }}
         >
           {/* KPI strip — dominant header element */}
-          {/* Wave 35 (⚠-5 R-B): deltas wired from priorReport.summary via
-              onPriorSummaryReady callback. Signed-fractional format (0.124 = +12.4%).
-              Wave 35 (S1): className='kpi-strip' added for probe/test selector parity. */}
+          {/* P04-F03: summary deltas from index prior-summary query (all viewports);
+              p95/errors from onPriorHealthReady when showComparison. */}
           <KpiStrip
             summary={kpiSummary}
             loading={summaryLoading}
@@ -1061,11 +1072,12 @@ export function Dashboard(): ReactElement {
           {/* Main dashboard content */}
           {/* 15-C.4: searchTerm passed for client-side row filtering */}
           {/* 15-D.5: filters + onOptionsReady wired for slicer */}
-          {/* Wave 35: onPriorSummaryReady wired to receive prior-period summary for KPI deltas */}
+          {/* P04-F03: summary KPI deltas come from index prior-summary query. */}
           {/* Wave 36 Fix 1: report + reportLoading hoisted from index.tsx query (dedup). */}
           {/* D1-226: keep PhosphorDashboard mounted during cold load so STATUS tabs
               and Diagnostics remain reachable while section bodies skeletonize. */}
-          {/* Wave 36 Fix 4: showComparison gates priorReport query to ≥3840px viewports. */}
+          {/* Wave 36 Fix 4 / P04-F03: showComparison gates full priorReport
+              (ComparisonPanel + p95/errors health) to ≥3840px viewports. */}
           <PhosphorDashboard
             from={from}
             to={to}
@@ -1073,7 +1085,6 @@ export function Dashboard(): ReactElement {
             searchTerm={searchTerm}
             filters={slicerFilters}
             onOptionsReady={handleSlicerOptionsReady}
-            onPriorSummaryReady={handlePriorSummaryReady}
             onPriorHealthReady={handlePriorHealthReady}
             report={summaryReport}
             reportLoading={summaryLoading}

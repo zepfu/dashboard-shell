@@ -1932,8 +1932,14 @@ describe('Dashboard — Wave 3 core orchestration', () => {
 
       await waitFor(
         () => {
-          expect(screen.getByText(/↑ 10\.0%/)).toBeInTheDocument()
-          expect(screen.getByText(/↑ 20\.0%/)).toBeInTheDocument()
+          // Multiple summary tiles can share the same % (cost/token_in/token_out
+          // are all +10% in this fixture), so use getAllByText not getByText.
+          expect(screen.getAllByText(/↑ 10\.0%/).length).toBeGreaterThanOrEqual(
+            1
+          )
+          expect(screen.getAllByText(/↑ 20\.0%/).length).toBeGreaterThanOrEqual(
+            1
+          )
         },
         { timeout: 10_000 }
       )

@@ -48,10 +48,10 @@
   }
 }
 
-/* Health cards have uneven heights because active quota lanes vary by provider.
-   Use column stacks here so short cards can pack under earlier cards instead of
-   waiting for the tallest card in a CSS Grid row. */
-.provider-health-summary-masonry {
+/* Health cards use multi-column stacks with round-robin striping. Column
+   count is driven by --provider-health-columns (set from
+   resolveProviderHealthColumnCount in phosphor-dashboard.tsx). */
+.provider-health-summary-columns {
   display: grid;
   grid-template-columns: repeat(
     var(--provider-health-columns, 2),
@@ -67,9 +67,6 @@
   flex-direction: column;
   gap: 4px;
 }
-
-/* Masonry column count is driven by --provider-health-columns on the grid
-   (set from resolveProviderHealthColumnCount in phosphor-dashboard.tsx). */
 
 /* ── Comparison section ─────────────────────────────────────────────────── */
 
