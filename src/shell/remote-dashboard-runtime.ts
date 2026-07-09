@@ -1,4 +1,3 @@
-import { isValidElementType } from 'react-is'
 import {
   normalizeRemoteRoutePath,
   type RemoteDashboardRegistryEntry,
@@ -39,7 +38,12 @@ export function assertProjectModule(
       'Module default does not satisfy ProjectModule contract: missing routes'
     )
   }
-  if (!isValidElementType(candidate.icon)) {
+  const icon = (candidate as { icon?: unknown }).icon
+  const iconOk =
+    icon != null &&
+    (typeof icon === 'function' ||
+      (typeof icon === 'object' && '$$typeof' in (icon as object)))
+  if (!iconOk) {
     throw new RemoteModuleContractError(
       'Module default does not satisfy ProjectModule contract: missing icon'
     )
