@@ -82,6 +82,21 @@ function clampPage(raw: unknown, defaultPage: number): number {
   return rounded >= 1 ? rounded : defaultPage
 }
 
+/**
+ * URL page param behavior:
+ * - Omit `page=1` only when it matches the globally-normalized first page.
+ * - With defaultPage > 1, writing `1` is explicit so page 2 and others stay reachable.
+ */
+function pageToSearchParam(
+  page: number,
+  defaultPage: number
+): number | undefined {
+  if (page <= 1) {
+    return defaultPage <= 1 ? undefined : 1
+  }
+  return page
+}
+
 function columnFiltersFromSearch(
   search: SearchRecord,
   columnFiltersCfg: UseTableUrlStateParams['columnFilters']
@@ -146,7 +161,7 @@ export function useTableUrlState(
     navigate({
       search: (prev) => ({
         ...(prev as SearchRecord),
-        [pageKey]: nextPage <= defaultPage ? undefined : nextPage,
+        [pageKey]: pageToSearchParam(nextPage, defaultPage),
         [pageSizeKey]:
           nextPageSize === defaultPageSize ? undefined : nextPageSize,
       }),
@@ -170,7 +185,7 @@ export function useTableUrlState(
           navigate({
             search: (prev) => ({
               ...(prev as SearchRecord),
-              [pageKey]: undefined,
+              [pageKey]: pageToSearchParam(1, defaultPage),
               [globalFilterKey]: value ? value : undefined,
             }),
           })
@@ -202,7 +217,7 @@ export function useTableUrlState(
     navigate({
       search: (prev) => ({
         ...(prev as SearchRecord),
-        [pageKey]: undefined,
+        [pageKey]: pageToSearchParam(1, defaultPage),
         ...patch,
       }),
     })
@@ -218,7 +233,10 @@ export function useTableUrlState(
         replace: true,
         search: (prev) => ({
           ...(prev as SearchRecord),
-          [pageKey]: opts.resetTo === 'last' ? pageCount : undefined,
+          [pageKey]:
+            opts.resetTo === 'last'
+              ? pageCount
+              : pageToSearchParam(1, defaultPage),
         }),
       })
     }
