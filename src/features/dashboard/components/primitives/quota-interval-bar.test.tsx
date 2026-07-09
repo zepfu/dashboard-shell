@@ -539,7 +539,9 @@ test('test_over_quota_tick_exact_contract', () => {
   expect(tick).not.toBeNull()
 
   expect(tick!.style.left).toBe('100%')
-  expect(tick!.style.right).toBe('0')
+  // Source sets right: 0 (number). jsdom CSSStyleDeclaration serializes
+  // unitless zero lengths as "0px"; accept both forms of the contract.
+  expect(['0', '0px']).toContain(tick!.style.right)
   expect(tick!.style.left).not.toBe('calc(100% - 2px)')
 })
 

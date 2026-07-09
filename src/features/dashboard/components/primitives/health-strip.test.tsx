@@ -18,7 +18,7 @@
  * remain for backward compat.
  */
 import { fireEvent, render } from '@testing-library/react'
-import { expect, test, vi } from 'vitest'
+import { expect, test } from 'vitest'
 import {
   BUCKET_MS,
   HealthStrip,
@@ -186,8 +186,10 @@ test('test_health_color_mapping_semantic_not_rgba_mirror', () => {
   }
 
   // One representative RGBA snapshot (green @ 0.5 intensity).
+  // jsdom CSSStyleDeclaration serializes with spaces after commas; pure helper
+  // matches that form so element.style.background equals the helper output.
   expect(resolveHealthCategoryStyle('green', 0.5).background).toBe(
-    'rgba(16,185,129,0.7)'
+    'rgba(16, 185, 129, 0.7)'
   )
 })
 
@@ -1138,21 +1140,12 @@ test('test_health_strip_event_count_sums_occurrences', () => {
 // ---------------------------------------------------------------------------
 
 test('test_health_strip_single_now_binding', () => {
-  const gridNow = new Date('2026-05-20T12:00:00.000Z')
-  const driftedNow = new Date(gridNow.getTime() + BUCKET_MS)
-  const bucketStart = new Date(gridNow.getTime() - BUCKET_MS).toISOString()
-
-  const RealDate = globalThis.Date
-  let unmockedDateCall = 0
-  const dateSpy = vi.spyOn(globalThis, 'Date').mockImplementation(((
-    ...args: [] | [string | number | Date]
-  ) => {
-    if (args.length === 0) {
-      unmockedDateCall += 1
-      return unmockedDateCall === 1 ? gridNow : driftedNow
-    }
-    return new RealDate(...(args as [string | number | Date]))
-  }) as unknown as typeof Date)
+  const originalDate = globalThis.Date
+  const gridNow = new originalDate('2026-05-20T12:00:00.000Z')
+  const driftedNow = new originalDate(gridNow.getTime() + BUCKET_MS)
+  const bucketStart = new originalDate(
+    gridNow.getTime() - BUCKET_MS
+  ).toISOString()
 
   const cells: CellDef[] = Array.from({ length: TOTAL_CELLS }, () => ({
     color: 'var(--card-2)',
@@ -1172,8 +1165,9 @@ test('test_health_strip_single_now_binding', () => {
     },
   }
 
+  // Explicit now: grid indexes the newest bucket under gridNow (no Date mock).
   const { container: gridContainer } = render(
-    <HealthStrip cells={cells} orientation='horizontal' />
+    <HealthStrip cells={cells} orientation='horizontal' now={gridNow} />
   )
   const gridCells = gridContainer.querySelectorAll('.health-strip-cell')
   const lastGridBg =
@@ -1181,15 +1175,36 @@ test('test_health_strip_single_now_binding', () => {
     (gridCells[TOTAL_CELLS - 1] as HTMLElement).style.backgroundColor
   expect(lastGridBg).toMatch(/rgba?\(16,\s*185,\s*129/)
 
-  const { container: verticalContainer } = render(
-    <HealthStrip cells={cells} orientation='vertical' />
-  )
-  openHealthStripTooltip(verticalContainer)
+  // Vertical path omits `now`. Replace Date (not vi.spyOn mockImplementation)
+  // so `new Date()` stays constructible. First no-arg call → gridNow (body
+  // binding); subsequent → driftedNow (would be used by a second tooltip clock).
+  // Single-binding fix keeps tooltip on the first instant (−0h 5m, not −0h 10m).
+  let unmockedDateCall = 0
+  class MockDate extends originalDate {
+    constructor(...args: unknown[]) {
+      if (args.length === 0) {
+        unmockedDateCall += 1
+        const fixed = unmockedDateCall === 1 ? gridNow : driftedNow
+        return new originalDate(fixed.getTime()) as Date
+      }
+      return new originalDate(
+        ...(args as ConstructorParameters<typeof originalDate>)
+      ) as Date
+    }
+  }
+  globalThis.Date = MockDate as unknown as DateConstructor
 
-  const head = document.body.querySelector('.v9-tip-head')
-  expect(head).not.toBeNull()
-  expect(head?.textContent).toMatch(/−0h 5m/)
-  expect(head?.textContent).not.toMatch(/−0h 10m/)
+  try {
+    const { container: verticalContainer } = render(
+      <HealthStrip cells={cells} orientation='vertical' />
+    )
+    openHealthStripTooltip(verticalContainer)
 
-  dateSpy.mockRestore()
+    const head = document.body.querySelector('.v9-tip-head')
+    expect(head).not.toBeNull()
+    expect(head?.textContent).toMatch(/−0h 5m/)
+    expect(head?.textContent).not.toMatch(/−0h 10m/)
+  } finally {
+    globalThis.Date = originalDate
+  }
 })
