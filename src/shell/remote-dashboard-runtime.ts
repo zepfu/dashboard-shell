@@ -38,6 +38,21 @@ export function assertProjectModule(
       'Module default does not satisfy ProjectModule contract: missing routes'
     )
   }
+  if (typeof candidate.icon !== 'function') {
+    throw new RemoteModuleContractError(
+      'Module default does not satisfy ProjectModule contract: missing icon'
+    )
+  }
+  if (typeof candidate.name !== 'string') {
+    throw new RemoteModuleContractError(
+      'Module default does not satisfy ProjectModule contract: missing name'
+    )
+  }
+  if (!Array.isArray(candidate.navItems)) {
+    throw new RemoteModuleContractError(
+      'Module default does not satisfy ProjectModule contract: missing navItems'
+    )
+  }
 }
 
 export function createRetryableImporter<T>(importFn: () => Promise<T>): {

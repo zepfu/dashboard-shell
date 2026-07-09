@@ -9,7 +9,6 @@ export type RemoteRouteComponent =
 export interface RemoteRouteConfig {
   path: string
   component: RemoteRouteComponent
-  requiresAuth?: boolean
 }
 
 export interface RemoteNavItem {
@@ -17,12 +16,6 @@ export interface RemoteNavItem {
   path: string
   icon: ComponentType<{ className?: string }>
   children?: RemoteNavItem[]
-}
-
-export interface RemoteExtensionConfig {
-  slot: string
-  component: ComponentType<Record<string, unknown>>
-  priority?: number
 }
 
 export interface ProjectModule {
@@ -33,7 +26,6 @@ export interface ProjectModule {
   basePath: string
   routes: RemoteRouteConfig[]
   navItems: RemoteNavItem[]
-  extensions?: RemoteExtensionConfig[]
   apiBase?: string
   accentColor?: string
 }
