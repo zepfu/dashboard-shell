@@ -797,7 +797,17 @@ describe('Dashboard — TCG-2: cold-load render path', () => {
     const intervalHandlers: Array<() => void> = []
     server.use(
       http.get('/api/shell/reports/usage', ({ request }) => {
-        usageUrls.push(request.url)
+        // Wave 3 always-on prior-summary also hits /usage; keep only the
+        // current-window request so last URL is the owned date range under test.
+        const parsed = new URL(request.url)
+        if (
+          !isPriorUsageReportRequest(
+            parsed.searchParams.get('from'),
+            parsed.searchParams.get('to')
+          )
+        ) {
+          usageUrls.push(request.url)
+        }
         return HttpResponse.json(MOCK_REPORT)
       })
     )
