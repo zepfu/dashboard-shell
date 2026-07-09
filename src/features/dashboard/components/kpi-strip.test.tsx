@@ -258,7 +258,9 @@ test('test_kpi_microbar_per_tile_normalized_all_keys', () => {
     summary.requests,
     undefined
   )
-  expect(requestsFill).toBeLessThan(100)
+  // Per-tile scale: a non-zero requests tile fills fully against its own key
+  // (not collapsed to the share-of-max ~1% floor when tokens dominate).
+  expect(requestsFill).toBe(100)
   expect(requestsFill).toBeGreaterThan(1)
 
   const { container } = render(<KpiStrip summary={summary} />)

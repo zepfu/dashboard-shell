@@ -115,8 +115,6 @@ export function deltaColor(
   if (delta === null || delta === 0) return 'var(--fg-muted)'
   if (delta > 0) {
     if (column === 'tokens') return 'var(--fg)'
-    // Fractional % deltas (typical token share) stay neutral; whole % stays hot for cost/err/p95.
-    if (column === 'cost' && Math.abs(delta % 1) > 1e-9) return 'var(--fg)'
     return 'var(--accent-hot)'
   }
   return 'var(--accent-teal)'

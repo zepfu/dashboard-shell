@@ -559,11 +559,11 @@ test('test_comparison_sparkline_color_per_provider', () => {
 
 /**
  * G-1: Δ Tok increases should not use the same "hot" polarity as cost/errors unless
- * product explicitly treats token growth as bad. RED until per-column polarity lands.
+ * product explicitly treats token growth as bad. Pass column='tokens' (production does).
  */
 test('D1-451_G1_delta_tok_increase_uses_neutral_or_non_hot_color', () => {
   const deltaTokUp = 12.5
-  expect(deltaColor(deltaTokUp)).not.toBe('var(--accent-hot)')
+  expect(deltaColor(deltaTokUp, 'tokens')).not.toBe('var(--accent-hot)')
 })
 
 /**

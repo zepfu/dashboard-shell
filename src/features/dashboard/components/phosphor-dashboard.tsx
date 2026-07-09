@@ -76,7 +76,7 @@ import {
   buildCurrentStats,
   ComparisonPanel,
   type ProviderCurrentStats,
-} from './comparison-panel'
+} from './comparison-panel.index'
 import type { LedgerView } from './master-ledger-aggregation'
 import { MasterLedgerTable } from './master-ledger-table'
 import {

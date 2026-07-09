@@ -9,26 +9,18 @@ export interface KpiSummary {
 
 export type KpiKey = keyof KpiSummary
 
-/** Max raw value across KPI tiles for share-of-max microbar when no explicit max passed. */
-function kpiShareOfMaxDenominator(summary: KpiSummary): number {
-  return Math.max(
-    summary.token_in,
-    summary.token_out,
-    summary.cost_usd,
-    summary.requests,
-    summary.errors,
-    summary.p95_ms ?? 0,
-    1
-  )
-}
-
-/** Per-tile scale for microbar fill (avoids token counts dominating other tiles). */
+/**
+ * Per-tile scale for microbar fill.
+ *
+ * Token tiles share a denom so Tokens In/Out stay proportional to each other
+ * (C-3). Other tiles scale against their own value so cost/requests/p95 are not
+ * collapsed by million-scale token counts (P07-F02).
+ */
 export function microbarScale(key: KpiKey, summary: KpiSummary): number {
   switch (key) {
     case 'token_in':
-      return Math.max(summary.token_in, 1)
     case 'token_out':
-      return Math.max(summary.token_out, 1)
+      return Math.max(summary.token_in, summary.token_out, 1)
     case 'cost_usd':
       return Math.max(summary.cost_usd, 0.01)
     case 'requests':
@@ -43,20 +35,17 @@ export function microbarScale(key: KpiKey, summary: KpiSummary): number {
 }
 
 export function kpiMicrobarFillPct(
-  _key: KpiKey,
+  key: KpiKey,
   summary: KpiSummary,
   rawValue: number,
-  priorFraction: number | undefined,
-  maxRawAcrossTiles?: number
+  priorFraction: number | undefined
 ): number {
   if (priorFraction !== undefined) {
     const pctPoints = Math.abs(priorFraction) * 100
     return Math.min(100, Math.max(0, Math.round((pctPoints / 5) * 100) / 100))
   }
-  const denominator =
-    maxRawAcrossTiles !== undefined && maxRawAcrossTiles > 0
-      ? maxRawAcrossTiles
-      : kpiShareOfMaxDenominator(summary)
+
+  const denominator = microbarScale(key, summary)
   const shareMax = rawValue / denominator
   const pct = Math.round(shareMax * 100)
   if (pct === 0 && rawValue > 0) {
