@@ -328,6 +328,31 @@ describe('assertProjectModule (S6-2)', () => {
     expect((caughtError as Error).name).toBe('RemoteModuleContractError')
   })
 
+  test('test_assert_project_module_rejects_missing_icon', () => {
+    const malformed = {
+      id: 'test-module',
+      name: 'Test Module',
+      description: 'Test',
+      basePath: '/test',
+      routes: [{ path: '/', component: () => null }],
+    }
+
+    let caughtError: unknown
+    try {
+      assertProjectModule(malformed)
+    } catch (err) {
+      caughtError = err
+    }
+
+    expect(caughtError).toBeDefined()
+    expect(caughtError).toBeInstanceOf(Error)
+    expect((caughtError as Error).name).toBe('RemoteModuleContractError')
+    expect((caughtError as Error).message).toMatch(
+      /contract|icon|name|navItems/i
+    )
+    expect(caughtError).not.toBeInstanceOf(TypeError)
+  })
+
   test('error message describes the violation', () => {
     let caughtError: unknown
     try {
