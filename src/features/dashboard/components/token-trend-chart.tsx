@@ -1028,8 +1028,8 @@ export function buildTrendSignalRows(input: BuildTrendSignalRowsInput): {
   const metricKeys = input.selectedMetrics
   const selectedMetrics: readonly TrendMetricDefinition[] =
     typeof metricKeys[0] === 'string'
-      ? HEALTH_TREND_METRICS.filter((m) =>
-          (metricKeys as readonly string[]).includes(m.key)
+      ? (mode === 'score' ? SCORE_TREND_METRICS : HEALTH_TREND_METRICS).filter(
+          (m) => (metricKeys as readonly string[]).includes(m.key)
         )
       : (metricKeys as readonly TrendMetricDefinition[])
 

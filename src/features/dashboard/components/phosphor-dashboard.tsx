@@ -287,7 +287,10 @@ const ProviderHealthMasonry = memo(function ProviderHealthMasonry({
   columnClassName: string
 }): ReactElement {
   return (
-    <div className={`provider-health-summary ${masonryClassName}`}>
+    <div
+      className={`provider-health-summary ${masonryClassName}`}
+      style={{ ['--provider-health-columns' as string]: columnCount }}
+    >
       {columns.map((cards, columnIndex) => (
         <div
           key={`provider-health-column-${columnIndex.toString()}`}

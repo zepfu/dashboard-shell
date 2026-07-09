@@ -96,9 +96,7 @@ export function formatDeltaPctWithPrior(
     Number.isFinite(current) &&
     current > 0
   ) {
-    const inferredColumn =
-      column === 'cost' && current >= 15 && current <= 60_000 ? 'p95' : column
-    if (inferredColumn === 'p95') {
+    if (column === 'p95') {
       return formatLatencyDeltaFromZero(current)
     }
     return 'new'
