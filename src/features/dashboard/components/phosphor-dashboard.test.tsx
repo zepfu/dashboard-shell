@@ -382,7 +382,7 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
     }
   })
 
-  test('test_status_health_deprecated_google_and_antigravity_omit_health_cards', async () => {
+  test('test_status_health_deprecated_provider_google_no_quota_ui', async () => {
     const makeGoogleQuotaRow = (): UsageReportQuotaRow => ({
       provider: 'google',
       model: 'gemini-2.5-flash-lite',
@@ -879,7 +879,7 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
     expect(aegis.getByText('unconfigured')).toBeInTheDocument()
   })
 
-  test('test_status_quota_tab_deprecated_display_no_provider_buckets', async () => {
+  test('test_status_quota_tab_deprecated_provider_no_quota_ui', async () => {
     const quotaHistoryRow = (
       overrides: Partial<UsageReportQuotaHistoryRow>
     ): UsageReportQuotaHistoryRow => ({
@@ -2394,6 +2394,51 @@ describe('Provider health cell classification', () => {
 // ---------------------------------------------------------------------------
 
 describe('PhosphorDashboard — TCG-3: prior-report query skipped when showComparison=false', () => {
+  test('test_no_duplicate_usage_fetch_when_parent_manages', async () => {
+    let usageCallCount = 0
+    server.use(
+      http.get('/api/shell/reports/usage', () => {
+        usageCallCount += 1
+        return HttpResponse.json(MOCK_REPORT)
+      })
+    )
+    server.use(
+      http.get('/api/shell/reports/quotas', () =>
+        HttpResponse.json({
+          metadata: {
+            generatedAt: '2026-05-19T00:00:00.000Z',
+            latestRecordAt: null,
+            latestRecordAgeMinutes: null,
+            latestRecordStale: false,
+            staleRecordThresholdMinutes: 60,
+          },
+          quotas: [],
+        })
+      )
+    )
+
+    await act(async () => {
+      render(
+        <Wrapper>
+          <PhosphorDashboard
+            from='2026-04-19'
+            to='2026-05-19'
+            report={undefined}
+            reportLoading={false}
+            reportFetching={false}
+            showComparison={false}
+          />
+        </Wrapper>
+      )
+    })
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50))
+    })
+
+    expect(usageCallCount).toBe(0)
+  })
+
   test('test_parent_managed_loading_without_report_does_not_duplicate_usage_query', async () => {
     let usageCallCount = 0
     server.use(
@@ -2529,6 +2574,99 @@ describe('PhosphorDashboard — TCG-3: prior-report query skipped when showCompa
 // ---------------------------------------------------------------------------
 
 describe('S1-T1 — prior window query uses computed prior range', () => {
+  /**
+   * P04-F06 / F15 — independent DST oracle (must stay RED until periodDays /
+   * priorFrom stop using raw `Date` + `86_400_000` and use the string-based
+   * Eastern-day helpers instead).
+   *
+   * Hand-computed US DST spring-forward span (clocks jump 2025-03-09):
+   *   current half-open window 2025-03-08 → 2025-03-12 = 4 Eastern days
+   *   prior window of equal length         2025-03-04 → 2025-03-08
+   *
+   * Asserts via the pure helper the engineer must extract/export; the MSW
+   * integration below then pins the same literals on the live query.
+   */
+  test('test_prior_window_dst_crossing_offbyone', async () => {
+    const DST_CURRENT_FROM = '2025-03-08'
+    const DST_CURRENT_TO = '2025-03-12'
+    const DST_PRIOR_TO = '2025-03-08'
+    const DST_PRIOR_FROM_LITERAL = '2025-03-04'
+
+    // Pure helper oracle — fails to resolve until engineer exports it and
+    // implements it with addDaysToDateString (not raw Date ms math).
+    const { computePriorReportWindow } =
+      await import('../lib/dashboard-date-range')
+    expect(typeof computePriorReportWindow).toBe('function')
+    expect(computePriorReportWindow(DST_CURRENT_FROM, DST_CURRENT_TO)).toEqual({
+      periodDays: 4,
+      priorFrom: DST_PRIOR_FROM_LITERAL,
+      priorTo: DST_PRIOR_TO,
+    })
+
+    // Fall-back DST span (US fall-back 2025-11-02) — same independent literals.
+    expect(computePriorReportWindow('2025-11-01', '2025-11-05')).toEqual({
+      periodDays: 4,
+      priorFrom: '2025-10-28',
+      priorTo: '2025-11-01',
+    })
+
+    let priorCallCount = 0
+    let capturedPriorFrom: string | null = null
+    let capturedPriorTo: string | null = null
+
+    server.use(
+      http.get('/api/shell/reports/usage', ({ request }) => {
+        const url = new URL(request.url)
+        const from = url.searchParams.get('from')
+        const to = url.searchParams.get('to')
+        if (from === DST_CURRENT_FROM && to === DST_CURRENT_TO) {
+          return HttpResponse.json(MOCK_REPORT)
+        }
+        priorCallCount += 1
+        capturedPriorFrom = from
+        capturedPriorTo = to
+        return HttpResponse.json(MOCK_REPORT)
+      })
+    )
+
+    server.use(
+      http.get('/api/shell/reports/quotas', () =>
+        HttpResponse.json({
+          metadata: {
+            generatedAt: '2026-05-19T00:00:00.000Z',
+            latestRecordAt: null,
+            latestRecordAgeMinutes: null,
+            latestRecordStale: false,
+            staleRecordThresholdMinutes: 60,
+          },
+          quotas: [],
+        })
+      )
+    )
+
+    await act(async () => {
+      render(
+        <Wrapper>
+          <PhosphorDashboard
+            from={DST_CURRENT_FROM}
+            to={DST_CURRENT_TO}
+            showComparison={true}
+          />
+        </Wrapper>
+      )
+    })
+
+    await waitFor(
+      () => {
+        expect(priorCallCount).toBe(1)
+      },
+      { timeout: 3000 }
+    )
+
+    expect(capturedPriorTo).toBe(DST_PRIOR_TO)
+    expect(capturedPriorFrom).toBe(DST_PRIOR_FROM_LITERAL)
+  })
+
   test('test_prior_window_query_uses_computed_prior_range', async () => {
     let currentCallCount = 0
     let priorCallCount = 0
@@ -3783,6 +3921,173 @@ describe('PhosphorDashboard — D1-450 P1/P3 memoization', () => {
 // ---------------------------------------------------------------------------
 
 describe('PhosphorDashboard — provider health masonry CSS var', () => {
+  test('test_masonry_packs_by_height_or_striping_documented', async () => {
+    const originalInnerWidth = window.innerWidth
+    Object.defineProperty(window, 'innerWidth', {
+      configurable: true,
+      value: 2100,
+    })
+
+    const reportWithTallAnthropic: UsageReportResponse = {
+      ...MOCK_REPORT,
+      providerLatencyHealth: [
+        {
+          provider: 'anthropic',
+          model: 'claude-sonnet-4-5',
+          environment: 'production',
+          bucket_start: '2026-05-19T00:00:00.000Z',
+          requests: 100,
+          p50_ms: 200,
+          p95_ms: 400,
+          p99_ms: 500,
+          status_probe_success_pct: 100,
+        },
+        {
+          provider: 'anthropic',
+          model: 'claude-opus-4-6',
+          environment: 'production',
+          bucket_start: '2026-05-19T00:00:00.000Z',
+          requests: 50,
+          p50_ms: 300,
+          p95_ms: 600,
+          p99_ms: 800,
+          status_probe_success_pct: 100,
+        },
+      ],
+      providerStatusUsage: [
+        {
+          provider: 'anthropic',
+          model: 'claude-sonnet-4-5',
+          traces: 10,
+          token_total: 1000,
+          usd_cost: 0.05,
+          period_start: '2026-05-18',
+          period_end: '2026-05-19',
+          upstream_p50_ms: null,
+          upstream_p95_ms: null,
+          upstream_p99_ms: null,
+          total_p95_ms: null,
+          proxy_processing_p95_ms: null,
+          missing_upstream_latency: 0,
+          provider_error_events: 0,
+          rate_limit_events: 0,
+          capacity_events: 0,
+          provider_5xx_events: 0,
+          provider_timeout_events: 0,
+          network_error_events: 0,
+          auth_failed_events: 0,
+        },
+        {
+          provider: 'anthropic',
+          model: 'claude-opus-4-6',
+          traces: 5,
+          token_total: 500,
+          usd_cost: 0.1,
+          period_start: '2026-05-18',
+          period_end: '2026-05-19',
+          upstream_p50_ms: null,
+          upstream_p95_ms: null,
+          upstream_p99_ms: null,
+          total_p95_ms: null,
+          proxy_processing_p95_ms: null,
+          missing_upstream_latency: 0,
+          provider_error_events: 0,
+          rate_limit_events: 0,
+          capacity_events: 0,
+          provider_5xx_events: 0,
+          provider_timeout_events: 0,
+          network_error_events: 0,
+          auth_failed_events: 0,
+        },
+      ],
+    }
+
+    try {
+      await act(async () => {
+        render(
+          <Wrapper>
+            <PhosphorDashboard
+              from='2026-05-20'
+              to='2026-05-21'
+              report={reportWithTallAnthropic}
+              reportLoading={false}
+              showComparison={false}
+              quotas={[]}
+              quotaHistory={[]}
+            />
+          </Wrapper>
+        )
+      })
+
+      const providerLayout = document.querySelector(
+        'section#status .provider-health-summary'
+      ) as HTMLElement | null
+      expect(providerLayout).not.toBeNull()
+
+      const columns = Array.from(
+        providerLayout?.querySelectorAll('.provider-health-summary-column') ??
+          []
+      )
+      expect(columns.length).toBeGreaterThan(2)
+
+      const providerCards = columns.flatMap((column) =>
+        Array.from(column.querySelectorAll('.provider-card:not(.aggregate)'))
+      )
+      expect(providerCards.length).toBeGreaterThan(4)
+
+      // P04-F05: either height-aware packing is implemented, OR the CSS
+      // "masonry packs short cards" language is removed. Round-robin striping
+      // with masonry docs remaining is the defect.
+      const sourcePath = resolve(
+        process.cwd(),
+        'src/features/dashboard/components/phosphor-dashboard.tsx'
+      )
+      const cssPath = resolve(
+        process.cwd(),
+        'src/features/dashboard/components/phosphor-dashboard.module.css'
+      )
+      const source = readFileSync(sourcePath, 'utf8')
+      const css = readFileSync(cssPath, 'utf8')
+
+      // Detect height-aware packing (shortest-column / running height estimate).
+      const heightAware =
+        /shortest|runningHeight|columnHeights|heightEstimate|bin.?pack/i.test(
+          source
+        ) && !/index\s*%\s*providerHealthColumnCount/.test(source)
+
+      // Detect residual "masonry packs short cards" language (module CSS + source).
+      const masonryLanguage =
+        /short cards can pack under earlier cards/i.test(css) ||
+        /\bmasonry\b/i.test(source)
+
+      // Card assignment: pure index%N is striping, not packing.
+      const pureStriping = /index\s*%\s*providerHealthColumnCount/.test(source)
+
+      // Contract: height-aware packing OR striping with masonry language removed.
+      expect(
+        heightAware || (!pureStriping && !masonryLanguage) || !masonryLanguage
+      ).toBe(true)
+      // Explicit: pure striping + masonry docs is forbidden.
+      expect(pureStriping && masonryLanguage).toBe(false)
+
+      // Structural sanity: column layout still renders multi-column cards.
+      const names = providerCards.map(
+        (card) =>
+          card
+            .querySelector('.provider-name')
+            ?.textContent?.trim()
+            .toUpperCase() ?? ''
+      )
+      expect(names).toContain('OPENAI')
+      expect(names).toContain('XAI')
+    } finally {
+      Object.defineProperty(window, 'innerWidth', {
+        configurable: true,
+        value: originalInnerWidth,
+      })
+    }
+  })
+
   test('masonry_root_sets_column_count_css_var', async () => {
     const originalInnerWidth = window.innerWidth
     Object.defineProperty(window, 'innerWidth', {

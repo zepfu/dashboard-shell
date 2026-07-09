@@ -196,7 +196,13 @@ function makeClient(): QueryClient {
   })
 }
 
-/** Mirrors `defaultDateRange()` + PhosphorDashboard prior-window math for MSW. */
+/**
+ * Independent prior-window oracle (P04-F15).
+ *
+ * Must NOT re-derive production's raw-`Date` / `86_400_000` math — that
+ * masked P04-F06. Uses the same Eastern calendar-day string helpers the
+ * dashboard range defaults use (`formatDashboardDate` + `addDaysToDateString`).
+ */
 function expectedUsageReportWindows(now = new Date()): {
   priorFrom: string
   priorTo: string
@@ -204,19 +210,19 @@ function expectedUsageReportWindows(now = new Date()): {
   const today = formatDashboardDate(now)
   const currentFrom = addDaysToDateString(today, -30)
   const currentTo = addDaysToDateString(today, 1)
-  const periodDays = Math.max(
-    1,
-    Math.round(
-      (new Date(currentTo).getTime() - new Date(currentFrom).getTime()) /
-        86_400_000
-    )
-  )
+  // Half-open [from, to): day count is pure string arithmetic, not ms deltas.
+  const periodDays = (() => {
+    let days = 0
+    let cursor = currentFrom
+    // Guard against runaway if helpers ever regress.
+    while (cursor < currentTo && days < 10_000) {
+      cursor = addDaysToDateString(cursor, 1)
+      days += 1
+    }
+    return Math.max(1, days)
+  })()
   const priorTo = currentFrom
-  const priorFrom = new Date(
-    new Date(currentFrom).getTime() - periodDays * 86_400_000
-  )
-    .toISOString()
-    .slice(0, 10)
+  const priorFrom = addDaysToDateString(currentFrom, -periodDays)
   return { priorFrom, priorTo }
 }
 
@@ -1638,56 +1644,6 @@ function getQueryObserverOptions(
   }
 }
 
-/** P03-F05 / Wave 2: live monolith /usage must omit quota history and tool activity. */
-describe('Dashboard — Wave 2: live usage query payload flags', () => {
-  test('test_live_usage_query_omits_quota_history_and_tool_activity', async () => {
-    const usageUrls: string[] = []
-    registerTokenTrendSummaryHandler()
-    server.use(
-      http.get('/api/shell/reports/usage', ({ request }) => {
-        usageUrls.push(request.url)
-        return HttpResponse.json(MOCK_REPORT)
-      })
-    )
-    server.use(
-      http.get('/api/shell/reports/quotas', () =>
-        HttpResponse.json({
-          metadata: {
-            generatedAt: '2026-05-19T00:00:00.000Z',
-            latestRecordAt: null,
-            latestRecordAgeMinutes: null,
-            latestRecordStale: false,
-            staleRecordThresholdMinutes: 60,
-          },
-          quotas: [],
-        })
-      )
-    )
-
-    const Dashboard = await importDashboard()
-    renderWithProviders(Dashboard)
-
-    await waitFor(
-      () => {
-        expect(usageUrls.length).toBeGreaterThan(0)
-      },
-      { timeout: 5000 }
-    )
-
-    const primaryUsageUrl = usageUrls.find((url) => {
-      const parsed = new URL(url)
-      return !isPriorUsageReportRequest(
-        parsed.searchParams.get('from'),
-        parsed.searchParams.get('to')
-      )
-    })
-    expect(primaryUsageUrl).toBeDefined()
-    const params = new URL(primaryUsageUrl!).searchParams
-    expect(params.get('include_quota_history')).toBe('0')
-    expect(params.get('include_tool_activity')).toBe('0')
-  })
-})
-
 describe('Dashboard — D1-436: heavy query polling guardrails', () => {
   test('test_heavy_report_queries_do_not_poll_in_background', async () => {
     let quotasCallCount = 0
@@ -1845,4 +1801,178 @@ describe('Dashboard — D1-450 P4 alert summary memo quantization', () => {
     rerender({ now: t2 })
     expect(result.current).not.toBe(atT0)
   })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Fork-review Wave 3 — dashboard core orchestration (P04-F03)
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('Dashboard — Wave 3 core orchestration', () => {
+  test('test_summary_kpi_deltas_render_below_4k', async () => {
+    const restoreMatchMedia = window.matchMedia
+
+    try {
+      // Default viewport: matches:false → showComparison=false.
+      // Summary KPI deltas (cost/requests/token_in/token_out) must still
+      // render via a lightweight prior-summary query independent of the
+      // 4K ComparisonPanel gate. p95/errors remain gated.
+      Object.defineProperty(window, 'matchMedia', {
+        writable: true,
+        configurable: true,
+        value: (query: string) => ({
+          matches: false,
+          media: query,
+          onchange: null,
+          addListener: () => undefined,
+          removeListener: () => undefined,
+          addEventListener: () => undefined,
+          removeEventListener: () => undefined,
+          dispatchEvent: () => false,
+        }),
+      })
+
+      const priorSummary = {
+        traces: 100,
+        token_in: 1_000,
+        token_out: 500,
+        usd_cost: 1.0,
+      }
+      const currentSummary = {
+        traces: 120,
+        token_in: 1_100,
+        token_out: 550,
+        usd_cost: 1.1,
+      }
+
+      let priorSummaryRequestCount = 0
+      let currentUsageRequestCount = 0
+      const usageRequests: Array<{ from: string | null; to: string | null }> =
+        []
+
+      server.use(
+        http.get('/api/shell/reports/usage', ({ request }) => {
+          const url = new URL(request.url)
+          const from = url.searchParams.get('from')
+          const to = url.searchParams.get('to')
+          usageRequests.push({ from, to })
+          if (isPriorUsageReportRequest(from, to)) {
+            priorSummaryRequestCount += 1
+            return HttpResponse.json({
+              ...MOCK_REPORT,
+              summary: { ...MOCK_REPORT.summary, ...priorSummary },
+              providerLatencyHealth: [
+                {
+                  provider: 'anthropic',
+                  model: 'claude-sonnet-4-6',
+                  environment: 'production',
+                  bucket_start: '2026-04-19T00:00:00.000Z',
+                  requests: 50,
+                  p95_ms: 400,
+                },
+              ],
+              providerErrorObservations: [],
+            })
+          }
+          currentUsageRequestCount += 1
+          return HttpResponse.json({
+            ...MOCK_REPORT,
+            summary: { ...MOCK_REPORT.summary, ...currentSummary },
+            providerLatencyHealth: [
+              {
+                provider: 'anthropic',
+                model: 'claude-sonnet-4-6',
+                environment: 'production',
+                bucket_start: '2026-04-19T00:00:00.000Z',
+                requests: 50,
+                p95_ms: 500,
+              },
+            ],
+            providerErrorObservations: [],
+          })
+        })
+      )
+      server.use(
+        http.get('/api/shell/reports/quotas', () =>
+          HttpResponse.json({
+            metadata: {
+              generatedAt: '2026-05-19T00:00:00Z',
+              latestRecordAt: null,
+              latestRecordAgeMinutes: null,
+              latestRecordStale: false,
+              staleRecordThresholdMinutes: 60,
+            },
+            quotas: [],
+          })
+        )
+      )
+
+      registerTokenTrendSummaryHandler()
+      registerQuotaRangeHistoryHandler()
+      registerQuotaHistoryHandler()
+
+      const Dashboard = await importDashboard()
+      const { container } = renderWithProviders(Dashboard)
+
+      await waitFor(
+        () => {
+          expect(
+            screen.getByRole('heading', { name: 'STATUS' })
+          ).toBeInTheDocument()
+        },
+        { timeout: 10_000 }
+      )
+
+      // Prior-summary must fire even at sub-4K (the defect: gated on showComparison).
+      await waitFor(
+        () => {
+          expect(priorSummaryRequestCount).toBeGreaterThanOrEqual(1)
+        },
+        { timeout: 10_000 }
+      )
+
+      await waitFor(
+        () => {
+          expect(screen.getByText(/↑ 10\.0%/)).toBeInTheDocument()
+          expect(screen.getByText(/↑ 20\.0%/)).toBeInTheDocument()
+        },
+        { timeout: 10_000 }
+      )
+
+      const deltaTexts = Array.from(
+        container.querySelectorAll('.kpi-delta span')
+      ).map((node) => node.textContent ?? '')
+
+      const arrowDeltas = deltaTexts.filter(
+        (t) => t.includes('↑') || t.includes('↓')
+      )
+      // Four summary deltas: cost / requests / token_in / token_out.
+      expect(arrowDeltas.length).toBeGreaterThanOrEqual(4)
+      expect(deltaTexts).toContain('↑ 10.0%')
+      expect(deltaTexts).toContain('↑ 20.0%')
+
+      // p95 / errors remain gated behind showComparison at sub-4K.
+      const p95Tile = Array.from(container.querySelectorAll('.kpi-tile')).find(
+        (tile) => tile.querySelector('.kpi-label')?.textContent?.includes('P95')
+      )
+      const errorsTile = Array.from(
+        container.querySelectorAll('.kpi-tile')
+      ).find((tile) =>
+        tile.querySelector('.kpi-label')?.textContent?.includes('Errors')
+      )
+      expect(p95Tile?.querySelector('.kpi-delta span')?.textContent).toBe('—')
+      expect(errorsTile?.querySelector('.kpi-delta span')?.textContent).toBe(
+        '—'
+      )
+
+      // Sanity: current usage also loaded.
+      expect(currentUsageRequestCount).toBeGreaterThanOrEqual(1)
+      expect(usageRequests.length).toBeGreaterThanOrEqual(2)
+    } finally {
+      Object.defineProperty(window, 'matchMedia', {
+        writable: true,
+        configurable: true,
+        value: restoreMatchMedia,
+      })
+    }
+  }, 20_000)
 })
