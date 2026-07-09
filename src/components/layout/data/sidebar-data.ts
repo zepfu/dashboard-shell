@@ -24,7 +24,6 @@ import {
   MessagesSquare,
 } from 'lucide-react'
 import { ClerkLogo } from '@/assets/clerk-logo'
-import { remoteNavBasePath } from '../nav-active'
 import { type SidebarData } from '../types'
 
 const remoteDashboardTeams = remoteDashboardMetadata.map((dashboard) => ({
@@ -37,7 +36,6 @@ const remoteDashboardTeams = remoteDashboardMetadata.map((dashboard) => ({
 
 const remoteDashboardNavItems = remoteDashboardMetadata.map((dashboard) => {
   const url = remoteDashboardHref(dashboard, dashboard.defaultRoutePath)
-  void remoteNavBasePath(url)
   return {
     title: dashboard.name,
     url,
