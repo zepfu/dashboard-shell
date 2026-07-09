@@ -18,6 +18,8 @@
  */
 import React, { type ReactElement } from 'react'
 import { fireEvent, render, screen } from '@testing-library/react'
+import { readFileSync } from 'node:fs'
+import path from 'node:path'
 import { providerBrandHex } from '../lib/usage-report-display'
 import {
   ProviderCard,
@@ -1442,6 +1444,20 @@ test('test_provider_card_accepts_variant_aggregate_prop', () => {
   // @ts-expect-error D1-451 Wave 2 — variant prop not yet on ProviderCardProps
   const { container } = render(<ProviderCard {...props} />)
   expect(container.querySelector('.provider-card.aggregate')).not.toBeNull()
+})
+
+/** P07-F04 — ProviderCardProps includes variant; no stale @ts-expect-error in this file. */
+test('test_provider_card_no_stale_ts_expect_error', () => {
+  const source = readFileSync(
+    path.join(import.meta.dirname, 'provider-card.test.tsx'),
+    'utf8'
+  )
+  expect(source).not.toMatch(/@ts-expect-error/)
+  type VariantOnProps = NonNullable<
+    import('./provider-card').ProviderCardProps['variant']
+  >
+  const _variantContract: VariantOnProps = 'aggregate'
+  expect(_variantContract).toBe('aggregate')
 })
 
 /**
