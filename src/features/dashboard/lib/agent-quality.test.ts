@@ -538,6 +538,99 @@ test('combine_agent_quality_summaries_weights_family_score_by_scoredEvaluated_no
   expect(combined?.quality.evaluated).toBe(14)
 })
 
+/** Wave 8 / P10-F01,F02: fully failed session must contribute evaluated weight, not drop to zero. */
+test('test_fully_failed_session_not_dropped_from_combined_score', () => {
+  const family = (
+    score: number | null,
+    evaluated: number,
+    issueCount: number,
+    scoredEvaluated: number
+  ) => ({
+    score,
+    evaluated,
+    scoredEvaluated,
+    possible: evaluated,
+    issueCount,
+  })
+
+  const emptyTail = {
+    discoveryInventoryCoverage: family(null, 0, 0, 0),
+    discoveryInventoryMissingCount: 0,
+    terminalCompletion: family(null, 0, 0, 0),
+    emptyCompletionFailures: 0,
+    invalidToolCallErrors: 0,
+    destructiveCheckoutFailures: 0,
+    largePayloadRisks: 0,
+    readOnlyPolicyViolations: 0,
+    ignoredPathTracking: {
+      score: null,
+      evaluated: 0,
+      possible: 0,
+      violationCount: 0,
+    },
+    baselineDeflection: {
+      attemptedScore: null,
+      attemptedEvaluated: 0,
+      attemptedIncidents: 0,
+      incidentScore: null,
+      incidentEvaluated: 0,
+      incidentIncidents: 0,
+      attemptCount: 0,
+      toolCallCount: 0,
+      inputTokens: 0,
+      elapsedMs: 0,
+      qualityGateTriggerCount: 0,
+      qualityGateFixAttemptCount: 0,
+      qualityGateRerunCount: 0,
+    },
+    sleepWellnessInterruption: {
+      attemptedScore: null,
+      attemptedEvaluated: 0,
+      attemptedIncidents: 0,
+      incidentScore: null,
+      incidentEvaluated: 0,
+      incidentIncidents: 0,
+      interruptionCount: 0,
+      outputTokens: 0,
+      inputTokens: 0,
+      elapsedMs: 0,
+      afterUserPushbackCount: 0,
+      repeatedCount: 0,
+    },
+    reasons: [] as const,
+  }
+
+  const perfectSession = {
+    totalRows: 10,
+    quality: family(1, 10, 0, 10),
+    instruction: family(1, 1, 0, 1),
+    tool: family(1, 1, 0, 1),
+    contract: family(1, 1, 0, 1),
+    progress: family(1, 1, 0, 1),
+    risk: family(0, 1, 0, 1),
+    ...emptyTail,
+  }
+
+  const fullyFailedSession = {
+    totalRows: 10,
+    quality: family(0, 10, 10, 0),
+    instruction: family(1, 1, 0, 1),
+    tool: family(1, 1, 0, 1),
+    contract: family(1, 1, 0, 1),
+    progress: family(1, 1, 0, 1),
+    risk: family(0, 1, 0, 1),
+    ...emptyTail,
+  }
+
+  const combined = combineAgentQualitySummaries([
+    perfectSession,
+    fullyFailedSession,
+  ])
+
+  expect(combined?.quality.score).toBeCloseTo(0.5, 5)
+  expect(combined?.quality.evaluated).toBe(20)
+})
+
 test('test_agentQualityIssueSortValue_undefined_returns_minus_one', () => {
   expect(agentQualityIssueSortValue(undefined)).toBe(-1)
 })

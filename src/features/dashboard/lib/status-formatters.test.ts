@@ -8,6 +8,7 @@ import {
   formatRemainingSeconds,
   formatStatusTimestamp,
 } from './status-formatters'
+import { formatDashboardTime } from './usage-report-display'
 
 describe('D1-451 status-formatters — formatRemainingSeconds (C2)', () => {
   test('test_formatRemainingSeconds_10h_uses_hours_tier_not_600m', () => {
@@ -36,6 +37,14 @@ describe('D1-451 status-formatters — formatStatusTimestamp (I3)', () => {
     expect(formatStatusTimestamp('2026-05-20T11:30:45.000Z')).toBe(
       '2026-05-20 11:30'
     )
+  })
+
+  test('test_status_timestamp_eastern_zone', () => {
+    const iso = '2026-05-20T11:30:00Z'
+    const eastern = formatDashboardTime(iso)
+    expect(formatStatusTimestamp(iso)).toBe(eastern)
+    expect(formatStatusTimestamp(iso)).not.toBe('2026-05-20 11:30')
+    expect(eastern).toMatch(/7:30/)
   })
 })
 
