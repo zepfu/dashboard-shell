@@ -456,23 +456,29 @@ describe('Wave 1 F03 BadRequestError HTTP mapping', () => {
   })
 })
 
-describe('Wave 1 F05 queryPostgresWithLocalSettings round-trip', () => {
-  test('test_query_local_settings_single_round_trip', async () => {
-    const pgQueryLog: string[] = []
+describe('Wave 1 F05 queryPostgresWithLocalSettings parameterized transaction', () => {
+  test('test_query_local_settings_parameterized_transaction', async () => {
+    const pgQueryLog: Array<{ text: string; values?: unknown }> = []
     vi.stubEnv('VITEST', 'true')
     vi.stubEnv('DATABASE_URL', 'postgresql://u:p@127.0.0.1:5432/test')
 
     vi.doMock('pg', () => {
       function Pool(this: {
         connect: () => Promise<{
-          query: (text: string) => Promise<{ rows: unknown[] }>
+          query: (
+            text: string,
+            values?: unknown
+          ) => Promise<{ rows: unknown[] }>
           release: () => void
         }>
         on: () => void
       }) {
         this.connect = async () => ({
-          query: async (text: string) => {
-            pgQueryLog.push(text.replace(/\s+/g, ' ').trim())
+          query: async (text: string, values?: unknown) => {
+            pgQueryLog.push({
+              text: text.replace(/\s+/g, ' ').trim(),
+              values,
+            })
             return { rows: [] }
           },
           release: () => {},
@@ -498,15 +504,29 @@ describe('Wave 1 F05 queryPostgresWithLocalSettings round-trip', () => {
       new URLSearchParams({ from: '2026-05-01', to: '2026-05-02' })
     )
 
-    const beginCount = pgQueryLog.filter((q) => q === 'BEGIN').length
-    const commitCount = pgQueryLog.filter((q) => q === 'COMMIT').length
+    const beginCount = pgQueryLog.filter((q) => q.text === 'BEGIN').length
+    const commitCount = pgQueryLog.filter((q) => q.text === 'COMMIT').length
+    // F05 single-round-trip string-inlining is intentionally gone: settings and
+    // the body must not be collapsed into one multi-statement simple query.
     const setLocalCombined = pgQueryLog.some(
       (q) =>
-        /set_config/i.test(q) && /;\s*SELECT/i.test(q) && !/^BEGIN$/i.test(q)
+        /set_config/i.test(q.text) &&
+        /;\s*SELECT/i.test(q.text) &&
+        !/^BEGIN$/i.test(q.text)
+    )
+    const parameterizedBody = pgQueryLog.some(
+      (q) =>
+        Array.isArray(q.values) &&
+        q.values.length > 0 &&
+        !/^SELECT set_config/i.test(q.text) &&
+        q.text !== 'BEGIN' &&
+        q.text !== 'COMMIT' &&
+        q.text !== 'ROLLBACK'
     )
 
-    expect(beginCount).toBe(0)
-    expect(commitCount).toBe(0)
-    expect(setLocalCombined).toBe(true)
+    expect(beginCount).toBeGreaterThan(0)
+    expect(commitCount).toBeGreaterThan(0)
+    expect(setLocalCombined).toBe(false)
+    expect(parameterizedBody).toBe(true)
   })
 })

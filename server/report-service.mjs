@@ -778,71 +778,6 @@ async function applyPostgresLocalSettings(
   await client.query(`SELECT ${expressions.join(', ')};`, values)
 }
 
-function escapePostgresStringLiteral(value) {
-  return String(value).replace(/'/g, "''")
-}
-
-function inlinePostgresQueryParams(sql, values) {
-  if (!values?.length) return sql
-  let inlined = sql
-  for (let index = values.length; index >= 1; index -= 1) {
-    const token = `$${index}`
-    const raw = values[index - 1]
-    let literal
-    if (raw === null || raw === undefined) {
-      literal = 'NULL'
-    } else if (typeof raw === 'number' && Number.isFinite(raw)) {
-      literal = String(raw)
-    } else if (typeof raw === 'boolean') {
-      literal = raw ? 'TRUE' : 'FALSE'
-    } else if (Array.isArray(raw)) {
-      const items = raw.map((item) => {
-        if (item === null || item === undefined) return 'NULL'
-        if (typeof item === 'number' && Number.isFinite(item))
-          return String(item)
-        if (typeof item === 'boolean') return item ? 'TRUE' : 'FALSE'
-        return `'${escapePostgresStringLiteral(item)}'`
-      })
-      literal = `ARRAY[${items.join(', ')}]::text[]`
-    } else if (raw instanceof Date) {
-      literal = `'${escapePostgresStringLiteral(raw.toISOString())}'`
-    } else {
-      literal = `'${escapePostgresStringLiteral(raw)}'`
-    }
-    inlined = inlined.replaceAll(token, literal)
-  }
-  return inlined
-}
-
-function buildPostgresLocalSettingsSelectSql(
-  statementTimeoutMs = REPORT_DB_STATEMENT_TIMEOUT_MS
-) {
-  const settings = buildPostgresLocalSettings(statementTimeoutMs)
-  if (settings.length === 0) return null
-  // is_local=true: multi-statement simple queries run in one implicit
-  // transaction, so LOCAL settings apply to the following statement and are
-  // released when the round-trip completes (no connection-level leak).
-  return `SELECT ${settings
-    .map(
-      ([name, value]) =>
-        `set_config('${escapePostgresStringLiteral(name)}', '${escapePostgresStringLiteral(value)}', true)`
-    )
-    .join(', ')}`
-}
-
-function selectQueryResult(result) {
-  if (Array.isArray(result)) {
-    for (let index = result.length - 1; index >= 0; index -= 1) {
-      const candidate = result[index]
-      if (candidate && Array.isArray(candidate.rows)) {
-        return candidate
-      }
-    }
-    return result[result.length - 1]
-  }
-  return result
-}
-
 async function queryPostgresWithLocalSettings(
   targetPool,
   sql,
@@ -850,27 +785,31 @@ async function queryPostgresWithLocalSettings(
   statementTimeoutMs = REPORT_DB_STATEMENT_TIMEOUT_MS
 ) {
   const client = await targetPool.connect()
+  let transactionOpen = false
   let discardClient = false
 
   try {
-    const body = String(sql ?? '')
-      .trim()
-      .replace(/;\s*$/, '')
-    const settingsSql = buildPostgresLocalSettingsSelectSql(statementTimeoutMs)
-    if (!settingsSql) {
-      return await client.query(body, values ?? [])
-    }
-
-    // Collapse settings + read into one network round-trip. Settings values are
-    // service-controlled; bind params are inlined because node-pg cannot
-    // parameterize multi-statement simple queries.
-    const inlinedBody = inlinePostgresQueryParams(body, values ?? [])
-    const combinedSql = `${settingsSql}; ${inlinedBody}`
-    const result = await client.query(combinedSql)
-    return selectQueryResult(result)
+    await client.query('BEGIN')
+    transactionOpen = true
+    await applyPostgresLocalSettings(client, statementTimeoutMs)
+    const result = await client.query(sql, values ?? [])
+    await client.query('COMMIT')
+    transactionOpen = false
+    return result
   } catch (error) {
-    if (isClientSideDatabaseTimeoutError(error)) {
+    const clientSideTimeout = isClientSideDatabaseTimeoutError(error)
+    if (clientSideTimeout) {
       discardClient = true
+    }
+    if (transactionOpen && !clientSideTimeout) {
+      try {
+        await client.query('ROLLBACK')
+      } catch (rollbackError) {
+        discardClient = true
+        process.stderr.write(
+          `[report-service] WARN: database rollback failed after query error: ${formatError(rollbackError)}\n`
+        )
+      }
     }
     throw error
   } finally {
