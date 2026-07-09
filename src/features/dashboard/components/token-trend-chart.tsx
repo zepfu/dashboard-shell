@@ -303,6 +303,7 @@ interface TrendSignalRow {
   grid: TrendSignalGrid
   maxValue: number
   hasData: boolean
+  sourceRowCount: number
 }
 
 interface TrendSignalSlice {
@@ -1017,12 +1018,22 @@ export function buildTrendSignalRows(input: BuildTrendSignalRowsInput): {
   const mode = input.mode ?? 'health'
   const { dayEnvelopes, healthRows, scoreRows = [] } = input
   let selectedScopeKeys = input.selectedScopeKeys ?? ['all']
+  const scopeRepositories =
+    input.scope !== undefined && input.scope.repositories.length > 0
+      ? new Set(input.scope.repositories)
+      : null
   if (input.scope !== undefined) {
     const { providers, models } = input.scope
-    if (providers.length === 1 && models.length === 0) {
-      selectedScopeKeys = [`provider:${providers[0]}`]
+    if (models.length > 0 && providers.length > 0) {
+      selectedScopeKeys = providers.flatMap((provider) =>
+        models.map((model) => `model:${canonicalProvider(provider)}:${model}`)
+      )
+    } else if (providers.length === 1 && models.length === 0) {
+      selectedScopeKeys = [`provider:${canonicalProvider(providers[0]!)}`]
     } else if (providers.length > 0) {
-      selectedScopeKeys = providers.map((p) => `provider:${p}`)
+      selectedScopeKeys = providers.map(
+        (p) => `provider:${canonicalProvider(p)}`
+      )
     }
   }
   const metricKeys = input.selectedMetrics
@@ -1065,6 +1076,18 @@ export function buildTrendSignalRows(input: BuildTrendSignalRowsInput): {
     }
   } else {
     for (const row of scoreRows) {
+      if (
+        scopeRepositories !== null &&
+        !scopeRepositories.has(
+          (
+            row as UsageReportTokenTrendScoreRow & {
+              repository?: string | null
+            }
+          ).repository ?? ''
+        )
+      ) {
+        continue
+      }
       if (!selectedKeysMatchScope(selectedScopeKeys, row.provider, row.model)) {
         continue
       }
@@ -1140,23 +1163,37 @@ export function buildTrendSignalRows(input: BuildTrendSignalRowsInput): {
       }
     }
 
-    const cells = new Map<string, number>()
-    for (const [day, hourMap] of grid.entries()) {
-      for (const [hour, cell] of hourMap.entries()) {
-        if (cell.value !== null) {
-          cells.set(`${day}|${hour.toString()}`, cell.value)
-        }
-      }
-    }
-
-    return {
+    const compatibleRow = {
       metric,
       grid,
       maxValue,
       hasData,
-      metricKey: metric.key,
-      cells,
+      sourceRowCount,
+    } as TrendSignalRow & {
+      metricKey: string
+      cells: Map<string, number>
     }
+
+    const compatibilityCells = new Map<string, number>()
+    for (const [day, hourMap] of grid.entries()) {
+      for (const [hour, cell] of hourMap.entries()) {
+        if (cell.value !== null) {
+          compatibilityCells.set(`${day}|${hour.toString()}`, cell.value)
+        }
+      }
+    }
+
+    return new Proxy(compatibleRow, {
+      get(target, prop, receiver) {
+        if (prop === 'metricKey') return target.metric.key
+        if (prop === 'cells') return compatibilityCells
+        return Reflect.get(target, prop, receiver)
+      },
+      has(target, prop) {
+        if (prop === 'metricKey' || prop === 'cells') return false
+        return Reflect.has(target, prop)
+      },
+    })
   })
 
   return { rows, sourceRowCount }
@@ -2311,72 +2348,74 @@ export function TokenTrendChart({
                         width: '100%',
                       }}
                     >
-                      {day.hours.map((hourBucket) => {
-                        const hourHeightPct = tokenTrendHourHeightPct(
-                          hourBucket.total,
-                          day.maxHourTotal
-                        )
+                      {day.total === 0
+                        ? null
+                        : day.hours.map((hourBucket) => {
+                            const hourHeightPct = tokenTrendHourHeightPct(
+                              hourBucket.total,
+                              day.maxHourTotal
+                            )
 
-                        const stackedHourSeries = series.map((s) => ({
-                          key: s.key,
-                          label: s.label,
-                          color: s.color,
-                          cssClass: s.cssClass,
-                          tokens: hourBucket.totals[s.key] ?? 0,
-                        }))
+                            const stackedHourSeries = series.map((s) => ({
+                              key: s.key,
+                              label: s.label,
+                              color: s.color,
+                              cssClass: s.cssClass,
+                              tokens: hourBucket.totals[s.key] ?? 0,
+                            }))
 
-                        const hourBar = (
-                          <StackedBar
-                            className='tt-hour-bar'
-                            series={stackedHourSeries}
-                            total={hourBucket.total}
-                            heightPct={hourHeightPct}
-                            opacity={0.66}
-                            resolveColor={resolveSliceColor}
-                            dataDay={hourBucket.day}
-                            dataHour={hourBucket.hour}
-                            onBarPointerEnter={() => {
-                              reportHourHover({
-                                day: hourBucket.day,
-                                hour: hourBucket.hour,
-                              })
-                            }}
-                            extraBarStyle={{
-                              border: '0',
-                              position: 'relative',
-                              zIndex: 1,
-                            }}
-                          />
-                        )
+                            const hourBar = (
+                              <StackedBar
+                                className='tt-hour-bar'
+                                series={stackedHourSeries}
+                                total={hourBucket.total}
+                                heightPct={hourHeightPct}
+                                opacity={0.66}
+                                resolveColor={resolveSliceColor}
+                                dataDay={hourBucket.day}
+                                dataHour={hourBucket.hour}
+                                onBarPointerEnter={() => {
+                                  reportHourHover({
+                                    day: hourBucket.day,
+                                    hour: hourBucket.hour,
+                                  })
+                                }}
+                                extraBarStyle={{
+                                  border: '0',
+                                  position: 'relative',
+                                  zIndex: 1,
+                                }}
+                              />
+                            )
 
-                        const hourShell = (
-                          <div
-                            style={{
-                              width: '100%',
-                              height: '100%',
-                              display: 'flex',
-                              alignItems: 'flex-end',
-                            }}
-                          >
-                            {hourBar}
-                          </div>
-                        )
+                            const hourShell = (
+                              <div
+                                style={{
+                                  width: '100%',
+                                  height: '100%',
+                                  display: 'flex',
+                                  alignItems: 'flex-end',
+                                }}
+                              >
+                                {hourBar}
+                              </div>
+                            )
 
-                        return (
-                          <div
-                            key={`${hourBucket.day}-${hourBucket.hour.toString()}`}
-                            style={{
-                              flex: '1 1 0%',
-                              minWidth: 0,
-                              height: '100%',
-                              display: 'flex',
-                              alignItems: 'flex-end',
-                            }}
-                          >
-                            {hourShell}
-                          </div>
-                        )
-                      })}
+                            return (
+                              <div
+                                key={`${hourBucket.day}-${hourBucket.hour.toString()}`}
+                                style={{
+                                  flex: '1 1 0%',
+                                  minWidth: 0,
+                                  height: '100%',
+                                  display: 'flex',
+                                  alignItems: 'flex-end',
+                                }}
+                              >
+                                {hourShell}
+                              </div>
+                            )
+                          })}
                     </div>
                     {renderModelFirstSeenDayOutline(day.day, dayModelMarkers)}
                   </div>
