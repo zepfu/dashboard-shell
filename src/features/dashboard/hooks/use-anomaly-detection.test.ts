@@ -420,3 +420,62 @@ test('test_useAnomalyDetection_memo_stable_identity', () => {
   expect(secondOutput.earlyReset.size).toBe(0)
   expect(secondOutput.cacheStale).toBe(false)
 })
+
+/**
+ * P03-F02 / Wave 2: health grouping must include environment so prod-only
+ * early-reset sequences do not leak false alerts into staging.
+ */
+test('test_health_group_key_includes_environment', () => {
+  const shared = {
+    provider: 'anthropic',
+    model: 'claude-sonnet-4',
+    quota_keys: 'short',
+  } as const
+
+  const prodRows = [
+    makeHealthRow({
+      ...shared,
+      environment: 'prod',
+      bucket_start: '2026-06-13T00:00:00Z',
+      next_expected_reset_at: '2026-06-13T10:00:00Z',
+    }),
+    makeHealthRow({
+      ...shared,
+      environment: 'prod',
+      bucket_start: '2026-06-13T01:00:00Z',
+      next_expected_reset_at: '2026-06-13T06:00:00Z',
+    }),
+  ]
+
+  const stagingRows = [
+    makeHealthRow({
+      ...shared,
+      environment: 'staging',
+      bucket_start: '2026-06-13T00:00:00Z',
+      next_expected_reset_at: '2026-06-13T10:00:00Z',
+    }),
+    makeHealthRow({
+      ...shared,
+      environment: 'staging',
+      bucket_start: '2026-06-13T01:00:00Z',
+      next_expected_reset_at: '2026-06-13T08:00:00Z',
+    }),
+  ]
+
+  const { result: prodOnly } = renderHook(() =>
+    useAnomalyDetection(prodRows, { latestRecordStale: false })
+  )
+  const { result: stagingOnly } = renderHook(() =>
+    useAnomalyDetection(stagingRows, { latestRecordStale: false })
+  )
+  const { result: combined } = renderHook(() =>
+    useAnomalyDetection([...prodRows, ...stagingRows], {
+      latestRecordStale: false,
+    })
+  )
+
+  expect(prodOnly.current.earlyReset.has('anthropic')).toBe(true)
+  expect(stagingOnly.current.earlyReset.size).toBe(0)
+  expect(combined.current.earlyReset.has('anthropic')).toBe(true)
+  expect(combined.current.earlyReset.size).toBe(1)
+})

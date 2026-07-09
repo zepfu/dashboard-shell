@@ -1240,6 +1240,53 @@ describe('test_fetchers_validate_metadata_summary_firstrow', () => {
     ).rejects.toThrow('Invalid usage report rows[0].provider')
   })
 
+  /** P03-F07 / Wave 2: validate every row, not only rows[0]. */
+  test('test_assert_usage_report_rows_validates_all_rows', async () => {
+    const goodRow = {
+      bucket: '2026-05-20',
+      traces: 12,
+      token_in: 20,
+      token_out: 30,
+      token_cache_input: 0,
+      token_cache_creation: 0,
+      token_reasoning_reported: 0,
+      token_reasoning_estimated: 0,
+      token_total: 50,
+      usd_cost: 0.12,
+      cache_miss_usd_cost: 0,
+      tool_calls: 0,
+      git_commit: 0,
+      git_push: 0,
+      period_start: '2026-05-20',
+      period_end: '2026-05-21',
+    }
+    const payload = minimalUsageReportPayload() as {
+      rows: Array<Record<string, unknown>>
+    }
+    payload.rows = [
+      { ...goodRow },
+      { ...goodRow, bucket: '2026-05-21' },
+      { ...goodRow, bucket: '2026-05-22' },
+      {
+        ...goodRow,
+        bucket: '2026-05-23',
+        token_total: 'bad' as unknown as number,
+      },
+    ]
+
+    server.use(
+      http.get('/api/shell/reports/usage', () => HttpResponse.json(payload))
+    )
+
+    await expect(
+      fetchUsageReport({
+        from: '2026-05-20',
+        to: '2026-05-21',
+        grain: 'day',
+      })
+    ).rejects.toThrow('Invalid usage report rows[3].token_total')
+  })
+
   test('fetchUsageReport accepts minimal payloads after stronger contract checks', async () => {
     server.use(
       http.get('/api/shell/reports/usage', () =>

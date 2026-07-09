@@ -1638,6 +1638,56 @@ function getQueryObserverOptions(
   }
 }
 
+/** P03-F05 / Wave 2: live monolith /usage must omit quota history and tool activity. */
+describe('Dashboard — Wave 2: live usage query payload flags', () => {
+  test('test_live_usage_query_omits_quota_history_and_tool_activity', async () => {
+    const usageUrls: string[] = []
+    registerTokenTrendSummaryHandler()
+    server.use(
+      http.get('/api/shell/reports/usage', ({ request }) => {
+        usageUrls.push(request.url)
+        return HttpResponse.json(MOCK_REPORT)
+      })
+    )
+    server.use(
+      http.get('/api/shell/reports/quotas', () =>
+        HttpResponse.json({
+          metadata: {
+            generatedAt: '2026-05-19T00:00:00.000Z',
+            latestRecordAt: null,
+            latestRecordAgeMinutes: null,
+            latestRecordStale: false,
+            staleRecordThresholdMinutes: 60,
+          },
+          quotas: [],
+        })
+      )
+    )
+
+    const Dashboard = await importDashboard()
+    renderWithProviders(Dashboard)
+
+    await waitFor(
+      () => {
+        expect(usageUrls.length).toBeGreaterThan(0)
+      },
+      { timeout: 5000 }
+    )
+
+    const primaryUsageUrl = usageUrls.find((url) => {
+      const parsed = new URL(url)
+      return !isPriorUsageReportRequest(
+        parsed.searchParams.get('from'),
+        parsed.searchParams.get('to')
+      )
+    })
+    expect(primaryUsageUrl).toBeDefined()
+    const params = new URL(primaryUsageUrl!).searchParams
+    expect(params.get('include_quota_history')).toBe('0')
+    expect(params.get('include_tool_activity')).toBe('0')
+  })
+})
+
 describe('Dashboard — D1-436: heavy query polling guardrails', () => {
   test('test_heavy_report_queries_do_not_poll_in_background', async () => {
     let quotasCallCount = 0
