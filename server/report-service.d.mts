@@ -378,7 +378,9 @@ declare module './report-service.mjs' {
           ) => Promise<boolean>)
         | null
     ) => void
-    encodeRedisReportCachePayload: (cacheEntry: unknown) => Promise<Buffer>
+    encodeRedisReportCachePayload: (
+      cacheEntry: unknown
+    ) => Promise<string | Buffer>
     decodeRedisReportCachePayload: (value: unknown) => Promise<unknown>
     readRedisCacheEntryFromClient: (
       identity: ReportCacheIdentityLike,

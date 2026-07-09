@@ -778,6 +778,71 @@ async function applyPostgresLocalSettings(
   await client.query(`SELECT ${expressions.join(', ')};`, values)
 }
 
+function escapePostgresStringLiteral(value) {
+  return String(value).replace(/'/g, "''")
+}
+
+function inlinePostgresQueryParams(sql, values) {
+  if (!values?.length) return sql
+  let inlined = sql
+  for (let index = values.length; index >= 1; index -= 1) {
+    const token = `$${index}`
+    const raw = values[index - 1]
+    let literal
+    if (raw === null || raw === undefined) {
+      literal = 'NULL'
+    } else if (typeof raw === 'number' && Number.isFinite(raw)) {
+      literal = String(raw)
+    } else if (typeof raw === 'boolean') {
+      literal = raw ? 'TRUE' : 'FALSE'
+    } else if (Array.isArray(raw)) {
+      const items = raw.map((item) => {
+        if (item === null || item === undefined) return 'NULL'
+        if (typeof item === 'number' && Number.isFinite(item))
+          return String(item)
+        if (typeof item === 'boolean') return item ? 'TRUE' : 'FALSE'
+        return `'${escapePostgresStringLiteral(item)}'`
+      })
+      literal = `ARRAY[${items.join(', ')}]::text[]`
+    } else if (raw instanceof Date) {
+      literal = `'${escapePostgresStringLiteral(raw.toISOString())}'`
+    } else {
+      literal = `'${escapePostgresStringLiteral(raw)}'`
+    }
+    inlined = inlined.replaceAll(token, literal)
+  }
+  return inlined
+}
+
+function buildPostgresLocalSettingsSelectSql(
+  statementTimeoutMs = REPORT_DB_STATEMENT_TIMEOUT_MS
+) {
+  const settings = buildPostgresLocalSettings(statementTimeoutMs)
+  if (settings.length === 0) return null
+  // is_local=true: multi-statement simple queries run in one implicit
+  // transaction, so LOCAL settings apply to the following statement and are
+  // released when the round-trip completes (no connection-level leak).
+  return `SELECT ${settings
+    .map(
+      ([name, value]) =>
+        `set_config('${escapePostgresStringLiteral(name)}', '${escapePostgresStringLiteral(value)}', true)`
+    )
+    .join(', ')}`
+}
+
+function selectQueryResult(result) {
+  if (Array.isArray(result)) {
+    for (let index = result.length - 1; index >= 0; index -= 1) {
+      const candidate = result[index]
+      if (candidate && Array.isArray(candidate.rows)) {
+        return candidate
+      }
+    }
+    return result[result.length - 1]
+  }
+  return result
+}
+
 async function queryPostgresWithLocalSettings(
   targetPool,
   sql,
@@ -785,31 +850,27 @@ async function queryPostgresWithLocalSettings(
   statementTimeoutMs = REPORT_DB_STATEMENT_TIMEOUT_MS
 ) {
   const client = await targetPool.connect()
-  let transactionOpen = false
   let discardClient = false
 
   try {
-    await client.query('BEGIN')
-    transactionOpen = true
-    await applyPostgresLocalSettings(client, statementTimeoutMs)
-    const result = await client.query(sql, values ?? [])
-    await client.query('COMMIT')
-    transactionOpen = false
-    return result
-  } catch (error) {
-    const clientSideTimeout = isClientSideDatabaseTimeoutError(error)
-    if (clientSideTimeout) {
-      discardClient = true
+    const body = String(sql ?? '')
+      .trim()
+      .replace(/;\s*$/, '')
+    const settingsSql = buildPostgresLocalSettingsSelectSql(statementTimeoutMs)
+    if (!settingsSql) {
+      return await client.query(body, values ?? [])
     }
-    if (transactionOpen && !clientSideTimeout) {
-      try {
-        await client.query('ROLLBACK')
-      } catch (rollbackError) {
-        discardClient = true
-        process.stderr.write(
-          `[report-service] WARN: database rollback failed after query error: ${formatError(rollbackError)}\n`
-        )
-      }
+
+    // Collapse settings + read into one network round-trip. Settings values are
+    // service-controlled; bind params are inlined because node-pg cannot
+    // parameterize multi-statement simple queries.
+    const inlinedBody = inlinePostgresQueryParams(body, values ?? [])
+    const combinedSql = `${settingsSql}; ${inlinedBody}`
+    const result = await client.query(combinedSql)
+    return selectQueryResult(result)
+  } catch (error) {
+    if (isClientSideDatabaseTimeoutError(error)) {
+      discardClient = true
     }
     throw error
   } finally {
@@ -978,6 +1039,8 @@ end
 return 0
 `
 
+let redisTypeMappingMissingWarned = false
+
 function createRedisCacheClient(
   redisUrl,
   clientFactory = createClient,
@@ -993,6 +1056,12 @@ function createRedisCacheClient(
   })
   const blobStringType = respTypes?.BLOB_STRING
   if (blobStringType == null || typeof client?.withTypeMapping !== 'function') {
+    if (!redisTypeMappingMissingWarned) {
+      redisTypeMappingMissingWarned = true
+      process.stderr.write(
+        '[report-service] WARN: Redis client type mapping unavailable; report cache payloads use explicit base64 encoding\n'
+      )
+    }
     return client
   }
 
@@ -1338,7 +1407,10 @@ function coerceRedisCacheStoredValue(encoded) {
 }
 
 async function encodeRedisReportCachePayload(entry) {
-  return gzip(Buffer.from(JSON.stringify(entry)))
+  const compressed = await gzip(Buffer.from(JSON.stringify(entry)))
+  // Always store base64 text so round-trips do not depend on RESP3
+  // BLOB_STRING→Buffer type mapping being present on the client.
+  return compressed.toString('base64')
 }
 
 async function decodeRedisReportCachePayload(encoded) {
@@ -2658,14 +2730,20 @@ CASE
 END`
 }
 
+// Default session_history dimension omits antigravity so quota-range joins keep
+// their established lane contract; opt in per-query with includeAntigravity.
 const providerDimension = providerDimensionExpression('sh.provider')
 
 function providerDimensionForAlias(alias = 'sh', options = {}) {
   return providerDimensionExpression(`${alias}.provider`, options)
 }
 
-const providerDimensionRecent = providerDimensionForAlias('sh_recent')
-const healthProviderDimension = providerDimensionForAlias('h')
+const providerDimensionRecent = providerDimensionForAlias('sh_recent', {
+  includeAntigravity: true,
+})
+const healthProviderDimension = providerDimensionForAlias('h', {
+  includeAntigravity: true,
+})
 const inboundModelAliasDimension =
   "COALESCE(NULLIF(sh.inbound_model_alias, ''), 'unknown_inbound_model')"
 const agentNameDimension =
@@ -2871,7 +2949,7 @@ export function parseUsageReportSort(searchParams) {
 
   const sort = sortColumns[sortKey]
   if (!sort) {
-    throw new Error(`Unsupported sort: ${rawSort}`)
+    throw new BadRequestError(`Unsupported sort: ${rawSort}`)
   }
 
   const sortDirection = directionParam?.toLowerCase() === 'asc' ? 'ASC' : 'DESC'
@@ -3268,6 +3346,30 @@ function isHttpResponseCommitted(res) {
   return Boolean(res.headersSent || res.writableEnded || res.destroyed)
 }
 
+class BadRequestError extends Error {
+  constructor(message) {
+    super(message)
+    this.name = 'BadRequestError'
+  }
+}
+
+function isBadRequestError(error) {
+  return (
+    error instanceof BadRequestError ||
+    (Boolean(error) && error.name === 'BadRequestError')
+  )
+}
+
+async function respondWithRequestError(req, res, error) {
+  if (isBadRequestError(error)) {
+    if (!isHttpResponseCommitted(res)) {
+      await sendJson(req, res, 400, { error: error.message ?? 'Bad request' })
+    }
+    return
+  }
+  await respondWithGenericServerError(req, res, error)
+}
+
 function logUnhandledRequestError(error) {
   process.stderr.write(
     `[report-service] WARN: unhandled request error: ${formatError(error)}\n`
@@ -3374,19 +3476,19 @@ function parseDateParam(value, fallback) {
   if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
     return parseDateOnlyParam(value)
   }
-  throw new Error('A valid date=YYYY-MM-DD parameter is required.')
+  throw new BadRequestError('A valid date=YYYY-MM-DD parameter is required.')
 }
 
 function parseDateOnlyParam(value) {
   if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
-    throw new Error('A valid date=YYYY-MM-DD parameter is required.')
+    throw new BadRequestError('A valid date=YYYY-MM-DD parameter is required.')
   }
   const date = new Date(`${value}T00:00:00.000Z`)
   if (
     Number.isNaN(date.getTime()) ||
     date.toISOString().slice(0, 10) !== value
   ) {
-    throw new Error(`Invalid date: ${value}`)
+    throw new BadRequestError(`Invalid date: ${value}`)
   }
   return value
 }
@@ -3545,7 +3647,9 @@ function parseGroupBy(value) {
   const groupBy = requested.length ? requested : DEFAULT_GROUP_BY
   const invalid = groupBy.filter((key) => !dimensions[key])
   if (invalid.length) {
-    throw new Error(`Unsupported group_by value: ${invalid.join(', ')}`)
+    throw new BadRequestError(
+      `Unsupported group_by value: ${invalid.join(', ')}`
+    )
   }
   return [...new Set(groupBy)]
 }
@@ -4042,7 +4146,7 @@ WHERE ${whereParts.join('\n  AND ')};
 export function buildTrendQuery(searchParams) {
   const grain = searchParams.get('grain') ?? 'day'
   if (!grains[grain]) {
-    throw new Error(`Unsupported grain: ${grain}`)
+    throw new BadRequestError(`Unsupported grain: ${grain}`)
   }
 
   const { values, whereParts } = buildFilteredWhere(searchParams)
@@ -4564,22 +4668,7 @@ WITH local_request_latency AS (
 SELECT
     bucket_start,
     COALESCE(environment, 'unknown') AS environment,
-    CASE
-        WHEN lower(COALESCE(provider, 'unknown')) IN ('google', 'gemini') THEN 'google'
-        WHEN lower(COALESCE(provider, 'unknown')) IN ('claude', 'anthropic') THEN 'anthropic'
-        WHEN lower(COALESCE(provider, 'unknown')) LIKE 'claude/%' THEN 'anthropic'
-        WHEN lower(COALESCE(provider, 'unknown')) LIKE 'anthropic/%' THEN 'anthropic'
-        WHEN lower(COALESCE(provider, 'unknown')) LIKE 'deepseek/%' THEN 'deepseek'
-        WHEN lower(COALESCE(provider, 'unknown')) IN ('xai', 'x.ai') THEN 'xai'
-        WHEN lower(COALESCE(provider, 'unknown')) LIKE 'xai/%' THEN 'xai'
-        WHEN lower(COALESCE(provider, 'unknown')) = 'nvidia' THEN 'nvidia_nim'
-        WHEN lower(COALESCE(provider, 'unknown')) LIKE 'nvidia_nim/%' THEN 'nvidia_nim'
-        WHEN lower(COALESCE(provider, 'unknown')) LIKE 'nvidia/%' THEN 'nvidia_nim'
-        WHEN lower(COALESCE(provider, 'unknown')) = 'local' THEN 'local'
-        WHEN lower(COALESCE(provider, 'unknown')) LIKE 'local/%' THEN 'local'
-        WHEN lower(COALESCE(provider, 'unknown')) LIKE 'local_%' THEN 'local'
-        ELSE COALESCE(provider, 'unknown')
-    END AS provider,
+    ${providerDimensionExpression('provider', { includeAntigravity: true })} AS provider,
     COALESCE(model, 'unknown') AS model,
     COALESCE(model_group, 'unknown') AS model_group,
     requests,
@@ -4780,6 +4869,8 @@ LIMIT $${values.length};
 const rateLimitProviderDimension = providerDimensionExpression('ri.provider', {
   includeAntigravity: true,
 })
+// Range-history deliberately omits antigravity so the Quota tab lanes stay
+// aligned with the existing range-history contract (see query-builders tests).
 const rateLimitRangeProviderDimension =
   providerDimensionExpression('ri.provider')
 
@@ -4787,6 +4878,19 @@ const XAI_GROK_BUILD_WEEKLY_CREDITS_KEY =
   'xai_grok_build_weekly_credits:credits'
 const XAI_GROK_BUILD_MONTHLY_REQUESTS_KEY =
   'xai_grok_build_monthly_requests:requests'
+
+function quotaUnitCaseExpression(columnExpression = 'ri.quota_key') {
+  return `CASE
+            WHEN ${columnExpression} = '${XAI_GROK_BUILD_WEEKLY_CREDITS_KEY}' THEN 'credits'
+            WHEN ${columnExpression} = '${XAI_GROK_BUILD_MONTHLY_REQUESTS_KEY}' THEN 'requests'
+            WHEN ${columnExpression} LIKE '%:credits' THEN 'credits'
+            WHEN ${columnExpression} LIKE '%:requests' THEN 'requests'
+            ELSE NULL
+        END`
+}
+
+const RATE_LIMIT_QUOTA_UNIT_CASE = quotaUnitCaseExpression('ri.quota_key')
+const SELECTED_QUOTA_UNIT_CASE = quotaUnitCaseExpression('s.quota_key')
 
 const RATE_LIMIT_NORMALIZED_MODEL_CASE = `
         CASE
@@ -5009,13 +5113,7 @@ billing_by_type AS (
         s.quota_key,
         NULLIF(TRIM(BOTH FROM COALESCE(o.source, '')), '') AS source,
         NULLIF(TRIM(BOTH FROM COALESCE(o.client, '')), '') AS client,
-        CASE
-            WHEN s.quota_key = '${XAI_GROK_BUILD_WEEKLY_CREDITS_KEY}' THEN 'credits'
-            WHEN s.quota_key = '${XAI_GROK_BUILD_MONTHLY_REQUESTS_KEY}' THEN 'requests'
-            WHEN s.quota_key LIKE '%:credits' THEN 'credits'
-            WHEN s.quota_key LIKE '%:requests' THEN 'requests'
-            ELSE NULL
-        END AS quota_unit,
+        ${SELECTED_QUOTA_UNIT_CASE} AS quota_unit,
         o.observed_at AS billing_observed_at,
         o.quota_limit AS quota_limit,
         o.quota_used AS quota_used,
@@ -5310,13 +5408,7 @@ normalized AS (
         ri.quota_key AS normalized_quota_key,
         NULLIF(TRIM(BOTH FROM COALESCE(to_jsonb(ri)->>'source', '')), '') AS source,
         NULLIF(TRIM(BOTH FROM COALESCE(to_jsonb(ri)->>'client', '')), '') AS client,
-        CASE
-            WHEN ri.quota_key = '${XAI_GROK_BUILD_WEEKLY_CREDITS_KEY}' THEN 'credits'
-            WHEN ri.quota_key = '${XAI_GROK_BUILD_MONTHLY_REQUESTS_KEY}' THEN 'requests'
-            WHEN ri.quota_key LIKE '%:credits' THEN 'credits'
-            WHEN ri.quota_key LIKE '%:requests' THEN 'requests'
-            ELSE NULL
-        END AS quota_unit,
+        ${RATE_LIMIT_QUOTA_UNIT_CASE} AS quota_unit,
         ri.expected_reset_at,
         ri.remaining_pct,
         ri.fromDate AS interval_start,
@@ -5661,13 +5753,7 @@ normalized AS (
         ri.quota_key AS normalized_quota_key,
         NULLIF(TRIM(BOTH FROM COALESCE(to_jsonb(ri)->>'source', '')), '') AS source,
         NULLIF(TRIM(BOTH FROM COALESCE(to_jsonb(ri)->>'client', '')), '') AS client,
-        CASE
-            WHEN ri.quota_key = '${XAI_GROK_BUILD_WEEKLY_CREDITS_KEY}' THEN 'credits'
-            WHEN ri.quota_key = '${XAI_GROK_BUILD_MONTHLY_REQUESTS_KEY}' THEN 'requests'
-            WHEN ri.quota_key LIKE '%:credits' THEN 'credits'
-            WHEN ri.quota_key LIKE '%:requests' THEN 'requests'
-            ELSE NULL
-        END AS quota_unit,
+        ${RATE_LIMIT_QUOTA_UNIT_CASE} AS quota_unit,
         ri.expected_reset_at,
         ri.fromDate AS interval_start,
         LEAST(
@@ -5870,13 +5956,7 @@ WITH normalized AS (
         ri.quota_key AS normalized_quota_key,
         NULLIF(TRIM(BOTH FROM COALESCE(to_jsonb(ri)->>'source', '')), '') AS source,
         NULLIF(TRIM(BOTH FROM COALESCE(to_jsonb(ri)->>'client', '')), '') AS client,
-        CASE
-            WHEN ri.quota_key = '${XAI_GROK_BUILD_WEEKLY_CREDITS_KEY}' THEN 'credits'
-            WHEN ri.quota_key = '${XAI_GROK_BUILD_MONTHLY_REQUESTS_KEY}' THEN 'requests'
-            WHEN ri.quota_key LIKE '%:credits' THEN 'credits'
-            WHEN ri.quota_key LIKE '%:requests' THEN 'requests'
-            ELSE NULL
-        END AS quota_unit,
+        ${RATE_LIMIT_QUOTA_UNIT_CASE} AS quota_unit,
         ri.expected_reset_at,
         ri.fromDate AS interval_start,
         ri.toDate AS interval_end,
@@ -5975,13 +6055,7 @@ WITH normalized AS (
         ri.quota_key AS normalized_quota_key,
         NULLIF(TRIM(BOTH FROM COALESCE(to_jsonb(ri)->>'source', '')), '') AS source,
         NULLIF(TRIM(BOTH FROM COALESCE(to_jsonb(ri)->>'client', '')), '') AS client,
-        CASE
-            WHEN ri.quota_key = '${XAI_GROK_BUILD_WEEKLY_CREDITS_KEY}' THEN 'credits'
-            WHEN ri.quota_key = '${XAI_GROK_BUILD_MONTHLY_REQUESTS_KEY}' THEN 'requests'
-            WHEN ri.quota_key LIKE '%:credits' THEN 'credits'
-            WHEN ri.quota_key LIKE '%:requests' THEN 'requests'
-            ELSE NULL
-        END AS quota_unit,
+        ${RATE_LIMIT_QUOTA_UNIT_CASE} AS quota_unit,
         ri.expected_reset_at,
         ri.fromDate AS interval_start,
         ri.toDate AS interval_end,
@@ -6132,14 +6206,7 @@ export function buildQuotaEstimatorObservationQuery(searchParams) {
 WITH reset_windows AS (
     SELECT
         ri.provider AS raw_provider,
-        CASE
-            WHEN lower(COALESCE(ri.provider, 'unknown')) IN ('claude', 'anthropic') THEN 'anthropic'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'claude/%' THEN 'anthropic'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'anthropic/%' THEN 'anthropic'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) = 'openai' THEN 'openai'
-            WHEN lower(COALESCE(ri.provider, 'unknown')) LIKE 'openai/%' THEN 'openai'
-            ELSE lower(COALESCE(ri.provider, 'unknown'))
-        END AS provider,
+        ${providerDimensionExpression('ri.provider', { includeAntigravity: true })} AS provider,
         ri.quota_key,
         ri.quota_type AS raw_interval_quota_type,
         ri.expected_reset_at,
@@ -6162,14 +6229,7 @@ WITH reset_windows AS (
 observations AS (
     SELECT
         o.provider AS raw_provider,
-        CASE
-            WHEN lower(COALESCE(o.provider, 'unknown')) IN ('claude', 'anthropic') THEN 'anthropic'
-            WHEN lower(COALESCE(o.provider, 'unknown')) LIKE 'claude/%' THEN 'anthropic'
-            WHEN lower(COALESCE(o.provider, 'unknown')) LIKE 'anthropic/%' THEN 'anthropic'
-            WHEN lower(COALESCE(o.provider, 'unknown')) = 'openai' THEN 'openai'
-            WHEN lower(COALESCE(o.provider, 'unknown')) LIKE 'openai/%' THEN 'openai'
-            ELSE lower(COALESCE(o.provider, 'unknown'))
-        END AS provider,
+        ${providerDimensionExpression('o.provider', { includeAntigravity: true })} AS provider,
         o.quota_key,
         CASE
             WHEN o.provider = 'anthropic' AND o.quota_key = 'anthropic_unified_5h:5h' THEN 'short'
@@ -6260,18 +6320,26 @@ ORDER BY o.provider ASC, o.quota_key ASC, o.expected_reset_at ASC NULLS LAST, o.
 export function buildQuotaEstimatorUsageBucketQuery(searchParams) {
   const from = parseSearchDateOnly(searchParams.get('from'), defaultFromDate)
   const to = parseSearchDateOnly(searchParams.get('to'), defaultToDate)
+  // Estimator buckets share the same provider CASE source as health (incl.
+  // antigravity) so a single alias addition propagates to both surfaces (F06).
+  const estimatorProviderDimension = providerDimensionExpression(
+    'sh.provider',
+    {
+      includeAntigravity: true,
+    }
+  )
 
   const sql = `
 WITH usage_events AS (
     SELECT
-        ${providerDimension} AS provider,
+        ${estimatorProviderDimension} AS provider,
         CASE
-            WHEN ${providerDimension} = 'anthropic' AND COALESCE(sh.model, '') ILIKE '%haiku%' THEN 'haiku'
-            WHEN ${providerDimension} = 'anthropic' AND COALESCE(sh.model, '') ILIKE '%sonnet%' THEN 'sonnet'
-            WHEN ${providerDimension} = 'anthropic' AND COALESCE(sh.model, '') ILIKE '%opus%' THEN 'opus'
-            WHEN ${providerDimension} = 'openai' AND COALESCE(sh.model, '') ILIKE '%spark%' THEN 'spark'
-            WHEN ${providerDimension} = 'openai' AND COALESCE(sh.model, '') ILIKE '%codex%' THEN 'codex'
-            WHEN ${providerDimension} = 'openai' AND COALESCE(sh.model, '') ILIKE 'gpt%' THEN 'gpt'
+            WHEN ${estimatorProviderDimension} = 'anthropic' AND COALESCE(sh.model, '') ILIKE '%haiku%' THEN 'haiku'
+            WHEN ${estimatorProviderDimension} = 'anthropic' AND COALESCE(sh.model, '') ILIKE '%sonnet%' THEN 'sonnet'
+            WHEN ${estimatorProviderDimension} = 'anthropic' AND COALESCE(sh.model, '') ILIKE '%opus%' THEN 'opus'
+            WHEN ${estimatorProviderDimension} = 'openai' AND COALESCE(sh.model, '') ILIKE '%spark%' THEN 'spark'
+            WHEN ${estimatorProviderDimension} = 'openai' AND COALESCE(sh.model, '') ILIKE '%codex%' THEN 'codex'
+            WHEN ${estimatorProviderDimension} = 'openai' AND COALESCE(sh.model, '') ILIKE 'gpt%' THEN 'gpt'
             ELSE 'other'
         END AS model_family,
         to_timestamp(
@@ -6289,7 +6357,7 @@ WITH usage_events AS (
     WHERE COALESCE(sh.end_time, sh.start_time, sh.created_at) >= ($1::date::timestamp AT TIME ZONE 'America/New_York') - INTERVAL '1 hour'
       AND COALESCE(sh.end_time, sh.start_time, sh.created_at) < ($2::date::timestamp AT TIME ZONE 'America/New_York') + INTERVAL '2 hours'
       AND ${sessionHistoryReportablePredicate()}
-      AND ${providerDimension} IN ('anthropic', 'openai')
+      AND ${estimatorProviderDimension} IN ('anthropic', 'openai')
 )
 SELECT
     provider,
@@ -9705,7 +9773,7 @@ async function readRequestBody(req) {
 export function buildUsageQuery(searchParams) {
   const grain = searchParams.get('grain') ?? 'day'
   if (!grains[grain]) {
-    throw new Error(`Unsupported grain: ${grain}`)
+    throw new BadRequestError(`Unsupported grain: ${grain}`)
   }
 
   const groupBy = parseGroupBy(searchParams.get('group_by'))
@@ -11497,7 +11565,7 @@ async function handleRequest(req, res) {
 
 const server = http.createServer((req, res) => {
   void handleRequest(req, res).catch((error) =>
-    respondWithGenericServerError(req, res, error)
+    respondWithRequestError(req, res, error)
   )
 })
 
@@ -11727,9 +11795,12 @@ export const __pgBouncerAdminTestHelpers = {
 }
 
 export const __serverRuntimeTestHelpers = {
+  BadRequestError,
+  isBadRequestError,
   GENERIC_INTERNAL_SERVER_ERROR_BODY,
   isHttpResponseCommitted,
   logUnhandledRequestError,
+  respondWithRequestError,
   respondWithGenericServerError,
   resolveBoundedShutdownGraceMs,
   scheduleShutdownForceExit,

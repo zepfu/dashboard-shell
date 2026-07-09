@@ -441,7 +441,8 @@ describe('Wave 1 F03 BadRequestError HTTP mapping', () => {
       await handleCachedUsageSubreport(req, res, 'usage-v2', load, {
         pool: {},
         sendJson: vi.fn(),
-        cachedReport: async (_scope, loader) => loader(),
+        cachedReport: async (_scope: string, loader: () => Promise<unknown>) =>
+          loader(),
       })
     } catch (error) {
       await respondWithGenericServerError(req, res, error)
