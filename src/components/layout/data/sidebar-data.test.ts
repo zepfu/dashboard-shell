@@ -10,6 +10,7 @@ import {
   normalizeRemoteRoutePath,
 } from '@/shell/remote-dashboard-metadata'
 import { describe, expect, test } from 'vitest'
+import { checkIsActive, remoteNavBasePath } from '../nav-active'
 import { sidebarData } from './sidebar-data'
 
 const DEAD_DEV_AUTH_URLS = [
@@ -170,24 +171,27 @@ describe('D1-451 Wave 5 — sidebar-data (W2, C4)', () => {
     // routes must still be absent from scaffoldNavGroups.
   })
 
-  test('test_sidebar_data_imports_shared_remote_nav_base_path_helper', async () => {
-    const navActive = await import('../nav-active')
-    expect(
-      'remoteNavBasePath' in navActive &&
-        typeof (navActive as { remoteNavBasePath?: (url: string) => string })
-          .remoteNavBasePath === 'function'
-    ).toBe(true)
+  test('test_sidebar_data_active_state_behavior', () => {
+    const dashboardsGroup = sidebarData.navGroups.find(
+      (group) => group.title === 'Dashboards'
+    )
+    expect(dashboardsGroup).toBeDefined()
 
-    const sidebarDataSource = await import(
-      /* @vite-ignore */ new URL('./sidebar-data.ts', import.meta.url).href
-    ).catch(() => null)
+    const aawmTapNav = dashboardsGroup!.items.find(
+      (item) => 'title' in item && item.title === 'AAWM TAP'
+    )
+    expect(aawmTapNav).toBeDefined()
+    expect('url' in aawmTapNav! && aawmTapNav!.url).toBeTruthy()
 
-    if (sidebarDataSource === null) {
-      expect(true).toBe(true)
-      return
+    const navItem = aawmTapNav as {
+      title: string
+      url: string
+      accentColor?: string
     }
 
-    const sourceText = String(sidebarDataSource)
-    expect(sourceText).toMatch(/remoteNavBasePath|nav-active/)
+    expect(remoteNavBasePath(navItem.url)).toBe('/aawm-tap')
+    expect(checkIsActive('/aawm-tap/processes/detail', navItem)).toBe(true)
+    expect(checkIsActive('/tasks', navItem)).toBe(false)
+    expect(checkIsActive('/aawm-tap/overview', navItem)).toBe(true)
   })
 })
