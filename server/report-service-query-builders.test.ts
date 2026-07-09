@@ -1166,7 +1166,7 @@ describe('report-service query builders', () => {
     expect(query.sql).toContain('(sh.changed_gitignore IS FALSE)')
   })
 
-  test('test_buildUsageQuery_uses_fast_usage_signal_filter', () => {
+  test('test_buildUsageQuery_uses_reportable_predicate', () => {
     const query = buildUsageQuery(
       new URLSearchParams({
         from: '2026-05-01',
@@ -1177,12 +1177,7 @@ describe('report-service query builders', () => {
       })
     )
 
-    expect(query.sql).toContain('COALESCE(sh.input_tokens, 0)')
-    expect(query.sql).toContain('COALESCE(sh.response_cost_usd, 0)')
-    expect(query.sql).toContain('COALESCE(sh.tool_call_count, 0) > 0')
-    expect(query.sql).not.toContain(
-      "sh.metadata->>'session_history_usage_record'"
-    )
+    expectReportableSessionHistoryFilter(query.sql)
     expect(query.sql).toContain('reason_bounds AS')
     expect(query.sql).toContain('reason_source AS MATERIALIZED')
   })
