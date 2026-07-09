@@ -3,6 +3,7 @@
  *
  * Contract assertions against live metadata and runtime utilities.
  */
+import { forwardRef } from 'react'
 import { readFileSync } from 'node:fs'
 import { describe, expect, test } from 'vitest'
 import {
@@ -279,6 +280,22 @@ describe('assertProjectModule (S6-2)', () => {
 
   test('accepts a valid ProjectModule without throwing', () => {
     expect(() => assertProjectModule(validModule)).not.toThrow()
+  })
+
+  test('accepts forwardRef and Lucide-shaped icon components', async () => {
+    const { LayoutDashboard } = await import('lucide-react')
+    const ForwardRefIcon = forwardRef<SVGSVGElement, { className?: string }>(
+      function ForwardRefIcon(_props, _ref) {
+        return null
+      }
+    )
+
+    expect(() =>
+      assertProjectModule({ ...validModule, icon: LayoutDashboard })
+    ).not.toThrow()
+    expect(() =>
+      assertProjectModule({ ...validModule, icon: ForwardRefIcon })
+    ).not.toThrow()
   })
 
   test('throws a named error (RemoteModuleContractError) when module is null', () => {

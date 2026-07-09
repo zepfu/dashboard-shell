@@ -60,7 +60,6 @@ export default {
     { path: '/items/:id', component: lazy(() => import('./pages/ItemDetail')) },
   ],
   navItems: [{ label: 'Overview', path: '/overview', icon: LayoutDashboard }],
-  extensions: [],
 }
 ```
 
@@ -109,8 +108,9 @@ The shell consumes these manifest fields:
   shell/server-side environment variables, not `VITE_*` values.
 - `accentColor`: CSS color used by shell chrome for the module icon tile and
   active nav accents.
-- `extensions`: Reserved extension slots. Keep it empty unless the shell has a
-  tracked consumer for a specific slot.
+
+`extensions` and `requiresAuth` were removed from the shell contract and are not
+supported.
 
 Do not add manifest fields unless the shell consumes them or a shell TODO tracks
 the consuming work.
