@@ -3210,3 +3210,131 @@ test('test_errpct_tooltip_does_not_claim_repo_scoping_on_repo_view_model_row', (
   ).toBeInTheDocument()
   expect(screen.queryByText('(scoped to: dashboard-shell)')).toBeNull()
 })
+
+// ---------------------------------------------------------------------------
+// Wave 4 (P05-F03,F06,F07) — master ledger RED tests
+// ---------------------------------------------------------------------------
+
+test('test_aggregation_memoized_per_group_not_recomputed_on_expand', () => {
+  const rows = [
+    makeRow({
+      model: 'claude-opus-4-7',
+      provider: 'anthropic',
+      tokens_in: 2000,
+    }),
+    makeRow({
+      model: 'claude-sonnet-4-5',
+      provider: 'anthropic',
+      tokens_in: 1500,
+    }),
+    makeRow({
+      model: 'gpt-4o',
+      provider: 'openai',
+      tokens_in: 5000,
+      tokens_out: 1000,
+      requests: 200,
+      p50_ms: 150,
+      p95_ms: 400,
+      error_pct: 0.2,
+      cost_usd: 0.5,
+    }),
+  ]
+
+  const aggregateSpy = vi.spyOn(masterLedgerAggregation, 'aggregateRows')
+  try {
+    render(<MasterLedgerTable rows={rows} />)
+
+    const openaiProviderCallsBefore = aggregateSpy.mock.calls.filter(
+      (call) =>
+        (call[1] as { providerKey?: string; ledgerLevel?: string })
+          .providerKey === 'openai' &&
+        (call[1] as { ledgerLevel?: string }).ledgerLevel === 'provider'
+    ).length
+    expect(openaiProviderCallsBefore).toBeGreaterThan(0)
+
+    expandLedger('Anthropic', 'provider')
+
+    const openaiProviderCallsAfter = aggregateSpy.mock.calls.filter(
+      (call) =>
+        (call[1] as { providerKey?: string; ledgerLevel?: string })
+          .providerKey === 'openai' &&
+        (call[1] as { ledgerLevel?: string }).ledgerLevel === 'provider'
+    ).length
+
+    expect(openaiProviderCallsAfter).toBe(openaiProviderCallsBefore)
+  } finally {
+    aggregateSpy.mockRestore()
+  }
+})
+
+test('test_aggregate_p95_column_header_marks_max_when_not_weighted', () => {
+  render(<MasterLedgerTable rows={mockRows} />)
+
+  const p95Header = screen.getByRole('columnheader', { name: /p95/i })
+  const headerText = (p95Header.textContent ?? '').toLowerCase()
+
+  const hasMaxLabel = headerText.includes('(max)')
+  const hasWeightedLabel =
+    headerText.includes('weighted') || headerText.includes('percentile')
+
+  expect(hasMaxLabel || hasWeightedLabel).toBe(true)
+})
+
+test('test_dead_ledger_columns_removed', () => {
+  const { container } = render(<MasterLedgerTable rows={mockRows} />)
+
+  expect(screen.queryByRole('columnheader', { name: /^queue$/i })).toBeNull()
+  expect(screen.queryByRole('columnheader', { name: /^resets$/i })).toBeNull()
+  expect(screen.queryByRole('columnheader', { name: /^inval$/i })).toBeNull()
+
+  const headers = Array.from(container.querySelectorAll('thead th')).map((th) =>
+    (th.textContent ?? '').trim()
+  )
+  expect(headers).not.toContain('Queue')
+  expect(headers).not.toContain('Resets')
+  expect(headers).not.toContain('INVAL')
+
+  type DeadFieldRow = ModelRow & {
+    queue?: number
+    resets?: number
+    inval?: number
+  }
+  const rowWithDeadFields: DeadFieldRow = makeRow({
+    queue: 0,
+    resets: 0,
+    inval: 0,
+  })
+  expect('queue' in rowWithDeadFields).toBe(false)
+  expect('resets' in rowWithDeadFields).toBe(false)
+  expect('inval' in rowWithDeadFields).toBe(false)
+})
+
+test('test_tokensDirectionEstimated_removed_or_surfaced', () => {
+  const model = 'claude-opus-4-7'
+  const built = buildModelRows(
+    [minimalStatusRow(model, { token_total: 10_000 })],
+    [] as UsageReportProviderLatencyHealthRow[],
+    [] as UsageReportRow[],
+    [] as UsageReportQuotaRow[],
+    []
+  )
+
+  expect(built).toHaveLength(1)
+  const hasEstimatedField = Object.prototype.hasOwnProperty.call(
+    built[0],
+    'tokensDirectionEstimated'
+  )
+
+  if (hasEstimatedField) {
+    expect(built[0].tokensDirectionEstimated).toBe(true)
+    const { container } = render(<MasterLedgerTable rows={built} />)
+    expandLedger('Anthropic', 'provider')
+    expandLedger('Opus', 'family')
+    const estimatedMarkers = container.querySelectorAll(
+      '[data-tokens-direction-estimated="true"]'
+    )
+    expect(estimatedMarkers.length).toBeGreaterThan(0)
+  } else {
+    expect(built[0].tokens_in + built[0].tokens_out).toBeGreaterThan(0)
+  }
+})
