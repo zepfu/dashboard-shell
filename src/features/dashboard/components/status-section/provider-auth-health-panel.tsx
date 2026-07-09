@@ -109,13 +109,9 @@ export function ProviderAuthHealthPanel({
     authHealth?.freshness_label ??
     'Current credential refresh state from provider_auth_current'
   const headPill =
-    entries.length > 0
-      ? statusPill(
-          AUTH_HEALTH_STATE_PILL,
-          entries[0].auth_health_state,
-          STATUS_PILL_FALLBACK
-        )
-      : statusPill(AUTH_HEALTH_STATE_PILL, 'refreshed', STATUS_PILL_FALLBACK)
+    entries.length === 0
+      ? statusPill(AUTH_HEALTH_STATE_PILL, 'refreshed', STATUS_PILL_FALLBACK)
+      : undefined
 
   return (
     <StatusPanel
