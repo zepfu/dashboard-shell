@@ -12,7 +12,7 @@ import type {
 } from '../../api/usage-report'
 import {
   formatTimeAgo,
-  quotaTypeToPeriodType,
+  quotaTypeToBarPeriodType,
   tipModelsFromBreakdownGoogleAggregated,
   tipModelsFromBreakdownSingleLabel,
   classifyGeminiModel,
@@ -71,35 +71,46 @@ describe('Wave 40 — formatTimeAgo', () => {
   })
 })
 
-describe('Wave 40 — quotaTypeToPeriodType', () => {
+describe('Wave 40 — quotaTypeToBarPeriodType', () => {
   test('test_quota_type_short_maps_to_5hr', () => {
-    expect(quotaTypeToPeriodType('short')).toBe('5hr')
+    expect(quotaTypeToBarPeriodType('short')).toBe('5hr')
   })
 
   test('test_quota_type_short_special_maps_to_5hr', () => {
-    expect(quotaTypeToPeriodType('short_special')).toBe('5hr')
+    expect(quotaTypeToBarPeriodType('short_special')).toBe('5hr')
   })
 
   test('test_quota_type_weekly_maps_to_weekly', () => {
-    expect(quotaTypeToPeriodType('weekly')).toBe('weekly')
+    expect(quotaTypeToBarPeriodType('weekly')).toBe('weekly')
   })
 
   test('test_quota_type_special_maps_to_special', () => {
-    expect(quotaTypeToPeriodType('special')).toBe('special')
+    expect(quotaTypeToBarPeriodType('special')).toBe('special')
   })
 
   test('test_quota_type_monthly_maps_to_monthly', () => {
-    expect(quotaTypeToPeriodType('monthly')).toBe('monthly')
+    expect(quotaTypeToBarPeriodType('monthly')).toBe('monthly')
   })
 
   test('test_quota_type_weekly_overage_included_maps_to_weekly_overage_included', () => {
-    expect(quotaTypeToPeriodType('weekly_overage_included')).toBe(
+    expect(quotaTypeToBarPeriodType('weekly_overage_included')).toBe(
       'weekly_overage_included'
     )
   })
   test('test_quota_type_unknown_defaults_to_weekly', () => {
-    expect(quotaTypeToPeriodType('requests')).toBe('weekly')
+    expect(quotaTypeToBarPeriodType('requests')).toBe('weekly')
   })
+})
+
+// ---------------------------------------------------------------------------
+// Fork-review Wave 5 — P09-F02 quotaTypeToPeriodType deletion (RED)
+// ---------------------------------------------------------------------------
+
+test('test_quotaTypeToPeriodType_removed', async () => {
+  const fields = await import('./fields')
+  expect('quotaTypeToPeriodType' in fields).toBe(false)
+  expect(quotaTypeToBarPeriodType('weekly_special')).toBe('special')
+  expect(quotaTypeToBarPeriodType('short')).toBe('5hr')
 })
 
 describe('Wave 40 — tipModelsFromBreakdownGoogleAggregated', () => {
