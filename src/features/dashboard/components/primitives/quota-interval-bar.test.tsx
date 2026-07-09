@@ -524,7 +524,7 @@ test('test_quota_projection_clamped_when_over_100', () => {
   expect(leftNum).toBeLessThanOrEqual(100)
 })
 
-test('test_over_quota_tick_is_visible', () => {
+test('test_over_quota_tick_exact_contract', () => {
   const intervals: QuotaInterval[] = [
     { widthPct: 100, severityClass: 'iv-50-p', highVelocity: false },
   ]
@@ -533,24 +533,14 @@ test('test_over_quota_tick_is_visible', () => {
     <QuotaIntervalBar intervals={intervals} projectionPct={115} />
   )
 
-  const bar = container.querySelector('.quota-row-bar') as HTMLElement | null
   const tick = container.querySelector(
     '.qbar-projection.over'
   ) as HTMLElement | null
-  expect(bar).not.toBeNull()
   expect(tick).not.toBeNull()
 
-  const left = tick!.style.left
-  const right = tick!.style.right
-  const usesVisibleAnchor =
-    left === 'calc(100% - 2px)' || right === '0' || right === '0px'
-  expect(usesVisibleAnchor).toBe(true)
-
-  const barRect = bar!.getBoundingClientRect()
-  const tickRect = tick!.getBoundingClientRect()
-  expect(tickRect.width).toBeGreaterThan(0)
-  expect(tickRect.right).toBeLessThanOrEqual(barRect.right + 0.5)
-  expect(tickRect.left).toBeGreaterThanOrEqual(barRect.left - 0.5)
+  expect(tick!.style.left).toBe('100%')
+  expect(tick!.style.right).toBe('0')
+  expect(tick!.style.left).not.toBe('calc(100% - 2px)')
 })
 
 test('test_merged_runs_do_not_lose_newest_interval_to_px_gap', () => {

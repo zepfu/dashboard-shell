@@ -407,12 +407,12 @@ describe('QuotaEstimatorWeightsPanel — A3 lane-def labels', () => {
 })
 
 describe('QuotaEstimatorWeightsPanel — G5 status label consistency', () => {
-  test('test_estimator_unknown_status_humanized_like_default_branch', () => {
-    const response: UsageReportQuotaEstimatorResponse = {
+  test('test_estimator_status_labels_all_humanized', () => {
+    const baseMeta = {
       metadata: {
-        from: null,
-        to: null,
-        phase: '0-2',
+        from: '2026-05-20' as const,
+        to: '2026-05-21' as const,
+        phase: '0-2' as const,
         lagCandidatesMinutes: [30],
         estimatorVersion: 'v1',
       },
@@ -421,8 +421,49 @@ describe('QuotaEstimatorWeightsPanel — G5 status label consistency', () => {
         usage_event_shape: {},
         quota_pct_interval_shape: {},
         provider_lane_policy: {},
-        known_missing_fields: [],
+        known_missing_fields: [] as string[],
       },
+    }
+
+    const cases = [
+      {
+        status: 'high_confidence' as const,
+        label: 'High confidence',
+      },
+      {
+        status: 'directional_only' as const,
+        label: 'Directional only',
+      },
+      {
+        status: 'not_identifiable' as const,
+        label: 'Not identifiable',
+      },
+    ] as const
+
+    for (const { status, label } of cases) {
+      cleanup()
+      const response: UsageReportQuotaEstimatorResponse = {
+        ...baseMeta,
+        estimates: [
+          makeEstimatorEstimate({
+            identifiability: {
+              ...makeEstimatorEstimate().identifiability,
+              status,
+            },
+          }),
+        ],
+      }
+      render(<QuotaEstimatorWeightsPanel response={response} loading={false} />)
+      const lanePill = screen
+        .getAllByRole('status')
+        .find((el) => el.className.includes('status-pill'))
+      expect(lanePill?.textContent).toBe(label)
+      expect(lanePill?.textContent).not.toMatch(/_/)
+    }
+
+    cleanup()
+    const unknownResponse: UsageReportQuotaEstimatorResponse = {
+      ...baseMeta,
       estimates: [
         makeEstimatorEstimate({
           identifiability: {
@@ -432,10 +473,13 @@ describe('QuotaEstimatorWeightsPanel — G5 status label consistency', () => {
         }),
       ],
     }
-    render(<QuotaEstimatorWeightsPanel response={response} loading={false} />)
-    const status = screen.getByRole('status')
-    // RED: either all statuses humanized or all verbatim — not mixed (G5).
-    expect(status.textContent).toBe('foo_bar')
+    render(
+      <QuotaEstimatorWeightsPanel response={unknownResponse} loading={false} />
+    )
+    const unknownPill = screen
+      .getAllByRole('status')
+      .find((el) => el.className.includes('status-pill'))
+    expect(unknownPill?.textContent).toBe('Foo bar')
   })
 })
 

@@ -18,7 +18,14 @@
  * remain for backward compat.
  */
 import { fireEvent, render } from '@testing-library/react'
-import { HealthStrip, type CellDef } from '../primitives/health-strip'
+import { expect, test, vi } from 'vitest'
+import {
+  BUCKET_MS,
+  HealthStrip,
+  resolveHealthCategoryStyle,
+  TOTAL_CELLS,
+  type CellDef,
+} from '../primitives/health-strip'
 
 const CELL_COUNT = 288 // 24h * 12 (5-min buckets)
 
@@ -152,19 +159,19 @@ const PADDED_CELLS = (first: CellDef) => [
   ...Array.from({ length: 287 }, () => ({ color: 'var(--card-2)' })),
 ]
 
-const CATEGORY_RGBA_CASES = [
-  ['blue', 'blue', /rgba?\(58,\s*130,\s*243/],
-  ['green', 'green', /rgba?\(16,\s*185,\s*129/],
-  ['orange', 'orange', /rgba?\(245,\s*158,\s*11/],
-  ['red', 'red', /rgba?\(239,\s*68,\s*68/],
-  ['normal', 'normal', /rgba?\(58,\s*130,\s*243/],
-  ['teal', 'teal', /rgba?\(16,\s*185,\s*129/],
-  ['warning', 'warning', /rgba?\(245,\s*158,\s*11/],
-] as const
+test('test_health_color_mapping_semantic_not_rgba_mirror', () => {
+  const categories: Array<NonNullable<CellDef['category']>> = [
+    'blue',
+    'green',
+    'orange',
+    'red',
+    'normal',
+    'teal',
+    'warning',
+  ]
 
-test.each(CATEGORY_RGBA_CASES)(
-  'test_health_strip_%s_category_applies_expected_rgba',
-  (_label, category, pattern) => {
+  for (const category of categories) {
+    const expected = resolveHealthCategoryStyle(category, 0.5).background
     const cells = PADDED_CELLS({
       color: 'var(--card-2)',
       category,
@@ -175,9 +182,14 @@ test.each(CATEGORY_RGBA_CASES)(
       '.health-strip-cell'
     )[0] as HTMLElement
     const bg = firstCell.style.background || firstCell.style.backgroundColor
-    expect(bg).toMatch(pattern)
+    expect(bg).toBe(expected)
   }
-)
+
+  // One representative RGBA snapshot (green @ 0.5 intensity).
+  expect(resolveHealthCategoryStyle('green', 0.5).background).toBe(
+    'rgba(16,185,129,0.7)'
+  )
+})
 
 test('test_health_strip_miss_category_applies_cat_miss_class_no_inline_bg', () => {
   const cells = PADDED_CELLS({
@@ -1119,4 +1131,65 @@ test('test_health_strip_event_count_sums_occurrences', () => {
   // After fix: overflow row must say "+2 more events" (not "earlier").
   // (16 events − 14 cap = 2 overflow)
   expect(tipText).toMatch(/\+2\s*more\s*events?/i)
+})
+
+// ---------------------------------------------------------------------------
+// Wave 7 (P08-F03) — single `now` binding for grid + tooltip
+// ---------------------------------------------------------------------------
+
+test('test_health_strip_single_now_binding', () => {
+  const gridNow = new Date('2026-05-20T12:00:00.000Z')
+  const driftedNow = new Date(gridNow.getTime() + BUCKET_MS)
+  const bucketStart = new Date(gridNow.getTime() - BUCKET_MS).toISOString()
+
+  const RealDate = globalThis.Date
+  let unmockedDateCall = 0
+  const dateSpy = vi.spyOn(globalThis, 'Date').mockImplementation(((
+    ...args: [] | [string | number | Date]
+  ) => {
+    if (args.length === 0) {
+      unmockedDateCall += 1
+      return unmockedDateCall === 1 ? gridNow : driftedNow
+    }
+    return new RealDate(...(args as [string | number | Date]))
+  }) as unknown as typeof Date)
+
+  const cells: CellDef[] = Array.from({ length: TOTAL_CELLS }, () => ({
+    color: 'var(--card-2)',
+  }))
+  cells[TOTAL_CELLS - 1] = {
+    color: 'var(--card-2)',
+    category: 'green',
+    bucketStart,
+    eventCount: 1,
+    rawErrorBreakdown: {
+      provider_error_events: 1,
+      provider_5xx_events: 0,
+      provider_timeout_events: 0,
+      network_error_events: 0,
+      rate_limit_events: 0,
+      capacity_events: 0,
+    },
+  }
+
+  const { container: gridContainer } = render(
+    <HealthStrip cells={cells} orientation='horizontal' />
+  )
+  const gridCells = gridContainer.querySelectorAll('.health-strip-cell')
+  const lastGridBg =
+    (gridCells[TOTAL_CELLS - 1] as HTMLElement).style.background ||
+    (gridCells[TOTAL_CELLS - 1] as HTMLElement).style.backgroundColor
+  expect(lastGridBg).toMatch(/rgba?\(16,\s*185,\s*129/)
+
+  const { container: verticalContainer } = render(
+    <HealthStrip cells={cells} orientation='vertical' />
+  )
+  openHealthStripTooltip(verticalContainer)
+
+  const head = document.body.querySelector('.v9-tip-head')
+  expect(head).not.toBeNull()
+  expect(head?.textContent).toMatch(/−0h 5m/)
+  expect(head?.textContent).not.toMatch(/−0h 10m/)
+
+  dateSpy.mockRestore()
 })
