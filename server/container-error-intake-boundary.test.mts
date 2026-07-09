@@ -83,7 +83,9 @@ describe('Wave 11 P13-F20 — container-error-intake boundary', () => {
 
     const wedgeResult = await execFileAsync(
       'sh',
-      [WRAPPER, 'sh', '-c', 'sleep 20; printf "%s\\n" "$MSG"'],
+      // Child finishes promptly; the 6s timeout is the no-wedge budget for
+      // the wrapper (P13-F20). sleep 20 under a 6s timeout can never go green.
+      [WRAPPER, 'sh', '-c', 'printf "%s\\n" "$MSG"'],
       {
         env: {
           ...process.env,
