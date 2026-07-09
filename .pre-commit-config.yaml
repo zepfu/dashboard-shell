@@ -35,7 +35,7 @@ repos:
     hooks:
       - id: tsc-check
         name: TypeScript type check
-        entry: npx tsc --noEmit -p tsconfig.json
+        entry: npx tsc -b --noEmit
         language: system
         types_or: [ts, tsx]
         pass_filenames: false
