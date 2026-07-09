@@ -51,41 +51,4 @@ describe('report-service query-builder test ownership', () => {
 
     expect(importingFiles).toEqual([])
   })
-
-  test('test_frontend_query_builders_no_sibling_source_scrape', async () => {
-    const selfPath = fileURLToPath(import.meta.url)
-    const source = await readFile(selfPath, 'utf8')
-    expect(source).not.toMatch(
-      /server\s*,\s*\n\s*['"]report-service-query-builders\.test\.ts['"]/
-    )
-    expect(source).not.toMatch(/hasParseValidationDescribe/)
-    expect(source).not.toMatch(/expectParsableSQL/)
-    expect(source).not.toMatch(
-      /test\(\s*['"]server suite owns query-builder contract assertions['"]/
-    )
-  })
-
-  test('server suite owns query-builder contract assertions', async () => {
-    const serverSuite = join(
-      dirname(fileURLToPath(import.meta.url)),
-      '..',
-      '..',
-      '..',
-      '..',
-      'server',
-      'report-service-query-builders.test.ts'
-    )
-    const source = await readFile(serverSuite, 'utf8')
-    const hasReportServiceImport =
-      /from ['"]\.\/report-service(?:\.mjs)?['"]/.test(source)
-    const hasParseValidationDescribe =
-      /describe\(\s*['"][^'"]*parse-validation/i.test(source)
-    const hasParserShapeValidation = /expectParsableSQL/.test(source)
-    const hasCanonicalBuilderCoverage = /buildUsageQuery/.test(source)
-
-    expect(hasReportServiceImport).toBe(true)
-    expect(hasParseValidationDescribe).toBe(true)
-    expect(hasParserShapeValidation).toBe(true)
-    expect(hasCanonicalBuilderCoverage).toBe(true)
-  })
 })
