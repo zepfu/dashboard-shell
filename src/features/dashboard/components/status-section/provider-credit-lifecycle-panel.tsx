@@ -156,49 +156,47 @@ export function ProviderCreditLifecyclePanel({
       headPill={headPill}
       emptyMessage={entries.length === 0 ? 'not observed' : undefined}
     >
-      {entries.length > 0 ? (
-        <>
-          {summaryLines.length > 0 ? (
-            <div className='provider-credit-summary-block'>
-              {summaryLines.map((line) => (
-                <div className='provider-credit-summary-line' key={line}>
-                  {line}
-                </div>
-              ))}
+      {summaryLines.length > 0 ? (
+        <div className='provider-credit-summary-block'>
+          {summaryLines.map((line) => (
+            <div className='provider-credit-summary-line' key={line}>
+              {line}
             </div>
-          ) : null}
-          <div className='provider-credit-table-wrap'>
-            <table
-              className='provider-credit-table'
-              aria-label='Provider credit lifecycle entries'
-            >
-              <caption className='provider-credit-table-caption'>
-                {creditTableCaption(entries)}
-              </caption>
-              <thead>
-                <tr>
-                  <th>provider</th>
-                  <th>environment</th>
-                  <th>family</th>
-                  <th>credit</th>
-                  <th>status</th>
-                  <th>granted</th>
-                  <th>expires</th>
-                  <th>observed</th>
-                  <th>notes</th>
-                </tr>
-              </thead>
-              <tbody>
-                {entries.map((entry) => (
-                  <CreditLifecycleRow
-                    key={creditLifecycleEntryKey(entry)}
-                    entry={entry}
-                  />
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </>
+          ))}
+        </div>
+      ) : null}
+      {entries.length > 0 ? (
+        <div className='provider-credit-table-wrap'>
+          <table
+            className='provider-credit-table'
+            aria-label='Provider credit lifecycle entries'
+          >
+            <caption className='provider-credit-table-caption'>
+              {creditTableCaption(entries)}
+            </caption>
+            <thead>
+              <tr>
+                <th>provider</th>
+                <th>environment</th>
+                <th>family</th>
+                <th>credit</th>
+                <th>status</th>
+                <th>granted</th>
+                <th>expires</th>
+                <th>observed</th>
+                <th>notes</th>
+              </tr>
+            </thead>
+            <tbody>
+              {entries.map((entry) => (
+                <CreditLifecycleRow
+                  key={creditLifecycleEntryKey(entry)}
+                  entry={entry}
+                />
+              ))}
+            </tbody>
+          </table>
+        </div>
       ) : undefined}
     </StatusPanel>
   )
