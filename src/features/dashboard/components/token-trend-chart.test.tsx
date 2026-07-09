@@ -2227,8 +2227,8 @@ test('D1-451_C3_offset_timestamp_day_matches_envelope_day_field', async () => {
     selectedMetrics: ['requests'],
     scope: { providers: ['anthropic'], models: [], repositories: [] },
   })
-  const requestRow = rows.find((r) => r.metricKey === 'requests')
-  expect(requestRow?.cells.get(`${envelopeDay}|23`)).toBe(3)
+  const requestRow = rows.find((r) => r.metric.key === 'requests')
+  expect(requestRow?.grid.get(envelopeDay)?.get(23)?.value).toBe(3)
 })
 
 test('D1-451_C4_token_scale_floor_tick_not_misleading_in_distortion_band', async () => {
