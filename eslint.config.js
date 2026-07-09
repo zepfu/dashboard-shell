@@ -18,7 +18,7 @@ export default defineConfig(
     ],
     files: ['**/*.{ts,tsx}'],
     languageOptions: {
-      ecmaVersion: 2020,
+      ecmaVersion: 2022,
       globals: globals.browser,
     },
     plugins: {
@@ -56,6 +56,18 @@ export default defineConfig(
       ],
       // Prevent duplicate imports from the same module
       'no-duplicate-imports': 'error',
+    },
+  },
+  // Node runtime globals for scripts/ and server/ (no browser APIs assumed).
+  {
+    files: [
+      'scripts/**/*.{js,mjs,cjs,ts,mts,cts}',
+      'server/**/*.{js,mjs,cjs,ts,mts,cts}',
+    ],
+    languageOptions: {
+      ecmaVersion: 2022,
+      globals: globals.node,
+      parser: tseslint.parser,
     },
   }
 )

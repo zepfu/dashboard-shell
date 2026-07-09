@@ -168,9 +168,11 @@ rebuild. Dependency changes under `server/package.json` still require rebuilding
 the report image.
 
 The shell defaults to loading remotes through `/modules/<base>/remoteEntry.js`,
-which `nginx.conf` proxies to the sibling static containers. For local Vite
-development, the dev compose file sets browser-accessible localhost remote
-entries such as `AAWM_DASHBOARD_REMOTE_ENTRY`, `AAWM_TAP_REMOTE_ENTRY`,
+which `nginx.conf.template` (the single nginx source; the image COPYs it into
+`/etc/nginx/templates/default.conf.template`) proxies to the sibling static
+containers. For local Vite development, the dev compose file sets
+browser-accessible localhost remote entries such as
+`AAWM_DASHBOARD_REMOTE_ENTRY`, `AAWM_TAP_REMOTE_ENTRY`,
 `AAWM_OBSERVE_REMOTE_ENTRY`, `AEGIS_REMOTE_ENTRY`, and `SLUICE_REMOTE_ENTRY`.
 `AEGIS_DB_PASSWORD` in `.env.example` remains the local-dev default only; treat it as non-production and
 override it for non-local operators before starting either compose stack.
