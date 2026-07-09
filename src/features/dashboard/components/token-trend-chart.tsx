@@ -1163,37 +1163,13 @@ export function buildTrendSignalRows(input: BuildTrendSignalRowsInput): {
       }
     }
 
-    const compatibleRow = {
+    return {
       metric,
       grid,
       maxValue,
       hasData,
       sourceRowCount,
-    } as TrendSignalRow & {
-      metricKey: string
-      cells: Map<string, number>
     }
-
-    const compatibilityCells = new Map<string, number>()
-    for (const [day, hourMap] of grid.entries()) {
-      for (const [hour, cell] of hourMap.entries()) {
-        if (cell.value !== null) {
-          compatibilityCells.set(`${day}|${hour.toString()}`, cell.value)
-        }
-      }
-    }
-
-    return new Proxy(compatibleRow, {
-      get(target, prop, receiver) {
-        if (prop === 'metricKey') return target.metric.key
-        if (prop === 'cells') return compatibilityCells
-        return Reflect.get(target, prop, receiver)
-      },
-      has(target, prop) {
-        if (prop === 'metricKey' || prop === 'cells') return false
-        return Reflect.has(target, prop)
-      },
-    })
   })
 
   return { rows, sourceRowCount }

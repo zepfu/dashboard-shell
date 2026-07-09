@@ -6,12 +6,10 @@ import {
   buildQuotaSegments,
   formatTimeAgo,
   quotaTypeToBarPeriodType,
-  quotaTypeToPeriodType,
 } from './fields'
 
-describe('weekly_special classification parity (D1-450 I1)', () => {
-  test('testkit quotaTypeToPeriodType and production quotaTypeToBarPeriodType agree', () => {
-    expect(quotaTypeToPeriodType('weekly_special')).toBe('special')
+describe('weekly_special classification (D1-450 I1)', () => {
+  test('production quotaTypeToBarPeriodType maps weekly_special to special', () => {
     expect(quotaTypeToBarPeriodType('weekly_special')).toBe('special')
   })
 })
