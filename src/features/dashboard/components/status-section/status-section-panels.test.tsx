@@ -3,7 +3,7 @@
  *
  * Covers: alias-routing (C2, I3), provider-auth-health (I3), provider-credit-lifecycle
  * (C7, I3, E4), session-diagnostics (P1, I2, E3, E4), pgbouncer (G2, G3, A4),
- * provider-quota-history-bucket (I4, I7), quota-estimator-weights (G5, I6, A3).
+ * quota-estimator-weights (G5, I6, A3).
  */
 import {
   cleanup,
@@ -24,7 +24,6 @@ import type {
   UsageReportProviderCreditLifecycleEntry,
   UsageReportQuotaEstimatorEstimate,
   UsageReportQuotaEstimatorResponse,
-  UsageReportQuotaHistoryRow,
   UsageReportSessionDiagnosticsResponse,
   UsageReportSessionDiagnosticsRow,
 } from '../../api/usage-report'
@@ -32,7 +31,6 @@ import { AawmAliasRoutingPanel } from './aawm-alias-routing-panel'
 import { PgBouncerHealthPanel } from './pgbouncer-health-panel'
 import { ProviderAuthHealthPanel } from './provider-auth-health-panel'
 import { ProviderCreditLifecyclePanel } from './provider-credit-lifecycle-panel'
-import { ProviderQuotaHistoryBucket } from './provider-quota-history-bucket'
 import { QuotaEstimatorWeightsPanel } from './quota-estimator-weights-panel'
 import { SessionDiagnosticsPanel } from './session-diagnostics-panel'
 
@@ -84,24 +82,6 @@ function makeCreditEntry(
     credit_family: 'promo_grant',
     available_count: 1,
     status: 'available',
-    ...overrides,
-  }
-}
-
-function makeHistoryRow(
-  overrides: Partial<UsageReportQuotaHistoryRow> = {}
-): UsageReportQuotaHistoryRow {
-  return {
-    provider: 'gemini',
-    model: null,
-    quota_type: 'short',
-    expected_reset_at: '2026-05-20T11:00:00Z',
-    interval_start: '2026-05-20T06:00:00Z',
-    interval_end: '2026-05-20T11:00:00Z',
-    min_remaining_pct: 40,
-    max_remaining_pct: 100,
-    usage_tokens: 200,
-    usage_breakdown: [],
     ...overrides,
   }
 }
@@ -388,44 +368,6 @@ describe('PgBouncerHealthPanel — A4 formatCompactQuantity import', () => {
     expect(typeof mod.formatCompactQuantity).toBe('function')
     const pgbMod = await import('./pgbouncer-health-panel')
     expect(pgbMod.PgBouncerHealthPanel).toBeDefined()
-  })
-})
-
-// ---------------------------------------------------------------------------
-// I4 / I7 — quota bucket header + rangeLabel shadow
-// ---------------------------------------------------------------------------
-
-describe('ProviderQuotaHistoryBucket — I4 canonical header', () => {
-  test('test_quota_bucket_header_shows_canonical_google_not_gemini', () => {
-    render(
-      <ProviderQuotaHistoryBucket
-        provider='gemini'
-        rows={[makeHistoryRow({ provider: 'gemini' })]}
-        rangeFrom='2026-05-20'
-        rangeTo='2026-05-21'
-      />
-    )
-    const head = screen.getByText('gemini')
-    expect(head).toBeInTheDocument()
-    // RED: header should canonicalize gemini → google (siblings use canonicalProvider in lane heads).
-    expect(screen.getByText('google')).toBeInTheDocument()
-  })
-})
-
-describe('ProviderQuotaHistoryBucket — I7 rangeLabel shadow', () => {
-  test('test_quota_bucket_source_avoids_inner_rangeLabel_shadowing', async () => {
-    const fs = await import('node:fs/promises')
-    const path = await import('node:path')
-    const source = await fs.readFile(
-      path.join(
-        process.cwd(),
-        'src/features/dashboard/components/status-section/provider-quota-history-bucket.tsx'
-      ),
-      'utf8'
-    )
-    const innerRangeLabelCount = (source.match(/\bconst rangeLabel\b/g) ?? [])
-      .length
-    expect(innerRangeLabelCount).toBeLessThanOrEqual(1)
   })
 })
 

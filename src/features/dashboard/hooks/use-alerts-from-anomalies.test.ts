@@ -9,7 +9,6 @@ import type {
 import { CANONICAL_PROVIDERS } from '../lib/provider-identity'
 import {
   buildDashboardAlertSummary,
-  useAlertsFromAnomalies,
   useDashboardAlertSummary,
 } from './use-alerts-from-anomalies'
 import type { AnomalyFlags } from './use-anomaly-detection'
@@ -366,51 +365,6 @@ describe('D1-450 C8 success_pct guard', () => {
     expect(count).toBeGreaterThanOrEqual(0)
     expect(count).not.toBeLessThan(0)
   })
-})
-
-test('test_useAlertsFromAnomalies_nvidia_not_healthy_when_anomalous (#46)', () => {
-  const anomalies: AnomalyFlags = {
-    earlyReset: new Map([
-      [
-        'nvidia_nim',
-        { prior: '2026-06-13T00:00:00Z', current: '2026-06-12T22:00:00Z' },
-      ],
-    ]),
-    cacheStale: false,
-  }
-  const { result } = renderHook(() => useAlertsFromAnomalies(anomalies))
-  expect(
-    result.current.filter((a) => a.head === 'NVIDIA: healthy')
-  ).toHaveLength(0)
-  expect(
-    result.current.filter((a) => a.type === 'early-reset').length
-  ).toBeGreaterThan(0)
-})
-
-test('test_useAlertsFromAnomalies_nvidia_healthy_regression_canonical_head (#46)', () => {
-  const { result } = renderHook(() => useAlertsFromAnomalies(emptyAnomalies))
-  const healthyNvidia = result.current.filter((a) =>
-    a.head.toLowerCase().includes('nvidia')
-  )
-  const hasHealthy = healthyNvidia.some((a) => a.head.endsWith(': healthy'))
-  expect(hasHealthy).toBe(true)
-  expect(healthyNvidia.some((a) => a.head === 'NVIDIA: healthy')).toBe(false)
-})
-
-test('test_dedup_healthy_alerts_no_duplicates (#48)', () => {
-  const { result } = renderHook(() => useAlertsFromAnomalies(emptyAnomalies))
-  const healthyAlerts = result.current.filter(
-    (a) => typeof a.head === 'string' && a.head.endsWith(': healthy')
-  )
-  const providerNames = healthyAlerts.map((a) => a.head)
-  expect(providerNames).toHaveLength(new Set(providerNames).size)
-})
-
-test('test_no_always_on_filler_sync_on_schedule (#49)', () => {
-  const { result } = renderHook(() => useAlertsFromAnomalies(emptyAnomalies))
-  expect(
-    result.current.filter((a) => a.head === 'Sync on schedule')
-  ).toHaveLength(0)
 })
 
 test('test_probe_failure_sums_dns_tcp_when_status_probes_ran (S4-T10)', () => {

@@ -382,7 +382,7 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
     }
   })
 
-  test('test_status_health_omits_google_and_antigravity_provider_cards', async () => {
+  test('test_status_health_deprecated_google_and_antigravity_omit_health_cards', async () => {
     const makeGoogleQuotaRow = (): UsageReportQuotaRow => ({
       provider: 'google',
       model: 'gemini-2.5-flash-lite',
@@ -879,7 +879,7 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
     expect(aegis.getByText('unconfigured')).toBeInTheDocument()
   })
 
-  test('test_providers_section_has_health_and_quota_tabs', async () => {
+  test('test_status_quota_tab_deprecated_display_no_provider_buckets', async () => {
     const quotaHistoryRow = (
       overrides: Partial<UsageReportQuotaHistoryRow>
     ): UsageReportQuotaHistoryRow => ({
@@ -895,15 +895,7 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
       velocity_scores: [],
       velocity_sample_count: 0,
       usage_tokens: 1000,
-      usage_breakdown: [
-        {
-          model: 'gpt-5.5',
-          tokens: 1000,
-          cost: 1,
-          traces: 5,
-          recent_traces_90m: 0,
-        },
-      ],
+      usage_breakdown: [],
       ...overrides,
     })
     const report: UsageReportResponse = {
@@ -911,163 +903,14 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
       quotaRangeHistory: [
         quotaHistoryRow({}),
         quotaHistoryRow({
-          expected_reset_at: '2026-05-22T00:00:00.000Z',
-          interval_start: '2026-05-15T00:00:00.000Z',
-          interval_end: '2026-05-22T00:00:00.000Z',
-          min_remaining_pct: 45,
-          usage_tokens: 2000,
-          usage_breakdown: [
-            {
-              model: 'gpt-5.5',
-              tokens: 2000,
-              cost: 2,
-              traces: 8,
-              recent_traces_90m: 0,
-            },
-          ],
-        }),
-        quotaHistoryRow({
-          expected_reset_at: '2026-05-22T00:10:00.000Z',
-          interval_start: '2026-05-15T00:00:00.000Z',
-          interval_end: '2026-05-22T00:10:00.000Z',
-          min_remaining_pct: 48,
-          usage_tokens: 1500,
-          usage_breakdown: [
-            {
-              model: 'gpt-5.5',
-              tokens: 1500,
-              cost: 1.5,
-              traces: 6,
-              recent_traces_90m: 0,
-            },
-          ],
-        }),
-        quotaHistoryRow({
-          quota_type: 'special',
-          expected_reset_at: '2026-05-23T00:00:00.000Z',
-          interval_start: '2026-05-16T00:00:00.000Z',
-          interval_end: '2026-05-23T00:00:00.000Z',
-          min_remaining_pct: 80,
-          usage_tokens: 500,
-          usage_breakdown: [
-            {
-              model: 'codex-spark',
-              tokens: 500,
-              cost: 0.5,
-              traces: 2,
-              recent_traces_90m: 0,
-            },
-          ],
-        }),
-        quotaHistoryRow({
-          quota_type: 'short',
-          expected_reset_at: '2026-05-23T05:00:00.000Z',
-          interval_start: '2026-05-23T00:00:00.000Z',
-          interval_end: '2026-05-23T05:00:00.000Z',
-          usage_tokens: 700,
-        }),
-        quotaHistoryRow({
-          provider: 'anthropic',
-          quota_type: 'weekly',
-          expected_reset_at: '2026-05-22T00:00:00.000Z',
-          interval_start: '2026-05-15T00:00:00.000Z',
-          interval_end: '2026-05-22T00:00:00.000Z',
-          usage_tokens: 1200,
-        }),
-        quotaHistoryRow({
-          provider: 'anthropic',
-          quota_type: 'short',
-          expected_reset_at: '2026-05-22T05:00:00.000Z',
-          interval_start: '2026-05-22T00:00:00.000Z',
-          interval_end: '2026-05-22T05:00:00.000Z',
-          usage_tokens: 800,
-        }),
-        quotaHistoryRow({
           provider: 'google',
           model: 'gemini-2.5-flash-lite',
           quota_type: 'short',
-          expected_reset_at: '2026-05-24T00:00:00.000Z',
-          interval_start: '2026-05-23T00:00:00.000Z',
-          interval_end: '2026-05-24T00:00:00.000Z',
-          min_remaining_pct: 55,
-          usage_tokens: 300,
-          usage_breakdown: [
-            {
-              model: 'gemini-2.5-flash-lite',
-              tokens: 300,
-              cost: 0.3,
-              traces: 3,
-              recent_traces_90m: 0,
-            },
-          ],
         }),
         quotaHistoryRow({
-          provider: 'google',
-          model: 'gemini-3.1-flash-lite-preview',
-          quota_type: 'short',
-          expected_reset_at: '2026-05-24T00:00:00.000Z',
-          interval_start: '2026-05-23T00:00:00.000Z',
-          interval_end: '2026-05-24T00:00:00.000Z',
-          min_remaining_pct: 50,
-          usage_tokens: 700,
-          usage_breakdown: [
-            {
-              model: 'gemini-3.1-flash-lite-preview',
-              tokens: 700,
-              cost: 0.7,
-              traces: 7,
-              recent_traces_90m: 0,
-            },
-          ],
-        }),
-        quotaHistoryRow({
-          provider: 'google',
-          model: 'gemini-2.5-flash-lite',
-          quota_type: 'short',
-          expected_reset_at: '2026-05-25T00:00:00.000Z',
-          interval_start: '2026-05-24T00:00:00.000Z',
-          interval_end: '2026-05-25T00:00:00.000Z',
-          min_remaining_pct: 0,
-          usage_tokens: 0,
-          usage_breakdown: [],
-        }),
-        quotaHistoryRow({
-          provider: 'xai',
-          model: 'xai_grok_build_weekly_credits:credits',
+          provider: 'antigravity',
+          model: 'antigravity_code_assist:gemini_pool',
           quota_type: 'weekly',
-          quota_key: 'xai_grok_build_weekly_credits:credits',
-          quota_unit: 'credits',
-          source: 'grok_billing',
-          client: 'grok-build',
-          expected_reset_at: '2026-06-15T00:00:00.000Z',
-          interval_start: '2026-06-08T00:00:00.000Z',
-          interval_end: '2026-06-15T00:00:00.000Z',
-          min_remaining_pct: 98,
-          usage_tokens: 120,
-          usage_breakdown: [],
-        }),
-        quotaHistoryRow({
-          provider: 'xai',
-          model: 'xai_grok_build_monthly_requests:requests',
-          quota_type: 'monthly',
-          quota_key: 'xai_grok_build_monthly_requests:requests',
-          quota_unit: 'requests',
-          source: 'grok_billing',
-          client: 'grok-build',
-          expected_reset_at: '2026-06-15T00:00:00.000Z',
-          interval_start: '2026-05-16T00:00:00.000Z',
-          interval_end: '2026-06-15T00:00:00.000Z',
-          min_remaining_pct: 70,
-          usage_tokens: 321,
-          usage_breakdown: [
-            {
-              model: 'grok-4',
-              tokens: 321,
-              cost: 0.3,
-              traces: 4,
-              recent_traces_90m: 0,
-            },
-          ],
         }),
       ],
     }
@@ -1087,8 +930,6 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
       )
     })
 
-    expect(screen.getByRole('heading', { name: 'STATUS' })).toBeInTheDocument()
-    expect(screen.queryByText('Provider Health Summary')).toBeNull()
     expect(screen.getByRole('tab', { name: 'Health' })).toHaveAttribute(
       'aria-selected',
       'true'
@@ -1096,128 +937,21 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
 
     fireEvent.click(screen.getByRole('tab', { name: 'Quota' }))
 
-    const openaiBucket = screen
-      .getByRole('tablist', { name: /openai quota bars/i })
-      .closest('article')
-    expect(openaiBucket).not.toBeNull()
-    const openai = within(openaiBucket as HTMLElement)
     expect(
-      openai.getByRole('tab', { name: /all models · 7d/i })
-    ).toHaveAttribute('aria-selected', 'true')
-    expect(
-      openai.getByRole('tab', { name: /codex-spark · 7d/i })
+      screen.getByTestId('status-quota-display-deprecated')
     ).toBeInTheDocument()
-    expect(openai.queryByRole('tab', { name: /5hr/i })).toBeNull()
-
-    const weeklyRows = Array.from(
-      (openaiBucket as HTMLElement).querySelectorAll(
-        '.provider-quota-history-row'
-      )
-    ).map((row) => row.textContent ?? '')
-    expect(weeklyRows).toHaveLength(2)
-    expect(weeklyRows[0]).toContain('2K tok · 8 req')
-    expect(weeklyRows[1]).toContain('1K tok · 5 req')
-
-    fireEvent.click(openai.getByRole('tab', { name: /codex-spark · 7d/i }))
-    expect(openai.getByText(/500 tok · 2 req/i)).toBeInTheDocument()
-
-    const anthropicBucket = screen
-      .getByRole('tablist', { name: /anthropic quota bars/i })
-      .closest('article')
-    expect(anthropicBucket).not.toBeNull()
-    const anthropic = within(anthropicBucket as HTMLElement)
-    const anthropicTabs = anthropic.getAllByRole('tab')
-    expect(anthropicTabs[0]).toHaveTextContent(/all models · 7d/i)
-    expect(anthropicTabs[0]).toHaveAttribute('aria-selected', 'true')
-    expect(anthropic.queryByRole('tab', { name: /5hr/i })).toBeNull()
-    expect(anthropic.queryByText(/800 tok/i)).toBeNull()
-
+    expect(
+      screen.queryByRole('tablist', { name: /openai quota bars/i })
+    ).toBeNull()
     expect(
       screen.queryByRole('tablist', { name: /google quota bars/i })
     ).toBeNull()
     expect(
       screen.queryByRole('tablist', { name: /antigravity quota bars/i })
     ).toBeNull()
-
-    const xaiBucket = screen
-      .getByRole('tablist', { name: /xai quota bars/i })
-      .closest('article')
-    expect(xaiBucket).not.toBeNull()
-    const xai = within(xaiBucket as HTMLElement)
-    expect(
-      xai.getByRole('tab', { name: /grok build · weekly credits/i })
-    ).toBeInTheDocument()
-    expect(
-      xai.getByRole('tab', { name: /grok build · monthly requests/i })
-    ).toBeInTheDocument()
-    expect(xai.getByText(/120 tok · 0 req · credits/i)).toBeInTheDocument()
-    expect(
-      xai.getByText(
-        /xai_grok_build_weekly_credits:credits · grok_billing · grok-build/i
-      )
-    ).toBeInTheDocument()
-
-    fireEvent.click(
-      xai.getByRole('tab', { name: /grok build · monthly requests/i })
-    )
-    expect(xai.getByText(/321 tok · 4 req · requests/i)).toBeInTheDocument()
-    expect(
-      xai.getByText(
-        /xai_grok_build_monthly_requests:requests · grok_billing · grok-build/i
-      )
-    ).toBeInTheDocument()
-  })
-
-  test('test_status_quota_tab_shows_provider_range_empty_state', async () => {
-    server.use(
-      http.get('/api/shell/reports/usage/token-trend-summary', () =>
-        HttpResponse.json({
-          metadata: {
-            from: '2026-05-20',
-            to: '2026-05-21',
-          },
-          tokenTrendHours: [],
-          tokenTrendVersions: [],
-        })
-      )
-    )
-
-    await act(async () => {
-      render(
-        <Wrapper>
-          <PhosphorDashboard
-            from='2026-05-20'
-            to='2026-05-21'
-            report={MOCK_REPORT}
-            reportLoading={false}
-            showComparison={false}
-            quotas={[]}
-            quotaRangeHistory={[]}
-          />
-        </Wrapper>
-      )
-    })
-
-    fireEvent.click(screen.getByRole('tab', { name: 'Quota' }))
-
+    expect(screen.queryByText('openai')).toBeNull()
     expect(screen.queryByText('google')).toBeNull()
     expect(screen.queryByText('antigravity')).toBeNull()
-    expect(
-      screen.queryByRole('tablist', { name: /google quota bars/i })
-    ).toBeNull()
-
-    const openaiBucket = screen.getByText('openai').closest('article')
-    expect(openaiBucket).not.toBeNull()
-    expect(
-      within(openaiBucket as HTMLElement).getByText(
-        'no quota history for openai in 2026-05-20 to 2026-05-21'
-      )
-    ).toBeInTheDocument()
-    expect(
-      within(openaiBucket as HTMLElement).getByRole('tab', {
-        name: /all models · 7d/i,
-      })
-    ).toHaveTextContent('0')
   })
 
   test('test_status_weights_tab_fetches_quota_estimator_and_renders_lane_detail', async () => {
