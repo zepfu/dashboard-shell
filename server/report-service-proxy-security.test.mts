@@ -71,7 +71,7 @@ describe('report-service upstream proxy secret guard', () => {
 
   test('uses_constant_time_compare', async () => {
     const expected = 'abcdefghijklmnopqr'
-    const wrongEqualLength = 'zyxwvutsrqponmlkjih'
+    const wrongEqualLength = 'zyxwvutsrqponmlkji'
     expect(wrongEqualLength.length).toBe(expected.length)
     vi.stubEnv('SHELL_REPORT_PROXY_SHARED_SECRET', expected)
     const { __proxySecurityTestHelpers } = await import('./report-service.mjs')
