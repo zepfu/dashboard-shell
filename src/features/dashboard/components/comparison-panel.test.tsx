@@ -3,12 +3,16 @@
  *
  * Component path: src/features/dashboard/components/comparison-panel.tsx
  * Expected export: ComparisonPanel (named)
+ */
+/**
  *
  * Primary regression coverage for ⚠-W19-3:
  *   burn = totalCost / 7 was hardcoded; now burn = totalCost / periodDays
  *   with periodDays defaulting to 1 (the Wave 16-V default window).
  */
 import { render, screen } from '@testing-library/react'
+import { existsSync } from 'node:fs'
+import path from 'node:path'
 import { formatUsd } from '../lib/usage-report-display'
 import {
   buildCurrentStats,
@@ -234,6 +238,13 @@ test('test_format_delta_pct_null_returns_dash', () => {
 
 test('test_delta_color_positive_is_hot', () => {
   expect(deltaColor(10)).toBe('var(--accent-hot)')
+})
+
+/** P07-F03 — positive cost delta stays hot for whole and fractional percent values. */
+test('test_delta_color_cost_polarity_deterministic', () => {
+  expect(deltaColor(10, 'cost')).toBe('var(--accent-hot)')
+  expect(deltaColor(10.5, 'cost')).toBe('var(--accent-hot)')
+  expect(deltaColor(0.124, 'cost')).toBe('var(--accent-hot)')
 })
 
 test('test_delta_color_negative_is_teal', () => {
@@ -581,4 +592,20 @@ test('D1-451_E3_sparkline_trendBuckets_fixture_satisfies_TrendBucket_type', () =
   ]
   expect(buckets.every((b) => typeof b.label === 'string')).toBe(true)
   expect(buckets.every((b) => b.totals !== undefined)).toBe(true)
+})
+
+/**
+ * P07-F05 — after barrel rename/removal, `./comparison-panel` must resolve to the
+ * intended module (barrel re-exports helpers + ComparisonPanel, not .tsx-only).
+ */
+test('test_comparison_panel_import_resolves_unambiguously', async () => {
+  const indexBarrel = path.join(
+    import.meta.dirname,
+    'comparison-panel.index.ts'
+  )
+  expect(existsSync(indexBarrel)).toBe(true)
+  const resolved = await import('./comparison-panel')
+  expect(typeof resolved.computeDeltaPct).toBe('function')
+  expect(typeof resolved.ComparisonPanel).toBe('function')
+  expect(resolved.ComparisonPanel.name).toBe('ComparisonPanel')
 })

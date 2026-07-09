@@ -9,6 +9,7 @@ import type { UsageReportSummary } from '../api/usage-report'
 import { KpiStrip } from './kpi-strip'
 import {
   kpiMicrobarFillPct,
+  microbarScale,
   renderDelta,
   type KpiKey,
   type KpiSummary,
@@ -222,6 +223,55 @@ test('test_kpi_microbar_per_tile_normalized', () => {
   expect(tokensInFill).toBe(100)
   expect(tokensOutFill).toBe(50)
   expect(tokensInFill).toBeGreaterThan(tokensOutFill)
+})
+
+/**
+ * P07-F02 — cost/requests/errors/p95 microbars use per-tile scale (microbarScale), not share-of-max collapse.
+ */
+test('test_kpi_microbar_per_tile_normalized_all_keys', () => {
+  const summary = summaryFromUsageReport({
+    token_in: 500_000,
+    token_out: 250_000,
+    usd_cost: 12.5,
+    tool_calls: 8_500,
+    errors: 3,
+    p95_ms: 1_200,
+  })
+
+  const costFill = kpiMicrobarFillPct(
+    'cost_usd',
+    summary,
+    summary.cost_usd,
+    undefined
+  )
+  const costScale = microbarScale('cost_usd', summary)
+  const expectedCostFill = Math.min(
+    100,
+    Math.round((summary.cost_usd / costScale) * 100)
+  )
+  expect(costFill).toBe(expectedCostFill)
+  expect(costFill).toBe(100)
+
+  const requestsFill = kpiMicrobarFillPct(
+    'requests',
+    summary,
+    summary.requests,
+    undefined
+  )
+  expect(requestsFill).toBeLessThan(100)
+  expect(requestsFill).toBeGreaterThan(1)
+
+  const { container } = render(<KpiStrip summary={summary} />)
+  const costTile = Array.from(container.querySelectorAll('.kpi-tile')).find(
+    (t) => t.querySelector('.kpi-label')?.textContent === 'Cost'
+  )
+  const costDomFill = parseFloat(
+    (
+      costTile?.querySelector('.kpi-microbar') as HTMLElement | null
+    )?.style.getPropertyValue('--fill') ?? '0'
+  )
+  expect(costDomFill).toBeGreaterThan(50)
+  expect(costDomFill).toBeLessThanOrEqual(100)
 })
 
 test('test_kpi_microbar_fill_not_degenerate_binary_without_deltas', () => {
