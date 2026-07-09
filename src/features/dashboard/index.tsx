@@ -45,7 +45,7 @@ import {
   type UsageReportQuotaRangeHistoryResponse,
 } from './api/usage-report'
 import AnchorBar from './components/anchor-bar'
-import { computeDeltaPct } from './components/comparison-panel'
+import { computeDeltaPct } from './components/comparison-panel.index'
 import { DateControls } from './components/date-controls'
 import { KpiStrip } from './components/kpi-strip'
 import type { LedgerView } from './components/master-ledger-aggregation'

@@ -182,15 +182,6 @@ export function KpiStrip({
   }
 
   const tiles = buildTiles(summary)
-  const maxMicrobarRaw = Math.max(
-    summary.token_in,
-    summary.token_out,
-    summary.cost_usd,
-    summary.requests,
-    summary.errors,
-    summary.p95_ms ?? 0,
-    1
-  )
 
   return (
     <div className={className} style={stripStyle}>
@@ -203,8 +194,7 @@ export function KpiStrip({
           key,
           summary,
           rawValue,
-          deltas?.[key],
-          maxMicrobarRaw
+          deltas?.[key]
         )
 
         return (
