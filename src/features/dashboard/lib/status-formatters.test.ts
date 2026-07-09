@@ -34,9 +34,9 @@ describe('D1-451 status-formatters — formatStatusTimestamp (I3)', () => {
   })
 
   test('test_formatStatusTimestamp_valid_iso_truncates_to_minute', () => {
-    expect(formatStatusTimestamp('2026-05-20T11:30:45.000Z')).toBe(
-      '2026-05-20 11:30'
-    )
+    const iso = '2026-05-20T11:30:45.000Z'
+    expect(formatStatusTimestamp(iso)).toBe(formatDashboardTime(iso))
+    expect(formatStatusTimestamp(iso)).toMatch(/7:30/)
   })
 
   test('test_status_timestamp_eastern_zone', () => {

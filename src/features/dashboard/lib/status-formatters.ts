@@ -2,6 +2,7 @@
  * Shared formatters for status-section panels and quota/history display.
  * D1-451 Wave 4: single home for duration, timestamp, and compact quantity (A4/C2/I3).
  */
+import { formatDashboardTime } from './usage-report-display'
 
 const FORMAT_COMPACT_QUANTITY = new Intl.NumberFormat('en-US', {
   notation: 'compact',
@@ -20,7 +21,8 @@ export function formatStatusTimestamp(
   if (value == null || value === '') return STATUS_TIMESTAMP_PLACEHOLDER
   const parsed = new Date(value)
   if (Number.isNaN(parsed.getTime())) return STATUS_TIMESTAMP_PLACEHOLDER
-  return value.slice(0, 16).replace('T', ' ')
+  const eastern = formatDashboardTime(value)
+  return eastern === '--' ? STATUS_TIMESTAMP_PLACEHOLDER : eastern
 }
 
 export function formatRemainingSeconds(

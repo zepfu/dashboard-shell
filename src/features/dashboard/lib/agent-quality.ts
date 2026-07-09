@@ -225,6 +225,11 @@ function familyFromFlat(
   const evaluatedN = finiteNumber(evaluated)
   const issueN = finiteNumber(issueCount)
   const scoreN = nullableScore(score)
+  /**
+   * `scoredEvaluated`: rows that contributed a numeric score (evaluated minus issues).
+   * When every row failed (`scoredEvaluated === 0`) but `score !== null`, `combineFamily`
+   * falls back to weighting by `evaluated` so fully-failed sessions still affect the blend (P10-F02).
+   */
   const scoredEvaluated =
     scoreN === null ? 0 : Math.max(0, Math.min(evaluatedN, evaluatedN - issueN))
   return {
@@ -515,8 +520,11 @@ function combineFamily(
   for (const summary of summaries) {
     const item = summary[family]
     const weight =
-      item.scoredEvaluated ??
-      (item.score !== null && item.evaluated > 0 ? item.evaluated : 0)
+      item.scoredEvaluated > 0
+        ? item.scoredEvaluated
+        : item.score !== null && item.evaluated > 0
+          ? item.evaluated
+          : 0
     evaluated += item.evaluated
     possible += item.possible
     issueCount += item.issueCount
