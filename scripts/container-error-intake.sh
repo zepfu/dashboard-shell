@@ -1,5 +1,8 @@
 #!/bin/sh
 # PID 1 wrapper: forward signals, tee child stdout/stderr, append actionable errors to JSONL.
+# P13-F20: open fifos read-write in the wrapper so a dead/slow reader cannot wedge
+# the child, and run error classification fire-and-forget off the hot path so a
+# slow classifier never back-pressures child stdout/stderr.
 set -u
 
 CONTAINER_NAME="${SHELL_CONTAINER_NAME:-unknown}"
@@ -382,11 +385,18 @@ out_reader_pid=""
 err_reader_pid=""
 fifo_out=""
 fifo_err=""
+# Fixed FDs held open read-write against each fifo so a dead reader cannot leave
+# the child blocked on open/write (the P13-F20 PID-1 wedge).
+out_hold_fd=8
+err_hold_fd=9
 
+# Prefer process-group delivery so nested children (e.g. `sleep` under `sh -c`)
+# receive the signal. Fall back to the direct child pid when setpgid is not
+# available (very old shells / restricted environments).
 forward_signal() {
   sig="$1"
-  if [ -n "$child_pid" ] && kill -0 "$child_pid" 2>/dev/null; then
-    kill -"$sig" "$child_pid" 2>/dev/null || true
+  if [ -n "$child_pid" ]; then
+    kill -"$sig" -- "-$child_pid" 2>/dev/null || kill -"$sig" "$child_pid" 2>/dev/null || true
   fi
 }
 
@@ -406,6 +416,13 @@ on_hup() {
   forward_signal HUP
 }
 
+close_hold_fd() {
+  fd="$1"
+  if [ -n "$fd" ]; then
+    eval "exec ${fd}>&-" 2>/dev/null || true
+  fi
+}
+
 cleanup() {
   if [ -n "$out_reader_pid" ] && kill -0 "$out_reader_pid" 2>/dev/null; then
     kill "$out_reader_pid" 2>/dev/null || true
@@ -414,8 +431,10 @@ cleanup() {
     kill "$err_reader_pid" 2>/dev/null || true
   fi
   if [ -n "$child_pid" ] && kill -0 "$child_pid" 2>/dev/null; then
-    kill "-TERM" "$child_pid" 2>/dev/null || true
+    kill -TERM -- "-$child_pid" 2>/dev/null || kill -TERM "$child_pid" 2>/dev/null || true
   fi
+  close_hold_fd "$out_hold_fd"
+  close_hold_fd "$err_hold_fd"
   if [ -n "$fifo_out" ]; then
     rm -f "$fifo_out" "$fifo_err" 2>/dev/null || true
   fi
@@ -448,23 +467,58 @@ if ! mkfifo "$fifo_out" "$fifo_err"; then
   exit 1
 fi
 
+# Open each fifo read-write in the wrapper BEFORE the child attaches. Holding an
+# open reader means a dead hot-path reader cannot leave the child blocked on the
+# next write (SIGPIPE only fires when zero readers remain).
+#
+# CRITICAL: every forked child must close these hold FDs. If a reader inherits
+# the write side of its own fifo, it never observes EOF after the real child
+# exits and PID 1 wedges on `wait $reader`.
+eval "exec ${out_hold_fd}<>\"$fifo_out\""
+eval "exec ${err_hold_fd}<>\"$fifo_err\""
+
+# Hot path: forward every complete line immediately. Classification is fire-
+# and-forget so a slow/dead classifier cannot back-pressure the child. The
+# `|| [ -n "$line" ]` branch flushes a trailing partial line so a complete
+# first line is never dropped on a boundary-aligned truncation/EOF.
 (
+  # Drop inherited hold FDs so this reader is not also a writer of the fifo.
+  eval "exec ${out_hold_fd}>&- ${err_hold_fd}>&-" 2>/dev/null || true
   while IFS= read -r line || [ -n "$line" ]; do
     printf '%s\n' "$line"
-    append_error_record stdout "$line"
+    (
+      eval "exec ${out_hold_fd}>&- ${err_hold_fd}>&-" 2>/dev/null || true
+      append_error_record stdout "$line"
+    ) >/dev/null 2>&1 &
   done < "$fifo_out"
+  # Drain in-flight classifiers started by this reader before exiting.
+  wait 2>/dev/null || true
 ) &
 out_reader_pid=$!
 
 (
+  eval "exec ${out_hold_fd}>&- ${err_hold_fd}>&-" 2>/dev/null || true
   while IFS= read -r line || [ -n "$line" ]; do
     printf '%s\n' "$line" >&2
-    append_error_record stderr "$line"
+    (
+      eval "exec ${out_hold_fd}>&- ${err_hold_fd}>&-" 2>/dev/null || true
+      append_error_record stderr "$line"
+    ) >/dev/null 2>&1 &
   done < "$fifo_err"
+  wait 2>/dev/null || true
 ) &
 err_reader_pid=$!
 
-"$@" >"$fifo_out" 2>"$fifo_err" &
+# Child must not inherit hold FDs either (would keep writers alive after exit
+# of the redirected fds, delaying reader EOF). Prefer a new session/process
+# group so forward_signal can reach nested grandchildren (sleep under sh -c).
+(
+  eval "exec ${out_hold_fd}>&- ${err_hold_fd}>&-" 2>/dev/null || true
+  if command -v setsid >/dev/null 2>&1; then
+    exec setsid "$@"
+  fi
+  exec "$@"
+) >"$fifo_out" 2>"$fifo_err" &
 child_pid=$!
 
 wait "$child_pid"
@@ -473,6 +527,13 @@ if [ "$status" -ge 128 ] && [ -n "$child_pid" ] && kill -0 "$child_pid" 2>/dev/n
   wait "$child_pid"
   status=$?
 fi
+
+# Child is done. Drop the held opens so readers observe EOF and drain any
+# remaining complete lines (including classification of the final line).
+close_hold_fd "$out_hold_fd"
+out_hold_fd=""
+close_hold_fd "$err_hold_fd"
+err_hold_fd=""
 
 if [ -n "$out_reader_pid" ]; then
   wait "$out_reader_pid" 2>/dev/null || true
