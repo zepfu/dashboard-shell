@@ -778,6 +778,15 @@ test('test_formatBucketLabel_passes_through_relative_labels', () => {
 })
 
 // ---------------------------------------------------------------------------
+// Fork-review Wave 5 — P06-F02 / P09-F01 pad: sentinel (RED)
+// ---------------------------------------------------------------------------
+
+test('test_formatBucketLabel_hides_pad_sentinel', () => {
+  expect(formatBucketLabel('pad:20h')).toBe('')
+  expect(formatBucketLabel('pad:0h')).toBe('')
+})
+
+// ---------------------------------------------------------------------------
 // D1-450 trend-utils (C4, G1, G2, W3)
 // ---------------------------------------------------------------------------
 

@@ -23,6 +23,7 @@ import {
   buildTokenTrendDayEnvelopes,
   deriveTokenTrendActiveVersionLanes,
   formatBucketLabel,
+  normalizeTrendData,
 } from '../lib/trend-utils'
 import { TokenTrendChart } from './token-trend-chart'
 
@@ -1330,6 +1331,43 @@ test('test_formatBucketLabel_relative', () => {
   expect(formatBucketLabel('5h')).toBe('5h')
 })
 
+test('test_formatBucketLabel_hides_pad_sentinel_legacy_branch_labels', () => {
+  const padBuckets = normalizeTrendData([
+    {
+      bucket: '2026-05-20',
+      provider: 'anthropic',
+      model: 'm',
+      repository: '',
+      traces: 1,
+      token_total: 100,
+      usd_cost: 0,
+    },
+  ])
+  const padLabels = padBuckets
+    .map((b) => b.label)
+    .filter((l) => l.startsWith('pad:'))
+  expect(padLabels.length).toBeGreaterThan(0)
+
+  const { container } = render(
+    <TokenTrendChart data={padBuckets} series={series} />
+  )
+  const labelRow = container.querySelector('.tt-label-row')
+  expect(labelRow).not.toBeNull()
+  const labelText = labelRow!.textContent ?? ''
+  expect(labelText).not.toMatch(/pad:\d+h/)
+
+  const barTip = container.querySelector('.tt-bar-tip-wrap')
+  if (barTip !== null) {
+    fireEvent.pointerEnter(barTip)
+    const openTip = document.body.querySelector(
+      '.v9-tip[data-state="open"]'
+    ) as HTMLElement | null
+    if (openTip !== null) {
+      expect(openTip.textContent ?? '').not.toMatch(/pad:\d+h/)
+    }
+  }
+})
+
 // ---------------------------------------------------------------------------
 // Wave 3 (adversarial-review-20260612) — FAILING tests, W3 engineer to fix
 // ---------------------------------------------------------------------------
@@ -2482,4 +2520,132 @@ test('score_mode_string_keys_return_rows', async () => {
   })
 
   expect(rows.length).toBeGreaterThan(0)
+})
+
+// ---------------------------------------------------------------------------
+// Fork-review Wave 5 — token-trend + trend signal scope (RED)
+// ---------------------------------------------------------------------------
+
+test('test_trend_signal_rows_no_dead_cells_metricKey', async () => {
+  const { buildTrendSignalRows } = await import('./token-trend-chart')
+  const chartPath = path.join(import.meta.dirname, 'token-trend-chart.tsx')
+  const source = readFileSync(chartPath, 'utf8')
+  const panelBlock = source.slice(
+    source.indexOf('function renderTrendSignalGraph'),
+    source.indexOf('function TrendSignalPanel')
+  )
+
+  const { rows } = buildTrendSignalRows({
+    dayEnvelopes: buildTokenTrendDayEnvelopes([
+      {
+        day: '2026-05-20',
+        hour: 8,
+        provider: 'anthropic',
+        traces: 1,
+        token_total: 10,
+        usd_cost: 0,
+      },
+    ]),
+    healthRows: [...trendHealthRows],
+    scoreRows: [],
+    selectedMetrics: ['requests'],
+  })
+
+  expect(rows.length).toBeGreaterThan(0)
+  for (const row of rows) {
+    expect('metricKey' in row).toBe(false)
+    expect('cells' in row).toBe(false)
+  }
+  expect(panelBlock).not.toMatch(/row\.cells\b/)
+  expect(panelBlock).not.toMatch(/row\.metricKey\b/)
+})
+
+test('test_trend_scope_models_filters', async () => {
+  const { buildTrendSignalRows } = await import('./token-trend-chart')
+
+  const makeHealthRow = (
+    model: string,
+    requests: number
+  ): UsageReportProviderLatencyHealthRow =>
+    ({
+      ...trendHealthRows[0],
+      model,
+      requests,
+      bucket_start: '2026-05-20T08:00:00.000Z',
+    }) as UsageReportProviderLatencyHealthRow
+
+  const dayEnvelopes = buildTokenTrendDayEnvelopes([
+    {
+      day: '2026-05-20',
+      hour: 8,
+      provider: 'anthropic',
+      traces: 10,
+      token_total: 100,
+      usd_cost: 0,
+    },
+  ])
+
+  const { rows: narrowed } = buildTrendSignalRows({
+    dayEnvelopes,
+    healthRows: [
+      makeHealthRow('claude-sonnet-4-6', 3),
+      makeHealthRow('claude-haiku-4', 7),
+    ],
+    scoreRows: [],
+    selectedMetrics: ['requests'],
+    scope: {
+      providers: ['anthropic'],
+      models: ['claude-sonnet-4-6'],
+      repositories: [],
+    },
+  })
+
+  const requestRow = narrowed.find((r) => r.metric.key === 'requests')
+  expect(requestRow).toBeDefined()
+  expect(requestRow!.grid.get('2026-05-20')?.get(8)?.value).toBe(3)
+
+  const { rows: repoScoped } = buildTrendSignalRows({
+    mode: 'score',
+    dayEnvelopes,
+    healthRows: [],
+    scoreRows: [
+      {
+        ...trendScoreRows[0],
+        repository: 'repo-a',
+        traces: 4,
+      },
+      {
+        ...trendScoreRows[0],
+        repository: 'repo-b',
+        traces: 9,
+      },
+    ],
+    selectedMetrics: ['quality'],
+    scope: {
+      providers: ['anthropic'],
+      models: [],
+      repositories: ['repo-a'],
+    },
+  })
+
+  const qualityRow = repoScoped.find((r) => r.metric.key === 'quality')
+  expect(qualityRow).toBeDefined()
+  expect(qualityRow!.sourceRowCount).toBe(1)
+})
+
+test('test_empty_days_render_single_shell', () => {
+  const dayEnvelopes = buildTokenTrendDayEnvelopes([], 'tokens', {
+    from: '2024-01-01',
+    to: '2025-02-04',
+  })
+  expect(dayEnvelopes.length).toBe(400)
+  expect(dayEnvelopes.every((d) => d.total === 0)).toBe(true)
+
+  const { container } = render(
+    <TokenTrendChart dayEnvelopes={dayEnvelopes} series={series} />
+  )
+
+  expect(container.querySelectorAll('.tt-day-envelope').length).toBe(400)
+  expect(container.querySelectorAll('.tt-hour-bar').length).toBe(0)
+  expect(container.querySelectorAll('[class*="stacked-bar"]').length).toBe(0)
 })
