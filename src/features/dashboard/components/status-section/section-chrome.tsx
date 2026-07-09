@@ -149,6 +149,12 @@ type StatusPillMap<T extends string> = Readonly<
 >
 
 // eslint-disable-next-line react-refresh/only-export-components
+export const STATUS_PILL_FALLBACK = {
+  label: 'unknown',
+  className: 'is-unknown',
+} as const
+
+// eslint-disable-next-line react-refresh/only-export-components
 export function statusPill<T extends string>(
   map: StatusPillMap<T>,
   value: T | string | null | undefined,
@@ -164,6 +170,7 @@ export function StatusPanel({
   subLabel,
   loading,
   emptyMessage,
+  headPill,
   children,
   className,
   ariaLabel,
@@ -172,6 +179,7 @@ export function StatusPanel({
   subLabel?: string
   loading?: boolean
   emptyMessage?: string
+  headPill?: { label: string; className: string }
   children?: ReactNode
   className?: string
   ariaLabel?: string
@@ -182,13 +190,19 @@ export function StatusPanel({
   return (
     <section className={className} aria-label={ariaLabel ?? title}>
       <div className='status-panel-head'>
-        <span>{title}</span>
-        {subLabel !== undefined ? (
-          <span className='status-panel-sub'>{subLabel}</span>
-        ) : null}
+        <div className='status-panel-head-main'>
+          <span className='status-panel-title'>{title}</span>
+          {subLabel !== undefined ? (
+            <span className='status-panel-sub'>{subLabel}</span>
+          ) : null}
+        </div>
         {loading ? (
           <span className='status-panel-loading' role='status'>
             updating
+          </span>
+        ) : headPill !== undefined ? (
+          <span className={`status-pill ${headPill.className}`}>
+            {headPill.label}
           </span>
         ) : null}
       </div>

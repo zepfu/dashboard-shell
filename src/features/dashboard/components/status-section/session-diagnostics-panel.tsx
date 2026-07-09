@@ -7,6 +7,11 @@ import {
   canonicalProvider,
   providerBrandHex,
 } from '../../lib/usage-report-display'
+import { STATUS_PILL_FALLBACK, StatusPanel, statusPill } from './section-chrome'
+
+const SESSION_DIAGNOSTICS_HEAD_PILL = {
+  loaded: { label: 'loaded', className: 'is-healthy' },
+} as const
 
 type JsonRecord = Record<string, unknown>
 type AliasRouteEvent = NonNullable<
@@ -554,15 +559,23 @@ export function SessionDiagnosticsPanel({
     )
   }
 
+  const subLabel = `${rows.length.toLocaleString()} rows · limit ${
+    response?.metadata.limit?.toLocaleString() ?? 'unknown'
+  }`
+  const headPill = statusPill(
+    SESSION_DIAGNOSTICS_HEAD_PILL,
+    'loaded',
+    STATUS_PILL_FALLBACK
+  )
+
   return (
-    <div className='status-estimator-panel status-diagnostics-panel'>
-      <header className='status-estimator-header'>
-        <strong>Session diagnostics</strong>
-        <span>
-          {rows.length.toLocaleString()} rows · limit{' '}
-          {response?.metadata.limit?.toLocaleString() ?? 'unknown'}
-        </span>
-      </header>
+    <StatusPanel
+      className='status-estimator-panel status-diagnostics-panel'
+      ariaLabel='Session diagnostics'
+      title='Session diagnostics'
+      subLabel={subLabel}
+      headPill={headPill}
+    >
       <div className='status-estimator-grid status-diagnostics-grid'>
         {rows.map((row) => (
           <SessionDiagnosticsCard
@@ -571,6 +584,6 @@ export function SessionDiagnosticsPanel({
           />
         ))}
       </div>
-    </div>
+    </StatusPanel>
   )
 }

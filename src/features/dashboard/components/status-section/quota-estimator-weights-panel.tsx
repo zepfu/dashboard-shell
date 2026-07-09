@@ -10,6 +10,13 @@ import {
   canonicalProvider,
   providerBrandHex,
 } from '../../lib/usage-report-display'
+import { STATUS_PILL_FALLBACK, StatusPanel, statusPill } from './section-chrome'
+
+const ESTIMATOR_IDENT_PILL = {
+  high_confidence: { label: 'high_confidence', className: 'is-healthy' },
+  directional_only: { label: 'directional_only', className: 'is-warn' },
+  not_identifiable: { label: 'not_identifiable', className: 'is-bad' },
+} as const
 
 function formatEstimatorPercent(
   value: number | null | undefined,
@@ -137,19 +144,31 @@ export function QuotaEstimatorWeightsPanel({
     )
   }
 
+  const subLabel = `${metadata?.phase === '0-2' ? 'Phase 0-2' : 'Phase unknown'} · ${
+    metadata?.estimatorVersion ?? 'version unknown'
+  }`
+  const headPill = statusPill(
+    ESTIMATOR_IDENT_PILL,
+    estimates[0]?.identifiability.status,
+    STATUS_PILL_FALLBACK
+  )
+
   return (
-    <div className='status-estimator-panel'>
-      <header className='status-estimator-header'>
-        <strong>Phase 0-2 estimator detail</strong>
-        <span>
-          {metadata?.phase === '0-2' ? 'Phase 0-2' : 'Phase unknown'} ·{' '}
-          {metadata?.estimatorVersion ?? 'version unknown'}
-        </span>
-      </header>
+    <StatusPanel
+      className='status-estimator-panel'
+      ariaLabel='Phase 0-2 estimator detail'
+      title='Phase 0-2 estimator detail'
+      subLabel={subLabel}
+      headPill={headPill}
+    >
       <div className='status-estimator-grid'>
         {estimates.map((estimate, index) => {
           const identStatus = estimate.identifiability.status
-          const statusClass = identStatus.replace(/_/g, '-')
+          const lanePill = statusPill(
+            ESTIMATOR_IDENT_PILL,
+            identStatus,
+            STATUS_PILL_FALLBACK
+          )
           const coefficientGroups = groupEstimatorCoefficients(
             estimate.coefficients
           )
@@ -175,12 +194,12 @@ export function QuotaEstimatorWeightsPanel({
               <div className='status-estimator-lane-key'>
                 {estimate.quota_key} · {estimate.quota_lane}
               </div>
-              <div
-                className={`status-estimator-lane-state is-${statusClass}`}
+              <span
+                className={`status-pill ${lanePill.className}`}
                 role='status'
               >
                 {formatEstimatorStatusLabel(identStatus)}
-              </div>
+              </span>
               <div className='status-estimator-meta-grid'>
                 <span>
                   lag <strong>{estimate.selected_lag_minutes}m</strong>
@@ -354,6 +373,6 @@ export function QuotaEstimatorWeightsPanel({
           )
         })}
       </div>
-    </div>
+    </StatusPanel>
   )
 }

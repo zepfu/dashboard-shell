@@ -4,30 +4,19 @@ import type {
   ShellPgBouncerSidecar,
 } from '../../api/usage-report'
 import { formatCompactQuantity } from '../../lib/status-formatters'
+import { STATUS_PILL_FALLBACK, StatusPanel, statusPill } from './section-chrome'
 
 const PGBOUNCER_STATUS_PILL = {
-  green: { label: 'ok', className: 'is-green' },
-  yellow: { label: 'degraded', className: 'is-yellow' },
-  red: { label: 'down', className: 'is-red' },
+  green: { label: 'ok', className: 'is-healthy' },
+  yellow: { label: 'degraded', className: 'is-warn' },
+  red: { label: 'down', className: 'is-bad' },
 } as const
 
-const PGBOUNCER_STATUS_UNKNOWN = {
-  label: 'unknown',
-  className: 'is-unknown',
-} as const
-
-function pgBouncerStatusLabel(status: string | undefined): string {
-  if (status === 'green' || status === 'yellow' || status === 'red') {
-    return PGBOUNCER_STATUS_PILL[status].label
-  }
-  return PGBOUNCER_STATUS_UNKNOWN.label
-}
-
-function pgBouncerStatusClass(status: string | undefined): string {
-  if (status === 'green' || status === 'yellow' || status === 'red') {
-    return PGBOUNCER_STATUS_PILL[status].className
-  }
-  return PGBOUNCER_STATUS_UNKNOWN.className
+function pgBouncerSidecarPill(status: string | undefined): {
+  label: string
+  className: string
+} {
+  return statusPill(PGBOUNCER_STATUS_PILL, status, STATUS_PILL_FALLBACK)
 }
 
 function formatPgBouncerWait(seconds: number, microseconds: number): string {
@@ -54,17 +43,16 @@ function PgBouncerSidecarCard({
   const servers = sidecar.admin.serverSummary
   const poolRows = sidecar.admin.pools.slice(0, 3)
   const statusKey = String(sidecar.status)
+  const pill = pgBouncerSidecarPill(statusKey)
 
   return (
-    <article className={`pgbouncer-card ${pgBouncerStatusClass(statusKey)}`}>
+    <article className={`pgbouncer-card ${pill.className}`}>
       <div className='pgbouncer-card-head'>
         <div>
           <span className='pgbouncer-card-name'>{sidecar.label}</span>
           <span className='pgbouncer-card-sub'>{sidecar.containerName}</span>
         </div>
-        <span className='pgbouncer-status-pill'>
-          {pgBouncerStatusLabel(statusKey)}
-        </span>
+        <span className={`status-pill ${pill.className}`}>{pill.label}</span>
       </div>
       <div className='pgbouncer-metrics'>
         <span>
@@ -153,14 +141,15 @@ export function PgBouncerHealthPanel({
 }): ReactElement {
   const sidecars = health?.sidecars ?? []
   const headStatus = health?.status
+
   return (
-    <section className='pgbouncer-health-panel' aria-label='PgBouncer health'>
-      <div className='pgbouncer-panel-head'>
-        <span>PgBouncer</span>
-        <span className='pgbouncer-panel-status'>
-          {loading ? 'updating' : (headStatus ?? 'unknown')}
-        </span>
-      </div>
+    <StatusPanel
+      className='pgbouncer-health-panel'
+      ariaLabel='PgBouncer health'
+      title='PgBouncer'
+      subLabel={loading || headStatus == null ? undefined : String(headStatus)}
+      loading={loading}
+    >
       <div className='pgbouncer-grid'>
         {sidecars.length > 0 ? (
           sidecars.map((sidecar) => (
@@ -170,6 +159,6 @@ export function PgBouncerHealthPanel({
           <div className='pgbouncer-empty'>no sidecars reported</div>
         )}
       </div>
-    </section>
+    </StatusPanel>
   )
 }

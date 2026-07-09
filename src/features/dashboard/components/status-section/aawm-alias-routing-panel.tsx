@@ -7,6 +7,12 @@ import {
   formatRemainingSeconds,
   formatStatusTimestamp,
 } from '../../lib/status-formatters'
+import { STATUS_PILL_FALLBACK, StatusPanel, statusPill } from './section-chrome'
+
+const ALIAS_ROUTING_HEAD_PILL_MAP = {
+  observed: { label: 'observed', className: 'is-warn' },
+  active: { label: 'active', className: 'is-healthy' },
+} as const
 
 function stateSourceLabel(
   source: UsageReportProviderAliasRoutingEntry['state_source']
@@ -47,7 +53,12 @@ function AliasRoutingEntryCard({
 }: {
   entry: UsageReportProviderAliasRoutingEntry
 }): ReactElement {
-  const activeLabel = entry.is_active ? 'active' : 'observed'
+  const activeKey = entry.is_active ? 'active' : 'observed'
+  const pill = statusPill(
+    ALIAS_ROUTING_HEAD_PILL_MAP,
+    activeKey,
+    STATUS_PILL_FALLBACK
+  )
   return (
     <article
       className={`alias-routing-card alias-routing-card--${entry.state_kind}`}
@@ -59,7 +70,7 @@ function AliasRoutingEntryCard({
           <span className='alias-routing-family'>{entry.family}</span>
           <span className='alias-routing-headline'>{entryHeadline(entry)}</span>
         </div>
-        <span className='alias-routing-status-pill'>{activeLabel}</span>
+        <span className={`status-pill ${pill.className}`}>{pill.label}</span>
       </div>
       <div className='alias-routing-detail-grid'>
         <span>alias</span>
@@ -113,19 +124,23 @@ export function AawmAliasRoutingPanel({
   const anthropicEntries = entries.filter(
     (entry) => entry.family === 'anthropic'
   )
+  const headPill = statusPill(
+    ALIAS_ROUTING_HEAD_PILL_MAP,
+    entries.length > 0 ? 'active' : 'observed',
+    STATUS_PILL_FALLBACK
+  )
 
   return (
-    <section
+    <StatusPanel
       className='alias-routing-health-panel'
-      aria-label='AAWM alias routing health'
+      ariaLabel='AAWM alias routing health'
+      title='AAWM alias routing'
+      subLabel={
+        routing?.freshness_label ??
+        'Recent observed routing from session history (not live Redis/DualCache)'
+      }
+      headPill={headPill}
     >
-      <div className='alias-routing-panel-head'>
-        <span>AAWM alias routing</span>
-        <span className='alias-routing-panel-sub'>
-          {routing?.freshness_label ??
-            'Recent observed routing from session history (not live Redis/DualCache)'}
-        </span>
-      </div>
       <div className='alias-routing-families'>
         <div className='alias-routing-family-block'>
           <div className='alias-routing-family-title'>codex</div>
@@ -162,6 +177,6 @@ export function AawmAliasRoutingPanel({
           </div>
         </div>
       </div>
-    </section>
+    </StatusPanel>
   )
 }

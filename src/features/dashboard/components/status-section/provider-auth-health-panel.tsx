@@ -7,45 +7,17 @@ import {
   formatRemainingSeconds,
   formatStatusTimestamp,
 } from '../../lib/status-formatters'
+import { STATUS_PILL_FALLBACK, StatusPanel, statusPill } from './section-chrome'
 
-function authStateLabel(
-  state: UsageReportProviderAuthHealthEntry['auth_health_state']
-): string {
-  switch (state) {
-    case 'refreshed':
-      return 'refreshed'
-    case 'skipped_valid':
-      return 'skipped (valid)'
-    case 'skipped_expired':
-      return 'skipped (expired)'
-    case 'failed':
-      return 'failed'
-    case 'attempted':
-      return 'attempted'
-    case 'expired':
-      return 'expired'
-    default:
-      return 'unknown'
-  }
-}
-
-function authStateClass(
-  state: UsageReportProviderAuthHealthEntry['auth_health_state']
-): string {
-  switch (state) {
-    case 'refreshed':
-    case 'skipped_valid':
-      return 'is-healthy'
-    case 'skipped_expired':
-    case 'attempted':
-      return 'is-warn'
-    case 'failed':
-    case 'expired':
-      return 'is-bad'
-    default:
-      return 'is-unknown'
-  }
-}
+const AUTH_HEALTH_STATE_PILL = {
+  refreshed: { label: 'refreshed', className: 'is-healthy' },
+  skipped_valid: { label: 'skipped (valid)', className: 'is-healthy' },
+  skipped_expired: { label: 'skipped (expired)', className: 'is-warn' },
+  attempted: { label: 'attempted', className: 'is-warn' },
+  failed: { label: 'failed', className: 'is-bad' },
+  expired: { label: 'expired', className: 'is-bad' },
+  unknown: { label: 'unknown', className: 'is-unknown' },
+} as const
 
 function entryHeadline(entry: UsageReportProviderAuthHealthEntry): string {
   const parts = [entry.provider, entry.auth_family].filter(Boolean)
@@ -68,6 +40,12 @@ function ProviderAuthHealthCard({
 }: {
   entry: UsageReportProviderAuthHealthEntry
 }): ReactElement {
+  const pill = statusPill(
+    AUTH_HEALTH_STATE_PILL,
+    entry.auth_health_state,
+    STATUS_PILL_FALLBACK
+  )
+
   return (
     <article
       className={`provider-auth-card provider-auth-card--${entry.auth_health_state}`}
@@ -80,11 +58,7 @@ function ProviderAuthHealthCard({
           <span className='provider-auth-environment'>{entry.environment}</span>
           <span className='provider-auth-headline'>{entryHeadline(entry)}</span>
         </div>
-        <span
-          className={`provider-auth-status-pill ${authStateClass(entry.auth_health_state)}`}
-        >
-          {authStateLabel(entry.auth_health_state)}
-        </span>
+        <span className={`status-pill ${pill.className}`}>{pill.label}</span>
       </div>
       <div className='provider-auth-detail-grid'>
         <span>observed</span>
@@ -131,19 +105,27 @@ export function ProviderAuthHealthPanel({
   authHealth?: UsageReportProviderAuthHealth
 }): ReactElement {
   const entries = authHealth?.entries ?? []
+  const subLabel =
+    authHealth?.freshness_label ??
+    'Current credential refresh state from provider_auth_current'
+  const headPill =
+    entries.length > 0
+      ? statusPill(
+          AUTH_HEALTH_STATE_PILL,
+          entries[0].auth_health_state,
+          STATUS_PILL_FALLBACK
+        )
+      : statusPill(AUTH_HEALTH_STATE_PILL, 'refreshed', STATUS_PILL_FALLBACK)
 
   return (
-    <section
+    <StatusPanel
       className='provider-auth-health-panel'
-      aria-label='Provider auth health'
+      ariaLabel='Provider auth health'
+      title='Provider auth'
+      subLabel={subLabel}
+      headPill={headPill}
+      emptyMessage={entries.length === 0 ? 'not observed' : undefined}
     >
-      <div className='provider-auth-panel-head'>
-        <span>Provider auth</span>
-        <span className='provider-auth-panel-sub'>
-          {authHealth?.freshness_label ??
-            'Current credential refresh state from provider_auth_current'}
-        </span>
-      </div>
       {entries.length > 0 ? (
         <div className='provider-auth-grid'>
           {entries.map((entry) => (
@@ -153,9 +135,7 @@ export function ProviderAuthHealthPanel({
             />
           ))}
         </div>
-      ) : (
-        <div className='provider-auth-empty'>not observed</div>
-      )}
-    </section>
+      ) : undefined}
+    </StatusPanel>
   )
 }
