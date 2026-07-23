@@ -10684,6 +10684,7 @@ async function loadUsageReport(searchParams) {
   return {
     metadata: {
       ...metadata,
+      ...buildFreshnessMetadata(summary.latest_record_at),
       staleRecordThresholdMinutes: STALE_RECORD_THRESHOLD_MINUTES,
       ...buildUsageReportRowSerializationMetadata(searchParams),
       agentScoreReasonsRecentIdCapTruncatesRequestedWindow:

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from 'vitest'
+import { afterEach, describe, expect, test, vi } from 'vitest'
 import {
   buildUsageReportAuxiliaryDegradedMetadata,
   __usageReportTestHelpers,
@@ -34,6 +34,7 @@ function usageReportTaskKey(options: unknown) {
 }
 
 afterEach(() => {
+  vi.useRealTimers()
   resetQueryReportDatabaseTestImpl()
   resetLoadDockerLogErrorsTestImpl()
   resetLoadLocalHealthTestImpl()
@@ -117,5 +118,48 @@ describe('D1-444 loadUsageReport optional fanout degradation', () => {
     await expect(loadUsageReport(params)).rejects.toThrow(
       'core usage query failed'
     )
+  })
+
+  test('test_loadUsageReport_includes_freshness_metadata_from_summary_latest_record', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-05-08T12:00:00.000Z'))
+    setQueryReportDatabaseTestImpl(async (_sql: string, _values, options) => {
+      if (usageReportTaskKey(options) === 'summary') {
+        return {
+          rows: [{ latest_record_at: '2026-05-08T11:56:00.000Z' }],
+        }
+      }
+      return emptyDbResult()
+    })
+    setLoadDockerLogErrorsTestImpl(async () => [])
+    setLoadLocalHealthTestImpl(async () => [])
+
+    const report = await loadUsageReport(params)
+
+    expect(report.metadata).toMatchObject({
+      generatedAt: '2026-05-08T12:00:00.000Z',
+      latestRecordAt: '2026-05-08T11:56:00.000Z',
+      latestRecordAgeMinutes: 4,
+      latestRecordStale: false,
+      staleRecordThresholdMinutes: expect.any(Number),
+    })
+  })
+
+  test('test_loadUsageReport_uses_null_stale_freshness_metadata_for_empty_summary', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-05-08T12:00:00.000Z'))
+    installSuccessfulCoreQueryMock()
+    setLoadDockerLogErrorsTestImpl(async () => [])
+    setLoadLocalHealthTestImpl(async () => [])
+
+    const report = await loadUsageReport(params)
+
+    expect(report.metadata).toMatchObject({
+      generatedAt: '2026-05-08T12:00:00.000Z',
+      latestRecordAt: null,
+      latestRecordAgeMinutes: null,
+      latestRecordStale: true,
+      staleRecordThresholdMinutes: expect.any(Number),
+    })
   })
 })
