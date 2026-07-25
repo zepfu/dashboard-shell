@@ -235,6 +235,38 @@ describe('D1-490 scheduled refresh context', () => {
 })
 
 describe('D1-490 real query metric lifecycle', () => {
+  test('usage_rows and usage_score_reasons inherit the 120000ms default statement timeout', async () => {
+    const { __queryCorrelationTestHelpers } = await loadReportService()
+    const { queryReportDatabase, setExecuteReportQueryTestImpl } =
+      __queryCorrelationTestHelpers
+    const observedTimeouts: Array<{
+      taskKey: string
+      statementTimeoutMs: number
+    }> = []
+
+    setExecuteReportQueryTestImpl(
+      async (sql, _values, { statementTimeoutMs }) => {
+        observedTimeouts.push({
+          taskKey: sql,
+          statementTimeoutMs,
+        })
+        return { rows: [] }
+      }
+    )
+
+    await queryReportDatabase('usage_rows', [], {
+      usageReportTaskKey: 'usage_rows',
+    })
+    await queryReportDatabase('usage_score_reasons', [], {
+      usageReportTaskKey: 'usage_score_reasons',
+    })
+
+    expect(observedTimeouts).toEqual([
+      { taskKey: 'usage_rows', statementTimeoutMs: 120_000 },
+      { taskKey: 'usage_score_reasons', statementTimeoutMs: 120_000 },
+    ])
+  })
+
   test('captures a 57014 timeout with bounded metadata and cleans up active state', async () => {
     vi.useFakeTimers()
     const startedAt = new Date('2026-07-25T01:00:00.000Z')

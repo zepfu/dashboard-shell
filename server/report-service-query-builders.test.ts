@@ -48,6 +48,8 @@ import {
   buildTokenTrendDayDetailQuery,
   buildToolActivityQuery,
   buildUsageQuery,
+  buildUsageScoreReasonsQuery,
+  buildUsageScoreReasonsMergeKey,
   parseUsageReportSort,
   shouldIncludeTokenTrendHealth,
   applyTokenTrendSummaryHealthInclusion,
@@ -1303,7 +1305,6 @@ describe('report-service query builders', () => {
       'NULL::double precision AS agent_compact_summary_verify_contexts'
     )
     expect(query.sql).toContain('AS agent_empty_completion_failures')
-    expect(query.sql).toContain('AS agent_score_reasons_top')
     expect(query.sql).toContain('AS agent_ignored_path_tracking_policy_score')
     expect(query.sql).toContain('AS agent_baseline_deflection_attempted_score')
     expect(query.sql).toContain(
@@ -1314,12 +1315,9 @@ describe('report-service query builders', () => {
       'COALESCE(sh.discovery_inventory_coverage_score, 0)'
     )
     expect(query.sql).not.toContain('/compact')
-    expect(query.sql).toContain('reason_source AS MATERIALIZED')
-    expect(query.sql).toContain(
-      "COALESCE(reason_summary.agent_score_reasons_top, '[]'::jsonb) AS agent_score_reasons_top"
-    )
-    expect(query.sql).toContain('jsonb_each(')
-    expect(query.sql).toContain('reason_value.value ->>')
+    expect(query.sql).not.toContain('reason_source AS MATERIALIZED')
+    expect(query.sql).not.toContain('reason_bounds AS')
+    expect(query.sql).not.toContain('reason_summary')
     expect(query.sql).not.toContain('COALESCE(sh.trace_quality_score, 0)')
   })
 
@@ -1341,7 +1339,7 @@ describe('report-service query builders', () => {
     expect(query.sql).toContain('sh.provider')
     expect(query.sql).toContain('sh.model')
     expect(query.sql).toContain('sh.response_cost_usd')
-    expect(query.sql).toContain('sh.agent_score_reasons')
+    expect(query.sql).not.toContain('sh.agent_score_reasons')
     expect(query.sql).toContain('sh.sleep_wellness_interruption_elapsed_ms')
     expect(query.sql).toContain('FROM filtered sh')
   })
@@ -1410,8 +1408,8 @@ describe('report-service query builders', () => {
     )
 
     expectReportableSessionHistoryFilter(query.sql)
-    expect(query.sql).toContain('reason_bounds AS')
-    expect(query.sql).toContain('reason_source AS MATERIALIZED')
+    expect(query.sql).not.toContain('reason_bounds AS')
+    expect(query.sql).not.toContain('reason_source AS MATERIALIZED')
   })
 
   test('aggregate_and_trend_use_same_eligibility', async () => {
@@ -2727,8 +2725,36 @@ describe('report-service query builders', () => {
     )
   })
 
-  test('buildUsageQuery_emits_explicit_agent_score_reasons_cap_truncation_metadata', () => {
+  test('buildUsageQuery_core_excludes_reason_enrichment_ctes', () => {
     const query = buildUsageQuery(
+      new URLSearchParams({
+        from: '2026-05-01',
+        to: '2026-05-08',
+        grain: 'day',
+        group_by: 'provider,model,repository',
+        limit: '50000',
+      })
+    )
+
+    expect(query.metadata).toMatchObject({
+      from: '2026-05-01',
+      to: '2026-05-08',
+    })
+    expect(query.metadata).not.toHaveProperty('agentScoreReasonsRecentRowLimit')
+    expect(query.metadata).not.toHaveProperty(
+      'agentScoreReasonsRecentIdCapActive'
+    )
+    expect(query.sql).not.toContain('reason_bounds AS')
+    expect(query.sql).not.toContain('reason_cap_state AS')
+    expect(query.sql).not.toContain('reason_source AS MATERIALIZED')
+    expect(query.sql).not.toContain('reason_summary')
+    expect(query.sql).not.toContain('agent_score_reasons_bounded_min_id')
+    expect(query.sql).toContain('SELECT')
+    expect(query.sql).toContain('base.*')
+  })
+
+  test('buildUsageScoreReasonsQuery_emits_explicit_agent_score_reasons_cap_truncation_metadata', () => {
+    const query = buildUsageScoreReasonsQuery(
       new URLSearchParams({
         from: '2026-05-01',
         to: '2026-05-08',
@@ -2755,6 +2781,122 @@ describe('report-service query builders', () => {
     expect(query.sql).toContain('agent_score_reasons_recent_id_cap_active')
     expect(query.sql).toContain(
       'agent_score_reasons_recent_id_cap_truncates_requested_window'
+    )
+    expect(query.sql).toContain('false AS agent_score_reasons_cap_state_only')
+    expect(query.sql).toContain('true AS agent_score_reasons_cap_state_only')
+    expect(query.sql).toContain(
+      'WHERE NOT EXISTS (SELECT 1 FROM reason_summary)'
+    )
+    expect(query.sql).toContain('reason_source AS MATERIALIZED')
+    expect(query.sql).toContain('jsonb_each(')
+    expect(query.sql).toContain('reason_value.value ->>')
+    expect(query.sql).toContain('agent_score_reasons_top')
+  })
+
+  test('D1-493 buildUsageScoreReasonsQuery_shares_date_filter_group_identity_with_core', () => {
+    const params = new URLSearchParams({
+      from: '2026-06-25',
+      to: '2026-07-26',
+      grain: 'day',
+      group_by: 'provider,model,repository',
+      limit: '50000',
+      provider: 'anthropic,openai',
+      environment: 'local',
+    })
+    const coreQuery = buildUsageQuery(params)
+    const reasonsQuery = buildUsageScoreReasonsQuery(params)
+
+    expect(reasonsQuery.values).toEqual(
+      coreQuery.values!.slice(0, reasonsQuery.values!.length)
+    )
+    expect(reasonsQuery.metadata.from).toBe(coreQuery.metadata.from)
+    expect(reasonsQuery.metadata.to).toBe(coreQuery.metadata.to)
+    expect(reasonsQuery.metadata.grain).toBe(coreQuery.metadata.grain)
+    expect(reasonsQuery.metadata.groupBy).toEqual(coreQuery.metadata.groupBy)
+
+    expect(reasonsQuery.sql).toContain("COALESCE(sh.tenant_id, 'unknown')")
+    expect(reasonsQuery.sql).toContain('sh.provider')
+    expect(coreQuery.sql).toContain("COALESCE(sh.tenant_id, 'unknown')")
+    expect(coreQuery.sql).toContain('sh.provider')
+
+    expect(coreQuery.sql).toContain('LIMIT')
+    expect(reasonsQuery.sql).not.toContain('LIMIT')
+  })
+
+  test('D1-493 buildUsageScoreReasonsMergeKey_matches_on_full_bucket_provider_model_repository', () => {
+    const groupBy = ['provider', 'model', 'repository']
+    const rowA = {
+      bucket: '2026-07-01',
+      provider: 'anthropic',
+      model: 'claude-sonnet-4-6',
+      repository: 'aawm',
+    }
+    const rowB = {
+      bucket: '2026-07-01',
+      provider: 'anthropic',
+      model: 'claude-sonnet-4-6',
+      repository: 'aawm',
+    }
+    const rowC = {
+      bucket: '2026-07-01',
+      provider: 'openai',
+      model: 'claude-sonnet-4-6',
+      repository: 'aawm',
+    }
+    const rowD = {
+      bucket: '2026-07-02',
+      provider: 'anthropic',
+      model: 'claude-sonnet-4-6',
+      repository: 'aawm',
+    }
+
+    expect(buildUsageScoreReasonsMergeKey(rowA, groupBy)).toBe(
+      buildUsageScoreReasonsMergeKey(rowB, groupBy)
+    )
+    expect(buildUsageScoreReasonsMergeKey(rowA, groupBy)).not.toBe(
+      buildUsageScoreReasonsMergeKey(rowC, groupBy)
+    )
+    expect(buildUsageScoreReasonsMergeKey(rowA, groupBy)).not.toBe(
+      buildUsageScoreReasonsMergeKey(rowD, groupBy)
+    )
+  })
+
+  test('D1-493 core_usage_query_excludes_agent_score_reasons_auxiliary_includes_it', () => {
+    const params = new URLSearchParams({
+      from: '2026-05-25',
+      to: '2026-06-25',
+      grain: 'day',
+      group_by: 'provider,model,repository',
+      limit: '50000',
+    })
+    const coreQuery = buildUsageQuery(params)
+    const reasonsQuery = buildUsageScoreReasonsQuery(params)
+
+    expect(coreQuery.sql).not.toContain('sh.agent_score_reasons')
+    expect(coreQuery.sql).not.toContain('reason_bounds')
+    expect(coreQuery.sql).not.toContain('jsonb_each(')
+
+    expect(reasonsQuery.sql).toContain('sh.agent_score_reasons')
+    expect(reasonsQuery.sql).toContain('reason_bounds AS')
+    expect(reasonsQuery.sql).toContain('sh.id > rb.min_id')
+    expect(reasonsQuery.sql).toContain('jsonb_each(')
+  })
+
+  test('D1-493 auxiliary_score_reasons_query_uses_10000_recent_id_cap', () => {
+    const query = buildUsageScoreReasonsQuery(
+      new URLSearchParams({
+        from: '2026-05-25',
+        to: '2026-06-25',
+        grain: 'day',
+        group_by: 'provider,model,repository',
+      })
+    )
+
+    expect(query.metadata.agentScoreReasonsRecentRowLimit).toBe(10_000)
+    expect(query.metadata.agentScoreReasonsRecentIdCapActive).toBe(true)
+    expect(query.sql).toContain('10000::bigint')
+    expect(query.sql).toContain(
+      'GREATEST(COALESCE(MAX(id), 0) - 10000::bigint, 0)'
     )
   })
   test('test_token_trend_signal_queries_cover_full_range_and_hourly_scores', () => {

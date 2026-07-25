@@ -272,6 +272,13 @@ declare module './report-service' {
   export const buildUsageQuery: (
     searchParams: SearchParamsLike
   ) => QueryResultWithMetadata
+  export const buildUsageScoreReasonsQuery: (
+    searchParams: SearchParamsLike
+  ) => QueryResultWithMetadata
+  export const buildUsageScoreReasonsMergeKey: (
+    row: Record<string, unknown>,
+    groupBy: string[]
+  ) => string
   export const parseUsageReportSort: (searchParams: SearchParamsLike) => {
     sort: string
     sortDirection: 'ASC' | 'DESC'

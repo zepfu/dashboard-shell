@@ -45,6 +45,44 @@ Local compose and dev defaults use `SHELL_REPORT_PROXY_SHARED_SECRET=dashboard-s
   - Docker log error intake follows the mounted host log directory selected by `SHELL_REPORT_DOCKER_LOG_ROOT`.
 - The host dependency-tree issue is handled by `.dockerignore` (for example `node_modules`, `dist`, `.analysis`, `.env*`, `.git`, and compose files) so it is not a Dockerfile runtime behavior gap.
 
+## Usage Report Score-Reason Auxiliary Split (D1-493)
+
+The core `usage_rows` SQL query no longer includes `agent_score_reasons` JSON
+expansion CTEs (`reason_bounds`, `reason_cap_state`, `reason_source`,
+`reason_counts`, `reason_ranked`, `reason_summary`) and does not select the
+`sh.agent_score_reasons` column in its `filtered` CTE at all. Score-reason
+enrichment runs as a separate auxiliary SQL task (`usage_score_reasons`), which
+selects `sh.agent_score_reasons` through `scoreReasonsFilteredColumnSelects`
+(extending the shared `usageFilteredColumnSelects` with only that one JSONB
+column). The auxiliary query carries:
+
+- The same date range, filter, grain, and group-by identity as the core query.
+- The same `AGENT_SCORE_REASON_RECENT_ROW_LIMIT` recent-ID cap.
+- Its own independent statement timeout budget (same 120000ms default).
+
+Merge happens in application code on the full `bucket` + group-by dimension key
+(`buildUsageScoreReasonsMergeKey`). Rows without a matching reason row receive
+`agent_score_reasons_top: '[]'`. When the reason summary has no groups, the
+auxiliary SQL returns one explicitly marked cap-state-only row. The loader does
+not add that row to the merge map or output rows; it uses the row only to
+preserve bounded min/max IDs and cap-truncation metadata on the report and its
+existing core rows.
+
+`usage_score_reasons` is an optional fanout section
+(`USAGE_REPORT_OPTIONAL_FANOUT_SECTION_KEYS`). On timeout or failure:
+
+- Core usage rows still return unchanged.
+- Report metadata includes `degraded: true`,
+  `degradedReason: 'auxiliary_fanout_failure'`,
+  `unavailableAuxiliarySections` containing `'usage_score_reasons'`, and
+  `agentScoreReasonsDegraded: true`.
+- `agentScoreReasonsRecentIdCapTruncatesRequestedWindow` reports `false`.
+- All rows receive `agent_score_reasons_top: '[]'`.
+
+Core `usage_rows` failure still fails fast (rejects the entire report). The
+split does not add DB indexes, broaden query windows, raise fanout concurrency,
+or weaken timeouts.
+
 ## Report cache identity
 
 `server/report-cache-identity.mjs` is the canonical owner of report Redis cache

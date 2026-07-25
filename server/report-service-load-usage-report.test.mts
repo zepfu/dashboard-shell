@@ -14,6 +14,17 @@ const {
   resetLoadLocalHealthTestImpl,
 } = __usageReportTestHelpers
 
+type UsageReportResult = {
+  metadata: Record<string, unknown>
+  rows: Array<Record<string, unknown>>
+  summary: Record<string, unknown>
+  [key: string]: unknown
+}
+
+function asUsageReport(report: unknown): UsageReportResult {
+  return report as UsageReportResult
+}
+
 const params = new URLSearchParams({
   from: '2026-05-01',
   to: '2026-05-08',
@@ -161,5 +172,226 @@ describe('D1-444 loadUsageReport optional fanout degradation', () => {
       latestRecordStale: true,
       staleRecordThresholdMinutes: expect.any(Number),
     })
+  })
+})
+
+describe('D1-493 usage_score_reasons auxiliary split', () => {
+  const d1493Params = new URLSearchParams({
+    from: '2026-05-01',
+    to: '2026-05-08',
+    group_by: 'provider,model,repository',
+  })
+
+  test('test_loadUsageReport_merges_score_reasons_into_core_rows_on_matching_key', async () => {
+    const coreRows = [
+      {
+        bucket: '2026-05-01',
+        provider: 'anthropic',
+        model: 'claude-sonnet-4-6',
+        repository: 'aawm',
+        token_total: 1000,
+      },
+      {
+        bucket: '2026-05-01',
+        provider: 'openai',
+        model: 'gpt-4o',
+        repository: 'aawm',
+        token_total: 500,
+      },
+    ]
+    const reasonRows = [
+      {
+        bucket: '2026-05-01',
+        provider: 'anthropic',
+        model: 'claude-sonnet-4-6',
+        repository: 'aawm',
+        agent_score_reasons_top: [
+          { family: 'quality', reason: 'high_score', count: 5 },
+        ],
+        agent_score_reasons_bounded_min_id: 100,
+        agent_score_reasons_bounded_max_id: 200,
+        agent_score_reasons_recent_row_limit: 10000,
+        agent_score_reasons_recent_id_cap_active: true,
+        agent_score_reasons_recent_id_cap_truncates_requested_window: false,
+      },
+    ]
+
+    setQueryReportDatabaseTestImpl(async (_sql: string, _values, options) => {
+      const taskKey = usageReportTaskKey(options)
+      if (taskKey === 'usage_rows') {
+        return { rows: coreRows }
+      }
+      if (taskKey === 'usage_score_reasons') {
+        return { rows: reasonRows }
+      }
+      return emptyDbResult()
+    })
+    setLoadDockerLogErrorsTestImpl(async () => [])
+    setLoadLocalHealthTestImpl(async () => [])
+
+    const report = asUsageReport(await loadUsageReport(d1493Params))
+
+    expect(report.metadata.agentScoreReasonsDegraded).toBe(false)
+    expect(
+      report.metadata.agentScoreReasonsRecentIdCapTruncatesRequestedWindow
+    ).toBe(false)
+    expect(report.metadata.agentScoreReasonsRecentRowLimit).toBe(10_000)
+    expect(report.metadata.agentScoreReasonsRecentIdCapActive).toBe(true)
+    expect(report.metadata.agentScoreReasonsBoundedMinId).toBe(100)
+    expect(report.metadata.agentScoreReasonsBoundedMaxId).toBe(200)
+
+    const anthropicRow = report.rows.find(
+      (r: Record<string, unknown>) => r.provider === 'anthropic'
+    )
+    expect(anthropicRow).toBeDefined()
+    expect(anthropicRow!.agent_score_reasons_top).toEqual([
+      { family: 'quality', reason: 'high_score', count: 5 },
+    ])
+    expect(anthropicRow!.agent_score_reasons_bounded_min_id).toBe(100)
+    expect(anthropicRow!.agent_score_reasons_bounded_max_id).toBe(200)
+
+    const openaiRow = report.rows.find(
+      (r: Record<string, unknown>) => r.provider === 'openai'
+    )
+    expect(openaiRow).toBeDefined()
+    expect(openaiRow!.agent_score_reasons_top).toEqual([])
+    expect(openaiRow!.agent_score_reasons_bounded_min_id).toBe(100)
+    expect(openaiRow!.agent_score_reasons_bounded_max_id).toBe(200)
+  })
+
+  test('test_loadUsageReport_preserves_cap_state_when_reason_summary_has_zero_groups', async () => {
+    const coreRows = [
+      {
+        bucket: '2026-05-01',
+        provider: 'anthropic',
+        model: 'claude-sonnet-4-6',
+        repository: 'aawm',
+        token_total: 1000,
+      },
+    ]
+    const capStateOnlyRows = [
+      {
+        bucket: null,
+        provider: null,
+        model: null,
+        repository: null,
+        agent_score_reasons_top: null,
+        agent_score_reasons_bounded_min_id: 250,
+        agent_score_reasons_bounded_max_id: 10250,
+        agent_score_reasons_recent_row_limit: 10000,
+        agent_score_reasons_recent_id_cap_active: true,
+        agent_score_reasons_recent_id_cap_truncates_requested_window: true,
+        agent_score_reasons_cap_state_only: true,
+      },
+    ]
+
+    setQueryReportDatabaseTestImpl(async (_sql: string, _values, options) => {
+      const taskKey = usageReportTaskKey(options)
+      if (taskKey === 'usage_rows') {
+        return { rows: coreRows }
+      }
+      if (taskKey === 'usage_score_reasons') {
+        return { rows: capStateOnlyRows }
+      }
+      return emptyDbResult()
+    })
+    setLoadDockerLogErrorsTestImpl(async () => [])
+    setLoadLocalHealthTestImpl(async () => [])
+
+    const report = asUsageReport(await loadUsageReport(d1493Params))
+
+    expect(report.metadata.agentScoreReasonsDegraded).toBe(false)
+    expect(
+      report.metadata.agentScoreReasonsRecentIdCapTruncatesRequestedWindow
+    ).toBe(true)
+    expect(report.metadata.agentScoreReasonsBoundedMinId).toBe(250)
+    expect(report.metadata.agentScoreReasonsBoundedMaxId).toBe(10250)
+    expect(report.rows).toHaveLength(1)
+    expect(report.rows[0]).toMatchObject({
+      bucket: '2026-05-01',
+      provider: 'anthropic',
+      model: 'claude-sonnet-4-6',
+      repository: 'aawm',
+      token_total: 1000,
+      agent_score_reasons_top: [],
+      agent_score_reasons_bounded_min_id: 250,
+      agent_score_reasons_bounded_max_id: 10250,
+      agent_score_reasons_recent_id_cap_truncates_requested_window: true,
+    })
+  })
+
+  test('test_loadUsageReport_degrades_score_reasons_timeout_without_rejecting_report', async () => {
+    const coreRows = [
+      {
+        bucket: '2026-05-01',
+        provider: 'anthropic',
+        model: 'claude-sonnet-4-6',
+        repository: 'aawm',
+        token_total: 1000,
+      },
+    ]
+
+    setQueryReportDatabaseTestImpl(async (_sql: string, _values, options) => {
+      const taskKey = usageReportTaskKey(options)
+      if (taskKey === 'usage_rows') {
+        return { rows: coreRows }
+      }
+      if (taskKey === 'usage_score_reasons') {
+        const error = new Error('canceling statement due to statement timeout')
+        ;(error as unknown as Record<string, unknown>).code = '57014'
+        throw error
+      }
+      return emptyDbResult()
+    })
+    setLoadDockerLogErrorsTestImpl(async () => [])
+    setLoadLocalHealthTestImpl(async () => [])
+
+    const report = asUsageReport(await loadUsageReport(d1493Params))
+
+    expect(report.metadata.degraded).toBe(true)
+    expect(report.metadata.degradedReason).toBe('auxiliary_fanout_failure')
+    expect(report.metadata.unavailableAuxiliarySections).toContain(
+      'usage_score_reasons'
+    )
+    expect(report.metadata.agentScoreReasonsDegraded).toBe(true)
+    expect(
+      report.metadata.agentScoreReasonsRecentIdCapTruncatesRequestedWindow
+    ).toBe(false)
+
+    expect(report.rows).toHaveLength(1)
+    expect(report.rows[0].token_total).toBe(1000)
+    expect(report.rows[0].agent_score_reasons_top).toEqual([])
+  })
+
+  test('test_loadUsageReport_core_fail_fast_still_works_after_score_reasons_split', async () => {
+    setQueryReportDatabaseTestImpl(async (_sql: string, _values, options) => {
+      if (usageReportTaskKey(options) === 'usage_rows') {
+        throw new Error('core usage query failed')
+      }
+      return emptyDbResult()
+    })
+    setLoadDockerLogErrorsTestImpl(async () => [])
+    setLoadLocalHealthTestImpl(async () => [])
+
+    await expect(loadUsageReport(d1493Params)).rejects.toThrow(
+      'core usage query failed'
+    )
+  })
+
+  test('test_loadUsageReport_score_reasons_metadata_present_on_success', async () => {
+    installSuccessfulCoreQueryMock()
+    setLoadDockerLogErrorsTestImpl(async () => [])
+    setLoadLocalHealthTestImpl(async () => [])
+
+    const report = asUsageReport(await loadUsageReport(d1493Params))
+
+    expect(report.metadata.agentScoreReasonsRecentRowLimit).toBe(10_000)
+    expect(report.metadata.agentScoreReasonsRecentIdCapActive).toBe(true)
+    expect(report.metadata.agentScoreReasonsBoundedMinId).toBeNull()
+    expect(report.metadata.agentScoreReasonsBoundedMaxId).toBeNull()
+    expect(report.metadata.agentScoreReasonsDegraded).toBe(false)
+    expect(
+      report.metadata.agentScoreReasonsRecentIdCapTruncatesRequestedWindow
+    ).toBe(false)
   })
 })

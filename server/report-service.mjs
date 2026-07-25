@@ -3593,7 +3593,6 @@ const usageFilteredColumns = [
   'compact_summary_id',
   'compact_summary_role',
   'compact_summary_source',
-  'agent_score_reasons',
   ...configChangeFlagColumns,
 ]
 const usageFilteredColumnSelects = [
@@ -3601,6 +3600,10 @@ const usageFilteredColumnSelects = [
   "        NULLIF(sh.inbound_model_alias, '') AS inbound_model_alias",
   "        NULLIF(sh.agent_name, '') AS agent_name",
   "        NULLIF(sh.agent_id, '') AS agent_id",
+]
+const scoreReasonsFilteredColumnSelects = [
+  ...usageFilteredColumnSelects,
+  '        sh.agent_score_reasons',
 ]
 
 function acceptsGzipEncoding(req) {
@@ -11580,10 +11583,6 @@ export function buildUsageQuery(searchParams) {
   const dimensionGroups = groupBy.map((key) => dimensions[key])
   const selectParts = [`${bucketExpression} AS bucket`, ...dimensionSelects]
   const groupParts = [bucketExpression, ...dimensionGroups]
-  const outputColumns = ['bucket', ...groupBy]
-  const reasonJoinParts = outputColumns.map(
-    (column) => `base.${column} IS NOT DISTINCT FROM reason_summary.${column}`
-  )
   const sql = `
 WITH filtered AS (
     SELECT
@@ -11669,8 +11668,55 @@ SELECT
 FROM filtered sh
 GROUP BY
     ${groupParts.join(',\n    ')}
-),
-reason_bounds AS (
+)
+SELECT
+    base.*
+FROM base
+ORDER BY ${sort} ${sortDirection}
+LIMIT $${values.length};
+`
+
+  return {
+    sql,
+    values,
+    metadata: {
+      from,
+      to,
+      grain,
+      groupBy,
+      limit,
+    },
+  }
+}
+
+export function buildUsageScoreReasonsQuery(searchParams) {
+  const grain = searchParams.get('grain') ?? 'day'
+  if (!grains[grain]) {
+    throw new BadRequestError(`Unsupported grain: ${grain}`)
+  }
+
+  const groupBy = parseGroupBy(searchParams.get('group_by'))
+  const from = parseDateParam(searchParams.get('from'), defaultFromDate)
+  const to = parseDateParam(searchParams.get('to'), defaultToDate)
+
+  const values = [from, to]
+  const whereParts = [...startTimeDateRangeWhere]
+  appendReportableSessionHistoryWhere(whereParts)
+
+  for (const key of Object.keys(filterColumns)) {
+    appendMultiValueFilter(searchParams, key, whereParts, values)
+  }
+  appendConfigChangeFilters(searchParams, whereParts)
+
+  const bucketExpression = grains[grain]
+  const dimensionSelects = groupBy.map((key) => `${dimensions[key]} AS ${key}`)
+  const dimensionGroups = groupBy.map((key) => dimensions[key])
+  const selectParts = [`${bucketExpression} AS bucket`, ...dimensionSelects]
+  const groupParts = [bucketExpression, ...dimensionGroups]
+  const outputColumns = ['bucket', ...groupBy]
+
+  const sql = `
+WITH reason_bounds AS (
     SELECT
         GREATEST(COALESCE(MAX(id), 0) - ${AGENT_SCORE_REASON_RECENT_ROW_LIMIT}::bigint, 0) AS min_id,
         COALESCE(MAX(id), 0) AS max_id,
@@ -11696,7 +11742,7 @@ reason_cap_state AS (
 ),
 reason_source AS MATERIALIZED (
     SELECT
-${usageFilteredColumnSelects.join(',\n')}
+${scoreReasonsFilteredColumnSelects.join(',\n')}
     FROM public.session_history sh
     CROSS JOIN reason_bounds rb
     WHERE sh.id > rb.min_id
@@ -11797,19 +11843,27 @@ GROUP BY
     ${outputColumns.join(',\n    ')}
 )
 SELECT
-    base.*,
-    COALESCE(reason_summary.agent_score_reasons_top, '[]'::jsonb) AS agent_score_reasons_top,
+    reason_summary.*,
     cap.agent_score_reasons_bounded_min_id,
     cap.agent_score_reasons_bounded_max_id,
     cap.agent_score_reasons_recent_row_limit,
     cap.agent_score_reasons_recent_id_cap_active,
-    cap.agent_score_reasons_recent_id_cap_truncates_requested_window
-FROM base
+    cap.agent_score_reasons_recent_id_cap_truncates_requested_window,
+    false AS agent_score_reasons_cap_state_only
+FROM reason_summary
 CROSS JOIN reason_cap_state cap
-LEFT JOIN reason_summary
-  ON ${reasonJoinParts.join('\n  AND ')}
-ORDER BY ${sort} ${sortDirection}
-LIMIT $${values.length};
+UNION ALL
+SELECT
+${outputColumns.map((column) => `    NULL AS ${column}`).join(',\n')},
+    NULL::jsonb AS agent_score_reasons_top,
+    cap.agent_score_reasons_bounded_min_id,
+    cap.agent_score_reasons_bounded_max_id,
+    cap.agent_score_reasons_recent_row_limit,
+    cap.agent_score_reasons_recent_id_cap_active,
+    cap.agent_score_reasons_recent_id_cap_truncates_requested_window,
+    true AS agent_score_reasons_cap_state_only
+FROM reason_cap_state cap
+WHERE NOT EXISTS (SELECT 1 FROM reason_summary);
 `
 
   return {
@@ -11820,7 +11874,6 @@ LIMIT $${values.length};
       to,
       grain,
       groupBy,
-      limit,
       agentScoreReasonsRecentRowLimit: AGENT_SCORE_REASON_RECENT_ROW_LIMIT,
       agentScoreReasonsRecentIdCapActive: true,
     },
@@ -12233,6 +12286,7 @@ async function loadLocalHealth() {
 }
 
 const USAGE_REPORT_OPTIONAL_FANOUT_SECTION_KEYS = [
+  'usage_score_reasons',
   'provider_alias_routing',
   'provider_auth_health',
   'provider_credit_lifecycle',
@@ -12254,6 +12308,14 @@ function buildEmptyUsageReportProviderAuthHealthReport(options = {}) {
 
 function buildEmptyUsageReportProviderCreditLifecycleReport(options = {}) {
   return normalizeProviderCreditLifecycleReport([], options)
+}
+
+export function buildUsageScoreReasonsMergeKey(row, groupBy) {
+  const parts = [String(row.bucket ?? '')]
+  for (const key of groupBy) {
+    parts.push(String(row[key] ?? ''))
+  }
+  return parts.join('\x00')
 }
 
 export function buildUsageReportAuxiliaryDegradedMetadata(
@@ -12330,6 +12392,7 @@ function resolveUsageReportFanoutValue(results, taskKey, fallback) {
 
 async function loadUsageReport(searchParams) {
   const { sql, values, metadata } = buildUsageQuery(searchParams)
+  const scoreReasonsQuery = buildUsageScoreReasonsQuery(searchParams)
   const summaryQuery = buildSummaryQuery(searchParams)
   const trendQuery = buildTrendQuery(searchParams)
   const clientUsageQuery = buildClientUsageQuery(searchParams)
@@ -12348,6 +12411,13 @@ async function loadUsageReport(searchParams) {
       taskKey: 'usage_rows',
       task: () =>
         queryReportDatabase(sql, values, { usageReportTaskKey: 'usage_rows' }),
+    },
+    {
+      taskKey: 'usage_score_reasons',
+      task: () =>
+        queryReportDatabase(scoreReasonsQuery.sql, scoreReasonsQuery.values, {
+          usageReportTaskKey: 'usage_score_reasons',
+        }),
     },
     {
       taskKey: 'summary',
@@ -12440,6 +12510,14 @@ async function loadUsageReport(searchParams) {
   const result = resolveUsageReportFanoutValue(fanoutResults, 'usage_rows', {
     rows: [],
   })
+  const scoreReasonsResult = resolveUsageReportFanoutValue(
+    fanoutResults,
+    'usage_score_reasons',
+    { rows: [] }
+  )
+  const scoreReasonsDegraded = unavailableAuxiliarySections.includes(
+    'usage_score_reasons'
+  )
   const summaryResult = resolveUsageReportFanoutValue(
     fanoutResults,
     'summary',
@@ -12496,8 +12574,50 @@ async function loadUsageReport(searchParams) {
     []
   )
 
+  const scoreReasonsCapState =
+    scoreReasonsResult.rows.find(
+      (row) => row.agent_score_reasons_cap_state_only === true
+    ) ??
+    scoreReasonsResult.rows.find(
+      (row) => row.agent_score_reasons_cap_state_only !== true
+    )
+  const scoreReasonRows = scoreReasonsResult.rows.filter(
+    (row) => row.agent_score_reasons_cap_state_only !== true
+  )
+  const scoreReasonsByKey = new Map()
+  for (const reasonRow of scoreReasonRows) {
+    const key = buildUsageScoreReasonsMergeKey(reasonRow, metadata.groupBy)
+    scoreReasonsByKey.set(key, reasonRow)
+  }
+
+  const mergedRows = result.rows.map((row) => {
+    const key = buildUsageScoreReasonsMergeKey(row, metadata.groupBy)
+    const reasonRow = scoreReasonsByKey.get(key)
+    const capState = reasonRow ?? scoreReasonsCapState
+    if (capState) {
+      return {
+        ...row,
+        agent_score_reasons_top: reasonRow?.agent_score_reasons_top ?? [],
+        agent_score_reasons_bounded_min_id:
+          capState.agent_score_reasons_bounded_min_id,
+        agent_score_reasons_bounded_max_id:
+          capState.agent_score_reasons_bounded_max_id,
+        agent_score_reasons_recent_row_limit:
+          capState.agent_score_reasons_recent_row_limit,
+        agent_score_reasons_recent_id_cap_active:
+          capState.agent_score_reasons_recent_id_cap_active,
+        agent_score_reasons_recent_id_cap_truncates_requested_window:
+          capState.agent_score_reasons_recent_id_cap_truncates_requested_window,
+      }
+    }
+    return {
+      ...row,
+      agent_score_reasons_top: [],
+    }
+  })
+
   const rows = serializeUsageReportRows(
-    result.rows.map(normalizeRow),
+    mergedRows.map(normalizeRow),
     searchParams
   )
   const summary = normalizeSummary(firstRow(summaryResult))
@@ -12515,10 +12635,10 @@ async function loadUsageReport(searchParams) {
     )
   }
 
-  const firstUsageRow = result.rows[0]
-  const agentScoreReasonsCapTruncatesRequestedWindow =
-    firstUsageRow?.agent_score_reasons_recent_id_cap_truncates_requested_window ??
-    false
+  const agentScoreReasonsCapTruncatesRequestedWindow = scoreReasonsDegraded
+    ? false
+    : (scoreReasonsCapState?.agent_score_reasons_recent_id_cap_truncates_requested_window ??
+      false)
 
   const auxiliaryDegradedMetadata = buildUsageReportAuxiliaryDegradedMetadata(
     unavailableAuxiliarySections
@@ -12532,6 +12652,21 @@ async function loadUsageReport(searchParams) {
       ...buildUsageReportRowSerializationMetadata(searchParams),
       agentScoreReasonsRecentIdCapTruncatesRequestedWindow:
         agentScoreReasonsCapTruncatesRequestedWindow,
+      agentScoreReasonsRecentRowLimit:
+        scoreReasonsQuery.metadata.agentScoreReasonsRecentRowLimit,
+      agentScoreReasonsRecentIdCapActive:
+        scoreReasonsQuery.metadata.agentScoreReasonsRecentIdCapActive,
+      agentScoreReasonsBoundedMinId: scoreReasonsDegraded
+        ? null
+        : normalizeNumber(
+            scoreReasonsCapState?.agent_score_reasons_bounded_min_id
+          ),
+      agentScoreReasonsBoundedMaxId: scoreReasonsDegraded
+        ? null
+        : normalizeNumber(
+            scoreReasonsCapState?.agent_score_reasons_bounded_max_id
+          ),
+      agentScoreReasonsDegraded: scoreReasonsDegraded,
       ...auxiliaryDegradedMetadata,
     },
     summary,
@@ -13574,6 +13709,7 @@ export const __usageReportTestHelpers = {
   buildUsageReportAuxiliaryDegradedMetadata,
   USAGE_REPORT_OPTIONAL_FANOUT_SECTION_KEYS,
   normalizeRow,
+  buildUsageScoreReasonsMergeKey,
   AGENT_SCORE_REASON_RECENT_ROW_LIMIT,
   setQueryReportDatabaseTestImpl(impl) {
     queryReportDatabaseTestImpl = impl
