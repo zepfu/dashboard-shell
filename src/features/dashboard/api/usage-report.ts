@@ -995,6 +995,10 @@ export interface UsageReportQuotaHistoryRow {
   client?: string | null
   /** Unit hint: credits vs requests for Build and similar keys. */
   quota_unit?: string | null
+  /** Absolute quota values when supplied by observation-backed telemetry. */
+  quota_limit?: number | null
+  quota_used?: number | null
+  quota_remaining?: number | null
   /**
    * Quota type after normalisation: 'weekly' | 'special' | 'short' |
    * 'weekly_overage_included' | 'short_special' | 'monthly' | 'wtus'

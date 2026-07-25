@@ -63,6 +63,53 @@ function formatObservedFreshness(iso: string): string {
   return `observed ${core}`
 }
 
+function quotaUnitLabel(unit: string | undefined): string {
+  if (unit === 'quota_units') return 'quota units'
+  if (unit === undefined) return 'credits'
+  return unit.replace(/_/g, ' ')
+}
+
+function formatQuotaAbsolute(value: number): string {
+  return value.toLocaleString('en-US', {
+    maximumFractionDigits: 4,
+  })
+}
+
+function renderQuotaAbsolutes(quotaBar: QuotaBarGroup): ReactElement | null {
+  const unitLabel = quotaUnitLabel(quotaBar.tipQuotaUnit)
+  if (quotaBar.tipAbsolutesUnavailable === true) {
+    return (
+      <div className='v9-tip-sub quota-tip-absolutes'>
+        {unitLabel}: unavailable
+      </div>
+    )
+  }
+
+  const rows = [
+    ['quota limit', quotaBar.tipQuotaLimit],
+    ['quota used', quotaBar.tipQuotaUsed],
+    ['quota remaining', quotaBar.tipQuotaRemaining],
+  ].filter((row): row is [string, number] => typeof row[1] === 'number')
+  if (rows.length === 0) return null
+
+  return (
+    <>
+      {rows.map(([label, value]) => (
+        <div
+          key={label}
+          className='v9-tip-row quota-tip-absolute'
+          style={{ gridTemplateColumns: 'minmax(0, 1fr) auto' }}
+        >
+          <span className='t-model'>{label}</span>
+          <span className='t-count'>
+            {formatQuotaAbsolute(value)} {unitLabel}
+          </span>
+        </div>
+      ))}
+    </>
+  )
+}
+
 /** Shared v9-tip-head / v9-tip-sub / v9-tip-row tooltip body (S2-21/S2-22). */
 export function buildQuotaTooltip(quotaBar: QuotaBarGroup): ReactElement {
   const tipWindowStr = quotaBar.tipWindow ?? '—'
@@ -88,11 +135,7 @@ export function buildQuotaTooltip(quotaBar: QuotaBarGroup): ReactElement {
           {identity}
         </div>
       ))}
-      {quotaBar.tipAbsolutesUnavailable === true && (
-        <div className='v9-tip-sub quota-tip-absolutes'>
-          credits: unavailable
-        </div>
-      )}
+      {renderQuotaAbsolutes(quotaBar)}
       {quotaBar.resetAt !== undefined && (
         <div className='v9-tip-sub quota-tip-reset'>
           resets {formatResetDistance(quotaBar.resetAt)}

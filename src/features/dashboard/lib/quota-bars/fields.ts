@@ -273,15 +273,137 @@ function quotaUnitFromKey(quotaKey: string | null | undefined): string | null {
   if (quotaKey === undefined || quotaKey === null) return null
   if (quotaKey.endsWith(':credits')) return 'credits'
   if (quotaKey.endsWith(':requests')) return 'requests'
+  if (quotaKey.endsWith(':quota_units')) return 'quota_units'
   return null
 }
 
 export function formatQuotaAccountSuffix(
   accountRef: string | null | undefined
 ): string | null {
-  const normalized = accountRef?.trim()
-  if (!normalized) return null
+  const normalized = normalizeQuotaAccountRef(accountRef)
+  if (normalized === null) return null
   return normalized.length <= 4 ? normalized : `…${normalized.slice(-4)}`
+}
+
+/**
+ * Normalizes browser-safe opaque quota account references.
+ *
+ * Current report payloads use 12 lowercase hex characters from
+ * `left(md5(...), 12)`. Eight-character refs remain accepted for existing
+ * browser/server caches. Full hashes and arbitrary identifiers are rejected.
+ */
+export function normalizeQuotaAccountRef(
+  accountRef: string | null | undefined
+): string | null {
+  const normalized = accountRef?.trim().toLowerCase()
+  return normalized !== undefined &&
+    /^(?:[a-f0-9]{8}|[a-f0-9]{12})$/.test(normalized)
+    ? normalized
+    : null
+}
+
+interface QuotaAccountIdentity {
+  accountRef: string | null
+  publicKey: string
+  normalizedInput: string | null
+  promotedLegacyRef: boolean
+}
+
+/**
+ * Resolves account references within one provider/contract collection.
+ *
+ * A legacy 8-hex ref is promoted only when it prefixes exactly one distinct
+ * 12-hex ref in the same collection. Ambiguous legacy refs, rejected refs, and
+ * missing refs each receive their own deterministic row-position identity.
+ */
+export function resolveQuotaAccountIdentities(
+  accountRefs: readonly (string | null | undefined)[]
+): QuotaAccountIdentity[] {
+  const normalizedInputs = accountRefs.map(normalizeQuotaAccountRef)
+  const currentRefs = [
+    ...new Set(
+      normalizedInputs.filter(
+        (ref): ref is string => ref !== null && ref.length === 12
+      )
+    ),
+  ]
+
+  return normalizedInputs.map((normalizedInput, index) => {
+    if (normalizedInput !== null && normalizedInput.length === 12) {
+      return {
+        accountRef: normalizedInput,
+        publicKey: normalizedInput,
+        normalizedInput,
+        promotedLegacyRef: false,
+      }
+    }
+
+    if (normalizedInput !== null) {
+      const prefixMatches = currentRefs.filter((ref) =>
+        ref.startsWith(normalizedInput)
+      )
+      if (prefixMatches.length === 1) {
+        const accountRef = prefixMatches[0]
+        return {
+          accountRef,
+          publicKey: accountRef,
+          normalizedInput,
+          promotedLegacyRef: true,
+        }
+      }
+      if (prefixMatches.length === 0) {
+        return {
+          accountRef: normalizedInput,
+          publicKey: normalizedInput,
+          normalizedInput,
+          promotedLegacyRef: false,
+        }
+      }
+    }
+
+    return {
+      accountRef: null,
+      publicKey: `unidentified-${(index + 1).toString()}`,
+      normalizedInput,
+      promotedLegacyRef: false,
+    }
+  })
+}
+
+interface KimiCodeQuotaContractFields {
+  quota_key?: string | null
+  quota_period?: string | null
+  source?: string | null
+  quota_unit?: string | null
+  client?: string | null
+}
+
+/** Exact frontend contract for a Kimi Code quota window. */
+export function matchesKimiCodeQuotaContract(
+  fields: KimiCodeQuotaContractFields | null | undefined,
+  quotaKey: string,
+  quotaPeriod: '5h' | '7d'
+): boolean {
+  return (
+    fields?.quota_key === quotaKey &&
+    fields.quota_period === quotaPeriod &&
+    fields.source === 'kimi_code_usage' &&
+    fields.quota_unit === 'quota_units' &&
+    fields.client === 'kimi-code'
+  )
+}
+
+/**
+ * Providers whose quota rows can carry meaningful sub-1% consumption and
+ * therefore keep a `<1%` display instead of rounding to `0%`.
+ * D1-489: Alibaba Token Plan (percentage-only credits).
+ * D1-492: Kimi Code (quota units against a 100-unit limit).
+ */
+export function isSubPercentPrecisionProvider(
+  provider: string | null | undefined
+): boolean {
+  const normalized = provider?.toLowerCase()
+  return normalized === 'alibaba_token_plan' || normalized === 'kimi_code'
 }
 
 function quotaBillingIdentityBits(
@@ -668,6 +790,7 @@ export function makeQuotaBarGroup(
   if (iv === null) return null
   const consumedPct = Math.max(0, Math.min(100, 100 - iv.remainingPct))
   const durationHours = quotaDurationHours(row.provider, interval)
+  const billingDetail = row.billing_details?.[interval]
 
   // F1b: interval_start/end for tipWindow, breakdown for tipModels.
   let intervalStart: string | null = null
@@ -735,11 +858,13 @@ export function makeQuotaBarGroup(
     tipModels: tipModelsFromBreakdown(breakdown),
     tipRequestTotal: tipRequestTotalFromBreakdown(breakdown),
     tipRecentRequestTotal90m: tipRecentRequestTotal90mFromBreakdown(breakdown),
-    tipObservedAt:
-      row.billing_details?.[interval]?.billing_observed_at ?? undefined,
+    tipObservedAt: billingDetail?.billing_observed_at ?? undefined,
+    tipQuotaLimit: billingDetail?.quota_limit,
+    tipQuotaUsed: billingDetail?.quota_used,
+    tipQuotaRemaining: billingDetail?.quota_remaining,
+    tipQuotaUnit: billingDetail?.quota_unit ?? undefined,
     tipAbsolutesUnavailable: quotaAbsolutesUnavailable(row, interval),
-    showSubPercentPrecision:
-      row.provider.toLowerCase() === 'alibaba_token_plan',
+    showSubPercentPrecision: isSubPercentPrecisionProvider(row.provider),
   }
 }
 
@@ -765,6 +890,7 @@ export function makeQuotaBarGroupAlways(
   const existing = makeQuotaBarGroup(label, row, interval)
   if (existing !== null) return existing
   const durationHours = quotaDurationHours(row.provider, interval)
+  const billingDetail = row.billing_details?.[interval]
 
   // Interval is inactive or pct is null — emit a 0%-consumed placeholder bar.
   let intervalStart: string | null = null
@@ -825,11 +951,13 @@ export function makeQuotaBarGroupAlways(
     tipModels: tipModelsFromBreakdown(breakdown),
     tipRequestTotal: tipRequestTotalFromBreakdown(breakdown),
     tipRecentRequestTotal90m: tipRecentRequestTotal90mFromBreakdown(breakdown),
-    tipObservedAt:
-      row.billing_details?.[interval]?.billing_observed_at ?? undefined,
+    tipObservedAt: billingDetail?.billing_observed_at ?? undefined,
+    tipQuotaLimit: billingDetail?.quota_limit,
+    tipQuotaUsed: billingDetail?.quota_used,
+    tipQuotaRemaining: billingDetail?.quota_remaining,
+    tipQuotaUnit: billingDetail?.quota_unit ?? undefined,
     tipAbsolutesUnavailable: quotaAbsolutesUnavailable(row, interval),
-    showSubPercentPrecision:
-      row.provider.toLowerCase() === 'alibaba_token_plan',
+    showSubPercentPrecision: isSubPercentPrecisionProvider(row.provider),
   }
 }
 

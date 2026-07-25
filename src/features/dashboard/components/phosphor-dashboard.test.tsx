@@ -60,6 +60,26 @@ function makeClient(): QueryClient {
   })
 }
 
+test('D1-492 keeps Kimi Code out of Token Trend provider-series seeding', () => {
+  const source = readFileSync(
+    resolve(
+      process.cwd(),
+      'src/features/dashboard/components/phosphor-dashboard.tsx'
+    ),
+    'utf8'
+  )
+  const providerSeries = source.match(/const PROVIDER_SERIES:[\s\S]*?\n\]/)?.[0]
+  const styles = readFileSync(
+    resolve(process.cwd(), 'src/styles/index.css'),
+    'utf8'
+  )
+
+  expect(providerSeries).toBeDefined()
+  expect(providerSeries).not.toContain("key: 'kimi_code'")
+  expect(providerSeries).not.toContain('tt-kimi')
+  expect(styles).not.toContain('.tt-slice.tt-kimi')
+})
+
 let phosphorTestQueryClient: QueryClient
 
 function Wrapper({ children }: { readonly children: ReactNode }): ReactNode {

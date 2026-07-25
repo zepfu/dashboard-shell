@@ -1077,7 +1077,7 @@ export default function PhosphorDashboard({
     () =>
       providerHealthCardProviders.flatMap((provider) => {
         const lanes = providerLanesByProvider.get(provider) ?? []
-        const quotaOnly = provider === 'alibaba_token_plan'
+        const quotaOnly = QUOTA_ONLY_PROVIDERS.includes(provider)
         if (quotaOnly && lanes.length === 0) return []
 
         const config: ProviderCardConfig = {
@@ -1087,7 +1087,9 @@ export default function PhosphorDashboard({
           displayName:
             provider === 'alibaba_token_plan'
               ? 'Alibaba Token Plan'
-              : undefined,
+              : provider === 'kimi_code'
+                ? 'Kimi Code'
+                : undefined,
           quotaOnly,
         }
         const aliases = providerAliases(provider)

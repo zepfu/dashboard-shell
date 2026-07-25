@@ -6,6 +6,8 @@ import type { UsageReportQuotaHistoryRow } from '../api/usage-report'
 import {
   ALIBABA_TOKEN_PLAN_5H_CREDITS_KEY,
   ALIBABA_TOKEN_PLAN_7D_CREDITS_KEY,
+  KIMI_CODE_5H_QUOTA_UNITS_KEY,
+  KIMI_CODE_7D_QUOTA_UNITS_KEY,
 } from './quota-bars/lane-defs'
 import { buildProviderQuotaHistoryTabs } from './quota-history-display'
 
@@ -167,6 +169,190 @@ describe('D1-489 — Alibaba Token Plan quota history tabs', () => {
     expect(tab7d?.rows).toHaveLength(0)
   })
 
+  test.each([
+    { source: 'alibaba_token_plan_usage' },
+    { quota_unit: 'credits' },
+    { quota_period: '7d' },
+    { client: 'qwen-cloud-console' },
+    { client: null },
+    { quota_key: ALIBABA_TOKEN_PLAN_5H_CREDITS_KEY },
+  ])('test_history_rejects_kimi_contract_mismatch', (override) => {
+    const tabs = buildProviderQuotaHistoryTabs('kimi_code', [
+      makeHistoryRow({
+        provider: 'kimi_code',
+        quota_type: 'short',
+        quota_key: KIMI_CODE_5H_QUOTA_UNITS_KEY,
+        quota_period: '5h',
+        source: 'kimi_code_usage',
+        client: 'kimi-code',
+        quota_unit: 'quota_units',
+        min_remaining_pct: 90,
+        max_remaining_pct: 100,
+        usage_tokens: 0,
+        usage_breakdown: [],
+        ...override,
+      }),
+    ])
+
+    expect(
+      tabs.find((tab) => tab.tabKey === 'kimi_code/5h-quota-units')?.rows
+    ).toHaveLength(0)
+  })
+
+  test('test_mixed_legacy_and_current_history_refs_aggregate_under_12_hex_identity', () => {
+    const shared = {
+      provider: 'kimi_code',
+      model: null,
+      quota_type: 'short',
+      quota_key: KIMI_CODE_5H_QUOTA_UNITS_KEY,
+      quota_period: '5h',
+      source: 'kimi_code_usage',
+      client: 'kimi-code',
+      quota_unit: 'quota_units',
+      expected_reset_at: '2026-07-24T17:22:00Z',
+      interval_start: '2026-07-24T12:22:00Z',
+      interval_end: '2026-07-24T17:22:00Z',
+      max_remaining_pct: 100,
+      usage_tokens: 0,
+      usage_breakdown: [],
+    } satisfies Partial<UsageReportQuotaHistoryRow>
+    const tabs = buildProviderQuotaHistoryTabs('kimi_code', [
+      makeHistoryRow({
+        ...shared,
+        account_ref: '119f6a46',
+        min_remaining_pct: 90,
+      }),
+      makeHistoryRow({
+        ...shared,
+        account_ref: '119f6a46bf29',
+        min_remaining_pct: 80,
+      }),
+    ])
+
+    const rows = tabs.find(
+      (tab) => tab.tabKey === 'kimi_code/5h-quota-units'
+    )?.rows
+    expect(rows).toHaveLength(1)
+    expect(rows?.[0].account_ref).toBe('119f6a46bf29')
+    expect(rows?.[0].min_remaining_pct).toBe(80)
+  })
+
+  test('test_cross_window_legacy_prefix_is_not_promoted_or_collapsed', () => {
+    const common = {
+      provider: 'kimi_code',
+      model: null,
+      source: 'kimi_code_usage',
+      client: 'kimi-code',
+      quota_unit: 'quota_units',
+      max_remaining_pct: 100,
+      usage_tokens: 0,
+      usage_breakdown: [],
+    } satisfies Partial<UsageReportQuotaHistoryRow>
+    const tabs = buildProviderQuotaHistoryTabs('kimi_code', [
+      makeHistoryRow({
+        ...common,
+        account_ref: '119f6a46',
+        quota_type: 'short',
+        quota_key: KIMI_CODE_5H_QUOTA_UNITS_KEY,
+        quota_period: '5h',
+        expected_reset_at: '2026-07-24T17:22:00Z',
+        interval_start: '2026-07-24T12:22:00Z',
+        interval_end: '2026-07-24T17:22:00Z',
+        min_remaining_pct: 90,
+      }),
+      makeHistoryRow({
+        ...common,
+        account_ref: '119f6a46bf29',
+        quota_type: 'short',
+        quota_key: KIMI_CODE_5H_QUOTA_UNITS_KEY,
+        quota_period: '5h',
+        expected_reset_at: '2026-07-24T17:22:00Z',
+        interval_start: '2026-07-24T12:22:00Z',
+        interval_end: '2026-07-24T17:22:00Z',
+        min_remaining_pct: 80,
+      }),
+      makeHistoryRow({
+        ...common,
+        account_ref: '119f6a46',
+        quota_type: 'weekly',
+        quota_key: KIMI_CODE_7D_QUOTA_UNITS_KEY,
+        quota_period: '7d',
+        expected_reset_at: '2026-07-29T16:26:00Z',
+        interval_start: '2026-07-22T16:26:00Z',
+        interval_end: '2026-07-29T16:26:00Z',
+        min_remaining_pct: 70,
+      }),
+      makeHistoryRow({
+        ...common,
+        account_ref: '119f6a46abcd',
+        quota_type: 'weekly',
+        quota_key: KIMI_CODE_7D_QUOTA_UNITS_KEY,
+        quota_period: '7d',
+        expected_reset_at: '2026-07-29T16:26:00Z',
+        interval_start: '2026-07-22T16:26:00Z',
+        interval_end: '2026-07-29T16:26:00Z',
+        min_remaining_pct: 60,
+      }),
+    ])
+
+    const rows5h = tabs.find(
+      (tab) => tab.tabKey === 'kimi_code/5h-quota-units'
+    )?.rows
+    const rows7d = tabs.find(
+      (tab) => tab.tabKey === 'kimi_code/7d-quota-units'
+    )?.rows
+
+    expect(rows5h).toHaveLength(2)
+    expect(rows7d).toHaveLength(2)
+    expect(rows5h?.map((row) => row.account_ref).sort()).toEqual([
+      '119f6a46bf29',
+      null,
+    ])
+    expect(rows7d?.map((row) => row.account_ref).sort()).toEqual([
+      '119f6a46abcd',
+      null,
+    ])
+    expect(rows5h?.map((row) => row.min_remaining_pct).sort()).toEqual([80, 90])
+    expect(rows7d?.map((row) => row.min_remaining_pct).sort()).toEqual([60, 70])
+  })
+
+  test('test_two_missing_history_refs_at_same_reset_do_not_merge', () => {
+    const shared = {
+      provider: 'kimi_code',
+      model: null,
+      quota_type: 'short',
+      quota_key: KIMI_CODE_5H_QUOTA_UNITS_KEY,
+      quota_period: '5h',
+      source: 'kimi_code_usage',
+      client: 'kimi-code',
+      quota_unit: 'quota_units',
+      expected_reset_at: '2026-07-24T17:22:00Z',
+      interval_start: '2026-07-24T12:22:00Z',
+      interval_end: '2026-07-24T17:22:00Z',
+      max_remaining_pct: 100,
+      usage_tokens: 0,
+      usage_breakdown: [],
+    } satisfies Partial<UsageReportQuotaHistoryRow>
+    const tabs = buildProviderQuotaHistoryTabs('kimi_code', [
+      makeHistoryRow({
+        ...shared,
+        account_ref: null,
+        min_remaining_pct: 90,
+      }),
+      makeHistoryRow({
+        ...shared,
+        account_ref: null,
+        min_remaining_pct: 80,
+      }),
+    ])
+
+    const rows = tabs.find(
+      (tab) => tab.tabKey === 'kimi_code/5h-quota-units'
+    )?.rows
+    expect(rows).toHaveLength(2)
+    expect(rows?.map((row) => row.min_remaining_pct).sort()).toEqual([80, 90])
+  })
+
   test('test_two_zero_usage_accounts_same_key_and_reset_remain_distinct', () => {
     const shared = {
       provider: 'alibaba_token_plan',
@@ -218,7 +404,43 @@ describe('D1-489 — Alibaba Token Plan quota history tabs', () => {
     }
   })
 
-  test('test_full_raw_account_hash_history_is_rejected', () => {
+  test('test_two_missing_alibaba_history_refs_same_reset_remain_distinct', () => {
+    const shared = {
+      provider: 'alibaba_token_plan',
+      model: null,
+      quota_type: 'short',
+      quota_key: ALIBABA_TOKEN_PLAN_5H_CREDITS_KEY,
+      quota_period: '5h',
+      source: 'alibaba_token_plan_usage',
+      quota_unit: 'credits',
+      expected_reset_at: '2026-07-24T21:00:00Z',
+      interval_start: '2026-07-24T16:00:00Z',
+      interval_end: '2026-07-24T21:00:00Z',
+      max_remaining_pct: 100,
+      usage_tokens: 0,
+      usage_breakdown: [],
+    } satisfies Partial<UsageReportQuotaHistoryRow>
+    const tabs = buildProviderQuotaHistoryTabs('alibaba_token_plan', [
+      makeHistoryRow({
+        ...shared,
+        account_ref: null,
+        min_remaining_pct: 90,
+      }),
+      makeHistoryRow({
+        ...shared,
+        account_ref: null,
+        min_remaining_pct: 80,
+      }),
+    ])
+
+    const rows = tabs.find(
+      (tab) => tab.tabKey === 'alibaba_token_plan/5h-credits'
+    )?.rows
+    expect(rows).toHaveLength(2)
+    expect(rows?.map((row) => row.min_remaining_pct).sort()).toEqual([80, 90])
+  })
+
+  test('test_full_raw_account_hash_history_is_retained_as_null_without_leakage', () => {
     const fullHash = 'a'.repeat(64)
     const tabs = buildProviderQuotaHistoryTabs('alibaba_token_plan', [
       makeHistoryRow({
@@ -238,7 +460,182 @@ describe('D1-489 — Alibaba Token Plan quota history tabs', () => {
     const rows = tabs.find(
       (tab) => tab.tabKey === 'alibaba_token_plan/5h-credits'
     )?.rows
-    expect(rows).toEqual([])
+    expect(rows).toHaveLength(1)
+    expect(rows?.[0].account_ref).toBeNull()
     expect(JSON.stringify(tabs)).not.toContain(fullHash)
+  })
+})
+
+describe('D1-492 — Kimi Code quota history tabs', () => {
+  test('test_5h_and_7d_history_kept_in_separate_tabs', () => {
+    const tabs = buildProviderQuotaHistoryTabs('kimi_code', [
+      makeHistoryRow({
+        provider: 'kimi_code',
+        model: null,
+        quota_type: 'short',
+        quota_key: KIMI_CODE_5H_QUOTA_UNITS_KEY,
+        quota_period: '5h',
+        source: 'kimi_code_usage',
+        account_ref: '119f6a46bf29',
+        client: 'kimi-code',
+        quota_unit: 'quota_units',
+        quota_limit: 100,
+        quota_used: 20,
+        quota_remaining: 80,
+        expected_reset_at: '2026-07-24T17:22:00Z',
+        interval_start: '2026-07-24T12:22:00Z',
+        interval_end: '2026-07-24T17:22:00Z',
+        usage_tokens: 5,
+      }),
+      makeHistoryRow({
+        provider: 'kimi_code',
+        model: null,
+        quota_type: 'weekly',
+        quota_key: KIMI_CODE_7D_QUOTA_UNITS_KEY,
+        quota_period: '7d',
+        source: 'kimi_code_usage',
+        account_ref: '119f6a46bf29',
+        client: 'kimi-code',
+        quota_unit: 'quota_units',
+        quota_limit: 100,
+        quota_used: 30,
+        quota_remaining: 70,
+        expected_reset_at: '2026-07-29T16:26:00Z',
+        interval_start: '2026-07-22T16:26:00Z',
+        interval_end: '2026-07-29T16:26:00Z',
+        usage_tokens: 9,
+      }),
+    ])
+
+    expect(tabs.map((tab) => tab.tabKey)).toEqual([
+      'kimi_code/5h-quota-units',
+      'kimi_code/7d-quota-units',
+    ])
+    expect(tabs[0].label).toBe('5-hour Quota Units')
+    expect(tabs[1].label).toBe('7-day Quota Units')
+    expect(tabs[0].rows).toHaveLength(1)
+    expect(tabs[1].rows).toHaveLength(1)
+    expect(tabs[0].rows[0].quota_key).toBe(KIMI_CODE_5H_QUOTA_UNITS_KEY)
+    expect(tabs[1].rows[0].quota_key).toBe(KIMI_CODE_7D_QUOTA_UNITS_KEY)
+    expect(tabs[0].rows[0].account_ref).toBe('119f6a46bf29')
+    expect(tabs[1].rows[0].account_ref).toBe('119f6a46bf29')
+    expect(tabs[0].rows[0]).toMatchObject({
+      quota_limit: 100,
+      quota_used: 20,
+      quota_remaining: 80,
+      quota_unit: 'quota_units',
+    })
+  })
+
+  test('test_history_rows_do_not_cross_contaminate_keys', () => {
+    const tabs = buildProviderQuotaHistoryTabs('kimi_code', [
+      makeHistoryRow({
+        provider: 'kimi_code',
+        quota_type: 'short',
+        quota_key: KIMI_CODE_5H_QUOTA_UNITS_KEY,
+        quota_period: '5h',
+        source: 'kimi_code_usage',
+        client: 'kimi-code',
+        quota_unit: 'quota_units',
+        usage_tokens: 5,
+      }),
+    ])
+    const tab7d = tabs.find((t) => t.tabKey === 'kimi_code/7d-quota-units')
+    expect(tab7d?.rows).toHaveLength(0)
+  })
+
+  test('test_zero_usage_pct_rows_still_surface_for_quota_units_lanes', () => {
+    const tabs = buildProviderQuotaHistoryTabs('kimi_code', [
+      makeHistoryRow({
+        provider: 'kimi_code',
+        model: null,
+        quota_type: 'short',
+        quota_key: KIMI_CODE_5H_QUOTA_UNITS_KEY,
+        quota_period: '5h',
+        source: 'kimi_code_usage',
+        client: 'kimi-code',
+        quota_unit: 'quota_units',
+        min_remaining_pct: 99.96,
+        max_remaining_pct: 100,
+        usage_tokens: 0,
+        usage_breakdown: [],
+      }),
+    ])
+    const rows = tabs.find(
+      (tab) => tab.tabKey === 'kimi_code/5h-quota-units'
+    )?.rows
+    expect(rows).toHaveLength(1)
+    expect(rows?.[0].min_remaining_pct).toBe(99.96)
+  })
+
+  test('test_full_raw_account_hash_history_is_retained_as_null_without_leakage', () => {
+    const fullHash = 'c'.repeat(64)
+    const tabs = buildProviderQuotaHistoryTabs('kimi_code', [
+      makeHistoryRow({
+        provider: 'kimi_code',
+        quota_type: 'short',
+        quota_key: KIMI_CODE_5H_QUOTA_UNITS_KEY,
+        quota_period: '5h',
+        source: 'kimi_code_usage',
+        account_ref: fullHash,
+        client: 'kimi-code',
+        quota_unit: 'quota_units',
+        min_remaining_pct: 90,
+        max_remaining_pct: 100,
+        usage_tokens: 0,
+        usage_breakdown: [],
+      }),
+    ])
+
+    const rows = tabs.find(
+      (tab) => tab.tabKey === 'kimi_code/5h-quota-units'
+    )?.rows
+    expect(rows).toHaveLength(1)
+    expect(rows?.[0].account_ref).toBeNull()
+    expect(JSON.stringify(tabs)).not.toContain(fullHash)
+  })
+
+  test('test_distinct_rejected_account_refs_do_not_collapse_history_rows', () => {
+    const firstHash = 'c'.repeat(64)
+    const secondHash = 'd'.repeat(64)
+    const tabs = buildProviderQuotaHistoryTabs('kimi_code', [
+      makeHistoryRow({
+        provider: 'kimi_code',
+        quota_type: 'short',
+        quota_key: KIMI_CODE_5H_QUOTA_UNITS_KEY,
+        quota_period: '5h',
+        source: 'kimi_code_usage',
+        account_ref: firstHash,
+        client: 'kimi-code',
+        quota_unit: 'quota_units',
+        min_remaining_pct: 90,
+        max_remaining_pct: 100,
+        usage_tokens: 0,
+        usage_breakdown: [],
+      }),
+      makeHistoryRow({
+        provider: 'kimi_code',
+        quota_type: 'short',
+        quota_key: KIMI_CODE_5H_QUOTA_UNITS_KEY,
+        quota_period: '5h',
+        source: 'kimi_code_usage',
+        account_ref: secondHash,
+        client: 'kimi-code',
+        quota_unit: 'quota_units',
+        min_remaining_pct: 80,
+        max_remaining_pct: 100,
+        usage_tokens: 0,
+        usage_breakdown: [],
+      }),
+    ])
+
+    const rows = tabs.find(
+      (tab) => tab.tabKey === 'kimi_code/5h-quota-units'
+    )?.rows
+    expect(rows).toHaveLength(2)
+    expect(rows?.every((row) => row.account_ref === null)).toBe(true)
+    expect(rows?.map((row) => row.min_remaining_pct).sort()).toEqual([80, 90])
+    expect(JSON.stringify(tabs)).not.toContain(firstHash)
+    expect(JSON.stringify(tabs)).not.toContain(secondHash)
   })
 })

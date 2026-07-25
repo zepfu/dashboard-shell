@@ -164,6 +164,7 @@ const providerColorsByKey: Record<string, string> = {
   nvidia_nim: '#6d28d9',
   chatgpt: '#475569',
   alibaba_token_plan: '#d97706',
+  kimi_code: '#0284c7',
 }
 
 /** Reference brand-identity colors for provider labels and headers. */
@@ -177,6 +178,7 @@ export const PROVIDER_BRAND_HEX: Record<string, string> = {
   openrouter: '#7e57c2',
   local: '#64748b',
   alibaba_token_plan: '#ff6a00',
+  kimi_code: '#0ea5e9',
 }
 
 /** Returns brand color for a provider, falling back to `'var(--fg)'`. */

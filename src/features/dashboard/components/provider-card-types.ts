@@ -93,6 +93,12 @@ export interface QuotaBarGroup {
   tipRecentRequestTotal90m?: number
   /** ISO timestamp of the billing observation, for freshness display. */
   tipObservedAt?: string
+  /** Absolute quota values supplied by billing telemetry. */
+  tipQuotaLimit?: number | null
+  tipQuotaUsed?: number | null
+  tipQuotaRemaining?: number | null
+  /** Machine-readable unit for absolute quota values, such as `quota_units`. */
+  tipQuotaUnit?: string
   /** True when billing detail exists but absolute values are all null (percentage-only telemetry). */
   tipAbsolutesUnavailable?: boolean
   /** Preserve meaningful sub-1% consumption display for percentage-only providers. */

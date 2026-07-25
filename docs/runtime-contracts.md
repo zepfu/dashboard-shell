@@ -163,6 +163,42 @@ Credit lanes remain separately identifiable in the Provider Status quota-only
 card, quota payloads/display helpers, and sidebar even when one lane is absent,
 stale, or unavailable.
 
+Moonshot/Kimi Code is a separate absolute-value quota family (`quota_units`).
+D1-492 provides first-class live Provider Status quota-only card and sidebar
+lanes for `kimi_code`, backed by `GET /api/shell/reports/quotas`. The
+`quota-history` and `quota-range-history` payloads and their display helpers
+preserve both windows as distinct lanes:
+
+- `kimi_code_5h:quota_units` → **5h** `quota_units` window.
+- `kimi_code_7d:quota_units` → **7d** `quota_units` window.
+
+The provider is `kimi_code`, the authoritative usage source is
+`kimi_code_usage`, and the client identity is `kimi-code`. Backend Kimi Code
+observation branches across current quota, velocity, history, history fallback,
+range history, and range fallback filter exact `provider = kimi_code`,
+`source = kimi_code_usage`, `client = kimi-code`, and the exact
+`quota_key`/`quota_period` pairs (`kimi_code_5h:quota_units` + `5h`,
+`kimi_code_7d:quota_units` + `7d`). Each lane retains its `provider`, exact
+`quota_key`, `quota_period` (`5h` / `7d`), unit (`quota_units`, exact API
+payload value, not a display label), `source`, `client`, absolute
+`quota_limit` / `quota_used` / `quota_remaining` values from
+`rate_limit_observations`, and freshness/observation metadata across the
+`/api/shell/reports/quotas`, `quota-history`, and `quota-range-history`
+payloads and display helpers.
+
+Account identity is privacy-safe only: the report service projects a 12-character
+lowercase hex `account_ref` via `left(md5(account_hash), 12)`. Frontend display
+helpers may reconcile legacy 8-hex refs with current 12-hex refs, but full
+`account_hash` values must never be exposed to the browser or rendered in
+tooltips.
+
+`kimi_code` is quota-only: exclude it from `session_history` usage enrichment
+for quota history / range-history windows, Token Trend, and unrelated provider
+identity merging. Do not alias or merge Moonshot API, other Moonshot products,
+or unrelated Kimi/subscription accounts with this family. The 5h and 7d
+`quota_units` lanes remain separately identifiable even when one lane is
+absent, stale, or unavailable.
+
 Anthropic Fable weekly overage-included (`7d_oi`) is a distinct quota family from
 baseline unified weekly (`7d`) and retired Sonnet weekly (`weekly_special` →
 internal `special`):
@@ -224,7 +260,7 @@ groups them by provider/model envelope, then uses a parameterized `LATERAL`
 `session_history` scan with a planner barrier (`OFFSET 0`) and the
 `session_history_quota_provider_started_model_idx` expression. The usage-scan
 canonical provider `CASE` must remain structurally compatible with that index.
-Antigravity and Alibaba Token Plan quota-only windows are excluded before the
+Antigravity, Alibaba Token Plan, and Kimi Code (`kimi_code`) quota-only windows are excluded before the
 scan. The 15s quota-history statement-timeout guardrail remains unchanged; if
 enrichment times out, the existing degraded fallback behavior still applies.
 

@@ -5354,6 +5354,12 @@ const ALIBABA_TOKEN_PLAN_SOURCE = 'alibaba_token_plan_usage'
 const ALIBABA_TOKEN_PLAN_5H_KEY = 'alibaba_token_plan_5h:credits'
 const ALIBABA_TOKEN_PLAN_7D_KEY = 'alibaba_token_plan_7d:credits'
 const ALIBABA_TOKEN_PLAN_QUOTA_UNIT = 'Credits'
+const KIMI_CODE_PROVIDER = 'kimi_code'
+const KIMI_CODE_SOURCE = 'kimi_code_usage'
+const KIMI_CODE_CLIENT = 'kimi-code'
+const KIMI_CODE_5H_KEY = 'kimi_code_5h:quota_units'
+const KIMI_CODE_7D_KEY = 'kimi_code_7d:quota_units'
+const KIMI_CODE_QUOTA_UNIT = 'quota_units'
 
 function quotaUnitCaseExpression(columnExpression = 'ri.quota_key') {
   return `CASE
@@ -5361,6 +5367,7 @@ function quotaUnitCaseExpression(columnExpression = 'ri.quota_key') {
             WHEN ${columnExpression} = '${XAI_GROK_BUILD_MONTHLY_REQUESTS_KEY}' THEN 'requests'
             WHEN ${columnExpression} LIKE '%:credits' THEN 'credits'
             WHEN ${columnExpression} LIKE '%:requests' THEN 'requests'
+            WHEN ${columnExpression} LIKE '%:quota_units' THEN 'quota_units'
             ELSE NULL
         END`
 }
@@ -5583,6 +5590,59 @@ alibaba_observations AS (
         COALESCE(o.source, ''), COALESCE(o.account_hash, ''),
         o.observed_at DESC
 ),
+kimi_code_observations AS (
+    SELECT DISTINCT ON (
+        o.provider, o.quota_key, o.quota_period, o.quota_type,
+        COALESCE(o.source, ''), COALESCE(o.account_hash, '')
+    )
+        o.provider AS raw_provider,
+        o.quota_type AS raw_quota_type,
+        o.quota_key,
+        o.provider AS provider,
+        NULLIF(o.model, '') AS model,
+        CASE
+            WHEN o.quota_period = '5h' THEN 'short'
+            WHEN o.quota_period = '7d' THEN 'weekly'
+            ELSE o.quota_type
+        END AS quota_type,
+        o.expected_reset_at,
+        o.remaining_pct,
+        o.expected_reset_at - CASE
+            WHEN o.quota_period = '5h' THEN INTERVAL '5 hours'
+            WHEN o.quota_period = '7d' THEN INTERVAL '7 days'
+            ELSE INTERVAL '7 days'
+        END AS interval_start,
+        o.expected_reset_at AS interval_end,
+        CASE
+            WHEN o.expected_reset_at - CASE
+                    WHEN o.quota_period = '5h' THEN INTERVAL '5 hours'
+                    WHEN o.quota_period = '7d' THEN INTERVAL '7 days'
+                    ELSE INTERVAL '7 days'
+                 END <= now()
+             AND o.expected_reset_at > now()
+            THEN true
+            ELSE false
+        END AS active,
+        o.account_hash,
+        NULLIF(TRIM(BOTH FROM COALESCE(o.source, '')), '') AS source,
+        o.quota_period,
+        1::bigint AS quota_rank
+    FROM public.rate_limit_observations o
+    WHERE o.provider = '${KIMI_CODE_PROVIDER}'
+      AND o.source = '${KIMI_CODE_SOURCE}'
+      AND o.client = '${KIMI_CODE_CLIENT}'
+      AND (
+          (o.quota_key = '${KIMI_CODE_5H_KEY}' AND o.quota_period = '5h')
+          OR
+          (o.quota_key = '${KIMI_CODE_7D_KEY}' AND o.quota_period = '7d')
+      )
+      AND o.observed_at IS NOT NULL
+      AND o.expected_reset_at IS NOT NULL
+    ORDER BY
+        o.provider, o.quota_key, o.quota_period, o.quota_type,
+        COALESCE(o.source, ''), COALESCE(o.account_hash, ''),
+        o.observed_at DESC
+),
 selected_with_fallbacks AS (
     SELECT *
     FROM selected
@@ -5644,6 +5704,8 @@ selected_with_fallbacks AS (
       )
     UNION ALL
     SELECT * FROM alibaba_observations
+    UNION ALL
+    SELECT * FROM kimi_code_observations
 ),
 billing_by_type AS (
     SELECT DISTINCT ON (
@@ -5667,6 +5729,8 @@ billing_by_type AS (
         CASE
             WHEN s.provider = '${ALIBABA_TOKEN_PLAN_PROVIDER}'
             THEN '${ALIBABA_TOKEN_PLAN_QUOTA_UNIT}'
+            WHEN s.provider = '${KIMI_CODE_PROVIDER}'
+            THEN '${KIMI_CODE_QUOTA_UNIT}'
             ELSE ${SELECTED_QUOTA_UNIT_CASE}
         END AS quota_unit,
         o.observed_at AS billing_observed_at,
@@ -5801,6 +5865,59 @@ normalized AS (
           (o.quota_key = '${ALIBABA_TOKEN_PLAN_5H_KEY}' AND o.quota_period = '5h')
           OR
           (o.quota_key = '${ALIBABA_TOKEN_PLAN_7D_KEY}' AND o.quota_period = '7d')
+      )
+      AND o.observed_at IS NOT NULL
+      AND o.expected_reset_at IS NOT NULL
+    GROUP BY
+        o.provider,
+        o.quota_key,
+        o.quota_period,
+        o.quota_type,
+        o.model,
+        o.expected_reset_at,
+        o.account_hash,
+        o.source
+    UNION ALL
+    SELECT
+        o.provider AS raw_provider,
+        o.provider AS provider,
+        NULLIF(o.model, '') AS model,
+        CASE
+            WHEN o.quota_period = '5h' THEN 'short'
+            WHEN o.quota_period = '7d' THEN 'weekly'
+            ELSE o.quota_type
+        END AS quota_type,
+        o.quota_type AS raw_quota_type,
+        o.quota_key,
+        o.expected_reset_at,
+        MIN(o.remaining_pct) AS remaining_pct,
+        o.expected_reset_at - CASE
+            WHEN o.quota_period = '5h' THEN INTERVAL '5 hours'
+            WHEN o.quota_period = '7d' THEN INTERVAL '7 days'
+            ELSE INTERVAL '7 days'
+        END AS interval_start,
+        o.expected_reset_at AS interval_end,
+        CASE
+            WHEN o.expected_reset_at - CASE
+                    WHEN o.quota_period = '5h' THEN INTERVAL '5 hours'
+                    WHEN o.quota_period = '7d' THEN INTERVAL '7 days'
+                    ELSE INTERVAL '7 days'
+                 END <= now()
+             AND o.expected_reset_at > now()
+            THEN true
+            ELSE false
+        END AS active,
+        o.account_hash,
+        NULLIF(TRIM(BOTH FROM COALESCE(o.source, '')), '') AS source,
+        o.quota_period
+    FROM public.rate_limit_observations o
+    WHERE o.provider = '${KIMI_CODE_PROVIDER}'
+      AND o.source = '${KIMI_CODE_SOURCE}'
+      AND o.client = '${KIMI_CODE_CLIENT}'
+      AND (
+          (o.quota_key = '${KIMI_CODE_5H_KEY}' AND o.quota_period = '5h')
+          OR
+          (o.quota_key = '${KIMI_CODE_7D_KEY}' AND o.quota_period = '7d')
       )
       AND o.observed_at IS NOT NULL
       AND o.expected_reset_at IS NOT NULL
@@ -6246,6 +6363,70 @@ normalized AS (
             o.expected_reset_at,
             o.observed_at DESC
     )
+    UNION ALL
+    (
+        SELECT DISTINCT ON (
+            o.provider,
+            o.quota_key,
+            o.quota_period,
+            o.quota_type,
+            COALESCE(o.source, ''),
+            COALESCE(o.account_hash, ''),
+            o.expected_reset_at
+        )
+            o.provider AS raw_provider,
+            o.quota_type AS raw_quota_type,
+            o.quota_key,
+            o.provider AS provider,
+            NULLIF(o.model, '') AS model,
+            CASE
+                WHEN o.quota_period = '5h' THEN 'short'
+                WHEN o.quota_period = '7d' THEN 'weekly'
+                ELSE o.quota_type
+            END AS quota_type,
+            o.quota_key AS normalized_quota_key,
+            NULLIF(TRIM(BOTH FROM COALESCE(o.source, '')), '') AS source,
+            NULLIF(TRIM(BOTH FROM COALESCE(o.client, '')), '') AS client,
+            '${KIMI_CODE_QUOTA_UNIT}'::text AS quota_unit,
+            o.expected_reset_at,
+            o.remaining_pct,
+            o.expected_reset_at - CASE
+                WHEN o.quota_period = '5h' THEN INTERVAL '5 hours'
+                WHEN o.quota_period = '7d' THEN INTERVAL '7 days'
+                ELSE INTERVAL '7 days'
+            END AS interval_start,
+            CASE
+                WHEN o.quota_period = '5h' THEN 5.0
+                WHEN o.quota_period = '7d' THEN 168.0
+                ELSE 168.0
+            END AS interval_hours,
+            o.account_hash,
+            o.quota_period,
+            o.observed_at,
+            o.quota_limit,
+            o.quota_used,
+            o.quota_remaining
+        FROM public.rate_limit_observations o
+        WHERE o.provider = '${KIMI_CODE_PROVIDER}'
+          AND o.source = '${KIMI_CODE_SOURCE}'
+          AND o.client = '${KIMI_CODE_CLIENT}'
+          AND (
+              (o.quota_key = '${KIMI_CODE_5H_KEY}' AND o.quota_period = '5h')
+              OR
+              (o.quota_key = '${KIMI_CODE_7D_KEY}' AND o.quota_period = '7d')
+          )
+          AND o.observed_at IS NOT NULL
+          AND o.expected_reset_at IS NOT NULL
+        ORDER BY
+            o.provider,
+            o.quota_key,
+            o.quota_period,
+            o.quota_type,
+            COALESCE(o.source, ''),
+            COALESCE(o.account_hash, ''),
+            o.expected_reset_at,
+            o.observed_at DESC
+    )
 ),
 scoped_normalized AS (
     SELECT
@@ -6588,6 +6769,7 @@ usage_windows AS MATERIALIZED (
     FROM window_bounds wb
     WHERE wb.provider <> 'antigravity'
       AND wb.provider <> '${ALIBABA_TOKEN_PLAN_PROVIDER}'
+      AND wb.provider <> '${KIMI_CODE_PROVIDER}'
 ),
 -- One session_history envelope scan per (provider, model) group, then
 -- set-based half-open assignment back onto distinct usage windows.
@@ -6951,6 +7133,87 @@ normalized AS (
             o.expected_reset_at,
             o.observed_at DESC
     )
+    UNION ALL
+    (
+        SELECT DISTINCT ON (
+            o.provider,
+            o.quota_key,
+            o.quota_period,
+            o.quota_type,
+            COALESCE(o.source, ''),
+            COALESCE(o.account_hash, ''),
+            o.expected_reset_at
+        )
+            o.provider AS raw_provider,
+            o.quota_type AS raw_quota_type,
+            o.quota_key,
+            o.provider AS provider,
+            NULLIF(o.model, '') AS model,
+            CASE
+                WHEN o.quota_period = '5h' THEN 'short'
+                WHEN o.quota_period = '7d' THEN 'weekly'
+                ELSE o.quota_type
+            END AS quota_type,
+            o.quota_key AS normalized_quota_key,
+            NULLIF(TRIM(BOTH FROM COALESCE(o.source, '')), '') AS source,
+            NULLIF(TRIM(BOTH FROM COALESCE(o.client, '')), '') AS client,
+            '${KIMI_CODE_QUOTA_UNIT}'::text AS quota_unit,
+            o.expected_reset_at,
+            o.expected_reset_at - CASE
+                WHEN o.quota_period = '5h' THEN INTERVAL '5 hours'
+                WHEN o.quota_period = '7d' THEN INTERVAL '7 days'
+                ELSE INTERVAL '7 days'
+            END AS interval_start,
+            CASE
+                WHEN o.quota_period = '5h' THEN 5.0
+                WHEN o.quota_period = '7d' THEN 168.0
+                ELSE 168.0
+            END AS interval_hours,
+            LEAST(COALESCE(o.remaining_pct, 100), 100) AS remaining_pct,
+            o.account_hash,
+            o.quota_period,
+            o.observed_at,
+            o.quota_limit,
+            o.quota_used,
+            o.quota_remaining
+        FROM public.rate_limit_observations o
+        WHERE o.provider = '${KIMI_CODE_PROVIDER}'
+          AND o.source = '${KIMI_CODE_SOURCE}'
+          AND o.client = '${KIMI_CODE_CLIENT}'
+          AND (
+              (o.quota_key = '${KIMI_CODE_5H_KEY}' AND o.quota_period = '5h')
+              OR
+              (o.quota_key = '${KIMI_CODE_7D_KEY}' AND o.quota_period = '7d')
+          )
+          AND o.observed_at IS NOT NULL
+          AND o.expected_reset_at IS NOT NULL
+          AND o.expected_reset_at >= now() - (
+                CASE
+                    WHEN o.quota_period = '5h' THEN 5.0
+                    WHEN o.quota_period = '7d' THEN 168.0
+                    ELSE 168.0
+                END * 1.5 * INTERVAL '1 hour'
+            )
+          AND o.expected_reset_at < now() + (
+                LEAST(
+                    CASE
+                        WHEN o.quota_period = '5h' THEN 5.0
+                        WHEN o.quota_period = '7d' THEN 168.0
+                        ELSE 168.0
+                    END,
+                    ${QUOTA_HISTORY_MAX_UPPER_HOURS}::double precision
+                ) * 2.0 * INTERVAL '1 hour'
+            )
+        ORDER BY
+            o.provider,
+            o.quota_key,
+            o.quota_period,
+            o.quota_type,
+            COALESCE(o.source, ''),
+            COALESCE(o.account_hash, ''),
+            o.expected_reset_at,
+            o.observed_at DESC
+    )
 ),
 scoped_intervals AS (
     SELECT
@@ -7178,6 +7441,51 @@ WITH normalized AS (
               ELSE INTERVAL '7 days'
           END < ($2::date::timestamp AT TIME ZONE 'America/New_York')
       AND o.expected_reset_at >= ($1::date::timestamp AT TIME ZONE 'America/New_York')
+    UNION ALL
+    SELECT
+        o.provider AS raw_provider,
+        o.provider AS provider,
+        NULLIF(o.model, '') AS model,
+        CASE
+            WHEN o.quota_period = '5h' THEN 'short'
+            WHEN o.quota_period = '7d' THEN 'weekly'
+            ELSE o.quota_type
+        END AS quota_type,
+        o.quota_key AS normalized_quota_key,
+        NULLIF(TRIM(BOTH FROM COALESCE(o.source, '')), '') AS source,
+        NULLIF(TRIM(BOTH FROM COALESCE(o.client, '')), '') AS client,
+        '${KIMI_CODE_QUOTA_UNIT}'::text AS quota_unit,
+        o.expected_reset_at,
+        o.expected_reset_at - CASE
+            WHEN o.quota_period = '5h' THEN INTERVAL '5 hours'
+            WHEN o.quota_period = '7d' THEN INTERVAL '7 days'
+            ELSE INTERVAL '7 days'
+        END AS interval_start,
+        o.expected_reset_at AS interval_end,
+        o.remaining_pct,
+        o.quota_period,
+        o.account_hash,
+        o.observed_at,
+        o.quota_limit,
+        o.quota_used,
+        o.quota_remaining
+    FROM public.rate_limit_observations o
+    WHERE o.provider = '${KIMI_CODE_PROVIDER}'
+      AND o.source = '${KIMI_CODE_SOURCE}'
+      AND o.client = '${KIMI_CODE_CLIENT}'
+      AND (
+          (o.quota_key = '${KIMI_CODE_5H_KEY}' AND o.quota_period = '5h')
+          OR
+          (o.quota_key = '${KIMI_CODE_7D_KEY}' AND o.quota_period = '7d')
+      )
+      AND o.observed_at IS NOT NULL
+      AND o.expected_reset_at IS NOT NULL
+      AND o.expected_reset_at - CASE
+              WHEN o.quota_period = '5h' THEN INTERVAL '5 hours'
+              WHEN o.quota_period = '7d' THEN INTERVAL '7 days'
+              ELSE INTERVAL '7 days'
+          END < ($2::date::timestamp AT TIME ZONE 'America/New_York')
+      AND o.expected_reset_at >= ($1::date::timestamp AT TIME ZONE 'America/New_York')
 ),
 observation_identity AS (
     SELECT DISTINCT ON (
@@ -7376,6 +7684,51 @@ WITH normalized AS (
               ELSE INTERVAL '7 days'
           END < ($2::date::timestamp AT TIME ZONE 'America/New_York')
       AND o.expected_reset_at >= ($1::date::timestamp AT TIME ZONE 'America/New_York')
+    UNION ALL
+    SELECT
+        o.provider AS raw_provider,
+        o.provider AS provider,
+        NULLIF(o.model, '') AS model,
+        CASE
+            WHEN o.quota_period = '5h' THEN 'short'
+            WHEN o.quota_period = '7d' THEN 'weekly'
+            ELSE o.quota_type
+        END AS quota_type,
+        o.quota_key AS normalized_quota_key,
+        NULLIF(TRIM(BOTH FROM COALESCE(o.source, '')), '') AS source,
+        NULLIF(TRIM(BOTH FROM COALESCE(o.client, '')), '') AS client,
+        '${KIMI_CODE_QUOTA_UNIT}'::text AS quota_unit,
+        o.expected_reset_at,
+        o.expected_reset_at - CASE
+            WHEN o.quota_period = '5h' THEN INTERVAL '5 hours'
+            WHEN o.quota_period = '7d' THEN INTERVAL '7 days'
+            ELSE INTERVAL '7 days'
+        END AS interval_start,
+        o.expected_reset_at AS interval_end,
+        o.remaining_pct,
+        o.quota_period,
+        o.account_hash,
+        o.observed_at,
+        o.quota_limit,
+        o.quota_used,
+        o.quota_remaining
+    FROM public.rate_limit_observations o
+    WHERE o.provider = '${KIMI_CODE_PROVIDER}'
+      AND o.source = '${KIMI_CODE_SOURCE}'
+      AND o.client = '${KIMI_CODE_CLIENT}'
+      AND (
+          (o.quota_key = '${KIMI_CODE_5H_KEY}' AND o.quota_period = '5h')
+          OR
+          (o.quota_key = '${KIMI_CODE_7D_KEY}' AND o.quota_period = '7d')
+      )
+      AND o.observed_at IS NOT NULL
+      AND o.expected_reset_at IS NOT NULL
+      AND o.expected_reset_at - CASE
+              WHEN o.quota_period = '5h' THEN INTERVAL '5 hours'
+              WHEN o.quota_period = '7d' THEN INTERVAL '7 days'
+              ELSE INTERVAL '7 days'
+          END < ($2::date::timestamp AT TIME ZONE 'America/New_York')
+      AND o.expected_reset_at >= ($1::date::timestamp AT TIME ZONE 'America/New_York')
 ),
 observation_identity AS (
     SELECT DISTINCT ON (
@@ -7482,6 +7835,7 @@ per_model_usage AS (
     JOIN public.session_history sh
       ON wb.provider <> 'antigravity'
      AND wb.provider <> '${ALIBABA_TOKEN_PLAN_PROVIDER}'
+     AND wb.provider <> '${KIMI_CODE_PROVIDER}'
      AND ${providerDimension} = wb.provider
      AND COALESCE(sh.start_time, sh.created_at) >= wb.interval_start
      AND COALESCE(sh.start_time, sh.created_at) < wb.expected_reset_at
@@ -10117,7 +10471,10 @@ function quotaVelocityLaneKey(
   } = {}
 ) {
   const baseIdentity = [provider ?? 'unknown', model ?? '', quotaType]
-  if (provider !== ALIBABA_TOKEN_PLAN_PROVIDER) {
+  if (
+    provider !== ALIBABA_TOKEN_PLAN_PROVIDER &&
+    provider !== KIMI_CODE_PROVIDER
+  ) {
     return baseIdentity.join('\u0000')
   }
   return [

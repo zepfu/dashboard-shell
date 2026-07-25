@@ -4234,3 +4234,544 @@ describe('D1-489 alibaba_token_plan quota support', () => {
     expect(normalized.every((row) => !('account_hash' in row))).toBe(true)
   })
 })
+
+// ---------------------------------------------------------------------------
+// D1-492: kimi_code (Moonshot/Kimi) quota support
+// ---------------------------------------------------------------------------
+describe('D1-492 kimi_code quota support', () => {
+  test('test_buildQuotaQuery_includes_kimi_code_observations_cte_from_rate_limit_observations', () => {
+    const query = buildQuotaQuery()
+    expect(query.sql).toContain('kimi_code_observations AS')
+    expect(query.sql).toContain("o.provider = 'kimi_code'")
+    expect(query.sql).toContain("o.source = 'kimi_code_usage'")
+    expect(query.sql).toContain("o.client = 'kimi-code'")
+    expect(query.sql).toContain("o.quota_key = 'kimi_code_5h:quota_units'")
+    expect(query.sql).toContain("o.quota_key = 'kimi_code_7d:quota_units'")
+    expect(query.sql).toContain('public.rate_limit_observations o')
+  })
+
+  test('test_buildQuotaQuery_maps_kimi_5h_to_short_and_7d_to_weekly', () => {
+    const query = buildQuotaQuery()
+    expect(query.sql).toContain("WHEN o.quota_period = '5h' THEN 'short'")
+    expect(query.sql).toContain("WHEN o.quota_period = '7d' THEN 'weekly'")
+  })
+
+  test('test_buildQuotaQuery_infers_quota_units_unit_from_key_suffix', () => {
+    const query = buildQuotaQuery()
+    expect(query.sql).toContain("LIKE '%:quota_units' THEN 'quota_units'")
+    expect(query.sql).toContain("THEN 'quota_units'")
+  })
+
+  test('test_buildQuotaQuery_uses_exact_kimi_quota_unit_not_display_label', () => {
+    const query = buildQuotaQuery()
+    expect(query.sql).toContain("THEN 'quota_units'")
+    // Must not invent a title-cased display label for the unit.
+    expect(query.sql).not.toContain("THEN 'Quota Units'")
+    expect(query.sql).not.toContain("THEN 'QuotaUnits'")
+  })
+
+  test('test_buildQuotaQuery_partitions_kimi_by_provider_quota_key_period_type_source_account', () => {
+    const query = buildQuotaQuery()
+    const compact = compactWhitespace(query.sql)
+    expect(compact).toContain(
+      "DISTINCT ON ( o.provider, o.quota_key, o.quota_period, o.quota_type, COALESCE(o.source, ''), COALESCE(o.account_hash, '') )"
+    )
+  })
+
+  test('test_buildQuotaQuery_never_exposes_full_account_hash_for_kimi', () => {
+    const query = buildQuotaQuery()
+    expect(query.sql).toContain(
+      "NULLIF(left(md5(COALESCE(s.account_hash, '')), 12), left(md5(''), 12)) AS account_ref"
+    )
+    const finalSelect = query.sql.slice(query.sql.lastIndexOf('SELECT'))
+    expect(finalSelect).not.toMatch(/AS\s+account_hash\b/)
+  })
+
+  test('test_buildQuotaQuery_groups_by_account_hash_to_prevent_kimi_collapse', () => {
+    const query = buildQuotaQuery()
+    expect(query.sql).toContain(
+      "GROUP BY s.provider, s.model, s.source, COALESCE(s.account_hash, '')"
+    )
+  })
+
+  test('test_buildQuotaQuery_projects_privacy_safe_twelve_hex_account_ref', () => {
+    const query = buildQuotaQuery()
+    expect(query.sql).toContain(
+      "NULLIF(left(md5(COALESCE(s.account_hash, '')), 12), left(md5(''), 12)) AS account_ref"
+    )
+  })
+
+  test('test_normalizeQuotaRow_includes_kimi_account_ref_absolute_values_and_quota_units', () => {
+    const row: Record<string, unknown> = {
+      provider: 'kimi_code',
+      model: null,
+      account_ref: '119f6a46bf29',
+      short_quota_key: 'kimi_code_5h:quota_units',
+      short_quota_period: '5h',
+      short_source: 'kimi_code_usage',
+      short_client: 'kimi-code',
+      short_quota_unit: 'quota_units',
+      short_quota_limit: 100,
+      short_quota_used: 42,
+      short_quota_remaining: 58,
+      short_billing_observed_at: '2026-07-25T10:00:00.000Z',
+      short_billing_period_start_at: null,
+      short_billing_period_end_at: null,
+      short_raw_provider_fields: {},
+      short_evidence: {},
+      short_remaining_pct: 58,
+      short_reset_at: '2026-07-25T15:00:00.000Z',
+      short_interval_start: '2026-07-25T10:00:00.000Z',
+      short_interval_end: '2026-07-25T15:00:00.000Z',
+      short_active: 1,
+      weekly_quota_key: 'kimi_code_7d:quota_units',
+      weekly_quota_period: '7d',
+      weekly_source: 'kimi_code_usage',
+      weekly_client: 'kimi-code',
+      weekly_quota_unit: 'quota_units',
+      weekly_quota_limit: 1000,
+      weekly_quota_used: 250,
+      weekly_quota_remaining: 750,
+      weekly_billing_observed_at: '2026-07-25T10:00:00.000Z',
+      weekly_billing_period_start_at: '2026-07-19T00:00:00.000Z',
+      weekly_billing_period_end_at: '2026-07-26T00:00:00.000Z',
+      weekly_raw_provider_fields: {},
+      weekly_evidence: {},
+      weekly_remaining_pct: 75,
+      weekly_reset_at: '2026-07-26T00:00:00.000Z',
+      weekly_interval_start: '2026-07-19T00:00:00.000Z',
+      weekly_interval_end: '2026-07-26T00:00:00.000Z',
+      weekly_active: 1,
+    }
+
+    const normalized = normalizeQuotaRowForTest(row)
+    const shortBilling = requireQuotaBillingDetail(normalized, 'short')
+    const weeklyBilling = requireQuotaBillingDetail(normalized, 'weekly')
+
+    expect(normalized.provider).toBe('kimi_code')
+    expect(normalized.account_ref).toBe('119f6a46bf29')
+    expect(shortBilling).toEqual({
+      quota_key: 'kimi_code_5h:quota_units',
+      quota_period: '5h',
+      source: 'kimi_code_usage',
+      client: 'kimi-code',
+      quota_unit: 'quota_units',
+      quota_limit: 100,
+      quota_used: 42,
+      quota_remaining: 58,
+      billing_observed_at: '2026-07-25T10:00:00.000Z',
+      billing_period_start_at: null,
+      billing_period_end_at: null,
+      raw_provider_fields: {},
+      evidence: {},
+    })
+    expect(weeklyBilling).toEqual({
+      quota_key: 'kimi_code_7d:quota_units',
+      quota_period: '7d',
+      source: 'kimi_code_usage',
+      client: 'kimi-code',
+      quota_unit: 'quota_units',
+      quota_limit: 1000,
+      quota_used: 250,
+      quota_remaining: 750,
+      billing_observed_at: '2026-07-25T10:00:00.000Z',
+      billing_period_start_at: '2026-07-19T00:00:00.000Z',
+      billing_period_end_at: '2026-07-26T00:00:00.000Z',
+      raw_provider_fields: {},
+      evidence: {},
+    })
+    expect(normalized).not.toHaveProperty('account_hash')
+    expect(normalized.short_remaining_pct).toBe(58)
+    expect(normalized.weekly_remaining_pct).toBe(75)
+  })
+
+  test('test_normalizeQuotaRow_does_not_expose_full_account_hash_for_kimi', () => {
+    const row: Record<string, unknown> = {
+      provider: 'kimi_code',
+      model: null,
+      account_ref: '119f6a46bf29',
+      account_hash: 'deadbeefcafebabe0123456789abcdef',
+    }
+
+    const normalized = normalizeQuotaRowForTest(row)
+    expect(normalized.account_ref).toBe('119f6a46bf29')
+    expect(normalized).not.toHaveProperty('account_hash')
+  })
+
+  test('test_buildQuotaQuery_sql_is_parsable_with_kimi_cte', async () => {
+    const query = buildQuotaQuery()
+    await expectParsableSQL(query.sql)
+  })
+
+  test('test_buildQuotaVelocityQuery_includes_kimi_observations_union', () => {
+    const query = buildQuotaVelocityQuery()
+    expect(query.sql).toContain("o.provider = 'kimi_code'")
+    expect(query.sql).toContain("o.source = 'kimi_code_usage'")
+    expect(query.sql).toContain("o.client = 'kimi-code'")
+    expect(query.sql).toContain("o.quota_key = 'kimi_code_5h:quota_units'")
+    expect(query.sql).toContain("o.quota_key = 'kimi_code_7d:quota_units'")
+    expect(query.sql).toContain("WHEN o.quota_period = '5h' THEN 'short'")
+    expect(query.sql).toContain("WHEN o.quota_period = '7d' THEN 'weekly'")
+  })
+
+  test('test_buildQuotaVelocityQuery_partitions_kimi_by_account_hash', () => {
+    const query = buildQuotaVelocityQuery()
+    expect(query.sql).toContain("COALESCE(account_hash, '')")
+    expect(query.sql).toContain('NULL::text AS account_hash')
+  })
+
+  test('test_buildQuotaVelocityQuery_does_not_expose_full_account_hash_for_kimi', () => {
+    const query = buildQuotaVelocityQuery()
+    const finalSelect = query.sql.slice(query.sql.lastIndexOf('SELECT'))
+    expect(finalSelect).not.toMatch(/AS\s+account_hash\b/)
+  })
+
+  test('test_buildQuotaVelocityQuery_sql_is_parsable_with_kimi', async () => {
+    const query = buildQuotaVelocityQuery()
+    await expectParsableSQL(query.sql)
+  })
+
+  test('test_buildQuotaHistoryQuery_includes_kimi_observations_union', () => {
+    const query = buildQuotaHistoryQuery(new URLSearchParams())
+    expect(query.sql).toContain("o.provider = 'kimi_code'")
+    expect(query.sql).toContain("o.source = 'kimi_code_usage'")
+    expect(query.sql).toContain("o.client = 'kimi-code'")
+    expect(query.sql).toContain("'quota_units'::text AS quota_unit")
+    expect(query.sql).toContain("WHEN o.quota_period = '5h' THEN 'short'")
+    expect(query.sql).toContain("WHEN o.quota_period = '7d' THEN 'weekly'")
+  })
+
+  test('test_buildQuotaHistoryQuery_excludes_kimi_from_session_history_usage_windows', () => {
+    const query = buildQuotaHistoryQuery(new URLSearchParams())
+    expect(query.sql).toContain("wb.provider <> 'kimi_code'")
+    expect(query.sql).toContain("wb.provider <> 'alibaba_token_plan'")
+  })
+
+  test('test_buildQuotaHistoryQuery_sql_is_parsable_with_kimi', async () => {
+    const query = buildQuotaHistoryQuery(new URLSearchParams())
+    await expectParsableSQL(query.sql)
+  })
+
+  test('test_buildQuotaHistoryFallbackQuery_includes_kimi_observations_union', () => {
+    const query = buildQuotaHistoryFallbackQuery(new URLSearchParams())
+    expect(query.sql).toContain("o.provider = 'kimi_code'")
+    expect(query.sql).toContain("o.source = 'kimi_code_usage'")
+    expect(query.sql).toContain("o.client = 'kimi-code'")
+    expect(query.sql).toContain("o.quota_key = 'kimi_code_5h:quota_units'")
+    expect(query.sql).toContain("o.quota_key = 'kimi_code_7d:quota_units'")
+    expect(query.sql).toContain("WHEN o.quota_period = '5h' THEN 'short'")
+    expect(query.sql).toContain("WHEN o.quota_period = '7d' THEN 'weekly'")
+  })
+
+  test('test_buildQuotaHistoryFallbackQuery_sql_is_parsable_with_kimi', async () => {
+    const query = buildQuotaHistoryFallbackQuery(new URLSearchParams())
+    await expectParsableSQL(query.sql)
+  })
+
+  test('test_buildQuotaRangeHistoryQuery_includes_kimi_observations_union', () => {
+    const query = buildQuotaRangeHistoryQuery(
+      new URLSearchParams({ from: '2026-07-01', to: '2026-07-24' })
+    )
+    expect(query.sql).toContain("o.provider = 'kimi_code'")
+    expect(query.sql).toContain("o.source = 'kimi_code_usage'")
+    expect(query.sql).toContain("o.client = 'kimi-code'")
+    expect(query.sql).toContain("'quota_units'::text AS quota_unit")
+    expect(query.sql).toContain("WHEN o.quota_period = '5h' THEN 'short'")
+    expect(query.sql).toContain("WHEN o.quota_period = '7d' THEN 'weekly'")
+  })
+
+  test('test_buildQuotaRangeHistoryQuery_excludes_kimi_from_session_history_usage_join', () => {
+    const query = buildQuotaRangeHistoryQuery(
+      new URLSearchParams({ from: '2026-07-01', to: '2026-07-24' })
+    )
+    expect(query.sql).toContain("wb.provider <> 'kimi_code'")
+  })
+
+  test('test_buildQuotaRangeHistoryQuery_sql_is_parsable_with_kimi', async () => {
+    const query = buildQuotaRangeHistoryQuery(
+      new URLSearchParams({ from: '2026-07-01', to: '2026-07-24' })
+    )
+    await expectParsableSQL(query.sql)
+  })
+
+  test('test_buildQuotaRangeHistoryFallbackQuery_includes_kimi_observations_union', () => {
+    const query = buildQuotaRangeHistoryFallbackQuery(
+      new URLSearchParams({ from: '2026-07-01', to: '2026-07-24' })
+    )
+    expect(query.sql).toContain("o.provider = 'kimi_code'")
+    expect(query.sql).toContain("o.source = 'kimi_code_usage'")
+    expect(query.sql).toContain("o.client = 'kimi-code'")
+    expect(query.sql).toContain("o.quota_key = 'kimi_code_5h:quota_units'")
+    expect(query.sql).toContain("o.quota_key = 'kimi_code_7d:quota_units'")
+  })
+
+  test('test_buildQuotaRangeHistoryFallbackQuery_sql_is_parsable_with_kimi', async () => {
+    const query = buildQuotaRangeHistoryFallbackQuery(
+      new URLSearchParams({ from: '2026-07-01', to: '2026-07-24' })
+    )
+    await expectParsableSQL(query.sql)
+  })
+
+  test('test_kimi_5h_and_7d_map_to_distinct_lanes_across_all_queries', () => {
+    const queries = [
+      buildQuotaQuery(),
+      buildQuotaVelocityQuery(),
+      buildQuotaHistoryQuery(new URLSearchParams()),
+      buildQuotaHistoryFallbackQuery(new URLSearchParams()),
+      buildQuotaRangeHistoryQuery(
+        new URLSearchParams({ from: '2026-07-01', to: '2026-07-24' })
+      ),
+      buildQuotaRangeHistoryFallbackQuery(
+        new URLSearchParams({ from: '2026-07-01', to: '2026-07-24' })
+      ),
+    ]
+    for (const query of queries) {
+      expect(query.sql).toContain("WHEN o.quota_period = '5h' THEN 'short'")
+      expect(query.sql).toContain("WHEN o.quota_period = '7d' THEN 'weekly'")
+      expect(query.sql).toContain("o.provider = 'kimi_code'")
+      expect(query.sql).toContain("o.source = 'kimi_code_usage'")
+      expect(query.sql).toContain("o.client = 'kimi-code'")
+      expect(query.sql).toContain("o.quota_key = 'kimi_code_5h:quota_units'")
+      expect(query.sql).toContain("o.quota_key = 'kimi_code_7d:quota_units'")
+    }
+  })
+
+  test('test_kimi_velocity_attachment_executes_with_separate_accounts_windows_and_sources', () => {
+    const quotaRows = [
+      {
+        provider: 'kimi_code',
+        model: null,
+        account_identity: 'account-identity-a',
+        account_ref: '119f6a46bf29',
+        short_quota_key: 'kimi_code_5h:quota_units',
+        short_quota_period: '5h',
+        short_source: 'kimi_code_usage',
+        short_quota_unit: 'quota_units',
+        short_quota_limit: 100,
+        short_quota_used: 40,
+        short_quota_remaining: 60,
+        weekly_quota_key: 'kimi_code_7d:quota_units',
+        weekly_quota_period: '7d',
+        weekly_source: 'kimi_code_usage',
+        weekly_quota_unit: 'quota_units',
+        weekly_quota_limit: 1000,
+        weekly_quota_used: 200,
+        weekly_quota_remaining: 800,
+      },
+      {
+        provider: 'kimi_code',
+        model: null,
+        account_identity: 'account-identity-b',
+        account_ref: '22aa33bb44cc',
+        short_quota_key: 'kimi_code_5h:quota_units',
+        short_quota_period: '5h',
+        short_source: 'kimi_code_usage',
+        short_quota_unit: 'quota_units',
+        short_quota_limit: 100,
+        short_quota_used: 10,
+        short_quota_remaining: 90,
+        weekly_quota_key: 'kimi_code_7d:quota_units',
+        weekly_quota_period: '7d',
+        weekly_source: 'kimi_code_usage',
+        weekly_quota_unit: 'quota_units',
+        weekly_quota_limit: 1000,
+        weekly_quota_used: 100,
+        weekly_quota_remaining: 900,
+      },
+      {
+        provider: 'kimi_code',
+        model: null,
+        account_identity: 'account-identity-a',
+        account_ref: '119f6a46bf29',
+        short_quota_key: 'kimi_code_5h:quota_units',
+        short_quota_period: '5h',
+        short_source: 'alternate-source',
+        short_quota_unit: 'quota_units',
+        short_quota_limit: 50,
+        short_quota_used: 5,
+        short_quota_remaining: 45,
+      },
+    ]
+    const velocityRows = [
+      {
+        provider: 'kimi_code',
+        model: null,
+        quota_type: 'short',
+        quota_key: 'kimi_code_5h:quota_units',
+        quota_period: '5h',
+        source: 'kimi_code_usage',
+        account_identity: 'account-identity-a',
+        velocity_sample_count: 11,
+        velocity_segments: [true],
+        velocity_scores: [101],
+      },
+      {
+        provider: 'kimi_code',
+        model: null,
+        quota_type: 'weekly',
+        quota_key: 'kimi_code_7d:quota_units',
+        quota_period: '7d',
+        source: 'kimi_code_usage',
+        account_identity: 'account-identity-a',
+        velocity_sample_count: 12,
+        velocity_segments: [false],
+        velocity_scores: [102],
+      },
+      {
+        provider: 'kimi_code',
+        model: null,
+        quota_type: 'short',
+        quota_key: 'kimi_code_5h:quota_units',
+        quota_period: '5h',
+        source: 'kimi_code_usage',
+        account_identity: 'account-identity-b',
+        velocity_sample_count: 21,
+        velocity_segments: [true],
+        velocity_scores: [201],
+      },
+      {
+        provider: 'kimi_code',
+        model: null,
+        quota_type: 'weekly',
+        quota_key: 'kimi_code_7d:quota_units',
+        quota_period: '7d',
+        source: 'kimi_code_usage',
+        account_identity: 'account-identity-b',
+        velocity_sample_count: 22,
+        velocity_segments: [false],
+        velocity_scores: [202],
+      },
+      {
+        provider: 'kimi_code',
+        model: null,
+        quota_type: 'short',
+        quota_key: 'kimi_code_5h:quota_units',
+        quota_period: '5h',
+        source: 'alternate-source',
+        account_identity: 'account-identity-a',
+        velocity_sample_count: 31,
+        velocity_segments: [true],
+        velocity_scores: [301],
+      },
+    ]
+
+    const velocityByLane = buildQuotaVelocityRowsByLane(velocityRows)
+    const normalizedRows = quotaRows.map((row) =>
+      normalizeQuotaRowForTest(attachQuotaVelocityRows(row, velocityByLane))
+    )
+
+    expect(normalizedRows).toHaveLength(3)
+    expect(normalizedRows[0].short_velocity_sample_count).toBe(11)
+    expect(normalizedRows[0].weekly_velocity_sample_count).toBe(12)
+    expect(normalizedRows[1].short_velocity_sample_count).toBe(21)
+    expect(normalizedRows[1].weekly_velocity_sample_count).toBe(22)
+    expect(normalizedRows[2].short_velocity_sample_count).toBe(31)
+    expect(
+      requireQuotaBillingDetail(normalizedRows[0], 'short').quota_limit
+    ).toBe(100)
+    expect(
+      requireQuotaBillingDetail(normalizedRows[1], 'weekly').quota_remaining
+    ).toBe(900)
+    expect(normalizedRows[0]).not.toHaveProperty('account_identity')
+    expect(normalizedRows[0]).not.toHaveProperty('account_hash')
+  })
+
+  test('test_kimi_history_normalization_executes_without_account_or_window_collapse', () => {
+    const rows = [
+      {
+        provider: 'kimi_code',
+        model: null,
+        quota_type: 'short',
+        quota_key: 'kimi_code_5h:quota_units',
+        quota_period: '5h',
+        source: 'kimi_code_usage',
+        client: 'kimi-code',
+        quota_unit: 'quota_units',
+        account_ref: '119f6a46bf29',
+        expected_reset_at: '2026-07-25T12:00:00.000Z',
+        observed_at: '2026-07-25T10:00:00.000Z',
+        quota_limit: 100,
+        quota_used: 40,
+        quota_remaining: 60,
+      },
+      {
+        provider: 'kimi_code',
+        model: null,
+        quota_type: 'weekly',
+        quota_key: 'kimi_code_7d:quota_units',
+        quota_period: '7d',
+        source: 'kimi_code_usage',
+        client: 'kimi-code',
+        quota_unit: 'quota_units',
+        account_ref: '119f6a46bf29',
+        expected_reset_at: '2026-08-01T00:00:00.000Z',
+        observed_at: '2026-07-25T10:00:00.000Z',
+        quota_limit: 1000,
+        quota_used: 250,
+        quota_remaining: 750,
+      },
+      {
+        provider: 'kimi_code',
+        model: null,
+        quota_type: 'short',
+        quota_key: 'kimi_code_5h:quota_units',
+        quota_period: '5h',
+        source: 'kimi_code_usage',
+        client: 'kimi-code',
+        quota_unit: 'quota_units',
+        account_ref: '22aa33bb44cc',
+        expected_reset_at: '2026-07-25T12:00:00.000Z',
+        observed_at: '2026-07-25T10:01:00.000Z',
+        quota_limit: 100,
+        quota_used: 10,
+        quota_remaining: 90,
+      },
+    ]
+
+    const normalized = rows.map(normalizeQuotaHistoryRow)
+
+    expect(normalized).toHaveLength(3)
+    expect(
+      normalized.map((row) => [
+        row.account_ref,
+        row.quota_key,
+        row.quota_period,
+        row.source,
+        row.client,
+        row.quota_unit,
+      ])
+    ).toEqual([
+      [
+        '119f6a46bf29',
+        'kimi_code_5h:quota_units',
+        '5h',
+        'kimi_code_usage',
+        'kimi-code',
+        'quota_units',
+      ],
+      [
+        '119f6a46bf29',
+        'kimi_code_7d:quota_units',
+        '7d',
+        'kimi_code_usage',
+        'kimi-code',
+        'quota_units',
+      ],
+      [
+        '22aa33bb44cc',
+        'kimi_code_5h:quota_units',
+        '5h',
+        'kimi_code_usage',
+        'kimi-code',
+        'quota_units',
+      ],
+    ])
+    expect(normalized.every((row) => row.quota_unit === 'quota_units')).toBe(
+      true
+    )
+    expect(normalized[0].quota_limit).toBe(100)
+    expect(normalized[0].quota_used).toBe(40)
+    expect(normalized[0].quota_remaining).toBe(60)
+    expect(normalized.every((row) => !('account_hash' in row))).toBe(true)
+  })
+})

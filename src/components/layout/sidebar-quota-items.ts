@@ -1,8 +1,17 @@
-import type { UsageReportQuotaRow } from '@/features/dashboard/api/usage-report'
-import { formatQuotaAccountSuffix } from '@/features/dashboard/lib/quota-bars/fields'
+import type {
+  UsageReportQuotaBillingDetail,
+  UsageReportQuotaRow,
+} from '@/features/dashboard/api/usage-report'
+import {
+  formatQuotaAccountSuffix,
+  matchesKimiCodeQuotaContract,
+  resolveQuotaAccountIdentities,
+} from '@/features/dashboard/lib/quota-bars/fields'
 import {
   ALIBABA_TOKEN_PLAN_5H_CREDITS_KEY,
   ALIBABA_TOKEN_PLAN_7D_CREDITS_KEY,
+  KIMI_CODE_5H_QUOTA_UNITS_KEY,
+  KIMI_CODE_7D_QUOTA_UNITS_KEY,
 } from '@/features/dashboard/lib/quota-bars/lane-defs'
 import {
   googleQuotaClass,
@@ -16,6 +25,148 @@ export type SidebarQuotaItem = {
   label: string
   percent: number | null
   color: string
+}
+
+type QuotaOnlySidebarConfig = {
+  provider: string
+  keyPrefix: string
+  keyUnit: string
+  labelPrefix: string
+  labelUnit: string
+  shortQuotaKey: string
+  weeklyQuotaKey: string
+}
+
+function quotaOnlySidebarDetailMatches(
+  config: QuotaOnlySidebarConfig,
+  detail: UsageReportQuotaBillingDetail | undefined,
+  quotaKey: string,
+  quotaPeriod: '5h' | '7d'
+): boolean {
+  if (config.provider === 'kimi_code') {
+    return matchesKimiCodeQuotaContract(detail, quotaKey, quotaPeriod)
+  }
+  return (
+    detail?.quota_key === quotaKey &&
+    (detail.quota_period == null || detail.quota_period === quotaPeriod)
+  )
+}
+
+function appendQuotaOnlySidebarItems(
+  items: SidebarQuotaItem[],
+  rows: UsageReportQuotaRow[],
+  config: QuotaOnlySidebarConfig
+): void {
+  const providerRows = rows
+    .filter((row) => row.provider.toLowerCase() === config.provider)
+    .map((row) => ({
+      row,
+      shortMatches: quotaOnlySidebarDetailMatches(
+        config,
+        row.billing_details?.short,
+        config.shortQuotaKey,
+        '5h'
+      ),
+      weeklyMatches: quotaOnlySidebarDetailMatches(
+        config,
+        row.billing_details?.weekly,
+        config.weeklyQuotaKey,
+        '7d'
+      ),
+    }))
+    .filter(({ shortMatches, weeklyMatches }) => shortMatches || weeklyMatches)
+  const identities = resolveQuotaAccountIdentities(
+    providerRows.map(({ row }) => row.account_ref)
+  )
+  const showAccountSuffix =
+    new Set(identities.map((identity) => identity.publicKey)).size > 1
+  const seenItems = new Map<
+    string,
+    { itemIndex: number; normalizedInput: string | null }
+  >()
+  const color = providerColorFor(config.provider)
+
+  const appendItem = (
+    key: string,
+    item: SidebarQuotaItem,
+    rowIndex: number
+  ): void => {
+    const identity = identities[rowIndex]
+    const existing = seenItems.get(key)
+    if (existing === undefined) {
+      seenItems.set(key, {
+        itemIndex: items.length,
+        normalizedInput: identity.normalizedInput,
+      })
+      items.push(item)
+      return
+    }
+
+    const isLegacyAliasPair =
+      identity.accountRef !== null &&
+      ((existing.normalizedInput?.length === 8 &&
+        identity.normalizedInput?.length === 12) ||
+        (existing.normalizedInput?.length === 12 &&
+          identity.normalizedInput?.length === 8))
+    if (isLegacyAliasPair) {
+      if (identity.normalizedInput?.length === 12) {
+        items[existing.itemIndex] = item
+        existing.normalizedInput = identity.normalizedInput
+      }
+      return
+    }
+
+    const distinctKey = `${key}-row-${(rowIndex + 1).toString()}`
+    seenItems.set(distinctKey, {
+      itemIndex: items.length,
+      normalizedInput: identity.normalizedInput,
+    })
+    items.push({ ...item, key: distinctKey })
+  }
+
+  providerRows.forEach(({ row, shortMatches, weeklyMatches }, rowIndex) => {
+    const identity = identities[rowIndex]
+    const includeAccountKey =
+      identity.accountRef !== null ||
+      Boolean(row.account_ref?.trim()) ||
+      showAccountSuffix
+    const accountKeySuffix = includeAccountKey ? `-${identity.publicKey}` : ''
+    const accountSuffix = formatQuotaAccountSuffix(identity.accountRef)
+    const identityLabel =
+      accountSuffix ??
+      (identity.publicKey.startsWith('unidentified-')
+        ? identity.publicKey.replace('-', ' ')
+        : null)
+    const labelSuffix =
+      showAccountSuffix && identityLabel !== null ? ` · ${identityLabel}` : ''
+
+    if (shortMatches && row.short_remaining_pct != null) {
+      const key = `${config.keyPrefix}-5h-${config.keyUnit}${accountKeySuffix}`
+      appendItem(
+        key,
+        {
+          key,
+          label: `${config.labelPrefix} 5h ${config.labelUnit}${labelSuffix}`,
+          percent: row.short_remaining_pct,
+          color,
+        },
+        rowIndex
+      )
+    }
+    if (weeklyMatches && row.weekly_remaining_pct != null) {
+      const key = `${config.keyPrefix}-7d-${config.keyUnit}${accountKeySuffix}`
+      appendItem(
+        key,
+        {
+          key,
+          label: `${config.labelPrefix} 7d ${config.labelUnit}${labelSuffix}`,
+          percent: row.weekly_remaining_pct,
+          color,
+        },
+        rowIndex
+      )
+    }
+  })
 }
 
 export function buildSidebarQuotaItems(
@@ -84,63 +235,23 @@ export function buildSidebarQuotaItems(
     })
   }
 
-  const alibabaColor = providerColorFor('alibaba_token_plan')
-  const alibabaRows = safeRows.filter(
-    (row) => row.provider.toLowerCase() === 'alibaba_token_plan'
-  )
-  const alibabaAccountRefs = new Set(
-    alibabaRows
-      .map((row) => row.account_ref?.trim())
-      .filter((ref): ref is string => Boolean(ref))
-  )
-  const showAlibabaAccountSuffix = alibabaAccountRefs.size > 1
-  const seenAlibabaItems = new Set<string>()
-
-  alibabaRows.forEach((row, rowIndex) => {
-    const shortKey = row.billing_details?.short?.quota_key
-    const weeklyKey = row.billing_details?.weekly?.quota_key
-    const accountRef = row.account_ref?.trim()
-    const accountKeySuffix =
-      accountRef !== undefined && accountRef !== ''
-        ? `-${accountRef}`
-        : alibabaRows.length > 1
-          ? `-unidentified-${rowIndex}`
-          : ''
-    const accountSuffix = formatQuotaAccountSuffix(row.account_ref)
-    const labelSuffix =
-      showAlibabaAccountSuffix && accountSuffix !== null
-        ? ` · ${accountSuffix}`
-        : ''
-    if (
-      shortKey === ALIBABA_TOKEN_PLAN_5H_CREDITS_KEY &&
-      row.short_remaining_pct != null
-    ) {
-      const key = `alibaba-5h-credits${accountKeySuffix}`
-      if (!seenAlibabaItems.has(key)) {
-        seenAlibabaItems.add(key)
-        items.push({
-          key,
-          label: `Alibaba 5h Credits${labelSuffix}`,
-          percent: row.short_remaining_pct,
-          color: alibabaColor,
-        })
-      }
-    }
-    if (
-      weeklyKey === ALIBABA_TOKEN_PLAN_7D_CREDITS_KEY &&
-      row.weekly_remaining_pct != null
-    ) {
-      const key = `alibaba-7d-credits${accountKeySuffix}`
-      if (!seenAlibabaItems.has(key)) {
-        seenAlibabaItems.add(key)
-        items.push({
-          key,
-          label: `Alibaba 7d Credits${labelSuffix}`,
-          percent: row.weekly_remaining_pct,
-          color: alibabaColor,
-        })
-      }
-    }
+  appendQuotaOnlySidebarItems(items, safeRows, {
+    provider: 'alibaba_token_plan',
+    keyPrefix: 'alibaba',
+    keyUnit: 'credits',
+    labelPrefix: 'Alibaba',
+    labelUnit: 'Credits',
+    shortQuotaKey: ALIBABA_TOKEN_PLAN_5H_CREDITS_KEY,
+    weeklyQuotaKey: ALIBABA_TOKEN_PLAN_7D_CREDITS_KEY,
+  })
+  appendQuotaOnlySidebarItems(items, safeRows, {
+    provider: 'kimi_code',
+    keyPrefix: 'kimi',
+    keyUnit: 'quota-units',
+    labelPrefix: 'Kimi Code',
+    labelUnit: 'Quota Units',
+    shortQuotaKey: KIMI_CODE_5H_QUOTA_UNITS_KEY,
+    weeklyQuotaKey: KIMI_CODE_7D_QUOTA_UNITS_KEY,
   })
 
   return items

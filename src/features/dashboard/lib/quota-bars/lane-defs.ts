@@ -156,6 +156,8 @@ export const ALIBABA_TOKEN_PLAN_5H_CREDITS_KEY =
   'alibaba_token_plan_5h:credits' as const
 export const ALIBABA_TOKEN_PLAN_7D_CREDITS_KEY =
   'alibaba_token_plan_7d:credits' as const
+export const KIMI_CODE_5H_QUOTA_UNITS_KEY = 'kimi_code_5h:quota_units' as const
+export const KIMI_CODE_7D_QUOTA_UNITS_KEY = 'kimi_code_7d:quota_units' as const
 
 const ALIBABA_TOKEN_PLAN_LANE_DEFS: LaneDef[] = [
   {
@@ -174,6 +176,30 @@ const ALIBABA_TOKEN_PLAN_LANE_DEFS: LaneDef[] = [
   },
 ]
 
+/**
+ * D1-492: Kimi Code (Moonshot AI) subscription quota windows. The stored
+ * contract reports one row per window with quota_type/unit `quota_units`,
+ * periods `5h`/`7d`, and absolute quota_limit/used/remaining values —
+ * unlike Alibaba Token Plan's percentage-only credits. Do not alias to
+ * Moonshot API or any other subscription product.
+ */
+const KIMI_CODE_LANE_DEFS: LaneDef[] = [
+  {
+    laneKey: 'kimi_code/5h-quota-units',
+    laneLabel: '5-hour Quota Units',
+    quotaType: 'short',
+    googleClass: null,
+    quotaKey: KIMI_CODE_5H_QUOTA_UNITS_KEY,
+  },
+  {
+    laneKey: 'kimi_code/7d-quota-units',
+    laneLabel: '7-day Quota Units',
+    quotaType: 'weekly',
+    googleClass: null,
+    quotaKey: KIMI_CODE_7D_QUOTA_UNITS_KEY,
+  },
+]
+
 export const PROVIDER_LANE_DEFS: Readonly<Record<string, LaneDef[]>> = {
   anthropic: ANTHROPIC_LANE_DEFS,
   openai: OPENAI_LANE_DEFS,
@@ -182,4 +208,5 @@ export const PROVIDER_LANE_DEFS: Readonly<Record<string, LaneDef[]>> = {
   xai: XAI_LANE_DEFS,
   openrouter: OPENROUTER_LANE_DEFS,
   alibaba_token_plan: ALIBABA_TOKEN_PLAN_LANE_DEFS,
+  kimi_code: KIMI_CODE_LANE_DEFS,
 }

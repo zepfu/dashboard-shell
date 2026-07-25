@@ -11,18 +11,22 @@ import type {
   QuotaLane,
   QuotaTipModel,
 } from '../../components/provider-card'
-import { providerAliases } from '../usage-report-display'
+import { providerAliases, QUOTA_ONLY_PROVIDERS } from '../usage-report-display'
 import {
   buildQuotaSegments,
   classifyGeminiModel,
   formatQuotaAccountSuffix,
   fmtIntervalCompact,
   formatTimeAgo,
+  isSubPercentPrecisionProvider,
   makeQuotaBarGroup,
   makeQuotaBarGroupAlways,
+  matchesKimiCodeQuotaContract,
+  normalizeQuotaAccountRef,
   pickBestGoogleQuotaRowForClass,
   quotaTypeToBarPeriodType,
   quotaTypeToLaneKey,
+  resolveQuotaAccountIdentities,
   roundToNearest30Min,
   tipModelsFromBreakdown,
   tipModelsFromBreakdownGoogleAggregated,
@@ -33,6 +37,9 @@ import {
 import { PROVIDER_LANE_DEFS } from './lane-defs'
 
 type QuotaBarInterval = Parameters<typeof makeQuotaBarGroup>[2]
+type ResolvedQuotaAccountIdentity = ReturnType<
+  typeof resolveQuotaAccountIdentities
+>[number]
 
 function quotaTypeToBarInterval(quotaType: string): QuotaBarInterval {
   switch (quotaType.toLowerCase()) {
@@ -55,16 +62,12 @@ function quotaTypeToBarInterval(quotaType: string): QuotaBarInterval {
   }
 }
 
-function safeQuotaHistoryAccountRef(
-  accountRef: string | null | undefined
-): string | null {
-  const normalized = accountRef?.trim()
-  return normalized !== undefined && /^[a-f0-9]{8}$/i.test(normalized)
-    ? normalized
-    : null
-}
-
-function expectedAlibabaQuotaPeriod(quotaType: string): string | null {
+/**
+ * Expected provider-reported quota period for quota-only subscription lanes
+ * (D1-489 Alibaba Token Plan credits, D1-492 Kimi Code quota units). History
+ * rows carrying a quota_period must match this to join a lane.
+ */
+function expectedQuotaOnlyQuotaPeriod(quotaType: string): string | null {
   switch (quotaTypeToLaneKey(quotaType)) {
     case 'short':
       return '5h'
@@ -75,11 +78,48 @@ function expectedAlibabaQuotaPeriod(quotaType: string): string | null {
   }
 }
 
-function quotaHistoryAccountRefIsSafe(
-  row: UsageReportQuotaHistoryRow
+function quotaOnlyCurrentRowMatchesContract(
+  provider: string,
+  row: UsageReportQuotaRow,
+  interval: QuotaBarInterval,
+  quotaKey: string,
+  quotaPeriod: string | null
 ): boolean {
-  const supplied = row.account_ref?.trim()
-  return !supplied || safeQuotaHistoryAccountRef(supplied) !== null
+  const detail = row.billing_details?.[interval]
+  if (provider === 'kimi_code') {
+    return (
+      quotaPeriod !== null &&
+      matchesKimiCodeQuotaContract(detail, quotaKey, quotaPeriod as '5h' | '7d')
+    )
+  }
+
+  return (
+    detail?.quota_key === quotaKey &&
+    (quotaPeriod === null ||
+      detail.quota_period == null ||
+      detail.quota_period.toLowerCase() === quotaPeriod)
+  )
+}
+
+function quotaOnlyHistoryRowMatchesContract(
+  provider: string,
+  row: UsageReportQuotaHistoryRow,
+  quotaKey: string,
+  quotaPeriod: string | null
+): boolean {
+  if (provider === 'kimi_code') {
+    return (
+      quotaPeriod !== null &&
+      matchesKimiCodeQuotaContract(row, quotaKey, quotaPeriod as '5h' | '7d')
+    )
+  }
+
+  return (
+    row.quota_key === quotaKey &&
+    (quotaPeriod === null ||
+      row.quota_period == null ||
+      row.quota_period.toLowerCase() === quotaPeriod)
+  )
 }
 
 function priorBarDedupKey(h: UsageReportQuotaHistoryRow): string {
@@ -89,7 +129,7 @@ function priorBarDedupKey(h: UsageReportQuotaHistoryRow): string {
     h.quota_key ?? '',
     h.quota_period ?? '',
     h.source ?? '',
-    safeQuotaHistoryAccountRef(h.account_ref) ?? '',
+    normalizeQuotaAccountRef(h.account_ref) ?? '',
   ].join(':')
   if (h.expected_reset_at !== null) {
     const rounded = roundToNearest30Min(h.expected_reset_at)
@@ -115,7 +155,7 @@ function shouldSuppressProviderLanePriorBars(
 function quotaHistoryIdentityBits(
   row: UsageReportQuotaHistoryRow
 ): string[] | undefined {
-  const accountRef = safeQuotaHistoryAccountRef(row.account_ref)
+  const accountRef = normalizeQuotaAccountRef(row.account_ref)
   const accountSuffix =
     accountRef === null ? null : formatQuotaAccountSuffix(accountRef)
   const bits = [
@@ -130,6 +170,17 @@ function quotaHistoryIdentityBits(
     (bit): bit is string => typeof bit === 'string' && bit.trim().length > 0
   )
   return bits.length > 0 ? bits : undefined
+}
+
+function quotaHistoryAbsolutesUnavailable(
+  row: UsageReportQuotaHistoryRow
+): boolean | undefined {
+  if (row.quota_unit == null) return undefined
+  return row.quota_limit == null &&
+    row.quota_used == null &&
+    row.quota_remaining == null
+    ? true
+    : undefined
 }
 
 function buildPriorBarsForLane(
@@ -200,6 +251,11 @@ export function buildPriorBarFromHistory(
       segments: buildQuotaSegments(100, h.velocity_scores),
       tipWindow: fmtIntervalCompact(h.interval_start, h.interval_end),
       tipIdentity: quotaHistoryIdentityBits(h),
+      tipQuotaLimit: h.quota_limit,
+      tipQuotaUsed: h.quota_used,
+      tipQuotaRemaining: h.quota_remaining,
+      tipQuotaUnit: h.quota_unit ?? undefined,
+      tipAbsolutesUnavailable: quotaHistoryAbsolutesUnavailable(h),
       tipModels: undefined,
       tipRequestTotal: tipRequestTotalFromBreakdown(h.usage_breakdown),
       tipRecentRequestTotal90m: tipRecentRequestTotal90mFromBreakdown(
@@ -208,7 +264,7 @@ export function buildPriorBarFromHistory(
       timeAgoLabel,
       dateRangeLabel: fmtIntervalCompact(h.interval_start, h.expected_reset_at),
       periodType: quotaTypeToBarPeriodType(quotaTypeLower),
-      showSubPercentPrecision: provider.toLowerCase() === 'alibaba_token_plan',
+      showSubPercentPrecision: isSubPercentPrecisionProvider(provider),
     }
   }
 
@@ -257,6 +313,11 @@ export function buildPriorBarFromHistory(
     segments: buildQuotaSegments(remainingPct, h.velocity_scores),
     tipWindow: fmtIntervalCompact(h.interval_start, h.interval_end),
     tipIdentity: quotaHistoryIdentityBits(h),
+    tipQuotaLimit: h.quota_limit,
+    tipQuotaUsed: h.quota_used,
+    tipQuotaRemaining: h.quota_remaining,
+    tipQuotaUnit: h.quota_unit ?? undefined,
+    tipAbsolutesUnavailable: quotaHistoryAbsolutesUnavailable(h),
     tipModels,
     tipRequestTotal: tipRequestTotalFromBreakdown(h.usage_breakdown),
     tipRecentRequestTotal90m: tipRecentRequestTotal90mFromBreakdown(
@@ -265,7 +326,7 @@ export function buildPriorBarFromHistory(
     timeAgoLabel,
     dateRangeLabel,
     periodType: quotaTypeToBarPeriodType(quotaTypeLower),
-    showSubPercentPrecision: providerLower === 'alibaba_token_plan',
+    showSubPercentPrecision: isSubPercentPrecisionProvider(providerLower),
   }
 }
 
@@ -299,24 +360,58 @@ export function buildProviderLanes(
   const laneDefs = PROVIDER_LANE_DEFS[providerLower]
   if (laneDefs === undefined || laneDefs.length === 0) return []
 
-  const result: QuotaLane[] = []
-  const alibabaAccountRefs =
-    providerLower === 'alibaba_token_plan'
-      ? new Set(
-          allQuotaRows
-            .filter(
-              (row) =>
-                row.provider.toLowerCase() === 'alibaba_token_plan' &&
-                safeQuotaHistoryAccountRef(row.account_ref) !== null
-            )
-            .map((row) => safeQuotaHistoryAccountRef(row.account_ref)!)
-        )
-      : new Set<string>()
-  const hasMultipleAlibabaAccounts = alibabaAccountRefs.size > 1
-  const singleAlibabaAccountRef =
-    alibabaAccountRefs.size === 1
-      ? (alibabaAccountRefs.values().next().value ?? null)
+  const providerWideKimiIdentityByRow =
+    providerLower === 'kimi_code'
+      ? (() => {
+          const kimiAliases = providerAliases('kimi_code')
+          const currentRows = allQuotaRows.filter(
+            (row) =>
+              kimiAliases.includes(row.provider.toLowerCase()) &&
+              laneDefs.some((def) => {
+                if (def.quotaKey === undefined) return false
+                return quotaOnlyCurrentRowMatchesContract(
+                  'kimi_code',
+                  row,
+                  quotaTypeToBarInterval(def.quotaType),
+                  def.quotaKey,
+                  expectedQuotaOnlyQuotaPeriod(def.quotaType)
+                )
+              })
+          )
+          const providerHistoryRows = historyRows.filter(
+            (row) =>
+              kimiAliases.includes(row.provider.toLowerCase()) &&
+              laneDefs.some((def) => {
+                if (
+                  def.quotaKey === undefined ||
+                  quotaTypeToLaneKey(row.quota_type) !==
+                    quotaTypeToLaneKey(def.quotaType)
+                ) {
+                  return false
+                }
+                return quotaOnlyHistoryRowMatchesContract(
+                  'kimi_code',
+                  row,
+                  def.quotaKey,
+                  expectedQuotaOnlyQuotaPeriod(def.quotaType)
+                )
+              })
+          )
+          const providerRows: Array<
+            UsageReportQuotaRow | UsageReportQuotaHistoryRow
+          > = [...currentRows, ...providerHistoryRows]
+          const identities = resolveQuotaAccountIdentities(
+            providerRows.map((row) => row.account_ref)
+          )
+
+          return new Map<
+            UsageReportQuotaRow | UsageReportQuotaHistoryRow,
+            ResolvedQuotaAccountIdentity
+          >(providerRows.map((row, index) => [row, identities[index]] as const))
+        })()
       : null
+
+  const result: QuotaLane[] = []
 
   for (const def of laneDefs) {
     const laneProvider = (def.sourceProvider ?? providerLower).toLowerCase()
@@ -326,64 +421,153 @@ export function buildProviderLanes(
     )
 
     if (
-      laneProvider === 'alibaba_token_plan' &&
-      def.quotaKey !== undefined &&
-      hasMultipleAlibabaAccounts
+      QUOTA_ONLY_PROVIDERS.includes(laneProvider) &&
+      def.quotaKey !== undefined
     ) {
       const interval = quotaTypeToBarInterval(def.quotaType)
-      const matchingRows = laneQuotas.filter(
-        (quota) => quota.billing_details?.[interval]?.quota_key === def.quotaKey
+      const expectedQuotaPeriod = expectedQuotaOnlyQuotaPeriod(def.quotaType)
+      const matchingRows = laneQuotas.filter((quota) =>
+        quotaOnlyCurrentRowMatchesContract(
+          laneProvider,
+          quota,
+          interval,
+          def.quotaKey!,
+          expectedQuotaPeriod
+        )
       )
-      const seenAccounts = new Set<string>()
-      const expectedQuotaPeriod = expectedAlibabaQuotaPeriod(def.quotaType)
+      const matchingHistory = historyRows.filter((historyRow) => {
+        if (
+          !laneAliases.includes(historyRow.provider.toLowerCase()) ||
+          quotaTypeToLaneKey(historyRow.quota_type) !==
+            quotaTypeToLaneKey(def.quotaType)
+        ) {
+          return false
+        }
+        return quotaOnlyHistoryRowMatchesContract(
+          laneProvider,
+          historyRow,
+          def.quotaKey!,
+          expectedQuotaPeriod
+        )
+      })
 
-      matchingRows.forEach((row, index) => {
-        const accountRef =
-          safeQuotaHistoryAccountRef(row.account_ref) ?? `unidentified-${index}`
-        if (seenAccounts.has(accountRef)) return
-        seenAccounts.add(accountRef)
+      type AccountGroup = {
+        publicKey: string
+        accountRef: string | null
+        currentRows: Array<{
+          row: UsageReportQuotaRow
+          promotedLegacyRef: boolean
+        }>
+        historyRows: UsageReportQuotaHistoryRow[]
+      }
+      const groups = new Map<string, AccountGroup>()
+      const combinedRows = [
+        ...matchingRows.map((row) => ({ kind: 'current' as const, row })),
+        ...matchingHistory.map((row) => ({ kind: 'history' as const, row })),
+      ]
+      const identities =
+        laneProvider === 'kimi_code' && providerWideKimiIdentityByRow !== null
+          ? combinedRows.map(
+              ({ row }) => providerWideKimiIdentityByRow.get(row)!
+            )
+          : resolveQuotaAccountIdentities(
+              combinedRows.map(({ row }) => row.account_ref)
+            )
 
-        const accountSuffix = formatQuotaAccountSuffix(row.account_ref)
-        const laneLabel =
-          accountSuffix === null
-            ? def.laneLabel
-            : `${def.laneLabel} · ${accountSuffix}`
-        const currentBar = makeQuotaBarGroup(laneLabel, row, interval)
-        if (currentBar === null) return
-        const laneHistory = historyRows.filter((historyRow) => {
-          if (!quotaHistoryAccountRefIsSafe(historyRow)) return false
+      combinedRows.forEach((entry, index) => {
+        const identity = identities[index]
+        const baseGroupKey = `account:${identity.publicKey}`
+
+        if (entry.kind === 'current') {
+          let groupKey = baseGroupKey
+          let group = groups.get(groupKey)
           if (
-            !laneAliases.includes(historyRow.provider.toLowerCase()) ||
-            quotaTypeToLaneKey(historyRow.quota_type) !==
-              quotaTypeToLaneKey(def.quotaType) ||
-            historyRow.quota_key !== def.quotaKey
+            group !== undefined &&
+            group.currentRows.length > 0 &&
+            identity.accountRef !== null
           ) {
-            return false
+            const hasExactCurrentRef = group.currentRows.some(({ row }) => {
+              const normalized = normalizeQuotaAccountRef(row.account_ref)
+              return normalized?.length === 12
+            })
+            const hasPromotedLegacyRef = group.currentRows.some(
+              (current) => current.promotedLegacyRef
+            )
+            const isLegacyAliasPair =
+              (identity.promotedLegacyRef && hasExactCurrentRef) ||
+              (identity.normalizedInput?.length === 12 &&
+                hasPromotedLegacyRef &&
+                !hasExactCurrentRef)
+            if (!isLegacyAliasPair) {
+              groupKey = `${baseGroupKey}:row:${(index + 1).toString()}`
+              group = undefined
+            }
           }
-          if (
-            expectedQuotaPeriod !== null &&
-            historyRow.quota_period !== null &&
-            historyRow.quota_period !== undefined &&
-            historyRow.quota_period.toLowerCase() !== expectedQuotaPeriod
-          ) {
-            return false
+
+          group ??= {
+            publicKey:
+              groupKey === baseGroupKey
+                ? identity.publicKey
+                : `${identity.publicKey}-row-${(index + 1).toString()}`,
+            accountRef: identity.accountRef,
+            currentRows: [],
+            historyRows: [],
           }
-          return (
-            safeQuotaHistoryAccountRef(historyRow.account_ref) === accountRef
-          )
+          group.currentRows.push({
+            row: entry.row,
+            promotedLegacyRef: identity.promotedLegacyRef,
+          })
+          groups.set(groupKey, group)
+          return
+        }
+
+        const group = groups.get(baseGroupKey) ?? {
+          publicKey: identity.publicKey,
+          accountRef: identity.accountRef,
+          currentRows: [],
+          historyRows: [],
+        }
+        group.historyRows.push({
+          ...entry.row,
+          account_ref: identity.accountRef,
         })
+        groups.set(baseGroupKey, group)
+      })
+
+      const showAccountIdentity = groups.size > 1
+      for (const group of groups.values()) {
+        const accountSuffix = formatQuotaAccountSuffix(group.accountRef)
+        const identityLabel =
+          accountSuffix ??
+          (group.publicKey.startsWith('unidentified-')
+            ? group.publicKey.replace('-', ' ')
+            : 'unidentified')
+        const laneLabel = showAccountIdentity
+          ? `${def.laneLabel} · ${identityLabel}`
+          : def.laneLabel
+        const preferredCurrentRow =
+          group.currentRows.find(({ row }) => {
+            const normalized = normalizeQuotaAccountRef(row.account_ref)
+            return normalized?.length === 12 && normalized === group.accountRef
+          })?.row ?? group.currentRows[0]?.row
+        const currentBar =
+          preferredCurrentRow === undefined
+            ? null
+            : makeQuotaBarGroup(laneLabel, preferredCurrentRow, interval)
 
         result.push({
-          laneKey: `${def.laneKey}/${accountRef}`,
+          laneKey: showAccountIdentity
+            ? `${def.laneKey}/${group.publicKey}`
+            : def.laneKey,
           laneLabel,
           currentBar,
           priorBars: buildPriorBarsForLane(
-            laneHistory,
+            group.historyRows,
             currentBar,
             laneProvider
           ),
         })
-      })
+      }
       continue
     }
 
@@ -436,17 +620,6 @@ export function buildProviderLanes(
               : 'monthly'
         currentBar = makeQuotaBarGroup(def.laneLabel, row, interval)
       }
-    } else if (
-      laneProvider === 'alibaba_token_plan' &&
-      def.quotaKey !== undefined
-    ) {
-      const interval = quotaTypeToBarInterval(def.quotaType)
-      const row = laneQuotas.find(
-        (quota) => quota.billing_details?.[interval]?.quota_key === def.quotaKey
-      )
-      if (row !== undefined) {
-        currentBar = makeQuotaBarGroup(def.laneLabel, row, interval)
-      }
     } else {
       // Anthropic / OpenAI: all quota data lives in the model=null row.
       const allRow = laneQuotas.find((r) => r.model === null)
@@ -481,30 +654,6 @@ export function buildProviderLanes(
           }
           if (laneProvider === 'xai' && def.quotaKey !== undefined) {
             return h.model === def.quotaKey || h.quota_key === def.quotaKey
-          }
-          if (
-            laneProvider === 'alibaba_token_plan' &&
-            def.quotaKey !== undefined
-          ) {
-            if (!quotaHistoryAccountRefIsSafe(h)) return false
-            if (h.quota_key !== def.quotaKey) return false
-            const expectedQuotaPeriod = expectedAlibabaQuotaPeriod(
-              def.quotaType
-            )
-            if (
-              expectedQuotaPeriod !== null &&
-              h.quota_period !== null &&
-              h.quota_period !== undefined &&
-              h.quota_period.toLowerCase() !== expectedQuotaPeriod
-            ) {
-              return false
-            }
-            const historyAccountRef = safeQuotaHistoryAccountRef(h.account_ref)
-            return (
-              singleAlibabaAccountRef === null ||
-              historyAccountRef === null ||
-              historyAccountRef === singleAlibabaAccountRef
-            )
           }
           return true
         })
