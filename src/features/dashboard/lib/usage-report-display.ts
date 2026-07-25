@@ -144,7 +144,11 @@ export function formatDashboardIntervalCompact(start: Date, end: Date): string {
 
 // Canonical provider identity is owned by provider-identity.ts.
 // Re-export here so existing import sites can continue using usage-report-display.
-export { canonicalProvider, providerAliases } from './provider-identity'
+export {
+  canonicalProvider,
+  providerAliases,
+  QUOTA_ONLY_PROVIDERS,
+} from './provider-identity'
 
 const providerColorsByKey: Record<string, string> = {
   openai: '#2563eb',
@@ -159,6 +163,7 @@ const providerColorsByKey: Record<string, string> = {
   local_embed: '#c026d3',
   nvidia_nim: '#6d28d9',
   chatgpt: '#475569',
+  alibaba_token_plan: '#d97706',
 }
 
 /** Reference brand-identity colors for provider labels and headers. */
@@ -171,6 +176,7 @@ export const PROVIDER_BRAND_HEX: Record<string, string> = {
   nvidia_nim: '#76b900',
   openrouter: '#7e57c2',
   local: '#64748b',
+  alibaba_token_plan: '#ff6a00',
 }
 
 /** Returns brand color for a provider, falling back to `'var(--fg)'`. */

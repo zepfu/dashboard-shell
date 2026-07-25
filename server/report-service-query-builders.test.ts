@@ -7,6 +7,7 @@
  * project.
  */
 import { describe, expect, test } from 'vitest'
+import * as reportServiceRuntime from './report-service'
 import {
   buildAegisPgBouncerAdminDatabaseUrl,
   buildPgBouncerAdminDatabaseUrl,
@@ -60,6 +61,118 @@ import {
   buildUsageReportRowSerializationMetadata,
   proxyTargetUrl,
 } from './report-service'
+
+type QuotaBillingDetailForTest = {
+  quota_key?: string | null
+  quota_period?: string | null
+  source?: string | null
+  quota_unit?: string | null
+  quota_limit?: number | null
+  quota_used?: number | null
+  quota_remaining?: number | null
+}
+
+type NormalizedQuotaRowForTest = Record<string, unknown> & {
+  provider: string
+  account_ref: string | null
+  billing_details: Record<string, QuotaBillingDetailForTest | undefined>
+  short_velocity_sample_count?: number
+  weekly_velocity_sample_count?: number
+}
+
+type NormalizedQuotaHistoryRowForTest = Record<string, unknown> & {
+  account_ref: string | null
+  quota_key: string | null
+  quota_period: string | null
+  source: string | null
+  quota_unit: string | null
+  quota_limit: number | null
+  quota_used: number | null
+  quota_remaining: number | null
+}
+
+type QuotaReportTestHelpers = {
+  attachQuotaVelocityRows: (
+    row: Record<string, unknown>,
+    rowsByLane: Map<string, Record<string, unknown>>
+  ) => Record<string, unknown>
+  buildQuotaVelocityRowsByLane: (
+    rows: Array<Record<string, unknown>>
+  ) => Map<string, Record<string, unknown>>
+  normalizeQuotaHistoryRow: (
+    row: Record<string, unknown>
+  ) => NormalizedQuotaHistoryRowForTest
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object'
+}
+
+function isQuotaReportTestHelpers(
+  value: unknown
+): value is QuotaReportTestHelpers {
+  if (!isRecord(value)) return false
+  return (
+    typeof value.attachQuotaVelocityRows === 'function' &&
+    typeof value.buildQuotaVelocityRowsByLane === 'function' &&
+    typeof value.normalizeQuotaHistoryRow === 'function'
+  )
+}
+
+function isNormalizedQuotaRowForTest(
+  value: unknown
+): value is NormalizedQuotaRowForTest {
+  if (!isRecord(value)) return false
+  if (typeof value.provider !== 'string') return false
+  if (value.account_ref !== null && typeof value.account_ref !== 'string') {
+    return false
+  }
+  if (!isRecord(value.billing_details)) return false
+  for (const field of [
+    'short_velocity_sample_count',
+    'weekly_velocity_sample_count',
+  ]) {
+    if (value[field] !== undefined && typeof value[field] !== 'number') {
+      return false
+    }
+  }
+  return true
+}
+
+function normalizeQuotaRowForTest(
+  row: Record<string, unknown>
+): NormalizedQuotaRowForTest {
+  const normalized: unknown = normalizeQuotaRow(row)
+  if (!isNormalizedQuotaRowForTest(normalized)) {
+    throw new TypeError('normalizeQuotaRow returned an invalid test shape')
+  }
+  return normalized
+}
+
+function requireQuotaBillingDetail(
+  row: NormalizedQuotaRowForTest,
+  lane: string
+): QuotaBillingDetailForTest {
+  const detail = row.billing_details[lane]
+  if (!detail) {
+    throw new TypeError(`missing quota billing detail for lane ${lane}`)
+  }
+  return detail
+}
+
+const quotaReportTestHelpersValue: unknown = Reflect.get(
+  reportServiceRuntime,
+  '__quotaReportTestHelpers'
+)
+if (!isQuotaReportTestHelpers(quotaReportTestHelpersValue)) {
+  throw new TypeError('report-service quota test helpers are unavailable')
+}
+
+const {
+  attachQuotaVelocityRows,
+  buildQuotaVelocityRowsByLane,
+  normalizeQuotaHistoryRow,
+} = quotaReportTestHelpersValue
 
 function compactWhitespace(sql: string): string {
   return sql.replace(/\s+/g, ' ').trim()
@@ -1638,12 +1751,14 @@ describe('report-service query builders', () => {
       weekly_evidence: { source: 'observation' },
     }
 
-    const normalized = normalizeQuotaRow(row)
+    const normalized = normalizeQuotaRowForTest(row)
+    const weeklyBilling = requireQuotaBillingDetail(normalized, 'weekly')
 
     expect(normalized.provider).toBe('xai')
     expect(normalized.model).toBeNull()
-    expect(normalized.billing_details.weekly).toEqual({
+    expect(weeklyBilling).toEqual({
       quota_key: 'xai_grok_build_weekly_credits:credits',
+      quota_period: null,
       source: 'grok_build',
       client: 'codex',
       quota_unit: 'credits',
@@ -1759,6 +1874,9 @@ describe('report-service query builders', () => {
         weekly.interval_start,
         weekly.interval_end,
         weekly.active,
+        NULL::text AS account_hash,
+        NULL::text AS source,
+        NULL::text AS quota_period,
         weekly.quota_rank
     FROM selected weekly`
 
@@ -1774,6 +1892,9 @@ describe('report-service query builders', () => {
         short.interval_start,
         short.interval_end,
         short.active,
+        NULL::text AS account_hash,
+        NULL::text AS source,
+        NULL::text AS quota_period,
         short.quota_rank
     FROM selected short`
 
@@ -1830,8 +1951,15 @@ describe('report-service query builders', () => {
   test('test_buildQuotaHistoryQuery_emits_quota_identity_metadata_columns', () => {
     const query = buildQuotaHistoryQuery(new URLSearchParams())
 
-    expect(query.sql).toContain(
-      "PARTITION BY n.provider, COALESCE(n.model, ''), n.quota_type, COALESCE(n.normalized_quota_key, '')"
+    expect(compactWhitespace(query.sql)).toContain(
+      compactWhitespace(`PARTITION BY
+        n.provider,
+        COALESCE(n.model, ''),
+        n.quota_type,
+        COALESCE(n.normalized_quota_key, ''),
+        COALESCE(n.quota_period, ''),
+        COALESCE(n.source, ''),
+        COALESCE(n.account_hash, '')`)
     )
     expect(query.sql).toContain('observation_identity AS')
     expect(query.sql).toContain('AND o.provider = n.raw_provider')
@@ -1956,10 +2084,17 @@ describe('report-service query builders', () => {
     expect(query.sql).toContain('ROW_NUMBER() OVER')
     expect(query.sql).toContain('interval_rank <=')
     expect(query.sql).toContain('observation_identity AS')
-    expect(query.sql).toContain(
-      "n.normalized_quota_key IN (\n          'xai_grok_build_weekly_credits:credits',"
-    )
+    expect(query.sql).toContain('ON n.normalized_quota_key IS NOT NULL')
     expect(query.sql).toContain('AND o.provider = n.raw_provider')
+    expect(query.sql).toContain(
+      'n.quota_period IS NULL OR o.quota_period IS NOT DISTINCT FROM n.quota_period'
+    )
+    expect(query.sql).toContain(
+      'n.source IS NULL OR o.source IS NOT DISTINCT FROM n.source'
+    )
+    expect(query.sql).toContain(
+      'n.account_hash IS NULL OR o.account_hash IS NOT DISTINCT FROM n.account_hash'
+    )
     expect(query.sql).toContain('0::double precision AS velocity_sample_count')
     expect(query.sql).toContain("'[]'::jsonb AS velocity_segments")
     expect(query.sql).toContain("'[]'::jsonb AS velocity_scores")
@@ -1986,10 +2121,17 @@ describe('report-service query builders', () => {
       "lower(COALESCE(ri.provider, 'unknown')) IN ('openai', 'anthropic', 'claude')"
     )
     expect(query.sql).toContain('observation_identity AS')
-    expect(query.sql).toContain(
-      "n.normalized_quota_key IN (\n          'xai_grok_build_weekly_credits:credits',"
-    )
+    expect(query.sql).toContain('ON n.normalized_quota_key IS NOT NULL')
     expect(query.sql).toContain('AND o.provider = n.raw_provider')
+    expect(query.sql).toContain(
+      'n.quota_period IS NULL OR o.quota_period IS NOT DISTINCT FROM n.quota_period'
+    )
+    expect(query.sql).toContain(
+      'n.source IS NULL OR o.source IS NOT DISTINCT FROM n.source'
+    )
+    expect(query.sql).toContain(
+      'n.account_hash IS NULL OR o.account_hash IS NOT DISTINCT FROM n.account_hash'
+    )
     expect(query.sql).toContain('0::double precision AS velocity_sample_count')
     expect(query.sql).toContain("'[]'::jsonb AS velocity_segments")
     expect(query.sql).toContain("'[]'::jsonb AS velocity_scores")
@@ -3208,5 +3350,658 @@ describe('D1-437 usage row serialization', () => {
 
   test('test_usage_report_cache_scope_is_versioned_usage_v2', () => {
     expect(USAGE_REPORT_CACHE_SCOPE).toBe('usage-v2')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// D1-489: Alibaba Token Plan quota support
+// ---------------------------------------------------------------------------
+describe('D1-489 alibaba_token_plan quota support', () => {
+  test('test_buildQuotaQuery_includes_alibaba_observations_cte_from_rate_limit_observations', () => {
+    const query = buildQuotaQuery()
+    expect(query.sql).toContain('alibaba_observations AS')
+    expect(query.sql).toContain("o.provider = 'alibaba_token_plan'")
+    expect(query.sql).toContain('public.rate_limit_observations o')
+  })
+
+  test('test_buildQuotaQuery_maps_alibaba_5h_to_short_and_7d_to_weekly', () => {
+    const query = buildQuotaQuery()
+    expect(query.sql).toContain("WHEN o.quota_period = '5h' THEN 'short'")
+    expect(query.sql).toContain("WHEN o.quota_period = '7d' THEN 'weekly'")
+  })
+
+  test('test_buildQuotaQuery_union_columns_keep_identity_text_before_bigint_rank', () => {
+    const query = buildQuotaQuery()
+    const compact = compactWhitespace(query.sql)
+
+    expect(compact).toContain(
+      'weekly.active, NULL::text AS account_hash, NULL::text AS source, NULL::text AS quota_period, weekly.quota_rank'
+    )
+    expect(compact).toContain(
+      'short.active, NULL::text AS account_hash, NULL::text AS source, NULL::text AS quota_period, short.quota_rank'
+    )
+    expect(compact).toContain(
+      "END AS active, o.account_hash, NULLIF(TRIM(BOTH FROM COALESCE(o.source, '')), '') AS source, o.quota_period, 1::bigint AS quota_rank"
+    )
+  })
+
+  test('test_buildQuotaQuery_partitions_alibaba_by_provider_quota_key_period_type_source_account', () => {
+    const query = buildQuotaQuery()
+    const compact = compactWhitespace(query.sql)
+    // DISTINCT ON must include all identity columns
+    expect(compact).toContain(
+      "DISTINCT ON ( o.provider, o.quota_key, o.quota_period, o.quota_type, COALESCE(o.source, ''), COALESCE(o.account_hash, '') )"
+    )
+  })
+
+  test('test_buildQuotaQuery_never_exposes_full_account_hash', () => {
+    const query = buildQuotaQuery()
+    expect(query.sql).toContain(
+      "NULLIF(left(md5(COALESCE(s.account_hash, '')), 12), left(md5(''), 12)) AS account_ref"
+    )
+    // The final SELECT must not project raw account_hash
+    const finalSelect = query.sql.slice(query.sql.lastIndexOf('SELECT'))
+    expect(finalSelect).not.toMatch(/AS\s+account_hash\b/)
+  })
+
+  test('test_buildQuotaQuery_groups_by_account_hash_to_prevent_collapse', () => {
+    const query = buildQuotaQuery()
+    expect(query.sql).toContain(
+      "GROUP BY s.provider, s.model, s.source, COALESCE(s.account_hash, '')"
+    )
+  })
+
+  test('test_buildQuotaQuery_billing_join_matches_account_hash_for_alibaba', () => {
+    const query = buildQuotaQuery()
+    expect(query.sql).toContain(
+      'billing.account_hash IS NOT DISTINCT FROM s.account_hash'
+    )
+  })
+
+  test('test_buildQuotaQuery_projects_quota_period_per_lane', () => {
+    const query = buildQuotaQuery()
+    const lanes = [
+      'weekly',
+      'short',
+      'special',
+      'short_special',
+      'monthly',
+      'wtus',
+      'weekly_overage_included',
+    ]
+    for (const lane of lanes) {
+      expect(query.sql).toContain(`AS ${lane}_quota_period`)
+    }
+  })
+
+  test('test_buildQuotaQuery_legacy_providers_have_null_account_hash', () => {
+    const query = buildQuotaQuery()
+    // The normalized CTE for rate_limit_intervals sets NULL::text AS account_hash
+    expect(query.sql).toContain('NULL::text AS account_hash')
+  })
+
+  test('test_buildQuotaQuery_derives_interval_from_expected_reset_and_period', () => {
+    const query = buildQuotaQuery()
+    // interval_start derived from expected_reset_at minus period, not billing_period_start_at
+    expect(query.sql).toContain(
+      "WHEN o.quota_period = '5h' THEN INTERVAL '5 hours'"
+    )
+    expect(query.sql).toContain(
+      "WHEN o.quota_period = '7d' THEN INTERVAL '7 days'"
+    )
+    // Must NOT use billing_period_start_at for interval_start in alibaba CTE
+    const alibabaCte = query.sql.slice(
+      query.sql.indexOf('alibaba_observations AS'),
+      query.sql.indexOf('selected_with_fallbacks AS')
+    )
+    expect(alibabaCte).not.toContain(
+      'billing_period_start_at AS interval_start'
+    )
+  })
+
+  test('test_normalizeQuotaRow_includes_account_ref_and_quota_period', () => {
+    const row: Record<string, unknown> = {
+      provider: 'alibaba_token_plan',
+      model: null,
+      account_ref: 'a1b2c3d4',
+      short_quota_key: 'alibaba_token_plan_5h:credits',
+      short_quota_period: '5h',
+      short_source: 'alibaba_token_plan_usage',
+      short_client: 'codex',
+      short_quota_unit: 'Credits',
+      short_quota_limit: null,
+      short_quota_used: null,
+      short_quota_remaining: null,
+      short_billing_observed_at: '2026-07-20T10:00:00.000Z',
+      short_billing_period_start_at: null,
+      short_billing_period_end_at: null,
+      short_raw_provider_fields: {},
+      short_evidence: {},
+      short_remaining_pct: 82.5,
+      short_reset_at: '2026-07-20T15:00:00.000Z',
+      short_interval_start: '2026-07-20T10:00:00.000Z',
+      short_interval_end: '2026-07-20T15:00:00.000Z',
+      short_active: 1,
+      weekly_quota_key: 'alibaba_token_plan_7d:credits',
+      weekly_quota_period: '7d',
+      weekly_source: 'alibaba_token_plan_usage',
+      weekly_client: 'codex',
+      weekly_quota_unit: 'Credits',
+      weekly_quota_limit: 1000,
+      weekly_quota_used: 250,
+      weekly_quota_remaining: 750,
+      weekly_billing_observed_at: '2026-07-20T10:00:00.000Z',
+      weekly_billing_period_start_at: '2026-07-14T00:00:00.000Z',
+      weekly_billing_period_end_at: '2026-07-21T00:00:00.000Z',
+      weekly_raw_provider_fields: {},
+      weekly_evidence: {},
+      weekly_remaining_pct: 75,
+      weekly_reset_at: '2026-07-21T00:00:00.000Z',
+      weekly_interval_start: '2026-07-14T00:00:00.000Z',
+      weekly_interval_end: '2026-07-21T00:00:00.000Z',
+      weekly_active: 1,
+    }
+
+    const normalized = normalizeQuotaRowForTest(row)
+    const shortBilling = requireQuotaBillingDetail(normalized, 'short')
+    const weeklyBilling = requireQuotaBillingDetail(normalized, 'weekly')
+
+    expect(normalized.provider).toBe('alibaba_token_plan')
+    expect(normalized.account_ref).toBe('a1b2c3d4')
+    expect(shortBilling).toEqual({
+      quota_key: 'alibaba_token_plan_5h:credits',
+      quota_period: '5h',
+      source: 'alibaba_token_plan_usage',
+      client: 'codex',
+      quota_unit: 'Credits',
+      quota_limit: null,
+      quota_used: null,
+      quota_remaining: null,
+      billing_observed_at: '2026-07-20T10:00:00.000Z',
+      billing_period_start_at: null,
+      billing_period_end_at: null,
+      raw_provider_fields: {},
+      evidence: {},
+    })
+    expect(weeklyBilling).toEqual({
+      quota_key: 'alibaba_token_plan_7d:credits',
+      quota_period: '7d',
+      source: 'alibaba_token_plan_usage',
+      client: 'codex',
+      quota_unit: 'Credits',
+      quota_limit: 1000,
+      quota_used: 250,
+      quota_remaining: 750,
+      billing_observed_at: '2026-07-20T10:00:00.000Z',
+      billing_period_start_at: '2026-07-14T00:00:00.000Z',
+      billing_period_end_at: '2026-07-21T00:00:00.000Z',
+      raw_provider_fields: {},
+      evidence: {},
+    })
+    // Null absolutes must remain null, never zero
+    expect(shortBilling.quota_limit).toBeNull()
+    expect(shortBilling.quota_used).toBeNull()
+    expect(shortBilling.quota_remaining).toBeNull()
+    // Lane fields populated
+    expect(normalized.short_remaining_pct).toBe(82.5)
+    expect(normalized.short_active).toBe(true)
+    expect(normalized.weekly_remaining_pct).toBe(75)
+    expect(normalized.weekly_active).toBe(true)
+  })
+
+  test('test_normalizeQuotaRow_legacy_provider_has_null_account_ref', () => {
+    const row: Record<string, unknown> = {
+      provider: 'anthropic',
+      model: null,
+      account_ref: null,
+      weekly_quota_key: 'anthropic_unified_7d:7d',
+      weekly_source: 'anthropic_api',
+      weekly_client: 'codex',
+      weekly_quota_unit: null,
+      weekly_quota_limit: 500,
+      weekly_quota_used: 100,
+      weekly_quota_remaining: 400,
+      weekly_billing_observed_at: '2026-07-20T10:00:00.000Z',
+      weekly_billing_period_start_at: null,
+      weekly_billing_period_end_at: null,
+      weekly_raw_provider_fields: {},
+      weekly_evidence: {},
+    }
+
+    const normalized = normalizeQuotaRowForTest(row)
+    const weeklyBilling = requireQuotaBillingDetail(normalized, 'weekly')
+    expect(normalized.provider).toBe('anthropic')
+    expect(normalized.account_ref).toBeNull()
+    expect(weeklyBilling.quota_key).toBe('anthropic_unified_7d:7d')
+    // quota_period is null for legacy providers that don't supply it
+    expect(weeklyBilling.quota_period).toBeNull()
+  })
+
+  test('test_normalizeQuotaRow_does_not_expose_full_account_hash', () => {
+    const row: Record<string, unknown> = {
+      provider: 'alibaba_token_plan',
+      model: null,
+      account_ref: 'a1b2c3d4',
+      account_hash: 'a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6',
+    }
+
+    const normalized = normalizeQuotaRowForTest(row)
+    expect(normalized.account_ref).toBe('a1b2c3d4')
+    expect(normalized).not.toHaveProperty('account_hash')
+  })
+
+  test('test_buildQuotaQuery_sql_is_parsable_with_alibaba_cte', async () => {
+    const query = buildQuotaQuery()
+    await expectParsableSQL(query.sql)
+  })
+
+  // --- Velocity query ---
+
+  test('test_buildQuotaVelocityQuery_includes_alibaba_observations_union', () => {
+    const query = buildQuotaVelocityQuery()
+    expect(query.sql).toContain("o.provider = 'alibaba_token_plan'")
+    expect(query.sql).toContain("WHEN o.quota_period = '5h' THEN 'short'")
+    expect(query.sql).toContain("WHEN o.quota_period = '7d' THEN 'weekly'")
+  })
+
+  test('test_buildQuotaVelocityQuery_partitions_by_account_hash', () => {
+    const query = buildQuotaVelocityQuery()
+    expect(query.sql).toContain("COALESCE(account_hash, '')")
+    expect(query.sql).toContain('NULL::text AS account_hash')
+  })
+
+  test('test_buildQuotaVelocityQuery_union_columns_keep_identity_text_before_rank', () => {
+    const query = buildQuotaVelocityQuery()
+    const compact = compactWhitespace(query.sql)
+
+    expect(compact).toContain(
+      'weekly.active, NULL::text AS account_hash, NULL::text AS source, NULL::text AS quota_period, weekly.quota_rank'
+    )
+    expect(compact).toContain(
+      'short.active, NULL::text AS account_hash, NULL::text AS source, NULL::text AS quota_period, short.quota_rank'
+    )
+  })
+
+  test('test_buildQuotaVelocityQuery_does_not_expose_full_account_hash', () => {
+    const query = buildQuotaVelocityQuery()
+    const finalSelect = query.sql.slice(query.sql.lastIndexOf('SELECT'))
+    expect(finalSelect).not.toMatch(/AS\s+account_hash\b/)
+  })
+
+  test('test_buildQuotaVelocityQuery_sql_is_parsable', async () => {
+    const query = buildQuotaVelocityQuery()
+    await expectParsableSQL(query.sql)
+  })
+
+  // --- History query ---
+
+  test('test_buildQuotaHistoryQuery_includes_alibaba_observations_union', () => {
+    const query = buildQuotaHistoryQuery(new URLSearchParams())
+    expect(query.sql).toContain("o.provider = 'alibaba_token_plan'")
+    expect(query.sql).toContain("WHEN o.quota_period = '5h' THEN 'short'")
+    expect(query.sql).toContain("WHEN o.quota_period = '7d' THEN 'weekly'")
+  })
+
+  test('test_buildQuotaHistoryQuery_partitions_bounded_normalized_by_account_hash', () => {
+    const query = buildQuotaHistoryQuery(new URLSearchParams())
+    expect(query.sql).toContain("COALESCE(n.account_hash, '')")
+  })
+
+  test('test_buildQuotaHistoryQuery_observation_join_guards_account_hash', () => {
+    const query = buildQuotaHistoryQuery(new URLSearchParams())
+    expect(query.sql).toContain(
+      'n.account_hash IS NULL OR o.account_hash IS NOT DISTINCT FROM n.account_hash'
+    )
+  })
+
+  test('test_buildQuotaHistoryQuery_scopes_alibaba_distinct_order_to_union_branch', () => {
+    const query = buildQuotaHistoryQuery(new URLSearchParams())
+    expect(compactWhitespace(query.sql)).toContain(
+      "UNION ALL ( SELECT DISTINCT ON ( o.provider, o.quota_key, o.quota_period, o.quota_type, COALESCE(o.source, ''), COALESCE(o.account_hash, ''), o.expected_reset_at )"
+    )
+  })
+
+  test('test_buildQuotaHistoryQuery_sql_is_parsable', async () => {
+    const query = buildQuotaHistoryQuery(new URLSearchParams())
+    await expectParsableSQL(query.sql)
+  })
+
+  // --- History fallback query ---
+
+  test('test_buildQuotaHistoryFallbackQuery_includes_alibaba_observations_union', () => {
+    const query = buildQuotaHistoryFallbackQuery(new URLSearchParams())
+    expect(query.sql).toContain("o.provider = 'alibaba_token_plan'")
+    expect(query.sql).toContain("WHEN o.quota_period = '5h' THEN 'short'")
+    expect(query.sql).toContain("WHEN o.quota_period = '7d' THEN 'weekly'")
+    expect(query.sql).toContain('NULL::text AS account_hash')
+  })
+
+  test('test_buildQuotaHistoryFallbackQuery_scopes_alibaba_distinct_order_to_union_branch', () => {
+    const query = buildQuotaHistoryFallbackQuery(new URLSearchParams())
+    expect(compactWhitespace(query.sql)).toContain(
+      "UNION ALL ( SELECT DISTINCT ON ( o.provider, o.quota_key, o.quota_period, o.quota_type, COALESCE(o.source, ''), COALESCE(o.account_hash, ''), o.expected_reset_at )"
+    )
+  })
+
+  test('test_buildQuotaHistoryFallbackQuery_sql_is_parsable', async () => {
+    const query = buildQuotaHistoryFallbackQuery(new URLSearchParams())
+    await expectParsableSQL(query.sql)
+  })
+
+  // --- Range history query ---
+
+  test('test_buildQuotaRangeHistoryQuery_includes_alibaba_observations_union', () => {
+    const query = buildQuotaRangeHistoryQuery(
+      new URLSearchParams({ from: '2026-07-01', to: '2026-07-24' })
+    )
+    expect(query.sql).toContain("o.provider = 'alibaba_token_plan'")
+    expect(query.sql).toContain("WHEN o.quota_period = '5h' THEN 'short'")
+    expect(query.sql).toContain("WHEN o.quota_period = '7d' THEN 'weekly'")
+  })
+
+  test('test_buildQuotaRangeHistoryQuery_derives_interval_from_period_not_billing', () => {
+    const query = buildQuotaRangeHistoryQuery(
+      new URLSearchParams({ from: '2026-07-01', to: '2026-07-24' })
+    )
+    expect(query.sql).toContain(
+      "WHEN o.quota_period = '5h' THEN INTERVAL '5 hours'"
+    )
+    expect(query.sql).toContain(
+      "WHEN o.quota_period = '7d' THEN INTERVAL '7 days'"
+    )
+  })
+
+  test('test_buildQuotaRangeHistoryQuery_distinct_identity_matches_leading_order_by', () => {
+    const query = buildQuotaRangeHistoryQuery(
+      new URLSearchParams({ from: '2026-07-01', to: '2026-07-24' })
+    )
+    const compact = compactWhitespace(query.sql)
+    const identity =
+      "n.raw_provider, n.normalized_quota_key, n.quota_period, COALESCE(n.source, ''), COALESCE(n.account_hash, ''), n.expected_reset_at"
+
+    expect(compact).toContain(`SELECT DISTINCT ON ( ${identity} )`)
+    expect(compact).toContain(`ORDER BY ${identity}, o.observed_at DESC`)
+    expect(compact).toContain('n.source AS selected_source')
+    expect(compact).toContain(
+      'n.account_hash, n.expected_reset_at, NULLIF(TRIM(BOTH FROM COALESCE(o.source'
+    )
+    expect(compact).toContain(
+      'o.observed_at, o.quota_limit, o.quota_used, o.quota_remaining'
+    )
+  })
+
+  test('test_buildQuotaRangeHistoryQuery_sql_is_parsable', async () => {
+    const query = buildQuotaRangeHistoryQuery(
+      new URLSearchParams({ from: '2026-07-01', to: '2026-07-24' })
+    )
+    await expectParsableSQL(query.sql)
+  })
+
+  // --- Range history fallback query ---
+
+  test('test_buildQuotaRangeHistoryFallbackQuery_includes_alibaba_observations_union', () => {
+    const query = buildQuotaRangeHistoryFallbackQuery(
+      new URLSearchParams({ from: '2026-07-01', to: '2026-07-24' })
+    )
+    expect(query.sql).toContain("o.provider = 'alibaba_token_plan'")
+    expect(query.sql).toContain("WHEN o.quota_period = '5h' THEN 'short'")
+    expect(query.sql).toContain("WHEN o.quota_period = '7d' THEN 'weekly'")
+  })
+
+  test('test_buildQuotaRangeHistoryFallbackQuery_sql_is_parsable', async () => {
+    const query = buildQuotaRangeHistoryFallbackQuery(
+      new URLSearchParams({ from: '2026-07-01', to: '2026-07-24' })
+    )
+    await expectParsableSQL(query.sql)
+  })
+
+  // --- 5h/7d lane separation ---
+
+  test('test_alibaba_5h_and_7d_map_to_distinct_lanes_across_all_queries', () => {
+    const queries = [
+      buildQuotaQuery(),
+      buildQuotaVelocityQuery(),
+      buildQuotaHistoryQuery(new URLSearchParams()),
+      buildQuotaHistoryFallbackQuery(new URLSearchParams()),
+      buildQuotaRangeHistoryQuery(
+        new URLSearchParams({ from: '2026-07-01', to: '2026-07-24' })
+      ),
+      buildQuotaRangeHistoryFallbackQuery(
+        new URLSearchParams({ from: '2026-07-01', to: '2026-07-24' })
+      ),
+    ]
+    for (const query of queries) {
+      // Both period mappings must be present
+      expect(query.sql).toContain("WHEN o.quota_period = '5h' THEN 'short'")
+      expect(query.sql).toContain("WHEN o.quota_period = '7d' THEN 'weekly'")
+      // Provider filter must be exact
+      expect(query.sql).toContain("o.provider = 'alibaba_token_plan'")
+    }
+  })
+
+  test('test_alibaba_velocity_attachment_executes_with_separate_accounts_windows_and_sources', () => {
+    const quotaRows = [
+      {
+        provider: 'alibaba_token_plan',
+        model: null,
+        account_identity: 'account-identity-a',
+        account_ref: 'account-ref-a',
+        short_quota_key: 'alibaba_token_plan_5h:credits',
+        short_quota_period: '5h',
+        short_source: 'alibaba_token_plan_usage',
+        short_quota_unit: 'Credits',
+        short_quota_limit: null,
+        short_quota_used: null,
+        short_quota_remaining: null,
+        weekly_quota_key: 'alibaba_token_plan_7d:credits',
+        weekly_quota_period: '7d',
+        weekly_source: 'alibaba_token_plan_usage',
+        weekly_quota_unit: 'Credits',
+        weekly_quota_limit: null,
+        weekly_quota_used: null,
+        weekly_quota_remaining: null,
+      },
+      {
+        provider: 'alibaba_token_plan',
+        model: null,
+        account_identity: 'account-identity-b',
+        account_ref: 'account-ref-b',
+        short_quota_key: 'alibaba_token_plan_5h:credits',
+        short_quota_period: '5h',
+        short_source: 'alibaba_token_plan_usage',
+        short_quota_unit: 'Credits',
+        short_quota_limit: null,
+        short_quota_used: null,
+        short_quota_remaining: null,
+        weekly_quota_key: 'alibaba_token_plan_7d:credits',
+        weekly_quota_period: '7d',
+        weekly_source: 'alibaba_token_plan_usage',
+        weekly_quota_unit: 'Credits',
+        weekly_quota_limit: null,
+        weekly_quota_used: null,
+        weekly_quota_remaining: null,
+      },
+      {
+        provider: 'alibaba_token_plan',
+        model: null,
+        account_identity: 'account-identity-a',
+        account_ref: 'account-ref-a',
+        short_quota_key: 'alibaba_token_plan_5h:credits',
+        short_quota_period: '5h',
+        short_source: 'alternate-source',
+        short_quota_unit: 'Credits',
+        short_quota_limit: null,
+        short_quota_used: null,
+        short_quota_remaining: null,
+      },
+    ]
+    const velocityRows = [
+      {
+        provider: 'alibaba_token_plan',
+        model: null,
+        quota_type: 'short',
+        quota_key: 'alibaba_token_plan_5h:credits',
+        quota_period: '5h',
+        source: 'alibaba_token_plan_usage',
+        account_identity: 'account-identity-a',
+        velocity_sample_count: 11,
+        velocity_segments: [true],
+        velocity_scores: [101],
+      },
+      {
+        provider: 'alibaba_token_plan',
+        model: null,
+        quota_type: 'weekly',
+        quota_key: 'alibaba_token_plan_7d:credits',
+        quota_period: '7d',
+        source: 'alibaba_token_plan_usage',
+        account_identity: 'account-identity-a',
+        velocity_sample_count: 12,
+        velocity_segments: [false],
+        velocity_scores: [102],
+      },
+      {
+        provider: 'alibaba_token_plan',
+        model: null,
+        quota_type: 'short',
+        quota_key: 'alibaba_token_plan_5h:credits',
+        quota_period: '5h',
+        source: 'alibaba_token_plan_usage',
+        account_identity: 'account-identity-b',
+        velocity_sample_count: 21,
+        velocity_segments: [true],
+        velocity_scores: [201],
+      },
+      {
+        provider: 'alibaba_token_plan',
+        model: null,
+        quota_type: 'weekly',
+        quota_key: 'alibaba_token_plan_7d:credits',
+        quota_period: '7d',
+        source: 'alibaba_token_plan_usage',
+        account_identity: 'account-identity-b',
+        velocity_sample_count: 22,
+        velocity_segments: [false],
+        velocity_scores: [202],
+      },
+      {
+        provider: 'alibaba_token_plan',
+        model: null,
+        quota_type: 'short',
+        quota_key: 'alibaba_token_plan_5h:credits',
+        quota_period: '5h',
+        source: 'alternate-source',
+        account_identity: 'account-identity-a',
+        velocity_sample_count: 31,
+        velocity_segments: [true],
+        velocity_scores: [301],
+      },
+    ]
+
+    const velocityByLane = buildQuotaVelocityRowsByLane(velocityRows)
+    const normalizedRows = quotaRows.map((row) =>
+      normalizeQuotaRowForTest(attachQuotaVelocityRows(row, velocityByLane))
+    )
+
+    expect(normalizedRows).toHaveLength(3)
+    expect(normalizedRows[0].short_velocity_sample_count).toBe(11)
+    expect(normalizedRows[0].weekly_velocity_sample_count).toBe(12)
+    expect(normalizedRows[1].short_velocity_sample_count).toBe(21)
+    expect(normalizedRows[1].weekly_velocity_sample_count).toBe(22)
+    expect(normalizedRows[2].short_velocity_sample_count).toBe(31)
+    expect(
+      requireQuotaBillingDetail(normalizedRows[0], 'short').quota_limit
+    ).toBeNull()
+    expect(
+      requireQuotaBillingDetail(normalizedRows[1], 'weekly').quota_remaining
+    ).toBeNull()
+    expect(normalizedRows[0]).not.toHaveProperty('account_identity')
+    expect(normalizedRows[0]).not.toHaveProperty('account_hash')
+  })
+
+  test('test_alibaba_history_normalization_executes_without_account_or_window_collapse', () => {
+    const rows = [
+      {
+        provider: 'alibaba_token_plan',
+        model: null,
+        quota_type: 'short',
+        quota_key: 'alibaba_token_plan_5h:credits',
+        quota_period: '5h',
+        source: 'alibaba_token_plan_usage',
+        quota_unit: 'Credits',
+        account_ref: 'account-ref-a',
+        expected_reset_at: '2026-07-25T12:00:00.000Z',
+        observed_at: '2026-07-25T10:00:00.000Z',
+        quota_limit: null,
+        quota_used: null,
+        quota_remaining: null,
+      },
+      {
+        provider: 'alibaba_token_plan',
+        model: null,
+        quota_type: 'weekly',
+        quota_key: 'alibaba_token_plan_7d:credits',
+        quota_period: '7d',
+        source: 'alibaba_token_plan_usage',
+        quota_unit: 'Credits',
+        account_ref: 'account-ref-a',
+        expected_reset_at: '2026-08-01T00:00:00.000Z',
+        observed_at: '2026-07-25T10:00:00.000Z',
+        quota_limit: null,
+        quota_used: null,
+        quota_remaining: null,
+      },
+      {
+        provider: 'alibaba_token_plan',
+        model: null,
+        quota_type: 'short',
+        quota_key: 'alibaba_token_plan_5h:credits',
+        quota_period: '5h',
+        source: 'alibaba_token_plan_usage',
+        quota_unit: 'Credits',
+        account_ref: 'account-ref-b',
+        expected_reset_at: '2026-07-25T12:00:00.000Z',
+        observed_at: '2026-07-25T10:01:00.000Z',
+        quota_limit: null,
+        quota_used: null,
+        quota_remaining: null,
+      },
+    ]
+
+    const normalized = rows.map(normalizeQuotaHistoryRow)
+
+    expect(normalized).toHaveLength(3)
+    expect(
+      normalized.map((row) => [
+        row.account_ref,
+        row.quota_key,
+        row.quota_period,
+        row.source,
+      ])
+    ).toEqual([
+      [
+        'account-ref-a',
+        'alibaba_token_plan_5h:credits',
+        '5h',
+        'alibaba_token_plan_usage',
+      ],
+      [
+        'account-ref-a',
+        'alibaba_token_plan_7d:credits',
+        '7d',
+        'alibaba_token_plan_usage',
+      ],
+      [
+        'account-ref-b',
+        'alibaba_token_plan_5h:credits',
+        '5h',
+        'alibaba_token_plan_usage',
+      ],
+    ])
+    expect(normalized.every((row) => row.quota_unit === 'Credits')).toBe(true)
+    expect(normalized.every((row) => row.quota_limit === null)).toBe(true)
+    expect(normalized.every((row) => row.quota_used === null)).toBe(true)
+    expect(normalized.every((row) => row.quota_remaining === null)).toBe(true)
+    expect(normalized.every((row) => !('account_hash' in row))).toBe(true)
   })
 })

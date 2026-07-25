@@ -8,6 +8,10 @@
  */
 import { describe, expect, test } from 'vitest'
 import type { UsageReportQuotaRow } from '@/features/dashboard/api/usage-report'
+import {
+  ALIBABA_TOKEN_PLAN_5H_CREDITS_KEY,
+  ALIBABA_TOKEN_PLAN_7D_CREDITS_KEY,
+} from '@/features/dashboard/lib/quota-bars/lane-defs'
 import { buildSidebarQuotaItems } from './sidebar-quota-items'
 
 function makeQuotaRow(
@@ -118,5 +122,127 @@ describe('D1-451 E2 — null rows coerced', () => {
       null as unknown as UsageReportQuotaRow[]
     )
     expect(items).toEqual([])
+  })
+})
+
+describe('D1-489 — Alibaba Token Plan sidebar separation', () => {
+  function alibabaRow(
+    overrides: Partial<UsageReportQuotaRow> = {}
+  ): UsageReportQuotaRow {
+    return makeQuotaRow({
+      provider: 'alibaba_token_plan',
+      billing_details: {
+        short: {
+          quota_key: ALIBABA_TOKEN_PLAN_5H_CREDITS_KEY,
+          source: 'alibaba_token_plan_usage',
+        },
+        weekly: {
+          quota_key: ALIBABA_TOKEN_PLAN_7D_CREDITS_KEY,
+          source: 'alibaba_token_plan_usage',
+        },
+      },
+      short_remaining_pct: 99.96,
+      short_active: true,
+      weekly_remaining_pct: 99.87,
+      weekly_active: true,
+      ...overrides,
+    })
+  }
+
+  test('test_two_separate_sidebar_items_with_distinct_keys_and_labels', () => {
+    const items = buildSidebarQuotaItems([alibabaRow()])
+    const item5h = items.find((i) => i.key === 'alibaba-5h-credits')
+    const item7d = items.find((i) => i.key === 'alibaba-7d-credits')
+    expect(item5h).toBeDefined()
+    expect(item7d).toBeDefined()
+    expect(item5h!.label).toBe('Alibaba 5h Credits')
+    expect(item7d!.label).toBe('Alibaba 7d Credits')
+    expect(item5h!.percent).toBe(99.96)
+    expect(item7d!.percent).toBe(99.87)
+  })
+
+  test('test_no_combined_or_collapsed_alibaba_item', () => {
+    const items = buildSidebarQuotaItems([alibabaRow()])
+    const alibabaItems = items.filter((i) => i.key.startsWith('alibaba'))
+    expect(alibabaItems).toHaveLength(2)
+    // No single combined value
+    expect(items.find((i) => i.key === 'alibaba-combined')).toBeUndefined()
+  })
+
+  test('test_only_5h_present_when_weekly_null', () => {
+    const items = buildSidebarQuotaItems([
+      alibabaRow({ weekly_remaining_pct: null, weekly_active: false }),
+    ])
+    expect(items.find((i) => i.key === 'alibaba-5h-credits')).toBeDefined()
+    expect(items.find((i) => i.key === 'alibaba-7d-credits')).toBeUndefined()
+  })
+
+  test('test_null_absolutes_do_not_render_as_zero', () => {
+    // Percentages are the only signal; a null percent omits the item entirely
+    const items = buildSidebarQuotaItems([
+      alibabaRow({ short_remaining_pct: null, short_active: false }),
+    ])
+    const item5h = items.find((i) => i.key === 'alibaba-5h-credits')
+    expect(item5h).toBeUndefined()
+  })
+
+  test('test_wrong_quota_key_not_matched', () => {
+    const items = buildSidebarQuotaItems([
+      alibabaRow({
+        billing_details: {
+          short: { quota_key: 'unrelated:credits' },
+          weekly: { quota_key: 'unrelated2:credits' },
+        },
+      }),
+    ])
+    expect(items.filter((i) => i.key.startsWith('alibaba'))).toHaveLength(0)
+  })
+
+  test('test_multiple_accounts_have_unique_keys_and_suffix_labels', () => {
+    const items = buildSidebarQuotaItems([
+      alibabaRow({
+        account_ref: 'a1b2c3d4',
+        short_remaining_pct: 99.96,
+        weekly_remaining_pct: 99.87,
+      }),
+      alibabaRow({
+        account_ref: 'e5f6a7b8',
+        short_remaining_pct: 88.5,
+        weekly_remaining_pct: 77.25,
+      }),
+    ]).filter((item) => item.key.startsWith('alibaba'))
+
+    expect(items).toHaveLength(4)
+    expect(new Set(items.map((item) => item.key)).size).toBe(4)
+    expect(items.map((item) => item.key)).toEqual([
+      'alibaba-5h-credits-a1b2c3d4',
+      'alibaba-7d-credits-a1b2c3d4',
+      'alibaba-5h-credits-e5f6a7b8',
+      'alibaba-7d-credits-e5f6a7b8',
+    ])
+    expect(items.map((item) => item.label)).toEqual([
+      'Alibaba 5h Credits · …c3d4',
+      'Alibaba 7d Credits · …c3d4',
+      'Alibaba 5h Credits · …a7b8',
+      'Alibaba 7d Credits · …a7b8',
+    ])
+    expect(items.map((item) => item.percent)).toEqual([
+      99.96, 99.87, 88.5, 77.25,
+    ])
+  })
+
+  test('test_single_account_keeps_compact_labels_but_account_key_identity', () => {
+    const items = buildSidebarQuotaItems([
+      alibabaRow({ account_ref: 'a1b2c3d4' }),
+    ]).filter((item) => item.key.startsWith('alibaba'))
+
+    expect(items.map((item) => item.key)).toEqual([
+      'alibaba-5h-credits-a1b2c3d4',
+      'alibaba-7d-credits-a1b2c3d4',
+    ])
+    expect(items.map((item) => item.label)).toEqual([
+      'Alibaba 5h Credits',
+      'Alibaba 7d Credits',
+    ])
   })
 })

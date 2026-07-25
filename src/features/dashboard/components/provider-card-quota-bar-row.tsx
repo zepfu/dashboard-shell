@@ -4,7 +4,11 @@
  */
 import type { ReactElement } from 'react'
 import { QuotaIntervalBar } from './primitives/quota-interval-bar'
-import { pctSeverityClass, quotaBarResetDisplay } from './provider-card-helpers'
+import {
+  pctSeverityClass,
+  quotaBarResetDisplay,
+  quotaConsumedPctDisplay,
+} from './provider-card-helpers'
 import { buildQuotaTooltip } from './provider-card-quota-tooltip'
 import type { QuotaBarGroup } from './provider-card-types'
 
@@ -67,7 +71,7 @@ export function QuotaBarRow({
               fontVariantNumeric: 'tabular-nums',
             }}
           >
-            {quotaBar.consumedPct.toFixed(0)}%
+            {quotaConsumedPctDisplay(quotaBar)}
           </span>
           <span
             className='quota-row-reset'
@@ -122,7 +126,7 @@ export function QuotaBarRow({
           className={`quota-row-pct ${pctSeverityClass(quotaBar.consumedPct)}`}
           style={{ fontVariantNumeric: 'tabular-nums' }}
         >
-          {quotaBar.consumedPct.toFixed(0)}%
+          {quotaConsumedPctDisplay(quotaBar)}
         </span>
         <span
           className='quota-row-reset'

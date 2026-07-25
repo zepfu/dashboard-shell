@@ -276,16 +276,53 @@ function quotaUnitFromKey(quotaKey: string | null | undefined): string | null {
   return null
 }
 
+export function formatQuotaAccountSuffix(
+  accountRef: string | null | undefined
+): string | null {
+  const normalized = accountRef?.trim()
+  if (!normalized) return null
+  return normalized.length <= 4 ? normalized : `…${normalized.slice(-4)}`
+}
+
 function quotaBillingIdentityBits(
   detail: UsageReportQuotaBillingDetail | undefined,
-  fallbackQuotaKey: string | null
+  fallbackQuotaKey: string | null,
+  accountRef: string | null | undefined
 ): string[] | undefined {
   const quotaKey = detail?.quota_key ?? fallbackQuotaKey
   const quotaUnit = detail?.quota_unit ?? quotaUnitFromKey(quotaKey)
-  const bits = [quotaKey, detail?.source, detail?.client, quotaUnit].filter(
+  const accountSuffix = formatQuotaAccountSuffix(accountRef)
+  const bits = [
+    quotaKey,
+    detail?.source,
+    detail?.client,
+    quotaUnit,
+    accountSuffix === null ? null : `account ${accountSuffix}`,
+  ].filter(
     (bit): bit is string => typeof bit === 'string' && bit.trim().length > 0
   )
   return bits.length > 0 ? bits : undefined
+}
+
+/**
+ * Returns true when a billing detail exists for the interval but all
+ * absolute values (limit, used, remaining) are null — percentage-only
+ * telemetry (e.g. Alibaba Token Plan). Returns undefined otherwise.
+ */
+function quotaAbsolutesUnavailable(
+  row: UsageReportQuotaRow,
+  interval: QuotaIntervalKind
+): boolean | undefined {
+  const detail = row.billing_details?.[interval]
+  if (detail === undefined) return undefined
+  if (
+    detail.quota_limit == null &&
+    detail.quota_used == null &&
+    detail.quota_remaining == null
+  ) {
+    return true
+  }
+  return undefined
 }
 
 function quotaIdentityForInterval(
@@ -301,7 +338,8 @@ function quotaIdentityForInterval(
       : null
   return quotaBillingIdentityBits(
     row.billing_details?.[interval],
-    fallbackQuotaKey
+    fallbackQuotaKey,
+    row.account_ref
   )
 }
 
@@ -697,6 +735,11 @@ export function makeQuotaBarGroup(
     tipModels: tipModelsFromBreakdown(breakdown),
     tipRequestTotal: tipRequestTotalFromBreakdown(breakdown),
     tipRecentRequestTotal90m: tipRecentRequestTotal90mFromBreakdown(breakdown),
+    tipObservedAt:
+      row.billing_details?.[interval]?.billing_observed_at ?? undefined,
+    tipAbsolutesUnavailable: quotaAbsolutesUnavailable(row, interval),
+    showSubPercentPrecision:
+      row.provider.toLowerCase() === 'alibaba_token_plan',
   }
 }
 
@@ -782,6 +825,11 @@ export function makeQuotaBarGroupAlways(
     tipModels: tipModelsFromBreakdown(breakdown),
     tipRequestTotal: tipRequestTotalFromBreakdown(breakdown),
     tipRecentRequestTotal90m: tipRecentRequestTotal90mFromBreakdown(breakdown),
+    tipObservedAt:
+      row.billing_details?.[interval]?.billing_observed_at ?? undefined,
+    tipAbsolutesUnavailable: quotaAbsolutesUnavailable(row, interval),
+    showSubPercentPrecision:
+      row.provider.toLowerCase() === 'alibaba_token_plan',
   }
 }
 

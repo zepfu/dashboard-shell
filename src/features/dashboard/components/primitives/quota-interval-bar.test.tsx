@@ -1,7 +1,7 @@
 /**
  * QuotaIntervalBar — interval merge, projection tick, velocity overlay.
  */
-import { render } from '@testing-library/react'
+import { fireEvent, render } from '@testing-library/react'
 import {
   QuotaIntervalBar,
   type QuotaInterval,
@@ -575,4 +575,104 @@ test('test_merged_runs_do_not_lose_newest_interval_to_px_gap', () => {
   }, 0)
   const totalGaps = (segments.length - 1) * gapPx
   expect(totalSegmentWidth + totalGaps).toBeLessThanOrEqual(barRect.width + 0.5)
+})
+
+// ---------------------------------------------------------------------------
+// D1-489: tooltip trigger must be a real element (not a Fragment)
+// ---------------------------------------------------------------------------
+
+/**
+ * D1-489 regression: HoverTooltip clones its child with `aria-describedby`
+ * when the tooltip opens. If the child is a React.Fragment, React emits an
+ * "Invalid prop" warning and the attribute is silently dropped, breaking the
+ * accessibility relationship. The trigger passed to HoverTooltip must be a
+ * real DOM element so cloneElement can attach aria-describedby.
+ */
+test('test_d1_489_tooltip_trigger_is_real_element_not_fragment', () => {
+  const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+
+  const intervals: QuotaInterval[] = [
+    { widthPct: 60, severityClass: 'iv-0-5', highVelocity: false },
+    {
+      widthPct: 40,
+      severityClass: 'iv-25-50',
+      highVelocity: true,
+      velocityClass: 'velocity-hot',
+    },
+  ]
+
+  const { container } = render(
+    <QuotaIntervalBar
+      intervals={intervals}
+      tooltipContent={<span>quota detail</span>}
+    />
+  )
+
+  // The tooltip wrapper must contain a real trigger element that wraps the bar.
+  const trigger = container.querySelector('.quota-bar-trigger')
+  expect(trigger).not.toBeNull()
+  expect(trigger!.tagName).toBe('DIV')
+
+  // The bar and velocity overlay must still be inside the trigger.
+  expect(trigger!.querySelector('.quota-row-bar')).not.toBeNull()
+
+  // Simulate hover to open the tooltip. React implements onPointerEnter
+  // via pointerover delegation, so fire pointerOver on the trigger (it
+  // bubbles up to the HoverTooltip wrapper's handler).
+  fireEvent.pointerOver(trigger!)
+
+  // Tooltip panel should appear.
+  const panel = document.querySelector('[data-testid="hover-tooltip-content"]')
+  expect(panel).not.toBeNull()
+
+  // The trigger element must now carry aria-describedby pointing to the panel.
+  const describedBy = trigger!.getAttribute('aria-describedby')
+  expect(describedBy).toBeTruthy()
+  expect(panel!.id).toBe(describedBy)
+
+  // No React Fragment prop warnings should have been emitted.
+  const fragmentWarnings = consoleSpy.mock.calls.filter((args) =>
+    args.some(
+      (arg) =>
+        typeof arg === 'string' &&
+        (arg.includes('Invalid prop') || arg.includes('React.Fragment'))
+    )
+  )
+  expect(fragmentWarnings).toHaveLength(0)
+
+  consoleSpy.mockRestore()
+})
+
+/**
+ * D1-489: bars without tooltipContent must NOT render the extra trigger
+ * wrapper, preserving the original bare Fragment output for non-tooltip usage.
+ */
+test('test_d1_489_no_trigger_wrapper_without_tooltip', () => {
+  const { container } = render(
+    <QuotaIntervalBar intervals={makeIntervals(4)} />
+  )
+
+  expect(container.querySelector('.quota-bar-trigger')).toBeNull()
+  // Bar still renders normally.
+  expect(container.querySelector('.quota-row-bar')).not.toBeNull()
+})
+
+/**
+ * D1-489: isPrior bars with tooltip must also get the real-element trigger.
+ */
+test('test_d1_489_prior_bar_tooltip_trigger', () => {
+  const { container } = render(
+    <QuotaIntervalBar
+      intervals={makeIntervals(6)}
+      isPrior={true}
+      tooltipContent={<span>prior detail</span>}
+    />
+  )
+
+  const trigger = container.querySelector('.quota-bar-trigger')
+  expect(trigger).not.toBeNull()
+
+  const bar = trigger!.querySelector('.quota-row-bar')
+  expect(bar).not.toBeNull()
+  expect(bar!.classList.contains('is-prior')).toBe(true)
 })

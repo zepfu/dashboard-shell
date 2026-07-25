@@ -96,7 +96,7 @@ function ProviderCardInner({
         border: '1px solid var(--border)',
         borderRadius: 0,
         padding: '10px',
-        paddingRight: '22px',
+        paddingRight: config.quotaOnly === true ? '10px' : '22px',
         maxWidth: '460px',
         width: '100%',
         display: 'flex',
@@ -105,7 +105,9 @@ function ProviderCardInner({
         fontSize: 'clamp(10px, 0.55vw, 14px)',
       }}
     >
-      <HealthStrip cells={healthCells} orientation='vertical' />
+      {config.quotaOnly !== true && (
+        <HealthStrip cells={healthCells} orientation='vertical' />
+      )}
 
       <div
         className='provider-name'
@@ -121,7 +123,7 @@ function ProviderCardInner({
           letterSpacing: '0.05em',
         }}
       >
-        <span>{config.provider.toUpperCase()}</span>
+        <span>{(config.displayName ?? config.provider).toUpperCase()}</span>
       </div>
 
       <ProviderCardMetricsBody
@@ -134,7 +136,7 @@ function ProviderCardInner({
         extraPaneLeft={extraPaneLeft}
       />
 
-      {topModels.length > 0 && (
+      {config.quotaOnly !== true && topModels.length > 0 && (
         <ProviderCardTopModelsPane
           topModels={topModels}
           errorCount={data.errors}

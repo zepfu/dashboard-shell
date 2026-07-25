@@ -24,6 +24,8 @@ export function providerDisplayName(provider: string): string {
       return 'NVIDIA'
     case 'local':
       return 'Local'
+    case 'alibaba_token_plan':
+      return 'Alibaba Token Plan'
     default:
       return formatModelDisplayName(provider)
   }

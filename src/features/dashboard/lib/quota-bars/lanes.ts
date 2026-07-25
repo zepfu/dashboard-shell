@@ -15,6 +15,7 @@ import { providerAliases } from '../usage-report-display'
 import {
   buildQuotaSegments,
   classifyGeminiModel,
+  formatQuotaAccountSuffix,
   fmtIntervalCompact,
   formatTimeAgo,
   makeQuotaBarGroup,
@@ -54,16 +55,51 @@ function quotaTypeToBarInterval(quotaType: string): QuotaBarInterval {
   }
 }
 
+function safeQuotaHistoryAccountRef(
+  accountRef: string | null | undefined
+): string | null {
+  const normalized = accountRef?.trim()
+  return normalized !== undefined && /^[a-f0-9]{8}$/i.test(normalized)
+    ? normalized
+    : null
+}
+
+function expectedAlibabaQuotaPeriod(quotaType: string): string | null {
+  switch (quotaTypeToLaneKey(quotaType)) {
+    case 'short':
+      return '5h'
+    case 'weekly':
+      return '7d'
+    default:
+      return null
+  }
+}
+
+function quotaHistoryAccountRefIsSafe(
+  row: UsageReportQuotaHistoryRow
+): boolean {
+  const supplied = row.account_ref?.trim()
+  return !supplied || safeQuotaHistoryAccountRef(supplied) !== null
+}
+
 function priorBarDedupKey(h: UsageReportQuotaHistoryRow): string {
+  const identity = [
+    h.provider,
+    h.quota_type,
+    h.quota_key ?? '',
+    h.quota_period ?? '',
+    h.source ?? '',
+    safeQuotaHistoryAccountRef(h.account_ref) ?? '',
+  ].join(':')
   if (h.expected_reset_at !== null) {
     const rounded = roundToNearest30Min(h.expected_reset_at)
     if (!Number.isNaN(rounded.getTime())) {
-      return rounded.toISOString()
+      return `${identity}:${rounded.toISOString()}`
     }
   }
   const start = h.interval_start?.trim()
-  if (start) return `null-reset:${start}`
-  return `null-reset:${h.provider}:${h.quota_type}:${String(h.min_remaining_pct)}`
+  if (start) return `${identity}:null-reset:${start}`
+  return `${identity}:null-reset:${String(h.min_remaining_pct)}`
 }
 
 function shouldSuppressProviderLanePriorBars(
@@ -79,10 +115,68 @@ function shouldSuppressProviderLanePriorBars(
 function quotaHistoryIdentityBits(
   row: UsageReportQuotaHistoryRow
 ): string[] | undefined {
-  const bits = [row.quota_key, row.source, row.client, row.quota_unit].filter(
+  const accountRef = safeQuotaHistoryAccountRef(row.account_ref)
+  const accountSuffix =
+    accountRef === null ? null : formatQuotaAccountSuffix(accountRef)
+  const bits = [
+    row.provider,
+    row.quota_key,
+    row.quota_period,
+    row.source,
+    row.client,
+    row.quota_unit,
+    accountSuffix === null ? null : `account ${accountSuffix}`,
+  ].filter(
     (bit): bit is string => typeof bit === 'string' && bit.trim().length > 0
   )
   return bits.length > 0 ? bits : undefined
+}
+
+function buildPriorBarsForLane(
+  laneHistory: UsageReportQuotaHistoryRow[],
+  currentBar: QuotaBarGroup | null,
+  laneProvider: string
+): QuotaBarGroup[] {
+  const thirtyMinutesMs = 30 * 60 * 1000
+  const currentRoundedResetMs: number | null =
+    currentBar?.resetAt !== undefined
+      ? roundToNearest30Min(currentBar.resetAt).getTime()
+      : null
+  const seen = new Set<string>()
+  const priorBars: QuotaBarGroup[] = []
+  const sortedHistory = [...laneHistory].sort((a, b) => {
+    const ad = a.expected_reset_at ?? ''
+    const bd = b.expected_reset_at ?? ''
+    return bd < ad ? -1 : bd > ad ? 1 : 0
+  })
+
+  for (const historyRow of sortedHistory) {
+    if (historyRow.min_remaining_pct === null) continue
+
+    const roundedSlotDate =
+      historyRow.expected_reset_at !== null
+        ? roundToNearest30Min(historyRow.expected_reset_at)
+        : null
+    if (roundedSlotDate !== null && Number.isNaN(roundedSlotDate.getTime())) {
+      continue
+    }
+
+    const roundedSlot = priorBarDedupKey(historyRow)
+    if (
+      roundedSlotDate !== null &&
+      currentRoundedResetMs !== null &&
+      Math.abs(currentRoundedResetMs - roundedSlotDate.getTime()) <=
+        thirtyMinutesMs
+    ) {
+      continue
+    }
+
+    if (seen.has(roundedSlot)) continue
+    seen.add(roundedSlot)
+    priorBars.push(buildPriorBarFromHistory(historyRow, laneProvider))
+  }
+
+  return priorBars
 }
 
 export function buildPriorBarFromHistory(
@@ -114,6 +208,7 @@ export function buildPriorBarFromHistory(
       timeAgoLabel,
       dateRangeLabel: fmtIntervalCompact(h.interval_start, h.expected_reset_at),
       periodType: quotaTypeToBarPeriodType(quotaTypeLower),
+      showSubPercentPrecision: provider.toLowerCase() === 'alibaba_token_plan',
     }
   }
 
@@ -170,6 +265,7 @@ export function buildPriorBarFromHistory(
     timeAgoLabel,
     dateRangeLabel,
     periodType: quotaTypeToBarPeriodType(quotaTypeLower),
+    showSubPercentPrecision: providerLower === 'alibaba_token_plan',
   }
 }
 
@@ -204,6 +300,23 @@ export function buildProviderLanes(
   if (laneDefs === undefined || laneDefs.length === 0) return []
 
   const result: QuotaLane[] = []
+  const alibabaAccountRefs =
+    providerLower === 'alibaba_token_plan'
+      ? new Set(
+          allQuotaRows
+            .filter(
+              (row) =>
+                row.provider.toLowerCase() === 'alibaba_token_plan' &&
+                safeQuotaHistoryAccountRef(row.account_ref) !== null
+            )
+            .map((row) => safeQuotaHistoryAccountRef(row.account_ref)!)
+        )
+      : new Set<string>()
+  const hasMultipleAlibabaAccounts = alibabaAccountRefs.size > 1
+  const singleAlibabaAccountRef =
+    alibabaAccountRefs.size === 1
+      ? (alibabaAccountRefs.values().next().value ?? null)
+      : null
 
   for (const def of laneDefs) {
     const laneProvider = (def.sourceProvider ?? providerLower).toLowerCase()
@@ -211,6 +324,68 @@ export function buildProviderLanes(
     const laneQuotas = allQuotaRows.filter((r) =>
       laneAliases.includes(r.provider.toLowerCase())
     )
+
+    if (
+      laneProvider === 'alibaba_token_plan' &&
+      def.quotaKey !== undefined &&
+      hasMultipleAlibabaAccounts
+    ) {
+      const interval = quotaTypeToBarInterval(def.quotaType)
+      const matchingRows = laneQuotas.filter(
+        (quota) => quota.billing_details?.[interval]?.quota_key === def.quotaKey
+      )
+      const seenAccounts = new Set<string>()
+      const expectedQuotaPeriod = expectedAlibabaQuotaPeriod(def.quotaType)
+
+      matchingRows.forEach((row, index) => {
+        const accountRef =
+          safeQuotaHistoryAccountRef(row.account_ref) ?? `unidentified-${index}`
+        if (seenAccounts.has(accountRef)) return
+        seenAccounts.add(accountRef)
+
+        const accountSuffix = formatQuotaAccountSuffix(row.account_ref)
+        const laneLabel =
+          accountSuffix === null
+            ? def.laneLabel
+            : `${def.laneLabel} · ${accountSuffix}`
+        const currentBar = makeQuotaBarGroup(laneLabel, row, interval)
+        if (currentBar === null) return
+        const laneHistory = historyRows.filter((historyRow) => {
+          if (!quotaHistoryAccountRefIsSafe(historyRow)) return false
+          if (
+            !laneAliases.includes(historyRow.provider.toLowerCase()) ||
+            quotaTypeToLaneKey(historyRow.quota_type) !==
+              quotaTypeToLaneKey(def.quotaType) ||
+            historyRow.quota_key !== def.quotaKey
+          ) {
+            return false
+          }
+          if (
+            expectedQuotaPeriod !== null &&
+            historyRow.quota_period !== null &&
+            historyRow.quota_period !== undefined &&
+            historyRow.quota_period.toLowerCase() !== expectedQuotaPeriod
+          ) {
+            return false
+          }
+          return (
+            safeQuotaHistoryAccountRef(historyRow.account_ref) === accountRef
+          )
+        })
+
+        result.push({
+          laneKey: `${def.laneKey}/${accountRef}`,
+          laneLabel,
+          currentBar,
+          priorBars: buildPriorBarsForLane(
+            laneHistory,
+            currentBar,
+            laneProvider
+          ),
+        })
+      })
+      continue
+    }
 
     // ── 1. Build current bar ────────────────────────────────────────────────
     let currentBar: QuotaBarGroup | null = null
@@ -261,6 +436,17 @@ export function buildProviderLanes(
               : 'monthly'
         currentBar = makeQuotaBarGroup(def.laneLabel, row, interval)
       }
+    } else if (
+      laneProvider === 'alibaba_token_plan' &&
+      def.quotaKey !== undefined
+    ) {
+      const interval = quotaTypeToBarInterval(def.quotaType)
+      const row = laneQuotas.find(
+        (quota) => quota.billing_details?.[interval]?.quota_key === def.quotaKey
+      )
+      if (row !== undefined) {
+        currentBar = makeQuotaBarGroup(def.laneLabel, row, interval)
+      }
     } else {
       // Anthropic / OpenAI: all quota data lives in the model=null row.
       const allRow = laneQuotas.find((r) => r.model === null)
@@ -296,58 +482,38 @@ export function buildProviderLanes(
           if (laneProvider === 'xai' && def.quotaKey !== undefined) {
             return h.model === def.quotaKey || h.quota_key === def.quotaKey
           }
+          if (
+            laneProvider === 'alibaba_token_plan' &&
+            def.quotaKey !== undefined
+          ) {
+            if (!quotaHistoryAccountRefIsSafe(h)) return false
+            if (h.quota_key !== def.quotaKey) return false
+            const expectedQuotaPeriod = expectedAlibabaQuotaPeriod(
+              def.quotaType
+            )
+            if (
+              expectedQuotaPeriod !== null &&
+              h.quota_period !== null &&
+              h.quota_period !== undefined &&
+              h.quota_period.toLowerCase() !== expectedQuotaPeriod
+            ) {
+              return false
+            }
+            const historyAccountRef = safeQuotaHistoryAccountRef(h.account_ref)
+            return (
+              singleAlibabaAccountRef === null ||
+              historyAccountRef === null ||
+              historyAccountRef === singleAlibabaAccountRef
+            )
+          }
           return true
         })
 
-    // Deduplicate by (rounded-30min slot) — suppress current reset window.
-    // Use a numeric timestamp for ±30 min proximity comparison to handle
-    // rounding artefacts where Math.round pushes a past reset into the future.
-    const THIRTY_MIN_MS = 30 * 60 * 1000
-    const currentRoundedResetMs: number | null =
-      currentBar?.resetAt !== undefined
-        ? roundToNearest30Min(currentBar.resetAt).getTime()
-        : null
-    const seen = new Set<string>()
-    const priorBars: QuotaBarGroup[] = []
-
-    // Sort by expected_reset_at DESC so newest prior is first.
-    const sortedHistory = [...laneHistory].sort((a, b) => {
-      const ad = a.expected_reset_at ?? ''
-      const bd = b.expected_reset_at ?? ''
-      return bd < ad ? -1 : bd > ad ? 1 : 0
-    })
-
-    for (const h of sortedHistory) {
-      if (h.min_remaining_pct === null) continue
-
-      const roundedSlotDate =
-        h.expected_reset_at !== null
-          ? roundToNearest30Min(h.expected_reset_at)
-          : null
-      if (roundedSlotDate !== null && Number.isNaN(roundedSlotDate.getTime())) {
-        continue
-      }
-
-      const roundedSlot = priorBarDedupKey(h)
-
-      // Skip if this slot is within ±30 min of the current bar's reset time.
-      // The ±30 min window absorbs rounding artefacts from Math.round that can
-      // push a history row's slot to the next 30-min boundary, making an exact
-      // ISO-string match miss rows that belong to the live reset window.
-      if (
-        roundedSlotDate !== null &&
-        currentRoundedResetMs !== null &&
-        Math.abs(currentRoundedResetMs - roundedSlotDate.getTime()) <=
-          THIRTY_MIN_MS
-      )
-        continue
-
-      // Dedup within the same 30-min slot.
-      if (seen.has(roundedSlot)) continue
-      seen.add(roundedSlot)
-
-      priorBars.push(buildPriorBarFromHistory(h, laneProvider))
-    }
+    const priorBars = buildPriorBarsForLane(
+      laneHistory,
+      currentBar,
+      laneProvider
+    )
 
     result.push({
       laneKey: def.laneKey,

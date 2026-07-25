@@ -129,6 +129,40 @@ aggregated across period or unit:
   `100 - creditUsagePercent` when usage percent is present).
 - `xai_grok_build_monthly_requests:requests` → monthly **requests** remaining.
 
+Alibaba Token Plan is a separate percentage-only quota family. The Status Quota
+UI was intentionally removed in commit `6319ccd` and remains deprecated; this
+does not restore a visible Quota tab or quota-history UI. D1-489 provides the
+live Provider Status quota-only card and sidebar lanes, backed by
+`GET /api/shell/reports/quotas`. The `quota-history` and `quota-range-history`
+payloads and their display helpers still preserve both windows as distinct
+lanes:
+
+- `alibaba_token_plan_5h:credits` → **5h** **Credits** window.
+- `alibaba_token_plan_7d:credits` → **7d** **Credits** window.
+
+The provider is `alibaba_token_plan`, and the authoritative usage source is
+`alibaba_token_plan_usage`. Each lane retains its `provider`, exact
+`quota_key`, `quota_period`, `unit`, `source`, and freshness/observation
+metadata across the `/api/shell/reports/quotas`, `quota-history`, and
+`quota-range-history` payloads and display helpers. The live Provider Status
+card and sidebar may show the reported percentage consumed or remaining and the
+reported reset time. Percentages and reset state are source telemetry, not
+derived absolute limits; freshness must remain visible so a stale or missing
+snapshot is not presented as a current zero-use state.
+
+Absolute quota values are unavailable when the source supplies null values.
+The dashboard must preserve those nulls and must not calculate or infer a
+credits total, daily quota, or monthly quota from the percentage, period, or
+usage history. `account_hash` is grouping-only: it may keep independent
+accounts' lanes separate, but full account-hash values must never be exposed
+to the browser or rendered in tooltips.
+
+Alibaba Token Plan must not be merged with Qwen request-token usage, Coding
+Plan quotas, or any other Alibaba product or subscription. The 5h and 7d
+Credit lanes remain separately identifiable in the Provider Status quota-only
+card, quota payloads/display helpers, and sidebar even when one lane is absent,
+stale, or unavailable.
+
 Anthropic Fable weekly overage-included (`7d_oi`) is a distinct quota family from
 baseline unified weekly (`7d`) and retired Sonnet weekly (`weekly_special` →
 internal `special`):

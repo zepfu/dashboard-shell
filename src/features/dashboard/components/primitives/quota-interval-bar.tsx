@@ -303,7 +303,12 @@ export function QuotaIntervalBar({
   if (tooltipContent !== undefined) {
     return (
       <HoverTooltip content={() => tooltipContent} variant='quota-bar'>
-        {bar}
+        {/*
+         * D1-489: wrap the bar Fragment in a real element so HoverTooltip's
+         * cloneElement(children, { 'aria-describedby' }) targets a DOM node
+         * instead of a React.Fragment (which silently drops the prop).
+         */}
+        <div className='quota-bar-trigger'>{bar}</div>
       </HoverTooltip>
     )
   }

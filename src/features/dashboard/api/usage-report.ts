@@ -870,6 +870,7 @@ export type UsageReportQuotaBillingLane =
 
 export interface UsageReportQuotaBillingDetail {
   quota_key?: string | null
+  quota_period?: string | null
   source?: string | null
   client?: string | null
   quota_unit?: string | null
@@ -886,6 +887,7 @@ export interface UsageReportQuotaBillingDetail {
 export interface UsageReportQuotaRow {
   provider: string
   model: string | null
+  account_ref?: string | null
   billing_details?: Partial<
     Record<UsageReportQuotaBillingLane, UsageReportQuotaBillingDetail>
   >
@@ -983,8 +985,12 @@ export interface UsageReportQuotaHistoryRow {
   model: string | null
   /** Exact telemetry key when the lane is keyed by quota_key (e.g. Grok Build). */
   quota_key?: string | null
+  /** Provider-reported quota period, such as `5h` or `7d`. */
+  quota_period?: string | null
   /** Billing/source surface when present on rate_limit_intervals or observations. */
   source?: string | null
+  /** Safe short account reference; full account hashes are never valid here. */
+  account_ref?: string | null
   /** Client identity when present on ingested quota rows. */
   client?: string | null
   /** Unit hint: credits vs requests for Build and similar keys. */

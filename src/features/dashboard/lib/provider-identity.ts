@@ -43,6 +43,7 @@ export const CANONICAL_PROVIDERS: ReadonlyArray<string> = Object.freeze([
  * aliases before filtering health rows.
  */
 const PROVIDER_ALIASES: Record<string, readonly string[]> = {
+  alibaba_token_plan: ['alibaba_token_plan'],
   antigravity: ['antigravity'],
   google: ['google', 'gemini'],
   local: [
@@ -96,3 +97,12 @@ export function canonicalProvider(provider: string): string {
   }
   return key
 }
+
+/**
+ * Quota-only providers that appear in Provider Status cards but are not
+ * part of the canonical 8-provider attribution/trend/ledger set.
+ * D1-489: Alibaba Token Plan is percentage-only quota telemetry.
+ */
+export const QUOTA_ONLY_PROVIDERS: ReadonlyArray<string> = Object.freeze([
+  'alibaba_token_plan',
+])

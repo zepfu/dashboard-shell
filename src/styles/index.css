@@ -3055,6 +3055,10 @@ tbody tr {
 .tt-swatch.tt-local {
   background: #94a3b8;
 }
+.tt-slice.tt-alibaba,
+.tt-swatch.tt-alibaba {
+  background: #ff6a00;
+}
 /* Wave 25 additions: chatgpt + unknown were missing from the Wave 15-A block. */
 /* Colors from PROVIDER_SERIES in phosphor-dashboard.tsx lines 118,157.        */
 .tt-slice.tt-chatgpt,

@@ -2,8 +2,11 @@
  * Quota interval tooltip body for ProviderCard (S2-21).
  */
 import type { ReactElement } from 'react'
-import { modelBrandHex } from '../lib/usage-report-display'
-import { fmtRequestCount } from './provider-card-helpers'
+import { formatResetDistance, modelBrandHex } from '../lib/usage-report-display'
+import {
+  fmtRequestCount,
+  quotaConsumedPctDisplay,
+} from './provider-card-helpers'
 import type { QuotaBarGroup } from './provider-card-types'
 
 function renderQuotaRequestTotals(
@@ -44,10 +47,30 @@ function renderQuotaRequestTotals(
   )
 }
 
+/** Formats an ISO timestamp as a relative freshness label, e.g. "observed 3m ago". */
+function formatObservedFreshness(iso: string): string {
+  const date = new Date(iso)
+  if (Number.isNaN(date.getTime())) return 'observed —'
+  const diffMs = Date.now() - date.getTime()
+  const totalMins = Math.floor(Math.abs(diffMs) / 60_000)
+  const hours = Math.floor(totalMins / 60)
+  const days = Math.floor(hours / 24)
+  let core: string
+  if (totalMins < 1) core = 'just now'
+  else if (totalMins < 60) core = `${totalMins.toString()}m ago`
+  else if (hours < 24) core = `${hours.toString()}h ago`
+  else core = `${days.toString()}d ago`
+  return `observed ${core}`
+}
+
 /** Shared v9-tip-head / v9-tip-sub / v9-tip-row tooltip body (S2-21/S2-22). */
 export function buildQuotaTooltip(quotaBar: QuotaBarGroup): ReactElement {
   const tipWindowStr = quotaBar.tipWindow ?? '—'
-  const tipHeadLabel = `${tipWindowStr} · ${quotaBar.consumedPct.toFixed(0)}% used`
+  const consumedDisplay = quotaConsumedPctDisplay(quotaBar)
+  const tipHeadLabel =
+    quotaBar.showSubPercentPrecision === true
+      ? `${tipWindowStr} · ${consumedDisplay} used · ${quotaBar.remainingPct.toFixed(2)}% remaining`
+      : `${tipWindowStr} · ${consumedDisplay} used`
   const tipVelocity = quotaBar.tipVelocity
   const tipModelRows =
     quotaBar.tipModels !== undefined && quotaBar.tipModels.length > 0
@@ -65,6 +88,21 @@ export function buildQuotaTooltip(quotaBar: QuotaBarGroup): ReactElement {
           {identity}
         </div>
       ))}
+      {quotaBar.tipAbsolutesUnavailable === true && (
+        <div className='v9-tip-sub quota-tip-absolutes'>
+          credits: unavailable
+        </div>
+      )}
+      {quotaBar.resetAt !== undefined && (
+        <div className='v9-tip-sub quota-tip-reset'>
+          resets {formatResetDistance(quotaBar.resetAt)}
+        </div>
+      )}
+      {quotaBar.tipObservedAt !== undefined && (
+        <div className='v9-tip-sub quota-tip-freshness'>
+          {formatObservedFreshness(quotaBar.tipObservedAt)}
+        </div>
+      )}
       {renderQuotaRequestTotals(quotaBar)}
       {tipModelRows.map((tm) => (
         <div key={tm.model} className='v9-tip-row'>

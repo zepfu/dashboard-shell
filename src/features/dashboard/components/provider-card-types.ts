@@ -6,6 +6,10 @@
 export interface ProviderCardConfig {
   provider: string
   color: string
+  /** Optional human-readable display name (defaults to provider key uppercased). */
+  displayName?: string
+  /** Render only quota lanes; omit traffic, token, health, and model sections. */
+  quotaOnly?: boolean
 }
 
 /** Core metrics for a single provider. */
@@ -87,6 +91,12 @@ export interface QuotaBarGroup {
   tipModels?: QuotaTipModel[]
   tipRequestTotal?: number
   tipRecentRequestTotal90m?: number
+  /** ISO timestamp of the billing observation, for freshness display. */
+  tipObservedAt?: string
+  /** True when billing detail exists but absolute values are all null (percentage-only telemetry). */
+  tipAbsolutesUnavailable?: boolean
+  /** Preserve meaningful sub-1% consumption display for percentage-only providers. */
+  showSubPercentPrecision?: boolean
   periodType?:
     | '5hr'
     | 'weekly'

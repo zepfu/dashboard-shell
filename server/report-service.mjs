@@ -4817,6 +4817,11 @@ const XAI_GROK_BUILD_WEEKLY_CREDITS_KEY =
   'xai_grok_build_weekly_credits:credits'
 const XAI_GROK_BUILD_MONTHLY_REQUESTS_KEY =
   'xai_grok_build_monthly_requests:requests'
+const ALIBABA_TOKEN_PLAN_PROVIDER = 'alibaba_token_plan'
+const ALIBABA_TOKEN_PLAN_SOURCE = 'alibaba_token_plan_usage'
+const ALIBABA_TOKEN_PLAN_5H_KEY = 'alibaba_token_plan_5h:credits'
+const ALIBABA_TOKEN_PLAN_7D_KEY = 'alibaba_token_plan_7d:credits'
+const ALIBABA_TOKEN_PLAN_QUOTA_UNIT = 'Credits'
 
 function quotaUnitCaseExpression(columnExpression = 'ri.quota_key') {
   return `CASE
@@ -4904,6 +4909,7 @@ function buildQuotaLaneAggregateSelectSql() {
       `    MAX(billing.quota_unit) FILTER (WHERE ${predicate}) AS ${quotaType}_quota_unit`,
       `    (ARRAY_AGG(billing.raw_provider_fields) FILTER (WHERE ${predicate}))[1] AS ${quotaType}_raw_provider_fields`,
       `    (ARRAY_AGG(billing.evidence) FILTER (WHERE ${predicate}))[1] AS ${quotaType}_evidence`,
+      `    MAX(billing.quota_period) FILTER (WHERE ${predicate}) AS ${quotaType}_quota_period`,
     ].join(',\n')
   }).join(',\n\n')
 }
@@ -4972,7 +4978,10 @@ WITH normalized AS (
         CASE
             WHEN ri.fromDate <= now() AND ri.toDate > now() THEN true
             ELSE false
-        END AS active
+        END AS active,
+        NULL::text AS account_hash,
+        NULL::text AS source,
+        NULL::text AS quota_period
     FROM public.rate_limit_intervals ri
     WHERE ri.quota_type IN ('weekly', 'weekly_overage_included', 'short', 'weekly_special', 'short_special', 'requests', 'monthly', 'wtus')
 ),
@@ -4990,6 +4999,58 @@ selected AS (
     FROM ranked
     WHERE quota_rank = 1
 ),
+alibaba_observations AS (
+    SELECT DISTINCT ON (
+        o.provider, o.quota_key, o.quota_period, o.quota_type,
+        COALESCE(o.source, ''), COALESCE(o.account_hash, '')
+    )
+        o.provider AS raw_provider,
+        o.quota_type AS raw_quota_type,
+        o.quota_key,
+        o.provider AS provider,
+        NULLIF(o.model, '') AS model,
+        CASE
+            WHEN o.quota_period = '5h' THEN 'short'
+            WHEN o.quota_period = '7d' THEN 'weekly'
+            ELSE o.quota_type
+        END AS quota_type,
+        o.expected_reset_at,
+        o.remaining_pct,
+        o.expected_reset_at - CASE
+            WHEN o.quota_period = '5h' THEN INTERVAL '5 hours'
+            WHEN o.quota_period = '7d' THEN INTERVAL '7 days'
+            ELSE INTERVAL '7 days'
+        END AS interval_start,
+        o.expected_reset_at AS interval_end,
+        CASE
+            WHEN o.expected_reset_at - CASE
+                    WHEN o.quota_period = '5h' THEN INTERVAL '5 hours'
+                    WHEN o.quota_period = '7d' THEN INTERVAL '7 days'
+                    ELSE INTERVAL '7 days'
+                 END <= now()
+             AND o.expected_reset_at > now()
+            THEN true
+            ELSE false
+        END AS active,
+        o.account_hash,
+        NULLIF(TRIM(BOTH FROM COALESCE(o.source, '')), '') AS source,
+        o.quota_period,
+        1::bigint AS quota_rank
+    FROM public.rate_limit_observations o
+    WHERE o.provider = '${ALIBABA_TOKEN_PLAN_PROVIDER}'
+      AND o.source = '${ALIBABA_TOKEN_PLAN_SOURCE}'
+      AND (
+          (o.quota_key = '${ALIBABA_TOKEN_PLAN_5H_KEY}' AND o.quota_period = '5h')
+          OR
+          (o.quota_key = '${ALIBABA_TOKEN_PLAN_7D_KEY}' AND o.quota_period = '7d')
+      )
+      AND o.observed_at IS NOT NULL
+      AND o.expected_reset_at IS NOT NULL
+    ORDER BY
+        o.provider, o.quota_key, o.quota_period, o.quota_type,
+        COALESCE(o.source, ''), COALESCE(o.account_hash, ''),
+        o.observed_at DESC
+),
 selected_with_fallbacks AS (
     SELECT *
     FROM selected
@@ -5006,6 +5067,9 @@ selected_with_fallbacks AS (
         weekly.interval_start,
         weekly.interval_end,
         weekly.active,
+        NULL::text AS account_hash,
+        NULL::text AS source,
+        NULL::text AS quota_period,
         weekly.quota_rank
     FROM selected weekly
     WHERE weekly.provider = 'openai'
@@ -5031,6 +5095,9 @@ selected_with_fallbacks AS (
         short.interval_start,
         short.interval_end,
         short.active,
+        NULL::text AS account_hash,
+        NULL::text AS source,
+        NULL::text AS quota_period,
         short.quota_rank
     FROM selected short
     WHERE short.provider = 'openai'
@@ -5043,16 +5110,33 @@ selected_with_fallbacks AS (
             AND short_special.model IS NOT DISTINCT FROM short.model
             AND short_special.quota_type = 'short_special'
       )
+    UNION ALL
+    SELECT * FROM alibaba_observations
 ),
 billing_by_type AS (
-    SELECT DISTINCT ON (s.provider, COALESCE(s.model, ''), s.quota_type)
+    SELECT DISTINCT ON (
+        s.provider,
+        COALESCE(s.model, ''),
+        s.quota_type,
+        COALESCE(s.quota_key, ''),
+        COALESCE(s.quota_period, ''),
+        COALESCE(s.source, ''),
+        COALESCE(s.account_hash, '')
+    )
         s.provider,
         s.model,
         s.quota_type,
         s.quota_key,
+        s.account_hash,
+        s.source AS selected_source,
+        s.quota_period AS selected_quota_period,
         NULLIF(TRIM(BOTH FROM COALESCE(o.source, '')), '') AS source,
         NULLIF(TRIM(BOTH FROM COALESCE(o.client, '')), '') AS client,
-        ${SELECTED_QUOTA_UNIT_CASE} AS quota_unit,
+        CASE
+            WHEN s.provider = '${ALIBABA_TOKEN_PLAN_PROVIDER}'
+            THEN '${ALIBABA_TOKEN_PLAN_QUOTA_UNIT}'
+            ELSE ${SELECTED_QUOTA_UNIT_CASE}
+        END AS quota_unit,
         o.observed_at AS billing_observed_at,
         o.quota_limit AS quota_limit,
         o.quota_used AS quota_used,
@@ -5060,11 +5144,15 @@ billing_by_type AS (
         o.billing_period_start_at AS billing_period_start_at,
         o.billing_period_end_at AS billing_period_end_at,
         COALESCE(o.raw_provider_fields, '{}'::jsonb) AS raw_provider_fields,
-        COALESCE(o.evidence, '{}'::jsonb) AS evidence
+        COALESCE(o.evidence, '{}'::jsonb) AS evidence,
+        o.quota_period
     FROM selected_with_fallbacks s
     JOIN public.rate_limit_observations o
-      ON o.provider = s.raw_provider
+     ON o.provider = s.raw_provider
      AND o.quota_key IS NOT DISTINCT FROM s.quota_key
+     AND (s.account_hash IS NULL OR o.account_hash IS NOT DISTINCT FROM s.account_hash)
+     AND (s.source IS NULL OR o.source IS NOT DISTINCT FROM s.source)
+     AND (s.quota_period IS NULL OR o.quota_period IS NOT DISTINCT FROM s.quota_period)
      AND (
           s.expected_reset_at IS NULL
           OR o.expected_reset_at IS NOT DISTINCT FROM s.expected_reset_at
@@ -5083,19 +5171,34 @@ billing_by_type AS (
         s.provider,
         COALESCE(s.model, ''),
         s.quota_type,
+        COALESCE(s.quota_key, ''),
+        COALESCE(s.quota_period, ''),
+        COALESCE(s.source, ''),
+        COALESCE(s.account_hash, ''),
         o.observed_at DESC
 )
 SELECT
     s.provider,
     s.model,
+    NULLIF(md5(COALESCE(s.account_hash, '')), md5('')) AS account_identity,
+    NULLIF(left(md5(COALESCE(s.account_hash, '')), 12), left(md5(''), 12)) AS account_ref,
+    s.source AS quota_source,
 ${buildQuotaLaneAggregateSelectSql()}
 FROM selected_with_fallbacks s
 LEFT JOIN billing_by_type billing
   ON billing.provider = s.provider
  AND billing.model IS NOT DISTINCT FROM s.model
  AND billing.quota_type = s.quota_type
-GROUP BY s.provider, s.model
-ORDER BY s.provider ASC, s.model ASC NULLS FIRST;
+ AND billing.account_hash IS NOT DISTINCT FROM s.account_hash
+ AND billing.selected_source IS NOT DISTINCT FROM s.source
+ AND billing.selected_quota_period IS NOT DISTINCT FROM s.quota_period
+ AND billing.quota_key IS NOT DISTINCT FROM s.quota_key
+GROUP BY s.provider, s.model, s.source, COALESCE(s.account_hash, '')
+ORDER BY
+    s.provider ASC,
+    s.model ASC NULLS FIRST,
+    s.source ASC NULLS FIRST,
+    COALESCE(s.account_hash, '') ASC;
 `
 
   return { sql, values: [] }
@@ -5120,15 +5223,77 @@ normalized AS (
         CASE
             WHEN ri.fromDate <= now() AND ri.toDate > now() THEN true
             ELSE false
-        END AS active
+        END AS active,
+        NULL::text AS account_hash,
+        NULL::text AS source,
+        NULL::text AS quota_period
     FROM public.rate_limit_intervals ri
     WHERE ri.quota_type IN ('weekly', 'weekly_overage_included', 'short', 'weekly_special', 'short_special', 'requests', 'monthly', 'wtus')
+    UNION ALL
+    SELECT
+        o.provider AS raw_provider,
+        o.provider AS provider,
+        NULLIF(o.model, '') AS model,
+        CASE
+            WHEN o.quota_period = '5h' THEN 'short'
+            WHEN o.quota_period = '7d' THEN 'weekly'
+            ELSE o.quota_type
+        END AS quota_type,
+        o.quota_type AS raw_quota_type,
+        o.quota_key,
+        o.expected_reset_at,
+        MIN(o.remaining_pct) AS remaining_pct,
+        o.expected_reset_at - CASE
+            WHEN o.quota_period = '5h' THEN INTERVAL '5 hours'
+            WHEN o.quota_period = '7d' THEN INTERVAL '7 days'
+            ELSE INTERVAL '7 days'
+        END AS interval_start,
+        o.expected_reset_at AS interval_end,
+        CASE
+            WHEN o.expected_reset_at - CASE
+                    WHEN o.quota_period = '5h' THEN INTERVAL '5 hours'
+                    WHEN o.quota_period = '7d' THEN INTERVAL '7 days'
+                    ELSE INTERVAL '7 days'
+                 END <= now()
+             AND o.expected_reset_at > now()
+            THEN true
+            ELSE false
+        END AS active,
+        o.account_hash,
+        NULLIF(TRIM(BOTH FROM COALESCE(o.source, '')), '') AS source,
+        o.quota_period
+    FROM public.rate_limit_observations o
+    WHERE o.provider = '${ALIBABA_TOKEN_PLAN_PROVIDER}'
+      AND o.source = '${ALIBABA_TOKEN_PLAN_SOURCE}'
+      AND (
+          (o.quota_key = '${ALIBABA_TOKEN_PLAN_5H_KEY}' AND o.quota_period = '5h')
+          OR
+          (o.quota_key = '${ALIBABA_TOKEN_PLAN_7D_KEY}' AND o.quota_period = '7d')
+      )
+      AND o.observed_at IS NOT NULL
+      AND o.expected_reset_at IS NOT NULL
+    GROUP BY
+        o.provider,
+        o.quota_key,
+        o.quota_period,
+        o.quota_type,
+        o.model,
+        o.expected_reset_at,
+        o.account_hash,
+        o.source
 ),
 ranked AS (
     SELECT
         *,
         ROW_NUMBER() OVER (
-            PARTITION BY provider, COALESCE(model, ''), quota_type
+            PARTITION BY
+                provider,
+                COALESCE(model, ''),
+                quota_type,
+                COALESCE(quota_key, ''),
+                COALESCE(quota_period, ''),
+                COALESCE(source, ''),
+                COALESCE(account_hash, '')
             ORDER BY active DESC, interval_start DESC, interval_end DESC
         ) AS quota_rank
     FROM normalized
@@ -5154,6 +5319,9 @@ selected_with_fallbacks AS (
         weekly.interval_start,
         weekly.interval_end,
         weekly.active,
+        NULL::text AS account_hash,
+        NULL::text AS source,
+        NULL::text AS quota_period,
         weekly.quota_rank
     FROM selected weekly
     WHERE weekly.provider = 'openai'
@@ -5179,6 +5347,9 @@ selected_with_fallbacks AS (
         short.interval_start,
         short.interval_end,
         short.active,
+        NULL::text AS account_hash,
+        NULL::text AS source,
+        NULL::text AS quota_period,
         short.quota_rank
     FROM selected short
     WHERE short.provider = 'openai'
@@ -5216,6 +5387,10 @@ observations AS (
         s.provider,
         s.model,
         s.quota_type,
+        s.quota_key,
+        s.quota_period,
+        s.source,
+        s.account_hash,
         s.interval_hours,
         o.observed_at,
         MAX(GREATEST(0, LEAST(100, 100 - o.remaining_pct))) AS consumed_pct
@@ -5225,23 +5400,49 @@ observations AS (
      AND s.expected_reset_at IS NOT NULL
      AND o.provider = s.raw_provider
      AND o.quota_key = s.quota_key
+     AND (s.account_hash IS NULL OR o.account_hash IS NOT DISTINCT FROM s.account_hash)
+     AND (s.source IS NULL OR o.source IS NOT DISTINCT FROM s.source)
+     AND (s.quota_period IS NULL OR o.quota_period IS NOT DISTINCT FROM s.quota_period)
      AND o.expected_reset_at IS NOT DISTINCT FROM s.expected_reset_at
      AND o.remaining_pct IS NOT NULL
      AND o.remaining_pct >= 0
      AND o.observed_at IS NOT NULL
      AND o.observed_at >= s.interval_start - INTERVAL '5 minutes'
      AND o.observed_at <= s.expected_reset_at + INTERVAL '5 minutes'
-    GROUP BY s.provider, s.model, s.quota_type, s.interval_hours, o.observed_at
+    GROUP BY
+        s.provider,
+        s.model,
+        s.quota_type,
+        s.quota_key,
+        s.quota_period,
+        s.source,
+        s.account_hash,
+        s.interval_hours,
+        o.observed_at
 ),
 ordered_observations AS (
     SELECT
         *,
         LAG(consumed_pct) OVER (
-            PARTITION BY provider, COALESCE(model, ''), quota_type
+            PARTITION BY
+                provider,
+                COALESCE(model, ''),
+                quota_type,
+                COALESCE(quota_key, ''),
+                COALESCE(quota_period, ''),
+                COALESCE(source, ''),
+                COALESCE(account_hash, '')
             ORDER BY observed_at ASC
         ) AS prev_consumed_pct,
         LAG(observed_at) OVER (
-            PARTITION BY provider, COALESCE(model, ''), quota_type
+            PARTITION BY
+                provider,
+                COALESCE(model, ''),
+                quota_type,
+                COALESCE(quota_key, ''),
+                COALESCE(quota_period, ''),
+                COALESCE(source, ''),
+                COALESCE(account_hash, '')
             ORDER BY observed_at ASC
         ) AS prev_observed_at
     FROM observations
@@ -5251,6 +5452,10 @@ velocity_segments AS (
         provider,
         model,
         quota_type,
+        quota_key,
+        quota_period,
+        source,
+        account_hash,
         segment.segment_index,
         MAX(
             (o.consumed_pct - o.prev_consumed_pct)
@@ -5266,37 +5471,83 @@ velocity_segments AS (
     WHERE o.prev_observed_at IS NOT NULL
       AND o.observed_at > o.prev_observed_at
       AND o.consumed_pct > o.prev_consumed_pct
-    GROUP BY provider, model, quota_type, segment.segment_index
+    GROUP BY
+        provider,
+        model,
+        quota_type,
+        quota_key,
+        quota_period,
+        source,
+        account_hash,
+        segment.segment_index
 ),
 samples_by_lane AS (
     SELECT
         provider,
         model,
         quota_type,
+        quota_key,
+        quota_period,
+        source,
+        account_hash,
         COUNT(*) AS sample_count
     FROM observations
-    GROUP BY provider, model, quota_type
+    GROUP BY
+        provider,
+        model,
+        quota_type,
+        quota_key,
+        quota_period,
+        source,
+        account_hash
 )
 SELECT
     s.provider,
     s.model,
     s.quota_type,
+    s.quota_key,
+    s.quota_period,
+    s.source,
+    NULLIF(md5(COALESCE(s.account_hash, '')), md5('')) AS account_identity,
     COALESCE(samples.sample_count, 0)::double precision AS velocity_sample_count,
     jsonb_agg((COALESCE(velocity.velocity_score, 0) > 1.0) ORDER BY segment.segment_index) AS velocity_segments,
     jsonb_agg(LEAST(COALESCE(velocity.velocity_score, 0), 10000.0) ORDER BY segment.segment_index) AS velocity_scores
 FROM selected_with_duration s
 CROSS JOIN generate_series(0, ${QUOTA_VELOCITY_SEGMENT_COUNT - 1}) AS segment(segment_index)
 LEFT JOIN velocity_segments velocity
-       ON velocity.provider = s.provider
+      ON velocity.provider = s.provider
       AND velocity.model IS NOT DISTINCT FROM s.model
       AND velocity.quota_type = s.quota_type
+      AND velocity.quota_key IS NOT DISTINCT FROM s.quota_key
+      AND velocity.quota_period IS NOT DISTINCT FROM s.quota_period
+      AND velocity.source IS NOT DISTINCT FROM s.source
+      AND velocity.account_hash IS NOT DISTINCT FROM s.account_hash
       AND velocity.segment_index = segment.segment_index
 LEFT JOIN samples_by_lane samples
        ON samples.provider = s.provider
       AND samples.model IS NOT DISTINCT FROM s.model
       AND samples.quota_type = s.quota_type
-GROUP BY s.provider, s.model, s.quota_type, samples.sample_count
-ORDER BY s.provider ASC, s.model ASC NULLS FIRST, s.quota_type ASC;
+      AND samples.quota_key IS NOT DISTINCT FROM s.quota_key
+      AND samples.quota_period IS NOT DISTINCT FROM s.quota_period
+      AND samples.source IS NOT DISTINCT FROM s.source
+      AND samples.account_hash IS NOT DISTINCT FROM s.account_hash
+GROUP BY
+    s.provider,
+    s.model,
+    s.quota_type,
+    s.quota_key,
+    s.quota_period,
+    s.source,
+    s.account_hash,
+    samples.sample_count
+ORDER BY
+    s.provider ASC,
+    s.model ASC NULLS FIRST,
+    s.quota_type ASC,
+    s.quota_key ASC NULLS FIRST,
+    s.quota_period ASC NULLS FIRST,
+    s.source ASC NULLS FIRST,
+    s.account_hash ASC NULLS FIRST;
 `
 
   return { sql, values: [] }
@@ -5387,13 +5638,82 @@ normalized AS (
                 1.0
             ),
             ${QUOTA_HISTORY_MAX_LOOKBACK_DAYS} * 24.0
-        ) AS interval_hours
+        ) AS interval_hours,
+        NULL::text AS account_hash,
+        NULL::text AS quota_period,
+        NULL::timestamp with time zone AS observed_at,
+        NULL::double precision AS quota_limit,
+        NULL::double precision AS quota_used,
+        NULL::double precision AS quota_remaining
     FROM public.rate_limit_intervals ri
     LEFT JOIN quota_key_interval_hours kh
            ON kh.provider  = ri.provider
           AND kh.quota_key = ri.quota_key
     WHERE ri.quota_type IN ('weekly', 'weekly_overage_included', 'weekly_special', 'short', 'short_special', 'requests', 'monthly', 'wtus')
       AND ri.expected_reset_at IS NOT NULL
+    UNION ALL
+    (
+        SELECT DISTINCT ON (
+            o.provider,
+            o.quota_key,
+            o.quota_period,
+            o.quota_type,
+            COALESCE(o.source, ''),
+            COALESCE(o.account_hash, ''),
+            o.expected_reset_at
+        )
+            o.provider AS raw_provider,
+            o.quota_type AS raw_quota_type,
+            o.quota_key,
+            o.provider AS provider,
+            NULLIF(o.model, '') AS model,
+            CASE
+                WHEN o.quota_period = '5h' THEN 'short'
+                WHEN o.quota_period = '7d' THEN 'weekly'
+                ELSE o.quota_type
+            END AS quota_type,
+            o.quota_key AS normalized_quota_key,
+            NULLIF(TRIM(BOTH FROM COALESCE(o.source, '')), '') AS source,
+            NULLIF(TRIM(BOTH FROM COALESCE(o.client, '')), '') AS client,
+            '${ALIBABA_TOKEN_PLAN_QUOTA_UNIT}'::text AS quota_unit,
+            o.expected_reset_at,
+            o.remaining_pct,
+            o.expected_reset_at - CASE
+                WHEN o.quota_period = '5h' THEN INTERVAL '5 hours'
+                WHEN o.quota_period = '7d' THEN INTERVAL '7 days'
+                ELSE INTERVAL '7 days'
+            END AS interval_start,
+            CASE
+                WHEN o.quota_period = '5h' THEN 5.0
+                WHEN o.quota_period = '7d' THEN 168.0
+                ELSE 168.0
+            END AS interval_hours,
+            o.account_hash,
+            o.quota_period,
+            o.observed_at,
+            o.quota_limit,
+            o.quota_used,
+            o.quota_remaining
+        FROM public.rate_limit_observations o
+        WHERE o.provider = '${ALIBABA_TOKEN_PLAN_PROVIDER}'
+          AND o.source = '${ALIBABA_TOKEN_PLAN_SOURCE}'
+          AND (
+              (o.quota_key = '${ALIBABA_TOKEN_PLAN_5H_KEY}' AND o.quota_period = '5h')
+              OR
+              (o.quota_key = '${ALIBABA_TOKEN_PLAN_7D_KEY}' AND o.quota_period = '7d')
+          )
+          AND o.observed_at IS NOT NULL
+          AND o.expected_reset_at IS NOT NULL
+        ORDER BY
+            o.provider,
+            o.quota_key,
+            o.quota_period,
+            o.quota_type,
+            COALESCE(o.source, ''),
+            COALESCE(o.account_hash, ''),
+            o.expected_reset_at,
+            o.observed_at DESC
+    )
 ),
 scoped_normalized AS (
     SELECT
@@ -5427,34 +5747,69 @@ bounded_normalized AS (
     SELECT
         n.*,
         ROW_NUMBER() OVER (
-            PARTITION BY n.provider, COALESCE(n.model, ''), n.quota_type, COALESCE(n.normalized_quota_key, '')
+            PARTITION BY
+                n.provider,
+                COALESCE(n.model, ''),
+                n.quota_type,
+                COALESCE(n.normalized_quota_key, ''),
+                COALESCE(n.quota_period, ''),
+                COALESCE(n.source, ''),
+                COALESCE(n.account_hash, '')
             ORDER BY n.expected_reset_at DESC
         ) AS interval_rank
     FROM scoped_normalized n
 ),
 observation_identity AS (
-    SELECT DISTINCT ON (n.raw_provider, n.quota_key, n.expected_reset_at)
+    SELECT DISTINCT ON (
         n.raw_provider,
         n.quota_key,
+        n.quota_period,
+        COALESCE(n.source, ''),
+        COALESCE(n.account_hash, ''),
+        n.expected_reset_at
+    )
+        n.raw_provider,
+        n.quota_key,
+        n.quota_period,
+        n.source AS selected_source,
+        n.account_hash,
         n.expected_reset_at,
         NULLIF(TRIM(BOTH FROM COALESCE(o.source, '')), '') AS source,
-        NULLIF(TRIM(BOTH FROM COALESCE(o.client, '')), '') AS client
+        NULLIF(TRIM(BOTH FROM COALESCE(o.client, '')), '') AS client,
+        o.observed_at,
+        o.quota_limit,
+        o.quota_used,
+        o.quota_remaining
     FROM bounded_normalized n
     JOIN public.rate_limit_observations o
       ON n.quota_key IS NOT NULL
      AND n.expected_reset_at IS NOT NULL
      AND o.provider = n.raw_provider
      AND o.quota_key = n.quota_key
+     AND (n.account_hash IS NULL OR o.account_hash IS NOT DISTINCT FROM n.account_hash)
+     AND (n.source IS NULL OR o.source IS NOT DISTINCT FROM n.source)
+     AND (n.quota_period IS NULL OR o.quota_period IS NOT DISTINCT FROM n.quota_period)
      AND o.expected_reset_at IS NOT DISTINCT FROM n.expected_reset_at
      AND o.observed_at IS NOT NULL${quotaObservationIntervalBoundsSql('n.interval_start', 'n.expected_reset_at')}
     WHERE n.interval_rank <= ${QUOTA_HISTORY_MAX_INTERVALS_PER_LANE}
-    ORDER BY n.raw_provider, n.quota_key, n.expected_reset_at, o.observed_at DESC
+    ORDER BY
+        n.raw_provider,
+        n.quota_key,
+        n.quota_period,
+        COALESCE(n.source, ''),
+        COALESCE(n.account_hash, ''),
+        n.expected_reset_at,
+        o.observed_at DESC
 ),
 history_observations AS (
     SELECT
         n.provider,
         n.model,
         n.quota_type,
+        n.normalized_quota_key AS quota_key,
+        n.quota_period,
+        n.source,
+        n.account_hash,
         n.expected_reset_at,
         MAX(n.interval_hours)::double precision AS interval_hours,
         o.observed_at,
@@ -5465,22 +5820,50 @@ history_observations AS (
      AND n.expected_reset_at IS NOT NULL
      AND o.provider = n.raw_provider
      AND o.quota_key = n.quota_key
+     AND (n.account_hash IS NULL OR o.account_hash IS NOT DISTINCT FROM n.account_hash)
+     AND (n.source IS NULL OR o.source IS NOT DISTINCT FROM n.source)
+     AND (n.quota_period IS NULL OR o.quota_period IS NOT DISTINCT FROM n.quota_period)
      AND o.expected_reset_at IS NOT DISTINCT FROM n.expected_reset_at
      AND o.remaining_pct IS NOT NULL
      AND o.remaining_pct >= 0
      AND o.observed_at IS NOT NULL${quotaObservationIntervalBoundsSql('n.interval_start', 'n.expected_reset_at')}
      AND n.interval_rank <= ${QUOTA_HISTORY_MAX_INTERVALS_PER_LANE}
-    GROUP BY n.provider, n.model, n.quota_type, n.expected_reset_at, o.observed_at
+    GROUP BY
+        n.provider,
+        n.model,
+        n.quota_type,
+        n.normalized_quota_key,
+        n.quota_period,
+        n.source,
+        n.account_hash,
+        n.expected_reset_at,
+        o.observed_at
 ),
 ordered_history_observations AS (
     SELECT
         *,
         LAG(consumed_pct) OVER (
-            PARTITION BY provider, COALESCE(model, ''), quota_type, expected_reset_at
+            PARTITION BY
+                provider,
+                COALESCE(model, ''),
+                quota_type,
+                COALESCE(quota_key, ''),
+                COALESCE(quota_period, ''),
+                COALESCE(source, ''),
+                COALESCE(account_hash, ''),
+                expected_reset_at
             ORDER BY observed_at ASC
         ) AS prev_consumed_pct,
         LAG(observed_at) OVER (
-            PARTITION BY provider, COALESCE(model, ''), quota_type, expected_reset_at
+            PARTITION BY
+                provider,
+                COALESCE(model, ''),
+                quota_type,
+                COALESCE(quota_key, ''),
+                COALESCE(quota_period, ''),
+                COALESCE(source, ''),
+                COALESCE(account_hash, ''),
+                expected_reset_at
             ORDER BY observed_at ASC
         ) AS prev_observed_at
     FROM history_observations
@@ -5490,6 +5873,10 @@ history_velocity_segments AS (
         provider,
         model,
         quota_type,
+        quota_key,
+        quota_period,
+        source,
+        account_hash,
         expected_reset_at,
         segment.segment_index,
         MAX(
@@ -5506,66 +5893,134 @@ history_velocity_segments AS (
     WHERE o.prev_observed_at IS NOT NULL
       AND o.observed_at > o.prev_observed_at
       AND o.consumed_pct > o.prev_consumed_pct
-    GROUP BY provider, model, quota_type, expected_reset_at, segment.segment_index
+    GROUP BY
+        provider,
+        model,
+        quota_type,
+        quota_key,
+        quota_period,
+        source,
+        account_hash,
+        expected_reset_at,
+        segment.segment_index
 ),
 history_velocity_samples AS (
     SELECT
         provider,
         model,
         quota_type,
+        quota_key,
+        quota_period,
+        source,
+        account_hash,
         expected_reset_at,
         COUNT(*) AS sample_count
     FROM history_observations
-    GROUP BY provider, model, quota_type, expected_reset_at
+    GROUP BY
+        provider,
+        model,
+        quota_type,
+        quota_key,
+        quota_period,
+        source,
+        account_hash,
+        expected_reset_at
 ),
 history_velocity_arrays AS (
     SELECT
         lanes.provider,
         lanes.model,
         lanes.quota_type,
+        lanes.quota_key,
+        lanes.quota_period,
+        lanes.source,
+        lanes.account_hash,
         lanes.expected_reset_at,
         COALESCE(samples.sample_count, 0)::double precision AS velocity_sample_count,
         jsonb_agg((COALESCE(velocity.velocity_score, 0) > 1.0) ORDER BY segment.segment_index) AS velocity_segments,
         jsonb_agg(LEAST(COALESCE(velocity.velocity_score, 0), 10000.0) ORDER BY segment.segment_index) AS velocity_scores
     FROM (
-        SELECT DISTINCT provider, model, quota_type, expected_reset_at
+        SELECT DISTINCT
+            provider,
+            model,
+            quota_type,
+            normalized_quota_key AS quota_key,
+            quota_period,
+            source,
+            account_hash,
+            expected_reset_at
         FROM bounded_normalized
        WHERE interval_rank <= ${QUOTA_HISTORY_MAX_INTERVALS_PER_LANE}
     ) lanes
     CROSS JOIN generate_series(0, ${QUOTA_VELOCITY_SEGMENT_COUNT - 1}) AS segment(segment_index)
     LEFT JOIN history_velocity_segments velocity
-           ON velocity.provider = lanes.provider
+          ON velocity.provider = lanes.provider
           AND velocity.model IS NOT DISTINCT FROM lanes.model
           AND velocity.quota_type = lanes.quota_type
+          AND velocity.quota_key IS NOT DISTINCT FROM lanes.quota_key
+          AND velocity.quota_period IS NOT DISTINCT FROM lanes.quota_period
+          AND velocity.source IS NOT DISTINCT FROM lanes.source
+          AND velocity.account_hash IS NOT DISTINCT FROM lanes.account_hash
           AND velocity.expected_reset_at IS NOT DISTINCT FROM lanes.expected_reset_at
           AND velocity.segment_index = segment.segment_index
     LEFT JOIN history_velocity_samples samples
-           ON samples.provider = lanes.provider
+          ON samples.provider = lanes.provider
           AND samples.model IS NOT DISTINCT FROM lanes.model
           AND samples.quota_type = lanes.quota_type
+          AND samples.quota_key IS NOT DISTINCT FROM lanes.quota_key
+          AND samples.quota_period IS NOT DISTINCT FROM lanes.quota_period
+          AND samples.source IS NOT DISTINCT FROM lanes.source
+          AND samples.account_hash IS NOT DISTINCT FROM lanes.account_hash
           AND samples.expected_reset_at IS NOT DISTINCT FROM lanes.expected_reset_at
-    GROUP BY lanes.provider, lanes.model, lanes.quota_type, lanes.expected_reset_at, samples.sample_count
+    GROUP BY
+        lanes.provider,
+        lanes.model,
+        lanes.quota_type,
+        lanes.quota_key,
+        lanes.quota_period,
+        lanes.source,
+        lanes.account_hash,
+        lanes.expected_reset_at,
+        samples.sample_count
 ),
 window_bounds AS (
     SELECT
         n.provider,
         n.model,
         n.quota_type,
-        MAX(n.normalized_quota_key) AS quota_key,
+        n.normalized_quota_key AS quota_key,
+        n.quota_period,
         COALESCE(MAX(n.source), MAX(oi.source)) AS source,
         COALESCE(MAX(n.client), MAX(oi.client)) AS client,
         MAX(n.quota_unit) AS quota_unit,
+        NULLIF(left(md5(COALESCE(n.account_hash, '')), 12), left(md5(''), 12)) AS account_ref,
+        n.account_hash,
         n.expected_reset_at,
         MIN(n.interval_start) AS interval_start,
         MIN(n.remaining_pct)::double precision AS min_remaining_pct,
-        MAX(n.remaining_pct)::double precision AS max_remaining_pct
+        MAX(n.remaining_pct)::double precision AS max_remaining_pct,
+        MAX(COALESCE(n.observed_at, oi.observed_at)) AS observed_at,
+        MAX(COALESCE(n.quota_limit, oi.quota_limit))::double precision AS quota_limit,
+        MAX(COALESCE(n.quota_used, oi.quota_used))::double precision AS quota_used,
+        MAX(COALESCE(n.quota_remaining, oi.quota_remaining))::double precision AS quota_remaining
     FROM bounded_normalized n
     LEFT JOIN observation_identity oi
-           ON oi.raw_provider = n.raw_provider
+          ON oi.raw_provider = n.raw_provider
           AND oi.quota_key = n.quota_key
+          AND oi.quota_period IS NOT DISTINCT FROM n.quota_period
+          AND oi.selected_source IS NOT DISTINCT FROM n.source
+          AND oi.account_hash IS NOT DISTINCT FROM n.account_hash
           AND oi.expected_reset_at IS NOT DISTINCT FROM n.expected_reset_at
    WHERE n.interval_rank <= ${QUOTA_HISTORY_MAX_INTERVALS_PER_LANE}
-    GROUP BY n.provider, n.model, n.quota_type, n.expected_reset_at
+    GROUP BY
+        n.provider,
+        n.model,
+        n.quota_type,
+        n.normalized_quota_key,
+        n.quota_period,
+        n.source,
+        n.account_hash,
+        n.expected_reset_at
 ),
 recent_traces_90m AS (
     SELECT
@@ -5583,6 +6038,10 @@ per_model_usage AS (
         wb.provider,
         wb.model AS quota_model,
         wb.quota_type,
+        wb.quota_key,
+        wb.quota_period,
+        wb.source,
+        wb.account_hash,
         wb.expected_reset_at,
         COALESCE(sh.model, 'unknown') AS sh_model,
         SUM(
@@ -5599,6 +6058,7 @@ per_model_usage AS (
     FROM window_bounds wb
     JOIN public.session_history sh
       ON wb.provider <> 'antigravity'
+     AND wb.provider <> '${ALIBABA_TOKEN_PLAN_PROVIDER}'
      AND ${providerDimensionForAlias('sh', { includeAntigravity: true })} = wb.provider
       -- Wave 35-C2 (⚠-7): use start_time (with created_at fallback) to match
       -- the live quota query (buildQuotaQuery), which also anchors on
@@ -5613,19 +6073,35 @@ per_model_usage AS (
       ON recent.provider = wb.provider
      AND recent.sh_model = COALESCE(sh.model, 'unknown')
      AND (wb.model IS NULL OR recent.sh_model = wb.model)
-    GROUP BY wb.provider, wb.model, wb.quota_type, wb.expected_reset_at, COALESCE(sh.model, 'unknown'), recent.recent_traces_90m
+    GROUP BY
+        wb.provider,
+        wb.model,
+        wb.quota_type,
+        wb.quota_key,
+        wb.quota_period,
+        wb.source,
+        wb.account_hash,
+        wb.expected_reset_at,
+        COALESCE(sh.model, 'unknown'),
+        recent.recent_traces_90m
 )
 SELECT
     wb.provider,
     wb.model,
     wb.quota_type,
     wb.quota_key,
+    wb.quota_period,
     wb.source,
     wb.client,
     wb.quota_unit,
+    wb.account_ref,
     wb.expected_reset_at,
     wb.interval_start,
     wb.expected_reset_at AS interval_end,
+    wb.observed_at,
+    wb.quota_limit,
+    wb.quota_used,
+    wb.quota_remaining,
     wb.min_remaining_pct,
     wb.max_remaining_pct,
     COALESCE(hv.velocity_sample_count, 0)::double precision AS velocity_sample_count,
@@ -5649,23 +6125,38 @@ FROM window_bounds wb
 LEFT JOIN per_model_usage pmu
   ON pmu.provider = wb.provider
   AND pmu.quota_type = wb.quota_type
+  AND pmu.quota_key IS NOT DISTINCT FROM wb.quota_key
+  AND pmu.quota_period IS NOT DISTINCT FROM wb.quota_period
+  AND pmu.source IS NOT DISTINCT FROM wb.source
+  AND pmu.account_hash IS NOT DISTINCT FROM wb.account_hash
   AND pmu.expected_reset_at = wb.expected_reset_at
   AND (pmu.quota_model IS NOT DISTINCT FROM wb.model)
 LEFT JOIN history_velocity_arrays hv
   ON hv.provider = wb.provider
   AND hv.model IS NOT DISTINCT FROM wb.model
   AND hv.quota_type = wb.quota_type
+  AND hv.quota_key IS NOT DISTINCT FROM wb.quota_key
+  AND hv.quota_period IS NOT DISTINCT FROM wb.quota_period
+  AND hv.source IS NOT DISTINCT FROM wb.source
+  AND hv.account_hash IS NOT DISTINCT FROM wb.account_hash
   AND hv.expected_reset_at IS NOT DISTINCT FROM wb.expected_reset_at
 GROUP BY
     wb.provider,
     wb.model,
     wb.quota_type,
     wb.quota_key,
+    wb.quota_period,
     wb.source,
     wb.client,
     wb.quota_unit,
+    wb.account_ref,
+    wb.account_hash,
     wb.expected_reset_at,
     wb.interval_start,
+    wb.observed_at,
+    wb.quota_limit,
+    wb.quota_used,
+    wb.quota_remaining,
     wb.min_remaining_pct,
     wb.max_remaining_pct,
     hv.velocity_sample_count,
@@ -5727,7 +6218,13 @@ normalized AS (
                 100
             ),
             100
-        ) AS remaining_pct
+        ) AS remaining_pct,
+        NULL::text AS account_hash,
+        NULL::text AS quota_period,
+        NULL::timestamp with time zone AS observed_at,
+        NULL::double precision AS quota_limit,
+        NULL::double precision AS quota_used,
+        NULL::double precision AS quota_remaining
     FROM public.rate_limit_intervals ri
     LEFT JOIN quota_key_interval_hours kh
            ON kh.provider  = ri.provider
@@ -5793,6 +6290,86 @@ normalized AS (
                 ${QUOTA_HISTORY_MAX_UPPER_HOURS}::double precision
             ) * 2.0 * INTERVAL '1 hour'
         )
+    UNION ALL
+    (
+        SELECT DISTINCT ON (
+            o.provider,
+            o.quota_key,
+            o.quota_period,
+            o.quota_type,
+            COALESCE(o.source, ''),
+            COALESCE(o.account_hash, ''),
+            o.expected_reset_at
+        )
+            o.provider AS raw_provider,
+            o.quota_type AS raw_quota_type,
+            o.quota_key,
+            o.provider AS provider,
+            NULLIF(o.model, '') AS model,
+            CASE
+                WHEN o.quota_period = '5h' THEN 'short'
+                WHEN o.quota_period = '7d' THEN 'weekly'
+                ELSE o.quota_type
+            END AS quota_type,
+            o.quota_key AS normalized_quota_key,
+            NULLIF(TRIM(BOTH FROM COALESCE(o.source, '')), '') AS source,
+            NULLIF(TRIM(BOTH FROM COALESCE(o.client, '')), '') AS client,
+            '${ALIBABA_TOKEN_PLAN_QUOTA_UNIT}'::text AS quota_unit,
+            o.expected_reset_at,
+            o.expected_reset_at - CASE
+                WHEN o.quota_period = '5h' THEN INTERVAL '5 hours'
+                WHEN o.quota_period = '7d' THEN INTERVAL '7 days'
+                ELSE INTERVAL '7 days'
+            END AS interval_start,
+            CASE
+                WHEN o.quota_period = '5h' THEN 5.0
+                WHEN o.quota_period = '7d' THEN 168.0
+                ELSE 168.0
+            END AS interval_hours,
+            LEAST(COALESCE(o.remaining_pct, 100), 100) AS remaining_pct,
+            o.account_hash,
+            o.quota_period,
+            o.observed_at,
+            o.quota_limit,
+            o.quota_used,
+            o.quota_remaining
+        FROM public.rate_limit_observations o
+        WHERE o.provider = '${ALIBABA_TOKEN_PLAN_PROVIDER}'
+          AND o.source = '${ALIBABA_TOKEN_PLAN_SOURCE}'
+          AND (
+              (o.quota_key = '${ALIBABA_TOKEN_PLAN_5H_KEY}' AND o.quota_period = '5h')
+              OR
+              (o.quota_key = '${ALIBABA_TOKEN_PLAN_7D_KEY}' AND o.quota_period = '7d')
+          )
+          AND o.observed_at IS NOT NULL
+          AND o.expected_reset_at IS NOT NULL
+          AND o.expected_reset_at >= now() - (
+                CASE
+                    WHEN o.quota_period = '5h' THEN 5.0
+                    WHEN o.quota_period = '7d' THEN 168.0
+                    ELSE 168.0
+                END * 1.5 * INTERVAL '1 hour'
+            )
+          AND o.expected_reset_at < now() + (
+                LEAST(
+                    CASE
+                        WHEN o.quota_period = '5h' THEN 5.0
+                        WHEN o.quota_period = '7d' THEN 168.0
+                        ELSE 168.0
+                    END,
+                    ${QUOTA_HISTORY_MAX_UPPER_HOURS}::double precision
+                ) * 2.0 * INTERVAL '1 hour'
+            )
+        ORDER BY
+            o.provider,
+            o.quota_key,
+            o.quota_period,
+            o.quota_type,
+            COALESCE(o.source, ''),
+            COALESCE(o.account_hash, ''),
+            o.expected_reset_at,
+            o.observed_at DESC
+    )
 ),
 scoped_intervals AS (
     SELECT
@@ -5808,65 +6385,122 @@ scoped_intervals AS (
         interval_start,
         remaining_pct,
         interval_hours,
+        account_hash,
+        quota_period,
+        observed_at,
+        quota_limit,
+        quota_used,
+        quota_remaining,
         ROW_NUMBER() OVER (
-            PARTITION BY provider, COALESCE(model, ''), quota_type, COALESCE(normalized_quota_key, '')
+            PARTITION BY
+                provider,
+                COALESCE(model, ''),
+                quota_type,
+                COALESCE(normalized_quota_key, ''),
+                COALESCE(quota_period, ''),
+                COALESCE(source, ''),
+                COALESCE(account_hash, '')
             ORDER BY expected_reset_at DESC
     ) AS interval_rank
     FROM normalized
 ),
 observation_identity AS (
-    SELECT DISTINCT ON (n.raw_provider, n.normalized_quota_key, n.expected_reset_at)
+    SELECT DISTINCT ON (
         n.raw_provider,
         n.normalized_quota_key,
+        n.quota_period,
+        COALESCE(n.source, ''),
+        COALESCE(n.account_hash, ''),
+        n.expected_reset_at
+    )
+        n.raw_provider,
+        n.normalized_quota_key,
+        n.quota_period,
+        n.source AS selected_source,
+        n.account_hash,
         n.expected_reset_at,
         NULLIF(TRIM(BOTH FROM COALESCE(o.source, '')), '') AS source,
-        NULLIF(TRIM(BOTH FROM COALESCE(o.client, '')), '') AS client
+        NULLIF(TRIM(BOTH FROM COALESCE(o.client, '')), '') AS client,
+        o.observed_at,
+        o.quota_limit,
+        o.quota_used,
+        o.quota_remaining
     FROM scoped_intervals n
     JOIN public.rate_limit_observations o
-      ON n.normalized_quota_key IN (
-          '${XAI_GROK_BUILD_WEEKLY_CREDITS_KEY}',
-          '${XAI_GROK_BUILD_MONTHLY_REQUESTS_KEY}'
-      )
+      ON n.normalized_quota_key IS NOT NULL
      AND n.expected_reset_at IS NOT NULL
      AND o.provider = n.raw_provider
      AND o.quota_key = n.normalized_quota_key
+     AND (n.quota_period IS NULL OR o.quota_period IS NOT DISTINCT FROM n.quota_period)
+     AND (n.source IS NULL OR o.source IS NOT DISTINCT FROM n.source)
+     AND (n.account_hash IS NULL OR o.account_hash IS NOT DISTINCT FROM n.account_hash)
      AND o.expected_reset_at IS NOT DISTINCT FROM n.expected_reset_at
      AND o.observed_at IS NOT NULL${quotaObservationIntervalBoundsSql('n.interval_start', 'n.expected_reset_at')}
     WHERE n.interval_rank <= ${QUOTA_HISTORY_MAX_INTERVALS_PER_LANE}
-    ORDER BY n.raw_provider, n.normalized_quota_key, n.expected_reset_at, o.observed_at DESC
+    ORDER BY
+        n.raw_provider,
+        n.normalized_quota_key,
+        n.quota_period,
+        COALESCE(n.source, ''),
+        COALESCE(n.account_hash, ''),
+        n.expected_reset_at,
+        o.observed_at DESC
 ),
 bounded_intervals AS (
     SELECT
         n.provider,
         n.model,
         n.quota_type,
-        MAX(n.normalized_quota_key) AS quota_key,
+        n.normalized_quota_key AS quota_key,
+        n.quota_period,
         COALESCE(MAX(n.source), MAX(oi.source)) AS source,
         COALESCE(MAX(n.client), MAX(oi.client)) AS client,
         MAX(n.quota_unit) AS quota_unit,
+        NULLIF(left(md5(COALESCE(n.account_hash, '')), 12), left(md5(''), 12)) AS account_ref,
         n.expected_reset_at,
         MIN(n.interval_start) AS interval_start,
         MIN(n.remaining_pct)::double precision AS min_remaining_pct,
-        MAX(n.remaining_pct)::double precision AS max_remaining_pct
+        MAX(n.remaining_pct)::double precision AS max_remaining_pct,
+        MAX(COALESCE(n.observed_at, oi.observed_at)) AS observed_at,
+        MAX(COALESCE(n.quota_limit, oi.quota_limit))::double precision AS quota_limit,
+        MAX(COALESCE(n.quota_used, oi.quota_used))::double precision AS quota_used,
+        MAX(COALESCE(n.quota_remaining, oi.quota_remaining))::double precision AS quota_remaining
     FROM scoped_intervals n
     LEFT JOIN observation_identity oi
            ON oi.raw_provider = n.raw_provider
           AND oi.normalized_quota_key = n.normalized_quota_key
+          AND oi.quota_period IS NOT DISTINCT FROM n.quota_period
+          AND oi.selected_source IS NOT DISTINCT FROM n.source
+          AND oi.account_hash IS NOT DISTINCT FROM n.account_hash
           AND oi.expected_reset_at IS NOT DISTINCT FROM n.expected_reset_at
     WHERE n.interval_rank <= ${QUOTA_HISTORY_MAX_INTERVALS_PER_LANE}
-    GROUP BY n.provider, n.model, n.quota_type, n.expected_reset_at
+    GROUP BY
+        n.provider,
+        n.model,
+        n.quota_type,
+        n.normalized_quota_key,
+        n.quota_period,
+        n.source,
+        n.account_hash,
+        n.expected_reset_at
 )
 SELECT
     provider,
     model,
     quota_type,
     quota_key,
+    quota_period,
     source,
     client,
     quota_unit,
+    account_ref,
     expected_reset_at,
     interval_start,
     expected_reset_at AS interval_end,
+    observed_at,
+    quota_limit,
+    quota_used,
+    quota_remaining,
     min_remaining_pct,
     max_remaining_pct,
     0::double precision AS velocity_sample_count,
@@ -5899,7 +6533,13 @@ WITH normalized AS (
         ri.expected_reset_at,
         ri.fromDate AS interval_start,
         ri.toDate AS interval_end,
-        ri.remaining_pct
+        ri.remaining_pct,
+        NULL::text AS quota_period,
+        NULL::text AS account_hash,
+        NULL::timestamp with time zone AS observed_at,
+        NULL::double precision AS quota_limit,
+        NULL::double precision AS quota_used,
+        NULL::double precision AS quota_remaining
     FROM public.rate_limit_intervals ri
     WHERE ri.quota_type IN ('weekly', 'weekly_overage_included', 'weekly_special', 'short', 'short_special', 'requests', 'monthly', 'wtus')
       AND ri.expected_reset_at IS NOT NULL
@@ -5913,59 +6553,148 @@ WITH normalized AS (
               OR lower(COALESCE(ri.provider, 'unknown')) LIKE 'anthropic/%'
           )
       )
+    UNION ALL
+    SELECT
+        o.provider AS raw_provider,
+        o.provider AS provider,
+        NULLIF(o.model, '') AS model,
+        CASE
+            WHEN o.quota_period = '5h' THEN 'short'
+            WHEN o.quota_period = '7d' THEN 'weekly'
+            ELSE o.quota_type
+        END AS quota_type,
+        o.quota_key AS normalized_quota_key,
+        NULLIF(TRIM(BOTH FROM COALESCE(o.source, '')), '') AS source,
+        NULLIF(TRIM(BOTH FROM COALESCE(o.client, '')), '') AS client,
+        '${ALIBABA_TOKEN_PLAN_QUOTA_UNIT}'::text AS quota_unit,
+        o.expected_reset_at,
+        o.expected_reset_at - CASE
+            WHEN o.quota_period = '5h' THEN INTERVAL '5 hours'
+            WHEN o.quota_period = '7d' THEN INTERVAL '7 days'
+            ELSE INTERVAL '7 days'
+        END AS interval_start,
+        o.expected_reset_at AS interval_end,
+        o.remaining_pct,
+        o.quota_period,
+        o.account_hash,
+        o.observed_at,
+        o.quota_limit,
+        o.quota_used,
+        o.quota_remaining
+    FROM public.rate_limit_observations o
+    WHERE o.provider = '${ALIBABA_TOKEN_PLAN_PROVIDER}'
+      AND o.source = '${ALIBABA_TOKEN_PLAN_SOURCE}'
+      AND (
+          (o.quota_key = '${ALIBABA_TOKEN_PLAN_5H_KEY}' AND o.quota_period = '5h')
+          OR
+          (o.quota_key = '${ALIBABA_TOKEN_PLAN_7D_KEY}' AND o.quota_period = '7d')
+      )
+      AND o.observed_at IS NOT NULL
+      AND o.expected_reset_at IS NOT NULL
+      AND o.expected_reset_at - CASE
+              WHEN o.quota_period = '5h' THEN INTERVAL '5 hours'
+              WHEN o.quota_period = '7d' THEN INTERVAL '7 days'
+              ELSE INTERVAL '7 days'
+          END < ($2::date::timestamp AT TIME ZONE 'America/New_York')
+      AND o.expected_reset_at >= ($1::date::timestamp AT TIME ZONE 'America/New_York')
 ),
 observation_identity AS (
-    SELECT DISTINCT ON (n.raw_provider, n.normalized_quota_key, n.expected_reset_at)
+    SELECT DISTINCT ON (
         n.raw_provider,
         n.normalized_quota_key,
+        n.quota_period,
+        COALESCE(n.source, ''),
+        COALESCE(n.account_hash, ''),
+        n.expected_reset_at
+    )
+        n.raw_provider,
+        n.normalized_quota_key,
+        n.quota_period,
+        n.source AS selected_source,
+        n.account_hash,
         n.expected_reset_at,
         NULLIF(TRIM(BOTH FROM COALESCE(o.source, '')), '') AS source,
-        NULLIF(TRIM(BOTH FROM COALESCE(o.client, '')), '') AS client
+        NULLIF(TRIM(BOTH FROM COALESCE(o.client, '')), '') AS client,
+        o.observed_at,
+        o.quota_limit,
+        o.quota_used,
+        o.quota_remaining
     FROM normalized n
     JOIN public.rate_limit_observations o
-      ON n.normalized_quota_key IN (
-          '${XAI_GROK_BUILD_WEEKLY_CREDITS_KEY}',
-          '${XAI_GROK_BUILD_MONTHLY_REQUESTS_KEY}'
-      )
+      ON n.normalized_quota_key IS NOT NULL
      AND n.expected_reset_at IS NOT NULL
      AND o.provider = n.raw_provider
      AND o.quota_key = n.normalized_quota_key
+     AND (n.quota_period IS NULL OR o.quota_period IS NOT DISTINCT FROM n.quota_period)
+     AND (n.source IS NULL OR o.source IS NOT DISTINCT FROM n.source)
+     AND (n.account_hash IS NULL OR o.account_hash IS NOT DISTINCT FROM n.account_hash)
      AND o.expected_reset_at IS NOT DISTINCT FROM n.expected_reset_at
      AND o.observed_at IS NOT NULL${quotaObservationIntervalBoundsSql('n.interval_start', 'n.expected_reset_at')}
-    ORDER BY n.raw_provider, n.normalized_quota_key, n.expected_reset_at, o.observed_at DESC
+    ORDER BY
+        n.raw_provider,
+        n.normalized_quota_key,
+        n.quota_period,
+        COALESCE(n.source, ''),
+        COALESCE(n.account_hash, ''),
+        n.expected_reset_at,
+        o.observed_at DESC
 ),
 window_bounds AS (
     SELECT
         n.provider,
         n.model,
         n.quota_type,
-        MAX(n.normalized_quota_key) AS quota_key,
+        n.normalized_quota_key AS quota_key,
+        n.quota_period,
         COALESCE(MAX(n.source), MAX(oi.source)) AS source,
         COALESCE(MAX(n.client), MAX(oi.client)) AS client,
         MAX(n.quota_unit) AS quota_unit,
+        NULLIF(left(md5(COALESCE(n.account_hash, '')), 12), left(md5(''), 12)) AS account_ref,
+        n.account_hash,
         n.expected_reset_at,
         MIN(n.interval_start) AS interval_start,
         MAX(n.interval_end) AS interval_end,
         MIN(n.remaining_pct)::double precision AS min_remaining_pct,
-        MAX(n.remaining_pct)::double precision AS max_remaining_pct
+        MAX(n.remaining_pct)::double precision AS max_remaining_pct,
+        MAX(COALESCE(n.observed_at, oi.observed_at)) AS observed_at,
+        MAX(COALESCE(n.quota_limit, oi.quota_limit))::double precision AS quota_limit,
+        MAX(COALESCE(n.quota_used, oi.quota_used))::double precision AS quota_used,
+        MAX(COALESCE(n.quota_remaining, oi.quota_remaining))::double precision AS quota_remaining
     FROM normalized n
     LEFT JOIN observation_identity oi
-           ON oi.raw_provider = n.raw_provider
+          ON oi.raw_provider = n.raw_provider
           AND oi.normalized_quota_key = n.normalized_quota_key
+          AND oi.quota_period IS NOT DISTINCT FROM n.quota_period
+          AND oi.selected_source IS NOT DISTINCT FROM n.source
+          AND oi.account_hash IS NOT DISTINCT FROM n.account_hash
           AND oi.expected_reset_at IS NOT DISTINCT FROM n.expected_reset_at
-    GROUP BY n.provider, n.model, n.quota_type, n.expected_reset_at
+    GROUP BY
+        n.provider,
+        n.model,
+        n.quota_type,
+        n.normalized_quota_key,
+        n.quota_period,
+        n.source,
+        n.account_hash,
+        n.expected_reset_at
 )
 SELECT
     provider,
     model,
     quota_type,
     quota_key,
+    quota_period,
     source,
     client,
     quota_unit,
+    account_ref,
     expected_reset_at,
     interval_start,
     interval_end,
+    observed_at,
+    quota_limit,
+    quota_used,
+    quota_remaining,
     min_remaining_pct,
     max_remaining_pct,
     0::double precision AS velocity_sample_count,
@@ -5998,7 +6727,13 @@ WITH normalized AS (
         ri.expected_reset_at,
         ri.fromDate AS interval_start,
         ri.toDate AS interval_end,
-        ri.remaining_pct
+        ri.remaining_pct,
+        NULL::text AS quota_period,
+        NULL::text AS account_hash,
+        NULL::timestamp with time zone AS observed_at,
+        NULL::double precision AS quota_limit,
+        NULL::double precision AS quota_used,
+        NULL::double precision AS quota_remaining
     FROM public.rate_limit_intervals ri
     WHERE ri.quota_type IN ('weekly', 'weekly_overage_included', 'weekly_special', 'short', 'short_special', 'requests', 'monthly', 'wtus')
       AND ri.expected_reset_at IS NOT NULL
@@ -6016,50 +6751,140 @@ WITH normalized AS (
               OR lower(COALESCE(ri.provider, 'unknown')) LIKE 'anthropic/%'
           )
       )
+    UNION ALL
+    SELECT
+        o.provider AS raw_provider,
+        o.provider AS provider,
+        NULLIF(o.model, '') AS model,
+        CASE
+            WHEN o.quota_period = '5h' THEN 'short'
+            WHEN o.quota_period = '7d' THEN 'weekly'
+            ELSE o.quota_type
+        END AS quota_type,
+        o.quota_key AS normalized_quota_key,
+        NULLIF(TRIM(BOTH FROM COALESCE(o.source, '')), '') AS source,
+        NULLIF(TRIM(BOTH FROM COALESCE(o.client, '')), '') AS client,
+        '${ALIBABA_TOKEN_PLAN_QUOTA_UNIT}'::text AS quota_unit,
+        o.expected_reset_at,
+        o.expected_reset_at - CASE
+            WHEN o.quota_period = '5h' THEN INTERVAL '5 hours'
+            WHEN o.quota_period = '7d' THEN INTERVAL '7 days'
+            ELSE INTERVAL '7 days'
+        END AS interval_start,
+        o.expected_reset_at AS interval_end,
+        o.remaining_pct,
+        o.quota_period,
+        o.account_hash,
+        o.observed_at,
+        o.quota_limit,
+        o.quota_used,
+        o.quota_remaining
+    FROM public.rate_limit_observations o
+    WHERE o.provider = '${ALIBABA_TOKEN_PLAN_PROVIDER}'
+      AND o.source = '${ALIBABA_TOKEN_PLAN_SOURCE}'
+      AND (
+          (o.quota_key = '${ALIBABA_TOKEN_PLAN_5H_KEY}' AND o.quota_period = '5h')
+          OR
+          (o.quota_key = '${ALIBABA_TOKEN_PLAN_7D_KEY}' AND o.quota_period = '7d')
+      )
+      AND o.observed_at IS NOT NULL
+      AND o.expected_reset_at IS NOT NULL
+      AND o.expected_reset_at - CASE
+              WHEN o.quota_period = '5h' THEN INTERVAL '5 hours'
+              WHEN o.quota_period = '7d' THEN INTERVAL '7 days'
+              ELSE INTERVAL '7 days'
+          END < ($2::date::timestamp AT TIME ZONE 'America/New_York')
+      AND o.expected_reset_at >= ($1::date::timestamp AT TIME ZONE 'America/New_York')
 ),
 observation_identity AS (
-    SELECT DISTINCT ON (n.raw_provider, n.normalized_quota_key, n.expected_reset_at)
+    SELECT DISTINCT ON (
         n.raw_provider,
         n.normalized_quota_key,
+        n.quota_period,
+        COALESCE(n.source, ''),
+        COALESCE(n.account_hash, ''),
+        n.expected_reset_at
+    )
+        n.raw_provider,
+        n.normalized_quota_key,
+        n.quota_period,
+        n.source AS selected_source,
+        n.account_hash,
         n.expected_reset_at,
         NULLIF(TRIM(BOTH FROM COALESCE(o.source, '')), '') AS source,
-        NULLIF(TRIM(BOTH FROM COALESCE(o.client, '')), '') AS client
+        NULLIF(TRIM(BOTH FROM COALESCE(o.client, '')), '') AS client,
+        o.observed_at,
+        o.quota_limit,
+        o.quota_used,
+        o.quota_remaining
     FROM normalized n
     JOIN public.rate_limit_observations o
       ON n.normalized_quota_key IS NOT NULL
      AND n.expected_reset_at IS NOT NULL
      AND o.provider = n.raw_provider
      AND o.quota_key = n.normalized_quota_key
+     AND (n.quota_period IS NULL OR o.quota_period IS NOT DISTINCT FROM n.quota_period)
+     AND (n.source IS NULL OR o.source IS NOT DISTINCT FROM n.source)
+     AND (n.account_hash IS NULL OR o.account_hash IS NOT DISTINCT FROM n.account_hash)
      AND o.expected_reset_at IS NOT DISTINCT FROM n.expected_reset_at
      AND o.observed_at IS NOT NULL${quotaObservationIntervalBoundsSql('n.interval_start', 'n.expected_reset_at')}
-    ORDER BY n.raw_provider, n.normalized_quota_key, n.expected_reset_at, o.observed_at DESC
+    ORDER BY
+        n.raw_provider,
+        n.normalized_quota_key,
+        n.quota_period,
+        COALESCE(n.source, ''),
+        COALESCE(n.account_hash, ''),
+        n.expected_reset_at,
+        o.observed_at DESC
 ),
 window_bounds AS (
     SELECT
         n.provider,
         n.model,
         n.quota_type,
-        MAX(n.normalized_quota_key) AS quota_key,
+        n.normalized_quota_key AS quota_key,
+        n.quota_period,
         COALESCE(MAX(n.source), MAX(oi.source)) AS source,
         COALESCE(MAX(n.client), MAX(oi.client)) AS client,
         MAX(n.quota_unit) AS quota_unit,
+        NULLIF(left(md5(COALESCE(n.account_hash, '')), 12), left(md5(''), 12)) AS account_ref,
+        n.account_hash,
         n.expected_reset_at,
         MIN(n.interval_start) AS interval_start,
         MAX(n.interval_end) AS interval_end,
         MIN(n.remaining_pct)::double precision AS min_remaining_pct,
-        MAX(n.remaining_pct)::double precision AS max_remaining_pct
+        MAX(n.remaining_pct)::double precision AS max_remaining_pct,
+        MAX(COALESCE(n.observed_at, oi.observed_at)) AS observed_at,
+        MAX(COALESCE(n.quota_limit, oi.quota_limit))::double precision AS quota_limit,
+        MAX(COALESCE(n.quota_used, oi.quota_used))::double precision AS quota_used,
+        MAX(COALESCE(n.quota_remaining, oi.quota_remaining))::double precision AS quota_remaining
     FROM normalized n
     LEFT JOIN observation_identity oi
-           ON oi.raw_provider = n.raw_provider
+          ON oi.raw_provider = n.raw_provider
           AND oi.normalized_quota_key = n.normalized_quota_key
+          AND oi.quota_period IS NOT DISTINCT FROM n.quota_period
+          AND oi.selected_source IS NOT DISTINCT FROM n.source
+          AND oi.account_hash IS NOT DISTINCT FROM n.account_hash
           AND oi.expected_reset_at IS NOT DISTINCT FROM n.expected_reset_at
-    GROUP BY n.provider, n.model, n.quota_type, n.expected_reset_at
+    GROUP BY
+        n.provider,
+        n.model,
+        n.quota_type,
+        n.normalized_quota_key,
+        n.quota_period,
+        n.source,
+        n.account_hash,
+        n.expected_reset_at
 ),
 per_model_usage AS (
     SELECT
         wb.provider,
         wb.model AS quota_model,
         wb.quota_type,
+        wb.quota_key,
+        wb.quota_period,
+        wb.source,
+        wb.account_hash,
         wb.expected_reset_at,
         COALESCE(sh.model, 'unknown') AS sh_model,
         SUM(
@@ -6075,24 +6900,40 @@ per_model_usage AS (
     FROM window_bounds wb
     JOIN public.session_history sh
       ON wb.provider <> 'antigravity'
+     AND wb.provider <> '${ALIBABA_TOKEN_PLAN_PROVIDER}'
      AND ${providerDimension} = wb.provider
      AND COALESCE(sh.start_time, sh.created_at) >= wb.interval_start
      AND COALESCE(sh.start_time, sh.created_at) < wb.expected_reset_at
      AND ${sessionHistoryReportablePredicate()}
      AND (wb.model IS NULL OR sh.model = wb.model)
-    GROUP BY wb.provider, wb.model, wb.quota_type, wb.expected_reset_at, COALESCE(sh.model, 'unknown')
+    GROUP BY
+        wb.provider,
+        wb.model,
+        wb.quota_type,
+        wb.quota_key,
+        wb.quota_period,
+        wb.source,
+        wb.account_hash,
+        wb.expected_reset_at,
+        COALESCE(sh.model, 'unknown')
 )
 SELECT
     wb.provider,
     wb.model,
     wb.quota_type,
     wb.quota_key,
+    wb.quota_period,
     wb.source,
     wb.client,
     wb.quota_unit,
+    wb.account_ref,
     wb.expected_reset_at,
     wb.interval_start,
     wb.expected_reset_at AS interval_end,
+    wb.observed_at,
+    wb.quota_limit,
+    wb.quota_used,
+    wb.quota_remaining,
     wb.min_remaining_pct,
     wb.max_remaining_pct,
     0::double precision AS velocity_sample_count,
@@ -6116,6 +6957,10 @@ FROM window_bounds wb
 LEFT JOIN per_model_usage pmu
   ON pmu.provider = wb.provider
  AND pmu.quota_type = wb.quota_type
+ AND pmu.quota_key IS NOT DISTINCT FROM wb.quota_key
+ AND pmu.quota_period IS NOT DISTINCT FROM wb.quota_period
+ AND pmu.source IS NOT DISTINCT FROM wb.source
+ AND pmu.account_hash IS NOT DISTINCT FROM wb.account_hash
  AND pmu.expected_reset_at = wb.expected_reset_at
  AND (pmu.quota_model IS NOT DISTINCT FROM wb.model)
 GROUP BY
@@ -6123,12 +6968,19 @@ GROUP BY
     wb.model,
     wb.quota_type,
     wb.quota_key,
+    wb.quota_period,
     wb.source,
     wb.client,
     wb.quota_unit,
+    wb.account_ref,
+    wb.account_hash,
     wb.expected_reset_at,
     wb.interval_start,
     wb.interval_end,
+    wb.observed_at,
+    wb.quota_limit,
+    wb.quota_used,
+    wb.quota_remaining,
     wb.min_remaining_pct,
     wb.max_remaining_pct
 ORDER BY wb.provider ASC, wb.expected_reset_at DESC, wb.quota_type ASC;
@@ -8599,6 +9451,7 @@ function normalizeQuotaBillingDetail(row, prefix) {
   const evidence = normalizeJsonRecord(row[`${prefix}_evidence`])
   const detail = {
     quota_key: row[`${prefix}_quota_key`] ?? null,
+    quota_period: row[`${prefix}_quota_period`] ?? null,
     source: row[`${prefix}_source`] ?? null,
     client: row[`${prefix}_client`] ?? null,
     quota_unit: row[`${prefix}_quota_unit`] ?? null,
@@ -8613,6 +9466,7 @@ function normalizeQuotaBillingDetail(row, prefix) {
   }
   const hasBillingValue =
     detail.quota_key !== null ||
+    detail.quota_period !== null ||
     detail.source !== null ||
     detail.client !== null ||
     detail.quota_unit !== null ||
@@ -8656,15 +9510,40 @@ function normalizeQuotaVelocitySegments(value) {
     .map((entry) => Boolean(entry))
 }
 
-function quotaVelocityLaneKey(provider, model, quotaType) {
-  return [provider ?? 'unknown', model ?? '', quotaType].join('\u0000')
+function quotaVelocityLaneKey(
+  provider,
+  model,
+  quotaType,
+  {
+    accountIdentity = null,
+    quotaKey = null,
+    quotaPeriod = null,
+    source = null,
+  } = {}
+) {
+  const baseIdentity = [provider ?? 'unknown', model ?? '', quotaType]
+  if (provider !== ALIBABA_TOKEN_PLAN_PROVIDER) {
+    return baseIdentity.join('\u0000')
+  }
+  return [
+    ...baseIdentity,
+    accountIdentity ?? '',
+    quotaKey ?? '',
+    quotaPeriod ?? '',
+    source ?? '',
+  ].join('\u0000')
 }
 
 function buildQuotaVelocityRowsByLane(rows) {
   const byLane = new Map()
   for (const row of rows) {
     byLane.set(
-      quotaVelocityLaneKey(row.provider, row.model, row.quota_type),
+      quotaVelocityLaneKey(row.provider, row.model, row.quota_type, {
+        accountIdentity: row.account_identity,
+        quotaKey: row.quota_key,
+        quotaPeriod: row.quota_period,
+        source: row.source,
+      }),
       row
     )
   }
@@ -8675,7 +9554,12 @@ function attachQuotaVelocityRows(row, quotaVelocityRowsByLane) {
   const merged = { ...row }
   for (const quotaType of QUOTA_LANE_TYPES) {
     const velocityRow = quotaVelocityRowsByLane.get(
-      quotaVelocityLaneKey(row.provider, row.model, quotaType)
+      quotaVelocityLaneKey(row.provider, row.model, quotaType, {
+        accountIdentity: row.account_identity,
+        quotaKey: row[`${quotaType}_quota_key`],
+        quotaPeriod: row[`${quotaType}_quota_period`],
+        source: row[`${quotaType}_source`],
+      })
     )
     merged[`${quotaType}_velocity_segments`] =
       velocityRow?.velocity_segments ?? []
@@ -8717,6 +9601,7 @@ export function normalizeQuotaRow(row) {
   return {
     provider: row.provider,
     model: row.model ?? null,
+    account_ref: row.account_ref ?? null,
     billing_details: normalizeQuotaBillingDetails(row),
     ...Object.assign(
       {},
@@ -8733,12 +9618,18 @@ function normalizeQuotaHistoryRow(row) {
     model: row.model ?? null,
     quota_type: row.quota_type ?? 'unknown',
     quota_key: row.quota_key ?? null,
+    quota_period: row.quota_period ?? null,
     source: row.source ?? null,
     client: row.client ?? null,
     quota_unit: row.quota_unit ?? null,
+    account_ref: row.account_ref ?? null,
     expected_reset_at: row.expected_reset_at ?? null,
     interval_start: row.interval_start ?? null,
     interval_end: row.interval_end ?? null,
+    observed_at: row.observed_at ?? null,
+    quota_limit: normalizeNumber(row.quota_limit),
+    quota_used: normalizeNumber(row.quota_used),
+    quota_remaining: normalizeNumber(row.quota_remaining),
     min_remaining_pct: normalizeNumber(row.min_remaining_pct),
     max_remaining_pct: normalizeNumber(row.max_remaining_pct),
     velocity_segments: normalizeQuotaVelocitySegments(row.velocity_segments),
@@ -11717,6 +12608,12 @@ export const __usageReportTestHelpers = {
   resetLoadLocalHealthTestImpl() {
     loadLocalHealthTestImpl = null
   },
+}
+
+export const __quotaReportTestHelpers = {
+  buildQuotaVelocityRowsByLane,
+  attachQuotaVelocityRows,
+  normalizeQuotaHistoryRow,
 }
 
 export { buildShellHealthPayload }

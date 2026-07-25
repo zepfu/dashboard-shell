@@ -550,6 +550,22 @@ export function ProviderCardMetricsBody({
   anomalies,
   extraPaneLeft,
 }: ProviderCardMetricsBodyProps): ReactElement {
+  if (config.quotaOnly === true) {
+    return (
+      <div
+        className='card-pane-left quota-only'
+        style={{ display: 'flex', flexDirection: 'column' }}
+      >
+        <ProviderCardQuotasSection
+          quotas={quotas}
+          lanes={lanes}
+          config={config}
+          anomalies={anomalies}
+        />
+      </div>
+    )
+  }
+
   const isHealthy =
     data.errors === 0 &&
     (data.packet_loss_pct === null ||

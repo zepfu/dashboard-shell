@@ -42,7 +42,29 @@ export function quotaHistoryRequests(row: UsageReportQuotaHistoryRow): number {
   return row.usage_breakdown.reduce((sum, entry) => sum + entry.traces, 0)
 }
 
+function safeQuotaHistoryAccountRef(
+  accountRef: string | null | undefined
+): string | null {
+  const normalized = accountRef?.trim()
+  return normalized !== undefined && /^[a-f0-9]{8}$/i.test(normalized)
+    ? normalized
+    : null
+}
+
+function quotaHistoryHasSafeAccountRef(
+  row: UsageReportQuotaHistoryRow
+): boolean {
+  const supplied = row.account_ref?.trim()
+  return !supplied || safeQuotaHistoryAccountRef(supplied) !== null
+}
+
 function quotaHistoryHasUsage(row: UsageReportQuotaHistoryRow): boolean {
+  if (
+    canonicalProvider(row.provider) === 'alibaba_token_plan' &&
+    (row.min_remaining_pct !== null || row.max_remaining_pct !== null)
+  ) {
+    return true
+  }
   return row.usage_tokens > 0 || quotaHistoryRequests(row) > 0
 }
 
@@ -99,6 +121,22 @@ function quotaHistoryRowMatchesLane(
 
   if (laneProvider === 'xai' && def.quotaKey !== undefined) {
     return row.model === def.quotaKey || row.quota_key === def.quotaKey
+  }
+
+  if (laneProvider === 'alibaba_token_plan' && def.quotaKey !== undefined) {
+    if (row.quota_key !== def.quotaKey) return false
+    const expectedQuotaPeriod =
+      quotaTypeToLaneKey(def.quotaType) === 'short'
+        ? '5h'
+        : quotaTypeToLaneKey(def.quotaType) === 'weekly'
+          ? '7d'
+          : null
+    return (
+      expectedQuotaPeriod === null ||
+      row.quota_period === null ||
+      row.quota_period === undefined ||
+      row.quota_period.toLowerCase() === expectedQuotaPeriod
+    )
   }
 
   if (laneProvider === 'google' && def.googleClass !== null) {
@@ -237,6 +275,9 @@ function aggregateQuotaHistoryRowsByReset(
       modelLabel ?? row.model ?? row.quota_key ?? 'all',
       row.quota_type,
       row.quota_key ?? '',
+      row.quota_period ?? '',
+      row.source ?? '',
+      safeQuotaHistoryAccountRef(row.account_ref) ?? '',
       resetKey,
     ].join('|')
     const group = grouped.get(groupKey) ?? []
@@ -260,7 +301,9 @@ function aggregateQuotaHistoryRowsByReset(
         model: modelLabel ?? first.model,
         quota_type: first.quota_type,
         quota_key: first.quota_key ?? null,
+        quota_period: first.quota_period ?? null,
         source: first.source ?? null,
+        account_ref: safeQuotaHistoryAccountRef(first.account_ref),
         client: first.client ?? null,
         quota_unit: first.quota_unit ?? null,
         expected_reset_at: resetAt,
@@ -316,6 +359,7 @@ export function buildProviderQuotaHistoryTabs(
   rows: UsageReportQuotaHistoryRow[]
 ): ProviderQuotaHistoryTab[] {
   const providerLower = canonicalProvider(provider).toLowerCase()
+  const safeRows = rows.filter(quotaHistoryHasSafeAccountRef)
   const laneDefs = (PROVIDER_LANE_DEFS[providerLower] ?? [])
     .filter((def) => !shouldHideQuotaHistoryLane(providerLower, def))
     .sort(
@@ -326,7 +370,7 @@ export function buildProviderQuotaHistoryTabs(
 
   if (laneDefs.length > 0) {
     return laneDefs.map((def) => {
-      const laneRows = rows
+      const laneRows = safeRows
         .filter((row) => quotaHistoryRowMatchesLane(providerLower, def, row))
         .sort(compareQuotaHistoryResetDesc)
       const displayRows =
@@ -342,7 +386,7 @@ export function buildProviderQuotaHistoryTabs(
   }
 
   const grouped = new Map<string, UsageReportQuotaHistoryRow[]>()
-  for (const row of rows) {
+  for (const row of safeRows) {
     const key = quotaTypeToLaneKey(row.quota_type)
     const group = grouped.get(key) ?? []
     group.push(row)

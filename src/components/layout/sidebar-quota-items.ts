@@ -1,4 +1,9 @@
 import type { UsageReportQuotaRow } from '@/features/dashboard/api/usage-report'
+import { formatQuotaAccountSuffix } from '@/features/dashboard/lib/quota-bars/fields'
+import {
+  ALIBABA_TOKEN_PLAN_5H_CREDITS_KEY,
+  ALIBABA_TOKEN_PLAN_7D_CREDITS_KEY,
+} from '@/features/dashboard/lib/quota-bars/lane-defs'
 import {
   googleQuotaClass,
   googleQuotaClasses,
@@ -78,6 +83,65 @@ export function buildSidebarQuotaItems(
       color: googleColor,
     })
   }
+
+  const alibabaColor = providerColorFor('alibaba_token_plan')
+  const alibabaRows = safeRows.filter(
+    (row) => row.provider.toLowerCase() === 'alibaba_token_plan'
+  )
+  const alibabaAccountRefs = new Set(
+    alibabaRows
+      .map((row) => row.account_ref?.trim())
+      .filter((ref): ref is string => Boolean(ref))
+  )
+  const showAlibabaAccountSuffix = alibabaAccountRefs.size > 1
+  const seenAlibabaItems = new Set<string>()
+
+  alibabaRows.forEach((row, rowIndex) => {
+    const shortKey = row.billing_details?.short?.quota_key
+    const weeklyKey = row.billing_details?.weekly?.quota_key
+    const accountRef = row.account_ref?.trim()
+    const accountKeySuffix =
+      accountRef !== undefined && accountRef !== ''
+        ? `-${accountRef}`
+        : alibabaRows.length > 1
+          ? `-unidentified-${rowIndex}`
+          : ''
+    const accountSuffix = formatQuotaAccountSuffix(row.account_ref)
+    const labelSuffix =
+      showAlibabaAccountSuffix && accountSuffix !== null
+        ? ` · ${accountSuffix}`
+        : ''
+    if (
+      shortKey === ALIBABA_TOKEN_PLAN_5H_CREDITS_KEY &&
+      row.short_remaining_pct != null
+    ) {
+      const key = `alibaba-5h-credits${accountKeySuffix}`
+      if (!seenAlibabaItems.has(key)) {
+        seenAlibabaItems.add(key)
+        items.push({
+          key,
+          label: `Alibaba 5h Credits${labelSuffix}`,
+          percent: row.short_remaining_pct,
+          color: alibabaColor,
+        })
+      }
+    }
+    if (
+      weeklyKey === ALIBABA_TOKEN_PLAN_7D_CREDITS_KEY &&
+      row.weekly_remaining_pct != null
+    ) {
+      const key = `alibaba-7d-credits${accountKeySuffix}`
+      if (!seenAlibabaItems.has(key)) {
+        seenAlibabaItems.add(key)
+        items.push({
+          key,
+          label: `Alibaba 7d Credits${labelSuffix}`,
+          percent: row.weekly_remaining_pct,
+          color: alibabaColor,
+        })
+      }
+    }
+  })
 
   return items
 }

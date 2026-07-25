@@ -49,6 +49,17 @@ export function fmtRequestCount(count: number | undefined): string {
   return Math.round(count).toLocaleString()
 }
 
+export function quotaConsumedPctDisplay(quotaBar: QuotaBarGroup): string {
+  if (
+    quotaBar.showSubPercentPrecision === true &&
+    quotaBar.consumedPct > 0 &&
+    quotaBar.consumedPct < 1
+  ) {
+    return '<1%'
+  }
+  return `${quotaBar.consumedPct.toFixed(0)}%`
+}
+
 /**
  * Returns the CSS modifier class for a `.quota-row-pct` element based on
  * consumed percentage (aligned with segment iv-* scale intent).

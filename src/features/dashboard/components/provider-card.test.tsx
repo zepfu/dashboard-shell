@@ -1474,3 +1474,200 @@ test('test_w2_invalid_tool_calls_api_field_name_pinned', () => {
     invalidToolField
   expect(_typeCheck).toBe('agent_invalid_tool_call_errors')
 })
+
+describe('D1-489 — Alibaba Token Plan ProviderCard', () => {
+  const ACCOUNT_HASH = 'a'.repeat(64)
+
+  function alibabaBar(): QuotaBarGroup {
+    return {
+      label: '5-hour Credits',
+      consumedPct: 0.04,
+      remainingPct: 99.96,
+      resetAt: '2026-07-22T02:22:00.000Z',
+      segments: makeSegments(),
+      tipIdentity: [
+        'alibaba_token_plan_5h:credits',
+        'alibaba_token_plan_usage',
+        'qwen-cloud-console',
+        'credits',
+      ],
+      tipObservedAt: '2026-07-21T22:39:00.000Z',
+      tipAbsolutesUnavailable: true,
+      showSubPercentPrecision: true,
+      periodType: '5hr',
+    }
+  }
+
+  test('test_display_name_renders_in_card_header', () => {
+    const { container } = render(
+      <ProviderCard
+        config={{
+          provider: 'alibaba_token_plan',
+          color: '#ff6a00',
+          displayName: 'Alibaba Token Plan',
+          quotaOnly: true,
+        }}
+        data={mockData}
+        healthCells={mockHealthCells}
+      />
+    )
+    const header = container.querySelector('.provider-name')
+    expect(header?.textContent).toBe('ALIBABA TOKEN PLAN')
+  })
+
+  test('test_provider_key_uppercased_when_no_display_name', () => {
+    const { container } = render(
+      <ProviderCard
+        config={{ provider: 'anthropic', color: '#cc7855' }}
+        data={mockData}
+        healthCells={mockHealthCells}
+      />
+    )
+    const header = container.querySelector('.provider-name')
+    expect(header?.textContent).toBe('ANTHROPIC')
+  })
+
+  test('test_tooltip_shows_unavailable_reset_and_freshness', () => {
+    const lane: QuotaLane = {
+      laneKey: 'alibaba_token_plan/5h-credits',
+      laneLabel: '5-hour Credits',
+      currentBar: alibabaBar(),
+      priorBars: [],
+    }
+    const { container } = render(
+      <ProviderCard
+        config={{
+          provider: 'alibaba_token_plan',
+          color: '#ff6a00',
+          displayName: 'Alibaba Token Plan',
+          quotaOnly: true,
+        }}
+        data={mockData}
+        healthCells={mockHealthCells}
+        lanes={[lane]}
+      />
+    )
+    const trigger =
+      container.querySelector('.quota-row-bar') ??
+      container.querySelector('.qbar-fill')
+    expect(trigger).not.toBeNull()
+    fireEvent.pointerEnter(trigger as HTMLElement)
+
+    const bodyText = document.body.textContent ?? ''
+    expect(container.querySelector('.quota-row-pct')?.textContent).toBe('<1%')
+    expect(bodyText).toContain('<1% used')
+    expect(bodyText).toContain('99.96% remaining')
+    expect(bodyText).toContain('credits: unavailable')
+    expect(bodyText).toContain('resets')
+    expect(bodyText).toContain('observed')
+    expect(bodyText).toContain('alibaba_token_plan_5h:credits')
+    expect(bodyText).toContain('alibaba_token_plan_usage')
+  })
+
+  test('test_tooltip_never_renders_full_account_hash', () => {
+    const lane: QuotaLane = {
+      laneKey: 'alibaba_token_plan/5h-credits',
+      laneLabel: '5-hour Credits',
+      currentBar: alibabaBar(),
+      priorBars: [],
+    }
+    const { container } = render(
+      <ProviderCard
+        config={{
+          provider: 'alibaba_token_plan',
+          color: '#ff6a00',
+          displayName: 'Alibaba Token Plan',
+          quotaOnly: true,
+        }}
+        data={mockData}
+        healthCells={mockHealthCells}
+        lanes={[lane]}
+      />
+    )
+    const trigger =
+      container.querySelector('.quota-row-bar') ??
+      container.querySelector('.qbar-fill')
+    fireEvent.pointerEnter(trigger as HTMLElement)
+    expect(document.body.textContent ?? '').not.toContain(ACCOUNT_HASH)
+  })
+
+  test('test_existing_provider_sub_one_percent_retains_whole_percent_display', () => {
+    const { container } = render(
+      <ProviderCard
+        config={anthropicConfig}
+        data={mockData}
+        healthCells={mockHealthCells}
+        quotas={[
+          {
+            label: 'Weekly',
+            consumedPct: 0.04,
+            remainingPct: 99.96,
+            segments: makeSegments(),
+          },
+        ]}
+      />
+    )
+
+    expect(container.querySelector('.quota-row-pct')?.textContent).toBe('0%')
+  })
+
+  test('test_quota_only_card_omits_health_usage_and_model_sections', () => {
+    const lane: QuotaLane = {
+      laneKey: 'alibaba_token_plan/5h-credits',
+      laneLabel: '5-hour Credits',
+      currentBar: alibabaBar(),
+      priorBars: [],
+    }
+    const { container } = render(
+      <ProviderCard
+        config={{
+          provider: 'alibaba_token_plan',
+          color: '#ff6a00',
+          displayName: 'Alibaba Token Plan',
+          quotaOnly: true,
+        }}
+        data={mockData}
+        healthCells={mockHealthCells}
+        lanes={[lane]}
+        topModels={[
+          {
+            model: 'qwen-token-plan',
+            tokens: 100,
+            cost_usd: 1,
+            requests: 2,
+            p95_ms: 100,
+          },
+        ]}
+      />
+    )
+
+    const text = container.textContent ?? ''
+    expect(text).toContain('ALIBABA TOKEN PLAN')
+    expect(text).toContain('Quotas')
+    expect(text).toContain('5-hour Credits')
+    expect(text).not.toContain('REQUESTS')
+    expect(text).not.toContain('TOKENS')
+    expect(text).not.toContain('p95 Latency')
+    expect(text).not.toContain('qwen-token-plan')
+    expect(container.querySelector('[data-testid="health-strip"]')).toBeNull()
+    expect(container.querySelector('.health-strip-cell')).toBeNull()
+  })
+
+  test('test_alibaba_provider_series_css_color_consistency', () => {
+    const dashboardSource = readFileSync(
+      path.join(import.meta.dirname, 'phosphor-dashboard.tsx'),
+      'utf8'
+    )
+    const cssSource = readFileSync(
+      path.resolve(process.cwd(), 'src/styles/index.css'),
+      'utf8'
+    )
+
+    expect(dashboardSource).toMatch(
+      /key:\s*'alibaba_token_plan'[\s\S]*?color:\s*'#ff6a00'[\s\S]*?cssClass:\s*'tt-alibaba'/
+    )
+    expect(cssSource).toMatch(
+      /\.tt-slice\.tt-alibaba,\s*\.tt-swatch\.tt-alibaba\s*\{\s*background:\s*#ff6a00;/
+    )
+  })
+})

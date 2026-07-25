@@ -74,6 +74,7 @@ import {
   computeFleetP95,
   providerBrandHex,
   providerAliases,
+  QUOTA_ONLY_PROVIDERS,
 } from '../lib/usage-report-display'
 import { useControllableState } from '../lib/use-controllable-state'
 import { AggregateCard } from './aggregate-card'
@@ -207,6 +208,12 @@ const PROVIDER_SERIES: ProviderSeries[] = [
     label: 'Local',
     color: '#94a3b8',
     cssClass: 'tt-local',
+  },
+  {
+    key: 'alibaba_token_plan',
+    label: 'Alibaba Token Plan',
+    color: '#ff6a00',
+    cssClass: 'tt-alibaba',
   },
   {
     key: 'unknown',
@@ -1007,10 +1014,12 @@ export default function PhosphorDashboard({
 
   const providers = useMemo(() => deriveProviders(), [])
   const providerHealthCardProviders = useMemo(
-    () =>
-      providers.filter(
+    () => [
+      ...providers.filter(
         (provider) => !STATUS_HEALTH_CARD_OMIT_PROVIDERS.has(provider)
       ),
+      ...QUOTA_ONLY_PROVIDERS,
+    ],
     [providers]
   )
 
@@ -1066,11 +1075,20 @@ export default function PhosphorDashboard({
 
   const providerHealthCardRows = useMemo(
     () =>
-      providerHealthCardProviders.map((provider) => {
+      providerHealthCardProviders.flatMap((provider) => {
+        const lanes = providerLanesByProvider.get(provider) ?? []
+        const quotaOnly = provider === 'alibaba_token_plan'
+        if (quotaOnly && lanes.length === 0) return []
+
         const config: ProviderCardConfig = {
           provider,
           // Wave 12 Fix 1: use reference brand hex for card header name color
           color: providerBrandHex(provider),
+          displayName:
+            provider === 'alibaba_token_plan'
+              ? 'Alibaba Token Plan'
+              : undefined,
+          quotaOnly,
         }
         const aliases = providerAliases(provider)
         const metrics = buildProviderMetrics(
@@ -1086,7 +1104,6 @@ export default function PhosphorDashboard({
           providerErrorObservations,
           aliases
         )
-        const lanes = providerLanesByProvider.get(provider) ?? []
         const topModels = buildTopModels(
           providerStatusUsage,
           provider,

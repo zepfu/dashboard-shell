@@ -152,6 +152,28 @@ const OPENROUTER_LANE_DEFS: LaneDef[] = [
   },
 ]
 
+export const ALIBABA_TOKEN_PLAN_5H_CREDITS_KEY =
+  'alibaba_token_plan_5h:credits' as const
+export const ALIBABA_TOKEN_PLAN_7D_CREDITS_KEY =
+  'alibaba_token_plan_7d:credits' as const
+
+const ALIBABA_TOKEN_PLAN_LANE_DEFS: LaneDef[] = [
+  {
+    laneKey: 'alibaba_token_plan/5h-credits',
+    laneLabel: '5-hour Credits',
+    quotaType: 'short',
+    googleClass: null,
+    quotaKey: ALIBABA_TOKEN_PLAN_5H_CREDITS_KEY,
+  },
+  {
+    laneKey: 'alibaba_token_plan/7d-credits',
+    laneLabel: '7-day Credits',
+    quotaType: 'weekly',
+    googleClass: null,
+    quotaKey: ALIBABA_TOKEN_PLAN_7D_CREDITS_KEY,
+  },
+]
+
 export const PROVIDER_LANE_DEFS: Readonly<Record<string, LaneDef[]>> = {
   anthropic: ANTHROPIC_LANE_DEFS,
   openai: OPENAI_LANE_DEFS,
@@ -159,4 +181,5 @@ export const PROVIDER_LANE_DEFS: Readonly<Record<string, LaneDef[]>> = {
   google: GOOGLE_LANE_DEFS,
   xai: XAI_LANE_DEFS,
   openrouter: OPENROUTER_LANE_DEFS,
+  alibaba_token_plan: ALIBABA_TOKEN_PLAN_LANE_DEFS,
 }
