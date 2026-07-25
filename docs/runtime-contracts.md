@@ -368,30 +368,49 @@ Operator application:
 psql "$DATABASE_URL" -f scripts/configure-dashboard-refresh-cron.sql
 ```
 
+The script enables `\set ON_ERROR_STOP on` internally so plain `psql -f`
+application is fail-fast without relying on caller flags; the operator command
+above remains valid.
+
 The script creates or replaces
 `public.dashboard_shell_maintain_materialized_view(view_name, operation)`, then
-idempotently creates and re-applies the four load-bearing cron jobs:
+reconciles the four load-bearing cron jobs:
 
 - `aawm_rate_limit_intervals_refresh`
 - `aawm_rate_limit_intervals_analyze`
 - `aawm_provider_latency_health_5m_refresh`
 - `aawm_provider_latency_health_5m_analyze`
 
-Keep those job names stable. `GET /api/shell/health` looks up those exact names
-in `cron.job`, joins latest status and messages from `cron.job_run_details`, and
-uses the result to report materialized-view freshness, active refresh work, last
-success, and last failure. If a job is renamed outside this script, health
-monitoring treats it as missing even if a cron schedule still exists.
+Keep those job names stable. On each apply, the script removes only the four
+exact obsolete schedule names
+(`dashboard_shell_rate_limit_intervals_refresh`,
+`dashboard_shell_rate_limit_intervals_analyze`,
+`dashboard_shell_provider_latency_health_5m_refresh`,
+`dashboard_shell_provider_latency_health_5m_analyze`). It does not use a
+`dashboard_shell_%` wildcard, so unrelated `dashboard_shell_*` jobs cannot be
+removed. It then creates any missing stable `aawm_*` jobs and alters each
+existing stable job to the intended schedule/command/active state. Existing job
+24 `aawm_rate_limit_intervals_refresh` is preserved rather than replaced. After
+creating any missing stable jobs (and before `cron.alter_job`), the script
+enumerates the four expected stable names as a `VALUES` set, `LEFT JOIN`s
+`cron.job`, and raises if any expected name has a count other than exactly one
+(including missing zero-count jobs).
+`GET /api/shell/health` looks up those exact names in `cron.job`, joins latest
+status and messages from `cron.job_run_details`, and uses the result to report
+materialized-view freshness, active refresh work, last success, and last
+failure. If a job is renamed outside this script, health monitoring treats it as
+missing even if a cron schedule still exists.
 
 The maintenance function serializes refresh and analyze work through a shared
-advisory lock. If one materialized-view job is still active when another starts,
-the later job emits a PostgreSQL `NOTICE` and skips instead of queuing duplicate
-refresh work; staleness should then be visible through the health payload's
-latest data age and cron job status. `REFRESH MATERIALIZED VIEW CONCURRENTLY`
-inside this wrapper is intentional. The fork-review concern about that syntax
-was retracted after checking PostgreSQL behavior; the remaining runbook
-requirement is to make this manually-applied script discoverable and to keep the
-health-monitored job names intact.
+nonblocking advisory lock (`pg_try_advisory_lock`) with exception-safe unlock.
+If one materialized-view job is still active when another starts, the later job
+emits a PostgreSQL `NOTICE` and skips instead of queuing duplicate refresh work;
+staleness should then be visible through the health payload's latest data age
+and cron job status. `REFRESH MATERIALIZED VIEW CONCURRENTLY` inside this wrapper
+is intentional. The fork-review concern about that syntax was retracted after
+checking PostgreSQL behavior; the remaining runbook requirement is to make this
+manually-applied script discoverable and to keep the health-monitored job names
+intact.
 
 ## Provider Health — Provider Auth Expiry (D1-338)
 
