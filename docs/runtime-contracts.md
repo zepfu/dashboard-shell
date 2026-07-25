@@ -212,6 +212,28 @@ rather than the pooled connection. Do not move these settings into pool-wide
 connection options unless all endpoint-specific timeout behavior is replaced by
 an equivalent per-query mechanism.
 
+Report query correlation is exposed on `GET /api/shell/health` under
+`reportQueryPressure.inProcess`. That object carries process-level counters plus
+bounded active and recent timeout/error records with endpoint, cache
+scope/hash, refresh kind, date identity, usage task key, statement timeout, and
+duration. Request IDs are hashed into a short `req:<digest>` reference and
+bounded; raw request IDs and raw error secrets are not exposed.
+
+Quota-history usage enrichment intentionally deduplicates logical usage windows,
+groups them by provider/model envelope, then uses a parameterized `LATERAL`
+`session_history` scan with a planner barrier (`OFFSET 0`) and the
+`session_history_quota_provider_started_model_idx` expression. The usage-scan
+canonical provider `CASE` must remain structurally compatible with that index.
+Antigravity and Alibaba Token Plan quota-only windows are excluded before the
+scan. The 15s quota-history statement-timeout guardrail remains unchanged; if
+enrichment times out, the existing degraded fallback behavior still applies.
+
+Main usage can exceed short HTTP client deadlines even when every DB task stays
+under its own 120s statement timeout, because those tasks run serially by
+default (`SHELL_REPORT_SQL_FANOUT_CONCURRENCY` defaults to `1`). Distinguish
+HTTP wall time from `reportQueryPressure` timeout/error counters: wall-clock
+latency is not by itself a per-statement timeout.
+
 `GET /api/shell/reports/usage` returns compact usage rows by default. The report
 service omits row properties whose normalized value is `null`, `undefined`, or
 an empty string, and marks the response with:

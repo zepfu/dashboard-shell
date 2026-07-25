@@ -344,6 +344,88 @@ declare module './report-service.mjs' {
     lockKey: string
   }
 
+  type QueryCorrelationContext = {
+    requestId: string | null
+    endpoint: string | null
+    cacheScope: string | null
+    cacheKeyHash: string | null
+    refreshKind: string | null
+    dateIdentity: string | null
+    usageTaskKey: string | null
+  }
+
+  type QueryCorrelationStore = {
+    requestId?: string | null
+    requestIdRef?: string | null
+    endpoint?: string | null
+    cacheScope?: string | null
+    cacheKeyHash?: string | null
+    refreshKind?: string | null
+    dateIdentity?: string | null
+  }
+
+  type ReportQueryFailureRecord = QueryCorrelationContext & {
+    failureKind: 'query'
+    queryId: number
+    label: string | null
+    statementTimeoutMs: number
+    startedAt: string
+    finishedAt: string
+    durationMs: number
+    errorCode: string | null
+    errorSummary: string
+    errorMessage: string
+  }
+
+  type ReportRequestFailureRecord = QueryCorrelationContext & {
+    failureKind: 'request'
+    queryId: null
+    label: null
+    statementTimeoutMs: null
+    startedAt: null
+    finishedAt: string
+    durationMs: null
+    errorCode: string | null
+    errorSummary: string
+    errorMessage: string
+  }
+
+  type ReportFailureRecord =
+    | ReportQueryFailureRecord
+    | ReportRequestFailureRecord
+
+  type ActiveReportQuery = QueryCorrelationContext & {
+    id: number
+    activeAgeMs: number
+    startedAt: string
+    label: string | null
+    statementTimeoutMs: number
+  }
+
+  type ReportQueryMetricsSnapshot = {
+    started: number
+    completed: number
+    errors: number
+    timeouts: number
+    active: number
+    oldestActiveAgeMs: number | null
+    lastStartedAt: string | null
+    lastCompletedAt: string | null
+    lastErrorAt: string | null
+    lastErrorMessage: string | null
+    lastTimeoutAt: string | null
+    lastDurationMs: number | null
+    maxDurationMs: number
+    activeQueries: ActiveReportQuery[]
+    recentTimeouts: ReportQueryFailureRecord[]
+    recentErrors: ReportFailureRecord[]
+  }
+
+  type ReportDatabaseResult = {
+    rows: unknown[]
+    [key: string]: unknown
+  }
+
   export const __ttlMemoizerTestHelpers: {
     createTtlMemoizer: (
       ttlMs: number,
@@ -493,6 +575,44 @@ declare module './report-service.mjs' {
     handleCachedUsageSubreport: (...args: unknown[]) => Promise<unknown>
   }
 
+  export const __queryCorrelationTestHelpers: {
+    reportQueryCorrelationStorage: import('node:async_hooks').AsyncLocalStorage<QueryCorrelationStore>
+    recentQueryTimeouts: ReportQueryFailureRecord[]
+    recentQueryErrors: ReportFailureRecord[]
+    resetQueryCorrelationForTests: () => void
+    QUERY_CORRELATION_MAX_RECENT: number
+    QUERY_CORRELATION_REQUEST_ID_MAX: number
+    QUERY_CORRELATION_DATE_IDENTITY_MAX: number
+    buildNormalizedReportRequestIdentity: (
+      searchParams?: URLSearchParams
+    ) => string | null
+    buildRequestIdReference: (value: unknown) => string | null
+    sanitizeCorrelationString: (
+      value: unknown,
+      maxLength: number
+    ) => string | null
+    resolveQueryCorrelationContext: (options?: {
+      usageReportTaskKey?: string | null
+    }) => QueryCorrelationContext
+    queryReportDatabase: (
+      sql: string,
+      values?: unknown[] | undefined,
+      options?: {
+        statementTimeoutMs?: number
+        usageReportTaskKey?: string | null
+      }
+    ) => Promise<ReportDatabaseResult>
+    reportQueryMetricsSnapshot: () => ReportQueryMetricsSnapshot
+    setExecuteReportQueryTestImpl: (
+      impl: (
+        sql: string,
+        values: unknown[] | undefined,
+        options: { statementTimeoutMs: number }
+      ) => ReportDatabaseResult | Promise<ReportDatabaseResult>
+    ) => void
+    resetExecuteReportQueryTestImpl: () => void
+  }
+
   export const __usageReportTestHelpers: {
     loadUsageReport: (
       searchParams: URLSearchParams
@@ -542,7 +662,10 @@ declare module './report-service.mjs' {
   export const __serverRuntimeTestHelpers: {
     GENERIC_INTERNAL_SERVER_ERROR_BODY: Record<string, unknown>
     isHttpResponseCommitted: (res: Record<string, unknown>) => boolean
-    logUnhandledRequestError: (...args: unknown[]) => void
+    logUnhandledRequestError: (
+      req: Record<string, unknown>,
+      error: unknown
+    ) => void
     respondWithGenericServerError: (
       req: Record<string, unknown>,
       res: Record<string, unknown>,

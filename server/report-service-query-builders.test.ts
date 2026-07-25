@@ -1832,20 +1832,25 @@ describe('report-service query builders', () => {
 
   test('test_buildQuotaHistoryQuery_reuses_canonical_session_history_provider_dimension_for_usage_join', () => {
     const query = buildQuotaHistoryQuery(new URLSearchParams())
+    const sql = query.sql
+    const groupedStart = sql.indexOf('grouped_session_usage AS MATERIALIZED (')
+    const perModelStart = sql.indexOf('per_model_usage AS (')
+    const groupedCte = sql.slice(groupedStart, perModelStart)
 
-    expect(query.sql).toContain(
+    // Index-compatible session_history CASE for the usage lateral (no antigravity).
+    expect(groupedCte).toContain(
       "WHEN lower(COALESCE(sh.provider, 'unknown')) IN ('google', 'gemini') THEN 'google'"
     )
-    expect(query.sql).toContain(
+    expect(groupedCte).not.toContain(
       "WHEN lower(COALESCE(sh.provider, 'unknown')) = 'antigravity' THEN 'antigravity'"
     )
-    expect(query.sql).toContain(
+    expect(groupedCte).toContain(
       "WHEN lower(COALESCE(sh.provider, 'unknown')) IN ('xai', 'x.ai') THEN 'xai'"
     )
-    expect(query.sql).toContain(
+    expect(groupedCte).toContain(
       "WHEN lower(COALESCE(sh.provider, 'unknown')) = 'nvidia' THEN 'nvidia_nim'"
     )
-    expect(query.sql).toContain(
+    expect(groupedCte).toContain(
       "WHEN lower(COALESCE(sh.provider, 'unknown')) LIKE 'local_%' THEN 'local'"
     )
   })
@@ -2005,6 +2010,198 @@ describe('report-service query builders', () => {
     expect(query.sql).not.toMatch(
       /SELECT\s+COUNT\(\*\)::double precision\s+FROM\s+public\.session_history\s+sh_recent/i
     )
+  })
+
+  test('test_buildQuotaHistoryQuery_materializes_grouped_session_usage_envelope', () => {
+    const query = buildQuotaHistoryQuery(new URLSearchParams())
+    const sql = query.sql
+
+    // Distinct usage windows remain the lane-sharing identity surface.
+    expect(sql).toContain('usage_windows AS MATERIALIZED (')
+    expect(sql).toContain('SELECT DISTINCT')
+    expect(sql).toContain('wb.provider')
+    expect(sql).toContain('wb.model')
+    expect(sql).toContain('wb.interval_start')
+    expect(sql).toContain('wb.expected_reset_at')
+    expect(sql).toContain("WHERE wb.provider <> 'antigravity'")
+    expect(sql).toContain("AND wb.provider <> 'alibaba_token_plan'")
+
+    // Grouped envelope materializes one parameterized session_history scan per
+    // provider/model via JOIN LATERAL + OFFSET 0 planner barrier.
+    expect(sql).toContain('grouped_session_usage AS MATERIALIZED (')
+    expect(sql).toContain('MIN(uw.interval_start) AS envelope_start')
+    expect(sql).toContain('MAX(uw.expected_reset_at) AS envelope_end')
+    expect(sql).toContain('GROUP BY uw.provider, uw.model')
+
+    const groupedStart = sql.indexOf('grouped_session_usage AS MATERIALIZED (')
+    const perModelStart = sql.indexOf('per_model_usage AS (')
+    const groupedCte = sql.slice(groupedStart, perModelStart)
+    expect(groupedCte).toContain('JOIN LATERAL (')
+    expect(groupedCte).toContain('FROM public.session_history sh')
+    expect(groupedCte).toContain('OFFSET 0')
+    expect(groupedCte).toContain(') sh ON TRUE')
+    expect(groupedCte).not.toMatch(/JOIN\s+public\.session_history\s+sh\s+ON\b/)
+    expect(groupedCte).toContain(
+      'COALESCE(sh.start_time, sh.created_at) AS sh_timestamp'
+    )
+    expect(groupedCte).toContain('sh.model AS raw_model')
+    expect(groupedCte).toContain("COALESCE(sh.model, 'unknown') AS sh_model")
+    expect(groupedCte).toContain(
+      'AND COALESCE(sh.start_time, sh.created_at) >= g.envelope_start'
+    )
+    expect(groupedCte).toContain(
+      'AND COALESCE(sh.start_time, sh.created_at) < g.envelope_end'
+    )
+    expect(groupedCte).toContain('AND (g.model IS NULL OR sh.model = g.model)')
+
+    // Canonical provider CASE matches session_history_quota_provider_started_model_idx
+    // (no explicit antigravity branch). usage_windows already excludes antigravity.
+    expect(groupedCte).toContain(
+      "WHEN lower(COALESCE(sh.provider, 'unknown')) IN ('google', 'gemini') THEN 'google'"
+    )
+    expect(groupedCte).not.toContain(
+      "WHEN lower(COALESCE(sh.provider, 'unknown')) = 'antigravity' THEN 'antigravity'"
+    )
+    expect(sql).not.toMatch(/\bsh\.provider\s*=\s*uw\.provider\b/)
+    expect(sql).not.toMatch(/\bsh\.provider\s*=\s*wb\.provider\b/)
+    expect(sql).not.toMatch(/\bsh\.provider\s*=\s*g\.provider\b/)
+    // Provider equality lives inside the lateral WHERE against the outer group.
+    expect(groupedCte).toMatch(/= g\.provider/)
+
+    // Per-session token/cost fields are projected before window assignment.
+    expect(sql).toContain('COALESCE(sh.input_tokens, 0)')
+    expect(sql).toContain('COALESCE(sh.output_tokens, 0)')
+    expect(sql).toContain('COALESCE(sh.cache_read_input_tokens, 0)')
+    expect(sql).toContain('COALESCE(sh.cache_creation_input_tokens, 0)')
+    expect(sql).toContain('COALESCE(sh.reasoning_tokens_reported, 0)')
+    expect(sql).toContain('COALESCE(sh.reasoning_tokens_estimated, 0)')
+    expect(sql).toContain(
+      'COALESCE(sh.response_cost_usd, 0)::double precision AS cost'
+    )
+
+    // Set-based half-open assignment from grouped rows back to windows.
+    expect(sql).toContain('per_model_usage AS (')
+    expect(sql).toContain('FROM usage_windows uw')
+    expect(sql).toContain('JOIN grouped_session_usage gsu')
+    expect(sql).toContain('AND gsu.quota_model IS NOT DISTINCT FROM uw.model')
+    expect(sql).toContain('AND gsu.sh_timestamp >= uw.interval_start')
+    expect(sql).toContain('AND gsu.sh_timestamp < uw.expected_reset_at')
+    expect(sql).toContain('SUM(gsu.tokens)::double precision AS tokens')
+    expect(sql).toContain('SUM(gsu.cost)::double precision AS cost')
+    expect(sql).toContain('COUNT(*)::double precision AS traces')
+    expect(sql).toContain(
+      'COALESCE(MAX(recent.recent_traces_90m), 0)::double precision AS recent_traces_90m'
+    )
+
+    // Usage path keeps one grouped-envelope LATERAL, not per-window probes.
+    const usageStart = sql.indexOf('usage_windows AS MATERIALIZED (')
+    const finalSelectStart = sql.indexOf('\nSELECT\n    wb.provider,')
+    const usagePath = sql.slice(usageStart, finalSelectStart)
+    const lateralSessionHistoryMatches = [
+      ...usagePath.matchAll(
+        /JOIN LATERAL \([\s\S]*?FROM public\.session_history sh/g
+      ),
+    ]
+    expect(lateralSessionHistoryMatches.length).toBe(1)
+    // No remaining flattenable direct join of the group envelope to session_history.
+    expect(usagePath).not.toMatch(
+      /\) g\s+JOIN\s+public\.session_history\s+sh\b/
+    )
+
+    // Outer join remains window-identity only so lane sharing is preserved.
+    expect(sql).toContain('LEFT JOIN per_model_usage pmu')
+    expect(sql).toContain('AND pmu.quota_model IS NOT DISTINCT FROM wb.model')
+    expect(sql).toContain('AND pmu.interval_start = wb.interval_start')
+    expect(sql).toContain('AND pmu.expected_reset_at = wb.expected_reset_at')
+    expect(sql).not.toContain('pmu.quota_type = wb.quota_type')
+    expect(sql).not.toContain('pmu.quota_key IS NOT DISTINCT FROM wb.quota_key')
+    expect(sql).not.toContain('pmu.source IS NOT DISTINCT FROM wb.source')
+    expect(sql).not.toContain(
+      'pmu.account_hash IS NOT DISTINCT FROM wb.account_hash'
+    )
+    expect(sql).not.toContain(
+      'pmu.quota_period IS NOT DISTINCT FROM wb.quota_period'
+    )
+
+    // Single precomputed recent_traces_90m path; velocity + observation identity unchanged.
+    expect(sql.match(/recent_traces_90m AS \(/g)?.length).toBe(1)
+    expect(sql).toContain('LEFT JOIN recent_traces_90m recent')
+    expect(sql).toContain('history_velocity_arrays AS (')
+    expect(sql).toContain('LEFT JOIN history_velocity_arrays hv')
+    expect(sql).toContain('observation_identity AS (')
+    expect(sql).toContain('observation_identity_windows AS MATERIALIZED (')
+    expect(sql).toContain('FROM observation_identity_windows n')
+  })
+
+  test('test_buildQuotaHistoryQuery_looks_up_latest_observation_per_bounded_identity_window', () => {
+    const query = buildQuotaHistoryQuery(new URLSearchParams())
+    const sql = query.sql
+
+    expect(sql).toContain('observation_identity_windows AS MATERIALIZED (')
+    expect(sql).toContain('FROM observation_identity_windows n')
+    expect(sql).toContain('JOIN LATERAL (')
+    expect(sql).toContain('FROM public.rate_limit_observations o')
+    expect(sql).toContain('ORDER BY o.observed_at DESC')
+    expect(sql).toContain('LIMIT 1')
+
+    // Bounded/deduped identity windows keep exact identity columns.
+    expect(sql).toContain('n.raw_provider')
+    expect(sql).toContain('n.quota_key')
+    expect(sql).toContain('n.quota_period')
+    expect(sql).toContain('n.source AS selected_source')
+    expect(sql).toContain('n.account_hash')
+    expect(sql).toContain('n.expected_reset_at')
+    expect(sql).toContain('n.interval_start')
+    expect(sql).toContain('WHERE n.interval_rank <= ')
+
+    // Parameterized latest-observation predicates preserve wildcards + bounds.
+    expect(sql).toContain('WHERE o.provider = n.raw_provider')
+    expect(sql).toContain('AND o.quota_key = n.quota_key')
+    expect(sql).toContain(
+      'AND (n.account_hash IS NULL OR o.account_hash IS NOT DISTINCT FROM n.account_hash)'
+    )
+    expect(sql).toContain(
+      'AND (n.selected_source IS NULL OR o.source IS NOT DISTINCT FROM n.selected_source)'
+    )
+    expect(sql).toContain(
+      'AND (n.quota_period IS NULL OR o.quota_period IS NOT DISTINCT FROM n.quota_period)'
+    )
+    expect(sql).toContain(
+      'AND o.expected_reset_at IS NOT DISTINCT FROM n.expected_reset_at'
+    )
+    expect(sql).toContain('AND o.observed_at IS NOT NULL')
+    expect(sql).toContain(
+      "AND o.observed_at >= n.interval_start - INTERVAL '5 minutes'"
+    )
+    expect(sql).toContain(
+      "AND o.observed_at <= n.expected_reset_at + INTERVAL '5 minutes'"
+    )
+
+    // observation_identity no longer uses set-based DISTINCT ON over observations.
+    const identityCte = sql.slice(
+      sql.indexOf('observation_identity AS ('),
+      sql.indexOf('history_observations AS (')
+    )
+    expect(identityCte).not.toContain('SELECT DISTINCT ON')
+    expect(identityCte).toContain('JOIN LATERAL (')
+    expect(identityCte).toContain('ORDER BY o.observed_at DESC')
+    expect(identityCte).toContain('LIMIT 1')
+
+    // Velocity path remains independent and still scans observations set-based.
+    const historyObs = sql.slice(
+      sql.indexOf('history_observations AS ('),
+      sql.indexOf('ordered_history_observations AS (')
+    )
+    expect(historyObs).toContain('JOIN public.rate_limit_observations o')
+    expect(historyObs).not.toContain('JOIN LATERAL')
+    expect(historyObs).toContain(
+      'AND (n.source IS NULL OR o.source IS NOT DISTINCT FROM n.source)'
+    )
+    expect(historyObs).toContain('remaining_pct')
+    expect(sql).toContain('history_velocity_arrays AS (')
+
+    // Identity metadata may still come from observations with null remaining_pct.
+    expect(identityCte).not.toContain('remaining_pct')
   })
 
   test('test_quota_key_interval_cte_helper_is_shared_without_duplicate_literals', () => {
@@ -2473,7 +2670,11 @@ describe('report-service query builders', () => {
     expect(query.sql).toContain('LEFT JOIN (')
     expect(query.sql).not.toContain('CROSS JOIN window_cap_state cap')
     expect(query.sql).toContain('a.id > b.min_id')
-    expect(query.sql).toContain('AND a.id <= b.min_id')
+    expect(query.sql).toContain('WHERE a.id <= b.min_id')
+    expect(query.sql).toContain('SELECT a.id')
+    expect(query.sql).toContain('ORDER BY a.id DESC')
+    expect(query.sql).toContain('LIMIT 1')
+    expect(query.sql).toContain('IS NOT NULL')
     expect(query.sql).toContain('tool_activity_bounded_min_id')
     expect(query.sql).toContain('tool_activity_bounded_max_id')
     expect(query.sql).toContain('tool_activity_recent_row_limit')
@@ -2495,6 +2696,34 @@ describe('report-service query builders', () => {
     )
     expect(query.sql).toContain(
       'ORDER BY activity_rows.provider ASC NULLS LAST'
+    )
+  })
+
+  test('buildToolActivityQuery_uses_newest_first_exact_truncation_probe', () => {
+    const query = buildToolActivityQuery(
+      new URLSearchParams({ from: '2026-06-24', to: '2026-07-25' })
+    )
+
+    // Exact window/cap predicates remain; only access order is optimized.
+    // min_id > 0 is only a short-circuit guard, not the truncation result.
+    // Scalar (SELECT a.id ... ORDER BY id DESC LIMIT 1) IS NOT NULL forces a
+    // PK reverse scan; bare EXISTS plans a forward scan under the live PK.
+    expect(query.sql).toMatch(
+      /\(\s*b\.min_id > 0\s+AND \(\s*SELECT a\.id\s+FROM public\.session_history_tool_activity a\s+WHERE a\.id <= b\.min_id\s+AND a\.created_at >= \(\$1::date::timestamp AT TIME ZONE 'America\/New_York'\)\s+AND a\.created_at < \(\$2::date::timestamp AT TIME ZONE 'America\/New_York'\)\s+ORDER BY a\.id DESC\s+LIMIT 1\s*\) IS NOT NULL\s*\)/s
+    )
+    // Reject the cheap-but-wrong approximation that uses min_id alone.
+    expect(query.sql).not.toMatch(
+      /tool_activity_recent_id_cap_truncates_requested_window\s*=\s*\(?\s*b\.min_id > 0\s*\)?/
+    )
+    expect(query.sql).toMatch(/b\.min_id > 0\s+AND \(/)
+    expect(query.sql).not.toMatch(
+      /tool_activity_recent_id_cap_truncates_requested_window[\s\S]{0,120}EXISTS \(/
+    )
+    // recent_activity keeps the open-ended recent-id floor (no max_id ceiling)
+    // so concurrent inserts above the snapshot max remain visible.
+    expect(query.sql).toMatch(/WHERE a\.id > b\.min_id\s+AND a\.created_at >=/s)
+    expect(query.sql).not.toMatch(
+      /WHERE a\.id > b\.min_id\s+AND a\.id <= b\.max_id/
     )
   })
 

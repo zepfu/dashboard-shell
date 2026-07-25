@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks'
 import crypto from 'node:crypto'
 import { open, readdir, readFile } from 'node:fs/promises'
 import http from 'node:http'
@@ -512,6 +513,7 @@ let reportCacheMaxEntries = MAX_REPORT_CACHE_ENTRIES
 let readRedisCacheEntryTestImpl = null
 let writeRedisCacheEntryTestImpl = null
 let queryReportDatabaseTestImpl = null
+let executeReportQueryTestImpl = null
 let loadDockerLogErrorsTestImpl = null
 let loadLocalHealthTestImpl = null
 const TOOL_ACTIVITY_RECENT_ROW_LIMIT = positiveIntegerEnv(
@@ -891,19 +893,247 @@ const reportQueryMetrics = {
   maxDurationMs: 0,
 }
 
-function summarizeReportSql(sql) {
-  return String(sql ?? '')
-    .replace(/--.*$/gm, '')
+// D1-490: Bounded request/query/cache correlation for timeout and error diagnostics.
+const QUERY_CORRELATION_MAX_RECENT = 20
+const QUERY_CORRELATION_REQUEST_ID_MAX = 28
+const QUERY_CORRELATION_REQUEST_ID_INPUT_MAX = 1_024
+const QUERY_CORRELATION_ENDPOINT_MAX = 180
+const QUERY_CORRELATION_FIELD_MAX = 96
+const QUERY_CORRELATION_DATE_IDENTITY_MAX = 384
+const QUERY_CORRELATION_DATE_IDENTITY_FIELDS = [
+  'date',
+  'from',
+  'to',
+  'grain',
+  'group_by',
+  'direction',
+  'sort',
+  'limit',
+  'include_health',
+  'include_empty_row_fields',
+]
+const reportQueryCorrelationStorage = new AsyncLocalStorage()
+const recentQueryTimeouts = []
+const recentQueryErrors = []
+// Side-table dedupe for request failures when error objects cannot be annotated
+// (frozen/non-extensible) and for primitive throws keyed by real request identity.
+const QUERY_CORRELATION_PRIMITIVE_FAILURE_MAX = 16
+// Side-table for query failures when database Error objects cannot be annotated
+// (frozen/non-extensible). GC-bounded by object identity; no raw secrets.
+let queryFailureRecordsByError = new WeakMap()
+let requestFailureRecordsByError = new WeakMap()
+let requestFailureRecordsByReqPrimitive = new WeakMap()
+
+function sanitizeCorrelationString(value, maxLength) {
+  if (typeof value !== 'string') return null
+  const sanitized = value
+    .replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
-    .slice(0, 180)
+  return sanitized ? sanitized.slice(0, maxLength) : null
+}
+
+function buildRequestIdReference(value) {
+  const normalized = sanitizeCorrelationString(
+    value,
+    QUERY_CORRELATION_REQUEST_ID_INPUT_MAX
+  )
+  if (!normalized) return null
+  const digest = crypto
+    .createHash('sha256')
+    .update(normalized)
+    .digest('hex')
+    .slice(0, 24)
+  return `req:${digest}`
+}
+
+function sanitizeRequestIdReference(value) {
+  const reference = sanitizeCorrelationString(
+    value,
+    QUERY_CORRELATION_REQUEST_ID_MAX
+  )
+  return /^req:[0-9a-f]{24}$/.test(reference ?? '') ? reference : null
+}
+
+function sanitizeIdentityValue(value) {
+  return sanitizeCorrelationString(value, QUERY_CORRELATION_FIELD_MAX)?.replace(
+    /[^a-zA-Z0-9_.:,/@+-]/g,
+    '_'
+  )
+}
+
+function buildNormalizedReportRequestIdentity(searchParams) {
+  if (!searchParams) return null
+  const parts = []
+  let totalLength = 0
+
+  for (const key of QUERY_CORRELATION_DATE_IDENTITY_FIELDS) {
+    const value = sanitizeIdentityValue(searchParams.get(key))
+    if (!value) continue
+
+    const prefix = parts.length === 0 ? '' : '&'
+    const available =
+      QUERY_CORRELATION_DATE_IDENTITY_MAX -
+      totalLength -
+      prefix.length -
+      key.length -
+      1
+    if (available <= 0) break
+
+    const part = `${key}=${value.slice(0, available)}`
+    parts.push(part)
+    totalLength += prefix.length + part.length
+  }
+
+  return parts.length > 0 ? parts.join('&') : null
+}
+
+function redactCorrelationSecrets(value) {
+  return value
+    .replace(/\b([a-z][a-z0-9+.-]*:\/\/)([^@\s/]+)@/gi, '$1[redacted]@')
+    .replace(
+      /"(password|passwd|secret|token|api[_-]?key|authorization)"\s*:\s*"(?:\\.|[^"\\])*"/gi,
+      '"$1":"[redacted]"'
+    )
+    .replace(
+      /'(password|passwd|secret|token|api[_-]?key|authorization)'\s*:\s*'(?:\\.|[^'\\])*'/gi,
+      "'$1':'[redacted]'"
+    )
+    .replace(/\b(Bearer)\s+\S+/gi, '$1 [redacted]')
+    .replace(
+      /\b(password|passwd|secret|token|api[_-]?key|authorization)\s*[:=]\s*[^\s,;]+/gi,
+      '$1=[redacted]'
+    )
+}
+
+function sanitizeStableErrorCode(error) {
+  const code = sanitizeCorrelationString(
+    error && typeof error === 'object' ? error.code : null,
+    40
+  )
+  if (
+    !code ||
+    !(
+      /^[0-9A-Z]{5}$/.test(code) ||
+      /^E[A-Z0-9_]{2,31}$/.test(code) ||
+      /^ERR_[A-Z0-9_]{1,28}$/.test(code) ||
+      /^UND_ERR_[A-Z0-9_]{1,24}$/.test(code)
+    )
+  ) {
+    return null
+  }
+  return code
+}
+
+function isRecognizedFetchFailure(error) {
+  return (
+    error instanceof Error &&
+    error.name === 'TypeError' &&
+    error.message.trim().toLowerCase() === 'fetch failed'
+  )
+}
+
+function safeReportErrorSummary(
+  error,
+  genericSummary = 'report query failure'
+) {
+  if (isDatabaseTimeoutError(error)) {
+    return 'database statement timeout'
+  }
+  if (isRecognizedFetchFailure(error)) {
+    return 'fetch failed'
+  }
+  const errorCode = sanitizeStableErrorCode(error)
+  return errorCode ? `${genericSummary} (${errorCode})` : genericSummary
+}
+
+function pushBoundedRecent(target, entry) {
+  target.push(entry)
+  while (target.length > QUERY_CORRELATION_MAX_RECENT) {
+    target.shift()
+  }
+}
+
+function resolveQueryCorrelationContext(options = {}) {
+  const store = reportQueryCorrelationStorage.getStore()
+  return {
+    requestId:
+      sanitizeRequestIdReference(store?.requestIdRef) ??
+      buildRequestIdReference(store?.requestId),
+    endpoint: sanitizeCorrelationString(
+      store?.endpoint,
+      QUERY_CORRELATION_ENDPOINT_MAX
+    ),
+    cacheScope: sanitizeCorrelationString(
+      store?.cacheScope,
+      QUERY_CORRELATION_FIELD_MAX
+    ),
+    cacheKeyHash: sanitizeCorrelationString(
+      store?.cacheKeyHash,
+      QUERY_CORRELATION_FIELD_MAX
+    ),
+    refreshKind: sanitizeCorrelationString(
+      store?.refreshKind,
+      QUERY_CORRELATION_FIELD_MAX
+    ),
+    dateIdentity: sanitizeCorrelationString(
+      store?.dateIdentity,
+      QUERY_CORRELATION_DATE_IDENTITY_MAX
+    ),
+    usageTaskKey: sanitizeCorrelationString(
+      options.usageReportTaskKey,
+      QUERY_CORRELATION_FIELD_MAX
+    ),
+  }
+}
+
+function resetQueryCorrelationForTests() {
+  recentQueryTimeouts.length = 0
+  recentQueryErrors.length = 0
+  queryFailureRecordsByError = new WeakMap()
+  requestFailureRecordsByError = new WeakMap()
+  requestFailureRecordsByReqPrimitive = new WeakMap()
+  activeReportQueries.clear()
+  Object.assign(reportQueryMetrics, {
+    nextQueryId: 1,
+    started: 0,
+    completed: 0,
+    errors: 0,
+    timeouts: 0,
+    lastStartedAt: null,
+    lastCompletedAt: null,
+    lastErrorAt: null,
+    lastErrorMessage: null,
+    lastTimeoutAt: null,
+    lastDurationMs: null,
+    maxDurationMs: 0,
+  })
+}
+
+function summarizeReportSql(sql) {
+  return sanitizeCorrelationString(
+    redactCorrelationSecrets(
+      String(sql ?? '')
+        .replace(/--.*$/gm, '')
+        .replace(/\s+/g, ' ')
+        .trim()
+    ),
+    180
+  )
+}
+
+function isReportQueryTestRuntime() {
+  return process.env.VITEST === 'true' || process.env.NODE_ENV === 'test'
 }
 
 async function queryReportDatabase(sql, values, options = {}) {
   if (queryReportDatabaseTestImpl) {
     return queryReportDatabaseTestImpl(sql, values, options)
   }
-  if (!pool) {
+  const testExecutor = isReportQueryTestRuntime()
+    ? executeReportQueryTestImpl
+    : null
+  if (!pool && !testExecutor) {
     throw new Error(
       'DATABASE_URL is not configured for the shell report service.'
     )
@@ -913,21 +1143,29 @@ async function queryReportDatabase(sql, values, options = {}) {
   const queryId = reportQueryMetrics.nextQueryId
   reportQueryMetrics.nextQueryId += 1
   const startedAtMs = Date.now()
+  const correlation = resolveQueryCorrelationContext(options)
   reportQueryMetrics.started += 1
   reportQueryMetrics.lastStartedAt = new Date(startedAtMs).toISOString()
+  const queryLabel = summarizeReportSql(sql)
   activeReportQueries.set(queryId, {
     id: queryId,
     startedAtMs,
-    label: summarizeReportSql(sql),
+    label: queryLabel,
+    ...correlation,
+    statementTimeoutMs,
   })
 
   try {
-    const result = await queryPostgresWithLocalSettings(
-      pool,
-      sql,
-      values,
-      statementTimeoutMs
-    )
+    const result = testExecutor
+      ? await testExecutor(sql, values, {
+          statementTimeoutMs,
+        })
+      : await queryPostgresWithLocalSettings(
+          pool,
+          sql,
+          values,
+          statementTimeoutMs
+        )
     const durationMs = Date.now() - startedAtMs
     reportQueryMetrics.completed += 1
     reportQueryMetrics.lastCompletedAt = new Date().toISOString()
@@ -938,18 +1176,50 @@ async function queryReportDatabase(sql, values, options = {}) {
     )
     return result
   } catch (error) {
-    const durationMs = Date.now() - startedAtMs
+    const finishedAtMs = Date.now()
+    const durationMs = finishedAtMs - startedAtMs
     reportQueryMetrics.errors += 1
-    reportQueryMetrics.lastErrorAt = new Date().toISOString()
-    reportQueryMetrics.lastErrorMessage = formatError(error)
+    reportQueryMetrics.lastErrorAt = new Date(finishedAtMs).toISOString()
+    const errorSummary = safeReportErrorSummary(error)
+    reportQueryMetrics.lastErrorMessage = errorSummary
     reportQueryMetrics.lastDurationMs = durationMs
     reportQueryMetrics.maxDurationMs = Math.max(
       reportQueryMetrics.maxDurationMs,
       durationMs
     )
+    const errorCode = sanitizeStableErrorCode(error)
+    const failureRecord = {
+      failureKind: 'query',
+      queryId,
+      label: queryLabel,
+      ...correlation,
+      statementTimeoutMs,
+      startedAt: new Date(startedAtMs).toISOString(),
+      finishedAt: new Date(finishedAtMs).toISOString(),
+      durationMs,
+      errorCode,
+      errorSummary,
+      errorMessage: errorSummary,
+    }
+    if (error && typeof error === 'object') {
+      try {
+        Object.defineProperty(error, 'reportQueryFailure', {
+          configurable: true,
+          value: failureRecord,
+        })
+      } catch {
+        // The original error still propagates when it cannot be annotated.
+      }
+      // Object identity side-table so frozen/non-extensible errors still resolve
+      // to the existing query record in request handling.
+      queryFailureRecordsByError.set(error, failureRecord)
+    }
     if (isDatabaseTimeoutError(error)) {
       reportQueryMetrics.timeouts += 1
       reportQueryMetrics.lastTimeoutAt = reportQueryMetrics.lastErrorAt
+      pushBoundedRecent(recentQueryTimeouts, failureRecord)
+    } else {
+      pushBoundedRecent(recentQueryErrors, failureRecord)
     }
     throw error
   } finally {
@@ -1130,9 +1400,39 @@ async function cachedReport(scope, load, options = {}) {
   const identity = buildReportCacheIdentity(scope, options.searchParams)
   const decorateMetadata = options.decorateMetadata !== false
   const cacheTtlMs = resolveReportCacheTtlMs(scope, options)
+  const baseCorrelationContext = {
+    requestIdRef:
+      sanitizeRequestIdReference(options.requestIdRef) ??
+      buildRequestIdReference(options.requestId),
+    endpoint: sanitizeCorrelationString(
+      options.endpoint,
+      QUERY_CORRELATION_ENDPOINT_MAX
+    ),
+    cacheScope: sanitizeCorrelationString(
+      identity.scope,
+      QUERY_CORRELATION_FIELD_MAX
+    ),
+    cacheKeyHash: sanitizeCorrelationString(
+      identity.hash,
+      QUERY_CORRELATION_FIELD_MAX
+    ),
+    dateIdentity: buildNormalizedReportRequestIdentity(options.searchParams),
+  }
+  const foregroundLoad = () =>
+    reportQueryCorrelationStorage.run(
+      {
+        ...baseCorrelationContext,
+        refreshKind:
+          sanitizeCorrelationString(
+            options.refreshKind,
+            QUERY_CORRELATION_FIELD_MAX
+          ) ?? 'foreground',
+      },
+      load
+    )
 
   if (cacheTtlMs <= 0) {
-    const value = await load()
+    const value = await foregroundLoad()
     return maybeDecorateCacheMetadata(
       value,
       {
@@ -1162,12 +1462,16 @@ async function cachedReport(scope, load, options = {}) {
   if (redisEntry.status === 'stale') {
     if (options.refreshStaleInForeground) {
       try {
-        const refreshResult = await refreshReportCache(identity, load, {
-          cacheTtlMs,
-          lockWaitMs:
-            options.lockWaitMs ?? REPORT_CACHE_FOREGROUND_LOCK_WAIT_MS,
-          requireFreshOnLockWait: true,
-        })
+        const refreshResult = await refreshReportCache(
+          identity,
+          foregroundLoad,
+          {
+            cacheTtlMs,
+            lockWaitMs:
+              options.lockWaitMs ?? REPORT_CACHE_FOREGROUND_LOCK_WAIT_MS,
+            requireFreshOnLockWait: true,
+          }
+        )
         if (refreshResult.entry) {
           return maybeDecorateCacheMetadata(
             refreshResult.entry.payload,
@@ -1182,13 +1486,19 @@ async function cachedReport(scope, load, options = {}) {
         }
       } catch (error) {
         process.stderr.write(
-          `[report-service] WARN: foreground cache refresh failed for ${identity.scope}:${identity.hash}: ${formatError(error)}\n`
+          `[report-service] WARN: foreground cache refresh failed for ${identity.scope}:${identity.hash}: ${safeReportErrorSummary(error)}\n`
         )
       }
     }
 
     setLocalReportCache(identity.cacheKey, redisEntry.entry)
-    scheduleBackgroundCacheRefresh(identity, load, { cacheTtlMs }, 'background')
+    scheduleBackgroundCacheRefresh(
+      identity,
+      load,
+      { cacheTtlMs },
+      'background',
+      baseCorrelationContext
+    )
     return maybeDecorateCacheMetadata(
       redisEntry.entry.payload,
       {
@@ -1213,7 +1523,8 @@ async function cachedReport(scope, load, options = {}) {
             cacheTtlMs,
             useRedis: false,
           },
-          'local'
+          'local',
+          baseCorrelationContext
         )
       }
       return maybeDecorateCacheMetadata(
@@ -1237,7 +1548,8 @@ async function cachedReport(scope, load, options = {}) {
         identity,
         load,
         { cacheTtlMs },
-        'background'
+        'background',
+        baseCorrelationContext
       )
     }
     return maybeDecorateCacheMetadata(
@@ -1253,7 +1565,7 @@ async function cachedReport(scope, load, options = {}) {
     )
   }
 
-  const refreshResult = await refreshReportCache(identity, load, {
+  const refreshResult = await refreshReportCache(identity, foregroundLoad, {
     cacheTtlMs,
     lockWaitMs: options.lockWaitMs ?? REPORT_CACHE_FOREGROUND_LOCK_WAIT_MS,
   })
@@ -1280,14 +1592,45 @@ export function shouldSuppressCacheRefreshFailureDuringShutdown(
 
 function logCacheRefreshFailure(kind, identity, error) {
   if (shouldSuppressCacheRefreshFailureDuringShutdown(error)) return
+  const failure = resolveQueryFailureRecord(error)
+  const errorCode = failure?.errorCode ?? sanitizeStableErrorCode(error)
+  const queryId = Number.isFinite(failure?.queryId)
+    ? failure.queryId.toString()
+    : 'unknown'
+  const usageTaskKey = failure?.usageTaskKey ?? 'none'
+  const queryLabel = JSON.stringify(failure?.label ?? 'unknown')
+  const endpoint = failure?.endpoint ?? 'none'
+  const dateIdentity = failure?.dateIdentity ?? 'none'
+  const codeField = errorCode ? ` code=${errorCode}` : ''
+  const errorSummary = failure?.errorSummary ?? safeReportErrorSummary(error)
   process.stderr.write(
-    `[report-service] WARN: ${kind} cache refresh failed for ${identity.scope}:${identity.hash}: ${formatError(error)}\n`
+    `[report-service] WARN: ${kind} cache refresh failed for ${identity.scope}:${identity.hash} refreshKind=${kind} queryId=${queryId} usageTaskKey=${usageTaskKey} queryLabel=${queryLabel} endpoint=${endpoint} dateIdentity=${dateIdentity}${codeField}: ${errorSummary}\n`
   )
 }
 
-function scheduleBackgroundCacheRefresh(identity, load, options, kind) {
+function scheduleBackgroundCacheRefresh(
+  identity,
+  load,
+  options,
+  kind,
+  baseCorrelationContext
+) {
   if (reportServiceShuttingDown) return
-  refreshReportCache(identity, load, options).catch((error) => {
+  const backgroundContext = {
+    ...baseCorrelationContext,
+    cacheScope:
+      sanitizeCorrelationString(identity.scope, QUERY_CORRELATION_FIELD_MAX) ??
+      null,
+    cacheKeyHash:
+      sanitizeCorrelationString(identity.hash, QUERY_CORRELATION_FIELD_MAX) ??
+      null,
+    refreshKind:
+      sanitizeCorrelationString(kind, QUERY_CORRELATION_FIELD_MAX) ??
+      'background',
+  }
+  const backgroundLoad = () =>
+    reportQueryCorrelationStorage.run(backgroundContext, load)
+  refreshReportCache(identity, backgroundLoad, options).catch((error) => {
     logCacheRefreshFailure(kind, identity, error)
   })
 }
@@ -1685,6 +2028,14 @@ function reportQueryMetricsSnapshot() {
       activeAgeMs: Date.now() - query.startedAtMs,
       startedAt: new Date(query.startedAtMs).toISOString(),
       label: query.label,
+      requestId: query.requestId,
+      endpoint: query.endpoint,
+      cacheScope: query.cacheScope,
+      cacheKeyHash: query.cacheKeyHash,
+      usageTaskKey: query.usageTaskKey,
+      refreshKind: query.refreshKind,
+      dateIdentity: query.dateIdentity,
+      statementTimeoutMs: query.statementTimeoutMs,
     }))
     .sort((a, b) => b.activeAgeMs - a.activeAgeMs)
 
@@ -1707,6 +2058,8 @@ function reportQueryMetricsSnapshot() {
     lastDurationMs: reportQueryMetrics.lastDurationMs,
     maxDurationMs: reportQueryMetrics.maxDurationMs,
     activeQueries: activeQueries.slice(0, 5),
+    recentTimeouts: [...recentQueryTimeouts],
+    recentErrors: [...recentQueryErrors],
   }
 }
 
@@ -3309,14 +3662,193 @@ async function respondWithRequestError(req, res, error) {
   await respondWithGenericServerError(req, res, error)
 }
 
-function logUnhandledRequestError(error) {
+function readRequestHeaderValue(req, headerName) {
+  const headers = req && typeof req === 'object' ? req.headers : null
+  if (!headers || typeof headers !== 'object') return null
+  const value = headers[headerName]
+  if (Array.isArray(value)) {
+    return typeof value[0] === 'string' ? value[0] : null
+  }
+  return typeof value === 'string' ? value : null
+}
+
+function resolveRequestUrlForCorrelation(req) {
+  if (!req || typeof req !== 'object' || typeof req.url !== 'string') {
+    return null
+  }
+  const host = readRequestHeaderValue(req, 'host') ?? 'localhost'
+  try {
+    return new URL(req.url, `http://${host}`)
+  } catch {
+    return null
+  }
+}
+
+function buildRequestFailureRecord(req, error) {
+  const requestUrl = resolveRequestUrlForCorrelation(req)
+  const endpoint = requestUrl
+    ? sanitizeCorrelationString(
+        requestUrl.pathname,
+        QUERY_CORRELATION_ENDPOINT_MAX
+      )
+    : null
+  const dateIdentity = requestUrl
+    ? buildNormalizedReportRequestIdentity(requestUrl.searchParams)
+    : null
+  const requestId = buildRequestIdReference(
+    readRequestHeaderValue(req, 'x-request-id')
+  )
+  const errorCode = sanitizeStableErrorCode(error)
+  const errorSummary = safeReportErrorSummary(error, 'request failure')
+  const finishedAt = new Date().toISOString()
+
+  return {
+    failureKind: 'request',
+    queryId: null,
+    label: null,
+    requestId,
+    endpoint,
+    cacheScope: null,
+    cacheKeyHash: null,
+    refreshKind: null,
+    dateIdentity,
+    usageTaskKey: null,
+    statementTimeoutMs: null,
+    startedAt: null,
+    finishedAt,
+    durationMs: null,
+    errorCode,
+    errorSummary,
+    errorMessage: errorSummary,
+  }
+}
+
+function isAnnotatableThrownValue(error) {
+  return (
+    (error !== null && typeof error === 'object') || typeof error === 'function'
+  )
+}
+
+function isPrimitiveThrownValue(error) {
+  return !isAnnotatableThrownValue(error)
+}
+
+function fingerprintPrimitiveThrownValue(error) {
+  const typeTag =
+    error === null ? 'null' : error === undefined ? 'undefined' : typeof error
+  let serialized
+  if (typeTag === 'null' || typeTag === 'undefined') {
+    serialized = typeTag
+  } else if (typeTag === 'bigint') {
+    serialized = `${error}n`
+  } else if (typeTag === 'symbol') {
+    serialized = String(error)
+  } else {
+    // string | number | boolean | (defensive fallback)
+    serialized = String(error)
+  }
+  const digest = crypto
+    .createHash('sha256')
+    .update(`${typeTag}\0${serialized}`)
+    .digest('hex')
+    .slice(0, 24)
+  return `p:${digest}`
+}
+
+function rememberPrimitiveRequestFailure(req, error, failureRecord) {
+  if (!req || typeof req !== 'object') {
+    return
+  }
+  let byPrimitive = requestFailureRecordsByReqPrimitive.get(req)
+  if (!byPrimitive) {
+    byPrimitive = new Map()
+    requestFailureRecordsByReqPrimitive.set(req, byPrimitive)
+  }
+  const fingerprint = fingerprintPrimitiveThrownValue(error)
+  if (
+    byPrimitive.size >= QUERY_CORRELATION_PRIMITIVE_FAILURE_MAX &&
+    !byPrimitive.has(fingerprint)
+  ) {
+    const oldestKey = byPrimitive.keys().next().value
+    if (oldestKey !== undefined) {
+      byPrimitive.delete(oldestKey)
+    }
+  }
+  byPrimitive.set(fingerprint, failureRecord)
+}
+
+function ensureRequestFailureRecord(req, error) {
+  // Optional compatibility annotation still wins when present.
+  if (isAnnotatableThrownValue(error) && error.reportRequestFailure) {
+    return error.reportRequestFailure
+  }
+
+  // Object/function identity side-table (covers frozen/non-extensible throws).
+  if (isAnnotatableThrownValue(error)) {
+    const existingByError = requestFailureRecordsByError.get(error)
+    if (existingByError) {
+      return existingByError
+    }
+  }
+
+  // Primitive throws: bound per real request object, fingerprint only (no raw text).
+  if (isPrimitiveThrownValue(error) && req && typeof req === 'object') {
+    const byPrimitive = requestFailureRecordsByReqPrimitive.get(req)
+    const existingByPrimitive = byPrimitive?.get(
+      fingerprintPrimitiveThrownValue(error)
+    )
+    if (existingByPrimitive) {
+      return existingByPrimitive
+    }
+  }
+
+  const failureRecord = buildRequestFailureRecord(req, error)
+  pushBoundedRecent(recentQueryErrors, failureRecord)
+
+  if (isAnnotatableThrownValue(error)) {
+    requestFailureRecordsByError.set(error, failureRecord)
+    try {
+      Object.defineProperty(error, 'reportRequestFailure', {
+        configurable: true,
+        value: failureRecord,
+      })
+    } catch {
+      // Side-table dedupe still holds when the error cannot be annotated.
+    }
+  } else if (req && typeof req === 'object') {
+    rememberPrimitiveRequestFailure(req, error, failureRecord)
+  }
+
+  return failureRecord
+}
+
+function resolveQueryFailureRecord(error) {
+  if (!error || typeof error !== 'object') {
+    return null
+  }
+  if (error.reportQueryFailure) {
+    return error.reportQueryFailure
+  }
+  return queryFailureRecordsByError.get(error) ?? null
+}
+
+function logUnhandledRequestError(req, error) {
+  const queryFailure = resolveQueryFailureRecord(error)
+  const failure = queryFailure ?? ensureRequestFailureRecord(req, error)
+  const requestId = failure?.requestId ?? 'none'
+  const endpoint = failure?.endpoint ?? 'none'
+  const errorCode = failure?.errorCode ?? sanitizeStableErrorCode(error)
+  const codeField = errorCode ? ` code=${errorCode}` : ''
+  const errorSummary =
+    failure?.errorSummary ?? safeReportErrorSummary(error, 'request failure')
+
   process.stderr.write(
-    `[report-service] WARN: unhandled request error: ${formatError(error)}\n`
+    `[report-service] WARN: unhandled request error requestId=${requestId} endpoint=${endpoint}${codeField}: ${errorSummary}\n`
   )
 }
 
 async function respondWithGenericServerError(req, res, error) {
-  logUnhandledRequestError(error)
+  logUnhandledRequestError(req, error)
   if (isHttpResponseCommitted(res)) {
     return
   }
@@ -5759,19 +6291,29 @@ bounded_normalized AS (
         ) AS interval_rank
     FROM scoped_normalized n
 ),
-observation_identity AS (
-    SELECT DISTINCT ON (
-        n.raw_provider,
-        n.quota_key,
-        n.quota_period,
-        COALESCE(n.source, ''),
-        COALESCE(n.account_hash, ''),
-        n.expected_reset_at
-    )
+observation_identity_windows AS MATERIALIZED (
+    -- Distinct capped identity windows for latest-observation lookup only.
+    -- session_history usage remains on usage_windows/per_model_usage; velocity
+    -- continues to scan history_observations independently.
+    SELECT DISTINCT
         n.raw_provider,
         n.quota_key,
         n.quota_period,
         n.source AS selected_source,
+        n.account_hash,
+        n.expected_reset_at,
+        n.interval_start
+    FROM bounded_normalized n
+    WHERE n.interval_rank <= ${QUOTA_HISTORY_MAX_INTERVALS_PER_LANE}
+      AND n.quota_key IS NOT NULL
+      AND n.expected_reset_at IS NOT NULL
+),
+observation_identity AS (
+    SELECT
+        n.raw_provider,
+        n.quota_key,
+        n.quota_period,
+        n.selected_source,
         n.account_hash,
         n.expected_reset_at,
         NULLIF(TRIM(BOTH FROM COALESCE(o.source, '')), '') AS source,
@@ -5780,26 +6322,26 @@ observation_identity AS (
         o.quota_limit,
         o.quota_used,
         o.quota_remaining
-    FROM bounded_normalized n
-    JOIN public.rate_limit_observations o
-      ON n.quota_key IS NOT NULL
-     AND n.expected_reset_at IS NOT NULL
-     AND o.provider = n.raw_provider
-     AND o.quota_key = n.quota_key
-     AND (n.account_hash IS NULL OR o.account_hash IS NOT DISTINCT FROM n.account_hash)
-     AND (n.source IS NULL OR o.source IS NOT DISTINCT FROM n.source)
-     AND (n.quota_period IS NULL OR o.quota_period IS NOT DISTINCT FROM n.quota_period)
-     AND o.expected_reset_at IS NOT DISTINCT FROM n.expected_reset_at
-     AND o.observed_at IS NOT NULL${quotaObservationIntervalBoundsSql('n.interval_start', 'n.expected_reset_at')}
-    WHERE n.interval_rank <= ${QUOTA_HISTORY_MAX_INTERVALS_PER_LANE}
-    ORDER BY
-        n.raw_provider,
-        n.quota_key,
-        n.quota_period,
-        COALESCE(n.source, ''),
-        COALESCE(n.account_hash, ''),
-        n.expected_reset_at,
-        o.observed_at DESC
+    FROM observation_identity_windows n
+    JOIN LATERAL (
+        SELECT
+            o.source,
+            o.client,
+            o.observed_at,
+            o.quota_limit,
+            o.quota_used,
+            o.quota_remaining
+        FROM public.rate_limit_observations o
+        WHERE o.provider = n.raw_provider
+          AND o.quota_key = n.quota_key
+          AND (n.account_hash IS NULL OR o.account_hash IS NOT DISTINCT FROM n.account_hash)
+          AND (n.selected_source IS NULL OR o.source IS NOT DISTINCT FROM n.selected_source)
+          AND (n.quota_period IS NULL OR o.quota_period IS NOT DISTINCT FROM n.quota_period)
+          AND o.expected_reset_at IS NOT DISTINCT FROM n.expected_reset_at
+          AND o.observed_at IS NOT NULL${quotaObservationIntervalBoundsSql('n.interval_start', 'n.expected_reset_at')}
+        ORDER BY o.observed_at DESC
+        LIMIT 1
+    ) o ON TRUE
 ),
 history_observations AS (
     SELECT
@@ -6033,58 +6575,101 @@ recent_traces_90m AS (
       AND ${sessionHistoryReportablePredicate('sh_recent')}
     GROUP BY ${providerDimensionRecent}, COALESCE(sh_recent.model, 'unknown')
 ),
-per_model_usage AS (
-    SELECT
-        wb.provider,
-        wb.model AS quota_model,
-        wb.quota_type,
-        wb.quota_key,
-        wb.quota_period,
-        wb.source,
-        wb.account_hash,
-        wb.expected_reset_at,
-        COALESCE(sh.model, 'unknown') AS sh_model,
-        SUM(
-            COALESCE(sh.input_tokens, 0)
-            + COALESCE(sh.output_tokens, 0)
-            + COALESCE(sh.cache_read_input_tokens, 0)
-            + COALESCE(sh.cache_creation_input_tokens, 0)
-            + COALESCE(sh.reasoning_tokens_reported, 0)
-            + COALESCE(sh.reasoning_tokens_estimated, 0)
-        )::double precision AS tokens,
-        SUM(COALESCE(sh.response_cost_usd, 0))::double precision AS cost,
-        COUNT(*)::double precision AS traces,
-        COALESCE(recent.recent_traces_90m, 0)::double precision AS recent_traces_90m
-    FROM window_bounds wb
-    JOIN public.session_history sh
-      ON wb.provider <> 'antigravity'
-     AND wb.provider <> '${ALIBABA_TOKEN_PLAN_PROVIDER}'
-     AND ${providerDimensionForAlias('sh', { includeAntigravity: true })} = wb.provider
-      -- Wave 35-C2 (⚠-7): use start_time (with created_at fallback) to match
-      -- the live quota query (buildQuotaQuery), which also anchors on
-      -- sh.start_time. Using created_at here caused sessions near quota-reset
-      -- boundaries to appear in the wrong historical interval because
-      -- created_at (record persistence time) can lag start_time by minutes.
-      AND COALESCE(sh.start_time, sh.created_at) >= wb.interval_start
-      AND COALESCE(sh.start_time, sh.created_at) < wb.expected_reset_at
-      AND ${sessionHistoryReportablePredicate()}
-      AND (wb.model IS NULL OR sh.model = wb.model)
-    LEFT JOIN recent_traces_90m recent
-      ON recent.provider = wb.provider
-     AND recent.sh_model = COALESCE(sh.model, 'unknown')
-     AND (wb.model IS NULL OR recent.sh_model = wb.model)
-    GROUP BY
+usage_windows AS MATERIALIZED (
+    -- Distinct session_history usage windows only. Multiple quota-key /
+    -- source / account / period lanes can share the same
+    -- (provider, model, interval_start, expected_reset_at) window; materialize
+    -- once so session_history is not re-scanned per identity lane.
+    SELECT DISTINCT
         wb.provider,
         wb.model,
-        wb.quota_type,
-        wb.quota_key,
-        wb.quota_period,
-        wb.source,
-        wb.account_hash,
-        wb.expected_reset_at,
-        COALESCE(sh.model, 'unknown'),
-        recent.recent_traces_90m
+        wb.interval_start,
+        wb.expected_reset_at
+    FROM window_bounds wb
+    WHERE wb.provider <> 'antigravity'
+      AND wb.provider <> '${ALIBABA_TOKEN_PLAN_PROVIDER}'
+),
+-- One session_history envelope scan per (provider, model) group, then
+-- set-based half-open assignment back onto distinct usage windows.
+-- Index target: session_history_quota_provider_started_model_idx
+--   btree(canonical provider CASE, COALESCE(start_time, created_at) DESC, model)
+-- JOIN LATERAL + OFFSET 0 keeps the parameterized envelope scan correlated so
+-- PostgreSQL cannot flatten it into a full-table Merge Join over session_history.
+grouped_session_usage AS MATERIALIZED (
+    SELECT
+        g.provider,
+        g.model AS quota_model,
+        sh.sh_timestamp,
+        sh.raw_model,
+        sh.sh_model,
+        sh.tokens,
+        sh.cost
+    FROM (
+        SELECT
+            uw.provider,
+            uw.model,
+            MIN(uw.interval_start) AS envelope_start,
+            MAX(uw.expected_reset_at) AS envelope_end
+        FROM usage_windows uw
+        GROUP BY uw.provider, uw.model
+    ) g
+    JOIN LATERAL (
+        SELECT
+            COALESCE(sh.start_time, sh.created_at) AS sh_timestamp,
+            sh.model AS raw_model,
+            COALESCE(sh.model, 'unknown') AS sh_model,
+            (
+                COALESCE(sh.input_tokens, 0)
+                + COALESCE(sh.output_tokens, 0)
+                + COALESCE(sh.cache_read_input_tokens, 0)
+                + COALESCE(sh.cache_creation_input_tokens, 0)
+                + COALESCE(sh.reasoning_tokens_reported, 0)
+                + COALESCE(sh.reasoning_tokens_estimated, 0)
+            )::double precision AS tokens,
+            COALESCE(sh.response_cost_usd, 0)::double precision AS cost
+        FROM public.session_history sh
+        WHERE ${providerDimensionForAlias('sh')} = g.provider
+          -- Wave 35-C2 (⚠-7): use start_time (with created_at fallback) to match
+          -- the live quota query (buildQuotaQuery), which also anchors on
+          -- sh.start_time. Using created_at here caused sessions near quota-reset
+          -- boundaries to appear in the wrong historical interval because
+          -- created_at (record persistence time) can lag start_time by minutes.
+          AND COALESCE(sh.start_time, sh.created_at) >= g.envelope_start
+          AND COALESCE(sh.start_time, sh.created_at) < g.envelope_end
+          AND ${sessionHistoryReportablePredicate()}
+          AND (g.model IS NULL OR sh.model = g.model)
+        OFFSET 0
+    ) sh ON TRUE
+),
+per_model_usage AS (
+    SELECT
+        uw.provider,
+        uw.model AS quota_model,
+        uw.interval_start,
+        uw.expected_reset_at,
+        gsu.sh_model,
+        SUM(gsu.tokens)::double precision AS tokens,
+        SUM(gsu.cost)::double precision AS cost,
+        COUNT(*)::double precision AS traces,
+        COALESCE(MAX(recent.recent_traces_90m), 0)::double precision AS recent_traces_90m
+    FROM usage_windows uw
+    JOIN grouped_session_usage gsu
+      ON gsu.provider = uw.provider
+     AND gsu.quota_model IS NOT DISTINCT FROM uw.model
+     AND gsu.sh_timestamp >= uw.interval_start
+     AND gsu.sh_timestamp < uw.expected_reset_at
+    LEFT JOIN recent_traces_90m recent
+      ON recent.provider = uw.provider
+     AND recent.sh_model = gsu.sh_model
+     AND (uw.model IS NULL OR recent.sh_model = uw.model)
+    GROUP BY
+        uw.provider,
+        uw.model,
+        uw.interval_start,
+        uw.expected_reset_at,
+        gsu.sh_model
 )
+
 SELECT
     wb.provider,
     wb.model,
@@ -6124,13 +6709,9 @@ SELECT
 FROM window_bounds wb
 LEFT JOIN per_model_usage pmu
   ON pmu.provider = wb.provider
-  AND pmu.quota_type = wb.quota_type
-  AND pmu.quota_key IS NOT DISTINCT FROM wb.quota_key
-  AND pmu.quota_period IS NOT DISTINCT FROM wb.quota_period
-  AND pmu.source IS NOT DISTINCT FROM wb.source
-  AND pmu.account_hash IS NOT DISTINCT FROM wb.account_hash
+  AND pmu.quota_model IS NOT DISTINCT FROM wb.model
+  AND pmu.interval_start = wb.interval_start
   AND pmu.expected_reset_at = wb.expected_reset_at
-  AND (pmu.quota_model IS NOT DISTINCT FROM wb.model)
 LEFT JOIN history_velocity_arrays hv
   ON hv.provider = wb.provider
   AND hv.model IS NOT DISTINCT FROM wb.model
@@ -7215,12 +7796,26 @@ window_cap_state AS (
         b.max_id AS tool_activity_bounded_max_id,
         b.recent_row_limit AS tool_activity_recent_row_limit,
         true AS tool_activity_recent_id_cap_active,
-        EXISTS (
-            SELECT 1
-            FROM public.session_history_tool_activity a
-            WHERE a.created_at >= ($1::date::timestamp AT TIME ZONE 'America/New_York')
-              AND a.created_at < ($2::date::timestamp AT TIME ZONE 'America/New_York')
-              AND a.id <= b.min_id
+        -- Exact truncation: any in-window row at/below the recent-id floor.
+        -- Guard with min_id > 0 only to skip the probe when the floor is zero
+        -- (no positive id can be capped out). Do not use min_id > 0 alone as
+        -- the truncation flag — that changes metadata when the capped-out
+        -- side has no rows in the requested window.
+        -- Use a scalar (SELECT a.id ... ORDER BY id DESC LIMIT 1) IS NOT NULL
+        -- probe (not bare EXISTS): on the live PK this becomes an Index Scan
+        -- Backward from min_id and stops at the first hit. Bare EXISTS plans a
+        -- forward PK scan that filters ~1M older rows under the 30s guardrail.
+        (
+            b.min_id > 0
+            AND (
+                SELECT a.id
+                FROM public.session_history_tool_activity a
+                WHERE a.id <= b.min_id
+                  AND a.created_at >= ($1::date::timestamp AT TIME ZONE 'America/New_York')
+                  AND a.created_at < ($2::date::timestamp AT TIME ZONE 'America/New_York')
+                ORDER BY a.id DESC
+                LIMIT 1
+            ) IS NOT NULL
         ) AS tool_activity_recent_id_cap_truncates_requested_window
     FROM bounds b
 ),
@@ -11944,8 +12539,14 @@ async function handleCachedUsageSubreport(req, res, scope, load, deps = {}) {
 
   const requestUrl = new URL(req.url, `http://${req.headers.host}`)
   const searchParams = requestUrl.searchParams
+  const requestId = req.headers['x-request-id'] ?? null
   const body = await cachedReportFn(scope, () => load(searchParams), {
     searchParams,
+    endpoint: sanitizeCorrelationString(
+      requestUrl.pathname,
+      QUERY_CORRELATION_ENDPOINT_MAX
+    ),
+    requestIdRef: buildRequestIdReference(requestId),
   })
 
   await sendJsonFn(req, res, 200, body)
@@ -12581,6 +13182,33 @@ export const __dockerLogScanTestHelpers = {
 
 export const __cachedUsageSubreportTestHelpers = {
   handleCachedUsageSubreport,
+}
+
+export const __queryCorrelationTestHelpers = {
+  reportQueryCorrelationStorage,
+  recentQueryTimeouts,
+  recentQueryErrors,
+  resetQueryCorrelationForTests,
+  QUERY_CORRELATION_MAX_RECENT,
+  QUERY_CORRELATION_REQUEST_ID_MAX,
+  QUERY_CORRELATION_DATE_IDENTITY_MAX,
+  buildNormalizedReportRequestIdentity,
+  buildRequestIdReference,
+  sanitizeCorrelationString,
+  resolveQueryCorrelationContext,
+  queryReportDatabase,
+  reportQueryMetricsSnapshot,
+  setExecuteReportQueryTestImpl(impl) {
+    if (!isReportQueryTestRuntime()) {
+      throw new Error(
+        'Report query test executor is only available in test runtime.'
+      )
+    }
+    executeReportQueryTestImpl = impl
+  },
+  resetExecuteReportQueryTestImpl() {
+    executeReportQueryTestImpl = null
+  },
 }
 
 export const __usageReportTestHelpers = {

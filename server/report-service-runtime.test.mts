@@ -1,6 +1,23 @@
 import { afterEach, describe, expect, test, vi } from 'vitest'
 
 const envSnapshot = { ...process.env }
+const RANDOM_CREDENTIAL = 'unlabeled-credential-7f4d9c2a'
+
+function sensitiveErrorMessage() {
+  return [
+    'request failed',
+    'Bearer bearer-secret',
+    'postgresql://db-user:db-password@localhost:5432/report',
+    'token=plain-token',
+    'password=plain-password',
+    'secret=plain-secret',
+    'apiKey=plain-api-key',
+    'authorization=plain-authorization',
+    '{"token":"json-token","password":"json-password","secret":"json-secret","apiKey":"json-api-key","authorization":"json-authorization"}',
+    RANDOM_CREDENTIAL,
+    'x'.repeat(500),
+  ].join(' ')
+}
 
 afterEach(() => {
   process.env = { ...envSnapshot }
@@ -30,12 +47,9 @@ describe('report-service generic unhandled error response', () => {
       end,
     }
     const req = { headers: {} }
+    const originalError = new Error(sensitiveErrorMessage())
 
-    await respondWithGenericServerError(
-      req,
-      res,
-      new Error('secret-db-password-leak')
-    )
+    await respondWithGenericServerError(req, res, originalError)
 
     expect(writeHead).toHaveBeenCalledWith(
       500,
@@ -45,11 +59,93 @@ describe('report-service generic unhandled error response', () => {
     )
     const payload = JSON.parse(String(end.mock.calls[0]?.[0]))
     expect(payload).toEqual(GENERIC_INTERNAL_SERVER_ERROR_BODY)
-    expect(JSON.stringify(payload)).not.toContain('secret-db-password-leak')
+    expect(JSON.stringify(payload)).not.toContain('bearer-secret')
     expect(stderrSpy).toHaveBeenCalled()
-    expect(String(stderrSpy.mock.calls[0]?.[0])).toContain(
-      'secret-db-password-leak'
+    const log = String(stderrSpy.mock.calls[0]?.[0])
+    for (const secret of [
+      'bearer-secret',
+      'db-user',
+      'db-password',
+      'plain-token',
+      'plain-password',
+      'plain-secret',
+      'plain-api-key',
+      'plain-authorization',
+      'json-token',
+      'json-password',
+      'json-secret',
+      'json-api-key',
+      'json-authorization',
+      RANDOM_CREDENTIAL,
+    ]) {
+      expect(log).not.toContain(secret)
+    }
+    expect(log).toContain('request failure')
+    expect(log).toContain('requestId=none')
+    expect(log).toContain('endpoint=none')
+    expect(log.length).toBeLessThanOrEqual(260)
+    expect(originalError.message).toContain('bearer-secret')
+    stderrSpy.mockRestore()
+  })
+
+  test('invalid non-object req with primitive error stays safe without identity dedupe', async () => {
+    vi.stubEnv('VITEST', 'true')
+    const stderrSpy = vi
+      .spyOn(process.stderr, 'write')
+      .mockImplementation(() => true)
+    const mod = await import('./report-service.mjs')
+    const {
+      respondWithGenericServerError,
+      GENERIC_INTERNAL_SERVER_ERROR_BODY,
+    } = mod.__serverRuntimeTestHelpers
+    const { resetQueryCorrelationForTests, reportQueryMetricsSnapshot } =
+      mod.__queryCorrelationTestHelpers
+    resetQueryCorrelationForTests()
+
+    const writeHead = vi.fn()
+    const end = vi.fn()
+    const res = {
+      headersSent: false,
+      writableEnded: false,
+      destroyed: false,
+      writeHead,
+      end,
+    }
+    const secret = 'non-object-req-primitive-secret'
+
+    await respondWithGenericServerError(
+      null as unknown as Record<string, unknown>,
+      res,
+      secret
     )
+    await respondWithGenericServerError(
+      'not-a-req' as unknown as Record<string, unknown>,
+      res,
+      secret
+    )
+
+    const payload = JSON.parse(String(end.mock.calls[0]?.[0]))
+    expect(payload).toEqual(GENERIC_INTERNAL_SERVER_ERROR_BODY)
+    expect(JSON.stringify(payload)).not.toContain(secret)
+
+    const snapshot = reportQueryMetricsSnapshot()
+    // Without a real request object, primitive identity dedupe is impossible.
+    expect(snapshot.recentErrors.length).toBeGreaterThanOrEqual(1)
+    for (const record of snapshot.recentErrors) {
+      expect(record).toMatchObject({
+        failureKind: 'request',
+        errorSummary: 'request failure',
+        endpoint: null,
+        dateIdentity: null,
+        requestId: null,
+      })
+      expect(JSON.stringify(record)).not.toContain(secret)
+    }
+    for (const call of stderrSpy.mock.calls) {
+      const log = String(call[0])
+      expect(log).toContain('request failure')
+      expect(log).not.toContain(secret)
+    }
     stderrSpy.mockRestore()
   })
 
