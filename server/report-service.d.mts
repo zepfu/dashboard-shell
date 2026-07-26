@@ -337,6 +337,50 @@ declare module './report-service.mjs' {
     unavailable?: readonly string[]
   ): Record<string, unknown>
 
+  type UsageReportFanoutTaskContext = {
+    deadlineMs: number
+    remainingBudgetMs: number
+    statementTimeoutMs: number
+  }
+
+  type UsageReportFanoutTask = {
+    taskKey: string
+    task: (context: UsageReportFanoutTaskContext) => unknown | Promise<unknown>
+  }
+
+  type UsageReportFanoutTaskResult =
+    | {
+        status: 'fulfilled'
+        taskKey: string
+        value: unknown
+      }
+    | {
+        status: 'rejected'
+        taskKey: string
+        error: unknown
+      }
+    | {
+        status: 'skipped'
+        taskKey: string
+        reason: 'request_budget_exhausted'
+      }
+
+  type UsageReportFanoutResult = {
+    results: UsageReportFanoutTaskResult[]
+    unavailableAuxiliarySections: string[]
+  }
+
+  type UsageReportSchedulerOptions = {
+    now?: () => number
+    requestStartedAtMs?: number
+    requestBudgetMs?: number
+    statementTimeoutCeilingMs?: number
+  }
+
+  type LoadUsageReportOptions = UsageReportSchedulerOptions & {
+    concurrency?: number
+  }
+
   type ProxySecretCheckResult =
     | { ok: true }
     | { ok: false; status: number; error: string }
@@ -564,6 +608,9 @@ declare module './report-service.mjs' {
     REPORT_DB_POOL_MAX: number
     REPORT_DB_DISABLE_PARALLELISM: boolean
     REPORT_DB_STATEMENT_TIMEOUT_MS: number
+    REPORT_DB_STATEMENT_TIMEOUT_CEILING_MS: number
+    USAGE_REPORT_REQUEST_BUDGET_MS: number
+    USAGE_REPORT_RESPONSE_HEADROOM_MS: number
     buildPostgresLocalSettings: (
       statementTimeoutMs?: number
     ) => Array<[string, string]>
@@ -632,13 +679,20 @@ declare module './report-service.mjs' {
 
   export const __usageReportTestHelpers: {
     loadUsageReport: (
-      searchParams: URLSearchParams
+      searchParams: URLSearchParams,
+      options?: LoadUsageReportOptions
     ) => Promise<Record<string, unknown>>
-    runUsageReportFanoutTasks: (...args: unknown[]) => Promise<unknown>
+    runUsageReportFanoutTasks: (
+      tasks: UsageReportFanoutTask[],
+      concurrency: number,
+      options?: UsageReportSchedulerOptions
+    ) => Promise<UsageReportFanoutResult>
     buildUsageReportAuxiliaryDegradedMetadata: (
       unavailable?: readonly string[]
     ) => Record<string, unknown>
     USAGE_REPORT_OPTIONAL_FANOUT_SECTION_KEYS: readonly string[]
+    USAGE_REPORT_REQUEST_BUDGET_MS: number
+    USAGE_REPORT_RESPONSE_HEADROOM_MS: number
     normalizeRow: (row: unknown) => RecordRow
     AGENT_SCORE_REASON_RECENT_ROW_LIMIT: number
     setQueryReportDatabaseTestImpl: (
@@ -646,7 +700,10 @@ declare module './report-service.mjs' {
         | ((
             sql: string,
             values: unknown,
-            options?: { usageReportTaskKey?: string }
+            options?: {
+              statementTimeoutMs?: number
+              usageReportTaskKey?: string
+            }
           ) => Promise<{ rows: unknown[] }>)
         | null
     ) => void

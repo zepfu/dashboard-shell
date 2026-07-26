@@ -6,6 +6,9 @@ import {
 
 const {
   loadUsageReport,
+  runUsageReportFanoutTasks,
+  USAGE_REPORT_REQUEST_BUDGET_MS,
+  USAGE_REPORT_RESPONSE_HEADROOM_MS,
   setQueryReportDatabaseTestImpl,
   resetQueryReportDatabaseTestImpl,
   setLoadDockerLogErrorsTestImpl,
@@ -44,11 +47,359 @@ function usageReportTaskKey(options: unknown) {
     : undefined
 }
 
+function usageReportStatementTimeoutMs(options: unknown) {
+  return typeof options === 'object' && options != null
+    ? (options as { statementTimeoutMs?: number }).statementTimeoutMs
+    : undefined
+}
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise
+    reject = rejectPromise
+  })
+  return { promise, resolve, reject }
+}
+
 afterEach(() => {
   vi.useRealTimers()
   resetQueryReportDatabaseTestImpl()
   resetLoadDockerLogErrorsTestImpl()
   resetLoadLocalHealthTestImpl()
+})
+
+describe('D1-496 usage report wall-clock scheduler', () => {
+  test('test_runUsageReportFanoutTasks_schedules_all_mandatory_work_before_optional_work', async () => {
+    const usageRowsGate = deferred<string>()
+    const started: string[] = []
+
+    const runPromise = runUsageReportFanoutTasks(
+      [
+        {
+          taskKey: 'usage_score_reasons',
+          task: async () => {
+            started.push('usage_score_reasons')
+            return 'score reasons'
+          },
+        },
+        {
+          taskKey: 'usage_rows',
+          task: async () => {
+            started.push('usage_rows')
+            return usageRowsGate.promise
+          },
+        },
+        {
+          taskKey: 'local_health',
+          task: async () => {
+            started.push('local_health')
+            return 'local health'
+          },
+        },
+        {
+          taskKey: 'summary',
+          task: async () => {
+            started.push('summary')
+            return 'summary'
+          },
+        },
+      ],
+      1,
+      {
+        now: () => 0,
+        requestStartedAtMs: 0,
+        requestBudgetMs: 1_000,
+      }
+    )
+
+    expect(started).toEqual(['usage_rows'])
+    usageRowsGate.resolve('usage rows')
+
+    const result = await runPromise
+
+    expect(started).toEqual([
+      'usage_rows',
+      'summary',
+      'usage_score_reasons',
+      'local_health',
+    ])
+    expect(result.unavailableAuxiliarySections).toEqual([])
+  })
+
+  test('test_runUsageReportFanoutTasks_skips_exhausted_optionals_and_reports_each_section', async () => {
+    let nowMs = 0
+    const optionalStarts: string[] = []
+
+    const result = await runUsageReportFanoutTasks(
+      [
+        {
+          taskKey: 'usage_score_reasons',
+          task: async () => {
+            optionalStarts.push('usage_score_reasons')
+            return 'score reasons'
+          },
+        },
+        {
+          taskKey: 'usage_rows',
+          task: async ({
+            remainingBudgetMs,
+            statementTimeoutMs,
+          }: {
+            remainingBudgetMs: number
+            statementTimeoutMs: number
+          }) => {
+            expect(remainingBudgetMs).toBe(100)
+            expect(statementTimeoutMs).toBe(100)
+            nowMs = 100
+            return 'usage rows'
+          },
+        },
+        {
+          taskKey: 'usage_diagnostic_strings',
+          task: async () => {
+            optionalStarts.push('usage_diagnostic_strings')
+            return 'diagnostic strings'
+          },
+        },
+      ],
+      1,
+      {
+        now: () => nowMs,
+        requestStartedAtMs: 0,
+        requestBudgetMs: 100,
+        statementTimeoutCeilingMs: 120_000,
+      }
+    )
+
+    expect(optionalStarts).toEqual([])
+    expect(result.unavailableAuxiliarySections).toEqual([
+      'usage_score_reasons',
+      'usage_diagnostic_strings',
+    ])
+    expect(result.results).toEqual([
+      {
+        status: 'skipped',
+        taskKey: 'usage_score_reasons',
+        reason: 'request_budget_exhausted',
+      },
+      {
+        status: 'fulfilled',
+        taskKey: 'usage_rows',
+        value: 'usage rows',
+      },
+      {
+        status: 'skipped',
+        taskKey: 'usage_diagnostic_strings',
+        reason: 'request_budget_exhausted',
+      },
+    ])
+    expect(
+      buildUsageReportAuxiliaryDegradedMetadata(
+        result.unavailableAuxiliarySections
+      )
+    ).toMatchObject({
+      degraded: true,
+      degradedReason: 'auxiliary_fanout_failure',
+      unavailableAuxiliarySections: [
+        'usage_score_reasons',
+        'usage_diagnostic_strings',
+      ],
+    })
+  })
+
+  test('test_runUsageReportFanoutTasks_awaits_started_optional_work_with_remaining_timeout', async () => {
+    let nowMs = 0
+    let observedStatementTimeoutMs: number | undefined
+    let optionalStarted = false
+    let runSettled = false
+    const optionalGate = deferred<string>()
+
+    const runPromise = runUsageReportFanoutTasks(
+      [
+        {
+          taskKey: 'usage_rows',
+          task: async () => {
+            nowMs = 40
+            return 'usage rows'
+          },
+        },
+        {
+          taskKey: 'usage_diagnostic_strings',
+          task: async ({
+            statementTimeoutMs,
+          }: {
+            statementTimeoutMs: number
+          }) => {
+            optionalStarted = true
+            observedStatementTimeoutMs = statementTimeoutMs
+            return optionalGate.promise
+          },
+        },
+      ],
+      1,
+      {
+        now: () => nowMs,
+        requestStartedAtMs: 0,
+        requestBudgetMs: 100,
+        statementTimeoutCeilingMs: 120_000,
+      }
+    )
+    void runPromise.then(() => {
+      runSettled = true
+    })
+
+    await vi.waitFor(() => {
+      expect(optionalStarted).toBe(true)
+    })
+    expect(observedStatementTimeoutMs).toBe(60)
+
+    nowMs = 100
+    await Promise.resolve()
+    expect(runSettled).toBe(false)
+
+    optionalGate.resolve('diagnostic strings')
+    const result = await runPromise
+
+    expect(runSettled).toBe(true)
+    expect(result.unavailableAuxiliarySections).toEqual([])
+  })
+
+  test('test_runUsageReportFanoutTasks_core_failure_stops_admission_but_awaits_started_work', async () => {
+    const summaryGate = deferred<string>()
+    const started: string[] = []
+    let runSettled = false
+
+    const runPromise = runUsageReportFanoutTasks(
+      [
+        {
+          taskKey: 'usage_rows',
+          task: async () => {
+            started.push('usage_rows')
+            throw new Error('core usage query failed')
+          },
+        },
+        {
+          taskKey: 'summary',
+          task: async () => {
+            started.push('summary')
+            return summaryGate.promise
+          },
+        },
+        {
+          taskKey: 'usage_score_reasons',
+          task: async () => {
+            started.push('usage_score_reasons')
+            return 'score reasons'
+          },
+        },
+      ],
+      2,
+      {
+        now: () => 0,
+        requestStartedAtMs: 0,
+        requestBudgetMs: 100,
+      }
+    )
+    void runPromise.catch(() => {
+      runSettled = true
+    })
+
+    await Promise.resolve()
+    expect(started).toEqual(['usage_rows', 'summary'])
+    expect(runSettled).toBe(false)
+
+    summaryGate.resolve('summary')
+    await expect(runPromise).rejects.toThrow('core usage query failed')
+
+    expect(runSettled).toBe(true)
+    expect(started).toEqual(['usage_rows', 'summary'])
+  })
+
+  test('test_runUsageReportFanoutTasks_defers_optional_phase_until_mandatory_success', async () => {
+    const usageRowsGate = deferred<string>()
+    const summaryGate = deferred<string>()
+    const started: string[] = []
+    let optionalStartedBeforeMandatoryDone = false
+
+    const runPromise = runUsageReportFanoutTasks(
+      [
+        {
+          taskKey: 'usage_score_reasons',
+          task: async () => {
+            if (
+              started.filter((key) => key === 'usage_rows' || key === 'summary')
+                .length < 2
+            ) {
+              optionalStartedBeforeMandatoryDone = true
+            }
+            started.push('usage_score_reasons')
+            return 'score reasons'
+          },
+        },
+        {
+          taskKey: 'usage_rows',
+          task: async () => {
+            started.push('usage_rows')
+            return usageRowsGate.promise
+          },
+        },
+        {
+          taskKey: 'local_health',
+          task: async () => {
+            if (
+              started.filter((key) => key === 'usage_rows' || key === 'summary')
+                .length < 2
+            ) {
+              optionalStartedBeforeMandatoryDone = true
+            }
+            started.push('local_health')
+            return 'local health'
+          },
+        },
+        {
+          taskKey: 'summary',
+          task: async () => {
+            started.push('summary')
+            return summaryGate.promise
+          },
+        },
+      ],
+      4,
+      {
+        now: () => 0,
+        requestStartedAtMs: 0,
+        requestBudgetMs: 1_000,
+      }
+    )
+
+    await vi.waitFor(() => {
+      expect(started).toEqual(expect.arrayContaining(['usage_rows', 'summary']))
+    })
+    expect(started).toHaveLength(2)
+    expect(optionalStartedBeforeMandatoryDone).toBe(false)
+
+    usageRowsGate.resolve('usage rows')
+    summaryGate.resolve('summary')
+    const result = await runPromise
+
+    expect(optionalStartedBeforeMandatoryDone).toBe(false)
+    expect(started.slice(0, 2).sort()).toEqual(['summary', 'usage_rows'])
+    expect(started.slice(2).sort()).toEqual([
+      'local_health',
+      'usage_score_reasons',
+    ])
+    expect(result.unavailableAuxiliarySections).toEqual([])
+  })
+
+  test('test_usage_report_budget_keeps_five_seconds_of_response_headroom', () => {
+    expect(USAGE_REPORT_REQUEST_BUDGET_MS).toBe(115_000)
+    expect(USAGE_REPORT_RESPONSE_HEADROOM_MS).toBe(5_000)
+    expect(
+      USAGE_REPORT_REQUEST_BUDGET_MS + USAGE_REPORT_RESPONSE_HEADROOM_MS
+    ).toBe(120_000)
+  })
 })
 
 describe('D1-444 loadUsageReport optional fanout degradation', () => {
@@ -285,8 +636,12 @@ describe('D1-493 usage_score_reasons auxiliary split', () => {
       },
     ]
 
+    const statementTimeouts = new Map<string, number | undefined>()
     setQueryReportDatabaseTestImpl(async (_sql: string, _values, options) => {
       const taskKey = usageReportTaskKey(options)
+      if (taskKey) {
+        statementTimeouts.set(taskKey, usageReportStatementTimeoutMs(options))
+      }
       if (taskKey === 'usage_rows') {
         return { rows: coreRows }
       }
@@ -439,8 +794,12 @@ describe('D1-496 usage_diagnostic_strings auxiliary split', () => {
       },
     ]
 
+    const statementTimeouts = new Map<string, number | undefined>()
     setQueryReportDatabaseTestImpl(async (_sql: string, _values, options) => {
       const taskKey = usageReportTaskKey(options)
+      if (taskKey) {
+        statementTimeouts.set(taskKey, usageReportStatementTimeoutMs(options))
+      }
       if (taskKey === 'usage_rows') {
         return { rows: coreRows }
       }
@@ -452,7 +811,9 @@ describe('D1-496 usage_diagnostic_strings auxiliary split', () => {
     setLoadDockerLogErrorsTestImpl(async () => [])
     setLoadLocalHealthTestImpl(async () => [])
 
-    const report = asUsageReport(await loadUsageReport(d1496Params))
+    const report = asUsageReport(
+      await loadUsageReport(d1496Params, { now: () => 0 })
+    )
 
     const anthropicRow = report.rows.find(
       (r: Record<string, unknown>) => r.provider === 'anthropic'
@@ -472,6 +833,8 @@ describe('D1-496 usage_diagnostic_strings auxiliary split', () => {
     expect(openaiRow!.reasoning_tokens_sources).toBeUndefined()
     expect(openaiRow!.cache_miss_reasons).toBeUndefined()
     expect(openaiRow!.token_total).toBe(500)
+    expect(statementTimeouts.get('usage_rows')).toBe(115_000)
+    expect(statementTimeouts.get('usage_diagnostic_strings')).toBe(115_000)
   })
 
   test('test_loadUsageReport_degrades_diagnostic_strings_timeout_without_rejecting_report', async () => {

@@ -172,7 +172,20 @@ describe('D1-496 sql fanout concurrency defaults', () => {
     expect(__envTestHelpers.REPORT_DB_POOL_MAX).toBe(4)
     expect(__envTestHelpers.REPORT_DB_DISABLE_PARALLELISM).toBe(true)
     expect(__envTestHelpers.REPORT_DB_STATEMENT_TIMEOUT_MS).toBe(120_000)
+    expect(__envTestHelpers.REPORT_DB_STATEMENT_TIMEOUT_CEILING_MS).toBe(
+      120_000
+    )
+    expect(__envTestHelpers.USAGE_REPORT_REQUEST_BUDGET_MS).toBe(115_000)
+    expect(__envTestHelpers.USAGE_REPORT_RESPONSE_HEADROOM_MS).toBe(5_000)
     expect(__envTestHelpers.buildPostgresLocalSettings()).toEqual([
+      ['max_parallel_workers_per_gather', '0'],
+      ['statement_timeout', '120000ms'],
+    ])
+    expect(__envTestHelpers.buildPostgresLocalSettings(115_000)).toEqual([
+      ['max_parallel_workers_per_gather', '0'],
+      ['statement_timeout', '115000ms'],
+    ])
+    expect(__envTestHelpers.buildPostgresLocalSettings(999_999)).toEqual([
       ['max_parallel_workers_per_gather', '0'],
       ['statement_timeout', '120000ms'],
     ])

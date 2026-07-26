@@ -58,7 +58,8 @@ column). The auxiliary query carries:
 
 - The same date range, filter, grain, and group-by identity as the core query.
 - The same `AGENT_SCORE_REASON_RECENT_ROW_LIMIT` recent-ID cap.
-- Its own independent statement timeout budget (same 120000ms default).
+- A transaction-local statement timeout capped to the usage request's remaining
+  execution budget and the global 120000ms ceiling.
 
 Merge happens in application code on the full `bucket` + group-by dimension key
 (`buildUsageScoreReasonsMergeKey`). Rows without a matching reason row receive
@@ -99,8 +100,8 @@ Diagnostic-string enrichment runs as a separate optional auxiliary SQL task
   `STRING_AGG(DISTINCT)` diagnostic string fields.
 - Does not apply the core row `LIMIT` (merge is identity-keyed, not position-
   keyed).
-- Shares the default 120000ms statement timeout budget with other usage report
-  SQL tasks.
+- Uses a transaction-local statement timeout capped to the usage request's
+  remaining execution budget and the global 120000ms ceiling.
 
 Merge happens in application code on the full `bucket` + group-by dimension key
 (reusing `buildUsageScoreReasonsMergeKey`). Matching auxiliary rows overwrite
@@ -119,11 +120,37 @@ the placeholder nulls. Rows without a matching diagnostic row keep
 
 Core `usage_rows` failure still fails fast (rejects the entire report). The
 split does not raise statement or proxy timeouts, weaken cache semantics, add DB
-indexes, or broaden query windows. D1-496 leaves the 120s per-statement timeout
-and disabled PostgreSQL intra-query parallelism unchanged, while separately
-raising bounded report SQL fanout default from 1 to 4 to match pool width based
-on the cold benchmark. Mandatory numeric and status fields stay in the core
-query; only the two DISTINCT string aggregates move out.
+indexes, or broaden query windows. Mandatory numeric and status fields stay in
+the core query; only the two DISTINCT string aggregates move out.
+
+The usage loader enforces a 115000ms execution budget measured from
+`loadUsageReport` entry, reserving 5000ms beneath the 120000ms wall-clock
+boundary for merge, serialization, transaction cleanup, and response delivery.
+Its scheduler:
+
+- Runs two phases. Phase 1 admits only mandatory tasks, regardless of declaration
+  order. Mandatory sections are `usage_rows`, summary, trend, client usage,
+  provider latency health, provider error observations, and provider status
+  usage.
+- Starts optional/auxiliary tasks only after every mandatory task has succeeded
+  and meaningful request budget still remains. An optional task that cannot
+  start is skipped and its key is included in
+  `metadata.unavailableAuxiliarySections` through the existing auxiliary
+  degradation response.
+- Caps every started usage-report SQL statement to the smaller of the configured
+  positive statement timeout, the 120000ms global ceiling, and the request
+  budget remaining when the task starts. If the global timeout is configured as
+  `0`, the request's remaining budget still supplies the usage-specific
+  transaction-local timeout.
+- Stops admitting new work after a mandatory failure or mandatory budget
+  exhaustion, awaits every task already started, skips any unstarted optionals,
+  then rejects the report. Optional failures continue to degrade without
+  changing mandatory failure behavior.
+
+The scheduler does not race work against an unawaited timer and does not return
+stale data. Started SQL therefore completes or terminates through PostgreSQL
+`statement_timeout`, transaction cleanup is awaited, and no usage SQL is left
+running in the background after the response.
 
 ## Report cache identity
 
@@ -344,21 +371,15 @@ Antigravity, Alibaba Token Plan, and Kimi Code (`kimi_code`) quota-only windows 
 scan. The 15s quota-history statement-timeout guardrail remains unchanged; if
 enrichment times out, the existing degraded fallback behavior still applies.
 
-Main usage can exceed short HTTP client deadlines even when every DB task stays
-under its own 120s statement timeout if fanout is reduced below the pool width.
-By default, usage/report SQL fanout runs with
-`SHELL_REPORT_SQL_FANOUT_CONCURRENCY=4` (clamped to a maximum of `4`), matching
-the default `SHELL_REPORT_DB_POOL_MAX=4`. PostgreSQL intra-query parallelism
-remains disabled by default (`SHELL_REPORT_DB_DISABLE_PARALLELISM=true`), and
-each statement still uses the independent 120s
-`SHELL_REPORT_DB_STATEMENT_TIMEOUT_MS` budget. Distinguish HTTP wall time from
-`reportQueryPressure` timeout/error counters: wall-clock latency is not by
+Usage/report SQL fanout defaults to
+`SHELL_REPORT_SQL_FANOUT_CONCURRENCY=4` and is clamped to a maximum of `4`.
+`SHELL_REPORT_DB_POOL_MAX` also defaults to and is clamped at `4`. PostgreSQL
+intra-query parallelism remains disabled by default
+(`SHELL_REPORT_DB_DISABLE_PARALLELISM=true`), and the global transaction-local
+statement timeout is clamped to a maximum of 120000ms. Usage-report tasks receive
+the tighter remaining-budget timeout described above. Distinguish HTTP wall time
+from `reportQueryPressure` timeout/error counters: wall-clock latency is not by
 itself a per-statement timeout.
-
-Cold-request evidence for the D1-496 diagnostic-string split on the local
-report service: fanout concurrency `1` returned HTTP 200 in about 249.3s;
-concurrency `4` returned HTTP 200 in about 105.0s with 1,828 rows, zero query
-errors/timeouts, and a max query duration of about 59.4s.
 
 `GET /api/shell/reports/usage` returns compact usage rows by default. The report
 service omits row properties whose normalized value is `null`, `undefined`, or

@@ -415,24 +415,29 @@ const LOCAL_MODEL_HEALTH_PROBES = [
 }))
 const MAX_PROVIDER_STATUS_ROWS = 500
 const STALE_RECORD_THRESHOLD_MINUTES = 120
+const REPORT_SQL_FANOUT_MAX = 4
+const REPORT_DB_STATEMENT_TIMEOUT_CEILING_MS = 120_000
 const REPORT_DB_DISABLE_PARALLELISM = parseBooleanEnv(
   'SHELL_REPORT_DB_DISABLE_PARALLELISM',
   true
 )
 const REPORT_SQL_FANOUT_CONCURRENCY = boundedIntegerEnv(
   'SHELL_REPORT_SQL_FANOUT_CONCURRENCY',
-  4,
-  { minimum: 1, maximum: 4 }
+  REPORT_SQL_FANOUT_MAX,
+  { minimum: 1, maximum: REPORT_SQL_FANOUT_MAX }
 )
 const REPORT_DB_STATEMENT_TIMEOUT_MS = boundedIntegerEnv(
   'SHELL_REPORT_DB_STATEMENT_TIMEOUT_MS',
-  120_000,
-  { minimum: 0, maximum: Number.POSITIVE_INFINITY }
+  REPORT_DB_STATEMENT_TIMEOUT_CEILING_MS,
+  { minimum: 0, maximum: REPORT_DB_STATEMENT_TIMEOUT_CEILING_MS }
 )
 const REPORT_DB_POOL_MAX = boundedIntegerEnv('SHELL_REPORT_DB_POOL_MAX', 4, {
   minimum: 1,
-  maximum: 8,
+  maximum: REPORT_SQL_FANOUT_MAX,
 })
+const USAGE_REPORT_RESPONSE_HEADROOM_MS = 5_000
+const USAGE_REPORT_REQUEST_BUDGET_MS =
+  REPORT_DB_STATEMENT_TIMEOUT_CEILING_MS - USAGE_REPORT_RESPONSE_HEADROOM_MS
 const REPORT_DB_CONNECTION_TIMEOUT_MS = boundedIntegerEnv(
   'SHELL_REPORT_DB_CONNECTION_TIMEOUT_MS',
   5_000,
@@ -745,6 +750,20 @@ function buildPostgresPoolOptions(
   }
 }
 
+function capReportStatementTimeoutMs(
+  statementTimeoutMs = REPORT_DB_STATEMENT_TIMEOUT_MS
+) {
+  const numeric = Number(statementTimeoutMs)
+  if (!Number.isFinite(numeric)) {
+    return REPORT_DB_STATEMENT_TIMEOUT_MS
+  }
+  if (numeric <= 0) return 0
+  return Math.min(
+    REPORT_DB_STATEMENT_TIMEOUT_CEILING_MS,
+    Math.max(1, Math.floor(numeric))
+  )
+}
+
 function buildPostgresLocalSettings(
   statementTimeoutMs = REPORT_DB_STATEMENT_TIMEOUT_MS
 ) {
@@ -752,10 +771,12 @@ function buildPostgresLocalSettings(
   if (REPORT_DB_DISABLE_PARALLELISM) {
     settings.push(['max_parallel_workers_per_gather', '0'])
   }
-  if (statementTimeoutMs > 0) {
+  const cappedStatementTimeoutMs =
+    capReportStatementTimeoutMs(statementTimeoutMs)
+  if (cappedStatementTimeoutMs > 0) {
     settings.push([
       'statement_timeout',
-      `${Math.round(statementTimeoutMs).toString()}ms`,
+      `${cappedStatementTimeoutMs.toString()}ms`,
     ])
   }
   return settings
@@ -1138,8 +1159,9 @@ async function queryReportDatabase(sql, values, options = {}) {
       'DATABASE_URL is not configured for the shell report service.'
     )
   }
-  const statementTimeoutMs =
+  const statementTimeoutMs = capReportStatementTimeoutMs(
     options.statementTimeoutMs ?? REPORT_DB_STATEMENT_TIMEOUT_MS
+  )
   const queryId = reportQueryMetrics.nextQueryId
   reportQueryMetrics.nextQueryId += 1
   const startedAtMs = Date.now()
@@ -12353,6 +12375,48 @@ const USAGE_REPORT_OPTIONAL_FANOUT_SECTION_KEY_SET = new Set(
   USAGE_REPORT_OPTIONAL_FANOUT_SECTION_KEYS
 )
 
+function usageReportTaskIsOptional(taskKey) {
+  return USAGE_REPORT_OPTIONAL_FANOUT_SECTION_KEY_SET.has(taskKey)
+}
+
+function resolveUsageReportTaskStatementTimeoutMs(
+  remainingBudgetMs,
+  statementTimeoutCeilingMs = REPORT_DB_STATEMENT_TIMEOUT_MS
+) {
+  const normalizedRemainingBudgetMs = Math.max(
+    1,
+    Math.floor(Number(remainingBudgetMs) || 0)
+  )
+  const configuredCeilingMs = capReportStatementTimeoutMs(
+    statementTimeoutCeilingMs
+  )
+  const effectiveCeilingMs =
+    configuredCeilingMs > 0
+      ? configuredCeilingMs
+      : REPORT_DB_STATEMENT_TIMEOUT_CEILING_MS
+  return Math.min(normalizedRemainingBudgetMs, effectiveCeilingMs)
+}
+
+function buildUsageReportRequestBudgetError(taskKey) {
+  const error = new Error(
+    `Usage report request budget was exhausted before mandatory section "${taskKey}" could start.`
+  )
+  error.code = 'USAGE_REPORT_REQUEST_BUDGET_EXHAUSTED'
+  error.usageReportTaskKey = taskKey
+  return error
+}
+
+function buildUsageReportDatabaseFanoutTask(taskKey, query) {
+  return {
+    taskKey,
+    task: ({ statementTimeoutMs } = {}) =>
+      queryReportDatabase(query.sql, query.values, {
+        statementTimeoutMs,
+        usageReportTaskKey: taskKey,
+      }),
+  }
+}
+
 function buildEmptyUsageReportProviderAliasRoutingReport(options = {}) {
   return normalizeProviderAliasRoutingReport([], options)
 }
@@ -12400,12 +12464,109 @@ export function buildUsageReportAuxiliaryDegradedMetadata(
   }
 }
 
-async function runUsageReportFanoutTasks(labeledTasks, concurrency) {
+async function runUsageReportFanoutTasks(
+  labeledTasks,
+  concurrency,
+  {
+    now = Date.now,
+    requestStartedAtMs = now(),
+    requestBudgetMs = USAGE_REPORT_REQUEST_BUDGET_MS,
+    statementTimeoutCeilingMs = REPORT_DB_STATEMENT_TIMEOUT_MS,
+  } = {}
+) {
   const results = new Array(labeledTasks.length)
-  await runTasksWithConcurrency(
-    labeledTasks.map(({ taskKey, task }, index) => async () => {
+  const normalizedRequestBudgetMs = Math.min(
+    USAGE_REPORT_REQUEST_BUDGET_MS,
+    Math.max(0, Math.floor(Number(requestBudgetMs) || 0))
+  )
+  const deadlineMs = requestStartedAtMs + normalizedRequestBudgetMs
+  const mandatoryTaskIndexes = []
+  const optionalTaskIndexes = []
+  for (let index = 0; index < labeledTasks.length; index += 1) {
+    const target = usageReportTaskIsOptional(labeledTasks[index].taskKey)
+      ? optionalTaskIndexes
+      : mandatoryTaskIndexes
+    target.push(index)
+  }
+
+  let nextMandatoryIndex = 0
+  let nextOptionalIndex = 0
+  let mandatoryFailure = null
+  let admitOptionals = false
+
+  const remainingBudgetMs = () => Math.floor(deadlineMs - now())
+
+  const markRemainingOptionalTasksSkipped = () => {
+    while (nextOptionalIndex < optionalTaskIndexes.length) {
+      const index = optionalTaskIndexes[nextOptionalIndex]
+      nextOptionalIndex += 1
+      results[index] = {
+        status: 'skipped',
+        taskKey: labeledTasks[index].taskKey,
+        reason: 'request_budget_exhausted',
+      }
+    }
+  }
+
+  const takeNextTask = () => {
+    if (mandatoryFailure) return null
+
+    let index
+    let optional = false
+    if (nextMandatoryIndex < mandatoryTaskIndexes.length) {
+      index = mandatoryTaskIndexes[nextMandatoryIndex]
+      nextMandatoryIndex += 1
+    } else if (
+      admitOptionals &&
+      nextOptionalIndex < optionalTaskIndexes.length
+    ) {
+      optional = true
+      index = optionalTaskIndexes[nextOptionalIndex]
+      nextOptionalIndex += 1
+    } else {
+      return null
+    }
+
+    const budgetMs = remainingBudgetMs()
+    if (budgetMs > 0) {
+      return { index, optional, remainingBudgetMs: budgetMs }
+    }
+
+    const taskKey = labeledTasks[index].taskKey
+    if (optional) {
+      results[index] = {
+        status: 'skipped',
+        taskKey,
+        reason: 'request_budget_exhausted',
+      }
+      markRemainingOptionalTasksSkipped()
+      return null
+    }
+
+    mandatoryFailure = buildUsageReportRequestBudgetError(taskKey)
+    results[index] = {
+      status: 'rejected',
+      taskKey,
+      error: mandatoryFailure,
+    }
+    return null
+  }
+
+  async function worker() {
+    while (true) {
+      const scheduled = takeNextTask()
+      if (!scheduled) return
+      const { index, optional, remainingBudgetMs: taskBudgetMs } = scheduled
+      const { taskKey, task } = labeledTasks[index]
       try {
-        const value = await task()
+        const value = await task({
+          deadlineMs,
+          remainingBudgetMs: taskBudgetMs,
+          statementTimeoutMs: resolveUsageReportTaskStatementTimeoutMs(
+            taskBudgetMs,
+            statementTimeoutCeilingMs
+          ),
+        })
         results[index] = {
           status: 'fulfilled',
           taskKey,
@@ -12417,19 +12578,47 @@ async function runUsageReportFanoutTasks(labeledTasks, concurrency) {
           taskKey,
           error,
         }
+        if (!optional && !mandatoryFailure) {
+          mandatoryFailure = error
+        }
       }
-    }),
-    concurrency
-  )
+    }
+  }
+
+  const runWorkers = async (pendingCount) => {
+    if (pendingCount <= 0) return
+    const workerCount = Math.min(
+      REPORT_SQL_FANOUT_MAX,
+      Math.max(1, Math.floor(Number(concurrency) || 1)),
+      pendingCount
+    )
+    await Promise.all(Array.from({ length: workerCount }, () => worker()))
+  }
+
+  // Phase 1: finish every mandatory section before admitting optional auxiliaries.
+  await runWorkers(mandatoryTaskIndexes.length)
+
+  if (mandatoryFailure) {
+    markRemainingOptionalTasksSkipped()
+    throw mandatoryFailure
+  }
+
+  // Phase 2: only after mandatory success, spend leftover budget on optionals.
+  if (remainingBudgetMs() > 0) {
+    admitOptionals = true
+    await runWorkers(optionalTaskIndexes.length - nextOptionalIndex)
+  } else {
+    markRemainingOptionalTasksSkipped()
+  }
 
   const unavailableAuxiliarySections = []
   for (const result of results) {
-    if (result.status === 'fulfilled') continue
-    if (USAGE_REPORT_OPTIONAL_FANOUT_SECTION_KEY_SET.has(result.taskKey)) {
+    if (result?.status === 'fulfilled') continue
+    if (usageReportTaskIsOptional(result?.taskKey)) {
       unavailableAuxiliarySections.push(result.taskKey)
       continue
     }
-    throw result.error
+    throw result?.error ?? buildUsageReportRequestBudgetError('unknown')
   }
 
   return {
@@ -12445,7 +12634,9 @@ function resolveUsageReportFanoutValue(results, taskKey, fallback) {
   return match?.value ?? fallback
 }
 
-async function loadUsageReport(searchParams) {
+async function loadUsageReport(searchParams, options = {}) {
+  const now = options.now ?? Date.now
+  const requestStartedAtMs = now()
   const { sql, values, metadata } = buildUsageQuery(searchParams)
   const scoreReasonsQuery = buildUsageScoreReasonsQuery(searchParams)
   const diagnosticStringsQuery = buildUsageDiagnosticStringsQuery(searchParams)
@@ -12463,104 +12654,42 @@ async function loadUsageReport(searchParams) {
     buildProviderCreditLifecycleQuery(searchParams)
 
   const fanoutTasks = [
-    {
-      taskKey: 'usage_rows',
-      task: () =>
-        queryReportDatabase(sql, values, { usageReportTaskKey: 'usage_rows' }),
-    },
-    {
-      taskKey: 'usage_score_reasons',
-      task: () =>
-        queryReportDatabase(scoreReasonsQuery.sql, scoreReasonsQuery.values, {
-          usageReportTaskKey: 'usage_score_reasons',
-        }),
-    },
-    {
-      taskKey: 'usage_diagnostic_strings',
-      task: () =>
-        queryReportDatabase(
-          diagnosticStringsQuery.sql,
-          diagnosticStringsQuery.values,
-          {
-            usageReportTaskKey: 'usage_diagnostic_strings',
-          }
-        ),
-    },
-    {
-      taskKey: 'summary',
-      task: () =>
-        queryReportDatabase(summaryQuery.sql, summaryQuery.values, {
-          usageReportTaskKey: 'summary',
-        }),
-    },
-    {
-      taskKey: 'trend',
-      task: () =>
-        queryReportDatabase(trendQuery.sql, trendQuery.values, {
-          usageReportTaskKey: 'trend',
-        }),
-    },
-    {
-      taskKey: 'client_usage',
-      task: () =>
-        queryReportDatabase(clientUsageQuery.sql, clientUsageQuery.values, {
-          usageReportTaskKey: 'client_usage',
-        }),
-    },
-    {
-      taskKey: 'provider_latency_health',
-      task: () =>
-        queryReportDatabase(
-          providerLatencyHealthQuery.sql,
-          providerLatencyHealthQuery.values,
-          { usageReportTaskKey: 'provider_latency_health' }
-        ),
-    },
-    {
-      taskKey: 'provider_error_observations',
-      task: () =>
-        queryReportDatabase(
-          providerErrorObservationQuery.sql,
-          providerErrorObservationQuery.values,
-          { usageReportTaskKey: 'provider_error_observations' }
-        ),
-    },
-    {
-      taskKey: 'provider_status_usage',
-      task: () =>
-        queryReportDatabase(
-          providerStatusUsageQuery.sql,
-          providerStatusUsageQuery.values,
-          { usageReportTaskKey: 'provider_status_usage' }
-        ),
-    },
-    {
-      taskKey: 'provider_alias_routing',
-      task: () =>
-        queryReportDatabase(
-          providerAliasRoutingQuery.sql,
-          providerAliasRoutingQuery.values,
-          { usageReportTaskKey: 'provider_alias_routing' }
-        ),
-    },
-    {
-      taskKey: 'provider_auth_health',
-      task: () =>
-        queryReportDatabase(
-          providerAuthHealthQuery.sql,
-          providerAuthHealthQuery.values,
-          { usageReportTaskKey: 'provider_auth_health' }
-        ),
-    },
-    {
-      taskKey: 'provider_credit_lifecycle',
-      task: () =>
-        queryReportDatabase(
-          providerCreditLifecycleQuery.sql,
-          providerCreditLifecycleQuery.values,
-          { usageReportTaskKey: 'provider_credit_lifecycle' }
-        ),
-    },
+    buildUsageReportDatabaseFanoutTask('usage_rows', { sql, values }),
+    buildUsageReportDatabaseFanoutTask(
+      'usage_score_reasons',
+      scoreReasonsQuery
+    ),
+    buildUsageReportDatabaseFanoutTask(
+      'usage_diagnostic_strings',
+      diagnosticStringsQuery
+    ),
+    buildUsageReportDatabaseFanoutTask('summary', summaryQuery),
+    buildUsageReportDatabaseFanoutTask('trend', trendQuery),
+    buildUsageReportDatabaseFanoutTask('client_usage', clientUsageQuery),
+    buildUsageReportDatabaseFanoutTask(
+      'provider_latency_health',
+      providerLatencyHealthQuery
+    ),
+    buildUsageReportDatabaseFanoutTask(
+      'provider_error_observations',
+      providerErrorObservationQuery
+    ),
+    buildUsageReportDatabaseFanoutTask(
+      'provider_status_usage',
+      providerStatusUsageQuery
+    ),
+    buildUsageReportDatabaseFanoutTask(
+      'provider_alias_routing',
+      providerAliasRoutingQuery
+    ),
+    buildUsageReportDatabaseFanoutTask(
+      'provider_auth_health',
+      providerAuthHealthQuery
+    ),
+    buildUsageReportDatabaseFanoutTask(
+      'provider_credit_lifecycle',
+      providerCreditLifecycleQuery
+    ),
     {
       taskKey: 'docker_log_errors',
       task: () => loadDockerLogErrors(),
@@ -12572,7 +12701,18 @@ async function loadUsageReport(searchParams) {
   ]
 
   const { results: fanoutResults, unavailableAuxiliarySections } =
-    await runUsageReportFanoutTasks(fanoutTasks, REPORT_SQL_FANOUT_CONCURRENCY)
+    await runUsageReportFanoutTasks(
+      fanoutTasks,
+      options.concurrency ?? REPORT_SQL_FANOUT_CONCURRENCY,
+      {
+        now,
+        requestStartedAtMs,
+        requestBudgetMs:
+          options.requestBudgetMs ?? USAGE_REPORT_REQUEST_BUDGET_MS,
+        statementTimeoutCeilingMs:
+          options.statementTimeoutCeilingMs ?? REPORT_DB_STATEMENT_TIMEOUT_MS,
+      }
+    )
 
   const result = resolveUsageReportFanoutValue(fanoutResults, 'usage_rows', {
     rows: [],
@@ -13717,6 +13857,9 @@ export const __envTestHelpers = {
   REPORT_DB_POOL_MAX,
   REPORT_DB_DISABLE_PARALLELISM,
   REPORT_DB_STATEMENT_TIMEOUT_MS,
+  REPORT_DB_STATEMENT_TIMEOUT_CEILING_MS,
+  USAGE_REPORT_REQUEST_BUDGET_MS,
+  USAGE_REPORT_RESPONSE_HEADROOM_MS,
   buildPostgresLocalSettings,
 }
 
@@ -13801,6 +13944,8 @@ export const __usageReportTestHelpers = {
   runUsageReportFanoutTasks,
   buildUsageReportAuxiliaryDegradedMetadata,
   USAGE_REPORT_OPTIONAL_FANOUT_SECTION_KEYS,
+  USAGE_REPORT_REQUEST_BUDGET_MS,
+  USAGE_REPORT_RESPONSE_HEADROOM_MS,
   normalizeRow,
   buildUsageScoreReasonsMergeKey,
   AGENT_SCORE_REASON_RECENT_ROW_LIMIT,
