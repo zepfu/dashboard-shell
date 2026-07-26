@@ -1700,24 +1700,6 @@
   pointer-events: none;
 }
 
-.v9-tip.tip-health {
-  width: 280px;
-  right: calc(100% + 8px);
-  left: auto;
-  top: 50%;
-  transform: translateY(-50%);
-  max-width: none;
-}
-
-.v9-tip.tip-quota {
-  width: 300px;
-  bottom: calc(100% + 6px);
-  top: auto;
-  right: 0;
-  left: auto;
-  max-width: calc(100% + 40px);
-}
-
 .v9-tip .v9-tip-head {
   display: block;
   color: var(--accent-warm);

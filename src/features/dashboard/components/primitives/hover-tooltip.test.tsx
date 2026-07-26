@@ -206,9 +206,10 @@ test('test_hover_tooltip_portalled_panel_clears_legacy_offsets', () => {
   const tooltip = document.body.querySelector('.v9-tip') as HTMLElement | null
   expect(tooltip).not.toBeNull()
 
-  // Regression: .tip-quota still has legacy absolute `bottom` CSS. The
-  // portalled fixed panel must clear it or the browser constrains the panel
-  // height and rows overflow outside the painted background.
+  // Defensive: the portalled fixed panel sets `inset: auto` so any legacy
+  // absolute offsets (e.g. a class-level `bottom` on .tip-quota) cannot
+  // constrain the panel height and overflow rows outside the painted
+  // background, even if such offsets are reintroduced later.
   expect(tooltip?.style.inset).toBe('auto')
 })
 
