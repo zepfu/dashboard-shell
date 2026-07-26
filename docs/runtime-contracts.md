@@ -83,6 +83,48 @@ Core `usage_rows` failure still fails fast (rejects the entire report). The
 split does not add DB indexes, broaden query windows, raise fanout concurrency,
 or weaken timeouts.
 
+## Usage Report Diagnostic-String Auxiliary Split (D1-496)
+
+The core `usage_rows` SQL query no longer computes the expensive
+`STRING_AGG(DISTINCT ...)` aggregates for `reasoning_tokens_sources` and
+`cache_miss_reasons`. Those two fields remain present on every core row as
+`NULL::text` placeholders so the response shape stays stable for consumers.
+
+Diagnostic-string enrichment runs as a separate optional auxiliary SQL task
+(`usage_diagnostic_strings` via `buildUsageDiagnosticStringsQuery`), which:
+
+- Uses the same date range, reportable predicate, filter, grain, and group-by
+  identity as the core query.
+- Emits only `bucket` + requested group-by dimensions plus the two
+  `STRING_AGG(DISTINCT)` diagnostic string fields.
+- Does not apply the core row `LIMIT` (merge is identity-keyed, not position-
+  keyed).
+- Shares the default 120000ms statement timeout budget with other usage report
+  SQL tasks.
+
+Merge happens in application code on the full `bucket` + group-by dimension key
+(reusing `buildUsageScoreReasonsMergeKey`). Matching auxiliary rows overwrite
+the placeholder nulls. Rows without a matching diagnostic row keep
+`reasoning_tokens_sources` / `cache_miss_reasons` as null.
+
+`usage_diagnostic_strings` is an optional fanout section
+(`USAGE_REPORT_OPTIONAL_FANOUT_SECTION_KEYS`). On timeout or failure:
+
+- Core usage rows still return unchanged (numeric/status fields and cache
+  attempted/miss summaries remain intact).
+- Report metadata includes `degraded: true`,
+  `degradedReason: 'auxiliary_fanout_failure'`, and
+  `unavailableAuxiliarySections` containing `'usage_diagnostic_strings'`.
+- Diagnostic string fields on rows remain null.
+
+Core `usage_rows` failure still fails fast (rejects the entire report). The
+split does not raise statement or proxy timeouts, weaken cache semantics, add DB
+indexes, or broaden query windows. D1-496 leaves the 120s per-statement timeout
+and disabled PostgreSQL intra-query parallelism unchanged, while separately
+raising bounded report SQL fanout default from 1 to 4 to match pool width based
+on the cold benchmark. Mandatory numeric and status fields stay in the core
+query; only the two DISTINCT string aggregates move out.
+
 ## Report cache identity
 
 `server/report-cache-identity.mjs` is the canonical owner of report Redis cache
@@ -303,10 +345,20 @@ scan. The 15s quota-history statement-timeout guardrail remains unchanged; if
 enrichment times out, the existing degraded fallback behavior still applies.
 
 Main usage can exceed short HTTP client deadlines even when every DB task stays
-under its own 120s statement timeout, because those tasks run serially by
-default (`SHELL_REPORT_SQL_FANOUT_CONCURRENCY` defaults to `1`). Distinguish
-HTTP wall time from `reportQueryPressure` timeout/error counters: wall-clock
-latency is not by itself a per-statement timeout.
+under its own 120s statement timeout if fanout is reduced below the pool width.
+By default, usage/report SQL fanout runs with
+`SHELL_REPORT_SQL_FANOUT_CONCURRENCY=4` (clamped to a maximum of `4`), matching
+the default `SHELL_REPORT_DB_POOL_MAX=4`. PostgreSQL intra-query parallelism
+remains disabled by default (`SHELL_REPORT_DB_DISABLE_PARALLELISM=true`), and
+each statement still uses the independent 120s
+`SHELL_REPORT_DB_STATEMENT_TIMEOUT_MS` budget. Distinguish HTTP wall time from
+`reportQueryPressure` timeout/error counters: wall-clock latency is not by
+itself a per-statement timeout.
+
+Cold-request evidence for the D1-496 diagnostic-string split on the local
+report service: fanout concurrency `1` returned HTTP 200 in about 249.3s;
+concurrency `4` returned HTTP 200 in about 105.0s with 1,828 rows, zero query
+errors/timeouts, and a max query duration of about 59.4s.
 
 `GET /api/shell/reports/usage` returns compact usage rows by default. The report
 service omits row properties whose normalized value is `null`, `undefined`, or

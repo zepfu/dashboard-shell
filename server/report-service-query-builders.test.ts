@@ -49,6 +49,7 @@ import {
   buildToolActivityQuery,
   buildUsageQuery,
   buildUsageScoreReasonsQuery,
+  buildUsageDiagnosticStringsQuery,
   buildUsageScoreReasonsMergeKey,
   parseUsageReportSort,
   shouldIncludeTokenTrendHealth,
@@ -2897,6 +2898,116 @@ describe('report-service query builders', () => {
     expect(query.sql).toContain('10000::bigint')
     expect(query.sql).toContain(
       'GREATEST(COALESCE(MAX(id), 0) - 10000::bigint, 0)'
+    )
+  })
+
+  test('D1-496 buildUsageQuery_core_emits_null_text_for_diagnostic_string_aggs', () => {
+    const query = buildUsageQuery(
+      new URLSearchParams({
+        from: '2026-05-25',
+        to: '2026-06-25',
+        grain: 'day',
+        group_by: 'provider,model,repository',
+        limit: '50000',
+      })
+    )
+
+    expect(query.sql).toContain('NULL::text AS reasoning_tokens_sources')
+    expect(query.sql).toContain('NULL::text AS cache_miss_reasons')
+    expect(query.sql).not.toMatch(
+      /STRING_AGG\(DISTINCT[\s\S]*reasoning_tokens_source/
+    )
+    expect(query.sql).not.toMatch(
+      /STRING_AGG\(DISTINCT[\s\S]*provider_cache_miss_reason/
+    )
+    expect(query.sql).toContain(
+      "MAX(CASE WHEN sh.provider_cache_attempted THEN 'attempted' ELSE NULL END) AS cache_attempted_summary"
+    )
+    expect(query.sql).toContain(
+      "MAX(CASE WHEN sh.provider_cache_miss THEN 'miss' ELSE NULL END) AS cache_miss_summary"
+    )
+    expect(query.sql).toContain(
+      'SUM(COALESCE(sh.reasoning_tokens_reported, 0))::double precision AS token_reasoning_reported'
+    )
+  })
+
+  test('D1-496 buildUsageDiagnosticStringsQuery_emits_string_agg_distinct_fields', () => {
+    const query = buildUsageDiagnosticStringsQuery(
+      new URLSearchParams({
+        from: '2026-05-25',
+        to: '2026-06-25',
+        grain: 'day',
+        group_by: 'provider,model,repository',
+        limit: '50000',
+      })
+    )
+
+    expect(query.metadata).toMatchObject({
+      from: '2026-05-25',
+      to: '2026-06-25',
+      grain: 'day',
+      groupBy: ['provider', 'model', 'repository'],
+    })
+    expect(query.sql).toContain('STRING_AGG(DISTINCT')
+    expect(query.sql).toContain('AS reasoning_tokens_sources')
+    expect(query.sql).toContain('AS cache_miss_reasons')
+    expect(query.sql).toContain("sh.reasoning_tokens_source = 'not_applicable'")
+    expect(query.sql).toContain('sh.provider_cache_miss_reason')
+    expect(query.sql).not.toContain('LIMIT')
+    expect(query.sql).not.toContain('token_total')
+    expect(query.sql).not.toContain('agent_score_reasons')
+  })
+
+  test('D1-496 buildUsageDiagnosticStringsQuery_shares_date_filter_group_identity_with_core', () => {
+    const params = new URLSearchParams({
+      from: '2026-05-25',
+      to: '2026-06-25',
+      grain: 'day',
+      group_by: 'provider,model,repository',
+      limit: '50000',
+      provider: 'anthropic,openai',
+      environment: 'local',
+    })
+    const coreQuery = buildUsageQuery(params)
+    const diagnosticQuery = buildUsageDiagnosticStringsQuery(params)
+
+    expect(diagnosticQuery.values).toEqual(
+      coreQuery.values!.slice(0, diagnosticQuery.values!.length)
+    )
+    expect(diagnosticQuery.metadata.from).toBe(coreQuery.metadata.from)
+    expect(diagnosticQuery.metadata.to).toBe(coreQuery.metadata.to)
+    expect(diagnosticQuery.metadata.grain).toBe(coreQuery.metadata.grain)
+    expect(diagnosticQuery.metadata.groupBy).toEqual(coreQuery.metadata.groupBy)
+
+    expect(diagnosticQuery.sql).toContain("COALESCE(sh.tenant_id, 'unknown')")
+    expect(diagnosticQuery.sql).toContain('sh.provider')
+    expect(coreQuery.sql).toContain("COALESCE(sh.tenant_id, 'unknown')")
+    expect(coreQuery.sql).toContain('sh.provider')
+
+    expect(coreQuery.sql).toContain('LIMIT')
+    expect(diagnosticQuery.sql).not.toContain('LIMIT')
+    expect(coreQuery.sql).toContain('NULL::text AS reasoning_tokens_sources')
+    expect(diagnosticQuery.sql).toMatch(/STRING_AGG\(DISTINCT/)
+  })
+
+  test('D1-496 diagnostic_strings_merge_key_matches_score_reasons_key_identity', () => {
+    const groupBy = ['provider', 'model', 'repository']
+    const rowA = {
+      bucket: '2026-06-01',
+      provider: 'anthropic',
+      model: 'claude-sonnet-4-6',
+      repository: 'aawm',
+    }
+    const rowB = {
+      bucket: '2026-06-01',
+      provider: 'anthropic',
+      model: 'claude-sonnet-4-6',
+      repository: 'aawm',
+      reasoning_tokens_sources: 'reported',
+      cache_miss_reasons: 'cold_start',
+    }
+    expect(buildUsageScoreReasonsMergeKey(rowA, groupBy)).toBe(
+      buildUsageScoreReasonsMergeKey(rowB, groupBy)
     )
   })
   test('test_token_trend_signal_queries_cover_full_range_and_hourly_scores', () => {

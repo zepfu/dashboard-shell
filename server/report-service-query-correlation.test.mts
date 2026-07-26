@@ -235,7 +235,7 @@ describe('D1-490 scheduled refresh context', () => {
 })
 
 describe('D1-490 real query metric lifecycle', () => {
-  test('usage_rows and usage_score_reasons inherit the 120000ms default statement timeout', async () => {
+  test('usage_rows, usage_score_reasons, and usage_diagnostic_strings inherit the 120000ms default statement timeout', async () => {
     const { __queryCorrelationTestHelpers } = await loadReportService()
     const { queryReportDatabase, setExecuteReportQueryTestImpl } =
       __queryCorrelationTestHelpers
@@ -260,10 +260,14 @@ describe('D1-490 real query metric lifecycle', () => {
     await queryReportDatabase('usage_score_reasons', [], {
       usageReportTaskKey: 'usage_score_reasons',
     })
+    await queryReportDatabase('usage_diagnostic_strings', [], {
+      usageReportTaskKey: 'usage_diagnostic_strings',
+    })
 
     expect(observedTimeouts).toEqual([
       { taskKey: 'usage_rows', statementTimeoutMs: 120_000 },
       { taskKey: 'usage_score_reasons', statementTimeoutMs: 120_000 },
+      { taskKey: 'usage_diagnostic_strings', statementTimeoutMs: 120_000 },
     ])
   })
 

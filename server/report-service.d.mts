@@ -272,6 +272,16 @@ declare module './report-service.mjs' {
   export const buildUsageQuery: (
     searchParams: SearchParamsLike
   ) => QueryResultWithMetadata
+  export const buildUsageScoreReasonsQuery: (
+    searchParams: SearchParamsLike
+  ) => QueryResultWithMetadata
+  export const buildUsageDiagnosticStringsQuery: (
+    searchParams: SearchParamsLike
+  ) => QueryResultWithMetadata
+  export const buildUsageScoreReasonsMergeKey: (
+    row: Record<string, unknown>,
+    groupBy: string[]
+  ) => string
   export const parseUsageReportSort: (searchParams: SearchParamsLike) => {
     sort: string
     sortDirection: 'ASC' | 'DESC'
@@ -550,6 +560,13 @@ declare module './report-service.mjs' {
       key: string,
       fallback: string
     ) => string
+    REPORT_SQL_FANOUT_CONCURRENCY: number
+    REPORT_DB_POOL_MAX: number
+    REPORT_DB_DISABLE_PARALLELISM: boolean
+    REPORT_DB_STATEMENT_TIMEOUT_MS: number
+    buildPostgresLocalSettings: (
+      statementTimeoutMs?: number
+    ) => Array<[string, string]>
   }
 
   export const __dockerLogScanTestHelpers: {

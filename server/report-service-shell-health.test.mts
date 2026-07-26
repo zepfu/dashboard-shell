@@ -6,6 +6,7 @@ afterEach(() => {
   process.env = { ...envSnapshot }
   vi.resetModules()
   vi.doUnmock('redis')
+  vi.doUnmock('pg')
   vi.unstubAllEnvs()
 })
 
@@ -312,5 +313,71 @@ describe('D1-444 PgBouncer admin pool cache', () => {
     })
     expect(Pool).not.toHaveBeenCalled()
     expect(getPgBouncerAdminPoolCacheSize()).toBe(0)
+  })
+})
+
+describe('D1-496 health reports sql fanout concurrency', () => {
+  test('databasePool includes sqlFanoutConcurrency matching default 4', async () => {
+    vi.stubEnv('VITEST', 'true')
+    vi.stubEnv(
+      'DATABASE_URL',
+      'postgresql://user:pass@127.0.0.1:1/dashboard_shell_test'
+    )
+    delete process.env.SHELL_REPORT_SQL_FANOUT_CONCURRENCY
+    delete process.env.SHELL_REPORT_DB_POOL_MAX
+
+    class Pool {
+      totalCount = 0
+      idleCount = 0
+      waitingCount = 0
+      on = vi.fn()
+      end = vi.fn(async () => undefined)
+    }
+    vi.doMock('pg', () => ({ default: { Pool }, Pool }))
+    vi.doMock('redis', () => ({
+      createClient: vi.fn(() => ({
+        isReady: false,
+        connect: vi.fn(async () => undefined),
+        quit: vi.fn(async () => undefined),
+        on: vi.fn(),
+      })),
+    }))
+
+    const { buildShellHealthPayload } = await import('./report-service.mjs')
+    const payload = await buildShellHealthPayload({
+      loaders: {
+        loadReportQueryPressure: async () => ({
+          status: 'unconfigured',
+          inProcess: { active: 0 },
+          pgStatActivity: {
+            connectionCount: 0,
+            activeCount: 0,
+            waitingCount: 0,
+            maxActiveAgeMs: null,
+            rows: [],
+          },
+        }),
+        loadPgBouncerHealth: async () => ({ status: 'green', sidecars: [] }),
+        loadSourceTableHealth: async () => ({
+          status: 'unconfigured',
+          tables: [],
+        }),
+        loadMaterializedViewHealth: async () => ({
+          status: 'unconfigured',
+          views: [],
+          cronJobs: [],
+        }),
+      },
+    })
+
+    expect(payload.databaseConfigured).toBe(true)
+    expect(payload.databasePool).toMatchObject({
+      max: 4,
+      total: 0,
+      idle: 0,
+      waiting: 0,
+      sqlFanoutConcurrency: 4,
+    })
+    expect(payload.healthDatabasePool).toMatchObject({ max: 1 })
   })
 })

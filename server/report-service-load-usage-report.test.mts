@@ -395,3 +395,181 @@ describe('D1-493 usage_score_reasons auxiliary split', () => {
     ).toBe(false)
   })
 })
+
+describe('D1-496 usage_diagnostic_strings auxiliary split', () => {
+  const d1496Params = new URLSearchParams({
+    from: '2026-05-25',
+    to: '2026-06-25',
+    group_by: 'provider,model,repository',
+  })
+
+  test('test_loadUsageReport_merges_diagnostic_strings_into_core_rows_on_matching_key', async () => {
+    const coreRows = [
+      {
+        bucket: '2026-05-25',
+        provider: 'anthropic',
+        model: 'claude-sonnet-4-6',
+        repository: 'aawm',
+        token_total: 1000,
+        reasoning_tokens_sources: null,
+        cache_miss_reasons: null,
+        cache_attempted_summary: 'attempted',
+        cache_miss_summary: 'miss',
+      },
+      {
+        bucket: '2026-05-25',
+        provider: 'openai',
+        model: 'gpt-4o',
+        repository: 'aawm',
+        token_total: 500,
+        reasoning_tokens_sources: null,
+        cache_miss_reasons: null,
+        cache_attempted_summary: null,
+        cache_miss_summary: null,
+      },
+    ]
+    const diagnosticRows = [
+      {
+        bucket: '2026-05-25',
+        provider: 'anthropic',
+        model: 'claude-sonnet-4-6',
+        repository: 'aawm',
+        reasoning_tokens_sources: 'reported,estimated',
+        cache_miss_reasons: 'cold_start',
+      },
+    ]
+
+    setQueryReportDatabaseTestImpl(async (_sql: string, _values, options) => {
+      const taskKey = usageReportTaskKey(options)
+      if (taskKey === 'usage_rows') {
+        return { rows: coreRows }
+      }
+      if (taskKey === 'usage_diagnostic_strings') {
+        return { rows: diagnosticRows }
+      }
+      return emptyDbResult()
+    })
+    setLoadDockerLogErrorsTestImpl(async () => [])
+    setLoadLocalHealthTestImpl(async () => [])
+
+    const report = asUsageReport(await loadUsageReport(d1496Params))
+
+    const anthropicRow = report.rows.find(
+      (r: Record<string, unknown>) => r.provider === 'anthropic'
+    )
+    expect(anthropicRow).toBeDefined()
+    expect(anthropicRow!.reasoning_tokens_sources).toBe('reported,estimated')
+    expect(anthropicRow!.cache_miss_reasons).toBe('cold_start')
+    expect(anthropicRow!.cache_attempted_summary).toBe('attempted')
+    expect(anthropicRow!.cache_miss_summary).toBe('miss')
+    expect(anthropicRow!.token_total).toBe(1000)
+
+    const openaiRow = report.rows.find(
+      (r: Record<string, unknown>) => r.provider === 'openai'
+    )
+    expect(openaiRow).toBeDefined()
+    // Default compact row serialization omits null diagnostic placeholders.
+    expect(openaiRow!.reasoning_tokens_sources).toBeUndefined()
+    expect(openaiRow!.cache_miss_reasons).toBeUndefined()
+    expect(openaiRow!.token_total).toBe(500)
+  })
+
+  test('test_loadUsageReport_degrades_diagnostic_strings_timeout_without_rejecting_report', async () => {
+    const coreRows = [
+      {
+        bucket: '2026-05-25',
+        provider: 'anthropic',
+        model: 'claude-sonnet-4-6',
+        repository: 'aawm',
+        token_total: 1000,
+        reasoning_tokens_sources: null,
+        cache_miss_reasons: null,
+        cache_attempted_summary: 'attempted',
+      },
+    ]
+
+    setQueryReportDatabaseTestImpl(async (_sql: string, _values, options) => {
+      const taskKey = usageReportTaskKey(options)
+      if (taskKey === 'usage_rows') {
+        return { rows: coreRows }
+      }
+      if (taskKey === 'usage_diagnostic_strings') {
+        const error = new Error('canceling statement due to statement timeout')
+        ;(error as unknown as Record<string, unknown>).code = '57014'
+        throw error
+      }
+      return emptyDbResult()
+    })
+    setLoadDockerLogErrorsTestImpl(async () => [])
+    setLoadLocalHealthTestImpl(async () => [])
+
+    const report = asUsageReport(await loadUsageReport(d1496Params))
+
+    expect(report.metadata.degraded).toBe(true)
+    expect(report.metadata.degradedReason).toBe('auxiliary_fanout_failure')
+    expect(report.metadata.unavailableAuxiliarySections).toContain(
+      'usage_diagnostic_strings'
+    )
+
+    expect(report.rows).toHaveLength(1)
+    expect(report.rows[0].token_total).toBe(1000)
+    expect(report.rows[0].cache_attempted_summary).toBe('attempted')
+    // Timeout leaves placeholders null; compact serialization drops them.
+    expect(report.rows[0].reasoning_tokens_sources).toBeUndefined()
+    expect(report.rows[0].cache_miss_reasons).toBeUndefined()
+  })
+
+  test('test_loadUsageReport_preserves_null_diagnostic_strings_when_empty_fields_requested', async () => {
+    const coreRows = [
+      {
+        bucket: '2026-05-25',
+        provider: 'anthropic',
+        model: 'claude-sonnet-4-6',
+        repository: 'aawm',
+        token_total: 1000,
+        reasoning_tokens_sources: null,
+        cache_miss_reasons: null,
+      },
+    ]
+
+    setQueryReportDatabaseTestImpl(async (_sql: string, _values, options) => {
+      const taskKey = usageReportTaskKey(options)
+      if (taskKey === 'usage_rows') {
+        return { rows: coreRows }
+      }
+      if (taskKey === 'usage_diagnostic_strings') {
+        const error = new Error('canceling statement due to statement timeout')
+        ;(error as unknown as Record<string, unknown>).code = '57014'
+        throw error
+      }
+      return emptyDbResult()
+    })
+    setLoadDockerLogErrorsTestImpl(async () => [])
+    setLoadLocalHealthTestImpl(async () => [])
+
+    const params = new URLSearchParams(d1496Params)
+    params.set('include_empty_row_fields', '1')
+    const report = asUsageReport(await loadUsageReport(params))
+
+    expect(report.metadata.unavailableAuxiliarySections).toContain(
+      'usage_diagnostic_strings'
+    )
+    expect(report.rows[0].reasoning_tokens_sources).toBeNull()
+    expect(report.rows[0].cache_miss_reasons).toBeNull()
+  })
+
+  test('test_loadUsageReport_core_fail_fast_still_works_after_diagnostic_strings_split', async () => {
+    setQueryReportDatabaseTestImpl(async (_sql: string, _values, options) => {
+      if (usageReportTaskKey(options) === 'usage_rows') {
+        throw new Error('core usage query failed')
+      }
+      return emptyDbResult()
+    })
+    setLoadDockerLogErrorsTestImpl(async () => [])
+    setLoadLocalHealthTestImpl(async () => [])
+
+    await expect(loadUsageReport(d1496Params)).rejects.toThrow(
+      'core usage query failed'
+    )
+  })
+})

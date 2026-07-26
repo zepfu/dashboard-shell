@@ -421,7 +421,7 @@ const REPORT_DB_DISABLE_PARALLELISM = parseBooleanEnv(
 )
 const REPORT_SQL_FANOUT_CONCURRENCY = boundedIntegerEnv(
   'SHELL_REPORT_SQL_FANOUT_CONCURRENCY',
-  1,
+  4,
   { minimum: 1, maximum: 4 }
 )
 const REPORT_DB_STATEMENT_TIMEOUT_MS = boundedIntegerEnv(
@@ -11620,11 +11620,7 @@ SELECT
     SUM(COALESCE(sh.cache_read_input_tokens, 0))::double precision AS token_cache_input,
     SUM(COALESCE(sh.cache_creation_input_tokens, 0))::double precision AS token_cache_creation,
 
-    STRING_AGG(DISTINCT
-        CASE WHEN sh.reasoning_tokens_source = 'not_applicable'
-             THEN NULL
-             ELSE sh.reasoning_tokens_source
-        END, ', ') AS reasoning_tokens_sources,
+    NULL::text AS reasoning_tokens_sources,
 
     SUM(COALESCE(sh.reasoning_tokens_reported, 0))::double precision AS token_reasoning_reported,
     SUM(COALESCE(sh.reasoning_tokens_estimated, 0))::double precision AS token_reasoning_estimated,
@@ -11632,12 +11628,7 @@ SELECT
     MAX(CASE WHEN sh.provider_cache_attempted THEN 'attempted' ELSE NULL END) AS cache_attempted_summary,
     MAX(CASE WHEN sh.provider_cache_miss THEN 'miss' ELSE NULL END) AS cache_miss_summary,
 
-    STRING_AGG(DISTINCT
-        CASE WHEN sh.provider_cache_miss_reason IS NOT NULL
-                  AND sh.provider_cache_miss_reason <> 'null'
-             THEN sh.provider_cache_miss_reason
-             ELSE NULL
-        END, ', ') AS cache_miss_reasons,
+    NULL::text AS cache_miss_reasons,
 
     SUM(COALESCE(sh.provider_cache_miss_token_count, 0))::double precision AS token_cache_miss,
     SUM(COALESCE(sh.input_tokens, 0)
@@ -11685,6 +11676,69 @@ LIMIT $${values.length};
       grain,
       groupBy,
       limit,
+    },
+  }
+}
+
+export function buildUsageDiagnosticStringsQuery(searchParams) {
+  const grain = searchParams.get('grain') ?? 'day'
+  if (!grains[grain]) {
+    throw new BadRequestError(`Unsupported grain: ${grain}`)
+  }
+
+  const groupBy = parseGroupBy(searchParams.get('group_by'))
+  const from = parseDateParam(searchParams.get('from'), defaultFromDate)
+  const to = parseDateParam(searchParams.get('to'), defaultToDate)
+
+  const values = [from, to]
+  const whereParts = [...startTimeDateRangeWhere]
+  appendReportableSessionHistoryWhere(whereParts)
+
+  for (const key of Object.keys(filterColumns)) {
+    appendMultiValueFilter(searchParams, key, whereParts, values)
+  }
+  appendConfigChangeFilters(searchParams, whereParts)
+
+  const bucketExpression = grains[grain]
+  const dimensionSelects = groupBy.map((key) => `${dimensions[key]} AS ${key}`)
+  const dimensionGroups = groupBy.map((key) => dimensions[key])
+  const selectParts = [`${bucketExpression} AS bucket`, ...dimensionSelects]
+  const groupParts = [bucketExpression, ...dimensionGroups]
+  const sql = `
+WITH filtered AS (
+    SELECT
+${usageFilteredColumnSelects.join(',\n')}
+    FROM public.session_history sh
+    WHERE ${whereParts.join('\n      AND ')}
+)
+SELECT
+    ${selectParts.join(',\n    ')},
+
+    STRING_AGG(DISTINCT
+        CASE WHEN sh.reasoning_tokens_source = 'not_applicable'
+             THEN NULL
+             ELSE sh.reasoning_tokens_source
+        END, ', ') AS reasoning_tokens_sources,
+
+    STRING_AGG(DISTINCT
+        CASE WHEN sh.provider_cache_miss_reason IS NOT NULL
+                  AND sh.provider_cache_miss_reason <> 'null'
+             THEN sh.provider_cache_miss_reason
+             ELSE NULL
+        END, ', ') AS cache_miss_reasons
+FROM filtered sh
+GROUP BY
+    ${groupParts.join(',\n    ')};
+`
+
+  return {
+    sql,
+    values,
+    metadata: {
+      from,
+      to,
+      grain,
+      groupBy,
     },
   }
 }
@@ -12287,6 +12341,7 @@ async function loadLocalHealth() {
 
 const USAGE_REPORT_OPTIONAL_FANOUT_SECTION_KEYS = [
   'usage_score_reasons',
+  'usage_diagnostic_strings',
   'provider_alias_routing',
   'provider_auth_health',
   'provider_credit_lifecycle',
@@ -12393,6 +12448,7 @@ function resolveUsageReportFanoutValue(results, taskKey, fallback) {
 async function loadUsageReport(searchParams) {
   const { sql, values, metadata } = buildUsageQuery(searchParams)
   const scoreReasonsQuery = buildUsageScoreReasonsQuery(searchParams)
+  const diagnosticStringsQuery = buildUsageDiagnosticStringsQuery(searchParams)
   const summaryQuery = buildSummaryQuery(searchParams)
   const trendQuery = buildTrendQuery(searchParams)
   const clientUsageQuery = buildClientUsageQuery(searchParams)
@@ -12418,6 +12474,17 @@ async function loadUsageReport(searchParams) {
         queryReportDatabase(scoreReasonsQuery.sql, scoreReasonsQuery.values, {
           usageReportTaskKey: 'usage_score_reasons',
         }),
+    },
+    {
+      taskKey: 'usage_diagnostic_strings',
+      task: () =>
+        queryReportDatabase(
+          diagnosticStringsQuery.sql,
+          diagnosticStringsQuery.values,
+          {
+            usageReportTaskKey: 'usage_diagnostic_strings',
+          }
+        ),
     },
     {
       taskKey: 'summary',
@@ -12515,6 +12582,11 @@ async function loadUsageReport(searchParams) {
     'usage_score_reasons',
     { rows: [] }
   )
+  const diagnosticStringsResult = resolveUsageReportFanoutValue(
+    fanoutResults,
+    'usage_diagnostic_strings',
+    { rows: [] }
+  )
   const scoreReasonsDegraded = unavailableAuxiliarySections.includes(
     'usage_score_reasons'
   )
@@ -12590,13 +12662,29 @@ async function loadUsageReport(searchParams) {
     scoreReasonsByKey.set(key, reasonRow)
   }
 
+  const diagnosticStringsByKey = new Map()
+  for (const diagnosticRow of diagnosticStringsResult.rows) {
+    const key = buildUsageScoreReasonsMergeKey(diagnosticRow, metadata.groupBy)
+    diagnosticStringsByKey.set(key, diagnosticRow)
+  }
+
   const mergedRows = result.rows.map((row) => {
     const key = buildUsageScoreReasonsMergeKey(row, metadata.groupBy)
     const reasonRow = scoreReasonsByKey.get(key)
+    const diagnosticRow = diagnosticStringsByKey.get(key)
     const capState = reasonRow ?? scoreReasonsCapState
+    const withDiagnostics = {
+      ...row,
+      reasoning_tokens_sources:
+        diagnosticRow?.reasoning_tokens_sources ??
+        row.reasoning_tokens_sources ??
+        null,
+      cache_miss_reasons:
+        diagnosticRow?.cache_miss_reasons ?? row.cache_miss_reasons ?? null,
+    }
     if (capState) {
       return {
-        ...row,
+        ...withDiagnostics,
         agent_score_reasons_top: reasonRow?.agent_score_reasons_top ?? [],
         agent_score_reasons_bounded_min_id:
           capState.agent_score_reasons_bounded_min_id,
@@ -12611,7 +12699,7 @@ async function loadUsageReport(searchParams) {
       }
     }
     return {
-      ...row,
+      ...withDiagnostics,
       agent_score_reasons_top: [],
     }
   })
@@ -13625,6 +13713,11 @@ export const __envTestHelpers = {
   providerDimensionExpression,
   providerDimensionForAlias,
   sessionHistoryMetadataText,
+  REPORT_SQL_FANOUT_CONCURRENCY,
+  REPORT_DB_POOL_MAX,
+  REPORT_DB_DISABLE_PARALLELISM,
+  REPORT_DB_STATEMENT_TIMEOUT_MS,
+  buildPostgresLocalSettings,
 }
 
 export {

@@ -158,3 +158,35 @@ describe('report-service env and date helpers', () => {
     expect(expression).toContain("'unsafe''fallback'")
   })
 })
+
+describe('D1-496 sql fanout concurrency defaults', () => {
+  test('defaults fanout concurrency to 4 with max clamp 4, pool max 4, parallelism disabled, 120s timeout', async () => {
+    vi.stubEnv('VITEST', 'true')
+    delete process.env.SHELL_REPORT_SQL_FANOUT_CONCURRENCY
+    delete process.env.SHELL_REPORT_DB_POOL_MAX
+    delete process.env.SHELL_REPORT_DB_DISABLE_PARALLELISM
+    delete process.env.SHELL_REPORT_DB_STATEMENT_TIMEOUT_MS
+
+    const { __envTestHelpers } = await import('./report-service.mjs')
+    expect(__envTestHelpers.REPORT_SQL_FANOUT_CONCURRENCY).toBe(4)
+    expect(__envTestHelpers.REPORT_DB_POOL_MAX).toBe(4)
+    expect(__envTestHelpers.REPORT_DB_DISABLE_PARALLELISM).toBe(true)
+    expect(__envTestHelpers.REPORT_DB_STATEMENT_TIMEOUT_MS).toBe(120_000)
+    expect(__envTestHelpers.buildPostgresLocalSettings()).toEqual([
+      ['max_parallel_workers_per_gather', '0'],
+      ['statement_timeout', '120000ms'],
+    ])
+  })
+
+  test('clamps SHELL_REPORT_SQL_FANOUT_CONCURRENCY above 4 down to 4 and accepts 1', async () => {
+    vi.stubEnv('VITEST', 'true')
+    vi.stubEnv('SHELL_REPORT_SQL_FANOUT_CONCURRENCY', '99')
+    let mod = await import('./report-service.mjs')
+    expect(mod.__envTestHelpers.REPORT_SQL_FANOUT_CONCURRENCY).toBe(4)
+
+    vi.resetModules()
+    vi.stubEnv('SHELL_REPORT_SQL_FANOUT_CONCURRENCY', '1')
+    mod = await import('./report-service.mjs')
+    expect(mod.__envTestHelpers.REPORT_SQL_FANOUT_CONCURRENCY).toBe(1)
+  })
+})

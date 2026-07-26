@@ -275,6 +275,9 @@ declare module './report-service' {
   export const buildUsageScoreReasonsQuery: (
     searchParams: SearchParamsLike
   ) => QueryResultWithMetadata
+  export const buildUsageDiagnosticStringsQuery: (
+    searchParams: SearchParamsLike
+  ) => QueryResultWithMetadata
   export const buildUsageScoreReasonsMergeKey: (
     row: Record<string, unknown>,
     groupBy: string[]
