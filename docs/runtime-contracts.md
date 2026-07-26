@@ -100,8 +100,9 @@ Diagnostic-string enrichment runs as a separate optional auxiliary SQL task
   `STRING_AGG(DISTINCT)` diagnostic string fields.
 - Does not apply the core row `LIMIT` (merge is identity-keyed, not position-
   keyed).
-- Uses a transaction-local statement timeout capped to the usage request's
-  remaining execution budget and the global 120000ms ceiling.
+- Uses a transaction-local statement timeout and matching client-side
+  `query_timeout` capped to the usage request's remaining execution budget and
+  the global 120000ms ceiling.
 
 Merge happens in application code on the full `bucket` + group-by dimension key
 (reusing `buildUsageScoreReasonsMergeKey`). Matching auxiliary rows overwrite
@@ -128,10 +129,12 @@ The usage loader enforces a 115000ms execution budget measured from
 boundary for merge, serialization, transaction cleanup, and response delivery.
 Its scheduler:
 
-- Runs two phases. Phase 1 admits only mandatory tasks, regardless of declaration
-  order. Mandatory sections are `usage_rows`, summary, trend, client usage,
-  provider latency health, provider error observations, and provider status
-  usage.
+- Runs two phases. Phase 1 admits only mandatory tasks, regardless of optional
+  declaration order. Mandatory sections are ordered heaviest-first
+  (`usage_rows`, `summary`, `trend`, `client_usage`,
+  `provider_error_observations`, `provider_latency_health`,
+  `provider_status_usage`) so later mandatories are less likely to starve under
+  the shared fanout pool.
 - Starts optional/auxiliary tasks only after every mandatory task has succeeded
   and meaningful request budget still remains. An optional task that cannot
   start is skipped and its key is included in
@@ -139,18 +142,28 @@ Its scheduler:
   degradation response.
 - Caps every started usage-report SQL statement to the smaller of the configured
   positive statement timeout, the 120000ms global ceiling, and the request
-  budget remaining when the task starts. If the global timeout is configured as
-  `0`, the request's remaining budget still supplies the usage-specific
-  transaction-local timeout.
+  budget remaining when the task starts. The same remaining-budget value is
+  applied as the client-side `pg` `query_timeout` for that statement so a slow
+  query cannot outlive the request solely because the pool-level read timeout is
+  looser. If the global timeout is configured as `0`, the request's remaining
+  budget still supplies the usage-specific transaction-local timeout.
+- Enforces the request deadline for started non-SQL optionals
+  (`docker_log_errors`, `local_health`) through timeout-aware APIs / abort
+  signals. The scheduler does not `Promise.race` those tasks against a timer and
+  orphan the underlying work; cancellation is cooperative via `AbortSignal`, and
+  the scheduler still awaits every task it started.
 - Stops admitting new work after a mandatory failure or mandatory budget
-  exhaustion, awaits every task already started, skips any unstarted optionals,
-  then rejects the report. Optional failures continue to degrade without
-  changing mandatory failure behavior.
+  exhaustion (including later mandatory sections that cannot start because
+  earlier mandatories consumed the budget), awaits every task already started,
+  skips any unstarted optionals, then rejects the report. Optional failures
+  continue to degrade without changing mandatory failure behavior.
 
 The scheduler does not race work against an unawaited timer and does not return
 stale data. Started SQL therefore completes or terminates through PostgreSQL
-`statement_timeout`, transaction cleanup is awaited, and no usage SQL is left
-running in the background after the response.
+`statement_timeout` and the matching client-side `query_timeout`; transaction
+cleanup is awaited; started non-SQL optionals honor the request deadline via
+abort; and no usage work is intentionally left running in the background after
+the response.
 
 ## Report cache identity
 

@@ -801,21 +801,50 @@ async function applyPostgresLocalSettings(
   await client.query(`SELECT ${expressions.join(', ')};`, values)
 }
 
+function resolveReportQueryTimeoutMs(
+  statementTimeoutMs = REPORT_DB_STATEMENT_TIMEOUT_MS,
+  queryTimeoutMs
+) {
+  const cappedStatementTimeoutMs =
+    capReportStatementTimeoutMs(statementTimeoutMs)
+  if (queryTimeoutMs !== undefined && queryTimeoutMs !== null) {
+    const numeric = Number(queryTimeoutMs)
+    if (!Number.isFinite(numeric) || numeric <= 0) return 0
+    return Math.min(
+      REPORT_DB_STATEMENT_TIMEOUT_CEILING_MS,
+      Math.max(1, Math.floor(numeric))
+    )
+  }
+  return cappedStatementTimeoutMs > 0 ? cappedStatementTimeoutMs + 5_000 : 0
+}
+
 async function queryPostgresWithLocalSettings(
   targetPool,
   sql,
   values,
-  statementTimeoutMs = REPORT_DB_STATEMENT_TIMEOUT_MS
+  statementTimeoutMs = REPORT_DB_STATEMENT_TIMEOUT_MS,
+  options = {}
 ) {
   const client = await targetPool.connect()
   let transactionOpen = false
   let discardClient = false
+  const queryTimeoutMs = resolveReportQueryTimeoutMs(
+    statementTimeoutMs,
+    options.queryTimeoutMs
+  )
 
   try {
     await client.query('BEGIN')
     transactionOpen = true
     await applyPostgresLocalSettings(client, statementTimeoutMs)
-    const result = await client.query(sql, values ?? [])
+    const queryConfig = {
+      text: sql,
+      values: values ?? [],
+    }
+    if (queryTimeoutMs > 0) {
+      queryConfig.query_timeout = queryTimeoutMs
+    }
+    const result = await client.query(queryConfig)
     await client.query('COMMIT')
     transactionOpen = false
     return result
@@ -1162,6 +1191,10 @@ async function queryReportDatabase(sql, values, options = {}) {
   const statementTimeoutMs = capReportStatementTimeoutMs(
     options.statementTimeoutMs ?? REPORT_DB_STATEMENT_TIMEOUT_MS
   )
+  const queryTimeoutMs = resolveReportQueryTimeoutMs(
+    statementTimeoutMs,
+    options.queryTimeoutMs
+  )
   const queryId = reportQueryMetrics.nextQueryId
   reportQueryMetrics.nextQueryId += 1
   const startedAtMs = Date.now()
@@ -1181,12 +1214,14 @@ async function queryReportDatabase(sql, values, options = {}) {
     const result = testExecutor
       ? await testExecutor(sql, values, {
           statementTimeoutMs,
+          queryTimeoutMs,
         })
       : await queryPostgresWithLocalSettings(
           pool,
           sql,
           values,
-          statementTimeoutMs
+          statementTimeoutMs,
+          { queryTimeoutMs }
         )
     const durationMs = Date.now() - startedAtMs
     reportQueryMetrics.completed += 1
@@ -12102,15 +12137,17 @@ async function persistDockerLogErrorsToIntake(rows) {
   }
 }
 
-async function scanDockerLogErrorsFromSources(sources) {
+async function scanDockerLogErrorsFromSources(sources, options = {}) {
   if (!sources?.length) return []
 
+  const signal = options.signal
   const cutoffMs = Date.now() - 90 * 60 * 1000
   const rows = []
   const scanSources = capDockerJsonLogSourcesForScan(sources)
   const nextSourceCache = new Map()
 
   for (const source of scanSources) {
+    throwIfUsageReportDeadlineExceeded(signal, 'docker_log_errors')
     const sourceCacheKey = computeDockerLogSourceCacheKey(source)
     const tailBytes = source.tailBytes ?? DOCKER_LOG_TAIL_BYTES
 
@@ -12173,10 +12210,54 @@ async function scanDockerLogErrorsFromSources(sources) {
   )
 }
 
-async function loadDockerLogErrors() {
-  if (loadDockerLogErrorsTestImpl) {
-    return loadDockerLogErrorsTestImpl()
+function throwIfUsageReportDeadlineExceeded(signal, label = 'work') {
+  if (signal?.aborted) {
+    const error = new Error(
+      `Usage report request deadline exceeded while running ${label}.`
+    )
+    error.code = 'USAGE_REPORT_REQUEST_DEADLINE_EXCEEDED'
+    error.cause = signal.reason
+    throw error
   }
+}
+
+function createUsageReportDeadlineController(deadlineMs, now = Date.now) {
+  const controller = new AbortController()
+  const remainingMs = Math.floor(Number(deadlineMs) - now())
+  if (!(remainingMs > 0)) {
+    const error = new Error('Usage report request deadline already exceeded.')
+    error.code = 'USAGE_REPORT_REQUEST_DEADLINE_EXCEEDED'
+    controller.abort(error)
+    return {
+      signal: controller.signal,
+      dispose() {},
+    }
+  }
+
+  const timeout = setTimeout(() => {
+    const error = new Error('Usage report request deadline exceeded.')
+    error.code = 'USAGE_REPORT_REQUEST_DEADLINE_EXCEEDED'
+    controller.abort(error)
+  }, remainingMs)
+  if (typeof timeout.unref === 'function') {
+    timeout.unref()
+  }
+
+  return {
+    signal: controller.signal,
+    dispose() {
+      clearTimeout(timeout)
+    },
+  }
+}
+
+async function loadDockerLogErrors(options = {}) {
+  const signal = options.signal
+  if (loadDockerLogErrorsTestImpl) {
+    return loadDockerLogErrorsTestImpl(options)
+  }
+
+  throwIfUsageReportDeadlineExceeded(signal, 'docker_log_errors')
 
   if (
     dockerLogErrorsScanCache &&
@@ -12186,11 +12267,14 @@ async function loadDockerLogErrors() {
       dockerLogErrorsScanCache.sortedRows,
       { env: process.env }
     )
+    throwIfUsageReportDeadlineExceeded(signal, 'docker_log_errors')
     await persistDockerLogErrorsToIntake(forCentralizedIntake)
+    throwIfUsageReportDeadlineExceeded(signal, 'docker_log_errors')
     return dockerLogErrorsScanCache.forDashboard
   }
 
   const sources = await findDockerJsonLogSources()
+  throwIfUsageReportDeadlineExceeded(signal, 'docker_log_errors')
   if (!sources.length) {
     dockerLogErrorsScanCache = {
       sortedRows: [],
@@ -12200,7 +12284,8 @@ async function loadDockerLogErrors() {
     return []
   }
 
-  const sorted = await scanDockerLogErrorsFromSources(sources)
+  const sorted = await scanDockerLogErrorsFromSources(sources, { signal })
+  throwIfUsageReportDeadlineExceeded(signal, 'docker_log_errors')
 
   const { forDashboard } = splitDockerLogErrorsForDashboardAndIntake(
     sorted,
@@ -12219,6 +12304,7 @@ async function loadDockerLogErrors() {
     }
   )
   await persistDockerLogErrorsToIntake(forCentralizedIntake)
+  throwIfUsageReportDeadlineExceeded(signal, 'docker_log_errors')
   return forDashboard
 }
 
@@ -12235,17 +12321,40 @@ function localHealthStatusForHttp(response) {
   return 'yellow'
 }
 
-async function probeHttpHealth(probe, checkedAt) {
+function combineAbortSignals(signals) {
+  const active = (signals ?? []).filter(Boolean)
+  if (active.length === 0) return undefined
+  if (active.length === 1) return active[0]
+  if (typeof AbortSignal.any === 'function') {
+    return AbortSignal.any(active)
+  }
+  const controller = new AbortController()
+  const onAbort = (event) => {
+    const target = event?.target
+    controller.abort(target?.reason)
+  }
+  for (const signal of active) {
+    if (signal.aborted) {
+      controller.abort(signal.reason)
+      return controller.signal
+    }
+    signal.addEventListener('abort', onAbort, { once: true })
+  }
+  return controller.signal
+}
+
+async function probeHttpHealth(probe, checkedAt, options = {}) {
   const startedAt = Date.now()
   const controller = new AbortController()
   const timeout = setTimeout(() => {
     controller.abort()
   }, LOCAL_HEALTH_TIMEOUT_MS)
+  const signal = combineAbortSignals([controller.signal, options.signal])
 
   try {
     const response = await fetch(probe.url, {
       headers: probe.headers,
-      signal: controller.signal,
+      signal,
     })
     const body = compactProbeMessage(await response.text().catch(() => ''))
     const latencyMs = Date.now() - startedAt
@@ -12288,8 +12397,9 @@ export function classifyRedisPingProbeResponse(accumulated) {
   }
 }
 
-function probeRedisHealth(probe, checkedAt) {
+function probeRedisHealth(probe, checkedAt, options = {}) {
   const startedAt = Date.now()
+  const externalSignal = options.signal
 
   return new Promise((resolve) => {
     let settled = false
@@ -12304,6 +12414,9 @@ function probeRedisHealth(probe, checkedAt) {
       if (settled) return
       settled = true
       clearTimeout(timeout)
+      if (externalSignal) {
+        externalSignal.removeEventListener('abort', onExternalAbort)
+      }
       socket.destroy()
       resolve({
         checked_at: checkedAt,
@@ -12317,9 +12430,25 @@ function probeRedisHealth(probe, checkedAt) {
       })
     }
 
+    const onExternalAbort = () => {
+      finish(
+        'red',
+        externalSignal?.reason?.message ??
+          'Usage report request deadline exceeded.'
+      )
+    }
+
     timeout = setTimeout(() => {
       finish('red', `timeout after ${LOCAL_HEALTH_TIMEOUT_MS}ms`)
     }, LOCAL_HEALTH_TIMEOUT_MS)
+
+    if (externalSignal) {
+      if (externalSignal.aborted) {
+        onExternalAbort()
+        return
+      }
+      externalSignal.addEventListener('abort', onExternalAbort, { once: true })
+    }
 
     socket.once('connect', () => {
       socket.write('PING\r\n')
@@ -12336,10 +12465,11 @@ function probeRedisHealth(probe, checkedAt) {
   })
 }
 
-async function loadLocalHealth() {
+async function loadLocalHealth(options = {}) {
   if (loadLocalHealthTestImpl) {
-    return loadLocalHealthTestImpl()
+    return loadLocalHealthTestImpl(options)
   }
+  throwIfUsageReportDeadlineExceeded(options.signal, 'local_health')
   const checkedAt = new Date().toISOString()
   const probes = [
     ...LOCAL_CONTAINER_HEALTH_PROBES.map((probe) => ({
@@ -12355,8 +12485,8 @@ async function loadLocalHealth() {
   return Promise.all(
     probes.map((probe) =>
       probe.kind === 'redis'
-        ? probeRedisHealth(probe, checkedAt)
-        : probeHttpHealth(probe, checkedAt)
+        ? probeRedisHealth(probe, checkedAt, options)
+        : probeHttpHealth(probe, checkedAt, options)
     )
   )
 }
@@ -12409,11 +12539,32 @@ function buildUsageReportRequestBudgetError(taskKey) {
 function buildUsageReportDatabaseFanoutTask(taskKey, query) {
   return {
     taskKey,
-    task: ({ statementTimeoutMs } = {}) =>
+    task: ({ statementTimeoutMs, queryTimeoutMs } = {}) =>
       queryReportDatabase(query.sql, query.values, {
         statementTimeoutMs,
+        queryTimeoutMs:
+          queryTimeoutMs ??
+          (statementTimeoutMs != null ? statementTimeoutMs : undefined),
         usageReportTaskKey: taskKey,
       }),
+  }
+}
+
+function buildUsageReportNonSqlFanoutTask(taskKey, loader) {
+  return {
+    taskKey,
+    task: async ({ deadlineMs, signal, now } = {}) => {
+      const deadline = createUsageReportDeadlineController(
+        deadlineMs,
+        now ?? Date.now
+      )
+      const combinedSignal = combineAbortSignals([signal, deadline.signal])
+      try {
+        return await loader({ signal: combinedSignal, deadlineMs })
+      } finally {
+        deadline.dispose()
+      }
+    },
   }
 }
 
@@ -12559,13 +12710,19 @@ async function runUsageReportFanoutTasks(
       const { index, optional, remainingBudgetMs: taskBudgetMs } = scheduled
       const { taskKey, task } = labeledTasks[index]
       try {
+        const statementTimeoutMs = resolveUsageReportTaskStatementTimeoutMs(
+          taskBudgetMs,
+          statementTimeoutCeilingMs
+        )
         const value = await task({
           deadlineMs,
           remainingBudgetMs: taskBudgetMs,
-          statementTimeoutMs: resolveUsageReportTaskStatementTimeoutMs(
-            taskBudgetMs,
-            statementTimeoutCeilingMs
-          ),
+          statementTimeoutMs,
+          // Keep the client-side pg read timeout aligned to the same remaining
+          // request budget as statement_timeout so usage SQL cannot outlive the
+          // request solely because pool-level query_timeout is looser.
+          queryTimeoutMs: statementTimeoutMs,
+          now,
         })
         results[index] = {
           status: 'fulfilled',
@@ -12653,8 +12810,25 @@ async function loadUsageReport(searchParams, options = {}) {
   const providerCreditLifecycleQuery =
     buildProviderCreditLifecycleQuery(searchParams)
 
+  // Mandatory SQL is ordered heaviest-first so later mandatory sections are less
+  // likely to starve under a shared request budget / fanout pool of 4.
   const fanoutTasks = [
     buildUsageReportDatabaseFanoutTask('usage_rows', { sql, values }),
+    buildUsageReportDatabaseFanoutTask('summary', summaryQuery),
+    buildUsageReportDatabaseFanoutTask('trend', trendQuery),
+    buildUsageReportDatabaseFanoutTask('client_usage', clientUsageQuery),
+    buildUsageReportDatabaseFanoutTask(
+      'provider_error_observations',
+      providerErrorObservationQuery
+    ),
+    buildUsageReportDatabaseFanoutTask(
+      'provider_latency_health',
+      providerLatencyHealthQuery
+    ),
+    buildUsageReportDatabaseFanoutTask(
+      'provider_status_usage',
+      providerStatusUsageQuery
+    ),
     buildUsageReportDatabaseFanoutTask(
       'usage_score_reasons',
       scoreReasonsQuery
@@ -12662,21 +12836,6 @@ async function loadUsageReport(searchParams, options = {}) {
     buildUsageReportDatabaseFanoutTask(
       'usage_diagnostic_strings',
       diagnosticStringsQuery
-    ),
-    buildUsageReportDatabaseFanoutTask('summary', summaryQuery),
-    buildUsageReportDatabaseFanoutTask('trend', trendQuery),
-    buildUsageReportDatabaseFanoutTask('client_usage', clientUsageQuery),
-    buildUsageReportDatabaseFanoutTask(
-      'provider_latency_health',
-      providerLatencyHealthQuery
-    ),
-    buildUsageReportDatabaseFanoutTask(
-      'provider_error_observations',
-      providerErrorObservationQuery
-    ),
-    buildUsageReportDatabaseFanoutTask(
-      'provider_status_usage',
-      providerStatusUsageQuery
     ),
     buildUsageReportDatabaseFanoutTask(
       'provider_alias_routing',
@@ -12690,14 +12849,8 @@ async function loadUsageReport(searchParams, options = {}) {
       'provider_credit_lifecycle',
       providerCreditLifecycleQuery
     ),
-    {
-      taskKey: 'docker_log_errors',
-      task: () => loadDockerLogErrors(),
-    },
-    {
-      taskKey: 'local_health',
-      task: () => loadLocalHealth(),
-    },
+    buildUsageReportNonSqlFanoutTask('docker_log_errors', loadDockerLogErrors),
+    buildUsageReportNonSqlFanoutTask('local_health', loadLocalHealth),
   ]
 
   const { results: fanoutResults, unavailableAuxiliarySections } =
@@ -13861,6 +14014,8 @@ export const __envTestHelpers = {
   USAGE_REPORT_REQUEST_BUDGET_MS,
   USAGE_REPORT_RESPONSE_HEADROOM_MS,
   buildPostgresLocalSettings,
+  resolveReportQueryTimeoutMs,
+  capReportStatementTimeoutMs,
 }
 
 export {
@@ -13943,6 +14098,9 @@ export const __usageReportTestHelpers = {
   loadUsageReport,
   runUsageReportFanoutTasks,
   buildUsageReportAuxiliaryDegradedMetadata,
+  resolveUsageReportTaskStatementTimeoutMs,
+  resolveReportQueryTimeoutMs,
+  createUsageReportDeadlineController,
   USAGE_REPORT_OPTIONAL_FANOUT_SECTION_KEYS,
   USAGE_REPORT_REQUEST_BUDGET_MS,
   USAGE_REPORT_RESPONSE_HEADROOM_MS,

@@ -341,6 +341,9 @@ declare module './report-service.mjs' {
     deadlineMs: number
     remainingBudgetMs: number
     statementTimeoutMs: number
+    queryTimeoutMs?: number
+    signal?: AbortSignal
+    now?: () => number
   }
 
   type UsageReportFanoutTask = {
@@ -614,6 +617,11 @@ declare module './report-service.mjs' {
     buildPostgresLocalSettings: (
       statementTimeoutMs?: number
     ) => Array<[string, string]>
+    resolveReportQueryTimeoutMs: (
+      statementTimeoutMs?: number,
+      queryTimeoutMs?: number | null
+    ) => number
+    capReportStatementTimeoutMs: (statementTimeoutMs?: number) => number
   }
 
   export const __dockerLogScanTestHelpers: {
@@ -663,6 +671,7 @@ declare module './report-service.mjs' {
       values?: unknown[] | undefined,
       options?: {
         statementTimeoutMs?: number
+        queryTimeoutMs?: number
         usageReportTaskKey?: string | null
       }
     ) => Promise<ReportDatabaseResult>
@@ -671,7 +680,7 @@ declare module './report-service.mjs' {
       impl: (
         sql: string,
         values: unknown[] | undefined,
-        options: { statementTimeoutMs: number }
+        options: { statementTimeoutMs: number; queryTimeoutMs?: number }
       ) => ReportDatabaseResult | Promise<ReportDatabaseResult>
     ) => void
     resetExecuteReportQueryTestImpl: () => void
@@ -690,6 +699,18 @@ declare module './report-service.mjs' {
     buildUsageReportAuxiliaryDegradedMetadata: (
       unavailable?: readonly string[]
     ) => Record<string, unknown>
+    resolveUsageReportTaskStatementTimeoutMs: (
+      remainingBudgetMs: number,
+      statementTimeoutCeilingMs?: number
+    ) => number
+    resolveReportQueryTimeoutMs: (
+      statementTimeoutMs?: number,
+      queryTimeoutMs?: number | null
+    ) => number
+    createUsageReportDeadlineController: (
+      deadlineMs: number,
+      now?: () => number
+    ) => { signal: AbortSignal; dispose: () => void }
     USAGE_REPORT_OPTIONAL_FANOUT_SECTION_KEYS: readonly string[]
     USAGE_REPORT_REQUEST_BUDGET_MS: number
     USAGE_REPORT_RESPONSE_HEADROOM_MS: number
@@ -702,6 +723,7 @@ declare module './report-service.mjs' {
             values: unknown,
             options?: {
               statementTimeoutMs?: number
+              queryTimeoutMs?: number
               usageReportTaskKey?: string
             }
           ) => Promise<{ rows: unknown[] }>)
@@ -709,11 +731,21 @@ declare module './report-service.mjs' {
     ) => void
     resetQueryReportDatabaseTestImpl: () => void
     setLoadDockerLogErrorsTestImpl: (
-      impl: (() => Promise<unknown[]>) | null
+      impl:
+        | ((options?: {
+            signal?: AbortSignal
+            deadlineMs?: number
+          }) => Promise<unknown[]>)
+        | null
     ) => void
     resetLoadDockerLogErrorsTestImpl: () => void
     setLoadLocalHealthTestImpl: (
-      impl: (() => Promise<unknown[]>) | null
+      impl:
+        | ((options?: {
+            signal?: AbortSignal
+            deadlineMs?: number
+          }) => Promise<unknown[]>)
+        | null
     ) => void
     resetLoadLocalHealthTestImpl: () => void
   }

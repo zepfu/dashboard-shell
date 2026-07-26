@@ -7,6 +7,9 @@ import {
 const {
   loadUsageReport,
   runUsageReportFanoutTasks,
+  resolveUsageReportTaskStatementTimeoutMs,
+  resolveReportQueryTimeoutMs,
+  createUsageReportDeadlineController,
   USAGE_REPORT_REQUEST_BUDGET_MS,
   USAGE_REPORT_RESPONSE_HEADROOM_MS,
   setQueryReportDatabaseTestImpl,
@@ -50,6 +53,12 @@ function usageReportTaskKey(options: unknown) {
 function usageReportStatementTimeoutMs(options: unknown) {
   return typeof options === 'object' && options != null
     ? (options as { statementTimeoutMs?: number }).statementTimeoutMs
+    : undefined
+}
+
+function usageReportQueryTimeoutMs(options: unknown) {
+  return typeof options === 'object' && options != null
+    ? (options as { queryTimeoutMs?: number }).queryTimeoutMs
     : undefined
 }
 
@@ -399,6 +408,247 @@ describe('D1-496 usage report wall-clock scheduler', () => {
     expect(
       USAGE_REPORT_REQUEST_BUDGET_MS + USAGE_REPORT_RESPONSE_HEADROOM_MS
     ).toBe(120_000)
+  })
+
+  test('test_runUsageReportFanoutTasks_rejects_later_mandatory_budget_exhaustion', async () => {
+    let nowMs = 0
+    const started: string[] = []
+
+    await expect(
+      runUsageReportFanoutTasks(
+        [
+          {
+            taskKey: 'usage_rows',
+            task: async () => {
+              started.push('usage_rows')
+              nowMs = 100
+              return 'usage rows'
+            },
+          },
+          {
+            taskKey: 'summary',
+            task: async () => {
+              started.push('summary')
+              return 'summary'
+            },
+          },
+          {
+            taskKey: 'usage_score_reasons',
+            task: async () => {
+              started.push('usage_score_reasons')
+              return 'score reasons'
+            },
+          },
+        ],
+        1,
+        {
+          now: () => nowMs,
+          requestStartedAtMs: 0,
+          requestBudgetMs: 100,
+        }
+      )
+    ).rejects.toMatchObject({
+      code: 'USAGE_REPORT_REQUEST_BUDGET_EXHAUSTED',
+      usageReportTaskKey: 'summary',
+      message: expect.stringContaining('summary'),
+    })
+
+    expect(started).toEqual(['usage_rows'])
+  })
+
+  test('test_runUsageReportFanoutTasks_orders_mandatory_work_heaviest_first_by_declaration', async () => {
+    const started: string[] = []
+    const result = await runUsageReportFanoutTasks(
+      [
+        {
+          taskKey: 'provider_status_usage',
+          task: async () => {
+            started.push('provider_status_usage')
+            return 'status'
+          },
+        },
+        {
+          taskKey: 'usage_rows',
+          task: async () => {
+            started.push('usage_rows')
+            return 'rows'
+          },
+        },
+        {
+          taskKey: 'summary',
+          task: async () => {
+            started.push('summary')
+            return 'summary'
+          },
+        },
+        {
+          taskKey: 'usage_score_reasons',
+          task: async () => {
+            started.push('usage_score_reasons')
+            return 'score'
+          },
+        },
+      ],
+      1,
+      {
+        now: () => 0,
+        requestStartedAtMs: 0,
+        requestBudgetMs: 1_000,
+      }
+    )
+
+    // Scheduler preserves mandatory declaration order while still finishing
+    // all mandatories before optionals. loadUsageReport supplies heaviest-first.
+    expect(started).toEqual([
+      'provider_status_usage',
+      'usage_rows',
+      'summary',
+      'usage_score_reasons',
+    ])
+    expect(result.unavailableAuxiliarySections).toEqual([])
+  })
+
+  test('test_runUsageReportFanoutTasks_passes_matching_client_query_timeout', async () => {
+    let nowMs = 0
+    let observed:
+      | {
+          statementTimeoutMs?: number
+          queryTimeoutMs?: number
+          remainingBudgetMs?: number
+        }
+      | undefined
+
+    await runUsageReportFanoutTasks(
+      [
+        {
+          taskKey: 'usage_rows',
+          task: async (context) => {
+            observed = context
+            nowMs = 25
+            return 'usage rows'
+          },
+        },
+      ],
+      1,
+      {
+        now: () => nowMs,
+        requestStartedAtMs: 0,
+        requestBudgetMs: 100,
+        statementTimeoutCeilingMs: 120_000,
+      }
+    )
+
+    expect(observed).toMatchObject({
+      remainingBudgetMs: 100,
+      statementTimeoutMs: 100,
+      queryTimeoutMs: 100,
+    })
+  })
+
+  test('test_runUsageReportFanoutTasks_cancels_started_non_sql_optional_via_deadline_signal', async () => {
+    vi.useFakeTimers()
+    let nowMs = 0
+    let optionalStarted = false
+    let optionalRejectedWithDeadline = false
+
+    const runPromise = runUsageReportFanoutTasks(
+      [
+        {
+          taskKey: 'usage_rows',
+          task: async () => {
+            nowMs = 40
+            return 'usage rows'
+          },
+        },
+        {
+          taskKey: 'local_health',
+          task: async ({ deadlineMs }) => {
+            optionalStarted = true
+            // Mirror production non-SQL wiring: deadline-aware AbortSignal, no
+            // Promise.race orphaning of the underlying work.
+            const deadline = createUsageReportDeadlineController(
+              deadlineMs,
+              () => nowMs
+            )
+            try {
+              await new Promise<never>((_resolve, reject) => {
+                if (deadline.signal.aborted) {
+                  reject(deadline.signal.reason ?? new Error('aborted'))
+                  return
+                }
+                deadline.signal.addEventListener(
+                  'abort',
+                  () => {
+                    reject(deadline.signal.reason ?? new Error('aborted'))
+                  },
+                  { once: true }
+                )
+              })
+            } catch (error) {
+              optionalRejectedWithDeadline =
+                (error as { code?: string } | undefined)?.code ===
+                'USAGE_REPORT_REQUEST_DEADLINE_EXCEEDED'
+              throw error
+            } finally {
+              deadline.dispose()
+            }
+          },
+        },
+      ],
+      1,
+      {
+        now: () => nowMs,
+        requestStartedAtMs: 0,
+        requestBudgetMs: 100,
+      }
+    )
+
+    await vi.waitFor(() => {
+      expect(optionalStarted).toBe(true)
+    })
+
+    // Fire the deadline timer after the remaining 60ms budget elapses.
+    nowMs = 120
+    await vi.advanceTimersByTimeAsync(60)
+
+    const result = await runPromise
+
+    expect(optionalRejectedWithDeadline).toBe(true)
+    expect(result.unavailableAuxiliarySections).toEqual(['local_health'])
+    expect(result.results[1]).toMatchObject({
+      status: 'rejected',
+      taskKey: 'local_health',
+    })
+  })
+
+  test('test_resolve_usage_report_timeouts_align_statement_and_query_budget', () => {
+    expect(resolveUsageReportTaskStatementTimeoutMs(12_345, 120_000)).toBe(
+      12_345
+    )
+    expect(resolveReportQueryTimeoutMs(12_345, 12_345)).toBe(12_345)
+    // Unspecified client timeout keeps the pool-style cushion for non-usage
+    // callers; usage fanout always passes the remaining budget explicitly.
+    expect(resolveReportQueryTimeoutMs(12_345)).toBe(17_345)
+    expect(resolveReportQueryTimeoutMs(12_345, 0)).toBe(0)
+  })
+
+  test('test_createUsageReportDeadlineController_aborts_at_deadline_without_orphan_timer_ownership', async () => {
+    vi.useFakeTimers()
+    const startedAt = 1_000
+    vi.setSystemTime(startedAt)
+    const deadline = createUsageReportDeadlineController(startedAt + 50)
+    expect(deadline.signal.aborted).toBe(false)
+
+    await vi.advanceTimersByTimeAsync(49)
+    expect(deadline.signal.aborted).toBe(false)
+
+    await vi.advanceTimersByTimeAsync(1)
+    expect(deadline.signal.aborted).toBe(true)
+    expect(
+      (deadline.signal.reason as { code?: string } | undefined)?.code
+    ).toBe('USAGE_REPORT_REQUEST_DEADLINE_EXCEEDED')
+
+    deadline.dispose()
   })
 })
 
@@ -795,10 +1045,12 @@ describe('D1-496 usage_diagnostic_strings auxiliary split', () => {
     ]
 
     const statementTimeouts = new Map<string, number | undefined>()
+    const queryTimeouts = new Map<string, number | undefined>()
     setQueryReportDatabaseTestImpl(async (_sql: string, _values, options) => {
       const taskKey = usageReportTaskKey(options)
       if (taskKey) {
         statementTimeouts.set(taskKey, usageReportStatementTimeoutMs(options))
+        queryTimeouts.set(taskKey, usageReportQueryTimeoutMs(options))
       }
       if (taskKey === 'usage_rows') {
         return { rows: coreRows }
@@ -835,6 +1087,8 @@ describe('D1-496 usage_diagnostic_strings auxiliary split', () => {
     expect(openaiRow!.token_total).toBe(500)
     expect(statementTimeouts.get('usage_rows')).toBe(115_000)
     expect(statementTimeouts.get('usage_diagnostic_strings')).toBe(115_000)
+    expect(queryTimeouts.get('usage_rows')).toBe(115_000)
+    expect(queryTimeouts.get('usage_diagnostic_strings')).toBe(115_000)
   })
 
   test('test_loadUsageReport_degrades_diagnostic_strings_timeout_without_rejecting_report', async () => {
@@ -933,6 +1187,117 @@ describe('D1-496 usage_diagnostic_strings auxiliary split', () => {
 
     await expect(loadUsageReport(d1496Params)).rejects.toThrow(
       'core usage query failed'
+    )
+  })
+})
+
+describe('D1-496 usage report deadline and mandatory ordering follow-up', () => {
+  test('test_loadUsageReport_starts_heavy_mandatories_before_lighter_mandatories', async () => {
+    const started: string[] = []
+    const gates = {
+      usage_rows: deferred<{ rows: unknown[] }>(),
+      summary: deferred<{ rows: unknown[] }>(),
+    }
+
+    setQueryReportDatabaseTestImpl(async (_sql, _values, options) => {
+      const taskKey = usageReportTaskKey(options)
+      if (taskKey) started.push(taskKey)
+      if (taskKey === 'usage_rows') return gates.usage_rows.promise
+      if (taskKey === 'summary') return gates.summary.promise
+      return emptyDbResult()
+    })
+    setLoadDockerLogErrorsTestImpl(async () => [])
+    setLoadLocalHealthTestImpl(async () => [])
+
+    const reportPromise = loadUsageReport(params, {
+      now: () => 0,
+      concurrency: 2,
+    })
+
+    await vi.waitFor(() => {
+      expect(started).toEqual(expect.arrayContaining(['usage_rows', 'summary']))
+    })
+    // With concurrency 2, the first admitted mandatories must be the heaviest pair.
+    expect(started.slice(0, 2)).toEqual(['usage_rows', 'summary'])
+
+    gates.usage_rows.resolve({ rows: [] })
+    gates.summary.resolve({ rows: [] })
+    await reportPromise
+  })
+
+  test('test_loadUsageReport_degrades_non_sql_optional_when_deadline_signal_aborts', async () => {
+    setQueryReportDatabaseTestImpl(async () => emptyDbResult())
+    setLoadDockerLogErrorsTestImpl(async ({ signal } = {}) => {
+      if (!signal) throw new Error('expected deadline signal')
+      if (signal.aborted) {
+        throw signal.reason ?? new Error('aborted')
+      }
+      await new Promise<never>((_resolve, reject) => {
+        signal.addEventListener(
+          'abort',
+          () => {
+            reject(signal.reason ?? new Error('aborted'))
+          },
+          { once: true }
+        )
+      })
+      return []
+    })
+    setLoadLocalHealthTestImpl(async () => [])
+
+    vi.useFakeTimers()
+    vi.setSystemTime(0)
+    const reportPromise = loadUsageReport(params, {
+      now: () => Date.now(),
+      requestBudgetMs: 50,
+      concurrency: 4,
+    })
+
+    await vi.advanceTimersByTimeAsync(60)
+    const report = asUsageReport(await reportPromise)
+
+    expect(report.metadata.degraded).toBe(true)
+    expect(report.metadata.unavailableAuxiliarySections).toEqual(
+      expect.arrayContaining(['docker_log_errors'])
+    )
+  })
+
+  test('test_loadUsageReport_does_not_start_non_sql_optionals_when_budget_already_exhausted', async () => {
+    let nowMs = 0
+    let dockerStarted = false
+    let localStarted = false
+
+    setQueryReportDatabaseTestImpl(async (_sql, _values, options) => {
+      const taskKey = usageReportTaskKey(options)
+      // Exhaust budget only after the final mandatory finishes so phase-2
+      // optionals are skipped without rejecting later mandatories.
+      if (taskKey === 'provider_status_usage') {
+        nowMs = 100
+      }
+      return emptyDbResult()
+    })
+    setLoadDockerLogErrorsTestImpl(async () => {
+      dockerStarted = true
+      return []
+    })
+    setLoadLocalHealthTestImpl(async () => {
+      localStarted = true
+      return []
+    })
+
+    const report = asUsageReport(
+      await loadUsageReport(params, {
+        now: () => nowMs,
+        requestBudgetMs: 100,
+        concurrency: 1,
+      })
+    )
+
+    expect(dockerStarted).toBe(false)
+    expect(localStarted).toBe(false)
+    expect(report.metadata.degraded).toBe(true)
+    expect(report.metadata.unavailableAuxiliarySections).toEqual(
+      expect.arrayContaining(['docker_log_errors', 'local_health'])
     )
   })
 })
