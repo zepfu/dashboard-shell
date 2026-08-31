@@ -48,3 +48,25 @@ describe('Wave 11 P13-F07 — .env.example covers compose variables', () => {
     ).toEqual([])
   })
 })
+
+describe('D1-499 report pool timeout defaults', () => {
+  test('keeps main and dev compose defaults distinct from the health timeout', () => {
+    const repoRoot = process.cwd()
+    const envExample = readFileSync(resolve(repoRoot, '.env.example'), 'utf8')
+
+    expect(envExample).toContain('SHELL_REPORT_DB_CONNECTION_TIMEOUT_MS=30000')
+    expect(envExample).toContain(
+      'SHELL_REPORT_HEALTH_DB_CONNECTION_TIMEOUT_MS=1000'
+    )
+
+    for (const file of COMPOSE_FILES) {
+      const compose = readFileSync(resolve(repoRoot, file), 'utf8')
+      expect(compose).toContain(
+        "SHELL_REPORT_DB_CONNECTION_TIMEOUT_MS: '${SHELL_REPORT_DB_CONNECTION_TIMEOUT_MS:-30000}'"
+      )
+      expect(compose).toContain(
+        "SHELL_REPORT_HEALTH_DB_CONNECTION_TIMEOUT_MS: '${SHELL_REPORT_HEALTH_DB_CONNECTION_TIMEOUT_MS:-1000}'"
+      )
+    }
+  })
+})

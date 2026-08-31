@@ -188,3 +188,16 @@ describe('D1-496 sql fanout concurrency defaults', () => {
     expect(mod.__envTestHelpers.REPORT_SQL_FANOUT_CONCURRENCY).toBe(1)
   })
 })
+
+describe('D1-499 report pool acquisition timeout defaults', () => {
+  test('uses 30 seconds for report connections while health connections stay at 1 second', async () => {
+    vi.stubEnv('VITEST', 'true')
+    delete process.env.SHELL_REPORT_DB_CONNECTION_TIMEOUT_MS
+    delete process.env.SHELL_REPORT_HEALTH_DB_CONNECTION_TIMEOUT_MS
+
+    const { __envTestHelpers } = await import('./report-service.mjs')
+
+    expect(__envTestHelpers.REPORT_DB_CONNECTION_TIMEOUT_MS).toBe(30_000)
+    expect(__envTestHelpers.HEALTH_DB_CONNECTION_TIMEOUT_MS).toBe(1_000)
+  })
+})

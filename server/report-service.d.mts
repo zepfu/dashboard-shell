@@ -631,9 +631,11 @@ declare module './report-service.mjs' {
     ) => string
     REPORT_SQL_FANOUT_CONCURRENCY: number
     REPORT_DB_POOL_MAX: number
+    REPORT_DB_CONNECTION_TIMEOUT_MS: number
     REPORT_DB_DISABLE_PARALLELISM: boolean
     REPORT_DB_STATEMENT_TIMEOUT_MS: number
     REPORT_DB_STATEMENT_TIMEOUT_CEILING_MS: number
+    HEALTH_DB_CONNECTION_TIMEOUT_MS: number
     USAGE_REPORT_REQUEST_BUDGET_MS: number
     USAGE_REPORT_RESPONSE_HEADROOM_MS: number
     buildPostgresLocalSettings: (

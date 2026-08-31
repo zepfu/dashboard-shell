@@ -444,6 +444,10 @@ the tighter remaining-budget timeout described above. Distinguish HTTP wall time
 from `reportQueryPressure` timeout/error counters: wall-clock latency is not by
 itself a per-statement timeout.
 
+The normal report pool connection-acquisition timeout defaults to
+`SHELL_REPORT_DB_CONNECTION_TIMEOUT_MS=30000`; the separate health pool retains
+its fail-fast `SHELL_REPORT_HEALTH_DB_CONNECTION_TIMEOUT_MS=1000` default.
+
 `GET /api/shell/reports/usage` returns compact usage rows by default. The report
 service omits row properties whose normalized value is `null`, `undefined`, or
 an empty string, and marks the response with:
