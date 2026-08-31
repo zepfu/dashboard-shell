@@ -29,6 +29,7 @@ services:
       AAWM_TAP_REMOTE_ENTRY_TYPE: 'module'
       AEGIS_REMOTE_DEV_PORT: '${AEGIS_REMOTE_DEV_PORT:-5174}'
       AEGIS_REMOTE_ENTRY_TYPE: 'module'
+      __VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS: '${DASHBOARD_DEV_ALLOWED_HOST:-.tailf1878c.ts.net}'
       CHOKIDAR_USEPOLLING: '${CHOKIDAR_USEPOLLING:-true}'
       DASHBOARD_SHELL_DEV_PORT: '${DASHBOARD_SHELL_DEV_PORT:-3006}'
       SHELL_REPORT_API_TARGET: 'http://dashboard-shell-reports-dev:${SHELL_REPORT_PORT:-3010}'
@@ -216,6 +217,7 @@ services:
       SHELL_CONTAINER_NAME: dashboard-shell-aawm-dashboard-dev
       SHELL_CONTAINER_ERROR_INTAKE_DIR: /dashboard-shell-analysis
       AAWM_DASHBOARD_REMOTE_DEV_PORT: '${AAWM_DASHBOARD_REMOTE_DEV_PORT:-5176}'
+      __VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS: '${DASHBOARD_DEV_ALLOWED_HOST:-.tailf1878c.ts.net}'
       CHOKIDAR_USEPOLLING: '${CHOKIDAR_USEPOLLING:-true}'
       WATCHPACK_POLLING: '${WATCHPACK_POLLING:-true}'
     ports:
@@ -226,6 +228,7 @@ services:
       - ./scripts/container-error-intake.sh:/usr/local/bin/container-error-intake.sh:ro
       - ./.analysis:/dashboard-shell-analysis
       - ../aawm-dashboard:/workspace/aawm-dashboard
+      - ./scripts/vite-tailnet-allowed-hosts.config.mjs:/workspace/aawm-dashboard/vite-tailnet-allowed-hosts.config.mjs:ro
       - aawm_dashboard_dev_node_modules:/workspace/aawm-dashboard/node_modules
       - aawm_dashboard_dev_npm_cache:/root/.npm
     entrypoint: ['/usr/local/bin/container-error-intake.sh']
@@ -234,7 +237,7 @@ services:
       - -lc
       - |
         npm ci
-        npm run dev -- --host 0.0.0.0 --port "$${AAWM_DASHBOARD_REMOTE_DEV_PORT:-5176}" --strictPort --cors
+        npm run dev -- --config vite-tailnet-allowed-hosts.config.mjs --host 0.0.0.0 --port "$${AAWM_DASHBOARD_REMOTE_DEV_PORT:-5176}" --strictPort --cors
     healthcheck:
       test:
         [
@@ -255,6 +258,7 @@ services:
       SHELL_CONTAINER_NAME: dashboard-shell-aawm-observe-dashboard-dev
       SHELL_CONTAINER_ERROR_INTAKE_DIR: /dashboard-shell-analysis
       AAWM_OBSERVE_REMOTE_DEV_PORT: '${AAWM_OBSERVE_REMOTE_DEV_PORT:-5177}'
+      __VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS: '${DASHBOARD_DEV_ALLOWED_HOST:-.tailf1878c.ts.net}'
       CHOKIDAR_USEPOLLING: '${CHOKIDAR_USEPOLLING:-true}'
       WATCHPACK_POLLING: '${WATCHPACK_POLLING:-true}'
     ports:
@@ -265,6 +269,7 @@ services:
       - ./scripts/container-error-intake.sh:/usr/local/bin/container-error-intake.sh:ro
       - ./.analysis:/dashboard-shell-analysis
       - ../aawm-observe-dashboard:/workspace/aawm-observe-dashboard
+      - ./scripts/vite-tailnet-allowed-hosts.config.mjs:/workspace/aawm-observe-dashboard/vite-tailnet-allowed-hosts.config.mjs:ro
       - aawm_observe_dashboard_dev_node_modules:/workspace/aawm-observe-dashboard/node_modules
       - aawm_observe_dashboard_dev_npm_cache:/root/.npm
     entrypoint: ['/usr/local/bin/container-error-intake.sh']
@@ -273,7 +278,7 @@ services:
       - -lc
       - |
         npm ci
-        npm run dev -- --host 0.0.0.0 --port "$${AAWM_OBSERVE_REMOTE_DEV_PORT:-5177}" --strictPort --cors
+        npm run dev -- --config vite-tailnet-allowed-hosts.config.mjs --host 0.0.0.0 --port "$${AAWM_OBSERVE_REMOTE_DEV_PORT:-5177}" --strictPort --cors
     healthcheck:
       test:
         [
@@ -294,6 +299,7 @@ services:
       SHELL_CONTAINER_NAME: dashboard-shell-aawm-tap-dashboard-dev
       SHELL_CONTAINER_ERROR_INTAKE_DIR: /dashboard-shell-analysis
       AAWM_TAP_REMOTE_DEV_PORT: '${AAWM_TAP_REMOTE_DEV_PORT:-5173}'
+      __VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS: '${DASHBOARD_DEV_ALLOWED_HOST:-.tailf1878c.ts.net}'
       CHOKIDAR_USEPOLLING: '${CHOKIDAR_USEPOLLING:-true}'
       VITE_API_KEY: ''
       VITE_ACCESS_TOKEN: ''
@@ -308,6 +314,7 @@ services:
       - ./scripts/container-error-intake.sh:/usr/local/bin/container-error-intake.sh:ro
       - ./.analysis:/dashboard-shell-analysis
       - ../aawm-tap-dashboard:/workspace/aawm-tap-dashboard
+      - ./scripts/vite-tailnet-allowed-hosts.config.mjs:/workspace/aawm-tap-dashboard/vite-tailnet-allowed-hosts.config.mjs:ro
       - aawm_tap_dashboard_dev_node_modules:/workspace/aawm-tap-dashboard/node_modules
       - aawm_tap_dashboard_dev_npm_cache:/root/.npm
     entrypoint: ['/usr/local/bin/container-error-intake.sh']
@@ -316,7 +323,7 @@ services:
       - -lc
       - |
         npm ci
-        npm run dev -- --host 0.0.0.0 --port "$${AAWM_TAP_REMOTE_DEV_PORT:-5173}" --strictPort --cors
+        npm run dev -- --config vite-tailnet-allowed-hosts.config.mjs --host 0.0.0.0 --port "$${AAWM_TAP_REMOTE_DEV_PORT:-5173}" --strictPort --cors
     healthcheck:
       test:
         [
@@ -337,6 +344,7 @@ services:
       SHELL_CONTAINER_NAME: dashboard-shell-aegis-dashboard-dev
       SHELL_CONTAINER_ERROR_INTAKE_DIR: /dashboard-shell-analysis
       AEGIS_REMOTE_DEV_PORT: '${AEGIS_REMOTE_DEV_PORT:-5174}'
+      __VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS: '${DASHBOARD_DEV_ALLOWED_HOST:-.tailf1878c.ts.net}'
       CHOKIDAR_USEPOLLING: '${CHOKIDAR_USEPOLLING:-true}'
       WATCHPACK_POLLING: '${WATCHPACK_POLLING:-true}'
     ports:
@@ -347,6 +355,7 @@ services:
       - ./scripts/container-error-intake.sh:/usr/local/bin/container-error-intake.sh:ro
       - ./.analysis:/dashboard-shell-analysis
       - ../aegis-dashboard:/workspace/aegis-dashboard
+      - ./scripts/vite-tailnet-allowed-hosts.config.mjs:/workspace/aegis-dashboard/vite-tailnet-allowed-hosts.config.mjs:ro
       - aegis_dashboard_dev_node_modules:/workspace/aegis-dashboard/node_modules
       - aegis_dashboard_dev_npm_cache:/root/.npm
     entrypoint: ['/usr/local/bin/container-error-intake.sh']
@@ -355,7 +364,7 @@ services:
       - -lc
       - |
         npm ci
-        npm run dev -- --host 0.0.0.0 --port "$${AEGIS_REMOTE_DEV_PORT:-5174}" --strictPort --cors
+        npm run dev -- --config vite-tailnet-allowed-hosts.config.mjs --host 0.0.0.0 --port "$${AEGIS_REMOTE_DEV_PORT:-5174}" --strictPort --cors
     healthcheck:
       test:
         [
@@ -377,6 +386,7 @@ services:
       SHELL_CONTAINER_ERROR_INTAKE_DIR: /dashboard-shell-analysis
       CHOKIDAR_USEPOLLING: '${CHOKIDAR_USEPOLLING:-true}'
       SLUICE_REMOTE_DEV_PORT: '${SLUICE_REMOTE_DEV_PORT:-5175}'
+      __VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS: '${DASHBOARD_DEV_ALLOWED_HOST:-.tailf1878c.ts.net}'
       WATCHPACK_POLLING: '${WATCHPACK_POLLING:-true}'
     ports:
       - '${DASHBOARD_DEV_BIND_HOST:-0.0.0.0}:${SLUICE_REMOTE_DEV_PORT:-5175}:${SLUICE_REMOTE_DEV_PORT:-5175}'
@@ -386,6 +396,7 @@ services:
       - ./scripts/container-error-intake.sh:/usr/local/bin/container-error-intake.sh:ro
       - ./.analysis:/dashboard-shell-analysis
       - ../sluice-dashboard:/workspace/sluice-dashboard
+      - ./scripts/vite-tailnet-allowed-hosts.config.mjs:/workspace/sluice-dashboard/vite-tailnet-allowed-hosts.config.mjs:ro
       - sluice_dashboard_dev_node_modules:/workspace/sluice-dashboard/node_modules
       - sluice_dashboard_dev_npm_cache:/root/.npm
     entrypoint: ['/usr/local/bin/container-error-intake.sh']
@@ -394,7 +405,7 @@ services:
       - -lc
       - |
         npm ci
-        npm run dev -- --host 0.0.0.0 --port "$${SLUICE_REMOTE_DEV_PORT:-5175}" --strictPort --cors
+        npm run dev -- --config vite-tailnet-allowed-hosts.config.mjs --host 0.0.0.0 --port "$${SLUICE_REMOTE_DEV_PORT:-5175}" --strictPort --cors
     healthcheck:
       test:
         [

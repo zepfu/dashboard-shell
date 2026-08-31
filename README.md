@@ -34,6 +34,21 @@ In `docker-compose.dev.yml`, all dev stack publish entries default to
 accept LAN and Tailscale ingress. Set `DASHBOARD_DEV_BIND_HOST=127.0.0.1` to
 restrict the stack to loopback.
 
+Vite additionally rejects requests whose `Host` header is not in
+`server.allowedHosts`. The shell container runs Vite 8, which honors
+`__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS` natively; the five remote dev
+containers run Vite 5, which ignores that hook, so
+`docker-compose.dev.yml` mounts the shared wrapper
+`scripts/vite-tailnet-allowed-hosts.config.mjs` read-only into each remote
+project root and starts it with `--config`. The wrapper loads the remote's own
+`vite.config.ts` with its own installed Vite and appends one pattern to
+`server.allowedHosts` (preserving `true` and existing entries; LAN IPv4/IPv6
+literals stay accepted automatically). All six services default to
+`${DASHBOARD_DEV_ALLOWED_HOST:-.tailf1878c.ts.net}`; the leading dot permits
+the base tailnet domain and every node hostname under it, so node renames
+within the tailnet need no change. Override `DASHBOARD_DEV_ALLOWED_HOST` only
+with a different trusted DNS suffix or hostname (one pattern only).
+
 This stack runs Vite servers in containers with bind-mounted source from this
 repo and the sibling dashboard repos, so changes in any checkout are served live
 without a Docker image rebuild. The shell dev server proxies `/api/aawm-tap/*`,
