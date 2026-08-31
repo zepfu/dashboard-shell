@@ -25,7 +25,7 @@ Local compose and dev defaults use `SHELL_REPORT_PROXY_SHARED_SECRET=dashboard-s
   upstream PostgreSQL endpoint is `aawm-dev-postgresql:5432`. Compose defaults
   rewrite localhost database URLs from the host endpoint to the container
   endpoint.
-- Redis dependency/runtime follow-up work is owned by server-package/report-service TODOs.
+- Both production and dev report services install the locked `server/package.json` dependencies; dev mounts its existing named report-service module volume at `server/node_modules`.
 - Redis cache support is optional for the report-service process:
   - If `redis` package import/connectivity is healthy, cached report payloads use Redis where configured.
   - If Redis is reachable, `buildShellHealthPayload` reports `redisPackageAvailable: true`, `redisStatus: ready`, and `redisConfigured: true`, `redisReady: true`.
