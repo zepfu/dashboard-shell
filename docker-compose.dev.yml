@@ -150,7 +150,7 @@ services:
       - ./scripts/container-error-intake.sh:/usr/local/bin/container-error-intake.sh:ro
       - ./.analysis:/dashboard-shell-analysis
       - .:/workspace/dashboard-shell
-      - dashboard_shell_reports_dev_node_modules:/workspace/dashboard-shell/node_modules
+      - dashboard_shell_reports_dev_node_modules:/workspace/dashboard-shell/server/node_modules
       - dashboard_shell_reports_dev_pnpm_store:/pnpm/store
       # Runtime boundary note (D1-446): report-service root mode is required for local operator paths.
       # It tails host logs from /host/docker/containers and writes intake rows under the bind-mounted /dashboard-shell-analysis.
@@ -163,7 +163,7 @@ services:
         corepack enable
         corepack prepare pnpm@10.30.2 --activate
         pnpm config set store-dir /pnpm/store
-        pnpm install --frozen-lockfile
+        pnpm --dir server install --frozen-lockfile
         node server/report-service.mjs
     healthcheck:
       test:
