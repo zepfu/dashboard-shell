@@ -52,7 +52,7 @@ function formatCount(n: number): string {
 interface TileData {
   label: string
   key: KpiKey
-  rawValue: number
+  rawValue: number | null
   value: string
   isError?: boolean
 }

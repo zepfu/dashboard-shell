@@ -1,7 +1,7 @@
 export interface KpiSummary {
   token_in: number
   token_out: number
-  cost_usd: number
+  cost_usd: number | null
   requests: number
   errors: number
   p95_ms: number | null
@@ -22,7 +22,7 @@ export function microbarScale(key: KpiKey, summary: KpiSummary): number {
     case 'token_out':
       return Math.max(summary.token_in, summary.token_out, 1)
     case 'cost_usd':
-      return Math.max(summary.cost_usd, 0.01)
+      return Math.max(summary.cost_usd ?? 0, 0.01)
     case 'requests':
       return Math.max(summary.requests, 1)
     case 'errors':
@@ -37,7 +37,7 @@ export function microbarScale(key: KpiKey, summary: KpiSummary): number {
 export function kpiMicrobarFillPct(
   key: KpiKey,
   summary: KpiSummary,
-  rawValue: number,
+  rawValue: number | null,
   priorFraction: number | undefined
 ): number {
   if (priorFraction !== undefined) {
@@ -45,10 +45,11 @@ export function kpiMicrobarFillPct(
     return Math.min(100, Math.max(0, Math.round((pctPoints / 5) * 100) / 100))
   }
 
+  const value = rawValue ?? 0
   const denominator = microbarScale(key, summary)
-  const shareMax = rawValue / denominator
+  const shareMax = value / denominator
   const pct = Math.round(shareMax * 100)
-  if (pct === 0 && rawValue > 0) {
+  if (pct === 0 && value > 0) {
     return 1
   }
   return Math.min(100, Math.max(0, pct))

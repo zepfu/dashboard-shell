@@ -41,6 +41,10 @@ import {
   normalizeProviderCreditLifecycleRow,
   normalizeProviderCreditLifecycleReport,
   buildSourceTableHealthQuery,
+  buildSummaryQuery,
+  buildTrendQuery,
+  buildClientUsageQuery,
+  buildProviderStatusUsageQuery,
   buildTokenTrendHealthQuery,
   buildTokenTrendHoursQuery,
   buildTokenTrendModelFirstSeenQuery,
@@ -48,6 +52,7 @@ import {
   buildTokenTrendDayDetailQuery,
   buildToolActivityQuery,
   buildUsageQuery,
+  buildProviderErrorObservationQuery,
   buildUsageScoreReasonsQuery,
   buildUsageDiagnosticStringsQuery,
   buildUsageScoreReasonsMergeKey,
@@ -232,6 +237,90 @@ function expectReportableSessionHistoryFilter(sql: string, alias = 'sh') {
   expect(sql).toContain('grok_cli_chat_proxy')
 }
 
+describe('D1-497 recorded response cost availability', () => {
+  test('summary keeps cost aggregates independent and counts persisted cost rows', async () => {
+    const { buildSummaryQuery } = await import('./report-service.mjs')
+    const query = buildSummaryQuery(new URLSearchParams())
+
+    expect(query.sql).toContain(
+      'SUM(COALESCE(sh.provider_cache_miss_cost_usd, 0))::double precision AS cache_miss_usd_cost'
+    )
+    expect(query.sql).toContain(
+      'SUM(COALESCE(sh.response_cost_usd, 0))::double precision AS usd_cost'
+    )
+    expect(query.sql).toContain(
+      'COUNT(sh.response_cost_usd)::double precision AS response_cost_rows'
+    )
+  })
+
+  test('usage rows expose persisted cost-row availability', async () => {
+    const { buildUsageQuery } = await import('./report-service.mjs')
+    const query = buildUsageQuery(
+      new URLSearchParams({
+        from: '2026-05-01',
+        to: '2026-05-08',
+      })
+    )
+
+    expect(query.sql).toContain(
+      'COUNT(sh.response_cost_usd)::double precision AS response_cost_rows'
+    )
+  })
+
+  test('quota usage breakdowns preserve missing cost separately from recorded zero', () => {
+    const historySql = buildQuotaHistoryQuery(new URLSearchParams()).sql
+    const rangeSql = buildQuotaRangeHistoryQuery(
+      new URLSearchParams({ from: '2026-05-01', to: '2026-05-08' })
+    ).sql
+
+    expect(historySql).toContain(
+      'sh.response_cost_usd::double precision AS cost'
+    )
+    expect(rangeSql).toContain(
+      'SUM(sh.response_cost_usd)::double precision AS cost'
+    )
+    for (const sql of [historySql, rangeSql]) {
+      expect(sql).not.toContain(
+        'SUM(COALESCE(sh.response_cost_usd, 0))::double precision AS cost'
+      )
+    }
+
+    const normalized = normalizeQuotaHistoryRow({
+      provider: 'anthropic',
+      usage_breakdown: [
+        { model: 'claude-sonnet-4-6', tokens: 100, cost: null, traces: 1 },
+        { model: 'claude-opus-4-7', tokens: 100, cost: 0, traces: 1 },
+      ],
+    })
+    expect(normalized.usage_breakdown).toEqual([
+      {
+        model: 'claude-sonnet-4-6',
+        tokens: 100,
+        cost: null,
+        traces: 1,
+        recent_traces_90m: 0,
+      },
+      {
+        model: 'claude-opus-4-7',
+        tokens: 100,
+        cost: 0,
+        traces: 1,
+        recent_traces_90m: 0,
+      },
+    ])
+  })
+
+  test('legacy Grok side-channel eligibility remains based on all cost signals', async () => {
+    const { buildSummaryQuery } = await import('./report-service.mjs')
+    const query = buildSummaryQuery(new URLSearchParams())
+
+    expect(query.sql).toContain(
+      'COALESCE(sh.response_cost_usd, 0)\n    + COALESCE(sh.provider_cache_miss_cost_usd, 0)'
+    )
+    expect(query.sql).toContain('grok_cli_chat_proxy')
+  })
+})
+
 // ---------------------------------------------------------------------------
 // S4-8: pgsql-parser parse-validation for each built SQL query
 //
@@ -251,6 +340,16 @@ describe('SQL parse-validation (pgsql-parser) (S4-8)', () => {
       })
     )
 
+    await expectParsableSQL(query.sql)
+  })
+
+  test('test_buildProviderErrorObservationQuery_sql_is_syntactically_valid', async () => {
+    const query = buildProviderErrorObservationQuery(
+      new URLSearchParams({
+        from: '2026-05-01',
+        to: '2026-05-08',
+      })
+    )
     await expectParsableSQL(query.sql)
   })
 
@@ -614,6 +713,178 @@ describe('reportable-filter sweep (S4-8)', () => {
     for (const query of queries) {
       expectReportableSessionHistoryFilter(query.sql)
     }
+  })
+})
+
+describe('D1-489 R3 query-construction safety', () => {
+  const makeDateParams = () =>
+    new URLSearchParams({
+      from: '2026-05-01',
+      to: '2026-05-08',
+    })
+
+  const compactTokenSignal =
+    '(COALESCE(sh.input_tokens, 0) + COALESCE(sh.output_tokens, 0) + COALESCE(sh.cache_read_input_tokens, 0) + COALESCE(sh.cache_creation_input_tokens, 0) + COALESCE(sh.reasoning_tokens_reported, 0) + COALESCE(sh.reasoning_tokens_estimated, 0))'
+
+  test('usage aggregates emit the canonical token signal expression', () => {
+    const queries = [
+      buildSummaryQuery(makeDateParams()),
+      buildTrendQuery(makeDateParams()),
+      buildTokenTrendHoursQuery(makeDateParams()),
+      buildTokenTrendDayDetailQuery(
+        new URLSearchParams({
+          ...Object.fromEntries(makeDateParams()),
+          date: '2026-05-03',
+        })
+      ),
+      buildTokenTrendModelFirstSeenQuery(makeDateParams()),
+      buildClientUsageQuery(makeDateParams()),
+      buildProviderStatusUsageQuery(makeDateParams()),
+    ]
+
+    for (const query of queries) {
+      expect(compactWhitespace(query.sql)).toContain(
+        `SUM(${compactTokenSignal})::double precision`
+      )
+    }
+
+    expect(
+      compactWhitespace(buildQuotaHistoryQuery(new URLSearchParams()).sql)
+    ).toContain(`${compactTokenSignal}::double precision AS tokens`)
+  })
+
+  test('date-bearing builders use the dashboard timezone and shared boundaries', () => {
+    const queries = [
+      buildSummaryQuery(makeDateParams()),
+      buildTrendQuery(makeDateParams()),
+      buildTokenTrendHealthQuery(makeDateParams()),
+      buildTokenTrendHoursQuery(makeDateParams()),
+      buildTokenTrendModelFirstSeenQuery(makeDateParams()),
+      buildTokenTrendScoreQuery(makeDateParams()),
+      buildTokenTrendDayDetailQuery(
+        new URLSearchParams({
+          ...Object.fromEntries(makeDateParams()),
+          date: '2026-05-03',
+        })
+      ),
+      buildToolActivityQuery(makeDateParams()),
+      buildQuotaEstimatorUsageBucketQuery(makeDateParams()),
+      buildQuotaEstimatorObservationQuery(makeDateParams()),
+      buildQuotaRangeHistoryQuery(makeDateParams()),
+      buildQuotaRangeHistoryFallbackQuery(makeDateParams()),
+    ]
+
+    for (const query of queries) {
+      expect(query.sql).toContain("AT TIME ZONE 'America/New_York'")
+      expect(query.sql).not.toContain("AT TIME ZONE 'UTC'")
+    }
+
+    const rangeQueries = [
+      buildQuotaRangeHistoryQuery(makeDateParams()),
+      buildQuotaRangeHistoryFallbackQuery(makeDateParams()),
+    ]
+    for (const query of rangeQueries) {
+      expect(query.sql).toContain(
+        "ri.fromDate < ($2::date::timestamp AT TIME ZONE 'America/New_York')"
+      )
+      expect(query.sql).toContain(
+        "ri.expected_reset_at >= ($1::date::timestamp AT TIME ZONE 'America/New_York')"
+      )
+      expect(compactWhitespace(query.sql)).toContain(
+        "o.expected_reset_at - CASE WHEN o.quota_period = '5h' THEN INTERVAL '5 hours'"
+      )
+    }
+  })
+
+  test('range-history builders share normalized CTE construction while preserving provider modes', () => {
+    const fallbackQuery = buildQuotaRangeHistoryFallbackQuery(makeDateParams())
+    const rangeQuery = buildQuotaRangeHistoryQuery(makeDateParams())
+
+    for (const query of [fallbackQuery, rangeQuery]) {
+      expect(query.sql.indexOf('normalized AS (')).toBe(
+        query.sql.lastIndexOf('normalized AS (')
+      )
+      expect(query.sql).toContain("o.quota_period = '5h' THEN 'short'")
+      expect(query.sql).toContain("o.quota_period = '7d' THEN 'weekly'")
+      expect(query.sql).toContain(
+        "o.expected_reset_at >= ($1::date::timestamp AT TIME ZONE 'America/New_York')"
+      )
+    }
+
+    expect(fallbackQuery.sql).toContain(
+      "WHEN lower(COALESCE(ri.provider, 'unknown')) = 'antigravity' THEN 'antigravity'"
+    )
+    expect(rangeQuery.sql).not.toContain(
+      "WHEN lower(COALESCE(ri.provider, 'unknown')) = 'antigravity' THEN 'antigravity'"
+    )
+  })
+
+  test('estimator lane CASE fragments stay aligned with their quota-key filters', () => {
+    const query = buildQuotaEstimatorObservationQuery(makeDateParams())
+    const mappings = [
+      {
+        provider: 'anthropic',
+        quotaKey: 'anthropic_unified_5h:5h',
+        quotaType: 'short',
+        quotaLane: 'anthropic_5h_all_model',
+      },
+      {
+        provider: 'anthropic',
+        quotaKey: 'anthropic_unified_7d:7d',
+        quotaType: 'weekly',
+        quotaLane: 'anthropic_weekly_all_model',
+      },
+      {
+        provider: 'anthropic',
+        quotaKey: 'anthropic_unified_7d_sonnet:7d_sonnet',
+        quotaType: 'special',
+        quotaLane: 'anthropic_weekly_sonnet',
+      },
+      {
+        provider: 'openai',
+        quotaKey: 'codex:primary',
+        quotaType: 'short',
+        quotaLane: 'openai_5h_all_model',
+      },
+      {
+        provider: 'openai',
+        quotaKey: 'codex:secondary',
+        quotaType: 'weekly',
+        quotaLane: 'openai_weekly_all_model',
+      },
+      {
+        provider: 'openai',
+        quotaKey: 'codex_bengalfox:primary',
+        quotaType: 'short_special',
+        quotaLane: 'openai_codex_spark_5h',
+      },
+      {
+        provider: 'openai',
+        quotaKey: 'codex_bengalfox:secondary',
+        quotaType: 'special',
+        quotaLane: 'openai_codex_spark_weekly',
+      },
+    ]
+
+    for (const { provider, quotaKey, quotaType, quotaLane } of mappings) {
+      const condition = `WHEN o.provider = '${provider}' AND o.quota_key = '${quotaKey}'`
+      expect(query.sql).toContain(`${condition} THEN '${quotaType}'`)
+      expect(query.sql).toContain(`${condition} THEN '${quotaLane}'`)
+      expect(query.sql).toContain(`'${quotaKey}'`)
+    }
+  })
+
+  test('tool activity computes each shell label once before aggregation', () => {
+    const sql = buildToolActivityQuery(makeDateParams()).sql
+    const labeledStart = sql.indexOf('labeled_commands AS (')
+    const shellStart = sql.indexOf('shell_labels AS (')
+    const labeledCommands = sql.slice(labeledStart, shellStart)
+    const shellLabels = sql.slice(shellStart)
+
+    expect(labeledCommands.match(/\bCASE\b/g)).toHaveLength(1)
+    expect(shellLabels).toContain('FROM labeled_commands')
+    expect(shellLabels).not.toContain('split_part')
+    expect(sql.match(/FROM shell_labels/g)).toHaveLength(1)
   })
 })
 
@@ -1472,6 +1743,37 @@ describe('report-service query builders', () => {
     expect(sortDirection).toBe('ASC')
   })
 
+  test('test_buildUsageQuery_rejects_invalid_limits_consistently', () => {
+    const baseParams = {
+      from: '2026-05-01',
+      to: '2026-05-08',
+      grain: 'day',
+      group_by: 'provider',
+    }
+
+    for (const limit of ['not-a-number', '0', '-1', '1.5', 'Infinity']) {
+      expect(() =>
+        buildUsageQuery(new URLSearchParams({ ...baseParams, limit }))
+      ).toThrow(`Invalid limit: ${limit}`)
+    }
+  })
+
+  test('test_buildUsageQuery_retains_the_hard_upper_limit', () => {
+    const query = buildUsageQuery(
+      new URLSearchParams({
+        from: '2026-05-01',
+        to: '2026-05-08',
+        grain: 'day',
+        group_by: 'provider',
+        limit: '50001',
+      })
+    )
+
+    expect(query.metadata.limit).toBe(50_000)
+    const values = query.values ?? []
+    expect(values[values.length - 1]).toBe(50_000)
+  })
+
   test('test_buildUsageQuery_orders_by_period_start_when_sort_is_dotted', () => {
     const query = buildUsageQuery(
       new URLSearchParams({
@@ -1777,8 +2079,8 @@ describe('report-service query builders', () => {
       expect(normalized[`${lane}_interval_start`]).toBeNull()
       expect(normalized[`${lane}_interval_end`]).toBeNull()
       expect(normalized[`${lane}_active`]).toBe(false)
-      expect(normalized[`${lane}_usage_tokens`]).toBe(0)
-      expect(normalized[`${lane}_usage_breakdown`]).toEqual([])
+      expect(normalized).not.toHaveProperty(`${lane}_usage_tokens`)
+      expect(normalized).not.toHaveProperty(`${lane}_usage_breakdown`)
       expect(normalized[`${lane}_velocity_segments`]).toEqual([])
       expect(normalized[`${lane}_velocity_scores`]).toEqual([])
       expect(normalized[`${lane}_velocity_sample_count`]).toBe(0)
@@ -1931,7 +2233,7 @@ describe('report-service query builders', () => {
     expect(query.sql).not.toContain('COALESCE(sh.start_time, sh.created_at)')
   })
 
-  test('test_buildQuotaQuery_projects_zero_empty_usage_placeholders_per_lane', () => {
+  test('test_buildQuotaQuery_omits_unsupported_current_usage_fields_per_lane', () => {
     const query = buildQuotaQuery()
     const lanes = [
       'weekly',
@@ -1944,12 +2246,41 @@ describe('report-service query builders', () => {
     ] as const
 
     for (const lane of lanes) {
-      expect(query.sql).toContain(`0::double precision AS ${lane}_usage_tokens`)
-      expect(query.sql).toContain(`'[]'::jsonb AS ${lane}_usage_breakdown`)
+      expect(query.sql).not.toContain(`${lane}_usage_tokens`)
+      expect(query.sql).not.toContain(`${lane}_usage_breakdown`)
     }
 
+    expect(query.sql).not.toContain('usage_by_type')
     expect(query.sql).not.toMatch(/MAX\(usage\.usage_tokens\)/)
     expect(query.sql).not.toMatch(/ARRAY_AGG\(usage\.usage_breakdown\)/)
+  })
+
+  test('test_buildProviderErrorObservationQuery_exposes_bounded_window_cap_metadata', () => {
+    const query = buildProviderErrorObservationQuery(
+      new URLSearchParams({
+        from: '2026-05-01',
+        to: '2026-05-08',
+      })
+    )
+
+    expect(query.values).toEqual([
+      2000,
+      '2026-05-01T04:00:00.000Z',
+      '2026-05-08T04:00:00.000Z',
+    ])
+    expect(query.metadata).toEqual({
+      from: '2026-05-01',
+      to: '2026-05-08',
+      providerErrorObservationRowLimit: 2000,
+      providerErrorObservationCapActive: true,
+    })
+    expect(query.sql).toContain('LIMIT ($1::bigint + 1)')
+    expect(query.sql).toContain(
+      'provider_error_observation_cap_truncates_requested_window'
+    )
+    expect(query.sql).toContain(
+      'COUNT(*) > $1::bigint AS provider_error_observation_cap_truncates_requested_window'
+    )
   })
 
   test('test_buildQuotaHistoryQuery_emits_quota_identity_metadata_columns', () => {
@@ -2074,9 +2405,7 @@ describe('report-service query builders', () => {
     expect(sql).toContain('COALESCE(sh.cache_creation_input_tokens, 0)')
     expect(sql).toContain('COALESCE(sh.reasoning_tokens_reported, 0)')
     expect(sql).toContain('COALESCE(sh.reasoning_tokens_estimated, 0)')
-    expect(sql).toContain(
-      'COALESCE(sh.response_cost_usd, 0)::double precision AS cost'
-    )
+    expect(sql).toContain('sh.response_cost_usd::double precision AS cost')
 
     // Set-based half-open assignment from grouped rows back to windows.
     expect(sql).toContain('per_model_usage AS (')
@@ -5026,5 +5355,221 @@ describe('D1-492 kimi_code quota support', () => {
     expect(normalized[0].quota_used).toBe(40)
     expect(normalized[0].quota_remaining).toBe(60)
     expect(normalized.every((row) => !('account_hash' in row))).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// D1-496: current provider quota contracts
+// ---------------------------------------------------------------------------
+describe('D1-496 current provider quota contracts', () => {
+  test('test_quota_builders_include_exact_cursor_and_zai_observation_contracts', () => {
+    const queries = [
+      buildQuotaQuery(),
+      buildQuotaVelocityQuery(),
+      buildQuotaHistoryQuery(new URLSearchParams()),
+      buildQuotaHistoryFallbackQuery(new URLSearchParams()),
+      buildQuotaRangeHistoryQuery(
+        new URLSearchParams({ from: '2026-07-01', to: '2026-07-24' })
+      ),
+      buildQuotaRangeHistoryFallbackQuery(
+        new URLSearchParams({ from: '2026-07-01', to: '2026-07-24' })
+      ),
+    ]
+
+    for (const query of queries) {
+      expect(query.sql).toContain("o.provider = 'cursor_agent'")
+      expect(query.sql).toContain("o.source = 'cursor_agent_usage'")
+      expect(query.sql).toContain("o.client = 'cursor-agent'")
+      expect(query.sql).toContain("o.model = 'cursor-agent'")
+      expect(query.sql).toContain("o.quota_key = 'cursor_agent_monthly:cents'")
+      expect(query.sql).toContain("o.quota_period = 'monthly'")
+      expect(query.sql).toContain("o.quota_type = 'cents'")
+
+      expect(query.sql).toContain("o.provider = 'zai_coding_plan'")
+      expect(query.sql).toContain("o.source = 'zai_coding_plan_quota_poll'")
+      expect(query.sql).toContain("o.client = 'zai-coding-plan'")
+      expect(query.sql).toContain("o.model = 'zai-coding-plan'")
+      for (const [quotaKey, quotaPeriod, quotaType] of [
+        ['zai_coding_plan_5h:credits', '5h', 'credits'],
+        ['zai_coding_plan_5h:percent', '5h', 'percent'],
+        ['zai_coding_plan_5h:count', '5h', 'count'],
+        ['zai_coding_plan_7d:credits', '7d', 'credits'],
+        ['zai_coding_plan_7d:percent', '7d', 'percent'],
+        ['zai_coding_plan_7d:count', '7d', 'count'],
+      ]) {
+        expect(query.sql).toContain(
+          `o.quota_key = '${quotaKey}' AND o.quota_period = '${quotaPeriod}' AND o.quota_type = '${quotaType}'`
+        )
+      }
+    }
+
+    const unitQueries = [
+      buildQuotaQuery(),
+      buildQuotaHistoryQuery(new URLSearchParams()),
+      buildQuotaHistoryFallbackQuery(new URLSearchParams()),
+      buildQuotaRangeHistoryQuery(
+        new URLSearchParams({ from: '2026-07-01', to: '2026-07-24' })
+      ),
+      buildQuotaRangeHistoryFallbackQuery(
+        new URLSearchParams({ from: '2026-07-01', to: '2026-07-24' })
+      ),
+    ]
+    for (const query of unitQueries) {
+      expect(query.sql).toContain("LIKE '%:tokens' THEN 'tokens'")
+      expect(query.sql).toContain("LIKE '%:cents' THEN 'cents'")
+      expect(query.sql).toContain("LIKE '%:percent' THEN 'percent'")
+      expect(query.sql).toContain("LIKE '%:count' THEN 'count'")
+    }
+  })
+
+  test('test_buildQuotaQuery_keeps_zai_unit_variants_and_account_refs_separate', () => {
+    const query = buildQuotaQuery()
+    const compact = compactWhitespace(query.sql)
+
+    expect(compact).toContain(
+      "CASE WHEN s.provider = 'zai_coding_plan' THEN COALESCE(s.quota_key, '') ELSE '' END"
+    )
+    expect(query.sql).toContain(
+      "NULLIF(left(md5(COALESCE(s.account_hash, '')), 12), left(md5(''), 12)) AS account_ref"
+    )
+    const finalSelect = query.sql.slice(query.sql.lastIndexOf('SELECT'))
+    expect(finalSelect).not.toMatch(/AS\s+account_hash\b/)
+  })
+
+  test('test_quota_history_builders_preserve_observation_metadata_and_absolutes', () => {
+    const queries = [
+      buildQuotaHistoryQuery(new URLSearchParams()),
+      buildQuotaHistoryFallbackQuery(new URLSearchParams()),
+      buildQuotaRangeHistoryQuery(
+        new URLSearchParams({ from: '2026-07-01', to: '2026-07-24' })
+      ),
+      buildQuotaRangeHistoryFallbackQuery(
+        new URLSearchParams({ from: '2026-07-01', to: '2026-07-24' })
+      ),
+    ]
+
+    for (const query of queries) {
+      expect(query.sql).toContain('o.quota_key AS normalized_quota_key')
+      expect(query.sql).toContain('AS source')
+      expect(query.sql).toContain('AS client')
+      expect(query.sql).toContain('AS quota_unit')
+      expect(query.sql).toContain('o.quota_period')
+      expect(query.sql).toContain('o.account_hash')
+      expect(query.sql).toContain('o.expected_reset_at')
+      expect(query.sql).toContain('o.observed_at')
+      expect(query.sql).toContain('o.quota_limit')
+      expect(query.sql).toContain('o.quota_used')
+      expect(query.sql).toContain('o.quota_remaining')
+      expect(query.sql).toContain(
+        "NULLIF(left(md5(COALESCE(n.account_hash, '')), 12), left(md5(''), 12)) AS account_ref"
+      )
+    }
+  })
+
+  test('test_normalizeQuotaRow_preserves_cursor_and_zai_absolute_value_contracts', () => {
+    const cursor = normalizeQuotaRowForTest({
+      provider: 'cursor_agent',
+      model: 'cursor-agent',
+      account_ref: '0123456789ab',
+      account_hash: '0123456789abcdef0123456789abcdef',
+      monthly_quota_key: 'cursor_agent_monthly:cents',
+      monthly_quota_period: 'monthly',
+      monthly_source: 'cursor_agent_usage',
+      monthly_client: 'cursor-agent',
+      monthly_quota_unit: 'cents',
+      monthly_quota_limit: 100000,
+      monthly_quota_used: 30000,
+      monthly_quota_remaining: 70000,
+      monthly_billing_observed_at: '2026-08-30T11:59:00.000Z',
+      monthly_remaining_pct: 70,
+      monthly_reset_at: '2026-08-30T12:00:00.000Z',
+      monthly_interval_start: '2026-07-30T12:00:00.000Z',
+      monthly_interval_end: '2026-08-30T12:00:00.000Z',
+      monthly_active: 1,
+    })
+    expect(requireQuotaBillingDetail(cursor, 'monthly')).toMatchObject({
+      quota_key: 'cursor_agent_monthly:cents',
+      quota_period: 'monthly',
+      source: 'cursor_agent_usage',
+      client: 'cursor-agent',
+      quota_unit: 'cents',
+      quota_limit: 100000,
+      quota_used: 30000,
+      quota_remaining: 70000,
+    })
+    expect(cursor).not.toHaveProperty('account_hash')
+
+    const zai = normalizeQuotaRowForTest({
+      provider: 'zai_coding_plan',
+      model: 'zai-coding-plan',
+      account_ref: 'fedcba987654',
+      short_quota_key: 'zai_coding_plan_5h:percent',
+      short_quota_period: '5h',
+      short_source: 'zai_coding_plan_quota_poll',
+      short_client: 'zai-coding-plan',
+      short_quota_unit: 'percent',
+      short_quota_limit: null,
+      short_quota_used: null,
+      short_quota_remaining: null,
+      short_remaining_pct: 55,
+      short_reset_at: '2026-08-30T14:00:00.000Z',
+      short_interval_start: '2026-08-30T09:00:00.000Z',
+      short_interval_end: '2026-08-30T14:00:00.000Z',
+      short_active: 1,
+    })
+    expect(requireQuotaBillingDetail(zai, 'short')).toMatchObject({
+      quota_key: 'zai_coding_plan_5h:percent',
+      quota_period: '5h',
+      source: 'zai_coding_plan_quota_poll',
+      client: 'zai-coding-plan',
+      quota_unit: 'percent',
+      quota_limit: null,
+      quota_used: null,
+      quota_remaining: null,
+    })
+  })
+
+  test('test_normalizeQuotaHistoryRow_preserves_zai_metadata_and_null_absolutes', () => {
+    const row = normalizeQuotaHistoryRow({
+      provider: 'zai_coding_plan',
+      model: 'zai-coding-plan',
+      quota_type: 'short',
+      quota_key: 'zai_coding_plan_5h:percent',
+      quota_period: '5h',
+      source: 'zai_coding_plan_quota_poll',
+      client: 'zai-coding-plan',
+      quota_unit: 'percent',
+      account_ref: '0123456789ab',
+      account_hash: '0123456789abcdef0123456789abcdef',
+      expected_reset_at: '2026-08-30T14:00:00.000Z',
+      interval_start: '2026-08-30T09:00:00.000Z',
+      interval_end: '2026-08-30T14:00:00.000Z',
+      observed_at: '2026-08-30T13:00:00.000Z',
+      quota_limit: null,
+      quota_used: null,
+      quota_remaining: null,
+      min_remaining_pct: 55,
+      max_remaining_pct: 100,
+      usage_tokens: 0,
+      usage_breakdown: [],
+    })
+
+    expect(row).toMatchObject({
+      provider: 'zai_coding_plan',
+      model: 'zai-coding-plan',
+      quota_key: 'zai_coding_plan_5h:percent',
+      quota_period: '5h',
+      source: 'zai_coding_plan_quota_poll',
+      client: 'zai-coding-plan',
+      quota_unit: 'percent',
+      account_ref: '0123456789ab',
+      expected_reset_at: '2026-08-30T14:00:00.000Z',
+      interval_start: '2026-08-30T09:00:00.000Z',
+      interval_end: '2026-08-30T14:00:00.000Z',
+      quota_limit: null,
+      quota_used: null,
+      quota_remaining: null,
+    })
+    expect(row).not.toHaveProperty('account_hash')
   })
 })

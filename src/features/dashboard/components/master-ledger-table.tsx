@@ -2,7 +2,14 @@
  * MasterLedgerTable — sortable TanStack Table for per-model usage metrics.
  * W11: orchestration; see master-ledger-columns, tooltips, tool-activity, aggregation.
  */
-import { memo, useState, useMemo, useEffect, type ReactElement } from 'react'
+import {
+  memo,
+  useState,
+  useMemo,
+  useEffect,
+  type CSSProperties,
+  type ReactElement,
+} from 'react'
 import {
   flexRender,
   getCoreRowModel,
@@ -20,6 +27,7 @@ import {
   aggregateRows,
   sortLedgerRows,
   toModelDisplayRow,
+  resolveFamilyRows,
   toRepositoryDisplayRow,
   toRepositoryPerspectiveModelRow,
   type LedgerDisplayRow,
@@ -62,6 +70,10 @@ export interface MasterLedgerTableProps {
   onLedgerViewChange?: (view: LedgerView) => void
   errorObservations?: ProviderErrorObservation[]
 }
+
+const LEDGER_TOOLTIP_PANEL_STYLE = Object.freeze({
+  maxWidth: 'calc(100vw - 16px)',
+} satisfies CSSProperties)
 
 function MasterLedgerTableInner({
   rows,
@@ -249,10 +261,7 @@ function MasterLedgerTableInner({
         ),
         sorting
       ).map((familyRow) => {
-        const exactRows =
-          familyRows.get(familyRow.familyKey ?? '')?.rows ??
-          familyRows.get(OTHER_FAMILY_DEFINITION.key)?.rows ??
-          []
+        const exactRows = resolveFamilyRows(familyRows, familyRow.familyKey)
         const models: ModelNode[] = sortLedgerRows(
           exactRows.map((row) =>
             toModelDisplayRow(row, providerKey, familyRow.familyKey)
@@ -539,34 +548,9 @@ function MasterLedgerTableInner({
           })}
         </div>
       ) : null}
-      <div
-        className='table-wrapper'
-        style={{
-          width: '100%',
-          overflowX: 'auto',
-          overflowY: 'auto',
-          background: 'var(--card)',
-          border: '1px solid var(--border)',
-        }}
-      >
-        <table
-          aria-label='Model usage ledger'
-          style={{
-            width: '100%',
-            borderCollapse: 'collapse',
-            fontSize: 'clamp(11px, 0.6vw, 16px)',
-            fontFamily: 'var(--font-mono)',
-          }}
-        >
-          <thead
-            style={{
-              position: 'sticky',
-              top: 0,
-              zIndex: 10,
-              background: 'var(--card-2)',
-              borderBottom: '1px solid rgba(245,158,11,0.25)',
-            }}
-          >
+      <div className='table-wrapper'>
+        <table aria-label='Model usage ledger' className='master-ledger-table'>
+          <thead className='master-ledger-table-head'>
             {table.getHeaderGroups().map((headerGroup) => (
               <tr key={headerGroup.id}>
                 {headerGroup.headers.map((header) => {
@@ -630,11 +614,23 @@ function MasterLedgerTableInner({
               // providerColorFor() returns legacy palette (blue/purple) which was
               // the false-fix in Wave 11 — swap to providerBrandHex() here.
               const providerColor = providerBrandHex(orig.provider)
+              const costCellColor = costColor(orig.cost_usd)
+              const errorCellColor =
+                orig.error_pct !== undefined
+                  ? errorPctColor(orig.error_pct)
+                  : 'var(--fg-muted)'
 
               return (
                 <tr
                   key={row.id}
-                  style={{ borderBottom: '1px solid var(--border)' }}
+                  className='master-ledger-row'
+                  style={
+                    {
+                      '--ledger-provider-color': providerColor,
+                      '--ledger-cost-color': costCellColor,
+                      '--ledger-error-color': errorCellColor,
+                    } as CSSProperties
+                  }
                 >
                   {row.getVisibleCells().map((cell, cellIdx) => {
                     const meta = cell.column.columnDef.meta as
@@ -643,13 +639,9 @@ function MasterLedgerTableInner({
                     const colId = cell.column.id
                     const isFirst = cellIdx === 0
 
-                    // Determine per-column styles
-                    let cellColor: string
                     let cellContent: ReactElement | string
 
                     if (colId === 'provider') {
-                      // C4: brand color for provider name
-                      cellColor = providerColor
                       cellContent = flexRender(
                         cell.column.columnDef.cell,
                         cell.getContext()
@@ -657,17 +649,12 @@ function MasterLedgerTableInner({
                     } else if (colId === 'cost_usd') {
                       // C6: cost severity color. D1-065 removes non-sparkline
                       // cell microbars from the Model Ledger.
-                      cellColor = costColor(orig.cost_usd)
                       cellContent = flexRender(
                         cell.column.columnDef.cell,
                         cell.getContext()
                       ) as ReactElement | string
                     } else if (colId === 'error_pct') {
                       const pct = orig.error_pct
-                      cellColor =
-                        pct !== undefined
-                          ? errorPctColor(pct)
-                          : 'var(--fg-muted)'
                       const baseLabel = flexRender(
                         cell.column.columnDef.cell,
                         cell.getContext()
@@ -687,10 +674,7 @@ function MasterLedgerTableInner({
                               if (rowObs.length === 0) return null
                               return (
                                 <div>
-                                  <div
-                                    className='v9-tip-head'
-                                    style={{ marginBottom: '4px' }}
-                                  >
+                                  <div className='v9-tip-head'>
                                     {rowObs.length} most recent error
                                     {rowObs.length === 1 ? '' : 's'}
                                     {orig.repositoryKey !== undefined
@@ -701,12 +685,7 @@ function MasterLedgerTableInner({
                                   {rowObs.map((e, idx) => (
                                     <div
                                       key={`${e.observed_at ?? 'null'}-${(e.status_code ?? 0).toString()}-${e.error_class}-${idx.toString()}`}
-                                      style={{
-                                        fontSize: '9px',
-                                        padding: '1px 0',
-                                        lineHeight: 1.5,
-                                        color: 'var(--fg, #e2e8f0)',
-                                      }}
+                                      className='master-ledger-error-tooltip-row'
                                     >
                                       {formatObservedAgo(e.observed_at)}
                                       {' · '}
@@ -732,12 +711,11 @@ function MasterLedgerTableInner({
                       // null, which renders as "" in text content.  Guard: treat
                       // undefined and [] the same — fall back to tokens_in when
                       // the array is non-empty, else render the em-dash placeholder.
-                      cellColor = 'var(--fg)'
                       const sparkRaw = orig.spark
                       const sparkData =
                         sparkRaw != null && sparkRaw.length > 0
                           ? sparkRaw
-                          : orig.tokens_in > 0
+                          : orig.tokens_in !== undefined && orig.tokens_in > 0
                             ? [orig.tokens_in]
                             : null
                       cellContent =
@@ -750,7 +728,6 @@ function MasterLedgerTableInner({
                       // W33: TOOL cell — plain count + optional 2-column hover breakdown.
                       // W36-fix: use fmtCompact per spec; fmtOrDash handles null/undefined
                       // and zero-call rows (renders em-dash, no hover trigger).
-                      cellColor = 'var(--accent-cool)'
                       const toolCount = orig.tool
                       // Render '—' for undefined/null; for 0 also render '—' (no calls).
                       const toolLabel =
@@ -809,40 +786,23 @@ function MasterLedgerTableInner({
                               )
                               return (
                                 <div
+                                  className='master-ledger-tool-tooltip'
                                   style={{
-                                    display: 'grid',
                                     gridTemplateColumns: `minmax(0, ${leftColumnCount.toString()}fr) minmax(0, ${shellColumnCount.toString()}fr)`,
-                                    columnGap: `${TOOL_HOVER_GROUP_GAP_PX.toString()}px`,
-                                    width: '100%',
-                                    maxWidth: 'calc(100vw - 16px)',
                                     minWidth: `min(${tooltipWidthPx.toString()}px, calc(100vw - 16px))`,
                                   }}
                                 >
-                                  <div style={{ minWidth: 0 }}>
-                                    <div
-                                      className='v9-tip-head'
-                                      style={{ marginBottom: '4px' }}
-                                    >
+                                  <div className='master-ledger-tooltip-section'>
+                                    <div className='v9-tip-head'>
                                       {orig.ledgerLabel} — tool breakdown
                                     </div>
-                                    <div
-                                      style={{
-                                        fontSize: '9px',
-                                        color: 'var(--accent-chrome, #94a3b8)',
-                                        fontWeight: 700,
-                                        letterSpacing: '0.04em',
-                                        marginBottom: '2px',
-                                        textTransform: 'uppercase',
-                                      }}
-                                    >
+                                    <div className='master-ledger-tooltip-section-heading'>
                                       Tools
                                     </div>
                                     <div
+                                      className='master-ledger-tooltip-columns'
                                       style={{
-                                        display: 'grid',
                                         gridTemplateColumns: `repeat(${leftColumnCount.toString()}, minmax(0, 1fr))`,
-                                        columnGap: '8px',
-                                        alignItems: 'start',
                                       }}
                                     >
                                       {displayLeftColumns.map(
@@ -853,45 +813,18 @@ function MasterLedgerTableInner({
                                             data-source-index={
                                               column.sourceIndex
                                             }
-                                            style={{ minWidth: 0 }}
+                                            className='master-ledger-tooltip-column'
                                           >
                                             {column.entries.map(
                                               (entry, entryIdx) => (
                                                 <div
                                                   key={`${entry.row.label}-${entryIdx.toString()}`}
                                                 >
-                                                  <div
-                                                    style={{
-                                                      display: 'flex',
-                                                      justifyContent:
-                                                        'space-between',
-                                                      gap: '4px',
-                                                      fontSize: '9px',
-                                                      color:
-                                                        'var(--fg, #e2e8f0)',
-                                                      padding: '1px 0',
-                                                      lineHeight: 1.5,
-                                                      minWidth: 0,
-                                                    }}
-                                                  >
-                                                    <span
-                                                      style={{
-                                                        flex: '1 1 auto',
-                                                        minWidth: 0,
-                                                        overflow: 'hidden',
-                                                        textOverflow:
-                                                          'ellipsis',
-                                                        whiteSpace: 'nowrap',
-                                                      }}
-                                                    >
+                                                  <div className='master-ledger-tooltip-entry-row'>
+                                                    <span className='master-ledger-tooltip-entry-label'>
                                                       {entry.row.label}
                                                     </span>
-                                                    <span
-                                                      style={{
-                                                        flex: '0 0 auto',
-                                                        whiteSpace: 'nowrap',
-                                                      }}
-                                                    >
+                                                    <span className='master-ledger-tooltip-entry-value'>
                                                       {numFmt(entry.row.calls)}
                                                       {'  '}
                                                       {entry.row.pct.toFixed(0)}
@@ -899,14 +832,7 @@ function MasterLedgerTableInner({
                                                     </span>
                                                   </div>
                                                   {entry.subRows.length > 0 && (
-                                                    <div
-                                                      style={{
-                                                        paddingLeft: '8px',
-                                                        fontSize: '8px',
-                                                        color:
-                                                          'var(--fg-muted, #94a3b8)',
-                                                      }}
-                                                    >
+                                                    <div className='master-ledger-tooltip-subrows'>
                                                       {entry.subRows.map(
                                                         (sr, srIdx, arr) => {
                                                           const isLastVisible =
@@ -921,16 +847,7 @@ function MasterLedgerTableInner({
                                                           return (
                                                             <div
                                                               key={`${sr.label}-${srIdx.toString()}`}
-                                                              style={{
-                                                                padding:
-                                                                  '0.5px 0',
-                                                                overflow:
-                                                                  'hidden',
-                                                                textOverflow:
-                                                                  'ellipsis',
-                                                                whiteSpace:
-                                                                  'nowrap',
-                                                              }}
+                                                              className='master-ledger-tooltip-subrow'
                                                             >
                                                               {prefix}{' '}
                                                               {sr.label}{' '}
@@ -952,15 +869,7 @@ function MasterLedgerTableInner({
                                             )}
                                             {columnIdx === 0 &&
                                               leftHiddenCount > 0 && (
-                                                <div
-                                                  style={{
-                                                    fontSize: '9px',
-                                                    color:
-                                                      'var(--fg-muted, #94a3b8)',
-                                                    fontStyle: 'italic',
-                                                    padding: '1px 0',
-                                                  }}
-                                                >
+                                                <div className='master-ledger-tooltip-more'>
                                                   {`+${leftHiddenCount.toString()} more`}
                                                 </div>
                                               )}
@@ -969,71 +878,32 @@ function MasterLedgerTableInner({
                                       )}
                                     </div>
                                   </div>
-                                  <div style={{ minWidth: 0 }}>
-                                    <div
-                                      className='v9-tip-head'
-                                      style={{ marginBottom: '4px' }}
-                                    >
-                                      &nbsp;
-                                    </div>
-                                    <div
-                                      style={{
-                                        fontSize: '9px',
-                                        color: 'var(--accent-chrome, #94a3b8)',
-                                        fontWeight: 700,
-                                        letterSpacing: '0.04em',
-                                        marginBottom: '2px',
-                                        textTransform: 'uppercase',
-                                      }}
-                                    >
+                                  <div className='master-ledger-tooltip-section'>
+                                    <div className='v9-tip-head'>&nbsp;</div>
+                                    <div className='master-ledger-tooltip-section-heading'>
                                       {`Shell (${numFmt(ta.shellTotalCalls)} calls)`}
                                     </div>
                                     <div
+                                      className='master-ledger-tooltip-columns'
                                       style={{
-                                        display: 'grid',
                                         gridTemplateColumns: `repeat(${shellColumnCount.toString()}, minmax(0, 1fr))`,
-                                        columnGap: '8px',
-                                        alignItems: 'start',
                                       }}
                                     >
                                       {shellColumns.map(
                                         (columnRows, columnIdx) => (
                                           <div
                                             key={`shell-${columnIdx.toString()}`}
-                                            style={{ minWidth: 0 }}
+                                            className='master-ledger-tooltip-column'
                                           >
                                             {columnRows.map((sr) => (
                                               <div
                                                 key={sr.label}
-                                                style={{
-                                                  display: 'flex',
-                                                  justifyContent:
-                                                    'space-between',
-                                                  gap: '4px',
-                                                  fontSize: '9px',
-                                                  color: 'var(--fg, #e2e8f0)',
-                                                  padding: '1px 0',
-                                                  lineHeight: 1.5,
-                                                  minWidth: 0,
-                                                }}
+                                                className='master-ledger-tooltip-entry-row'
                                               >
-                                                <span
-                                                  style={{
-                                                    flex: '1 1 auto',
-                                                    minWidth: 0,
-                                                    overflow: 'hidden',
-                                                    textOverflow: 'ellipsis',
-                                                    whiteSpace: 'nowrap',
-                                                  }}
-                                                >
+                                                <span className='master-ledger-tooltip-entry-label'>
                                                   {sr.label}
                                                 </span>
-                                                <span
-                                                  style={{
-                                                    flex: '0 0 auto',
-                                                    whiteSpace: 'nowrap',
-                                                  }}
-                                                >
+                                                <span className='master-ledger-tooltip-entry-value'>
                                                   {numFmt(sr.calls)}
                                                 </span>
                                               </div>
@@ -1041,15 +911,7 @@ function MasterLedgerTableInner({
                                             {columnIdx ===
                                               shellColumns.length - 1 &&
                                               shellHiddenCount > 0 && (
-                                                <div
-                                                  style={{
-                                                    fontSize: '9px',
-                                                    color:
-                                                      'var(--fg-muted, #94a3b8)',
-                                                    fontStyle: 'italic',
-                                                    padding: '1px 0',
-                                                  }}
-                                                >
+                                                <div className='master-ledger-tooltip-more'>
                                                   {`+${shellHiddenCount.toString()} more`}
                                                 </div>
                                               )}
@@ -1061,9 +923,7 @@ function MasterLedgerTableInner({
                                 </div>
                               )
                             }}
-                            panelStyle={{
-                              maxWidth: 'calc(100vw - 16px)',
-                            }}
+                            panelStyle={LEDGER_TOOLTIP_PANEL_STYLE}
                           >
                             {toolLabel}
                           </HoverTooltip>
@@ -1075,7 +935,6 @@ function MasterLedgerTableInner({
                     } else if (colId === 'model') {
                       // Model hierarchy: provider rows expand to family/model/
                       // repository rows without changing the raw data shape.
-                      cellColor = 'var(--fg)'
                       const isProviderRow = orig.ledgerLevel === 'provider'
                       const isFamilyRow = orig.ledgerLevel === 'family'
                       const isModelRow = orig.ledgerLevel === 'model'
@@ -1166,13 +1025,7 @@ function MasterLedgerTableInner({
                       cellContent = (
                         <div
                           data-ledger-level={orig.ledgerLevel}
-                          style={{
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: '6px',
-                            minWidth: 0,
-                            paddingLeft: `${indentPx.toString()}px`,
-                          }}
+                          className={`master-ledger-model-cell master-ledger-model-cell-indent-${indentPx.toString()}`}
                         >
                           {orig.isExpandable ? (
                             <button
@@ -1182,19 +1035,7 @@ function MasterLedgerTableInner({
                                 event.stopPropagation()
                                 toggleExpansion()
                               }}
-                              style={{
-                                display: 'inline-flex',
-                                alignItems: 'center',
-                                justifyContent: 'center',
-                                width: '16px',
-                                height: '16px',
-                                flex: '0 0 16px',
-                                padding: 0,
-                                border: '0',
-                                background: 'transparent',
-                                color: providerColor,
-                                cursor: 'pointer',
-                              }}
+                              className='master-ledger-expander'
                             >
                               {isExpanded ? (
                                 <ChevronDown size={13} aria-hidden='true' />
@@ -1205,41 +1046,16 @@ function MasterLedgerTableInner({
                           ) : (
                             <span
                               aria-hidden='true'
-                              style={{ width: '16px', flex: '0 0 16px' }}
+                              className='master-ledger-expander-placeholder'
                             />
                           )}
-                          <span
-                            style={{
-                              minWidth: 0,
-                              overflow: 'hidden',
-                              textOverflow: 'ellipsis',
-                              whiteSpace: 'nowrap',
-                              color:
-                                orig.ledgerLevel === 'model' ||
-                                orig.ledgerLevel === 'repository'
-                                  ? 'var(--fg)'
-                                  : providerColor,
-                              fontWeight:
-                                orig.ledgerLevel === 'repository'
-                                  ? 400
-                                  : orig.ledgerLevel === 'model'
-                                    ? 500
-                                    : 700,
-                            }}
-                          >
+                          <span className='master-ledger-model-label'>
                             {orig.ledgerLabel}
                           </span>
                           {orig.ledgerLevel !== 'repository' &&
                             (orig.ledgerLevel !== 'model' ||
                               orig.childCount > 0) && (
-                              <span
-                                style={{
-                                  flex: '0 0 auto',
-                                  color: 'var(--fg-muted)',
-                                  fontSize: '9px',
-                                  whiteSpace: 'nowrap',
-                                }}
-                              >
+                              <span className='master-ledger-model-count'>
                                 {orig.ledgerLevel === 'model'
                                   ? `${orig.childCount.toString()} ${
                                       orig.childCount === 1 ? 'repo' : 'repos'
@@ -1255,17 +1071,11 @@ function MasterLedgerTableInner({
                       )
                     } else {
                       // Other numeric columns (p50ms, p95ms, $/1k, 4K/5K cols)
-                      cellColor = 'var(--accent-cool)'
                       cellContent = flexRender(
                         cell.column.columnDef.cell,
                         cell.getContext()
                       ) as ReactElement | string
                     }
-
-                    const isNumericAlign =
-                      colId !== 'model' &&
-                      colId !== 'provider' &&
-                      colId !== 'sparkline'
 
                     // 14-F.1: add .number class to numeric cells for CSS class system parity
                     const isNumericCell =
@@ -1275,7 +1085,12 @@ function MasterLedgerTableInner({
 
                     // Build className: meta class + optional number class
                     const tdClassName =
-                      [meta?.className, isNumericCell ? 'number' : undefined]
+                      [
+                        'master-ledger-cell',
+                        meta?.className,
+                        isNumericCell ? 'number' : undefined,
+                        isFirst ? 'master-ledger-cell-first' : undefined,
+                      ]
                         .filter(Boolean)
                         .join(' ') || undefined
 
@@ -1284,16 +1099,6 @@ function MasterLedgerTableInner({
                         key={cell.id}
                         data-col-id={colId}
                         className={tdClassName}
-                        style={{
-                          padding: '6px 8px',
-                          fontFamily: 'var(--font-mono)',
-                          color: cellColor,
-                          borderRight: '1px solid var(--border)',
-                          borderLeft: isFirst ? '4px solid' : undefined,
-                          borderLeftColor: isFirst ? providerColor : undefined,
-                          paddingLeft: isFirst ? '6px' : undefined,
-                          textAlign: isNumericAlign ? 'right' : 'left',
-                        }}
                       >
                         {cellContent}
                       </td>

@@ -119,8 +119,6 @@ describe('D1-492 Kimi Code quota contract', () => {
       short_interval_start: null,
       short_interval_end: null,
       short_active: true,
-      short_usage_tokens: 0,
-      short_usage_breakdown: [],
     } as UsageReportQuotaRow
 
     const bar = makeQuotaBarGroup('5-hour Quota Units', row, 'short')

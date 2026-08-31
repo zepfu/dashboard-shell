@@ -51,6 +51,7 @@ const OPENAI_LANE_DEFS: LaneDef[] = [
     laneLabel: 'codex-spark · 5hr',
     quotaType: 'short_special',
     googleClass: null,
+    quotaKey: 'codex_spark:tokens',
   },
   {
     laneKey: 'openai/weekly',
@@ -63,6 +64,7 @@ const OPENAI_LANE_DEFS: LaneDef[] = [
     laneLabel: 'codex-spark · 7d',
     quotaType: 'special',
     googleClass: null,
+    quotaKey: 'codex_spark:tokens',
   },
 ]
 
@@ -126,6 +128,8 @@ export const XAI_GROK_BUILD_WEEKLY_CREDITS_KEY =
 export const XAI_GROK_BUILD_MONTHLY_REQUESTS_KEY =
   'xai_grok_build_monthly_requests:requests' as const
 
+export const OPENAI_CODEX_SPARK_CURRENT_KEY = 'codex_spark:tokens' as const
+
 const XAI_LANE_DEFS: LaneDef[] = [
   {
     laneKey: 'xai/grok-build-weekly-credits',
@@ -158,6 +162,20 @@ export const ALIBABA_TOKEN_PLAN_7D_CREDITS_KEY =
   'alibaba_token_plan_7d:credits' as const
 export const KIMI_CODE_5H_QUOTA_UNITS_KEY = 'kimi_code_5h:quota_units' as const
 export const KIMI_CODE_7D_QUOTA_UNITS_KEY = 'kimi_code_7d:quota_units' as const
+
+export const CURSOR_AGENT_MONTHLY_CENTS_KEY =
+  'cursor_agent_monthly:cents' as const
+
+export const ZAI_CODING_PLAN_5H_CREDITS_KEY =
+  'zai_coding_plan_5h:credits' as const
+export const ZAI_CODING_PLAN_5H_PERCENT_KEY =
+  'zai_coding_plan_5h:percent' as const
+export const ZAI_CODING_PLAN_5H_COUNT_KEY = 'zai_coding_plan_5h:count' as const
+export const ZAI_CODING_PLAN_7D_CREDITS_KEY =
+  'zai_coding_plan_7d:credits' as const
+export const ZAI_CODING_PLAN_7D_PERCENT_KEY =
+  'zai_coding_plan_7d:percent' as const
+export const ZAI_CODING_PLAN_7D_COUNT_KEY = 'zai_coding_plan_7d:count' as const
 
 const ALIBABA_TOKEN_PLAN_LANE_DEFS: LaneDef[] = [
   {
@@ -200,6 +218,61 @@ const KIMI_CODE_LANE_DEFS: LaneDef[] = [
   },
 ]
 
+const CURSOR_AGENT_LANE_DEFS: LaneDef[] = [
+  {
+    laneKey: 'cursor_agent/monthly-cents',
+    laneLabel: 'Monthly Cents',
+    quotaType: 'monthly',
+    googleClass: null,
+    quotaKey: CURSOR_AGENT_MONTHLY_CENTS_KEY,
+  },
+]
+
+const ZAI_CODING_PLAN_LANE_DEFS: LaneDef[] = [
+  {
+    laneKey: 'zai_coding_plan/5h-credits',
+    laneLabel: '5-hour Credits',
+    quotaType: 'short',
+    googleClass: null,
+    quotaKey: ZAI_CODING_PLAN_5H_CREDITS_KEY,
+  },
+  {
+    laneKey: 'zai_coding_plan/5h-percent',
+    laneLabel: '5-hour Percent',
+    quotaType: 'short',
+    googleClass: null,
+    quotaKey: ZAI_CODING_PLAN_5H_PERCENT_KEY,
+  },
+  {
+    laneKey: 'zai_coding_plan/5h-count',
+    laneLabel: '5-hour Count',
+    quotaType: 'short',
+    googleClass: null,
+    quotaKey: ZAI_CODING_PLAN_5H_COUNT_KEY,
+  },
+  {
+    laneKey: 'zai_coding_plan/7d-credits',
+    laneLabel: '7-day Credits',
+    quotaType: 'weekly',
+    googleClass: null,
+    quotaKey: ZAI_CODING_PLAN_7D_CREDITS_KEY,
+  },
+  {
+    laneKey: 'zai_coding_plan/7d-percent',
+    laneLabel: '7-day Percent',
+    quotaType: 'weekly',
+    googleClass: null,
+    quotaKey: ZAI_CODING_PLAN_7D_PERCENT_KEY,
+  },
+  {
+    laneKey: 'zai_coding_plan/7d-count',
+    laneLabel: '7-day Count',
+    quotaType: 'weekly',
+    googleClass: null,
+    quotaKey: ZAI_CODING_PLAN_7D_COUNT_KEY,
+  },
+]
+
 export const PROVIDER_LANE_DEFS: Readonly<Record<string, LaneDef[]>> = {
   anthropic: ANTHROPIC_LANE_DEFS,
   openai: OPENAI_LANE_DEFS,
@@ -209,4 +282,6 @@ export const PROVIDER_LANE_DEFS: Readonly<Record<string, LaneDef[]>> = {
   openrouter: OPENROUTER_LANE_DEFS,
   alibaba_token_plan: ALIBABA_TOKEN_PLAN_LANE_DEFS,
   kimi_code: KIMI_CODE_LANE_DEFS,
+  cursor_agent: CURSOR_AGENT_LANE_DEFS,
+  zai_coding_plan: ZAI_CODING_PLAN_LANE_DEFS,
 }

@@ -34,6 +34,7 @@ services:
       SHELL_REPORT_API_TARGET: 'http://dashboard-shell-reports-dev:${SHELL_REPORT_PORT:-3010}'
       SLUICE_REMOTE_ENTRY: 'http://localhost:${SLUICE_REMOTE_DEV_PORT:-5175}/remoteEntry.js'
       SLUICE_REMOTE_ENTRY_TYPE: 'module'
+      VITE_SHOW_ANTHROPIC_PROVIDER_STATUS: '${VITE_SHOW_ANTHROPIC_PROVIDER_STATUS:-false}'
       WATCHPACK_POLLING: '${WATCHPACK_POLLING:-true}'
     extra_hosts:
       - 'host.docker.internal:host-gateway'

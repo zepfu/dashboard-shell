@@ -1,8 +1,8 @@
 /**
- * D1-454 Wave 1 — Provider token-trend slice/swatch hex must match PROVIDER_SERIES.
+ * D1-493 — token-trend provider colors have one rendering owner.
  *
- * TRIPWIRE: raw-text grep against `index.css` `.tt-*` rules and
- * `PROVIDER_SERIES` in phosphor-dashboard.tsx (same guard class as quota-burn tiers).
+ * The chart resolver supplies inline slice and swatch colors. Provider CSS
+ * classes remain structural hooks and must not define a competing palette.
  */
 import fs from 'node:fs'
 import path from 'node:path'
@@ -13,59 +13,42 @@ const dashboardSource = fs.readFileSync(
   'utf8'
 )
 
-function readTtProviderHex(cssClass: string): string {
-  const escaped = cssClass.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  const match = css.match(
-    new RegExp(
-      `\\.tt-slice\\.${escaped},\\s*\\n\\.tt-swatch\\.${escaped}\\s*\\{[^}]*background:\\s*(#[0-9a-fA-F]{3,8})`,
-      's'
-    )
-  )
-  if (!match) {
-    const fallback = css.match(
-      new RegExp(
-        `\\.tt-slice\\.${escaped}[^}]*background:\\s*(#[0-9a-fA-F]{3,8})`,
-        's'
-      )
-    )
-    return fallback?.[1]?.toLowerCase() ?? ''
-  }
-  return match[1].toLowerCase()
-}
-
-function parseProviderSeries(): Array<{ cssClass: string; color: string }> {
+function parseProviderSeries(): string[] {
   const blockMatch = dashboardSource.match(
     /const PROVIDER_SERIES[^=]*=\s*\[([\s\S]*?)\n\]/
   )
   if (!blockMatch) return []
 
-  const entries: Array<{ cssClass: string; color: string }> = []
+  const entries: string[] = []
   const objectRe = /\{[^{}]*\}/g
   let obj: RegExpExecArray | null
   while ((obj = objectRe.exec(blockMatch[1])) !== null) {
-    const color = obj[0].match(/color:\s*'(#[0-9a-fA-F]{3,8})'/)?.[1]
     const cssClass = obj[0].match(/cssClass:\s*'([^']+)'/)?.[1]
-    if (color && cssClass) {
-      entries.push({ cssClass, color: color.toLowerCase() })
-    }
+    if (cssClass) entries.push(cssClass)
   }
   return entries
 }
 
 const providerSeries = parseProviderSeries()
 
-test('test_css_and_provider_series_hex_match', () => {
-  /**
-   * I-2: each `.tt-*` provider slice hex in index.css must equal
-   * PROVIDER_SERIES[].color for the same cssClass key.
-   */
+test('test_provider_series_colors_are_not_duplicated_in_css', () => {
   expect(providerSeries.length).toBeGreaterThan(0)
 
-  for (const { cssClass, color } of providerSeries) {
-    const cssHex = readTtProviderHex(cssClass)
-    expect(
-      cssHex,
-      `${cssClass}: index.css .tt-slice/.tt-swatch background`
-    ).toBe(color)
+  for (const cssClass of providerSeries) {
+    const escaped = cssClass.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    expect(css).not.toMatch(
+      new RegExp(`\\.tt-(?:slice|swatch)\\.${escaped}\\b`)
+    )
   }
+})
+
+test('test_token_trend_source_uses_resolved_inline_slice_and_swatch_colors', () => {
+  const chartSource = fs.readFileSync(
+    path.resolve('src/features/dashboard/components/token-trend-chart.tsx'),
+    'utf8'
+  )
+
+  expect(chartSource).toContain('function resolveSliceColor')
+  expect(chartSource).toContain('background: resolveSliceColor(s.key, s.color)')
+  expect(chartSource).toContain('resolveColor={resolveSliceColor}')
 })

@@ -5,10 +5,6 @@ import {
   type ReportCacheMetadata,
   type UsageReportTokenTrendSummaryResponse,
   USAGE_REPORT_DEFAULT_LIMIT,
-  USAGE_REPORT_DEFAULT_INCLUDE_QUOTAS,
-  USAGE_REPORT_DEFAULT_INCLUDE_QUOTA_HISTORY,
-  USAGE_REPORT_DEFAULT_INCLUDE_TOOL_ACTIVITY,
-  USAGE_REPORT_MONOLITH_PAYLOAD_DEFAULT_INCLUDES,
   isReportCacheMetadata,
   type UsageReportFilterParams,
   type UsageReportQuotaBillingDetail,
@@ -172,6 +168,9 @@ function minimalUsageReportPayload() {
       latestRecordAgeMinutes: null,
       latestRecordStale: false,
       staleRecordThresholdMinutes: 60,
+      providerErrorObservationRowLimit: 2000,
+      providerErrorObservationCapActive: true,
+      providerErrorObservationCapTruncatesRequestedWindow: false,
     },
     summary: {
       traces: 0,
@@ -196,27 +195,8 @@ function minimalUsageReportPayload() {
     providerLatencyHealth: [],
     providerErrorObservations: [],
     providerStatusUsage: [],
-    quotas: [],
-    quotaHistory: [],
-    toolActivity: [],
     rows: [],
   }
-}
-
-type UsageReportMonolithPayloadSection =
-  | 'quotas'
-  | 'quotaHistory'
-  | 'toolActivity'
-
-function minimalUsageReportPayloadWithoutMonolithSections(
-  omittedSections: readonly UsageReportMonolithPayloadSection[]
-) {
-  const payload = minimalUsageReportPayload() as Record<string, unknown>
-  const filteredPayload = { ...payload }
-  for (const section of omittedSections) {
-    delete filteredPayload[section]
-  }
-  return filteredPayload
 }
 
 type UsageReportPayload = ReturnType<typeof minimalUsageReportPayload>
@@ -349,12 +329,20 @@ test('test_fetchUsageReport_uses_compact_rows_by_default', async () => {
     })
   )
 
-  await fetchUsageReport({
+  const report = await fetchUsageReport({
     from: '2026-05-20',
     to: '2026-05-21',
     grain: 'day',
   })
 
+  expect(report.metadata).toMatchObject({
+    providerErrorObservationRowLimit: 2000,
+    providerErrorObservationCapActive: true,
+    providerErrorObservationCapTruncatesRequestedWindow: false,
+  })
+  expect(report).not.toHaveProperty('quotas')
+  expect(report).not.toHaveProperty('quotaHistory')
+  expect(report).not.toHaveProperty('toolActivity')
   expect(requestedUrl?.searchParams.get('group_by')).toBe(
     'environment,client,repository,provider_model'
   )
@@ -362,40 +350,78 @@ test('test_fetchUsageReport_uses_compact_rows_by_default', async () => {
     String(USAGE_REPORT_DEFAULT_LIMIT)
   )
   expect(requestedUrl?.searchParams.get('sort')).toBe('period_end')
-  expect(requestedUrl?.searchParams.get('include_quotas')).toBe(
-    USAGE_REPORT_MONOLITH_PAYLOAD_DEFAULT_INCLUDES.includeQuotas ? '1' : '0'
-  )
-  expect(requestedUrl?.searchParams.get('include_quota_history')).toBe(
-    USAGE_REPORT_MONOLITH_PAYLOAD_DEFAULT_INCLUDES.includeQuotaHistory
-      ? '1'
-      : '0'
-  )
-  expect(requestedUrl?.searchParams.get('include_tool_activity')).toBe(
-    USAGE_REPORT_MONOLITH_PAYLOAD_DEFAULT_INCLUDES.includeToolActivity
-      ? '1'
-      : '0'
-  )
+  expect(requestedUrl?.searchParams.has('include_quotas')).toBe(false)
+  expect(requestedUrl?.searchParams.has('include_quota_history')).toBe(false)
+  expect(requestedUrl?.searchParams.has('include_tool_activity')).toBe(false)
   expect(requestedUrl?.searchParams.has('include_empty_row_fields')).toBe(false)
 })
 
-test('test_usage_report_monolith_section_defaults_are_explicit', () => {
-  expect(USAGE_REPORT_MONOLITH_PAYLOAD_DEFAULT_INCLUDES).toEqual({
-    includeQuotas: true,
-    includeQuotaHistory: true,
-    includeToolActivity: true,
+test('D1-497_api_accepts_missing_persisted_cost_and_keeps_cache_miss_numeric', async () => {
+  const payload = minimalUsageReportPayload() as {
+    summary: Record<string, unknown>
+    trend: Array<Record<string, unknown>>
+    providerStatusUsage: Array<Record<string, unknown>>
+    rows: Array<Record<string, unknown>>
+  }
+  payload.summary.usd_cost = null
+  payload.summary.cache_miss_usd_cost = 0.12
+  payload.trend = [
+    {
+      bucket: '2026-05-20',
+      provider: 'anthropic',
+      model: 'claude-sonnet-4-6',
+      repository: 'dashboard-shell',
+      traces: 2,
+      token_total: 100,
+      usd_cost: null,
+      response_cost_rows: 0,
+      tool_calls: 0,
+    },
+  ]
+  payload.providerStatusUsage = [
+    {
+      provider: 'anthropic',
+      model: 'claude-sonnet-4-6',
+      traces: 2,
+      token_total: 100,
+      usd_cost: null,
+      period_start: '2026-05-20',
+      period_end: '2026-05-21',
+    },
+  ]
+  payload.rows = [
+    {
+      bucket: '2026-05-20',
+      traces: 2,
+      token_total: 100,
+      usd_cost: null,
+      cache_miss_usd_cost: 0.12,
+      tool_calls: 0,
+      git_commit: 0,
+      git_push: 0,
+    },
+  ]
+
+  server.use(
+    http.get('/api/shell/reports/usage', () => HttpResponse.json(payload))
+  )
+
+  const report = await fetchUsageReport({
+    from: '2026-05-20',
+    to: '2026-05-21',
+    grain: 'day',
   })
-  expect(USAGE_REPORT_DEFAULT_INCLUDE_QUOTAS).toBe(
-    USAGE_REPORT_MONOLITH_PAYLOAD_DEFAULT_INCLUDES.includeQuotas
-  )
-  expect(USAGE_REPORT_DEFAULT_INCLUDE_QUOTA_HISTORY).toBe(
-    USAGE_REPORT_MONOLITH_PAYLOAD_DEFAULT_INCLUDES.includeQuotaHistory
-  )
-  expect(USAGE_REPORT_DEFAULT_INCLUDE_TOOL_ACTIVITY).toBe(
-    USAGE_REPORT_MONOLITH_PAYLOAD_DEFAULT_INCLUDES.includeToolActivity
-  )
+
+  expect(report.summary.usd_cost).toBeNull()
+  expect(report.summary.cache_miss_usd_cost).toBe(0.12)
+  expect(report.trend[0].usd_cost).toBeNull()
+  expect(report.trend[0].response_cost_rows).toBe(0)
+  expect(report.providerStatusUsage[0].usd_cost).toBeNull()
+  expect(report.rows[0].usd_cost).toBeNull()
+  expect(report.rows[0].cache_miss_usd_cost).toBe(0.12)
 })
 
-test('test_fetchUsageReport_uses_caller_supplied_limit_and_can_toggle_monolith_payload_sections', async () => {
+test('test_fetchUsageReport_uses_caller_supplied_limit_without_monolith_flags', async () => {
   let requestedUrl: URL | null = null
 
   server.use(
@@ -410,83 +436,12 @@ test('test_fetchUsageReport_uses_caller_supplied_limit_and_can_toggle_monolith_p
     to: '2026-05-21',
     grain: 'day',
     limit: 25,
-    includeQuotas: false,
-    includeQuotaHistory: false,
-    includeToolActivity: false,
   })
 
   expect(requestedUrl?.searchParams.get('limit')).toBe('25')
-  expect(requestedUrl?.searchParams.get('include_quotas')).toBe('0')
-  expect(requestedUrl?.searchParams.get('include_quota_history')).toBe('0')
-  expect(requestedUrl?.searchParams.get('include_tool_activity')).toBe('0')
-})
-
-test('test_fetchUsageReport_can_individually_opt_out_of_each_monolith_payload_section', async () => {
-  let requestedUrl: URL | null
-
-  server.use(
-    http.get('/api/shell/reports/usage', ({ request }) => {
-      requestedUrl = new URL(request.url)
-      return HttpResponse.json(minimalUsageReportPayload())
-    })
-  )
-
-  const toggles: Array<{
-    request: Pick<
-      Parameters<typeof fetchUsageReport>[0],
-      'includeQuotas' | 'includeQuotaHistory' | 'includeToolActivity'
-    >
-    expected: {
-      includeQuotas: '0' | '1'
-      includeQuotaHistory: '0' | '1'
-      includeToolActivity: '0' | '1'
-    }
-  }> = [
-    {
-      request: { includeQuotas: false },
-      expected: {
-        includeQuotas: '0',
-        includeQuotaHistory: '1',
-        includeToolActivity: '1',
-      },
-    },
-    {
-      request: { includeQuotaHistory: false },
-      expected: {
-        includeQuotas: '1',
-        includeQuotaHistory: '0',
-        includeToolActivity: '1',
-      },
-    },
-    {
-      request: { includeToolActivity: false },
-      expected: {
-        includeQuotas: '1',
-        includeQuotaHistory: '1',
-        includeToolActivity: '0',
-      },
-    },
-  ]
-
-  for (const { request, expected } of toggles) {
-    requestedUrl = null
-    await fetchUsageReport({
-      from: '2026-05-20',
-      to: '2026-05-21',
-      grain: 'day',
-      ...request,
-    })
-
-    expect(requestedUrl?.searchParams.get('include_quotas')).toBe(
-      expected.includeQuotas
-    )
-    expect(requestedUrl?.searchParams.get('include_quota_history')).toBe(
-      expected.includeQuotaHistory
-    )
-    expect(requestedUrl?.searchParams.get('include_tool_activity')).toBe(
-      expected.includeToolActivity
-    )
-  }
+  expect(requestedUrl?.searchParams.has('include_quotas')).toBe(false)
+  expect(requestedUrl?.searchParams.has('include_quota_history')).toBe(false)
+  expect(requestedUrl?.searchParams.has('include_tool_activity')).toBe(false)
 })
 
 test('test_usage_report_cache_metadata_exports_capture_decomposition_contract', () => {
@@ -1055,9 +1010,6 @@ describe('test_fetchers_validate_metadata_summary_firstrow', () => {
     providerLatencyHealth: [],
     providerErrorObservations: [],
     providerStatusUsage: [],
-    quotas: [],
-    quotaHistory: [],
-    toolActivity: [],
   }
 
   test('fetchUsageReport rejects malformed metadata', async () => {
@@ -1112,6 +1064,9 @@ describe('test_fetchers_validate_metadata_summary_firstrow', () => {
             latestRecordAgeMinutes: null,
             latestRecordStale: false,
             staleRecordThresholdMinutes: 60,
+            providerErrorObservationRowLimit: 2000,
+            providerErrorObservationCapActive: true,
+            providerErrorObservationCapTruncatesRequestedWindow: false,
           },
           summary: null,
           rows: [],
@@ -1120,9 +1075,6 @@ describe('test_fetchers_validate_metadata_summary_firstrow', () => {
           providerLatencyHealth: [],
           providerErrorObservations: [],
           providerStatusUsage: [],
-          quotas: [],
-          quotaHistory: [],
-          toolActivity: [],
         })
       )
     )
@@ -1313,111 +1265,6 @@ describe('test_fetchers_validate_metadata_summary_firstrow', () => {
       },
       rows: [],
     })
-  })
-
-  test('fetchUsageReport accepts missing monolith sections when include flags opt out', async () => {
-    let omittedSections: UsageReportMonolithPayloadSection[] = []
-
-    server.use(
-      http.get('/api/shell/reports/usage', () =>
-        HttpResponse.json(
-          minimalUsageReportPayloadWithoutMonolithSections(omittedSections)
-        )
-      )
-    )
-
-    const toggles: Array<{
-      request: Pick<
-        Parameters<typeof fetchUsageReport>[0],
-        'includeQuotas' | 'includeQuotaHistory' | 'includeToolActivity'
-      >
-      omittedSections: UsageReportMonolithPayloadSection[]
-    }> = [
-      {
-        request: { includeQuotas: false },
-        omittedSections: ['quotas'],
-      },
-      {
-        request: { includeQuotaHistory: false },
-        omittedSections: ['quotaHistory'],
-      },
-      {
-        request: { includeToolActivity: false },
-        omittedSections: ['toolActivity'],
-      },
-      {
-        request: {
-          includeQuotas: false,
-          includeQuotaHistory: false,
-          includeToolActivity: false,
-        },
-        omittedSections: ['quotas', 'quotaHistory', 'toolActivity'],
-      },
-    ]
-
-    for (const { request, omittedSections: sectionsToOmit } of toggles) {
-      omittedSections = sectionsToOmit
-      await expect(
-        fetchUsageReport({
-          from: '2026-05-20',
-          to: '2026-05-21',
-          grain: 'day',
-          ...request,
-        })
-      ).resolves.toMatchObject({
-        summary: {
-          traces: 0,
-          token_in: 0,
-          token_out: 0,
-          token_cache_input: 0,
-          token_cache_creation: 0,
-          token_reasoning_reported: 0,
-          token_reasoning_estimated: 0,
-          token_total: 0,
-        },
-        rows: [],
-      })
-    }
-  })
-
-  test('fetchUsageReport rejects missing monolith sections when defaults include them', async () => {
-    let omittedSection: UsageReportMonolithPayloadSection = 'quotas'
-    server.use(
-      http.get('/api/shell/reports/usage', () =>
-        HttpResponse.json(
-          minimalUsageReportPayloadWithoutMonolithSections([omittedSection])
-        )
-      )
-    )
-
-    const requiredCases: Array<{
-      omittedSection: UsageReportMonolithPayloadSection
-      expectedError: string
-    }> = [
-      {
-        omittedSection: 'quotas',
-        expectedError: 'Invalid usage report quotas',
-      },
-      {
-        omittedSection: 'quotaHistory',
-        expectedError: 'Invalid usage report quotaHistory',
-      },
-      {
-        omittedSection: 'toolActivity',
-        expectedError: 'Invalid usage report toolActivity',
-      },
-    ]
-
-    for (const { omittedSection: section, expectedError } of requiredCases) {
-      omittedSection = section
-      await expect(
-        fetchUsageReport({
-          from: '2026-05-20',
-          to: '2026-05-21',
-          grain: 'day',
-        })
-      ).rejects.toThrow(expectedError)
-    }
   })
 
   test('fetchUsageReportTokenTrendSummary rejects malformed metadata', async () => {
@@ -2023,6 +1870,9 @@ describe('D1-223/224/225 usage identity and billing contracts', () => {
             latestRecordAgeMinutes: null,
             latestRecordStale: false,
             staleRecordThresholdMinutes: 60,
+            providerErrorObservationRowLimit: 2000,
+            providerErrorObservationCapActive: true,
+            providerErrorObservationCapTruncatesRequestedWindow: false,
           },
           summary: {
             traces: 0,
@@ -2047,9 +1897,6 @@ describe('D1-223/224/225 usage identity and billing contracts', () => {
           providerLatencyHealth: [],
           providerErrorObservations: [],
           providerStatusUsage: [],
-          quotas: [],
-          quotaHistory: [],
-          toolActivity: [],
           rows: [],
         })
       })

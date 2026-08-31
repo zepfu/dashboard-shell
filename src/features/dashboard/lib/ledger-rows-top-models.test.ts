@@ -5,7 +5,7 @@
  */
 import { describe, test, expect } from 'vitest'
 import type { UsageReportProviderLatencyHealthRow } from '../api/usage-report'
-import { buildTopModels } from './ledger-rows'
+import { buildTopModels, deriveProviders } from './ledger-rows'
 
 describe('S1-11 — buildTopModels falls back to total_p95_ms', () => {
   test('test_buildTopModels_falls_back_to_total_p95_ms', () => {
@@ -71,5 +71,39 @@ describe('S1-11 — buildTopModels falls back to total_p95_ms', () => {
     expect(top[0]?.model).toBe('local-llama-3.3')
     expect(top[0]?.p95_ms).toBe(150)
     expect(top[0]?.p95_ms).not.toBeNull()
+  })
+})
+
+describe('D1-495 — observed provider derivation', () => {
+  test('test_deriveProviders_preserves_curated_order_and_appends_observed', () => {
+    expect(
+      deriveProviders(['cohere', 'google', 'Emerging_Provider', 'x.ai'])
+    ).toEqual([
+      'anthropic',
+      'openai',
+      'google',
+      'antigravity',
+      'xai',
+      'openrouter',
+      'nvidia_nim',
+      'local',
+      'cohere',
+      'emerging_provider',
+    ])
+  })
+
+  test('test_deriveProviders_excludes_non_self_identity_and_blank', () => {
+    expect(
+      deriveProviders(['', 'gemini', 'proxy_internal', 'aggregate'])
+    ).toEqual([
+      'anthropic',
+      'openai',
+      'google',
+      'antigravity',
+      'xai',
+      'openrouter',
+      'nvidia_nim',
+      'local',
+    ])
   })
 })

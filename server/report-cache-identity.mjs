@@ -140,6 +140,30 @@ function buildReportCacheEntry(payload, options = {}) {
   }
 }
 
+function applyCurrentReportCacheTtl(entry, options = {}) {
+  const config = options.config ?? defaultReportCacheConfig
+  if (
+    !entry ||
+    entry.cacheVersion !== config.version ||
+    !Number.isFinite(entry.freshUntil) ||
+    !Number.isFinite(entry.staleUntil) ||
+    typeof entry.generatedAt !== 'string'
+  ) {
+    return entry
+  }
+
+  const generatedAtMs = Date.parse(entry.generatedAt)
+  if (!Number.isFinite(generatedAtMs)) return entry
+
+  const freshUntil =
+    generatedAtMs + resolveReportCacheTtlMs(options.scope, options)
+  return {
+    ...entry,
+    freshUntil,
+    staleUntil: freshUntil + config.staleTtlMs,
+  }
+}
+
 export {
   CACHE_IDENTITY_EXCLUDED_KEYS,
   REPORT_CACHE_PREFIX,
@@ -147,6 +171,7 @@ export {
   REPORT_CACHE_TTL_MS,
   REPORT_CACHE_USAGE_TTL_MS,
   REPORT_CACHE_VERSION,
+  applyCurrentReportCacheTtl,
   buildReportCacheEntry,
   buildReportCacheIdentity,
   buildReportCachePrewarmLockKey,

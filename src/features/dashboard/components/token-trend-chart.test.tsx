@@ -427,10 +427,10 @@ test('test_even_labels_visible_at_24_bars', () => {
     const el = labels[i] as HTMLElement
     if (i % 2 === 0) {
       // Even indices: visible with actual label text
-      expect(el.style.visibility).not.toBe('hidden')
+      expect(el).not.toHaveClass('is-hidden')
     } else {
       // Odd indices: hidden placeholder
-      expect(el.style.visibility).toBe('hidden')
+      expect(el).toHaveClass('is-hidden')
     }
   }
 })
@@ -803,18 +803,8 @@ test('test_day_envelope_mode_renders_active_version_lane_without_usage_overlay',
   expect(within(lane).queryByText('0.28.1')).toBeNull()
   const familyRows = container.querySelectorAll('.tt-active-version-family')
   expect(familyRows).toHaveLength(4)
-  expect((familyRows[0] as HTMLElement | undefined)?.style.borderTop).toBe(
-    '0px'
-  )
-  expect((familyRows[1] as HTMLElement | undefined)?.style.borderTop).toContain(
-    'color-mix'
-  )
-  expect(
-    (familyRows[0] as HTMLElement | undefined)?.style.background
-  ).toContain('color-mix')
-  expect(
-    (familyRows[1] as HTMLElement | undefined)?.style.background
-  ).toContain('color-mix')
+  expect(familyRows[0]).toHaveClass('is-first', 'is-even')
+  expect(familyRows[1]).toHaveClass('is-not-first', 'is-odd')
   expect(container.querySelectorAll('.tt-active-version-line').length).toBe(2)
   expect(
     container.querySelectorAll('.tt-active-version-release-dot').length
@@ -846,11 +836,7 @@ test('test_day_envelope_mode_renders_active_version_lane_without_usage_overlay',
     'aria-label',
     expect.stringContaining('10:00 openai gpt-5.5')
   )
-  expect((firstSeenColumns[0] as HTMLElement).style.position).toBe('absolute')
-  expect((firstSeenColumns[0] as HTMLElement).style.top).toBe('0px')
-  expect((firstSeenColumns[0] as HTMLElement).style.right).toBe('0px')
-  expect((firstSeenColumns[0] as HTMLElement).style.bottom).toBe('0px')
-  expect((firstSeenColumns[0] as HTMLElement).style.left).toBe('0px')
+  expect(firstSeenColumns[0]).toHaveClass('tt-model-first-seen-column')
   expect(within(container).getByText('First seen model')).toBeInTheDocument()
   expect(container.querySelector('.tt-version-overlay')).toBeNull()
   expect(container.querySelector('.tt-version-line')).toBeNull()
@@ -1660,17 +1646,7 @@ test('test_version_lane_first_lane_by_index', () => {
 
   // The first rendered family row (index 0) must have no top border separator.
   const firstRow = renderedFamilyRows[0] as HTMLElement
-  const borderTop = firstRow.style.borderTop
-
-  // After fix: laneIndex === 0 → borderTop is '0' or empty for the first lane.
-  // Before fix: lane.key !== 'claude' → codex incorrectly gets a separator border
-  //   even when it is the first (only) rendered lane.
-  expect(
-    borderTop === '0' ||
-      borderTop === '' ||
-      borderTop === '0px' ||
-      borderTop === 'none'
-  ).toBe(true) // FAILS before fix when codex is first lane (not claude)
+  expect(firstRow).toHaveClass('is-first')
 })
 
 /**
@@ -2136,6 +2112,90 @@ test('D1-450_I5_lowerLaneMode_uses_useControllableState', () => {
   expect(source).not.toMatch(
     /const \[internalLowerLaneMode, setInternalLowerLaneMode\]/
   )
+})
+
+// ---------------------------------------------------------------------------
+// D1-493 — trend render boundaries, palette ownership, and static layout
+// ---------------------------------------------------------------------------
+
+test('D1-493_trend_modes_use_memoized_render_boundaries', () => {
+  const chartPath = path.join(import.meta.dirname, 'token-trend-chart.tsx')
+  const source = readFileSync(chartPath, 'utf8')
+
+  expect(source).toMatch(
+    /const DayEnvelopeTrendChart = memo\(function DayEnvelopeTrendChart/
+  )
+  expect(source).toMatch(
+    /const LegacyBucketTrendChart = memo\(function LegacyBucketTrendChart/
+  )
+  expect(source).toMatch(/if \(dayEnvelopes !== undefined\)/)
+})
+
+test('D1-493_legacy_mode_uses_one_inline_slice_and_legend_color', () => {
+  const color = '#123456'
+  const colorSeries = [
+    {
+      key: 'anthropic',
+      label: 'Anthropic',
+      color,
+      cssClass: 'tt-anthropic',
+    },
+  ]
+  const { container } = render(
+    <TokenTrendChart
+      data={[{ label: '1h', totals: { anthropic: 10 } }]}
+      series={colorSeries}
+    />
+  )
+
+  expect(container.querySelector('.tt-day-chart')).toBeNull()
+  expect(container.querySelector('.tt-legacy-chart')).not.toBeNull()
+  const slice = container.querySelector(
+    '.tt-legacy-chart .tt-slice'
+  ) as HTMLElement
+  const swatch = container.querySelector(
+    '.tt-legacy-chart-root .tt-swatch'
+  ) as HTMLElement
+  expect(slice.style.background).toBe('rgb(18, 52, 86)')
+  expect(swatch.style.background).toBe('rgb(18, 52, 86)')
+  expect(slice.style.background).toBe(swatch.style.background)
+})
+
+test('D1-493_day_mode_uses_one_inline_slice_and_legend_color', () => {
+  const color = '#123456'
+  const colorSeries = [
+    {
+      key: 'anthropic',
+      label: 'Anthropic',
+      color,
+      cssClass: 'tt-anthropic',
+    },
+  ]
+  const dayEnvelopes = buildTokenTrendDayEnvelopes([
+    {
+      day: '2026-05-20',
+      hour: 8,
+      provider: 'anthropic',
+      traces: 1,
+      token_total: 10,
+      usd_cost: 0,
+    },
+  ])
+  const { container } = render(
+    <TokenTrendChart dayEnvelopes={dayEnvelopes} series={colorSeries} />
+  )
+
+  expect(container.querySelector('.tt-legacy-chart')).toBeNull()
+  expect(container.querySelector('.tt-day-chart')).not.toBeNull()
+  const slice = container.querySelector(
+    '.tt-day-chart .tt-slice'
+  ) as HTMLElement
+  const swatch = container.querySelector(
+    '.tt-day-chart ~ .tt-chart-footer .tt-swatch'
+  ) as HTMLElement
+  expect(slice.style.background).toBe('rgb(18, 52, 86)')
+  expect(swatch.style.background).toBe('rgb(18, 52, 86)')
+  expect(slice.style.background).toBe(swatch.style.background)
 })
 
 // ---------------------------------------------------------------------------

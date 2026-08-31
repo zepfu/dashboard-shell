@@ -4,6 +4,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        VITE_SHOW_ANTHROPIC_PROVIDER_STATUS: '${VITE_SHOW_ANTHROPIC_PROVIDER_STATUS:-false}'
     image: dashboard-shell:local
     environment:
       SHELL_REPORT_PROXY_SHARED_SECRET: '${SHELL_REPORT_PROXY_SHARED_SECRET:-dashboard-shell-local-proxy-secret}'

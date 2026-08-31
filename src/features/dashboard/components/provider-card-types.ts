@@ -16,7 +16,7 @@ export interface ProviderCardConfig {
 export interface ProviderMetrics {
   tokens_in: number
   tokens_out: number
-  cost_usd: number
+  cost_usd: number | null
   requests: number
   errors: number
   p95_ms: number | null
@@ -129,7 +129,8 @@ export interface QuotaLane {
 export interface TopModelRow {
   model: string
   tokens: number
-  cost_usd: number
+  /** Null means no row in the group persisted response_cost_usd. */
+  cost_usd: number | null
   requests: number
   /** Upstream P95 latency in ms; null when no matching health row. */
   p95_ms?: number | null

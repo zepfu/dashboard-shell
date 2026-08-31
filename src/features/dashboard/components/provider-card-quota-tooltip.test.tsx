@@ -70,4 +70,25 @@ describe('D1-492 quota tooltip absolutes', () => {
 
     expect(screen.getByText('credits: unavailable')).toBeInTheDocument()
   })
+
+  test('renders missing persisted model cost as unavailable', () => {
+    const { container } = render(
+      <div>
+        {buildQuotaTooltip(
+          quotaBar({
+            tipModels: [
+              {
+                model: 'claude-sonnet-4-6',
+                costDelta: '—',
+                requests: 1,
+              },
+            ],
+          })
+        )}
+      </div>
+    )
+
+    const costValues = container.querySelectorAll('.v9-tip-row .t-count')
+    expect(costValues[1]?.textContent).toBe('—')
+  })
 })

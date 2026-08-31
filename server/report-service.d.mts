@@ -272,6 +272,9 @@ declare module './report-service.mjs' {
   export const buildUsageQuery: (
     searchParams: SearchParamsLike
   ) => QueryResultWithMetadata
+  export const buildProviderErrorObservationQuery: (
+    searchParams: SearchParamsLike
+  ) => QueryResultWithMetadata
   export const buildUsageScoreReasonsQuery: (
     searchParams: SearchParamsLike
   ) => QueryResultWithMetadata
@@ -296,6 +299,11 @@ declare module './report-service.mjs' {
   export const findUpstreamApiProxy: (
     pathname: string
   ) => UpstreamApiProxyConfig | undefined
+  export const handleUpstreamApiProxy: (
+    req: unknown,
+    res: unknown,
+    proxyConfig: UpstreamApiProxyConfig
+  ) => Promise<void>
   export const shouldSuppressCacheRefreshFailureDuringShutdown: (
     error: unknown,
     shuttingDown?: boolean
@@ -499,6 +507,7 @@ declare module './report-service.mjs' {
           promise?: Promise<unknown>
         }
       | undefined
+    getReportCacheEntryKeys: () => IterableIterator<string>
     setMaxReportCacheEntriesForTests: (maxEntries: number) => void
     resetMaxReportCacheEntriesForTests: () => void
     setReadRedisCacheEntryImpl: (
@@ -523,7 +532,12 @@ declare module './report-service.mjs' {
     decodeRedisReportCachePayload: (value: unknown) => Promise<unknown>
     readRedisCacheEntryFromClient: (
       identity: ReportCacheIdentityLike,
-      client: unknown
+      client: unknown,
+      cacheTtlOptions?: {
+        scope?: string
+        cacheTtlMs?: number
+        config?: unknown
+      }
     ) => Promise<unknown>
     writeRedisCacheEntry: (
       identity: ReportCacheIdentityLike,
@@ -543,6 +557,14 @@ declare module './report-service.mjs' {
       load: () => Promise<unknown>,
       options?: Record<string, unknown>
     ) => Promise<{ entry?: { payload?: unknown }; [key: string]: unknown }>
+    readLocalReportCache: (
+      cacheKey: string,
+      cacheTtlOptions?: {
+        scope?: string
+        cacheTtlMs?: number
+        config?: unknown
+      }
+    ) => { status: string; entry?: unknown } | null
     setLocalReportCache: (cacheKey: string, entry: unknown) => void
     pruneReportCache: () => void
   }
@@ -756,12 +778,16 @@ declare module './report-service.mjs' {
 
   export const __shellHealthTestHelpers: {
     buildShellHealthPayload: typeof buildShellHealthPayload
+    loadMaterializedViewHealthFromDatabase: (
+      queryDatabase: (
+        sql: string,
+        values?: unknown[]
+      ) => Promise<{ rows: Array<Record<string, unknown>> }>
+    ) => Promise<Record<string, unknown>>
   }
 
   export const __pgBouncerAdminTestHelpers: {
-    cleanupPgBouncerAdminPools: () => void
-    getOrCreatePgBouncerAdminPool: (...args: unknown[]) => Promise<unknown>
-    getPgBouncerAdminPoolCacheSize: () => number
+    createPgBouncerAdminClient: (...args: unknown[]) => unknown
     loadPgBouncerAdminSummaryForTests: (...args: unknown[]) => Promise<unknown>
   }
 

@@ -5,7 +5,7 @@
  * Phosphor visual sidebar treatment, while dashboard module entries come from
  * the shared remote-dashboard metadata so they stay aligned with shell routing.
  */
-import { useState, type ReactElement } from 'react'
+import { useEffect, useState, type ReactElement } from 'react'
 import { Link, useLocation } from '@tanstack/react-router'
 import {
   remoteDashboardHref,
@@ -13,7 +13,14 @@ import {
 } from '@/shell/remote-dashboard-metadata'
 import { SidebarProvider } from '@/components/ui/sidebar'
 import { SidebarQuotaRemaining } from '@/components/layout/sidebar-quota-remaining'
-import type { DashboardAlertSummary } from '../hooks/use-alerts-from-anomalies'
+import type {
+  UsageReportProviderLatencyHealthRow,
+  UsageReportQuotaRow,
+} from '../api/usage-report'
+import {
+  useDashboardAlertSummary,
+  type DashboardAlertSummary,
+} from '../hooks/use-alerts-from-anomalies'
 import { HoverTooltip } from './primitives/hover-tooltip'
 
 interface NavItem {
@@ -29,52 +36,56 @@ interface NavSection {
 
 interface PhosphorSidebarProps {
   dashboardAlerts?: DashboardAlertSummary
+  alertInput?: {
+    anomalies: Parameters<typeof useDashboardAlertSummary>[0]
+    summary?: Parameters<typeof useDashboardAlertSummary>[1]
+    quotas?: UsageReportQuotaRow[]
+    providerErrorObservations?: Parameters<typeof useDashboardAlertSummary>[3]
+    dockerLogErrors?: Parameters<typeof useDashboardAlertSummary>[4]
+    providerLatencyHealth?: UsageReportProviderLatencyHealthRow[]
+  }
 }
 
-const REMOTE_DASHBOARD_NAV_ITEMS: readonly NavItem[] =
-  remoteDashboardMetadata.map((dashboard) => ({
-    label: dashboard.name,
-    href: remoteDashboardHref(dashboard, dashboard.defaultRoutePath),
-    activePrefix: dashboard.basePath,
-  }))
+const ALERT_CLOCK_INTERVAL_MS = 10_000
 
-const NAV_SECTIONS: readonly NavSection[] = [
-  {
-    title: 'Dashboards',
-    items: REMOTE_DASHBOARD_NAV_ITEMS,
-  },
-  {
-    title: 'General',
-    items: [
-      { label: 'Dashboard', href: '/' },
-      { label: 'Apps', href: '/apps' },
-      { label: 'Chats', href: '/chats' },
-      { label: 'Tasks', href: '/tasks' },
-      { label: 'Users', href: '/users' },
-    ],
-  },
-  {
-    title: 'Pages',
-    items: [
-      { label: 'Auth', href: '/sign-in' },
-      { label: 'Errors', href: '/errors/not-found' },
-    ],
-  },
-  {
-    title: 'Other',
-    items: [
-      { label: 'Settings', href: '/settings' },
-      { label: 'Help Center', href: '/help-center' },
-    ],
-  },
-] as const
+function DashboardSidebarAlerts({
+  input,
+  pathname,
+}: {
+  input: NonNullable<PhosphorSidebarProps['alertInput']>
+  pathname: string
+}): ReactElement {
+  const [now, setNow] = useState(() => new Date())
 
-export function PhosphorSidebar({
+  useEffect(() => {
+    const id = setInterval(() => {
+      setNow(new Date())
+    }, ALERT_CLOCK_INTERVAL_MS)
+    return () => {
+      clearInterval(id)
+    }
+  }, [])
+
+  const dashboardAlerts = useDashboardAlertSummary(
+    input.anomalies,
+    input.summary,
+    input.quotas,
+    input.providerErrorObservations,
+    input.dockerLogErrors,
+    input.providerLatencyHealth,
+    now
+  )
+
+  return <PhosphorSidebarShell {...{ dashboardAlerts, pathname }} />
+}
+
+function PhosphorSidebarShell({
   dashboardAlerts,
-}: PhosphorSidebarProps): ReactElement {
-  const location = useLocation()
-  const pathname = location.pathname
-
+  pathname,
+}: {
+  dashboardAlerts?: DashboardAlertSummary
+  pathname: string
+}): ReactElement {
   return (
     <>
       <div className='sidebar-team-switcher'>Dashboard Shell ▼</div>
@@ -117,6 +128,58 @@ export function PhosphorSidebar({
       <div className='sidebar-footer'>Local User</div>
     </>
   )
+}
+
+const REMOTE_DASHBOARD_NAV_ITEMS: readonly NavItem[] =
+  remoteDashboardMetadata.map((dashboard) => ({
+    label: dashboard.name,
+    href: remoteDashboardHref(dashboard, dashboard.defaultRoutePath),
+    activePrefix: dashboard.basePath,
+  }))
+
+const NAV_SECTIONS: readonly NavSection[] = [
+  {
+    title: 'Dashboards',
+    items: REMOTE_DASHBOARD_NAV_ITEMS,
+  },
+  {
+    title: 'General',
+    items: [
+      { label: 'Dashboard', href: '/' },
+      { label: 'Apps', href: '/apps' },
+      { label: 'Chats', href: '/chats' },
+      { label: 'Tasks', href: '/tasks' },
+      { label: 'Users', href: '/users' },
+    ],
+  },
+  {
+    title: 'Pages',
+    items: [
+      { label: 'Auth', href: '/sign-in' },
+      { label: 'Errors', href: '/errors/not-found' },
+    ],
+  },
+  {
+    title: 'Other',
+    items: [
+      { label: 'Settings', href: '/settings' },
+      { label: 'Help Center', href: '/help-center' },
+    ],
+  },
+] as const
+
+export function PhosphorSidebar({
+  dashboardAlerts,
+  alertInput,
+}: PhosphorSidebarProps): ReactElement {
+  const location = useLocation()
+  const pathname = location.pathname
+
+  if (dashboardAlerts === undefined && alertInput !== undefined) {
+    return <DashboardSidebarAlerts input={alertInput} pathname={pathname} />
+  }
+
+  return <PhosphorSidebarShell {...{ dashboardAlerts, pathname }} />
 }
 
 function SidebarAlertDot({

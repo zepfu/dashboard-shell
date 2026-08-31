@@ -38,6 +38,7 @@ import {
   formatLatency,
   formatUsd,
   providerBrandHex,
+  providerDisplayLabel,
 } from '../lib/usage-report-display'
 import {
   BURN_DAILY_HOT_THRESHOLD_USD,
@@ -311,11 +312,13 @@ export function ComparisonPanel({
             const prior = priorByProvider.get(stat.provider.toLowerCase())
 
             const deltaCost =
-              prior !== undefined
+              stat.totalCost !== null &&
+              prior !== undefined &&
+              prior.totalCost !== null
                 ? computeDeltaPct(stat.totalCost, prior.totalCost)
                 : null
             const deltaTok =
-              prior !== undefined
+              prior?.totalTokens !== undefined && stat.totalTokens !== undefined
                 ? computeDeltaPct(stat.totalTokens, prior.totalTokens)
                 : null
             const deltaP95 =
@@ -326,6 +329,14 @@ export function ComparisonPanel({
               prior !== undefined
                 ? computeDeltaPct(stat.avgErrPct, prior.avgErrPct)
                 : null
+            const currentTokenLabel =
+              stat.totalTokens === undefined
+                ? '—'
+                : fmtCompact(stat.totalTokens)
+            const priorTokenLabel =
+              prior?.totalTokens === undefined
+                ? '—'
+                : fmtCompact(prior.totalTokens)
 
             return (
               <tr
@@ -343,7 +354,7 @@ export function ComparisonPanel({
                     whiteSpace: 'nowrap',
                   }}
                 >
-                  {stat.provider.toUpperCase()}
+                  {providerDisplayLabel(stat.provider)}
                 </td>
 
                 {/* Δ Cost — signed % change vs prior window */}
@@ -356,7 +367,9 @@ export function ComparisonPanel({
                     whiteSpace: 'nowrap',
                   }}
                   title={
-                    prior !== undefined
+                    prior !== undefined &&
+                    prior.totalCost !== null &&
+                    stat.totalCost !== null
                       ? `Current: ${formatUsd(stat.totalCost)} · Prior: ${formatUsd(prior.totalCost)}`
                       : `Current period cost: ${formatUsd(stat.totalCost)}`
                   }
@@ -380,16 +393,18 @@ export function ComparisonPanel({
                   }}
                   title={
                     prior !== undefined
-                      ? `Current: ${fmtCompact(stat.totalTokens)} · Prior: ${fmtCompact(prior.totalTokens)}`
-                      : `Current period tokens: ${fmtCompact(stat.totalTokens)}`
+                      ? `Current: ${currentTokenLabel} · Prior: ${priorTokenLabel}`
+                      : `Current period tokens: ${currentTokenLabel}`
                   }
                 >
-                  {formatDeltaPctWithPrior(
-                    stat.totalTokens,
-                    prior?.totalTokens,
-                    deltaTok,
-                    'tokens'
-                  )}
+                  {stat.totalTokens === undefined
+                    ? '—'
+                    : formatDeltaPctWithPrior(
+                        stat.totalTokens,
+                        prior?.totalTokens,
+                        deltaTok,
+                        'tokens'
+                      )}
                 </td>
 
                 {/* Δ p95 — signed % change vs prior window */}
@@ -463,6 +478,7 @@ export function ComparisonPanel({
                     textAlign: 'right',
                     borderRight: '1px solid var(--border)',
                     color:
+                      stat.burn !== null &&
                       stat.burn > BURN_DAILY_HOT_THRESHOLD_USD
                         ? 'var(--accent-hot)'
                         : 'var(--fg)',

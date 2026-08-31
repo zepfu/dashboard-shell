@@ -21,7 +21,9 @@ import {
   isSubPercentPrecisionProvider,
   makeQuotaBarGroup,
   makeQuotaBarGroupAlways,
+  matchesCursorAgentQuotaContract,
   matchesKimiCodeQuotaContract,
+  matchesZaiCodingPlanQuotaContract,
   normalizeQuotaAccountRef,
   pickBestGoogleQuotaRowForClass,
   quotaTypeToBarPeriodType,
@@ -73,6 +75,8 @@ function expectedQuotaOnlyQuotaPeriod(quotaType: string): string | null {
       return '5h'
     case 'weekly':
       return '7d'
+    case 'monthly':
+      return 'monthly'
     default:
       return null
   }
@@ -86,6 +90,18 @@ function quotaOnlyCurrentRowMatchesContract(
   quotaPeriod: string | null
 ): boolean {
   const detail = row.billing_details?.[interval]
+  if (provider === 'cursor_agent') {
+    return matchesCursorAgentQuotaContract(detail, row.model)
+  }
+  if (provider === 'zai_coding_plan') {
+    if (quotaPeriod !== '5h' && quotaPeriod !== '7d') return false
+    return matchesZaiCodingPlanQuotaContract(
+      detail,
+      row.model,
+      quotaKey,
+      quotaPeriod
+    )
+  }
   if (provider === 'kimi_code') {
     return (
       quotaPeriod !== null &&
@@ -582,25 +598,9 @@ export function buildProviderLanes(
       if (bestRow !== null) {
         const g = makeQuotaBarGroup(`${def.laneLabel}`, bestRow, 'short')
         if (g !== null) {
-          // Aggregate short_usage_breakdown across ALL same-class rows so that
-          // split quota rows (e.g. gemini-2.5-flash-lite vs gemini-3.1-flash-lite-preview)
-          // are merged into one class-bucket tooltip instead of showing "— —".
-          const mergedBreakdown = laneQuotas
-            .filter(
-              (r) =>
-                r.model !== null &&
-                classifyGeminiModel(r.model) === def.googleClass
-            )
-            .flatMap((r) => r.short_usage_breakdown)
-          const aggregatedTipModels =
-            tipModelsFromBreakdownGoogleAggregated(mergedBreakdown)
           currentBar = {
             ...g,
             label: def.laneLabel,
-            tipModels: aggregatedTipModels,
-            tipRequestTotal: tipRequestTotalFromBreakdown(mergedBreakdown),
-            tipRecentRequestTotal90m:
-              tipRecentRequestTotal90mFromBreakdown(mergedBreakdown),
           }
         }
       }
@@ -619,6 +619,20 @@ export function buildProviderLanes(
               ? 'monthly'
               : 'monthly'
         currentBar = makeQuotaBarGroup(def.laneLabel, row, interval)
+      }
+    } else if (laneProvider === 'openai' && def.quotaKey !== undefined) {
+      const interval = quotaTypeToBarInterval(def.quotaType)
+      const contractRow =
+        laneQuotas.find(
+          (quota) =>
+            quota.billing_details?.[interval]?.quota_key === def.quotaKey
+        ) ?? laneQuotas.find((quota) => quota.model === null)
+      if (contractRow !== undefined) {
+        currentBar = makeQuotaBarGroupAlways(
+          def.laneLabel,
+          contractRow,
+          interval
+        )
       }
     } else {
       // Anthropic / OpenAI: all quota data lives in the model=null row.

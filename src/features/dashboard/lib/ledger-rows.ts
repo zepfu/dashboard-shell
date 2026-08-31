@@ -5,7 +5,6 @@
 import type {
   UsageReportProviderLatencyHealthRow,
   UsageReportProviderStatusUsageRow,
-  UsageReportQuotaRow,
   UsageReportRow,
   UsageReportToolActivityRow,
   UsageReportTrendRow,
@@ -43,17 +42,38 @@ import { canonicalProvider, providerAliases } from './usage-report-display'
 /**
  * Always returns the canonical 8 providers in fixed order.
  *
- * Wave 11 PR2 (11-f): replaces dynamic derivation from the API response so
- * every provider card slot (including `local`) is always present.
+ * Wave 11 PR2 (11-f): preserves the canonical 8 provider order. D1-495 appends
+ * observed provider identities so entries newer than the curated lists remain
+ * visible without granting identity to internal fleet views.
  */
-export function deriveProviders(): string[] {
-  return [...CANONICAL_PROVIDERS]
+export function deriveProviders(
+  observedProviders: readonly string[] = []
+): string[] {
+  const known = new Set<string>(CANONICAL_PROVIDERS)
+  const observed = new Set<string>()
+  const internal = new Set(['proxy_internal', 'aggregate'])
+
+  for (const provider of observedProviders) {
+    const key = canonicalProvider(provider)
+    if (key === '' || known.has(key) || internal.has(key)) continue
+    if (providerAliases(key).includes(key)) observed.add(key)
+  }
+
+  return [...CANONICAL_PROVIDERS, ...[...observed].sort()]
 }
 
 export function canonicalRepositoryName(
   repository: string | null | undefined
 ): string {
   return (repository ?? '(unknown)').replace(/\s+\(memory\)$/i, '')
+}
+
+function addMeasuredValue(
+  current: number | undefined,
+  value: number | null | undefined
+): number | undefined {
+  if (value === null || value === undefined) return current
+  return (current ?? 0) + value
 }
 
 function ledgerP50Ms(
@@ -80,15 +100,14 @@ function ledgerP95Ms(
  *
  * Wave 15-B fixes:
  * - 15-B.3: real token_in / token_out aggregated from usageRows (report.rows)
- *   grouped by provider+model, replacing the fake 60/40 split of token_total.
+ *   grouped by provider+model. Missing directional measurements stay
+ *   unavailable instead of being inferred from token_total.
  * - 15-B.4: upstream_p50_ms wired from healthRows (was always null/0).
- * - 15-B.5: quota_pct computed from quotaRows (was always hardcoded 0).
  */
 export function buildModelRows(
   rows: UsageReportProviderStatusUsageRow[],
   healthRows: UsageReportProviderLatencyHealthRow[],
   usageRows: UsageReportRow[],
-  quotaRows: UsageReportQuotaRow[],
   trendRows: UsageReportTrendRow[],
   toolActivityRows: UsageReportToolActivityRow[] = []
 ): ModelRow[] {
@@ -109,8 +128,8 @@ export function buildModelRows(
   const tokensByKey = new Map<
     string,
     {
-      token_in: number
-      token_out: number
+      token_in?: number
+      token_out?: number
       cache_input: number
       cache_creation: number
       cache_miss_usd: number
@@ -125,8 +144,6 @@ export function buildModelRows(
     if (!p || !m) continue
     const key = keyFor(r.provider ?? '', r.model ?? '')
     const existing = tokensByKey.get(key)
-    const tin = r.token_in ?? 0
-    const tout = r.token_out ?? 0
     const ci = r.token_cache_input ?? 0
     const cc = r.token_cache_creation ?? 0
     const cm_usd = r.cache_miss_usd_cost ?? 0
@@ -135,8 +152,8 @@ export function buildModelRows(
     const agentQuality = agentQualityFromFlatRow(r)
     if (existing === undefined) {
       tokensByKey.set(key, {
-        token_in: tin,
-        token_out: tout,
+        token_in: r.token_in ?? undefined,
+        token_out: r.token_out ?? undefined,
         cache_input: ci,
         cache_creation: cc,
         cache_miss_usd: cm_usd,
@@ -145,8 +162,8 @@ export function buildModelRows(
         agentQuality,
       })
     } else {
-      existing.token_in += tin
-      existing.token_out += tout
+      existing.token_in = addMeasuredValue(existing.token_in, r.token_in)
+      existing.token_out = addMeasuredValue(existing.token_out, r.token_out)
       existing.cache_input += ci
       existing.cache_creation += cc
       existing.cache_miss_usd += cm_usd
@@ -158,10 +175,6 @@ export function buildModelRows(
       ])
     }
   }
-
-  // quotaRows param retained in signature for backward compat with call-sites
-  // but quota_pct column removed (Wave 26, operator F#13).
-  void quotaRows
 
   // Build per-(provider, model) sparkline series from trend data (24h buckets).
   // Sort chronologically so the polyline reads left-to-right oldest-to-newest.
@@ -235,8 +248,11 @@ export function buildModelRows(
       (r.token_cache_input ?? 0) + (r.token_cache_creation ?? 0)
     const cachePct = cachePctFromTokens(cacheTokens, r.token_in ?? 0)
     const cacheMissUsd = r.cache_miss_usd_cost ?? 0
-    const cost = r.usd_cost ?? 0
-    const cacheMissPct = cacheMissPctFromUsd(cacheMissUsd, cost)
+    const cost = r.usd_cost
+    const cacheMissPct =
+      cost === null || cost === undefined
+        ? undefined
+        : cacheMissPctFromUsd(cacheMissUsd, cost)
     const agentQuality = agentQualityFromFlatRow(r)
     const latencySummary = latencySummaryFromReportRow(r)
 
@@ -244,14 +260,14 @@ export function buildModelRows(
       repoMap.set(repo, {
         model: repo,
         provider: p,
-        tokens_in: r.token_in ?? 0,
-        tokens_out: r.token_out ?? 0,
+        tokens_in: r.token_in ?? undefined,
+        tokens_out: r.token_out ?? undefined,
         requests: r.traces ?? 0,
         p50_ms: ledgerP50Ms(latencySummary, r.llm_upstream_elapsed_average_ms),
         p95_ms: ledgerP95Ms(latencySummary, r.llm_upstream_elapsed_average_ms),
         // C3: no repo-granular error source — omit error_pct (renders —), not 0.0%.
         error_pct: undefined,
-        cost_usd: cost,
+        cost_usd: cost ?? null,
         cache_pct: cachePct,
         cache_miss_pct: cacheMissPct,
         cache_miss_usd_cost: cacheMissUsd > 0 ? cacheMissUsd : undefined,
@@ -270,10 +286,9 @@ export function buildModelRows(
         sparkBuckets: sparkBucketsByRepositoryKey.get(`${modelKey}::${repo}`),
       })
     } else {
-      existing.tokens_in += r.token_in ?? 0
-      existing.tokens_out += r.token_out ?? 0
+      existing.tokens_in = addMeasuredValue(existing.tokens_in, r.token_in)
+      existing.tokens_out = addMeasuredValue(existing.tokens_out, r.token_out)
       existing.requests += r.traces ?? 0
-      existing.cost_usd += cost
       existing.latencySummary = mergeLatencySummaries(
         existing.latencySummary,
         latencySummary
@@ -288,6 +303,12 @@ export function buildModelRows(
       )
       existing.cache_miss_usd_cost =
         (existing.cache_miss_usd_cost ?? 0) + cacheMissUsd
+      existing.cost_usd =
+        existing.cost_usd === null
+          ? cost
+          : cost === null || cost === undefined
+            ? existing.cost_usd
+            : existing.cost_usd + cost
       existing.reasoning_reported =
         (existing.reasoning_reported ?? 0) + (r.token_reasoning_reported ?? 0)
       existing.reasoning_estimated =
@@ -311,10 +332,13 @@ export function buildModelRows(
         existing.cache_toks ?? 0,
         existing.tokens_in
       )
-      existing.cache_miss_pct = cacheMissPctFromUsd(
-        existing.cache_miss_usd_cost ?? 0,
-        existing.cost_usd
-      )
+      existing.cache_miss_pct =
+        existing.cost_usd === null
+          ? undefined
+          : cacheMissPctFromUsd(
+              existing.cache_miss_usd_cost ?? 0,
+              existing.cost_usd
+            )
     }
     repositoryChildrenByKey.set(modelKey, repoMap)
   }
@@ -387,8 +411,8 @@ export function buildModelRows(
     const errors = health?.errors ?? 0
     const errorPct = requests > 0 ? (errors / requests) * 100 : 0
     const tokenAgg = tokensByKey.get(key)
-    const tokens_in = tokenAgg?.token_in ?? Math.round(row.token_total * 0.6)
-    const tokens_out = tokenAgg?.token_out ?? Math.round(row.token_total * 0.4)
+    const tokens_in = tokenAgg?.token_in
+    const tokens_out = tokenAgg?.token_out
 
     const cacheTokensAgg =
       tokenAgg !== undefined
@@ -396,14 +420,14 @@ export function buildModelRows(
         : 0
     const cache_pct =
       tokenAgg !== undefined
-        ? cachePctFromTokens(cacheTokensAgg, tokenAgg.token_in)
+        ? cachePctFromTokens(cacheTokensAgg, tokenAgg.token_in ?? 0)
         : undefined
     const cache_miss_usd_cost =
       tokenAgg !== undefined ? tokenAgg.cache_miss_usd : undefined
-    const cache_miss_pct = cacheMissPctFromUsd(
-      cache_miss_usd_cost ?? 0,
-      row.usd_cost
-    )
+    const cache_miss_pct =
+      row.usd_cost === null
+        ? undefined
+        : cacheMissPctFromUsd(cache_miss_usd_cost ?? 0, row.usd_cost)
     const reasoning_reported =
       tokenAgg !== undefined ? tokenAgg.reasoning_reported : undefined
     const reasoning_estimated =
@@ -453,9 +477,9 @@ export function buildModelRows(
         ...(repositoryChildrenByKey.get(key)?.values() ?? []),
       ].sort(
         (left, right) =>
-          right.tokens_in +
-          right.tokens_out -
-          (left.tokens_in + left.tokens_out)
+          (right.tokens_in ?? 0) +
+          (right.tokens_out ?? 0) -
+          ((left.tokens_in ?? 0) + (left.tokens_out ?? 0))
       ),
     }
   })
@@ -474,7 +498,7 @@ export function buildTopModels(
     provider: string
     model: string
     token_total: number
-    usd_cost: number
+    usd_cost: number | null
     traces: number
   }[],
   provider: string,

@@ -46,14 +46,16 @@ export interface ModelLatencySummary {
 export interface ModelRow {
   model: string
   provider: string
-  tokens_in: number
-  tokens_out: number
+  /** Measured input tokens; unavailable when no directional measurement exists. */
+  tokens_in?: number
+  /** Measured output tokens; unavailable when no directional measurement exists. */
+  tokens_out?: number
   requests: number
   p50_ms: number
   p95_ms: number
   /** Raw rate; round only at display. Undefined = no error data (repository leaves). */
   error_pct?: number
-  cost_usd: number
+  cost_usd: number | null
   cache_pct?: number
   cache_miss_pct?: number
   cache_miss_usd_cost?: number
@@ -92,6 +94,14 @@ export interface RepositoryModelEntry {
   sourceRow: ModelRow
   repoRow: ModelRow
   family: ModelFamilyDefinition | null
+}
+
+/** Resolve a family node's children without substituting another family. */
+export function resolveFamilyRows<T>(
+  familyRows: ReadonlyMap<string, { rows: readonly T[] }>,
+  familyKey: string | undefined
+): readonly T[] {
+  return familyRows.get(familyKey ?? '')?.rows ?? []
 }
 
 // ---------------------------------------------------------------------------
@@ -164,6 +174,19 @@ function countWeightedLatencyMs(
   return Math.max(0, ...rows.map((row) => row[fallbackField]))
 }
 
+function sumMeasured(
+  rows: readonly ModelRow[],
+  pick: (row: ModelRow) => number | undefined
+): number | undefined {
+  let total: number | undefined
+  for (const row of rows) {
+    const value = pick(row)
+    if (value === undefined) continue
+    total = (total ?? 0) + value
+  }
+  return total
+}
+
 // G2: cost_usd and cache_miss_usd_cost are summed as IEEE doubles; rounding at display only.
 export function aggregateRows(
   rows: readonly ModelRow[],
@@ -181,7 +204,11 @@ export function aggregateRows(
   >
 ): LedgerDisplayRow {
   const requests = rows.reduce((sum, row) => sum + row.requests, 0)
-  const cost = rows.reduce((sum, row) => sum + row.cost_usd, 0)
+  const persistedCostRows = rows.filter((row) => row.cost_usd !== null)
+  const cost = persistedCostRows.reduce((sum, row) => {
+    if (row.cost_usd === null) return sum
+    return sum + row.cost_usd
+  }, 0)
   const cacheToks = rows.reduce((sum, row) => sum + (row.cache_toks ?? 0), 0)
   const errorRows = rows.filter((row) => row.error_pct !== undefined)
   const errorRequestTotal = errorRows.reduce(
@@ -238,12 +265,14 @@ export function aggregateRows(
           totalServerP50Ms: p50_ms,
           totalServerP95Ms: p95_ms,
         }
+  const tokensIn = sumMeasured(rows, (row) => row.tokens_in)
+  const tokensOut = sumMeasured(rows, (row) => row.tokens_out)
 
   return {
     model: overrides.ledgerLabel,
     provider: overrides.providerKey,
-    tokens_in: rows.reduce((sum, row) => sum + row.tokens_in, 0),
-    tokens_out: rows.reduce((sum, row) => sum + row.tokens_out, 0),
+    tokens_in: tokensIn,
+    tokens_out: tokensOut,
     requests,
     p50_ms,
     p95_ms,
@@ -251,13 +280,10 @@ export function aggregateRows(
       errorRequestTotal > 0
         ? Math.round((weightedErrorTotal / errorRequestTotal) * 10) / 10
         : undefined,
-    cost_usd: cost,
-    cache_pct: cachePctFromTokens(
-      cacheToks,
-      rows.reduce((sum, row) => sum + row.tokens_in, 0)
-    ),
+    cost_usd: persistedCostRows.length > 0 ? cost : null,
+    cache_pct: cachePctFromTokens(cacheToks, tokensIn ?? 0),
     cache_miss_pct:
-      cacheMissUsdDefined && cost > 0 && cacheMissUsdSum > 0
+      cacheMissUsdDefined && cost !== null && cost > 0 && cacheMissUsdSum > 0
         ? (cacheMissUsdSum / cost) * 100
         : undefined,
     cache_miss_usd_cost: cacheMissUsdDefined ? cacheMissUsdSum : undefined,

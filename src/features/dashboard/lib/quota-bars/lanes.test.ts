@@ -3,14 +3,22 @@
  */
 import { describe, expect, test } from 'vitest'
 import type {
+  UsageReportQuotaBillingDetail,
   UsageReportQuotaHistoryRow,
   UsageReportQuotaRow,
 } from '../../api/usage-report'
 import {
   ALIBABA_TOKEN_PLAN_5H_CREDITS_KEY,
   ALIBABA_TOKEN_PLAN_7D_CREDITS_KEY,
+  CURSOR_AGENT_MONTHLY_CENTS_KEY,
   KIMI_CODE_5H_QUOTA_UNITS_KEY,
   KIMI_CODE_7D_QUOTA_UNITS_KEY,
+  ZAI_CODING_PLAN_5H_COUNT_KEY,
+  ZAI_CODING_PLAN_5H_CREDITS_KEY,
+  ZAI_CODING_PLAN_5H_PERCENT_KEY,
+  ZAI_CODING_PLAN_7D_COUNT_KEY,
+  ZAI_CODING_PLAN_7D_CREDITS_KEY,
+  ZAI_CODING_PLAN_7D_PERCENT_KEY,
 } from './lane-defs'
 import { buildProviderLanes } from './lanes'
 
@@ -25,36 +33,26 @@ function minimalQuotaRow(
     weekly_interval_start: null,
     weekly_interval_end: null,
     weekly_active: false,
-    weekly_usage_tokens: 0,
-    weekly_usage_breakdown: [],
     short_remaining_pct: 50,
     short_reset_at: '2026-06-13T12:00:00.000Z',
     short_interval_start: '2026-06-13T07:00:00.000Z',
     short_interval_end: '2026-06-13T12:00:00.000Z',
     short_active: true,
-    short_usage_tokens: 0,
-    short_usage_breakdown: [],
     special_remaining_pct: null,
     special_reset_at: null,
     special_interval_start: null,
     special_interval_end: null,
     special_active: false,
-    special_usage_tokens: 0,
-    special_usage_breakdown: [],
     short_special_remaining_pct: null,
     short_special_reset_at: null,
     short_special_interval_start: null,
     short_special_interval_end: null,
     short_special_active: false,
-    short_special_usage_tokens: 0,
-    short_special_usage_breakdown: [],
     monthly_remaining_pct: null,
     monthly_reset_at: null,
     monthly_interval_start: null,
     monthly_interval_end: null,
     monthly_active: false,
-    monthly_usage_tokens: 0,
-    monthly_usage_breakdown: [],
     ...overrides,
   }
 }
@@ -161,36 +159,26 @@ describe('D1-489 — Alibaba Token Plan lane separation', () => {
       weekly_interval_start: '2026-07-19T16:26:00.000Z',
       weekly_interval_end: '2026-07-26T16:26:00.000Z',
       weekly_active: true,
-      weekly_usage_tokens: 0,
-      weekly_usage_breakdown: [],
       short_remaining_pct: 99.96,
       short_reset_at: '2026-07-22T02:22:00.000Z',
       short_interval_start: '2026-07-21T21:22:00.000Z',
       short_interval_end: '2026-07-22T02:22:00.000Z',
       short_active: true,
-      short_usage_tokens: 0,
-      short_usage_breakdown: [],
       special_remaining_pct: null,
       special_reset_at: null,
       special_interval_start: null,
       special_interval_end: null,
       special_active: false,
-      special_usage_tokens: 0,
-      special_usage_breakdown: [],
       short_special_remaining_pct: null,
       short_special_reset_at: null,
       short_special_interval_start: null,
       short_special_interval_end: null,
       short_special_active: false,
-      short_special_usage_tokens: 0,
-      short_special_usage_breakdown: [],
       monthly_remaining_pct: null,
       monthly_reset_at: null,
       monthly_interval_start: null,
       monthly_interval_end: null,
       monthly_active: false,
-      monthly_usage_tokens: 0,
-      monthly_usage_breakdown: [],
       ...overrides,
     }
   }
@@ -530,36 +518,26 @@ describe('D1-492 — Kimi Code lane separation', () => {
       weekly_interval_start: '2026-07-22T16:26:00.000Z',
       weekly_interval_end: '2026-07-29T16:26:00.000Z',
       weekly_active: true,
-      weekly_usage_tokens: 0,
-      weekly_usage_breakdown: [],
       short_remaining_pct: 99.96,
       short_reset_at: '2026-07-24T17:22:00.000Z',
       short_interval_start: '2026-07-24T12:22:00.000Z',
       short_interval_end: '2026-07-24T17:22:00.000Z',
       short_active: true,
-      short_usage_tokens: 0,
-      short_usage_breakdown: [],
       special_remaining_pct: null,
       special_reset_at: null,
       special_interval_start: null,
       special_interval_end: null,
       special_active: false,
-      special_usage_tokens: 0,
-      special_usage_breakdown: [],
       short_special_remaining_pct: null,
       short_special_reset_at: null,
       short_special_interval_start: null,
       short_special_interval_end: null,
       short_special_active: false,
-      short_special_usage_tokens: 0,
-      short_special_usage_breakdown: [],
       monthly_remaining_pct: null,
       monthly_reset_at: null,
       monthly_interval_start: null,
       monthly_interval_end: null,
       monthly_active: false,
-      monthly_usage_tokens: 0,
-      monthly_usage_breakdown: [],
       ...overrides,
     }
   }
@@ -997,4 +975,245 @@ describe('D1-492 — Kimi Code lane separation', () => {
     )
     expect(JSON.stringify(lanes)).not.toContain(fullHash)
   })
+})
+
+describe('D1-496 — current provider quota contracts', () => {
+  function cursorQuotaRow(
+    detailOverrides: Partial<UsageReportQuotaBillingDetail> = {},
+    rowOverrides: Partial<UsageReportQuotaRow> = {}
+  ): UsageReportQuotaRow {
+    return minimalQuotaRow({
+      provider: 'cursor_agent',
+      model: 'cursor-agent',
+      account_ref: '0123456789ab',
+      monthly_remaining_pct: 70,
+      monthly_reset_at: '2026-08-30T12:00:00.000Z',
+      monthly_interval_start: '2026-07-30T12:00:00.000Z',
+      monthly_interval_end: '2026-08-30T12:00:00.000Z',
+      monthly_active: true,
+      billing_details: {
+        monthly: {
+          quota_key: CURSOR_AGENT_MONTHLY_CENTS_KEY,
+          quota_period: 'monthly',
+          source: 'cursor_agent_usage',
+          client: 'cursor-agent',
+          quota_unit: 'cents',
+          quota_limit: 100000,
+          quota_used: 30000,
+          quota_remaining: 70000,
+          billing_observed_at: '2026-08-30T11:59:00.000Z',
+          ...detailOverrides,
+        },
+      },
+      ...rowOverrides,
+    })
+  }
+
+  function zaiQuotaRow(
+    quotaKey: string,
+    quotaPeriod: '5h' | '7d',
+    quotaUnit: 'credits' | 'percent' | 'count',
+    detailOverrides: Partial<UsageReportQuotaBillingDetail> = {},
+    rowOverrides: Partial<UsageReportQuotaRow> = {}
+  ): UsageReportQuotaRow {
+    const interval = quotaPeriod === '5h' ? 'short' : 'weekly'
+    const remainingPct =
+      quotaUnit === 'credits' ? 80 : quotaUnit === 'percent' ? 55 : 70
+    const detail = {
+      quota_key: quotaKey,
+      quota_period: quotaPeriod,
+      source: 'zai_coding_plan_quota_poll',
+      client: 'zai-coding-plan',
+      quota_unit: quotaUnit,
+      quota_limit: quotaUnit === 'percent' ? null : 100,
+      quota_used: quotaUnit === 'percent' ? null : 20,
+      quota_remaining: quotaUnit === 'percent' ? null : 80,
+      billing_observed_at: '2026-08-30T11:59:00.000Z',
+      ...detailOverrides,
+    }
+
+    return minimalQuotaRow({
+      provider: 'zai_coding_plan',
+      model: 'zai-coding-plan',
+      account_ref: '0123456789ab',
+      ...(interval === 'short'
+        ? {
+            short_remaining_pct: remainingPct,
+            short_reset_at: '2026-08-30T14:00:00.000Z',
+            short_interval_start: '2026-08-30T09:00:00.000Z',
+            short_interval_end: '2026-08-30T14:00:00.000Z',
+            short_active: true,
+            billing_details: { short: detail },
+          }
+        : {
+            weekly_remaining_pct: remainingPct,
+            weekly_reset_at: '2026-09-01T12:00:00.000Z',
+            weekly_interval_start: '2026-08-25T12:00:00.000Z',
+            weekly_interval_end: '2026-09-01T12:00:00.000Z',
+            weekly_active: true,
+            billing_details: { weekly: detail },
+          }),
+      ...rowOverrides,
+    })
+  }
+
+  test('test_cursor_monthly_cents_lane_preserves_contract_and_absolutes', () => {
+    const lanes = buildProviderLanes('cursor_agent', [cursorQuotaRow()], [])
+
+    expect(lanes).toHaveLength(1)
+    expect(lanes[0].laneKey).toBe('cursor_agent/monthly-cents')
+    expect(lanes[0].laneLabel).toBe('Monthly Cents')
+    expect(lanes[0].currentBar).toMatchObject({
+      remainingPct: 70,
+      tipQuotaLimit: 100000,
+      tipQuotaUsed: 30000,
+      tipQuotaRemaining: 70000,
+      tipQuotaUnit: 'cents',
+    })
+    expect(lanes[0].currentBar!.tipIdentity).toEqual(
+      expect.arrayContaining([
+        CURSOR_AGENT_MONTHLY_CENTS_KEY,
+        'cursor_agent_usage',
+        'cursor-agent',
+        'cents',
+        'account …89ab',
+      ])
+    )
+  })
+
+  test.each([
+    ['source', { source: 'wrong-source' }, {}],
+    ['client', { client: 'wrong-client' }, {}],
+    ['quota key', { quota_key: 'cursor_agent_monthly:tokens' }, {}],
+    ['period', { quota_period: '5h' }, {}],
+    ['unit', { quota_unit: 'dollars' }, {}],
+    ['model', {}, { model: 'cursor' }],
+  ] as const)(
+    'test_cursor_monthly_cents_rejects_%s_contract_mismatch',
+    (_field, detailOverrides, rowOverrides) => {
+      expect(
+        buildProviderLanes(
+          'cursor_agent',
+          [cursorQuotaRow(detailOverrides, rowOverrides)],
+          []
+        )
+      ).toHaveLength(0)
+    }
+  )
+
+  test('test_cursor_monthly_cents_accounts_remain_distinct', () => {
+    const lanes = buildProviderLanes(
+      'cursor_agent',
+      [
+        cursorQuotaRow({}, { account_ref: '0123456789ab' }),
+        cursorQuotaRow(
+          { quota_remaining: 40000 },
+          { account_ref: 'fedcba987654', monthly_remaining_pct: 40 }
+        ),
+      ],
+      []
+    )
+
+    expect(lanes.map((lane) => lane.laneKey)).toEqual([
+      'cursor_agent/monthly-cents/0123456789ab',
+      'cursor_agent/monthly-cents/fedcba987654',
+    ])
+    expect(lanes.map((lane) => lane.laneLabel)).toEqual([
+      'Monthly Cents · …89ab',
+      'Monthly Cents · …7654',
+    ])
+  })
+
+  test('test_zai_renders_each_observed_unit_variant_with_absolute_values_only_when_supplied', () => {
+    const lanes = buildProviderLanes(
+      'zai_coding_plan',
+      [
+        zaiQuotaRow(ZAI_CODING_PLAN_5H_CREDITS_KEY, '5h', 'credits'),
+        zaiQuotaRow(ZAI_CODING_PLAN_5H_PERCENT_KEY, '5h', 'percent'),
+        zaiQuotaRow(ZAI_CODING_PLAN_5H_COUNT_KEY, '5h', 'count'),
+        zaiQuotaRow(ZAI_CODING_PLAN_7D_CREDITS_KEY, '7d', 'credits'),
+        zaiQuotaRow(ZAI_CODING_PLAN_7D_PERCENT_KEY, '7d', 'percent'),
+        zaiQuotaRow(ZAI_CODING_PLAN_7D_COUNT_KEY, '7d', 'count'),
+      ],
+      []
+    )
+
+    expect(lanes.map((lane) => lane.laneKey)).toEqual([
+      'zai_coding_plan/5h-credits',
+      'zai_coding_plan/5h-percent',
+      'zai_coding_plan/5h-count',
+      'zai_coding_plan/7d-credits',
+      'zai_coding_plan/7d-percent',
+      'zai_coding_plan/7d-count',
+    ])
+    expect(lanes.map((lane) => lane.currentBar!.tipQuotaUnit)).toEqual([
+      'credits',
+      'percent',
+      'count',
+      'credits',
+      'percent',
+      'count',
+    ])
+    expect(lanes[0].currentBar).toMatchObject({
+      tipQuotaLimit: 100,
+      tipQuotaUsed: 20,
+      tipQuotaRemaining: 80,
+    })
+    expect(lanes[1].currentBar).toMatchObject({
+      tipQuotaLimit: null,
+      tipQuotaUsed: null,
+      tipQuotaRemaining: null,
+      tipAbsolutesUnavailable: true,
+    })
+  })
+
+  test('test_zai_missing_unit_variants_stay_absent_instead_of_zero', () => {
+    const lanes = buildProviderLanes(
+      'zai_coding_plan',
+      [
+        zaiQuotaRow(ZAI_CODING_PLAN_5H_CREDITS_KEY, '5h', 'credits'),
+        zaiQuotaRow(ZAI_CODING_PLAN_7D_COUNT_KEY, '7d', 'count'),
+      ],
+      []
+    )
+
+    expect(lanes.map((lane) => lane.laneKey)).toEqual([
+      'zai_coding_plan/5h-credits',
+      'zai_coding_plan/7d-count',
+    ])
+    expect(lanes.find((lane) => lane.laneKey.includes('5h-percent'))).toBe(
+      undefined
+    )
+    expect(lanes.find((lane) => lane.laneKey.includes('7d-percent'))).toBe(
+      undefined
+    )
+  })
+
+  test.each([
+    ['source', { source: 'wrong-source' }, {}],
+    ['client', { client: 'wrong-client' }, {}],
+    ['quota key', { quota_key: ZAI_CODING_PLAN_5H_PERCENT_KEY }, {}],
+    ['period', { quota_period: '7d' }, {}],
+    ['unit', { quota_unit: 'wrong-unit' }, {}],
+    ['model', {}, { model: 'zai' }],
+  ] as const)(
+    'test_zai_5h_credits_rejects_%s_contract_mismatch',
+    (_field, detailOverrides, rowOverrides) => {
+      expect(
+        buildProviderLanes(
+          'zai_coding_plan',
+          [
+            zaiQuotaRow(
+              ZAI_CODING_PLAN_5H_CREDITS_KEY,
+              '5h',
+              'credits',
+              detailOverrides,
+              rowOverrides
+            ),
+          ],
+          []
+        )
+      ).toHaveLength(0)
+    }
+  )
 })

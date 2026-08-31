@@ -50,9 +50,8 @@ export function normalizeTrendData(rows: UsageReportTrendRow[]): TrendBucket[] {
 
   for (const row of rows) {
     const key = row.bucket
-    // Normalise provider name so variant spellings ('x.ai', 'gemini', 'nvidia')
-    // collapse to their canonical forms ('xai', 'google', 'nvidia_nim') and
-    // match the keys used in PROVIDER_SERIES / TokenTrendChart.
+    // Normalise provider names while preserving every observed canonical
+    // identity, including providers newer than the curated series lists.
     const provider = canonicalProvider(row.provider)
     const existing = bucketMap.get(key)
     if (existing === undefined) {
@@ -432,7 +431,24 @@ function normalizedText(value: string): string {
 }
 
 function hasTokenSequence(value: string, sequence: string): boolean {
-  return value.split(/\s+/).filter(Boolean).join(' ').includes(sequence)
+  const expectedTokens = sequence.split(/\s+/).filter(Boolean)
+  const tokens = value.split(/\s+/).filter(Boolean)
+
+  if (expectedTokens.length === 0 || expectedTokens.length > tokens.length) {
+    return false
+  }
+
+  return tokens.some((_, start) =>
+    expectedTokens.every(
+      (expected, offset) => tokens[start + offset] === expected
+    )
+  )
+}
+
+function isCodexVersion(value: string): boolean {
+  // Codex version identifiers use a slash or whitespace separator; keep
+  // hyphenated smoke labels such as "codex-dev-smoke-2026" out of this lane.
+  return /^codex(?:\/|\s|$)/i.test(value.trim())
 }
 
 export function isTokenTrendActiveVersionClient(row: {
@@ -466,6 +482,7 @@ export function isTokenTrendActiveVersionClient(row: {
   return (
     clientVersion.includes('claude') ||
     clientVersion.includes('gemini') ||
+    isCodexVersion(row.client_version ?? '') ||
     clientVersion.includes('grok')
   )
 }

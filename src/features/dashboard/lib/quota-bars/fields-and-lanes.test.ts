@@ -13,10 +13,12 @@ import type {
 import {
   formatTimeAgo,
   quotaTypeToBarPeriodType,
+  tipModelsFromBreakdown,
   tipModelsFromBreakdownGoogleAggregated,
   tipModelsFromBreakdownSingleLabel,
   classifyGeminiModel,
 } from './fields'
+import { OPENAI_CODEX_SPARK_CURRENT_KEY } from './lane-defs'
 import { buildPriorBarFromHistory, buildProviderLanes } from './lanes'
 
 // ---------------------------------------------------------------------------
@@ -117,7 +119,7 @@ describe('Wave 40 — tipModelsFromBreakdownGoogleAggregated', () => {
   const makeBreakdown = (
     entries: ReadonlyArray<{
       model: string
-      cost: number
+      cost: number | null
       traces?: number
       recent_traces_90m?: number
     }>
@@ -189,13 +191,25 @@ describe('Wave 40 — tipModelsFromBreakdownGoogleAggregated', () => {
     expect(result![0].requests).toBe(6)
     expect(result![0].recentRequests90m).toBe(4)
   })
+
+  test('test_google_aggregated_preserves_missing_cost_and_recorded_zero', () => {
+    const result = tipModelsFromBreakdownGoogleAggregated(
+      makeBreakdown([
+        { model: 'gemini-2.5-flash', cost: null, traces: 1 },
+        { model: 'gemini-2.5-pro', cost: 0, traces: 1 },
+      ])
+    )
+
+    expect(result?.find((row) => row.model === 'flash')?.costDelta).toBe('—')
+    expect(result?.find((row) => row.model === 'pro')?.costDelta).toBe('$0.00')
+  })
 })
 
 describe('Wave 40 — tipModelsFromBreakdownSingleLabel', () => {
   const makeBreakdown = (
     entries: ReadonlyArray<{
       model: string
-      cost: number
+      cost: number | null
       traces?: number
       recent_traces_90m?: number
     }>
@@ -245,6 +259,35 @@ describe('Wave 40 — tipModelsFromBreakdownSingleLabel', () => {
     expect(result![0].model).toBe('codex-spark')
     expect(result![0].costDelta).toBe('$7.50')
   })
+
+  test('test_single_label_preserves_missing_cost_and_recorded_zero', () => {
+    expect(
+      tipModelsFromBreakdownSingleLabel(
+        makeBreakdown([{ model: 'gpt-4o', cost: null }]),
+        'codex-spark'
+      )?.[0].costDelta
+    ).toBe('—')
+    expect(
+      tipModelsFromBreakdownSingleLabel(
+        makeBreakdown([{ model: 'gpt-4o', cost: 0 }]),
+        'codex-spark'
+      )?.[0].costDelta
+    ).toBe('$0.00')
+  })
+})
+
+test('D1-497_generic_tip_models_render_missing_cost_as_unavailable', () => {
+  const result = tipModelsFromBreakdown([
+    { model: 'missing-cost', tokens: 10, cost: null, traces: 1 },
+    { model: 'recorded-zero', tokens: 10, cost: 0, traces: 1 },
+  ])
+
+  expect(result?.find((row) => row.model === 'missing-cost')?.costDelta).toBe(
+    '—'
+  )
+  expect(result?.find((row) => row.model === 'recorded-zero')?.costDelta).toBe(
+    '$0.00'
+  )
 })
 
 // ---------------------------------------------------------------------------
@@ -304,43 +347,31 @@ describe('Wave 41 — buildProviderLanes', () => {
       weekly_interval_start: '2026-05-14T15:00:00Z',
       weekly_interval_end: '2026-05-21T15:00:00Z',
       weekly_active: true,
-      weekly_usage_tokens: 1000,
-      weekly_usage_breakdown: [],
       short_remaining_pct: 99,
       short_reset_at: '2026-05-20T21:00:00Z',
       short_interval_start: '2026-05-20T16:00:00Z',
       short_interval_end: '2026-05-20T21:00:00Z',
       short_active: true,
-      short_usage_tokens: 10,
-      short_usage_breakdown: [],
       special_remaining_pct: 65,
       special_reset_at: '2026-05-21T15:00:00Z',
       special_interval_start: '2026-05-14T15:00:00Z',
       special_interval_end: '2026-05-21T15:00:00Z',
       special_active: true,
-      special_usage_tokens: 500,
-      special_usage_breakdown: [],
       short_special_remaining_pct: null,
       short_special_reset_at: null,
       short_special_interval_start: null,
       short_special_interval_end: null,
       short_special_active: false,
-      short_special_usage_tokens: 0,
-      short_special_usage_breakdown: [],
       monthly_remaining_pct: null,
       monthly_reset_at: null,
       monthly_interval_start: null,
       monthly_interval_end: null,
       monthly_active: false,
-      monthly_usage_tokens: 0,
-      monthly_usage_breakdown: [],
       weekly_overage_included_remaining_pct: null,
       weekly_overage_included_reset_at: null,
       weekly_overage_included_interval_start: null,
       weekly_overage_included_interval_end: null,
       weekly_overage_included_active: false,
-      weekly_overage_included_usage_tokens: 0,
-      weekly_overage_included_usage_breakdown: [],
       ...overrides,
     }
   }
@@ -409,8 +440,6 @@ describe('Wave 41 — buildProviderLanes', () => {
         weekly_overage_included_interval_start: '2026-07-02T15:00:00Z',
         weekly_overage_included_interval_end: '2026-07-09T15:00:00Z',
         weekly_overage_included_active: true,
-        weekly_overage_included_usage_tokens: 120,
-        weekly_overage_included_usage_breakdown: [],
       }),
     ]
     const lanes = buildProviderLanes('anthropic', quotaRows, [])
@@ -536,12 +565,18 @@ describe('Wave 41 — buildProviderLanes', () => {
     const openaiRow: UsageReportQuotaRow = {
       ...makeAnthropicQuotaRow(),
       provider: 'openai',
+      billing_details: {
+        short_special: {
+          quota_key: OPENAI_CODEX_SPARK_CURRENT_KEY,
+          quota_period: '5h',
+          quota_unit: 'tokens',
+        },
+      },
       short_special_remaining_pct: 75,
       short_special_reset_at: '2026-05-20T14:33:00Z',
       short_special_interval_start: '2026-05-20T09:33:00Z',
       short_special_interval_end: '2026-05-20T14:33:00Z',
       short_special_active: true,
-      short_special_usage_tokens: 50,
     }
     const lanes = buildProviderLanes('openai', [openaiRow], [])
     expect(lanes.length).toBe(4)
@@ -556,12 +591,18 @@ describe('Wave 41 — buildProviderLanes', () => {
     const openaiRow: UsageReportQuotaRow = {
       ...makeAnthropicQuotaRow(),
       provider: 'openai',
+      billing_details: {
+        short_special: {
+          quota_key: OPENAI_CODEX_SPARK_CURRENT_KEY,
+          quota_period: '5h',
+          quota_unit: 'tokens',
+        },
+      },
       short_special_remaining_pct: 75,
       short_special_reset_at: '2026-05-20T14:33:00Z',
       short_special_interval_start: '2026-05-20T09:33:00Z',
       short_special_interval_end: '2026-05-20T14:33:00Z',
       short_special_active: true,
-      short_special_usage_tokens: 50,
     }
     const historyRows: UsageReportQuotaHistoryRow[] = [
       makeHistoryRow({
@@ -587,6 +628,9 @@ describe('Wave 41 — buildProviderLanes', () => {
 
     expect(spark5hLane).toBeDefined()
     expect(spark5hLane!.currentBar).not.toBeNull()
+    expect(spark5hLane!.currentBar!.tipIdentity).toContain(
+      OPENAI_CODEX_SPARK_CURRENT_KEY
+    )
     expect(spark5hLane!.priorBars).toHaveLength(0)
   })
 
@@ -667,8 +711,6 @@ describe('Wave 41 — buildProviderLanes', () => {
       wtus_interval_start: '2026-06-05T19:04:12Z',
       wtus_interval_end: '9999-12-31T00:00:00Z',
       wtus_active: true,
-      wtus_usage_tokens: 0,
-      wtus_usage_breakdown: [],
     })
     const historyRows: UsageReportQuotaHistoryRow[] = [
       makeHistoryRow({
@@ -726,12 +768,8 @@ describe('Wave 41 — buildProviderLanes', () => {
       model: quotaKey,
       weekly_remaining_pct: quotaType === 'weekly' ? remainingPct : null,
       weekly_active: quotaType === 'weekly',
-      weekly_usage_tokens: 0,
-      weekly_usage_breakdown: [],
       monthly_remaining_pct: quotaType === 'monthly' ? remainingPct : null,
       monthly_active: quotaType === 'monthly',
-      monthly_usage_tokens: 0,
-      monthly_usage_breakdown: [],
       short_active: false,
       special_active: false,
       short_special_active: false,
@@ -904,43 +942,31 @@ describe('S1-4 — buildProviderLanes distinct null-reset rows not collapsed', (
       weekly_interval_start: null,
       weekly_interval_end: null,
       weekly_active: false,
-      weekly_usage_tokens: 0,
-      weekly_usage_breakdown: [],
       short_remaining_pct: null,
       short_reset_at: null,
       short_interval_start: null,
       short_interval_end: null,
       short_active: false,
-      short_usage_tokens: 0,
-      short_usage_breakdown: [],
       special_remaining_pct: null,
       special_reset_at: null,
       special_interval_start: null,
       special_interval_end: null,
       special_active: false,
-      special_usage_tokens: 0,
-      special_usage_breakdown: [],
       short_special_remaining_pct: null,
       short_special_reset_at: null,
       short_special_interval_start: null,
       short_special_interval_end: null,
       short_special_active: false,
-      short_special_usage_tokens: 0,
-      short_special_usage_breakdown: [],
       monthly_remaining_pct: null,
       monthly_reset_at: null,
       monthly_interval_start: null,
       monthly_interval_end: null,
       monthly_active: false,
-      monthly_usage_tokens: 0,
-      monthly_usage_breakdown: [],
       wtus_remaining_pct: null,
       wtus_reset_at: null,
       wtus_interval_start: null,
       wtus_interval_end: null,
       wtus_active: false,
-      wtus_usage_tokens: 0,
-      wtus_usage_breakdown: [],
       ...overrides,
     }
   }
@@ -980,7 +1006,6 @@ describe('S1-4 — buildProviderLanes distinct null-reset rows not collapsed', (
       weekly_reset_at: '2026-05-15T00:00:00Z',
       weekly_interval_start: '2026-05-08T00:00:00Z',
       weekly_interval_end: '2026-05-15T00:00:00Z',
-      weekly_usage_tokens: 1000,
     })
 
     const lanes = buildProviderLanes(

@@ -1,5 +1,8 @@
 FROM node:22-alpine AS build
 
+ARG VITE_SHOW_ANTHROPIC_PROVIDER_STATUS=false
+ENV VITE_SHOW_ANTHROPIC_PROVIDER_STATUS=${VITE_SHOW_ANTHROPIC_PROVIDER_STATUS}
+
 WORKDIR /app
 
 RUN corepack enable && corepack prepare pnpm@10.30.2 --activate
@@ -14,6 +17,7 @@ FROM nginx:1.27-alpine
 
 COPY --from=build /app/dist /usr/share/nginx/html
 COPY nginx.conf.template /etc/nginx/templates/default.conf.template
+COPY nginx/*.conf /etc/nginx/
 # Escape " \ in SHELL_REPORT_PROXY_SHARED_SECRET before envsubst fills the template (P13-F04).
 # Numbered 15- so it runs before the stock 20-envsubst-on-templates.sh hook.
 COPY scripts/15-escape-nginx-proxy-secret.sh /docker-entrypoint.d/15-escape-nginx-proxy-secret.sh

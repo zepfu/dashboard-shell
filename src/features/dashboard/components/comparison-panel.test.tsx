@@ -32,7 +32,7 @@ import type { TrendBucket } from './token-trend-chart'
 
 function makeRow(
   provider: string,
-  cost_usd: number,
+  cost_usd: number | null,
   overrides: Partial<ModelRow> = {}
 ): ModelRow {
   return {
@@ -64,9 +64,9 @@ const MODEL_ROWS: ModelRow[] = [
 test('test_comparison_panel_renders_provider_rows', () => {
   render(<ComparisonPanel providers={PROVIDERS} modelRows={MODEL_ROWS} />)
 
-  // Both provider names should be rendered in upper case
-  expect(screen.getByText('ANTHROPIC')).toBeTruthy()
-  expect(screen.getByText('OPENAI')).toBeTruthy()
+  // Both provider names should use their stable display labels.
+  expect(screen.getByText('Anthropic')).toBeTruthy()
+  expect(screen.getByText('OpenAI')).toBeTruthy()
 })
 
 test('test_comparison_panel_burn_defaults_to_period_1_day', () => {
@@ -179,6 +179,68 @@ test('test_comparison_panel_zero_cost_burn_is_zero', () => {
 
   // burn = 0 / 7 = 0.00
   expect(screen.getByText(formatUsd(0))).toBeTruthy()
+})
+
+test('D1-497_missing_persisted_cost_differs_from_zero_and_cache_miss_stays_numeric', () => {
+  const rows: ModelRow[] = [
+    makeRow('anthropic', null, {
+      cache_miss_usd_cost: 0.12,
+      cache_miss_pct: undefined,
+    }),
+    makeRow('anthropic', 2),
+    makeRow('openai', 0),
+  ]
+
+  const stats = buildCurrentStats(PROVIDERS, rows, 7)
+
+  const anthropic = stats.find((stat) => stat.provider === 'anthropic')
+  const openai = stats.find((stat) => stat.provider === 'openai')
+  expect(anthropic?.totalCost).toBe(2)
+  expect(anthropic?.burn).toBeCloseTo(2 / 7)
+  expect(openai?.totalCost).toBe(0)
+  expect(openai?.burn).toBe(0)
+
+  const unavailable = buildCurrentStats(
+    ['google'],
+    [makeRow('google', null)],
+    7
+  )[0]
+  expect(unavailable?.totalCost).toBeNull()
+  expect(unavailable?.burn).toBeNull()
+})
+
+test('D1-497_comparison_cost_delta_hides_only_when_either_period_lacks_persisted_cost', () => {
+  const currentRows: ModelRow[] = [
+    makeRow('anthropic', null, {
+      cache_miss_usd_cost: 0.12,
+      cache_miss_pct: undefined,
+    }),
+  ]
+  const priorStats: ProviderCurrentStats[] = [
+    {
+      provider: 'anthropic',
+      totalCost: 4,
+      totalTokens: 1500,
+      avgP95: 300,
+      avgErrPct: 0,
+      avgCachePct: 0,
+      burn: 4,
+    },
+  ]
+
+  render(
+    <ComparisonPanel
+      providers={['anthropic']}
+      modelRows={currentRows}
+      priorStats={priorStats}
+    />
+  )
+
+  const costCell = document.querySelectorAll('tbody td')[1]
+  expect(costCell?.textContent).toBe('—')
+  expect(costCell?.getAttribute('title')).toBe('Current period cost: —')
+  const burnCell = document.querySelectorAll('tbody td')[6]
+  expect(burnCell?.textContent).toBe('—')
 })
 
 // ---------------------------------------------------------------------------
@@ -390,6 +452,21 @@ test('test_build_current_stats_exported_aggregates_correctly', () => {
   // burn = totalCost / 1 (periodDays = 1)
   expect(anthropic?.burn).toBeCloseTo(70)
   expect(openai?.burn).toBeCloseTo(14)
+})
+
+test('test_buildCurrentStats_keeps_incomplete_token_totals_unavailable', () => {
+  const stats = buildCurrentStats(
+    ['openai'],
+    [
+      makeRow('openai', 1, {
+        tokens_in: undefined,
+        tokens_out: 40,
+      }),
+    ],
+    1
+  )
+
+  expect(stats[0]?.totalTokens).toBeUndefined()
 })
 
 // ---------------------------------------------------------------------------

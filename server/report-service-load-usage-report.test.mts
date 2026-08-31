@@ -717,6 +717,72 @@ describe('D1-444 loadUsageReport optional fanout degradation', () => {
     expect(report.summary).toBeDefined()
   })
 
+  test('test_loadUsageReport_exposes_provider_error_cap_and_filters_cap_state_rows', async () => {
+    setQueryReportDatabaseTestImpl(async (_sql: string, _values, options) => {
+      if (usageReportTaskKey(options) === 'provider_error_observations') {
+        return {
+          rows: [
+            {
+              observed_at: null,
+              provider_error_observation_row_limit: 2000,
+              provider_error_observation_cap_active: true,
+              provider_error_observation_cap_truncates_requested_window: true,
+            },
+            {
+              observed_at: '2026-05-07T12:00:00.000Z',
+              environment: 'production',
+              provider: 'anthropic',
+              model: 'claude-sonnet-4-6',
+              model_group: 'sonnet',
+              route_family: 'llm',
+              status_code: 529,
+              error_type: 'provider_error',
+              error_code: 'overloaded',
+              error_class: 'provider_error',
+              error_message: 'upstream overloaded',
+              retry_after_seconds: 30,
+              expected_reset_at: null,
+              provider_error_observation_row_limit: 2000,
+              provider_error_observation_cap_active: true,
+              provider_error_observation_cap_truncates_requested_window: true,
+            },
+          ],
+        }
+      }
+      return emptyDbResult()
+    })
+    setLoadDockerLogErrorsTestImpl(async () => [])
+    setLoadLocalHealthTestImpl(async () => [])
+
+    const report = asUsageReport(await loadUsageReport(params))
+
+    expect(report.metadata).toMatchObject({
+      providerErrorObservationRowLimit: 2000,
+      providerErrorObservationCapActive: true,
+      providerErrorObservationCapTruncatesRequestedWindow: true,
+    })
+    expect(report.providerErrorObservations).toEqual([
+      {
+        observed_at: '2026-05-07T12:00:00.000Z',
+        environment: 'production',
+        provider: 'anthropic',
+        model: 'claude-sonnet-4-6',
+        model_group: 'sonnet',
+        route_family: 'llm',
+        status_code: 529,
+        error_type: 'provider_error',
+        error_code: 'overloaded',
+        error_class: 'provider_error',
+        error_message: 'upstream overloaded',
+        retry_after_seconds: 30,
+        expected_reset_at: null,
+      },
+    ])
+    expect(report).not.toHaveProperty('quotas')
+    expect(report).not.toHaveProperty('quotaHistory')
+    expect(report).not.toHaveProperty('toolActivity')
+  })
+
   test('test_loadUsageReport_still_fails_fast_when_core_usage_query_fails', async () => {
     setQueryReportDatabaseTestImpl(async (_sql: string, _values, options) => {
       if (usageReportTaskKey(options) === 'usage_rows') {
@@ -1166,7 +1232,9 @@ describe('D1-496 usage_diagnostic_strings auxiliary split', () => {
 
     const params = new URLSearchParams(d1496Params)
     params.set('include_empty_row_fields', '1')
-    const report = asUsageReport(await loadUsageReport(params))
+    const report = asUsageReport(
+      await loadUsageReport(new URLSearchParams(params))
+    )
 
     expect(report.metadata.unavailableAuxiliarySections).toContain(
       'usage_diagnostic_strings'
@@ -1299,5 +1367,70 @@ describe('D1-496 usage report deadline and mandatory ordering follow-up', () => 
     expect(report.metadata.unavailableAuxiliarySections).toEqual(
       expect.arrayContaining(['docker_log_errors', 'local_health'])
     )
+  })
+})
+
+describe('D1-497 persisted response cost availability', () => {
+  test('missing cost rows differ from recorded zero without changing cache diagnostics', async () => {
+    setQueryReportDatabaseTestImpl(async (_sql: string, _values, options) => {
+      const taskKey = usageReportTaskKey(options)
+      if (taskKey === 'usage_rows') {
+        return {
+          rows: [
+            {
+              bucket: '2026-05-25',
+              provider: 'anthropic',
+              model: 'claude-sonnet-4-6',
+              repository: 'aawm',
+              traces: 1,
+              token_total: 100,
+              usd_cost: null,
+              response_cost_rows: null,
+              cache_miss_usd_cost: 0.12,
+              cache_miss_summary: 'miss',
+            },
+            {
+              bucket: '2026-05-26',
+              provider: 'anthropic',
+              model: 'claude-sonnet-4-6',
+              repository: 'aawm',
+              traces: 1,
+              token_total: 100,
+              usd_cost: 0,
+              response_cost_rows: 1,
+              cache_miss_usd_cost: 0,
+              cache_miss_summary: null,
+            },
+          ],
+        }
+      }
+      if (taskKey === 'summary') {
+        return {
+          rows: [
+            {
+              traces: 2,
+              token_total: 200,
+              usd_cost: 0,
+              response_cost_rows: 1,
+              cache_miss_usd_cost: 0.12,
+            },
+          ],
+        }
+      }
+      return emptyDbResult()
+    })
+    setLoadDockerLogErrorsTestImpl(async () => [])
+    setLoadLocalHealthTestImpl(async () => [])
+
+    const report = asUsageReport(await loadUsageReport(params))
+
+    expect(report.summary.usd_cost).toBe(0)
+    expect(report.summary.cache_miss_usd_cost).toBe(0.12)
+    expect(report.rows).toHaveLength(2)
+    expect(report.rows[0].usd_cost).toBeNull()
+    expect(report.rows[0].cache_miss_usd_cost).toBe(0.12)
+    expect(report.rows[0].cache_miss_summary).toBe('miss')
+    expect(report.rows[1].usd_cost).toBe(0)
+    expect(report.rows[1].cache_miss_usd_cost).toBe(0)
   })
 })

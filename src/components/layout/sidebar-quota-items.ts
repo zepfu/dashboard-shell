@@ -2,6 +2,7 @@ import type {
   UsageReportQuotaBillingDetail,
   UsageReportQuotaRow,
 } from '@/features/dashboard/api/usage-report'
+import { isAnthropicProviderStatusVisible } from '@/features/dashboard/lib/provider-status-visibility'
 import {
   formatQuotaAccountSuffix,
   matchesKimiCodeQuotaContract,
@@ -178,6 +179,7 @@ export function buildSidebarQuotaItems(
   const openaiSpecial = providerRowForSpecial(safeRows, 'openai')
   const anthropicWeekly = providerRowForWeekly(safeRows, 'anthropic')
   const anthropicSpecial = providerRowForSpecial(safeRows, 'anthropic')
+  const showAnthropicProviderStatus = isAnthropicProviderStatusVisible()
   const openaiColor = providerColorFor('openai')
   const anthropicColor = providerColorFor('anthropic')
   const googleColor = providerColorFor('google')
@@ -198,7 +200,10 @@ export function buildSidebarQuotaItems(
       color: openaiColor,
     })
   }
-  if (anthropicWeekly?.weekly_remaining_pct != null) {
+  if (
+    showAnthropicProviderStatus &&
+    anthropicWeekly?.weekly_remaining_pct != null
+  ) {
     items.push({
       key: 'anthropic-weekly',
       label: 'Anthropic Weekly',
@@ -206,7 +211,10 @@ export function buildSidebarQuotaItems(
       color: anthropicColor,
     })
   }
-  if (anthropicWeekly?.weekly_overage_included_remaining_pct != null) {
+  if (
+    showAnthropicProviderStatus &&
+    anthropicWeekly?.weekly_overage_included_remaining_pct != null
+  ) {
     items.push({
       key: 'anthropic-fable-overage',
       label: 'Anthropic Fable 7d OI',
@@ -214,7 +222,10 @@ export function buildSidebarQuotaItems(
       color: anthropicColor,
     })
   }
-  if (anthropicSpecial?.special_remaining_pct != null) {
+  if (
+    showAnthropicProviderStatus &&
+    anthropicSpecial?.special_remaining_pct != null
+  ) {
     items.push({
       key: 'anthropic-sonnet-retired',
       label: 'Anthropic Retired Sonnet',

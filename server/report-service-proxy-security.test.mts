@@ -146,3 +146,42 @@ describe('report-service proxyHeaders', () => {
     expect(headers.Authorization).toBe('Bearer already-prefixed')
   })
 })
+
+describe('report-service upstream credential resolution', () => {
+  test('does not resolve TAP runtime secrets from browser-facing VITE variables', async () => {
+    for (const name of [
+      'AAWM_TAP_API_KEY',
+      'AAWM_TAP_ACCESS_TOKEN',
+      'AAWM_TAP_ADMIN_CAPABILITY',
+    ]) {
+      delete process.env[name]
+    }
+    vi.stubEnv('VITE_API_KEY', 'browser-api-secret')
+    vi.stubEnv('VITE_TAP_API_KEY', 'browser-tap-api-secret')
+    vi.stubEnv('VITE_ACCESS_TOKEN', 'browser-access-secret')
+    vi.stubEnv('VITE_TAP_ACCESS_TOKEN', 'browser-tap-access-secret')
+    vi.stubEnv('VITE_TAP_ADMIN_CAPABILITY', 'browser-admin-capability')
+    vi.resetModules()
+
+    const { findUpstreamApiProxy } = await import('./report-service.mjs')
+    expect(findUpstreamApiProxy('/api/aawm-tap')).toMatchObject({
+      apiKey: undefined,
+      accessToken: undefined,
+      adminCapability: undefined,
+    })
+  })
+
+  test('resolves TAP runtime secrets from supported server-only variables', async () => {
+    vi.stubEnv('AAWM_TAP_API_KEY', 'server-api-secret')
+    vi.stubEnv('AAWM_TAP_ACCESS_TOKEN', 'server-access-secret')
+    vi.stubEnv('AAWM_TAP_ADMIN_CAPABILITY', 'server-admin-capability')
+    vi.resetModules()
+
+    const { findUpstreamApiProxy } = await import('./report-service.mjs')
+    expect(findUpstreamApiProxy('/api/aawm-tap')).toMatchObject({
+      apiKey: 'server-api-secret',
+      accessToken: 'server-access-secret',
+      adminCapability: 'server-admin-capability',
+    })
+  })
+})

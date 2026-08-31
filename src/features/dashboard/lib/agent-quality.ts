@@ -86,7 +86,7 @@ export interface AgentQualitySummary {
   discoveryInventoryCoverage: AgentQualityFamilySummary
   discoveryInventoryMissingCount: number
   terminalCompletion: AgentQualityFamilySummary
-  compactSummary?: AgentQualityCompactSummary
+  compactSummary: AgentQualityCompactSummary
   reasons: AgentQualityReason[]
 }
 
@@ -169,12 +169,22 @@ export interface AgentQualityFlatFields {
   agent_score_reasons_top?: unknown
 }
 
-const FAMILY_KEYS = [
+export const AGENT_QUALITY_PASS_FAMILY_KEYS = [
   'quality',
   'instruction',
   'tool',
   'contract',
   'progress',
+] as const satisfies readonly AgentQualityFamilyKey[]
+
+const AGENT_QUALITY_DISPLAY_SCORE_FAMILY_KEYS = [
+  ...AGENT_QUALITY_PASS_FAMILY_KEYS,
+  'discoveryInventoryCoverage',
+  'terminalCompletion',
+] as const satisfies readonly AgentQualityFamilyKey[]
+
+const FAMILY_KEYS = [
+  ...AGENT_QUALITY_PASS_FAMILY_KEYS,
   'risk',
   'discoveryInventoryCoverage',
   'terminalCompletion',
@@ -506,6 +516,17 @@ export function agentQualityFromFlatRow(
   return summary
 }
 
+function sumBy<T>(
+  values: readonly T[],
+  select: (value: T) => number | undefined
+): number {
+  let total = 0
+  for (const value of values) {
+    total += select(value) ?? 0
+  }
+  return total
+}
+
 function combineFamily(
   summaries: readonly AgentQualitySummary[],
   family: AgentQualityFamilyKey
@@ -574,12 +595,9 @@ function combinePolicySignals(
         evaluated: signal.evaluated,
       }))
     ),
-    evaluated: signals.reduce((sum, signal) => sum + signal.evaluated, 0),
-    possible: signals.reduce((sum, signal) => sum + signal.possible, 0),
-    violationCount: signals.reduce(
-      (sum, signal) => sum + signal.violationCount,
-      0
-    ),
+    evaluated: sumBy(signals, (signal) => signal.evaluated),
+    possible: sumBy(signals, (signal) => signal.possible),
+    violationCount: sumBy(signals, (signal) => signal.violationCount),
   }
 }
 
@@ -594,28 +612,16 @@ function combineIncidentSignals(
         evaluated: value.attemptedEvaluated,
       }))
     ),
-    attemptedEvaluated: signals.reduce(
-      (sum, value) => sum + value.attemptedEvaluated,
-      0
-    ),
-    attemptedIncidents: signals.reduce(
-      (sum, value) => sum + value.attemptedIncidents,
-      0
-    ),
+    attemptedEvaluated: sumBy(signals, (value) => value.attemptedEvaluated),
+    attemptedIncidents: sumBy(signals, (value) => value.attemptedIncidents),
     incidentScore: weightedNullableScore(
       signals.map((value) => ({
         score: value.incidentScore,
         evaluated: value.incidentEvaluated,
       }))
     ),
-    incidentEvaluated: signals.reduce(
-      (sum, value) => sum + value.incidentEvaluated,
-      0
-    ),
-    incidentIncidents: signals.reduce(
-      (sum, value) => sum + value.incidentIncidents,
-      0
-    ),
+    incidentEvaluated: sumBy(signals, (value) => value.incidentEvaluated),
+    incidentIncidents: sumBy(signals, (value) => value.incidentIncidents),
   }
 }
 
@@ -632,17 +638,11 @@ function combineCompactSummarySignals(
   }
 
   return {
-    eventCount: signals.reduce((sum, value) => sum + value.eventCount, 0),
-    threadCount: signals.reduce((sum, value) => sum + value.threadCount, 0),
-    idCount: signals.reduce((sum, value) => sum + value.idCount, 0),
-    resumeContextCount: signals.reduce(
-      (sum, value) => sum + value.resumeContextCount,
-      0
-    ),
-    verifyContextCount: signals.reduce(
-      (sum, value) => sum + value.verifyContextCount,
-      0
-    ),
+    eventCount: sumBy(signals, (value) => value.eventCount),
+    threadCount: sumBy(signals, (value) => value.threadCount),
+    idCount: sumBy(signals, (value) => value.idCount),
+    resumeContextCount: sumBy(signals, (value) => value.resumeContextCount),
+    verifyContextCount: sumBy(signals, (value) => value.verifyContextCount),
     sourceCounts,
   }
 }
@@ -669,7 +669,7 @@ export function combineAgentQualitySummaries(
   }
 
   return {
-    totalRows: summaries.reduce((sum, summary) => sum + summary.totalRows, 0),
+    totalRows: sumBy(summaries, (summary) => summary.totalRows),
     quality: combineFamily(summaries, 'quality'),
     instruction: combineFamily(summaries, 'instruction'),
     tool: combineFamily(summaries, 'tool'),
@@ -680,103 +680,89 @@ export function combineAgentQualitySummaries(
       summaries,
       'discoveryInventoryCoverage'
     ),
-    discoveryInventoryMissingCount: summaries.reduce(
-      (sum, summary) => sum + summary.discoveryInventoryMissingCount,
-      0
+    discoveryInventoryMissingCount: sumBy(
+      summaries,
+      (summary) => summary.discoveryInventoryMissingCount
     ),
     terminalCompletion: combineFamily(summaries, 'terminalCompletion'),
-    emptyCompletionFailures: summaries.reduce(
-      (sum, summary) => sum + summary.emptyCompletionFailures,
-      0
+    emptyCompletionFailures: sumBy(
+      summaries,
+      (summary) => summary.emptyCompletionFailures
     ),
-    invalidToolCallErrors: summaries.reduce(
-      (sum, summary) => sum + summary.invalidToolCallErrors,
-      0
+    invalidToolCallErrors: sumBy(
+      summaries,
+      (summary) => summary.invalidToolCallErrors
     ),
-    destructiveCheckoutFailures: summaries.reduce(
-      (sum, summary) => sum + summary.destructiveCheckoutFailures,
-      0
+    destructiveCheckoutFailures: sumBy(
+      summaries,
+      (summary) => summary.destructiveCheckoutFailures
     ),
-    largePayloadRisks: summaries.reduce(
-      (sum, summary) => sum + summary.largePayloadRisks,
-      0
-    ),
-    readOnlyPolicyViolations: summaries.reduce(
-      (sum, summary) => sum + summary.readOnlyPolicyViolations,
-      0
+    largePayloadRisks: sumBy(summaries, (summary) => summary.largePayloadRisks),
+    readOnlyPolicyViolations: sumBy(
+      summaries,
+      (summary) => summary.readOnlyPolicyViolations
     ),
     ignoredPathTracking: combinePolicySignals(summaries),
     baselineDeflection: {
       ...combineIncidentSignals(
         summaries.map((summary) => summary.baselineDeflection)
       ),
-      attemptCount: summaries.reduce(
-        (sum, summary) => sum + (summary.baselineDeflection?.attemptCount ?? 0),
-        0
+      attemptCount: sumBy(
+        summaries,
+        (summary) => summary.baselineDeflection?.attemptCount
       ),
-      toolCallCount: summaries.reduce(
-        (sum, summary) =>
-          sum + (summary.baselineDeflection?.toolCallCount ?? 0),
-        0
+      toolCallCount: sumBy(
+        summaries,
+        (summary) => summary.baselineDeflection?.toolCallCount
       ),
-      inputTokens: summaries.reduce(
-        (sum, summary) => sum + (summary.baselineDeflection?.inputTokens ?? 0),
-        0
+      inputTokens: sumBy(
+        summaries,
+        (summary) => summary.baselineDeflection?.inputTokens
       ),
-      elapsedMs: summaries.reduce(
-        (sum, summary) => sum + (summary.baselineDeflection?.elapsedMs ?? 0),
-        0
+      elapsedMs: sumBy(
+        summaries,
+        (summary) => summary.baselineDeflection?.elapsedMs
       ),
-      qualityGateTriggerCount: summaries.reduce(
-        (sum, summary) =>
-          sum + (summary.baselineDeflection?.qualityGateTriggerCount ?? 0),
-        0
+      qualityGateTriggerCount: sumBy(
+        summaries,
+        (summary) => summary.baselineDeflection?.qualityGateTriggerCount
       ),
-      qualityGateFixAttemptCount: summaries.reduce(
-        (sum, summary) =>
-          sum + (summary.baselineDeflection?.qualityGateFixAttemptCount ?? 0),
-        0
+      qualityGateFixAttemptCount: sumBy(
+        summaries,
+        (summary) => summary.baselineDeflection?.qualityGateFixAttemptCount
       ),
-      qualityGateRerunCount: summaries.reduce(
-        (sum, summary) =>
-          sum + (summary.baselineDeflection?.qualityGateRerunCount ?? 0),
-        0
+      qualityGateRerunCount: sumBy(
+        summaries,
+        (summary) => summary.baselineDeflection?.qualityGateRerunCount
       ),
     },
     sleepWellnessInterruption: {
       ...combineIncidentSignals(
         summaries.map((summary) => summary.sleepWellnessInterruption)
       ),
-      interruptionCount: summaries.reduce(
-        (sum, summary) =>
-          sum + (summary.sleepWellnessInterruption?.interruptionCount ?? 0),
-        0
+      interruptionCount: sumBy(
+        summaries,
+        (summary) => summary.sleepWellnessInterruption?.interruptionCount
       ),
-      outputTokens: summaries.reduce(
-        (sum, summary) =>
-          sum + (summary.sleepWellnessInterruption?.outputTokens ?? 0),
-        0
+      outputTokens: sumBy(
+        summaries,
+        (summary) => summary.sleepWellnessInterruption?.outputTokens
       ),
-      inputTokens: summaries.reduce(
-        (sum, summary) =>
-          sum + (summary.sleepWellnessInterruption?.inputTokens ?? 0),
-        0
+      inputTokens: sumBy(
+        summaries,
+        (summary) => summary.sleepWellnessInterruption?.inputTokens
       ),
-      elapsedMs: summaries.reduce(
-        (sum, summary) =>
-          sum + (summary.sleepWellnessInterruption?.elapsedMs ?? 0),
-        0
+      elapsedMs: sumBy(
+        summaries,
+        (summary) => summary.sleepWellnessInterruption?.elapsedMs
       ),
-      afterUserPushbackCount: summaries.reduce(
-        (sum, summary) =>
-          sum +
-          (summary.sleepWellnessInterruption?.afterUserPushbackCount ?? 0),
-        0
+      afterUserPushbackCount: sumBy(
+        summaries,
+        (summary) => summary.sleepWellnessInterruption?.afterUserPushbackCount
       ),
-      repeatedCount: summaries.reduce(
-        (sum, summary) =>
-          sum + (summary.sleepWellnessInterruption?.repeatedCount ?? 0),
-        0
+      repeatedCount: sumBy(
+        summaries,
+        (summary) => summary.sleepWellnessInterruption?.repeatedCount
       ),
     },
     compactSummary: combineCompactSummarySignals(
@@ -793,37 +779,89 @@ export function combineAgentQualitySummaries(
   }
 }
 
-export function agentQualityIssueSortValue(
-  summary: AgentQualitySummary | undefined
-): number {
-  if (summary === undefined) return -1
-  const passScores = [
-    summary.quality,
-    summary.instruction,
-    summary.tool,
-    summary.contract,
-    summary.progress,
-  ]
-    .map((family) => family.score)
+export interface AgentQualitySeverityMetrics {
+  sortWorstPassScore: number | null
+  displayWorstPassScore: number | null
+  riskScore: number
+  discoveryIssueCount: number
+  handoffIssueCount: number
+  handoffAttemptCount: number
+  totalIssueCount: number
+}
+
+function minimumFamilyScore(
+  summary: AgentQualitySummary,
+  familyKeys: readonly AgentQualityFamilyKey[]
+): number | null {
+  const scores = familyKeys
+    .map((family) => summary[family].score)
     .filter((score): score is number => score !== null)
-  const worstPassScore = passScores.length > 0 ? Math.min(...passScores) : 1
-  const riskScore = summary.risk.score ?? 0
-  const handoffIssueCount =
-    (summary.ignoredPathTracking?.violationCount ?? 0) +
-    (summary.baselineDeflection?.incidentIncidents ?? 0) +
-    (summary.sleepWellnessInterruption?.incidentIncidents ?? 0)
+  return scores.length > 0 ? Math.min(...scores) : null
+}
+
+/**
+ * Keep each signal in one bucket. Discovery coverage, missing inventory, and
+ * terminal completion use the discovery bucket; handoff contains only
+ * behavioral incidents. Ordering keeps the documented 50/50/10 weights.
+ */
+export function agentQualitySeverityMetrics(
+  summary: AgentQualitySummary
+): AgentQualitySeverityMetrics {
   const discoveryIssueCount =
     summary.discoveryInventoryCoverage.issueCount +
     summary.discoveryInventoryMissingCount +
     summary.terminalCompletion.issueCount
+  const handoffIssueCount =
+    (summary.ignoredPathTracking?.violationCount ?? 0) +
+    (summary.baselineDeflection?.incidentIncidents ?? 0) +
+    (summary.sleepWellnessInterruption?.incidentIncidents ?? 0)
   const handoffAttemptCount =
     (summary.baselineDeflection?.attemptedIncidents ?? 0) +
     (summary.sleepWellnessInterruption?.attemptedIncidents ?? 0)
+  const passIssueCount = AGENT_QUALITY_PASS_FAMILY_KEYS.reduce(
+    (sum, family) => sum + summary[family].issueCount,
+    0
+  )
+  const failureFlagCount =
+    summary.emptyCompletionFailures +
+    summary.invalidToolCallErrors +
+    summary.destructiveCheckoutFailures +
+    summary.largePayloadRisks +
+    summary.readOnlyPolicyViolations
+
+  return {
+    sortWorstPassScore: minimumFamilyScore(
+      summary,
+      AGENT_QUALITY_PASS_FAMILY_KEYS
+    ),
+    displayWorstPassScore: minimumFamilyScore(
+      summary,
+      AGENT_QUALITY_DISPLAY_SCORE_FAMILY_KEYS
+    ),
+    riskScore: summary.risk.score ?? 0,
+    discoveryIssueCount,
+    handoffIssueCount,
+    handoffAttemptCount,
+    totalIssueCount:
+      passIssueCount +
+      summary.risk.issueCount +
+      discoveryIssueCount +
+      failureFlagCount +
+      handoffIssueCount +
+      handoffAttemptCount,
+  }
+}
+
+export function agentQualityIssueSortValue(
+  summary: AgentQualitySummary | undefined
+): number {
+  if (summary === undefined) return -1
+  const metrics = agentQualitySeverityMetrics(summary)
   return (
-    (1 - worstPassScore) * 100 +
-    riskScore * 100 +
-    discoveryIssueCount * 50 +
-    handoffIssueCount * 50 +
-    handoffAttemptCount * 10
+    (1 - (metrics.sortWorstPassScore ?? 1)) * 100 +
+    metrics.riskScore * 100 +
+    metrics.discoveryIssueCount * 50 +
+    metrics.handoffIssueCount * 50 +
+    metrics.handoffAttemptCount * 10
   )
 }

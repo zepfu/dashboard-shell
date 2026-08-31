@@ -249,6 +249,18 @@ aggregated across period or unit:
   `100 - creditUsagePercent` when usage percent is present).
 - `xai_grok_build_monthly_requests:requests` → monthly **requests** remaining.
 
+OpenAI Codex Spark has one current observation key and two historical keys. The
+current `codex_spark:tokens` observation is mapped to the existing Spark 5h and
+7d display lanes using its `quota_period` (`5h` → `short_special`, `7d` →
+`special`). Historical observations retain their existing keys and meanings:
+
+- `codex_bengalfox:primary` → Spark **5h**.
+- `codex_bengalfox:secondary` → Spark **7d**.
+
+The current and historical keys must not be rewritten into one another.
+Observation reset/window metadata and any supplied billing identity or
+absolute values remain source data; missing values are not inferred.
+
 Alibaba Token Plan is a separate percentage-only quota family. The Status Quota
 UI was intentionally removed in commit `6319ccd` and remains deprecated; this
 does not restore a visible Quota tab or quota-history UI. D1-489 provides the
@@ -318,6 +330,32 @@ identity merging. Do not alias or merge Moonshot API, other Moonshot products,
 or unrelated Kimi/subscription accounts with this family. The 5h and 7d
 `quota_units` lanes remain separately identifiable even when one lane is
 absent, stale, or unavailable.
+
+Cursor Agent is a quota-only monthly cents family. The exact contract is
+provider `cursor_agent`, source `cursor_agent_usage`, client/model
+`cursor-agent`, `quota_key=cursor_agent_monthly:cents`,
+`quota_period=monthly`, and `quota_type=cents`. The current and historical
+quota payloads preserve absolute `quota_limit`, `quota_used`, and
+`quota_remaining` values, `remaining_pct`, reset/window metadata, and the
+privacy-safe `account_ref`; missing absolute values remain missing.
+
+Z.ai Coding Plan is a quota-only family with separate 5h and 7d lanes for each
+observed unit type. The exact provider/source/client/model contract is
+`zai_coding_plan`, `zai_coding_plan_quota_poll`, and `zai-coding-plan`. The
+supported key/period pairs are:
+
+- `zai_coding_plan_5h:credits` + `5h` → **5h Credits**.
+- `zai_coding_plan_5h:percent` + `5h` → **5h Percent**.
+- `zai_coding_plan_5h:count` + `5h` → **5h Count**.
+- `zai_coding_plan_7d:credits` + `7d` → **7d Credits**.
+- `zai_coding_plan_7d:percent` + `7d` → **7d Percent**.
+- `zai_coding_plan_7d:count` + `7d` → **7d Count**.
+
+Only observed variants render. Absolute values are preserved only when the
+source supplies them; the dashboard does not infer zeros or totals from
+percentages, periods, or usage history. Each lane retains its exact key,
+period, unit, source, client/model, reset/window metadata, `remaining_pct`, and
+privacy-safe `account_ref` across current and history payloads.
 
 Anthropic Fable weekly overage-included (`7d_oi`) is a distinct quota family from
 baseline unified weekly (`7d`) and retired Sonnet weekly (`weekly_special` →

@@ -6,8 +6,9 @@
  * diverge. Dead per-kind `compareProviderQuotaRows` special branch must not drive
  * weekly row selection.
  */
-import { describe, expect, test } from 'vitest'
+import { afterEach, describe, expect, test, vi } from 'vitest'
 import type { UsageReportQuotaRow } from '@/features/dashboard/api/usage-report'
+import { ANTHROPIC_PROVIDER_STATUS_ENV_VAR } from '@/features/dashboard/lib/provider-status-visibility'
 import {
   ALIBABA_TOKEN_PLAN_5H_CREDITS_KEY,
   ALIBABA_TOKEN_PLAN_7D_CREDITS_KEY,
@@ -15,6 +16,10 @@ import {
   KIMI_CODE_7D_QUOTA_UNITS_KEY,
 } from '@/features/dashboard/lib/quota-bars/lane-defs'
 import { buildSidebarQuotaItems } from './sidebar-quota-items'
+
+afterEach(() => {
+  vi.unstubAllEnvs()
+})
 
 function makeQuotaRow(
   overrides: Partial<UsageReportQuotaRow> &
@@ -27,36 +32,26 @@ function makeQuotaRow(
     weekly_interval_start: null,
     weekly_interval_end: null,
     weekly_active: false,
-    weekly_usage_tokens: 0,
-    weekly_usage_breakdown: [],
     weekly_overage_included_remaining_pct: null,
     weekly_overage_included_reset_at: null,
     weekly_overage_included_interval_start: null,
     weekly_overage_included_interval_end: null,
     weekly_overage_included_active: false,
-    weekly_overage_included_usage_tokens: 0,
-    weekly_overage_included_usage_breakdown: [],
     short_remaining_pct: null,
     short_reset_at: null,
     short_interval_start: null,
     short_interval_end: null,
     short_active: false,
-    short_usage_tokens: 0,
-    short_usage_breakdown: [],
     special_remaining_pct: null,
     special_reset_at: null,
     special_interval_start: null,
     special_interval_end: null,
     special_active: false,
-    special_usage_tokens: 0,
-    special_usage_breakdown: [],
     short_special_remaining_pct: null,
     short_special_reset_at: null,
     short_special_interval_start: null,
     short_special_interval_end: null,
     short_special_active: false,
-    short_special_usage_tokens: 0,
-    short_special_usage_breakdown: [],
     ...overrides,
   }
 }
@@ -92,6 +87,7 @@ describe('D1-451 C1 — special percent from correct OpenAI row', () => {
   })
 
   test('test_provider_row_selection_uses_weekly_kind_only_not_special_comparator', () => {
+    vi.stubEnv(ANTHROPIC_PROVIDER_STATUS_ENV_VAR, 'true')
     // Two rows: special-active row has better weekly % but is weekly-inactive.
     // Weekly item must still prefer weekly_active row (dead special comparator must not affect reduce).
     const rows: UsageReportQuotaRow[] = [
@@ -114,6 +110,40 @@ describe('D1-451 C1 — special percent from correct OpenAI row', () => {
     const items = buildSidebarQuotaItems(rows)
     const weekly = items.find((i) => i.key === 'anthropic-weekly')
     expect(weekly?.percent).toBe(55)
+  })
+})
+
+describe('D1-498 — Anthropic sidebar visibility', () => {
+  const anthropicRow = makeQuotaRow({
+    provider: 'anthropic',
+    weekly_remaining_pct: 88,
+    weekly_active: true,
+    weekly_overage_included_remaining_pct: 77,
+    weekly_overage_included_active: true,
+    special_remaining_pct: 66,
+    special_active: true,
+  })
+
+  test('test_default_config_hides_all_anthropic_sidebar_items', () => {
+    vi.stubEnv(ANTHROPIC_PROVIDER_STATUS_ENV_VAR, 'false')
+
+    const items = buildSidebarQuotaItems([anthropicRow])
+
+    expect(items.filter((item) => item.key.startsWith('anthropic-'))).toEqual(
+      []
+    )
+  })
+
+  test('test_true_config_restores_all_anthropic_sidebar_items', () => {
+    vi.stubEnv(ANTHROPIC_PROVIDER_STATUS_ENV_VAR, 'true')
+
+    const items = buildSidebarQuotaItems([anthropicRow])
+
+    expect(items.map((item) => item.key)).toEqual([
+      'anthropic-weekly',
+      'anthropic-fable-overage',
+      'anthropic-sonnet-retired',
+    ])
   })
 })
 

@@ -8,6 +8,7 @@ import { __reportCacheInternals } from './report-service.mjs'
 const {
   resetReportCache,
   getReportCacheEntry,
+  getReportCacheEntryKeys,
   setMaxReportCacheEntriesForTests,
   resetMaxReportCacheEntriesForTests,
   setReadRedisCacheEntryImpl,
@@ -21,6 +22,7 @@ const {
   refreshReportCache,
   setLocalReportCache,
   pruneReportCache,
+  readLocalReportCache,
 } = __reportCacheInternals
 
 const TEST_SCOPE = 'cache-lifecycle-test'
@@ -43,12 +45,14 @@ function staleLocalEntry(payload: unknown, cacheTtlMs = 1) {
   })
   return {
     ...entry,
+    generatedAt: new Date(Date.now() - 70_000).toISOString(),
     freshUntil: Date.now() - 10_000,
     staleUntil: Date.now() + 60_000,
   }
 }
 
 afterEach(() => {
+  vi.useRealTimers()
   resetReportCache()
   resetMaxReportCacheEntriesForTests()
   setReadRedisCacheEntryImpl(null)
@@ -57,6 +61,272 @@ afterEach(() => {
 })
 
 describe('report-service cache lifecycle', () => {
+  test('read-report-cache recency tracks reads for LRU eviction', () => {
+    setMaxReportCacheEntriesForTests(2)
+    const oldKey = testIdentity('lru-old').cacheKey
+    const recentlyReadKey = testIdentity('lru-read').cacheKey
+    const newKey = testIdentity('lru-new').cacheKey
+
+    setLocalReportCache(oldKey, freshLocalEntry({ id: 'old' }))
+    setLocalReportCache(recentlyReadKey, freshLocalEntry({ id: 'read' }))
+    expect(
+      readLocalReportCache(recentlyReadKey, { scope: TEST_SCOPE })
+    ).toMatchObject({ status: 'fresh' })
+    setLocalReportCache(newKey, freshLocalEntry({ id: 'new' }))
+
+    expect(getReportCacheEntry(oldKey)).toBeUndefined()
+    expect(getReportCacheEntry(recentlyReadKey)).toBeDefined()
+    expect([...getReportCacheEntryKeys()]).toEqual([recentlyReadKey, newKey])
+  })
+
+  test('pruneReportCache preserves active refreshes while evicting true LRU', () => {
+    setMaxReportCacheEntriesForTests(2)
+    const inFlightIdentity = testIdentity('lru-in-flight')
+    const evictableIdentity = testIdentity('lru-evictable')
+    const newestIdentity = testIdentity('lru-newest')
+
+    setLocalReportCache(
+      evictableIdentity.cacheKey,
+      freshLocalEntry({ id: 'old' })
+    )
+    setLocalReportCache(
+      inFlightIdentity.cacheKey,
+      freshLocalEntry({ id: 'in-flight' })
+    )
+    const inFlight = getReportCacheEntry(inFlightIdentity.cacheKey)
+    const blocked = new Promise(() => {})
+    if (inFlight) {
+      ;(inFlight as { promise?: Promise<unknown> }).promise = blocked
+    }
+    setLocalReportCache(
+      newestIdentity.cacheKey,
+      freshLocalEntry({ id: 'newest' })
+    )
+
+    pruneReportCache()
+
+    expect(getReportCacheEntry(inFlightIdentity.cacheKey)?.promise).toBe(
+      blocked
+    )
+    expect(getReportCacheEntry(inFlightIdentity.cacheKey)).toBeDefined()
+    expect(getReportCacheEntry(evictableIdentity.cacheKey)).toBeUndefined()
+    expect(getReportCacheEntry(newestIdentity.cacheKey)).toBeDefined()
+  })
+
+  test('local cache freshness follows the current request TTL', () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-08-30T12:00:00.000Z'))
+    const identity = testIdentity('local-current-ttl')
+    setLocalReportCache(
+      identity.cacheKey,
+      freshLocalEntry({ id: 'ttl' }, 60_000)
+    )
+
+    vi.advanceTimersByTime(10_000)
+    expect(
+      readLocalReportCache(identity.cacheKey, {
+        scope: TEST_SCOPE,
+        cacheTtlMs: 20_000,
+      })
+    ).toMatchObject({ status: 'fresh' })
+
+    vi.advanceTimersByTime(11_000)
+    expect(
+      readLocalReportCache(identity.cacheKey, {
+        scope: TEST_SCOPE,
+        cacheTtlMs: 20_000,
+      })
+    ).toMatchObject({ status: 'stale' })
+
+    expect(
+      readLocalReportCache(identity.cacheKey, {
+        scope: TEST_SCOPE,
+        cacheTtlMs: 40_000,
+      })
+    ).toMatchObject({ status: 'fresh' })
+  })
+
+  test('cachedReport reclassifies a local entry when the request TTL changes', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-08-30T12:00:00.000Z'))
+    const identity = testIdentity('cached-current-ttl')
+    setLocalReportCache(
+      identity.cacheKey,
+      freshLocalEntry({ metric: 'old' }, 60_000)
+    )
+    setReadRedisCacheEntryImpl(async () => ({
+      status: 'error',
+      error: new Error('redis down'),
+    }))
+    let releaseRefresh: ((value: { metric: string }) => void) | undefined
+    const refreshGate = new Promise<{ metric: string }>((resolve) => {
+      releaseRefresh = resolve
+    })
+    const load = vi.fn(() => refreshGate)
+
+    vi.advanceTimersByTime(31_000)
+    const staleBody = await cachedReport(TEST_SCOPE, load, {
+      searchParams: new URLSearchParams({ q: 'cached-current-ttl' }),
+      cacheTtlMs: 20_000,
+      decorateMetadata: true,
+    })
+    expect(staleBody).toMatchObject({
+      metric: 'old',
+      metadata: {
+        cacheStatus: 'redis_error',
+        cacheRefreshing: true,
+      },
+    })
+
+    releaseRefresh!({ metric: 'refreshed' })
+    await refreshGate
+    await vi.waitFor(() => {
+      expect(load).toHaveBeenCalledTimes(1)
+      expect(getReportCacheEntry(identity.cacheKey)?.entry?.payload).toEqual({
+        metric: 'refreshed',
+      })
+      expect(getReportCacheEntry(identity.cacheKey)?.promise).toBeUndefined()
+    })
+
+    const freshBody = await cachedReport(TEST_SCOPE, load, {
+      searchParams: new URLSearchParams({ q: 'cached-current-ttl' }),
+      cacheTtlMs: 40_000,
+      decorateMetadata: true,
+    })
+    expect(freshBody).toMatchObject({
+      metric: 'refreshed',
+      metadata: {
+        cacheStatus: 'redis_error',
+        cacheRefreshing: false,
+      },
+    })
+  })
+
+  test('Redis reads reclassify entries using the requested TTL', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-08-30T12:00:00.000Z'))
+    const identity = testIdentity('redis-current-ttl')
+    const entry = freshLocalEntry({ id: 'redis-ttl' }, 60_000)
+    const redis = {
+      isReady: true,
+      async get() {
+        return await encodeRedisReportCachePayload(entry)
+      },
+      async del() {
+        throw new Error('a TTL change should not delete the entry')
+      },
+    }
+
+    vi.advanceTimersByTime(10_000)
+    await expect(
+      readRedisCacheEntryFromClient(identity, redis, {
+        scope: identity.scope,
+        cacheTtlMs: 20_000,
+      })
+    ).resolves.toMatchObject({
+      status: 'fresh',
+      entry: { payload: { id: 'redis-ttl' } },
+    })
+
+    vi.advanceTimersByTime(11_000)
+    await expect(
+      readRedisCacheEntryFromClient(identity, redis, {
+        scope: identity.scope,
+        cacheTtlMs: 20_000,
+      })
+    ).resolves.toMatchObject({
+      status: 'stale',
+      entry: { payload: { id: 'redis-ttl' } },
+    })
+
+    await expect(
+      readRedisCacheEntryFromClient(identity, redis, {
+        scope: identity.scope,
+        cacheTtlMs: 40_000,
+      })
+    ).resolves.toMatchObject({
+      status: 'fresh',
+      entry: { payload: { id: 'redis-ttl' } },
+    })
+
+    vi.advanceTimersByTime(20_000)
+    await expect(
+      readRedisCacheEntryFromClient(identity, redis, {
+        scope: identity.scope,
+        cacheTtlMs: 40_000,
+      })
+    ).resolves.toMatchObject({
+      status: 'stale',
+      entry: { payload: { id: 'redis-ttl' } },
+    })
+  })
+
+  test('non-empty cache_bust refreshes the base entry without identity flooding', async () => {
+    const identity = testIdentity('cache-bust')
+    setLocalReportCache(
+      identity.cacheKey,
+      freshLocalEntry({ metric: 'cached' })
+    )
+    const load = vi
+      .fn()
+      .mockResolvedValueOnce({ metric: 'fresh-1' })
+      .mockResolvedValueOnce({ metric: 'fresh-2' })
+
+    const first = await cachedReport(TEST_SCOPE, load, {
+      searchParams: new URLSearchParams({
+        q: 'cache-bust',
+        cache_bust: ' manual-1 ',
+      }),
+      decorateMetadata: true,
+    })
+    const second = await cachedReport(TEST_SCOPE, load, {
+      searchParams: new URLSearchParams({
+        q: 'cache-bust',
+        cache_bust: 'manual-2',
+      }),
+      decorateMetadata: true,
+    })
+
+    expect(first).toMatchObject({ metric: 'fresh-1' })
+    expect(second).toMatchObject({ metric: 'fresh-2' })
+    expect(load).toHaveBeenCalledTimes(2)
+    expect([...getReportCacheEntryKeys()]).toEqual([identity.cacheKey])
+    expect(getReportCacheEntry(identity.cacheKey)?.entry?.payload).toEqual({
+      metric: 'fresh-2',
+    })
+  })
+
+  test('empty cache_bust does not bypass a fresh local entry', async () => {
+    const identity = testIdentity('empty-cache-bust')
+    setLocalReportCache(
+      identity.cacheKey,
+      freshLocalEntry({ metric: 'cached' })
+    )
+    setReadRedisCacheEntryImpl(async () => ({
+      status: 'error',
+      error: new Error('redis down'),
+    }))
+    const load = vi.fn(async () => ({ metric: 'loaded' }))
+
+    const body = await cachedReport(TEST_SCOPE, load, {
+      searchParams: new URLSearchParams({
+        q: 'empty-cache-bust',
+        cache_bust: '   ',
+      }),
+      decorateMetadata: true,
+    })
+
+    expect(load).not.toHaveBeenCalled()
+    expect(body).toMatchObject({
+      metric: 'cached',
+      metadata: {
+        cacheStatus: 'redis_error',
+        cacheRefreshing: false,
+      },
+    })
+    expect([...getReportCacheEntryKeys()]).toEqual([identity.cacheKey])
+  })
+
   test('concurrent refreshReportCache calls share one loader and clear promise after resolve', async () => {
     const identity = testIdentity('shared-refresh')
     let loadCount = 0
@@ -84,6 +354,31 @@ describe('report-service cache lifecycle', () => {
     const cached = getReportCacheEntry(identity.cacheKey)
     expect(cached?.entry?.payload).toEqual({ rows: [1] })
     expect(cached?.promise).toBeUndefined()
+  })
+
+  test('rejected refreshes clear in-flight state so a later refresh can run', async () => {
+    const identity = testIdentity('rejected-refresh')
+    const failure = new Error('refresh failed')
+    const failedLoad = vi.fn().mockRejectedValueOnce(failure)
+
+    await expect(
+      refreshReportCache(identity, failedLoad, {
+        cacheTtlMs: 60_000,
+        useRedis: false,
+      })
+    ).rejects.toBe(failure)
+
+    expect(getReportCacheEntry(identity.cacheKey)).toBeUndefined()
+
+    const retryLoad = vi.fn(async () => ({ rows: [2] }))
+    const retry = await refreshReportCache(identity, retryLoad, {
+      cacheTtlMs: 60_000,
+      useRedis: false,
+    })
+
+    expect(retryLoad).toHaveBeenCalledTimes(1)
+    expect(retry.entry?.payload).toEqual({ rows: [2] })
+    expect(getReportCacheEntry(identity.cacheKey)?.promise).toBeUndefined()
   })
 
   test('pruneReportCache does not evict entries with an active refresh promise', async () => {

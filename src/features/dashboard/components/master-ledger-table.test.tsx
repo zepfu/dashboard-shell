@@ -12,7 +12,6 @@ import { vi } from 'vitest'
 import {
   type UsageReportProviderLatencyHealthRow,
   type UsageReportProviderStatusUsageRow,
-  type UsageReportQuotaRow,
   type UsageReportRow,
   type UsageReportToolActivityRow,
   type UsageReportTrendRow,
@@ -20,7 +19,7 @@ import {
 import { buildModelRows } from '../lib/ledger-rows'
 import { providerBrandHex } from '../lib/usage-report-display'
 import * as masterLedgerAggregation from './master-ledger-aggregation'
-import { type ModelRow } from './master-ledger-aggregation'
+import { resolveFamilyRows, type ModelRow } from './master-ledger-aggregation'
 import {
   formatLedgerModelDisplayName,
   modelFamilyForRow,
@@ -643,6 +642,18 @@ test('test_model_ledger_expands_exact_model_to_repository_rows', () => {
 
   expect(screen.getByText('dashboard-shell')).toBeInTheDocument()
   expect(screen.getByText('aawm-tap')).toBeInTheDocument()
+})
+
+test('test_missing_family_lookup_does_not_reuse_other_family_children', () => {
+  const otherRows = [makeRow({ model: 'claude-unknown' })]
+  const familyRows = new Map<string, { rows: readonly ModelRow[] }>([
+    ['other', { rows: otherRows }],
+    ['opus', { rows: [makeRow({ model: 'claude-opus-4-7' })] }],
+  ])
+
+  expect(resolveFamilyRows(familyRows, 'missing-family')).toEqual([])
+  expect(resolveFamilyRows(familyRows, undefined)).toEqual([])
+  expect(resolveFamilyRows(familyRows, 'other')).toEqual(otherRows)
 })
 
 test('test_repository_tab_pivots_ledger_to_repository_provider_family_model', () => {
@@ -1555,9 +1566,12 @@ test('test_model_name_gutter_uses_provider_brand_color', () => {
 
   const firstCell = container.querySelector('tbody td') as HTMLElement | null
   expect(firstCell).not.toBeNull()
-  expect(firstCell).toHaveStyle({
-    borderLeftColor: providerBrandHex('anthropic'),
-  })
+  expect(firstCell?.classList.contains('master-ledger-cell-first')).toBe(true)
+  const firstRow = firstCell?.closest('tr') as HTMLElement | null
+  expect(firstRow).not.toBeNull()
+  expect(firstRow?.style.getPropertyValue('--ledger-provider-color')).toBe(
+    providerBrandHex('anthropic')
+  )
   expect(firstCell?.className).not.toContain('gutter-')
 })
 
@@ -3002,6 +3016,7 @@ function minimalTrendRow(
     traces: 1,
     token_total: tokenTotal,
     usd_cost: 0.1,
+    response_cost_rows: 1,
   }
 }
 
@@ -3025,7 +3040,6 @@ test('test_buildModelRows_populates_sparkBuckets_aligned_to_trend_buckets', () =
     [minimalStatusRow(model)],
     [] as UsageReportProviderLatencyHealthRow[],
     [minimalUsageRow(model, 'dashboard-shell')],
-    [] as UsageReportQuotaRow[],
     trendRows
   )
 
@@ -3052,7 +3066,6 @@ test('test_buildModelRows_model_spark_sums_per_bucket_not_per_repository', () =>
       minimalUsageRow(model, 'dashboard-shell'),
       minimalUsageRow(model, 'aawm-tap'),
     ],
-    [] as UsageReportQuotaRow[],
     trendRows
   )
 
@@ -3078,7 +3091,6 @@ test('test_aggregate_sparkline_bucket_aligned_end_to_end_from_buildModelRows', (
       minimalUsageRow(opus, 'dashboard-shell'),
       minimalUsageRow(sonnet, 'dashboard-shell'),
     ],
-    [] as UsageReportQuotaRow[],
     trendRows
   )
 
@@ -3104,7 +3116,6 @@ test('test_repository_view_renders_no_data_for_errors_not_zero_pct', () => {
       minimalUsageRow(model, 'dashboard-shell'),
       minimalUsageRow(model, 'aawm-tap'),
     ],
-    [] as UsageReportQuotaRow[],
     []
   )
 
@@ -3313,32 +3324,91 @@ test('test_dead_ledger_columns_removed', () => {
   expect('inval' in rowWithDeadFields).toBe(false)
 })
 
-test('test_tokensDirectionEstimated_removed_or_surfaced', () => {
+test('test_buildModelRows_keeps_directional_tokens_unavailable_without_usage_coverage', () => {
   const model = 'claude-opus-4-7'
   const built = buildModelRows(
     [minimalStatusRow(model, { token_total: 10_000 })],
     [] as UsageReportProviderLatencyHealthRow[],
     [] as UsageReportRow[],
-    [] as UsageReportQuotaRow[],
     []
   )
 
   expect(built).toHaveLength(1)
-  const hasEstimatedField = Object.prototype.hasOwnProperty.call(
-    built[0],
-    'tokensDirectionEstimated'
+  expect(built[0]?.tokens_in).toBeUndefined()
+  expect(built[0]?.tokens_out).toBeUndefined()
+
+  const { container } = render(<MasterLedgerTable rows={built} />)
+  expect(
+    Array.from(container.querySelectorAll('[data-col-id="tokens_in"]')).every(
+      (cell) => cell.textContent?.trim() === '—'
+    )
+  ).toBe(true)
+  expect(
+    Array.from(container.querySelectorAll('[data-col-id="tokens_out"]')).every(
+      (cell) => cell.textContent?.trim() === '—'
+    )
+  ).toBe(true)
+})
+
+test('test_buildModelRows_preserves_measured_zero_and_sums_directional_tokens', () => {
+  const measuredModel = 'claude-opus-4-7'
+  const partialModel = 'claude-sonnet-4-6'
+  const built = buildModelRows(
+    [
+      minimalStatusRow(measuredModel, { token_total: 1_000 }),
+      minimalStatusRow(partialModel, { token_total: 1_000 }),
+    ],
+    [] as UsageReportProviderLatencyHealthRow[],
+    [
+      minimalUsageRow(measuredModel, 'dashboard-shell', {
+        token_in: 0,
+        token_out: 40,
+      }),
+      minimalUsageRow(measuredModel, 'aawm-tap', {
+        token_in: 25,
+        token_out: 0,
+      }),
+      minimalUsageRow(partialModel, 'dashboard-shell', {
+        token_in: null,
+        token_out: 0,
+      }),
+    ],
+    [] as UsageReportQuotaRow[],
+    []
   )
 
-  if (hasEstimatedField) {
-    expect(built[0].tokensDirectionEstimated).toBe(true)
-    const { container } = render(<MasterLedgerTable rows={built} />)
-    expandLedger('Anthropic', 'provider')
-    expandLedger('Opus', 'family')
-    const estimatedMarkers = container.querySelectorAll(
-      '[data-tokens-direction-estimated="true"]'
-    )
-    expect(estimatedMarkers.length).toBeGreaterThan(0)
-  } else {
-    expect(built[0].tokens_in + built[0].tokens_out).toBeGreaterThan(0)
-  }
+  const measured = built.find((row) => row.model === measuredModel)
+  const partial = built.find((row) => row.model === partialModel)
+  expect(measured?.tokens_in).toBe(25)
+  expect(measured?.tokens_out).toBe(40)
+  expect(partial?.tokens_in).toBeUndefined()
+  expect(partial?.tokens_out).toBe(0)
+})
+
+test('D1-497_ledger_aggregation_preserves_recorded_zero_and_separate_cache_miss_cost', () => {
+  const missing = makeRow({
+    model: 'claude-sonnet-4-6',
+    provider: 'anthropic',
+    cost_usd: null,
+    cache_miss_usd_cost: 0.12,
+    cache_miss_pct: undefined,
+  })
+  const recordedZero = makeRow({
+    model: 'claude-opus-4-7',
+    provider: 'anthropic',
+    cost_usd: 0,
+    cache_miss_usd_cost: 0,
+    cache_miss_pct: undefined,
+  })
+
+  const aggregate = aggregateRows([missing, recordedZero], {
+    ledgerLevel: 'provider',
+    ledgerId: 'provider:anthropic',
+    ledgerLabel: 'Anthropic',
+    providerKey: 'anthropic',
+    childCount: 2,
+  })
+
+  expect(aggregate.cost_usd).toBe(0)
+  expect(aggregate.cache_miss_usd_cost).toBe(0.12)
 })

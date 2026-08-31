@@ -43,11 +43,11 @@ const baseVolumeColumns = [
   }),
   helper.accessor('tokens_in', {
     header: 'Toks In',
-    cell: (info) => numFmt(info.getValue() as number),
+    cell: (info) => fmtOrDash(info.getValue(), numFmt),
   }),
   helper.accessor('tokens_out', {
     header: 'Toks Out',
-    cell: (info) => numFmt(info.getValue() as number),
+    cell: (info) => fmtOrDash(info.getValue(), numFmt),
   }),
 ]
 
@@ -121,7 +121,7 @@ const latencyCostColumns = [
   }),
   helper.accessor('cost_usd', {
     header: 'Cost',
-    cell: (info) => formatUsd(info.getValue() as number),
+    cell: (info) => formatUsd(info.getValue() as number | null),
   }),
 ]
 

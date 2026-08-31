@@ -146,16 +146,34 @@ describe('report-service env and date helpers', () => {
     expect(expression).not.toContain('sh.provider')
   })
 
-  test('sessionHistoryMetadataText escapes key and fallback literals', async () => {
+  test('sessionHistoryMetadataText accepts only code-owned literal inputs', async () => {
     const { __envTestHelpers } = await import('./report-service.mjs')
+
     const expression = __envTestHelpers.sessionHistoryMetadataText(
       'sh',
-      "unsafe'key",
-      "unsafe'fallback"
+      'session_history_usage_record',
+      'true'
     )
 
-    expect(expression).toContain("sh.metadata->>'unsafe''key'")
-    expect(expression).toContain("'unsafe''fallback'")
+    expect(expression).toContain("sh.metadata->>'session_history_usage_record'")
+    expect(expression).toContain("'true'")
+    expect(() =>
+      __envTestHelpers.sessionHistoryMetadataText('sh', "unsafe'key", 'true')
+    ).toThrow('code-owned literals')
+    expect(() =>
+      __envTestHelpers.sessionHistoryMetadataText(
+        'sh',
+        'session_history_usage_record',
+        "unsafe'fallback"
+      )
+    ).toThrow('code-owned literals')
+    expect(() =>
+      __envTestHelpers.sessionHistoryMetadataText(
+        'sh; DROP TABLE session_history',
+        'session_history_usage_record',
+        'true'
+      )
+    ).toThrow('SQL identifier')
   })
 })
 

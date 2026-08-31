@@ -1750,6 +1750,107 @@
   grid-template-columns: 58px minmax(72px, 0.8fr) minmax(0, 2fr) auto;
 }
 
+/* D1-493 #84 — Master Ledger static table and tooltip presentation. */
+.master-ledger-sort-header {
+  padding: 6px 8px;
+  text-align: left;
+  font-weight: 600;
+  color: var(--accent-chrome);
+  background: var(--card-2);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border-right: 1px solid var(--border);
+  cursor: default;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.master-ledger-sort-header[data-sortable='true'] {
+  cursor: pointer;
+}
+
+.master-ledger-error-tooltip-row {
+  font-size: 9px;
+  padding: 1px 0;
+  line-height: 1.5;
+  color: var(--fg, #e2e8f0);
+}
+
+.master-ledger-tool-tooltip {
+  display: grid;
+  column-gap: 12px;
+  width: 100%;
+  max-width: calc(100vw - 16px);
+}
+
+.master-ledger-tooltip-section {
+  min-width: 0;
+}
+
+.master-ledger-tooltip-section-heading {
+  font-size: 9px;
+  color: var(--accent-chrome, #94a3b8);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  margin-bottom: 2px;
+  text-transform: uppercase;
+}
+
+.master-ledger-tooltip-columns {
+  display: grid;
+  column-gap: 8px;
+  align-items: start;
+}
+
+.master-ledger-tooltip-column {
+  min-width: 0;
+}
+
+.master-ledger-tooltip-entry-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 4px;
+  font-size: 9px;
+  color: var(--fg, #e2e8f0);
+  padding: 1px 0;
+  line-height: 1.5;
+  min-width: 0;
+}
+
+.master-ledger-tooltip-entry-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.master-ledger-tooltip-entry-value {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.master-ledger-tooltip-subrows {
+  padding-left: 8px;
+  font-size: 8px;
+  color: var(--fg-muted, #94a3b8);
+}
+
+.master-ledger-tooltip-subrow {
+  padding: 0.5px 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.master-ledger-tooltip-more {
+  font-size: 9px;
+  color: var(--fg-muted, #94a3b8);
+  font-style: italic;
+  padding: 1px 0;
+}
+
 /* v9-tip subclass helpers */
 .v9-tip .t-time {
   color: var(--fg-muted);
@@ -2139,6 +2240,145 @@
   isolation: isolate;
 }
 
+.tt-chart-root {
+  width: 100%;
+}
+
+.tt-day-chart {
+  background: var(--card);
+  border: 1px solid var(--border);
+  padding: 8px;
+  width: 100%;
+  box-sizing: border-box;
+  position: relative;
+}
+
+.tt-day-strip {
+  position: relative;
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+  isolation: isolate;
+}
+
+.tt-day-hover-shell {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: flex-end;
+  min-width: 0;
+  position: relative;
+  z-index: 1;
+}
+
+.tt-day-envelope {
+  width: 100%;
+  min-width: 0;
+  display: flex;
+  align-items: flex-end;
+  position: relative;
+  border: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+  background: transparent;
+  overflow: hidden;
+}
+
+.tt-hour-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 1px;
+  height: 100%;
+  width: 100%;
+}
+
+.tt-hour-cell {
+  flex: 1 1 0%;
+  min-width: 0;
+  height: 100%;
+  display: flex;
+  align-items: flex-end;
+}
+
+.tt-hour-shell {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: flex-end;
+}
+
+.tt-hour-bar {
+  border: 0;
+  position: relative;
+  z-index: 1;
+}
+
+.tt-label-row {
+  display: flex;
+  align-items: flex-start;
+  padding-top: 3px;
+  padding-left: 8px;
+  padding-right: 8px;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.tt-day-label-row {
+  gap: 2px;
+}
+
+.tt-legacy-label-row {
+  gap: 1px;
+}
+
+.tt-label-cell {
+  flex: 1 1 0%;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 8px;
+  color: var(--fg-muted);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: clip;
+  line-height: 1.2;
+  letter-spacing: 0;
+  user-select: none;
+}
+
+.tt-day-label {
+  min-width: 14px;
+}
+
+.tt-legacy-label {
+  min-width: 0;
+}
+
+.tt-label-cell.is-hidden {
+  visibility: hidden;
+}
+
+.tt-legacy-chart {
+  background: var(--card);
+  border: 1px solid var(--border);
+  padding: 8px;
+  display: flex;
+  align-items: flex-end;
+  gap: 1px;
+  height: 80px;
+  width: 100%;
+}
+
+.tt-legacy-bar-slot {
+  flex: 1;
+  min-width: 0;
+}
+
+.tt-legacy-bar {
+  min-width: 0;
+  border: 1px solid var(--border);
+}
+
 .tt-day-stripe-layer {
   position: absolute;
   inset: 0;
@@ -2172,6 +2412,11 @@
 }
 
 .tt-active-version-lane {
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--card) 94%, var(--fg-muted) 6%);
+  box-sizing: border-box;
+  overflow: hidden;
   position: relative;
   isolation: isolate;
 }
@@ -2257,7 +2502,136 @@
 }
 
 .tt-model-first-seen-column {
+  position: absolute;
+  inset: 0;
+  border: 1px solid color-mix(in srgb, #c084fc 70%, transparent);
+  box-sizing: border-box;
+  pointer-events: none;
+  z-index: 2;
   cursor: help;
+}
+
+.tt-active-version-family {
+  position: relative;
+  box-sizing: border-box;
+  z-index: 1;
+}
+
+.tt-active-version-family.is-first {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: 0;
+}
+
+.tt-active-version-family.is-not-first {
+  margin-top: 3px;
+  padding-top: 7px;
+  border-top: 1px solid color-mix(in srgb, var(--fg-muted) 28%, transparent);
+}
+
+.tt-active-version-family.is-even {
+  background: color-mix(in srgb, var(--card) 82%, transparent);
+}
+
+.tt-active-version-family.is-odd {
+  background: color-mix(in srgb, var(--fg-muted) 7%, transparent);
+}
+
+.tt-active-version-family-label {
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 4;
+  min-width: 42px;
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--card) 92%, transparent);
+  color: var(--fg-muted);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  line-height: 1.1;
+  letter-spacing: 0;
+}
+
+.tt-active-version-track {
+  position: relative;
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+}
+
+.tt-active-version-svg {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  z-index: 2;
+}
+
+.tt-active-version-segment-label {
+  height: 9px;
+  padding: 0 3px;
+  border-radius: 3px;
+  box-sizing: border-box;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg);
+  background: color-mix(in srgb, var(--card) 82%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  font-family: var(--font-mono);
+  font-size: 8px;
+  line-height: 8px;
+  letter-spacing: 0;
+  pointer-events: auto;
+  z-index: 3;
+}
+
+.tt-token-scale-marker {
+  position: absolute;
+  left: 0;
+  right: 0;
+  border-top: 1px solid color-mix(in srgb, var(--fg-muted) 20%, transparent);
+  pointer-events: none;
+  z-index: 2;
+}
+
+.tt-token-scale-label {
+  position: absolute;
+  left: 4px;
+  top: -1px;
+  transform: translateY(-50%);
+  padding: 0 3px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--card) 88%, transparent);
+  color: var(--fg-muted);
+  font-family: var(--font-mono);
+  font-size: 8px;
+  line-height: 1.1;
+  letter-spacing: 0;
+}
+
+.v9-tip.tip-quota .v9-tip-row.tt-tip-row-one {
+  grid-template-columns: 1fr;
+}
+
+.v9-tip.tip-quota .v9-tip-row.tt-tip-row-two {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.v9-tip.tip-quota .v9-tip-row.tt-tip-row-three {
+  grid-template-columns: auto minmax(0, 1fr) auto;
+}
+
+.tt-tip-muted {
+  color: var(--fg-muted);
+}
+
+.v9-tip .v9-tip-head.tt-tip-section-head {
+  margin-top: 6px;
 }
 
 .tt-metric-day-shell {
@@ -2329,6 +2703,12 @@
   flex-direction: column;
   overflow: hidden;
   opacity: 0.72;
+}
+
+.tt-metric-hour-bar > .tt-slice {
+  flex-shrink: 0;
+  min-height: 1px;
+  width: 100%;
 }
 
 .provider-quota-summary {
@@ -2966,14 +3346,147 @@
 }
 
 /* ── §13 #9: table-wrapper max-height — base 400px; 320px at 1600+ per mockup line 1288 ── */
-/* Base rule replaces the former inline maxHeight:'400px' (wave34-code-css-audit ✘-3). */
+/* Base rule replaces the former inline table-wrapper styles and maxHeight. */
 .table-wrapper {
+  width: 100%;
+  overflow-x: auto;
+  overflow-y: auto;
+  background: var(--card);
+  border: 1px solid var(--border);
   max-height: 400px;
 }
 @media (min-width: 1600px) {
   .table-wrapper {
     max-height: 320px;
   }
+}
+
+.master-ledger-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: clamp(11px, 0.6vw, 16px);
+  font-family: var(--font-mono);
+}
+
+.master-ledger-table-head {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: var(--card-2);
+  border-bottom: 1px solid rgba(245, 158, 11, 0.25);
+}
+
+.master-ledger-row {
+  border-bottom: 1px solid var(--border);
+}
+
+.master-ledger-cell {
+  padding: 6px 8px;
+  font-family: var(--font-mono);
+  border-right: 1px solid var(--border);
+  color: var(--accent-cool);
+}
+
+.master-ledger-cell:not(.number) {
+  text-align: left;
+}
+
+.master-ledger-cell-first {
+  border-left: 4px solid var(--ledger-provider-color);
+  padding-left: 6px;
+}
+
+.master-ledger-cell[data-col-id='model'],
+.master-ledger-cell[data-col-id='sparkline'] {
+  color: var(--fg);
+}
+
+.master-ledger-cell[data-col-id='provider'] {
+  color: var(--ledger-provider-color);
+}
+
+.master-ledger-cell[data-col-id='cost_usd'] {
+  color: var(--ledger-cost-color);
+}
+
+.master-ledger-cell[data-col-id='error_pct'] {
+  color: var(--ledger-error-color);
+}
+
+.master-ledger-model-cell {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.master-ledger-model-cell-indent-0 {
+  padding-left: 0;
+}
+
+.master-ledger-model-cell-indent-16 {
+  padding-left: 16px;
+}
+
+.master-ledger-model-cell-indent-30 {
+  padding-left: 30px;
+}
+
+.master-ledger-model-cell-indent-44 {
+  padding-left: 44px;
+}
+
+.master-ledger-expander {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ledger-provider-color);
+  cursor: pointer;
+}
+
+.master-ledger-expander-placeholder {
+  width: 16px;
+  flex: 0 0 16px;
+}
+
+.master-ledger-model-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.master-ledger-model-cell[data-ledger-level='provider']
+  .master-ledger-model-label,
+.master-ledger-model-cell[data-ledger-level='family']
+  .master-ledger-model-label {
+  color: var(--ledger-provider-color);
+  font-weight: 700;
+}
+
+.master-ledger-model-cell[data-ledger-level='model']
+  .master-ledger-model-label {
+  color: var(--fg);
+  font-weight: 500;
+}
+
+.master-ledger-model-cell[data-ledger-level='repository']
+  .master-ledger-model-label {
+  color: var(--fg);
+  font-weight: 400;
+}
+
+.master-ledger-model-count {
+  flex: 0 0 auto;
+  color: var(--fg-muted);
+  font-size: 9px;
+  white-space: nowrap;
 }
 
 /* ── §18 #3: body line-height: 1.4 per mockup line 32 ──────────────────────  */
@@ -3001,56 +3514,8 @@ tbody tr {
    Wave 15-A: Visual regression fixes
    ═══════════════════════════════════════════════════════════════════════════ */
 
-/* ── S12 HIGH: Token trend stacked slice + swatch colors per provider ───────
-   Wave 14-F.5 removed inline `background: s.color` from .tt-slice/.tt-swatch
-   expecting these CSS class rules to exist — they were never added.
-   Values from mockup lines 1339-1345 + 1368-1374 (authoritative spec).     */
-.tt-slice.tt-anthropic,
-.tt-swatch.tt-anthropic {
-  background: #cc7855;
-}
-.tt-slice.tt-openai,
-.tt-swatch.tt-openai {
-  background: #10a37f;
-}
-.tt-slice.tt-google,
-.tt-swatch.tt-google {
-  background: #4285f4;
-}
-.tt-slice.tt-antigravity,
-.tt-swatch.tt-antigravity {
-  background: #0f766e;
-}
-.tt-slice.tt-xai,
-.tt-swatch.tt-xai {
-  background: #475569;
-}
-.tt-slice.tt-nvidia,
-.tt-swatch.tt-nvidia {
-  background: #76b900;
-}
-.tt-slice.tt-openrouter,
-.tt-swatch.tt-openrouter {
-  background: #7e57c2;
-}
-.tt-slice.tt-local,
-.tt-swatch.tt-local {
-  background: #94a3b8;
-}
-.tt-slice.tt-alibaba,
-.tt-swatch.tt-alibaba {
-  background: #ff6a00;
-}
-/* Wave 25 additions: chatgpt + unknown were missing from the Wave 15-A block. */
-/* Colors from PROVIDER_SERIES in phosphor-dashboard.tsx lines 118,157.        */
-.tt-slice.tt-chatgpt,
-.tt-swatch.tt-chatgpt {
-  background: #10a37f;
-}
-.tt-slice.tt-unknown,
-.tt-swatch.tt-unknown {
-  background: #64748b;
-}
+/* Trend provider slices and swatches receive their background inline from the
+   chart's canonical resolver; provider classes remain structural hooks only. */
 
 /* ── S16 MEDIUM: .alert-glyph 12px centered span ────────────────────────────
    Mockup lines 403-408: display:inline-block, 12px width, text-align:center,

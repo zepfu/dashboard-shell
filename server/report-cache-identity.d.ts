@@ -53,6 +53,15 @@ declare module './report-cache-identity.mjs' {
     }
   ): ReportCacheEntry
 
+  export function applyCurrentReportCacheTtl(
+    cacheEntry: ReportCacheEntry | null | undefined,
+    options?: {
+      scope?: string
+      cacheTtlMs?: number
+      config?: ReturnType<typeof resolveReportCacheConfig>
+    }
+  ): ReportCacheEntry | null | undefined
+
   export function isUsageReportCacheScope(scope: string): boolean
 
   export function resolveReportCacheConfig(env?: NodeJS.ProcessEnv): {

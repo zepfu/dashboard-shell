@@ -5,13 +5,14 @@ import type { ModelRow } from './master-ledger-aggregation'
  */
 export interface ProviderCurrentStats {
   provider: string
-  totalCost: number
-  totalTokens: number
+  totalCost: number | null
+  /** Exact total when every model row has both directional token measures. */
+  totalTokens?: number
   avgP95: number
   avgErrPct: number
   avgCachePct: number
   /** Burn = avg daily spend = totalCost / periodDays. */
-  burn: number
+  burn: number | null
 }
 
 /** Daily burn above this USD amount uses accent-hot in the Burn column. */
@@ -44,8 +45,18 @@ export function buildCurrentStats(
     const rows = modelRows.filter(
       (r) => r.provider.toLowerCase() === provider.toLowerCase()
     )
-    const totalCost = rows.reduce((s, r) => s + r.cost_usd, 0)
-    const totalTokens = rows.reduce((s, r) => s + r.tokens_in + r.tokens_out, 0)
+    const persistedRows = rows.filter((row) => row.cost_usd !== null)
+    const totalCost = persistedRows.reduce((sum, row) => {
+      if (row.cost_usd === null) return sum
+      return sum + row.cost_usd
+    }, 0)
+    const totalTokens =
+      rows.length > 0 &&
+      rows.every(
+        (row) => row.tokens_in !== undefined && row.tokens_out !== undefined
+      )
+        ? rows.reduce((s, r) => s + (r.tokens_in ?? 0) + (r.tokens_out ?? 0), 0)
+        : undefined
 
     const avgP95 = requestWeightedAverage(rows, (r) =>
       r.p95_ms > 0 ? r.p95_ms : undefined
@@ -55,11 +66,11 @@ export function buildCurrentStats(
 
     const avgCachePct = requestWeightedAverage(rows, (r) => r.cache_pct)
 
-    const burn = totalCost / windowDays
+    const burn = persistedRows.length > 0 ? totalCost / windowDays : null
 
     return {
       provider,
-      totalCost,
+      totalCost: persistedRows.length > 0 ? totalCost : null,
       totalTokens,
       avgP95,
       avgErrPct,
@@ -85,14 +96,15 @@ export function formatDeltaPct(delta: number | null): string {
 export type DeltaColumnKind = 'cost' | 'tokens' | 'p95' | 'err'
 
 export function formatDeltaPctWithPrior(
-  current: number,
-  prior: number | undefined,
+  current: number | null,
+  prior: number | null | undefined,
   delta: number | null,
   column: DeltaColumnKind = 'cost'
 ): string {
   if (
     prior !== undefined &&
     prior === 0 &&
+    current !== null &&
     Number.isFinite(current) &&
     current > 0
   ) {

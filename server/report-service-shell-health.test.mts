@@ -195,38 +195,117 @@ describe('D1-444 /api/shell/health parallel health checks', () => {
   })
 })
 
-describe('D1-444 PgBouncer admin pool cache', () => {
-  test('reuses one Pool per sidecar/admin URL across repeated admin summary calls', async () => {
+describe('D1-489 materialized view health degradation', () => {
+  test('keeps sibling views observable when one materialized view is missing', async () => {
     vi.stubEnv('VITEST', 'true')
 
-    const connect = vi.fn(async () => ({
-      query: vi.fn(async (sql: string) => {
-        if (sql === 'SHOW POOLS;') return { rows: [] }
-        if (sql === 'SHOW STATS;') return { rows: [] }
-        if (sql === 'SHOW SERVERS;') return { rows: [] }
-        throw new Error(`unexpected query: ${sql}`)
+    const { __shellHealthTestHelpers } = await import('./report-service.mjs')
+    const loadMaterializedViewHealthFromDatabase = Reflect.get(
+      __shellHealthTestHelpers,
+      'loadMaterializedViewHealthFromDatabase'
+    ) as (
+      queryDatabase: (
+        sql: string,
+        values?: unknown[]
+      ) => Promise<{ rows: Array<Record<string, unknown>> }>
+    ) => Promise<Record<string, unknown>>
+
+    const calls: string[] = []
+    const queryDatabase = vi.fn(
+      async (
+        sql: string
+      ): Promise<{ rows: Array<Record<string, unknown>> }> => {
+        calls.push(sql)
+        if (sql.includes('to_regclass(relation_name)')) {
+          return {
+            rows: [
+              {
+                view_name: 'rate_limit_intervals',
+                resolved_relation_name: null,
+              },
+              {
+                view_name: 'provider_latency_health_5m',
+                resolved_relation_name: 'public.provider_latency_health_5m',
+              },
+            ],
+          }
+        }
+        if (sql.includes('MAX(bucket_start)')) {
+          return {
+            rows: [
+              {
+                latest_data_at: new Date().toISOString(),
+                row_count: '12',
+              },
+            ],
+          }
+        }
+        if (sql.includes('FROM cron.job')) return { rows: [] }
+        if (sql.includes('FROM pg_stat_activity')) return { rows: [] }
+        throw new Error(`unexpected health query: ${sql}`)
+      }
+    )
+
+    const report = await loadMaterializedViewHealthFromDatabase(queryDatabase)
+    const views = report.views as Array<Record<string, unknown>>
+
+    expect(report.status).toBe('unknown')
+    expect(views).toEqual([
+      expect.objectContaining({
+        viewName: 'rate_limit_intervals',
+        category: 'quota',
+        status: 'unknown',
+        present: false,
+        latestDataAt: null,
+        rowCount: null,
       }),
-      release: vi.fn(),
-    }))
+      expect.objectContaining({
+        viewName: 'provider_latency_health_5m',
+        category: 'provider_health',
+        status: 'ok',
+        present: true,
+        rowCount: 12,
+      }),
+    ])
+    expect(calls[0]).toContain('to_regclass(relation_name)')
+    expect(calls[0]).not.toContain('::regclass')
+    expect(calls.some((sql) => sql.includes('MAX(fromdate)'))).toBe(false)
+  })
+})
+
+describe('D1-489 PgBouncer admin direct client and weighted stats', () => {
+  test('opens and closes one direct Client per admin summary call', async () => {
+    vi.stubEnv('VITEST', 'true')
+
+    const connect = vi.fn(async () => undefined)
+    const query = vi.fn(async (sql: string) => {
+      if (sql === 'SHOW POOLS;') return { rows: [] }
+      if (sql === 'SHOW STATS;') return { rows: [] }
+      if (sql === 'SHOW SERVERS;') return { rows: [] }
+      throw new Error(`unexpected query: ${sql}`)
+    })
     const on = vi.fn()
     const end = vi.fn(async () => {})
-    const Pool = vi.fn(function Pool(
-      this: { connect: typeof connect; on: typeof on; end: typeof end },
-      _opts: unknown
+    const Client = vi.fn(function Client(
+      this: {
+        connect: typeof connect
+        query: typeof query
+        on: typeof on
+        end: typeof end
+      },
+      _options: unknown
     ) {
       this.connect = connect
+      this.query = query
       this.on = on
       this.end = end
     })
+    const Pool = vi.fn()
 
-    vi.doMock('pg', () => ({ default: { Pool }, Pool }))
+    vi.doMock('pg', () => ({ default: { Client, Pool }, Client, Pool }))
 
     const { __pgBouncerAdminTestHelpers } = await import('./report-service.mjs')
-    const {
-      cleanupPgBouncerAdminPools,
-      getPgBouncerAdminPoolCacheSize,
-      loadPgBouncerAdminSummaryForTests,
-    } = __pgBouncerAdminTestHelpers
+    const { loadPgBouncerAdminSummaryForTests } = __pgBouncerAdminTestHelpers
 
     const sidecar = {
       key: 'aawm-pgbouncer',
@@ -236,70 +315,93 @@ describe('D1-444 PgBouncer admin pool cache', () => {
     await loadPgBouncerAdminSummaryForTests(sidecar)
     await loadPgBouncerAdminSummaryForTests(sidecar)
 
-    expect(Pool).toHaveBeenCalledTimes(1)
+    expect(Client).toHaveBeenCalledTimes(2)
     expect(connect).toHaveBeenCalledTimes(2)
-    expect(getPgBouncerAdminPoolCacheSize()).toBe(1)
-
-    await cleanupPgBouncerAdminPools()
-    expect(end).toHaveBeenCalledTimes(1)
-    expect(getPgBouncerAdminPoolCacheSize()).toBe(0)
+    expect(end).toHaveBeenCalledTimes(2)
+    expect(Pool).not.toHaveBeenCalled()
+    expect(Client).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        connectionString: sidecar.adminDatabaseUrl,
+        application_name: 'dashboard-shell-pgbouncer-health',
+        connectionTimeoutMillis: 2_000,
+        query_timeout: 2_000,
+      })
+    )
   })
 
-  test('creates distinct Pools for distinct sidecars/admin URLs', async () => {
+  test('weights aggregate averages by the matching PgBouncer traffic totals', async () => {
     vi.stubEnv('VITEST', 'true')
 
-    const connect = vi.fn(async () => ({
-      query: vi.fn(async () => ({ rows: [] })),
-      release: vi.fn(),
-    }))
-    const on = vi.fn()
-    const end = vi.fn(async () => {})
-    const Pool = vi.fn(function Pool(
-      this: { connect: typeof connect; on: typeof on; end: typeof end },
-      _opts: unknown
-    ) {
-      this.connect = connect
-      this.on = on
-      this.end = end
+    const statsRows = [
+      {
+        database: 'busy',
+        total_xact_count: '100',
+        total_query_count: '200',
+        total_server_assignment_count: '10',
+        avg_xact_count: '10',
+        avg_query_count: '20',
+        avg_wait_time: '4',
+      },
+      {
+        database: 'idle',
+        total_xact_count: '1',
+        total_query_count: '2',
+        avg_xact_count: '100',
+        avg_query_count: '200',
+        avg_wait_time: '100',
+      },
+    ]
+    const query = vi.fn(async (sql: string) => {
+      if (sql === 'SHOW POOLS;') return { rows: [] }
+      if (sql === 'SHOW STATS;') return { rows: statsRows }
+      if (sql === 'SHOW SERVERS;') return { rows: [] }
+      throw new Error(`unexpected query: ${sql}`)
     })
-
-    vi.doMock('pg', () => ({ default: { Pool }, Pool }))
+    const Client = vi.fn(function Client(
+      this: {
+        connect: () => Promise<void>
+        query: typeof query
+        on: () => void
+        end: () => Promise<void>
+      },
+      _options: unknown
+    ) {
+      this.connect = async () => undefined
+      this.query = query
+      this.on = () => undefined
+      this.end = async () => undefined
+    })
+    const Pool = vi.fn()
+    vi.doMock('pg', () => ({ default: { Client, Pool }, Client, Pool }))
 
     const { __pgBouncerAdminTestHelpers } = await import('./report-service.mjs')
-    const {
-      cleanupPgBouncerAdminPools,
-      getPgBouncerAdminPoolCacheSize,
-      loadPgBouncerAdminSummaryForTests,
-    } = __pgBouncerAdminTestHelpers
-
-    await loadPgBouncerAdminSummaryForTests({
+    const { loadPgBouncerAdminSummaryForTests } = __pgBouncerAdminTestHelpers
+    const summary = (await loadPgBouncerAdminSummaryForTests({
       key: 'aawm-pgbouncer',
       adminDatabaseUrl: 'postgresql://admin:secret@127.0.0.1:6432/pgbouncer',
-    })
-    await loadPgBouncerAdminSummaryForTests({
-      key: 'aegis-pgbouncer',
-      adminDatabaseUrl: 'postgresql://admin:secret@127.0.0.1:6433/pgbouncer',
-    })
+    })) as {
+      statsSummary: Record<string, number>
+    }
 
-    expect(Pool).toHaveBeenCalledTimes(2)
-    expect(getPgBouncerAdminPoolCacheSize()).toBe(2)
-
-    await cleanupPgBouncerAdminPools()
-    expect(end).toHaveBeenCalledTimes(2)
-    expect(getPgBouncerAdminPoolCacheSize()).toBe(0)
+    expect(summary.statsSummary).toMatchObject({
+      totalXactCount: 101,
+      totalQueryCount: 202,
+      avgXactCount: 11,
+      avgQueryCount: 22,
+      avgWaitTime: 13,
+    })
+    expect(Pool).not.toHaveBeenCalled()
   })
 
-  test('preserves missing admin DSN behavior without creating a Pool', async () => {
+  test('preserves missing admin DSN behavior without creating a Client', async () => {
     vi.stubEnv('VITEST', 'true')
 
+    const Client = vi.fn()
     const Pool = vi.fn()
-    vi.doMock('pg', () => ({ default: { Pool }, Pool }))
+    vi.doMock('pg', () => ({ default: { Client, Pool }, Client, Pool }))
 
     const { __pgBouncerAdminTestHelpers } = await import('./report-service.mjs')
-    const {
-      loadPgBouncerAdminSummaryForTests,
-      getPgBouncerAdminPoolCacheSize,
-    } = __pgBouncerAdminTestHelpers
+    const { loadPgBouncerAdminSummaryForTests } = __pgBouncerAdminTestHelpers
 
     const summary = await loadPgBouncerAdminSummaryForTests({
       key: 'aawm-pgbouncer',
@@ -311,8 +413,8 @@ describe('D1-444 PgBouncer admin pool cache', () => {
       status: 'unconfigured',
       error: 'PgBouncer admin database URL is not configured.',
     })
+    expect(Client).not.toHaveBeenCalled()
     expect(Pool).not.toHaveBeenCalled()
-    expect(getPgBouncerAdminPoolCacheSize()).toBe(0)
   })
 })
 

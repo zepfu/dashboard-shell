@@ -5,6 +5,7 @@ import {
   deriveTokenTrendActiveVersionLanes,
   deriveTokenTrendModelFirstSeenGroups,
   formatBucketLabel,
+  isTokenTrendActiveVersionClient,
   normalizeTrendData,
   normalizeTokenTrendClientVersionForLane,
 } from './trend-utils'
@@ -42,6 +43,41 @@ test('test_buildTokenTrendDayEnvelopes_groups_hours_by_day_and_provider', () => 
   expect(envelopes[0]?.hours[8]?.totals.xai).toBe(150)
   expect(envelopes[0]?.total).toBe(150)
   expect(envelopes[1]?.hours[9]?.totals.google).toBe(25)
+})
+
+test('test_normalizeTrendData_keeps_distinct_and_observed_unknown_providers', () => {
+  const data = normalizeTrendData([
+    {
+      bucket: '2026-05-20',
+      provider: 'Emerging_Provider',
+      model: 'm',
+      repository: '',
+      traces: 1,
+      token_total: 7,
+      usd_cost: 0,
+    },
+    {
+      bucket: '2026-05-20',
+      provider: 'cohere',
+      model: 'm',
+      repository: '',
+      traces: 1,
+      token_total: 11,
+      usd_cost: 0,
+    },
+    {
+      bucket: '2026-05-20',
+      provider: 'cohere',
+      model: 'm',
+      repository: '',
+      traces: 1,
+      token_total: 4,
+      usd_cost: 0,
+    },
+  ])
+
+  expect(data[data.length - 1]?.totals.cohere).toBe(15)
+  expect(data[data.length - 1]?.totals.emerging_provider).toBe(7)
 })
 
 test('test_buildTokenTrendDayEnvelopes_supports_request_and_tool_metrics', () => {
@@ -146,6 +182,29 @@ test('test_classifyTokenTrendActiveVersionFamily_normalizes_client_and_provider_
       client_version: '1.0.0',
     })
   ).toBeNull()
+})
+
+test('test_hasTokenSequence_matches_whole_client_tokens_only', () => {
+  expect(
+    isTokenTrendActiveVersionClient({
+      client_name: 'claude clip',
+    })
+  ).toBe(false)
+  expect(
+    isTokenTrendActiveVersionClient({
+      client_name: 'Claude CLI! extra',
+    })
+  ).toBe(true)
+})
+
+test('test_classifyTokenTrendActiveVersionFamily_accepts_codex_version_only', () => {
+  expect(
+    classifyTokenTrendActiveVersionFamily({
+      provider: 'openai',
+      client_name: 'unknown-client',
+      client_version: 'Codex/1.2.3',
+    })
+  ).toBe('codex')
 })
 
 test('test_normalizeTokenTrendClientVersionForLane_collapses_hash_suffixed_builds', () => {

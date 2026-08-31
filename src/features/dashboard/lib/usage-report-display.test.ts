@@ -27,6 +27,7 @@ import {
   formatResetDistance,
   formatUsd,
   modelBrandHex,
+  providerDisplayLabel,
   providerAliases,
 } from './usage-report-display'
 
@@ -239,6 +240,18 @@ describe('provider alias canonicalization', () => {
     expect(providerAliases('xai')).toEqual(expect.arrayContaining(['oa_xai']))
     expect(canonicalProvider('oa_xai')).toBe('xai')
     expect(canonicalProvider('oa_xai/grok-4.3')).toBe('xai')
+  })
+
+  test('test_distinct_providers_render_curated_labels', () => {
+    expect(providerDisplayLabel('cursor_agent')).toBe('Cursor Agent')
+    expect(providerDisplayLabel('alibaba_token_plan')).toBe(
+      'Alibaba Token Plan'
+    )
+    expect(providerDisplayLabel('zai_coding_plan')).toBe('Z.ai Coding Plan')
+    expect(providerDisplayLabel('kimi_code')).toBe('Kimi Code')
+    expect(providerDisplayLabel('opencode_go')).toBe('OpenCode Go')
+    expect(providerDisplayLabel('opencode_zen')).toBe('OpenCode Zen')
+    expect(providerDisplayLabel('cohere')).toBe('Cohere')
   })
 })
 

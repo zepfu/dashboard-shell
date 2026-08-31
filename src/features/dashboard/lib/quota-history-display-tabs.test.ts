@@ -6,8 +6,15 @@ import type { UsageReportQuotaHistoryRow } from '../api/usage-report'
 import {
   ALIBABA_TOKEN_PLAN_5H_CREDITS_KEY,
   ALIBABA_TOKEN_PLAN_7D_CREDITS_KEY,
+  CURSOR_AGENT_MONTHLY_CENTS_KEY,
   KIMI_CODE_5H_QUOTA_UNITS_KEY,
   KIMI_CODE_7D_QUOTA_UNITS_KEY,
+  ZAI_CODING_PLAN_5H_COUNT_KEY,
+  ZAI_CODING_PLAN_5H_CREDITS_KEY,
+  ZAI_CODING_PLAN_5H_PERCENT_KEY,
+  ZAI_CODING_PLAN_7D_COUNT_KEY,
+  ZAI_CODING_PLAN_7D_CREDITS_KEY,
+  ZAI_CODING_PLAN_7D_PERCENT_KEY,
 } from './quota-bars/lane-defs'
 import { buildProviderQuotaHistoryTabs } from './quota-history-display'
 
@@ -30,6 +37,30 @@ function makeHistoryRow(
 }
 
 describe('buildProviderQuotaHistoryTabs — xai grok build split', () => {
+  test('test_openai_history_keeps_short_special_but_hides_regular_short', () => {
+    const tabs = buildProviderQuotaHistoryTabs('openai', [
+      makeHistoryRow({
+        provider: 'openai',
+        quota_type: 'short',
+        expected_reset_at: '2026-07-24T17:22:00Z',
+        interval_start: '2026-07-24T12:22:00Z',
+        interval_end: '2026-07-24T17:22:00Z',
+      }),
+      makeHistoryRow({
+        provider: 'openai',
+        quota_type: 'short_special',
+        expected_reset_at: '2026-07-24T17:22:00Z',
+        interval_start: '2026-07-24T12:22:00Z',
+        interval_end: '2026-07-24T17:22:00Z',
+      }),
+    ])
+
+    expect(tabs.some((tab) => tab.tabKey === 'openai/short')).toBe(false)
+    expect(
+      tabs.find((tab) => tab.tabKey === 'openai/short_special')?.rows
+    ).toHaveLength(1)
+  })
+
   test('test_xai_grok_build_history_tabs_keep_weekly_credits_and_monthly_requests_split', () => {
     const tabs = buildProviderQuotaHistoryTabs('xai', [
       makeHistoryRow({
@@ -78,6 +109,40 @@ describe('buildProviderQuotaHistoryTabs — xai grok build split', () => {
       'xai_grok_build_monthly_requests:requests'
     )
     expect(tabs[1].rows[0].quota_unit).toBe('requests')
+  })
+
+  test('test_openai_spark_history_keeps_legacy_bengalfox_keys', () => {
+    const tabs = buildProviderQuotaHistoryTabs('openai', [
+      makeHistoryRow({
+        provider: 'openai',
+        quota_type: 'short_special',
+        quota_key: 'codex_bengalfox:primary',
+        expected_reset_at: '2026-07-24T17:22:00Z',
+        interval_start: '2026-07-24T12:22:00Z',
+        interval_end: '2026-07-24T17:22:00Z',
+      }),
+      makeHistoryRow({
+        provider: 'openai',
+        quota_type: 'special',
+        quota_key: 'codex_bengalfox:secondary',
+        expected_reset_at: '2026-07-24T17:22:00Z',
+        interval_start: '2026-07-17T17:22:00Z',
+        interval_end: '2026-07-24T17:22:00Z',
+      }),
+    ])
+
+    expect(tabs.map((tab) => tab.tabKey)).toEqual([
+      'openai/short_special',
+      'openai/weekly',
+      'openai/special',
+    ])
+    expect(
+      tabs.find((tab) => tab.tabKey === 'openai/short_special')?.rows[0]
+        ?.quota_key
+    ).toBe('codex_bengalfox:primary')
+    expect(
+      tabs.find((tab) => tab.tabKey === 'openai/special')?.rows[0]?.quota_key
+    ).toBe('codex_bengalfox:secondary')
   })
 
   test('test_google_quota_history_tabs_include_antigravity_wtus_detail', () => {
@@ -638,4 +703,182 @@ describe('D1-492 — Kimi Code quota history tabs', () => {
     expect(JSON.stringify(tabs)).not.toContain(firstHash)
     expect(JSON.stringify(tabs)).not.toContain(secondHash)
   })
+})
+
+describe('D1-496 — current provider quota history tabs', () => {
+  function zaiHistoryRow(
+    quotaKey: string,
+    quotaPeriod: '5h' | '7d',
+    quotaUnit: 'credits' | 'percent' | 'count',
+    overrides: Partial<UsageReportQuotaHistoryRow> = {}
+  ): UsageReportQuotaHistoryRow {
+    const quotaType = quotaPeriod === '5h' ? 'short' : 'weekly'
+    return makeHistoryRow({
+      provider: 'zai_coding_plan',
+      model: 'zai-coding-plan',
+      quota_type: quotaType,
+      quota_key: quotaKey,
+      quota_period: quotaPeriod,
+      source: 'zai_coding_plan_quota_poll',
+      client: 'zai-coding-plan',
+      quota_unit: quotaUnit,
+      quota_limit: quotaUnit === 'percent' ? null : 100,
+      quota_used: quotaUnit === 'percent' ? null : 20,
+      quota_remaining: quotaUnit === 'percent' ? null : 80,
+      min_remaining_pct: quotaUnit === 'percent' ? 55 : 80,
+      max_remaining_pct: 100,
+      usage_tokens: 0,
+      ...overrides,
+    })
+  }
+
+  test('test_cursor_monthly_cents_history_preserves_contract_and_absolutes', () => {
+    const tabs = buildProviderQuotaHistoryTabs('cursor_agent', [
+      makeHistoryRow({
+        provider: 'cursor_agent',
+        model: 'cursor-agent',
+        quota_type: 'monthly',
+        quota_key: CURSOR_AGENT_MONTHLY_CENTS_KEY,
+        quota_period: 'monthly',
+        source: 'cursor_agent_usage',
+        client: 'cursor-agent',
+        quota_unit: 'cents',
+        quota_limit: 100000,
+        quota_used: 30000,
+        quota_remaining: 70000,
+        account_ref: '0123456789ab',
+        min_remaining_pct: 70,
+        max_remaining_pct: 100,
+        usage_tokens: 0,
+      }),
+    ])
+
+    expect(tabs.map((tab) => tab.tabKey)).toEqual([
+      'cursor_agent/monthly-cents',
+    ])
+    expect(tabs[0].label).toBe('Monthly Cents')
+    expect(tabs[0].rows).toHaveLength(1)
+    expect(tabs[0].rows[0]).toMatchObject({
+      quota_key: CURSOR_AGENT_MONTHLY_CENTS_KEY,
+      quota_period: 'monthly',
+      source: 'cursor_agent_usage',
+      client: 'cursor-agent',
+      quota_unit: 'cents',
+      quota_limit: 100000,
+      quota_used: 30000,
+      quota_remaining: 70000,
+      account_ref: '0123456789ab',
+    })
+  })
+
+  test.each([
+    ['source', { source: 'wrong-source' }],
+    ['client', { client: 'wrong-client' }],
+    ['quota key', { quota_key: 'cursor_agent_monthly:tokens' }],
+    ['period', { quota_period: '5h' }],
+    ['unit', { quota_unit: 'dollars' }],
+    ['model', { model: 'cursor' }],
+  ] as const)(
+    'test_cursor_monthly_cents_history_rejects_%s_contract_mismatch',
+    (_field, override) => {
+      const tabs = buildProviderQuotaHistoryTabs('cursor_agent', [
+        makeHistoryRow({
+          provider: 'cursor_agent',
+          model: 'cursor-agent',
+          quota_type: 'monthly',
+          quota_key: CURSOR_AGENT_MONTHLY_CENTS_KEY,
+          quota_period: 'monthly',
+          source: 'cursor_agent_usage',
+          client: 'cursor-agent',
+          quota_unit: 'cents',
+          quota_limit: 100000,
+          quota_used: 30000,
+          quota_remaining: 70000,
+          min_remaining_pct: 70,
+          max_remaining_pct: 100,
+          usage_tokens: 0,
+          ...override,
+        }),
+      ])
+
+      expect(tabs[0].rows).toHaveLength(0)
+    }
+  )
+
+  test('test_zai_history_tabs_render_each_observed_unit_variant', () => {
+    const tabs = buildProviderQuotaHistoryTabs('zai_coding_plan', [
+      zaiHistoryRow(ZAI_CODING_PLAN_5H_CREDITS_KEY, '5h', 'credits'),
+      zaiHistoryRow(ZAI_CODING_PLAN_5H_PERCENT_KEY, '5h', 'percent'),
+      zaiHistoryRow(ZAI_CODING_PLAN_5H_COUNT_KEY, '5h', 'count'),
+      zaiHistoryRow(ZAI_CODING_PLAN_7D_CREDITS_KEY, '7d', 'credits'),
+      zaiHistoryRow(ZAI_CODING_PLAN_7D_PERCENT_KEY, '7d', 'percent'),
+      zaiHistoryRow(ZAI_CODING_PLAN_7D_COUNT_KEY, '7d', 'count'),
+    ])
+
+    expect(tabs.map((tab) => tab.tabKey)).toEqual([
+      'zai_coding_plan/5h-credits',
+      'zai_coding_plan/5h-percent',
+      'zai_coding_plan/5h-count',
+      'zai_coding_plan/7d-credits',
+      'zai_coding_plan/7d-percent',
+      'zai_coding_plan/7d-count',
+    ])
+    expect(tabs.every((tab) => tab.rows.length === 1)).toBe(true)
+    expect(tabs.map((tab) => tab.rows[0].quota_unit)).toEqual([
+      'credits',
+      'percent',
+      'count',
+      'credits',
+      'percent',
+      'count',
+    ])
+    expect(tabs[1].rows[0]).toMatchObject({
+      quota_limit: null,
+      quota_used: null,
+      quota_remaining: null,
+    })
+  })
+
+  test('test_zai_missing_history_variants_have_no_rows_and_no_zero_absolute_values', () => {
+    const tabs = buildProviderQuotaHistoryTabs('zai_coding_plan', [
+      zaiHistoryRow(ZAI_CODING_PLAN_5H_CREDITS_KEY, '5h', 'credits'),
+      zaiHistoryRow(ZAI_CODING_PLAN_7D_COUNT_KEY, '7d', 'count'),
+    ])
+
+    expect(
+      tabs.find((tab) => tab.tabKey === 'zai_coding_plan/5h-percent')?.rows
+    ).toHaveLength(0)
+    expect(
+      tabs.find((tab) => tab.tabKey === 'zai_coding_plan/7d-percent')?.rows
+    ).toHaveLength(0)
+    expect(
+      tabs.find((tab) => tab.tabKey === 'zai_coding_plan/5h-credits')?.rows[0]
+        ?.quota_limit
+    ).toBe(100)
+  })
+
+  test.each([
+    ['source', { source: 'wrong-source' }],
+    ['client', { client: 'wrong-client' }],
+    ['quota key', { quota_key: ZAI_CODING_PLAN_5H_PERCENT_KEY }],
+    ['period', { quota_period: '7d' }],
+    ['unit', { quota_unit: 'count' }],
+    ['model', { model: 'zai' }],
+  ] as const)(
+    'test_zai_5h_credits_history_rejects_%s_contract_mismatch',
+    (_field, override) => {
+      const tabs = buildProviderQuotaHistoryTabs('zai_coding_plan', [
+        zaiHistoryRow(
+          ZAI_CODING_PLAN_5H_CREDITS_KEY,
+          '5h',
+          'credits',
+          override
+        ),
+      ])
+
+      expect(
+        tabs.find((tab) => tab.tabKey === 'zai_coding_plan/5h-credits')?.rows
+      ).toHaveLength(0)
+    }
+  )
 })

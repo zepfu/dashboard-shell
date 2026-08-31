@@ -65,7 +65,7 @@ export function formatDashboardFreshness(
   if (Number.isNaN(displayDate.getTime())) {
     return 'FETCHED -- UTC · -- ago'
   }
-  const timeUTC = displayDate.toUTCString().split(' ')[4] ?? ''
+  const timeUTC = displayDate.toISOString().slice(11, 19)
   const distance = formatDistance(displayDate, now, { addSuffix: false })
   return `FETCHED ${timeUTC} UTC · ${distance} ago`
 }
@@ -74,7 +74,7 @@ export function formatRecencyValue(iso: string | null, now: Date): string {
   if (iso === null) return '--'
   const date = new Date(iso)
   if (Number.isNaN(date.getTime())) return '--'
-  const timeUTC = date.toUTCString().split(' ')[4] ?? ''
+  const timeUTC = date.toISOString().slice(11, 19)
   const distance = formatDistance(date, now, { addSuffix: false })
   return `${timeUTC} UTC / ${distance} ago`
 }

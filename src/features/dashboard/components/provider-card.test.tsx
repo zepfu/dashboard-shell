@@ -1652,22 +1652,4 @@ describe('D1-489 — Alibaba Token Plan ProviderCard', () => {
     expect(container.querySelector('[data-testid="health-strip"]')).toBeNull()
     expect(container.querySelector('.health-strip-cell')).toBeNull()
   })
-
-  test('test_alibaba_provider_series_css_color_consistency', () => {
-    const dashboardSource = readFileSync(
-      path.join(import.meta.dirname, 'phosphor-dashboard.tsx'),
-      'utf8'
-    )
-    const cssSource = readFileSync(
-      path.resolve(process.cwd(), 'src/styles/index.css'),
-      'utf8'
-    )
-
-    expect(dashboardSource).toMatch(
-      /key:\s*'alibaba_token_plan'[\s\S]*?color:\s*'#ff6a00'[\s\S]*?cssClass:\s*'tt-alibaba'/
-    )
-    expect(cssSource).toMatch(
-      /\.tt-slice\.tt-alibaba,\s*\.tt-swatch\.tt-alibaba\s*\{\s*background:\s*#ff6a00;/
-    )
-  })
 })

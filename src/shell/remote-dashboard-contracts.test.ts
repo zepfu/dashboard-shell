@@ -59,7 +59,205 @@ describe('remote dashboard doc contracts (preserved)', () => {
       'add_header Content-Security-Policy $dashboard_shell_csp always;'
     )
   })
+
+  test('test_static_nginx_proxy_route_bodies_preserve_route_parity', () => {
+    const nginx = renderNginxIncludes(readProjectFile('nginx.conf.template'))
+    const locations = parseNginxLocations(nginx)
+    const moduleBody = (path: string, host: string) => [
+      `set $module_dashboard http://${host}:80;`,
+      `rewrite ^${path}/(.*)$ /$1 break;`,
+      'proxy_pass $module_dashboard;',
+      'proxy_http_version 1.1;',
+      'proxy_set_header Host $host;',
+      'proxy_connect_timeout 5s;',
+      'proxy_read_timeout 60s;',
+    ]
+    const credentialledApiBody = [
+      'proxy_set_header X-Dashboard-Shell-Proxy-Secret $shell_report_proxy_secret;',
+      'set $shell_report_api http://dashboard-shell-reports:3010;',
+      'proxy_pass $shell_report_api;',
+      'proxy_http_version 1.1;',
+      'proxy_set_header Host $host;',
+      'proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;',
+      'proxy_set_header X-Forwarded-Proto $scheme;',
+      'proxy_connect_timeout 5s;',
+      'proxy_read_timeout 60s;',
+    ]
+    const streamingApiBody = [...credentialledApiBody, 'proxy_buffering off;']
+    const uncredentialledApiBody = [
+      'set $shell_report_api http://dashboard-shell-reports:3010;',
+      'proxy_pass $shell_report_api;',
+      'proxy_http_version 1.1;',
+      'proxy_set_header Host $host;',
+      'proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;',
+      'proxy_set_header X-Forwarded-Proto $scheme;',
+      'proxy_connect_timeout 5s;',
+      'proxy_read_timeout 60s;',
+    ]
+    const expected = [
+      {
+        location: '= /modules/aawm-tap/remoteEntry.js',
+        directives: [
+          ...moduleBody('/modules/aawm-tap', 'aawm-tap-dashboard'),
+          'add_header Cache-Control "no-store" always;',
+        ],
+      },
+      {
+        location: '^~ /modules/aawm-tap/',
+        directives: moduleBody('/modules/aawm-tap', 'aawm-tap-dashboard'),
+      },
+      {
+        location: '= /modules/aawm/remoteEntry.js',
+        directives: [
+          ...moduleBody('/modules/aawm', 'aawm-dashboard'),
+          'add_header Cache-Control "no-store" always;',
+        ],
+      },
+      {
+        location: '^~ /modules/aawm/',
+        directives: moduleBody('/modules/aawm', 'aawm-dashboard'),
+      },
+      {
+        location: '= /modules/aawm-observe/remoteEntry.js',
+        directives: [
+          ...moduleBody('/modules/aawm-observe', 'aawm-observe-dashboard'),
+          'add_header Cache-Control "no-store" always;',
+        ],
+      },
+      {
+        location: '^~ /modules/aawm-observe/',
+        directives: moduleBody(
+          '/modules/aawm-observe',
+          'aawm-observe-dashboard'
+        ),
+      },
+      {
+        location: '= /modules/aegis/remoteEntry.js',
+        directives: [
+          ...moduleBody('/modules/aegis', 'aegis-dashboard'),
+          'add_header Cache-Control "no-store" always;',
+        ],
+      },
+      {
+        location: '^~ /modules/aegis/',
+        directives: moduleBody('/modules/aegis', 'aegis-dashboard'),
+      },
+      {
+        location: '= /modules/sluice/remoteEntry.js',
+        directives: [
+          ...moduleBody('/modules/sluice', 'sluice-dashboard'),
+          'add_header Cache-Control "no-store" always;',
+        ],
+      },
+      {
+        location: '^~ /modules/sluice/',
+        directives: moduleBody('/modules/sluice', 'sluice-dashboard'),
+      },
+      {
+        location: '= /api/aawm-tap',
+        directives: credentialledApiBody,
+      },
+      {
+        location: '^~ /api/aawm-tap/',
+        directives: credentialledApiBody,
+      },
+      { location: '= /api/aawm-observe', directives: streamingApiBody },
+      { location: '^~ /api/aawm-observe/', directives: streamingApiBody },
+      { location: '= /api/aawm', directives: streamingApiBody },
+      { location: '^~ /api/aawm/', directives: streamingApiBody },
+      { location: '= /hook-api', directives: streamingApiBody },
+      { location: '^~ /hook-api/', directives: streamingApiBody },
+      { location: '= /api/aegis', directives: streamingApiBody },
+      { location: '^~ /api/aegis/', directives: streamingApiBody },
+      { location: '= /api/shell', directives: uncredentialledApiBody },
+      { location: '^~ /api/shell/', directives: uncredentialledApiBody },
+      { location: '= /api/sluice', directives: streamingApiBody },
+      { location: '^~ /api/sluice/', directives: streamingApiBody },
+    ]
+
+    const proxyLocations = locations.filter(({ location }) =>
+      /\/modules\/|\/api\/|\/hook-api/.test(location)
+    )
+
+    expect(nginx).not.toContain('MODULE_HOST')
+    expect(nginx).not.toContain('MODULE_PATH')
+    expect(nginx).toContain('proxy_send_timeout 60s;')
+    expect(proxyLocations).toEqual(expected)
+    expect(locations.map(({ location }) => location)).toEqual([
+      '= /index.html',
+      ...expected.map(({ location }) => location),
+      '~* \\.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|eot)$',
+      '/',
+    ])
+  })
 })
+
+function renderNginxIncludes(content: string): string {
+  const includes = new Map<string, string>()
+  const files = [
+    'modules-proxy.conf',
+    'report-api-credentialled.conf',
+    'report-api-uncredentialled.conf',
+  ]
+
+  for (const filename of files) {
+    includes.set(
+      filename,
+      readProjectFile(`nginx/${filename}`)
+        .trimEnd()
+        .split('\n')
+        .map((line) => line.trim())
+        .join('\n')
+    )
+  }
+
+  return content.replace(
+    /^(\s*)include\s+\/etc\/nginx\/([^;\s]+);\s*$/gm,
+    (match, indent: string, filename: string) => {
+      const include = includes.get(filename)
+      if (include === undefined) {
+        return match
+      }
+
+      return include
+        .split('\n')
+        .map((line) => `${indent}${line}`)
+        .join('\n')
+    }
+  )
+}
+
+function parseNginxLocations(content: string) {
+  const locations: Array<{ location: string; directives: string[] }> = []
+  let current: { location: string; directives: string[] } | undefined
+  let depth = 0
+
+  for (const rawLine of content.split('\n')) {
+    const line = rawLine.trim()
+    const location = line.match(/^location\s+(.+?)\s*\{$/)
+
+    if (location) {
+      if (depth !== 1) {
+        throw new Error(`Unexpected location at depth ${depth}: ${line}`)
+      }
+      current = { location: location[1], directives: [] }
+      locations.push(current)
+      depth += 1
+      continue
+    }
+
+    depth += (line.match(/\{/g) ?? []).length
+    depth -= (line.match(/\}/g) ?? []).length
+
+    if (current && line !== '}' && depth === 2) {
+      current.directives.push(line)
+    } else if (line === '}') {
+      current = undefined
+    }
+  }
+
+  return locations
+}
 
 // ---------------------------------------------------------------------------
 // S6-T1 / S6-1: Real MF contract tests — metadata invariants

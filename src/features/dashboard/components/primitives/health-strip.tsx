@@ -226,6 +226,113 @@ function sumEventOccurrences(events: readonly HealthStripEvent[]): number {
   return events.reduce((total, event) => total + event.count, 0)
 }
 
+type AccessibilityCellState = 'degraded' | 'error' | 'no-data' | 'normal'
+type HealthSummaryStateCounts = Record<AccessibilityCellState, number>
+
+function countBreakdownValues(
+  breakdown: CellDef['rawErrorBreakdown'] | CellDef['rawDegradedBreakdown']
+): number {
+  if (breakdown == null) return 0
+  return Object.values(breakdown).reduce((total, value) => total + value, 0)
+}
+
+function cellSignalCount(cell: CellDef): number {
+  const eventCount =
+    cell.eventCount ??
+    sumEventOccurrences(cell.events ?? []) +
+      countBreakdownValues(cell.rawErrorBreakdown)
+  return eventCount + (cell.degradedCount ?? 0)
+}
+
+function accessibilityCellState(cell: CellDef): AccessibilityCellState {
+  const category = cell.category
+
+  if (category === 'miss') return 'no-data'
+  if (
+    category === undefined &&
+    cell.rawP95Ms === undefined &&
+    cell.rawErrorCount === undefined
+  ) {
+    return 'no-data'
+  }
+  if (
+    category === undefined &&
+    cell.rawP95Ms == null &&
+    (cell.rawErrorCount ?? 0) === 0
+  ) {
+    return 'no-data'
+  }
+  if (category === 'blue' || category === 'normal') {
+    return 'no-data'
+  }
+
+  if (category === 'red') return 'error'
+  if (
+    (cell.rawErrorCount ?? 0) > 0 ||
+    countBreakdownValues(cell.rawErrorBreakdown) > 0
+  ) {
+    return 'error'
+  }
+  if (
+    category === 'orange' ||
+    category === 'warning' ||
+    (cell.degradedCount ?? 0) > 0 ||
+    countBreakdownValues(cell.rawDegradedBreakdown) > 0
+  ) {
+    return 'degraded'
+  }
+  return 'normal'
+}
+
+function buildHealthSummary(cells: readonly CellDef[]): string {
+  const stateCounts = cells.reduce(
+    (counts, cell) => {
+      counts[accessibilityCellState(cell)] += 1
+      return counts
+    },
+    {
+      degraded: 0,
+      error: 0,
+      'no-data': 0,
+      normal: 0,
+    } satisfies HealthSummaryStateCounts
+  )
+
+  const dataCount = TOTAL_CELLS - stateCounts['no-data']
+  const eventCount = cells.reduce(
+    (total, cell) => total + cellSignalCount(cell),
+    0
+  )
+  const degradedCount = cells.reduce(
+    (total, cell) => total + (cell.degradedCount ?? 0),
+    0
+  )
+
+  if (dataCount === 0) {
+    return 'Provider health: no data in the last 24 hours.'
+  }
+
+  const status =
+    stateCounts.error > 0
+      ? `service errors detected in ${stateCounts.error.toString()} ${
+          stateCounts.error === 1 ? 'interval' : 'intervals'
+        }`
+      : stateCounts.degraded > 0
+        ? `degraded signals detected in ${stateCounts.degraded.toString()} ${
+            stateCounts.degraded === 1 ? 'interval' : 'intervals'
+          }`
+        : 'nominal'
+
+  return [
+    `Provider health: ${status}`,
+    `${dataCount.toString()} of ${TOTAL_CELLS.toString()} intervals have data`,
+    `${eventCount.toString()} ${eventCount === 1 ? 'event' : 'events'}`,
+    `${degradedCount.toString()} degraded ${
+      degradedCount === 1 ? 'signal' : 'signals'
+    }`,
+  ].join('; ')
+}
+
 function buildDegradedTooltipRows(
   breakdown: CellDef['rawDegradedBreakdown']
 ): ReactNode[] {
@@ -526,6 +633,7 @@ export const HealthStrip = memo(function HealthStrip({
     const renderCells = normalized
     const visualRuns = buildHealthVisualRuns(renderCells, p90Threshold)
     const tooltipSourceCells = cells.length > 0 ? cells : normalized
+    const healthSummary = buildHealthSummary(renderCells)
 
     const stripInner = (
       <>
@@ -572,8 +680,16 @@ export const HealthStrip = memo(function HealthStrip({
     }
 
     const stripContent = (
-      <div className='health-strip-wrapper' style={stripWrapperStyle}>
-        {stripInner}
+      <div
+        aria-label={healthSummary}
+        className='health-strip-wrapper'
+        role='img'
+        style={stripWrapperStyle}
+        tabIndex={0}
+      >
+        <div aria-hidden='true' style={{ display: 'contents' }}>
+          {stripInner}
+        </div>
       </div>
     )
 
@@ -583,7 +699,7 @@ export const HealthStrip = memo(function HealthStrip({
     }
 
     return (
-      <div aria-hidden='true' style={shellStyle}>
+      <div style={shellStyle}>
         <div style={{ pointerEvents: 'auto', height: '100%' }}>
           <HoverTooltip
             content={() =>

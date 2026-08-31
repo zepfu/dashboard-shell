@@ -9,7 +9,9 @@ import type {
 import {
   classifyGeminiModel,
   ivClassForConsumed,
+  matchesCursorAgentQuotaContract,
   matchesKimiCodeQuotaContract,
+  matchesZaiCodingPlanQuotaContract,
   quotaTypeToLaneKey,
   resolveQuotaAccountIdentities,
   roundToNearest30Min,
@@ -87,12 +89,12 @@ function compareQuotaHistoryResetDesc(
 
 function shouldHideQuotaHistoryLane(
   providerLower: string,
-  def: { laneLabel: string }
+  def: { quotaType: string }
 ): boolean {
   if (providerLower !== 'anthropic' && providerLower !== 'openai') {
     return false
   }
-  return def.laneLabel.toLowerCase().includes('5hr')
+  return quotaTypeToLaneKey(def.quotaType) === 'short'
 }
 
 function quotaHistoryRowMatchesLane(
@@ -135,6 +137,20 @@ function quotaHistoryRowMatchesLane(
       return (
         expectedQuotaPeriod !== null &&
         matchesKimiCodeQuotaContract(row, def.quotaKey, expectedQuotaPeriod)
+      )
+    }
+    if (laneProvider === 'cursor_agent') {
+      return matchesCursorAgentQuotaContract(row, row.model)
+    }
+    if (laneProvider === 'zai_coding_plan') {
+      if (expectedQuotaPeriod !== '5h' && expectedQuotaPeriod !== '7d') {
+        return false
+      }
+      return matchesZaiCodingPlanQuotaContract(
+        row,
+        row.model,
+        def.quotaKey,
+        expectedQuotaPeriod
       )
     }
     return (
@@ -232,7 +248,7 @@ function aggregateQuotaUsageBreakdown(
     byModel.set(model, {
       model,
       tokens: Math.max(existing.tokens, entry.tokens),
-      cost: Math.max(existing.cost, entry.cost),
+      cost: maxNullableNumber([existing.cost, entry.cost]),
       traces: Math.max(existing.traces, entry.traces),
       recent_traces_90m:
         existing.recent_traces_90m === undefined &&
@@ -259,8 +275,12 @@ function quotaHistoryResetGroupKey(row: UsageReportQuotaHistoryRow): string {
       laneKey === 'weekly' ||
       laneKey === 'special' ||
       laneKey === 'monthly' ||
+      laneKey === 'wtus' ||
       (laneKey === 'short' &&
-        (provider === 'google' || provider === 'openrouter'))
+        (provider === 'google' ||
+          provider === 'openrouter' ||
+          provider === 'alibaba_token_plan' ||
+          provider === 'kimi_code'))
     ) {
       return parsed.toISOString().slice(0, 10)
     }

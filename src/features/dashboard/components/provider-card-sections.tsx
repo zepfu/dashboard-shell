@@ -298,11 +298,12 @@ export function ProviderCardTopModelsPane({
               fontSize: '9.5px',
             }}
           >
-            $
-            {m.cost_usd.toLocaleString('en-US', {
-              minimumFractionDigits: 2,
-              maximumFractionDigits: 2,
-            })}
+            {m.cost_usd === null
+              ? '—'
+              : `$${m.cost_usd.toLocaleString('en-US', {
+                  minimumFractionDigits: 2,
+                  maximumFractionDigits: 2,
+                })}`}
           </span>
           <span
             className='p95'
@@ -626,7 +627,7 @@ export function ProviderCardMetricsBody({
         <PcMiniRow label='out' value={fmtCompact(data.tokens_out)} />
         <PcMiniRow
           label='cost'
-          value={formatUsd(data.cost_usd)}
+          value={formatUsd(data.cost_usd ?? null)}
           valueMod='cost'
         />
         <PcMiniRow label='cache in' value={fmtCompact(data.cache_input)} />

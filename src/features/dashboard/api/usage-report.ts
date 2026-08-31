@@ -178,34 +178,6 @@ const USAGE_REPORT_DEFAULT_GROUP_BY: UsageReportDimension[] = [
 export const USAGE_REPORT_DEFAULT_LIMIT = 50_000
 const USAGE_REPORT_DEFAULT_SORT = 'period_end'
 /**
- * P1: `/api/shell/reports/usage` keeps these sections for backward-compatible
- * bootstrap/fallback behavior while dedicated endpoints remain authoritative for
- * live dashboard refresh.
- *
- * Live dashboard authoritative sources:
- * - `/api/shell/reports/quotas`
- * - `/api/shell/reports/usage/quota-range-history`
- * - `/api/shell/reports/usage/tool-activity`
- */
-export const USAGE_REPORT_MONOLITH_PAYLOAD_DEFAULT_INCLUDES = {
-  includeQuotas: true,
-  includeQuotaHistory: true,
-  includeToolActivity: true,
-} as const
-export const USAGE_REPORT_DEFAULT_INCLUDE_QUOTAS =
-  USAGE_REPORT_MONOLITH_PAYLOAD_DEFAULT_INCLUDES.includeQuotas
-export const USAGE_REPORT_DEFAULT_INCLUDE_QUOTA_HISTORY =
-  USAGE_REPORT_MONOLITH_PAYLOAD_DEFAULT_INCLUDES.includeQuotaHistory
-export const USAGE_REPORT_DEFAULT_INCLUDE_TOOL_ACTIVITY =
-  USAGE_REPORT_MONOLITH_PAYLOAD_DEFAULT_INCLUDES.includeToolActivity
-
-type UsageReportMonolithPayloadSections = {
-  includeQuotas: boolean
-  includeQuotaHistory: boolean
-  includeToolActivity: boolean
-}
-
-/**
  * Multi-value dimension filters supported by the usage report API.
  *
  * 15-D.1: The server uses parseCsv() on each param, so values are joined as
@@ -251,20 +223,6 @@ export interface UsageReportParams extends UsageReportFilterParams {
   groupBy?: readonly UsageReportDimension[]
   cacheBust?: string
   includeEmptyRowFields?: boolean
-  /**
-   * Fallback contract toggles for `/api/shell/reports/usage`.
-   * Monolith payload sections are still kept for backward-compatibility; live
-   * dashboard refresh is authoritative from dedicated endpoints:
-   * `/api/shell/reports/quotas`,
-   * `/api/shell/reports/usage/quota-range-history`, and
-   * `/api/shell/reports/usage/tool-activity`.
-   * Set explicit `false` values to opt out of each section in the monolith
-   * payload (for lighter bootstrap responses while dedicated endpoints cover
-   * live updates).
-   */
-  includeQuotas?: boolean
-  includeQuotaHistory?: boolean
-  includeToolActivity?: boolean
   /** Exposed caller override for row limit; default is `USAGE_REPORT_DEFAULT_LIMIT`. */
   limit?: number
 }
@@ -574,7 +532,8 @@ export interface UsageReportSummary extends UsageReportConfigChangeFields {
   token_reasoning_reported: number
   token_reasoning_estimated: number
   token_total: number
-  usd_cost: number
+  /** Null means no row in the group persisted response_cost_usd. */
+  usd_cost: number | null
   cache_miss_usd_cost: number
   tool_calls: number
   git_commit: number
@@ -591,7 +550,9 @@ export interface UsageReportTrendRow {
   repository: string
   traces: number
   token_total: number
-  usd_cost: number
+  /** Null means no row in the group persisted response_cost_usd. */
+  usd_cost: number | null
+  response_cost_rows: number | null
 }
 
 export interface UsageReportTokenTrendHourRow {
@@ -854,7 +815,8 @@ export interface UsageReportProviderStatusUsageRow extends UsageReportLatencyFie
   model: string
   traces: number
   token_total: number
-  usd_cost: number
+  /** Null means no row in the group persisted response_cost_usd. */
+  usd_cost: number | null
   period_start: string | null
   period_end: string | null
 }
@@ -896,8 +858,6 @@ export interface UsageReportQuotaRow {
   weekly_interval_start: string | null
   weekly_interval_end: string | null
   weekly_active: boolean
-  weekly_usage_tokens: number
-  weekly_usage_breakdown: UsageReportQuotaUsageBreakdown[]
   weekly_velocity_segments?: boolean[]
   weekly_velocity_scores?: number[]
   weekly_velocity_sample_count?: number
@@ -907,8 +867,6 @@ export interface UsageReportQuotaRow {
   weekly_overage_included_interval_start: string | null
   weekly_overage_included_interval_end: string | null
   weekly_overage_included_active: boolean
-  weekly_overage_included_usage_tokens: number
-  weekly_overage_included_usage_breakdown: UsageReportQuotaUsageBreakdown[]
   weekly_overage_included_velocity_segments?: boolean[]
   weekly_overage_included_velocity_scores?: number[]
   weekly_overage_included_velocity_sample_count?: number
@@ -917,8 +875,6 @@ export interface UsageReportQuotaRow {
   short_interval_start: string | null
   short_interval_end: string | null
   short_active: boolean
-  short_usage_tokens: number
-  short_usage_breakdown: UsageReportQuotaUsageBreakdown[]
   short_velocity_segments?: boolean[]
   short_velocity_scores?: number[]
   short_velocity_sample_count?: number
@@ -927,8 +883,6 @@ export interface UsageReportQuotaRow {
   special_interval_start: string | null
   special_interval_end: string | null
   special_active: boolean
-  special_usage_tokens: number
-  special_usage_breakdown: UsageReportQuotaUsageBreakdown[]
   special_velocity_segments?: boolean[]
   special_velocity_scores?: number[]
   special_velocity_sample_count?: number
@@ -937,8 +891,6 @@ export interface UsageReportQuotaRow {
   short_special_interval_start: string | null
   short_special_interval_end: string | null
   short_special_active: boolean
-  short_special_usage_tokens: number
-  short_special_usage_breakdown: UsageReportQuotaUsageBreakdown[]
   short_special_velocity_segments?: boolean[]
   short_special_velocity_scores?: number[]
   short_special_velocity_sample_count?: number
@@ -947,8 +899,6 @@ export interface UsageReportQuotaRow {
   monthly_interval_start: string | null
   monthly_interval_end: string | null
   monthly_active: boolean
-  monthly_usage_tokens: number
-  monthly_usage_breakdown: UsageReportQuotaUsageBreakdown[]
   monthly_velocity_segments?: boolean[]
   monthly_velocity_scores?: number[]
   monthly_velocity_sample_count?: number
@@ -957,8 +907,6 @@ export interface UsageReportQuotaRow {
   wtus_interval_start?: string | null
   wtus_interval_end?: string | null
   wtus_active?: boolean
-  wtus_usage_tokens?: number
-  wtus_usage_breakdown?: UsageReportQuotaUsageBreakdown[]
   wtus_velocity_segments?: boolean[]
   wtus_velocity_scores?: number[]
   wtus_velocity_sample_count?: number
@@ -967,7 +915,8 @@ export interface UsageReportQuotaRow {
 export interface UsageReportQuotaUsageBreakdown {
   model: string
   tokens: number
-  cost: number
+  /** Null means no session_history row in the breakdown persisted response_cost_usd. */
+  cost: number | null
   traces: number
   recent_traces_90m?: number
 }
@@ -1304,6 +1253,9 @@ export interface UsageReportResponse {
     latestRecordAgeMinutes: number | null
     latestRecordStale: boolean
     staleRecordThresholdMinutes: number
+    providerErrorObservationRowLimit: number
+    providerErrorObservationCapActive: boolean
+    providerErrorObservationCapTruncatesRequestedWindow: boolean
   }
   summary: UsageReportSummary
   trend: UsageReportTrendRow[]
@@ -1321,15 +1273,8 @@ export interface UsageReportResponse {
   providerAliasRouting?: UsageReportProviderAliasRouting
   providerAuthHealth?: UsageReportProviderAuthHealth
   providerCreditLifecycle?: UsageReportProviderCreditLifecycle
-  /** Backward-compatible /usage bootstrap/fallback payload. */
-  quotas: UsageReportQuotaRow[]
-  /** W32: flat list of past reset windows per (provider, quota_type). */
-  quotaHistory: UsageReportQuotaHistoryRow[]
   /** W32: range-aware quota history, refreshed from `/usage/quota-range-history`. */
   quotaRangeHistory?: UsageReportQuotaHistoryRow[]
-  /** W33: per-tool and per-command-label call counts for the TOOL cell hover. */
-  /** Backward-compatible /usage fallback while `/usage/tool-activity` is authoritative for live refresh. */
-  toolActivity: UsageReportToolActivityRow[]
   rows: UsageReportRow[]
 }
 
@@ -1563,7 +1508,6 @@ const USAGE_REPORT_SUMMARY_CHECK_NUMBERS = [
   'token_reasoning_reported',
   'token_reasoning_estimated',
   'token_total',
-  'usd_cost',
   'cache_miss_usd_cost',
   'tool_calls',
   'git_commit',
@@ -1614,6 +1558,9 @@ const USAGE_REPORT_ROW_CHECK_NUMBERS = [
   'git_commit',
   'git_push',
 ] as const
+
+const USAGE_REPORT_SUMMARY_CHECK_NULLABLE_NUMBERS = ['usd_cost'] as const
+
 const USAGE_REPORT_ROW_CHECK_STRINGS = [
   'provider',
   'model',
@@ -1649,14 +1596,25 @@ const USAGE_REPORT_QUERY_REQUIRED_METADATA_KEYS = [
   'latestRecordAgeMinutes',
   'latestRecordStale',
   'staleRecordThresholdMinutes',
+  'providerErrorObservationRowLimit',
+  'providerErrorObservationCapActive',
+  'providerErrorObservationCapTruncatesRequestedWindow',
 ] as const
 
 const USAGE_REPORT_QUERY_REQUIRED_METADATA_SHAPE: UsageReportMetadataShape = {
   strings: ['from', 'to', 'grain', 'generatedAt'],
   nullableStrings: ['latestRecordAt'],
-  numbers: ['limit', 'staleRecordThresholdMinutes'],
+  numbers: [
+    'limit',
+    'staleRecordThresholdMinutes',
+    'providerErrorObservationRowLimit',
+  ],
   nullableNumbers: ['latestRecordAgeMinutes'],
-  booleans: ['latestRecordStale'],
+  booleans: [
+    'latestRecordStale',
+    'providerErrorObservationCapActive',
+    'providerErrorObservationCapTruncatesRequestedWindow',
+  ],
   arrayOfStrings: ['groupBy'],
 }
 
@@ -1782,6 +1740,12 @@ function assertUsageReportSummary(summary: unknown): void {
   const record = summary as UsageReportJsonRecord
   for (const key of USAGE_REPORT_SUMMARY_CHECK_NUMBERS) {
     if (typeof record[key] !== 'number') {
+      throw new Error(`Invalid usage report summary.${key}`)
+    }
+  }
+  for (const key of USAGE_REPORT_SUMMARY_CHECK_NULLABLE_NUMBERS) {
+    const value = record[key]
+    if (value !== null && typeof value !== 'number') {
       throw new Error(`Invalid usage report summary.${key}`)
     }
   }
@@ -2002,16 +1966,7 @@ function assertShellHealthResponse(json: unknown): void {
   }
 }
 
-function assertUsageReportMetadataResponse(
-  json: unknown,
-  includeSections: UsageReportMonolithPayloadSections = {
-    ...USAGE_REPORT_MONOLITH_PAYLOAD_DEFAULT_INCLUDES,
-  }
-): void {
-  const include = {
-    ...USAGE_REPORT_MONOLITH_PAYLOAD_DEFAULT_INCLUDES,
-    ...includeSections,
-  }
+function assertUsageReportMetadataResponse(json: unknown): void {
   const requireArrays = [
     'rows',
     'trend',
@@ -2020,22 +1975,12 @@ function assertUsageReportMetadataResponse(
     'providerErrorObservations',
     'providerStatusUsage',
   ] as const
-  const requiredArrays: string[] = [...requireArrays]
-  if (include.includeQuotas) {
-    requiredArrays.push('quotas')
-  }
-  if (include.includeQuotaHistory) {
-    requiredArrays.push('quotaHistory')
-  }
-  if (include.includeToolActivity) {
-    requiredArrays.push('toolActivity')
-  }
 
   assertUsageReportSpotCheck(json, {
     metadataKeys: USAGE_REPORT_QUERY_REQUIRED_METADATA_KEYS,
     metadataShape: USAGE_REPORT_QUERY_REQUIRED_METADATA_SHAPE,
     requireObjects: ['summary'],
-    requireArrays: requiredArrays,
+    requireArrays,
   })
   const record = json as UsageReportJsonRecord
   assertUsageReportSummary(record.summary)
@@ -2145,23 +2090,14 @@ async function fetchDashboardJson<T>(options: {
 }
 
 function buildUsageReportQueryParams(
-  params: UsageReportParams,
-  includeSections: UsageReportMonolithPayloadSections = {
-    ...USAGE_REPORT_MONOLITH_PAYLOAD_DEFAULT_INCLUDES,
-  }
+  params: UsageReportParams
 ): URLSearchParams {
   // Keep these defaults in the monolith endpoint as the source of truth for
   // current consumers that do not pass explicit `groupBy/limit/sort`.
   // Removing this fallback risks row-order/coverage regressions in old callers.
-  // P1/P2: legacy payload flags and cap are made explicit so monolith callers
-  // can intentionally opt out of sections once decomposition is complete.
-  const include = {
-    ...USAGE_REPORT_MONOLITH_PAYLOAD_DEFAULT_INCLUDES,
-    ...includeSections,
-  }
   const limit = params.limit ?? USAGE_REPORT_DEFAULT_LIMIT
 
-  const searchParams = new URLSearchParams({
+  return new URLSearchParams({
     from: params.from,
     to: params.to,
     grain: params.grain,
@@ -2170,23 +2106,6 @@ function buildUsageReportQueryParams(
     limit: String(limit),
     sort: USAGE_REPORT_DEFAULT_SORT,
   })
-  appendUsageReportBooleanFlagParam(
-    searchParams,
-    'include_quotas',
-    include.includeQuotas
-  )
-  appendUsageReportBooleanFlagParam(
-    searchParams,
-    'include_quota_history',
-    include.includeQuotaHistory
-  )
-  appendUsageReportBooleanFlagParam(
-    searchParams,
-    'include_tool_activity',
-    include.includeToolActivity
-  )
-
-  return searchParams
 }
 
 function encodeBooleanFilterValue(
@@ -2206,15 +2125,6 @@ function encodeBooleanFilterValue(
     return 'false'
   }
   return value
-}
-
-function appendUsageReportBooleanFlagParam(
-  searchParams: URLSearchParams,
-  key: string,
-  value: boolean | undefined
-): void {
-  if (value === undefined) return
-  searchParams.set(key, value ? '1' : '0')
 }
 
 function appendUsageReportBooleanFilterParam(
@@ -2366,18 +2276,7 @@ export async function fetchUsageReport(
   // is now USAGE_REPORT_DEFAULT_LIMIT.
   // Aggregate/KPI surfaces use report.summary and were always correct.
   // Future work: server-side pagination would be more scalable.
-  const includeSections = {
-    includeQuotas:
-      params.includeQuotas ??
-      USAGE_REPORT_MONOLITH_PAYLOAD_DEFAULT_INCLUDES.includeQuotas,
-    includeQuotaHistory:
-      params.includeQuotaHistory ??
-      USAGE_REPORT_MONOLITH_PAYLOAD_DEFAULT_INCLUDES.includeQuotaHistory,
-    includeToolActivity:
-      params.includeToolActivity ??
-      USAGE_REPORT_MONOLITH_PAYLOAD_DEFAULT_INCLUDES.includeToolActivity,
-  }
-  const searchParams = buildUsageReportQueryParams(params, includeSections)
+  const searchParams = buildUsageReportQueryParams(params)
 
   appendUsageReportFilters(searchParams, params)
   if (params.cacheBust !== undefined && params.cacheBust !== '') {
@@ -2391,8 +2290,7 @@ export async function fetchUsageReport(
     url: `/api/shell/reports/usage?${searchParams}`,
     signal,
     errorMessage: 'Usage report request failed with',
-    validate: (json: unknown) =>
-      assertUsageReportMetadataResponse(json, includeSections),
+    validate: assertUsageReportMetadataResponse,
   })
 }
 

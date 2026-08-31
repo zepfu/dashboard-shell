@@ -5,6 +5,8 @@ import http from 'node:http'
 import net from 'node:net'
 import path from 'node:path'
 import process from 'node:process'
+import { Readable } from 'node:stream'
+import { pipeline } from 'node:stream/promises'
 import { URL } from 'node:url'
 import { promisify } from 'node:util'
 import { gzip as gzipCallback, gunzip as gunzipCallback } from 'node:zlib'
@@ -25,6 +27,7 @@ import {
   buildReportCacheIdentity,
   buildReportCachePrewarmLockKey,
   canonicalizeSearchParams,
+  applyCurrentReportCacheTtl,
   REPORT_CACHE_VERSION,
   resolveReportCacheTtlMs,
 } from './report-cache-identity.mjs'
@@ -58,7 +61,7 @@ try {
   // redis not resolvable; redisClient remains null below.
 }
 
-const { Pool } = pg
+const { Client, Pool } = pg
 const gzip = promisify(gzipCallback)
 const gunzip = promisify(gunzipCallback)
 
@@ -164,16 +167,9 @@ const UPSTREAM_API_PROXIES = [
     prefix: '/api/aawm-tap',
     displayName: 'AAWM TAP',
     target: process.env.AAWM_TAP_API_TARGET ?? 'http://127.0.0.1:8000',
-    apiKey: envSecret('AAWM_TAP_API_KEY', 'VITE_TAP_API_KEY', 'VITE_API_KEY'),
-    accessToken: envSecret(
-      'AAWM_TAP_ACCESS_TOKEN',
-      'VITE_TAP_ACCESS_TOKEN',
-      'VITE_ACCESS_TOKEN'
-    ),
-    adminCapability: envSecret(
-      'AAWM_TAP_ADMIN_CAPABILITY',
-      'VITE_TAP_ADMIN_CAPABILITY'
-    ),
+    apiKey: envSecret('AAWM_TAP_API_KEY'),
+    accessToken: envSecret('AAWM_TAP_ACCESS_TOKEN'),
+    adminCapability: envSecret('AAWM_TAP_ADMIN_CAPABILITY'),
   },
   {
     prefix: '/api/aawm-observe',
@@ -613,6 +609,7 @@ const UPSTREAM_FETCH_TIMEOUT_MS = parseFiniteNumberEnv(
   'SHELL_REPORT_UPSTREAM_TIMEOUT_MS',
   30_000
 )
+const UPSTREAM_ERROR_BODY_MAX_BYTES = 1 * 1024 * 1024
 const HOP_BY_HOP_HEADERS = new Set([
   'connection',
   'content-encoding',
@@ -725,6 +722,21 @@ const PGBOUNCER_SIDECARS = [
   },
 ]
 
+const MATERIALIZED_VIEW_HEALTH_DEFINITIONS = [
+  {
+    viewName: 'rate_limit_intervals',
+    category: 'quota',
+    relationName: 'public.rate_limit_intervals',
+    latestColumn: 'fromdate',
+  },
+  {
+    viewName: 'provider_latency_health_5m',
+    category: 'provider_health',
+    relationName: 'public.provider_latency_health_5m',
+    latestColumn: 'bucket_start',
+  },
+]
+
 function optionalEnvValue(value) {
   if (typeof value !== 'string') return undefined
   const trimmed = value.trim()
@@ -782,23 +794,18 @@ function buildPostgresLocalSettings(
   return settings
 }
 
-async function applyPostgresLocalSettings(
-  client,
+function buildPostgresLocalSettingsTransactionSql(
   statementTimeoutMs = REPORT_DB_STATEMENT_TIMEOUT_MS
 ) {
   const settings = buildPostgresLocalSettings(statementTimeoutMs)
-  if (settings.length === 0) return
+  if (settings.length === 0) return 'BEGIN'
 
-  const expressions = []
-  const values = []
-  for (const [name, value] of settings) {
-    values.push(name, value)
-    expressions.push(
-      `set_config($${(values.length - 1).toString()}, $${values.length.toString()}, true)`
+  return `BEGIN; SELECT ${settings
+    .map(
+      ([name, value]) =>
+        `set_config(${pg.escapeLiteral(name)}, ${pg.escapeLiteral(value)}, true)`
     )
-  }
-
-  await client.query(`SELECT ${expressions.join(', ')};`, values)
+    .join(', ')};`
 }
 
 function resolveReportQueryTimeoutMs(
@@ -834,9 +841,10 @@ async function queryPostgresWithLocalSettings(
   )
 
   try {
-    await client.query('BEGIN')
     transactionOpen = true
-    await applyPostgresLocalSettings(client, statementTimeoutMs)
+    await client.query(
+      buildPostgresLocalSettingsTransactionSql(statementTimeoutMs)
+    )
     const queryConfig = {
       text: sql,
       values: values ?? [],
@@ -1339,6 +1347,7 @@ function createRedisCacheClient(
 const redisClient = createRedisCacheClient(REPORT_CACHE_REDIS_URL)
 let prewarmTimer = null
 let prewarmPromise = null
+let prewarmCachedReportTestImpl = null
 function createTtlMemoizer(ttlMs, onError) {
   /** @type {{ expiresAt: number, value: unknown } | null} */
   let cache = null
@@ -1388,12 +1397,7 @@ function createTtlMemoizer(ttlMs, onError) {
 
 const materializedViewHealthMemo = createTtlMemoizer(
   MATERIALIZED_VIEW_HEALTH_CACHE_TTL_MS,
-  (error) => ({
-    status: 'unknown',
-    error: formatError(error),
-    views: [],
-    cronJobs: [],
-  })
+  (error) => buildMaterializedViewHealthErrorReport(error)
 )
 const pgBouncerHealthMemo = createTtlMemoizer(
   PGBOUNCER_HEALTH_CACHE_TTL_MS,
@@ -1457,6 +1461,9 @@ async function cachedReport(scope, load, options = {}) {
   const identity = buildReportCacheIdentity(scope, options.searchParams)
   const decorateMetadata = options.decorateMetadata !== false
   const cacheTtlMs = resolveReportCacheTtlMs(scope, options)
+  const cacheTtlOptions = Number.isFinite(options.cacheTtlMs)
+    ? { cacheTtlMs }
+    : {}
   const baseCorrelationContext = {
     requestIdRef:
       sanitizeRequestIdReference(options.requestIdRef) ??
@@ -1501,7 +1508,31 @@ async function cachedReport(scope, load, options = {}) {
     )
   }
 
-  const redisEntry = await readRedisCacheEntry(identity)
+  const cacheBustValue =
+    typeof options.searchParams?.get === 'function'
+      ? options.searchParams.get('cache_bust')
+      : null
+  const cacheBustRequested =
+    typeof cacheBustValue === 'string' && cacheBustValue.trim() !== ''
+  if (cacheBustRequested) {
+    const refreshResult = await refreshReportCache(identity, foregroundLoad, {
+      cacheTtlMs,
+      lockWaitMs: options.lockWaitMs ?? REPORT_CACHE_FOREGROUND_LOCK_WAIT_MS,
+      requireFreshOnLockWait: true,
+    })
+    return maybeDecorateCacheMetadata(
+      refreshResult.entry.payload,
+      {
+        ...identity,
+        backend: refreshResult.backend,
+        status: refreshResult.status,
+        entry: refreshResult.entry,
+      },
+      decorateMetadata
+    )
+  }
+
+  const redisEntry = await readRedisCacheEntry(identity, cacheTtlOptions)
   if (redisEntry.status === 'fresh') {
     setLocalReportCache(identity.cacheKey, redisEntry.entry)
     return maybeDecorateCacheMetadata(
@@ -1570,7 +1601,10 @@ async function cachedReport(scope, load, options = {}) {
   }
 
   if (redisEntry.status === 'error' || redisEntry.status === 'unavailable') {
-    const localEntry = readLocalReportCache(identity.cacheKey)
+    const localEntry = readLocalReportCache(identity.cacheKey, {
+      scope: identity.scope,
+      ...cacheTtlOptions,
+    })
     if (localEntry?.status === 'fresh' || localEntry?.status === 'stale') {
       if (localEntry.status === 'stale') {
         scheduleBackgroundCacheRefresh(
@@ -1598,7 +1632,10 @@ async function cachedReport(scope, load, options = {}) {
     }
   }
 
-  const localEntry = readLocalReportCache(identity.cacheKey)
+  const localEntry = readLocalReportCache(identity.cacheKey, {
+    scope: identity.scope,
+    ...cacheTtlOptions,
+  })
   if (localEntry?.status === 'fresh' || localEntry?.status === 'stale') {
     if (localEntry.status === 'stale') {
       scheduleBackgroundCacheRefresh(
@@ -1692,20 +1729,37 @@ function scheduleBackgroundCacheRefresh(
   })
 }
 
-function readLocalReportCache(cacheKey) {
+function touchReportCacheEntry(cacheKey) {
   const cached = reportCache.get(cacheKey)
+  if (cached !== undefined) {
+    reportCache.set(cacheKey, cached)
+  }
+  return cached
+}
+
+function readLocalReportCache(cacheKey, cacheTtlOptions = {}) {
+  const cached = touchReportCacheEntry(cacheKey)
   if (!cached?.entry) return null
 
-  const status = classifyCacheEntry(cached.entry)
+  // Re-derive freshness so TTL configuration changes take effect on the next
+  // read instead of remaining fixed for the lifetime of an old cache entry.
+  const entry =
+    Number.isFinite(cacheTtlOptions.cacheTtlMs) ||
+    cacheTtlOptions.config !== undefined
+      ? applyCurrentReportCacheTtl(cached.entry, cacheTtlOptions)
+      : cached.entry
+  reportCache.set(cacheKey, { ...cached, entry })
+
+  const status = classifyCacheEntry(entry)
   if (status === 'fresh' || status === 'stale') {
-    return { status, entry: cached.entry }
+    return { status, entry }
   }
 
   return null
 }
 
 function setLocalReportCache(cacheKey, entry) {
-  const existing = reportCache.get(cacheKey)
+  const existing = touchReportCacheEntry(cacheKey)
   reportCache.set(cacheKey, {
     ...existing,
     entry,
@@ -1726,6 +1780,24 @@ function classifyCacheEntry(entry) {
   if (entry.freshUntil > now) return 'fresh'
   if (entry.staleUntil > now) return 'stale'
   return 'expired'
+}
+
+function normalizeRedisCacheRead(identity, result, cacheTtlOptions = {}) {
+  if (!result.entry) return result
+
+  const entry =
+    Number.isFinite(cacheTtlOptions.cacheTtlMs) ||
+    cacheTtlOptions.config !== undefined
+      ? applyCurrentReportCacheTtl(result.entry, {
+          scope: identity.scope,
+          ...cacheTtlOptions,
+        })
+      : result.entry
+  const status = classifyCacheEntry(entry)
+  if (status === 'fresh' || status === 'stale') {
+    return { ...result, status, entry }
+  }
+  return { status }
 }
 
 function coerceRedisCacheStoredValue(encoded) {
@@ -1761,14 +1833,18 @@ async function decodeRedisReportCachePayload(encoded) {
   return JSON.parse(json)
 }
 
-async function readRedisCacheEntry(identity) {
+async function readRedisCacheEntry(identity, cacheTtlOptions = {}) {
   if (readRedisCacheEntryTestImpl) {
     return readRedisCacheEntryTestImpl(identity)
   }
-  return readRedisCacheEntryFromClient(identity, redisClient)
+  return readRedisCacheEntryFromClient(identity, redisClient, cacheTtlOptions)
 }
 
-async function readRedisCacheEntryFromClient(identity, client) {
+async function readRedisCacheEntryFromClient(
+  identity,
+  client,
+  cacheTtlOptions = {}
+) {
   if (!client) return { status: 'unavailable' }
   if (!client.isReady) return { status: 'unavailable' }
 
@@ -1777,11 +1853,15 @@ async function readRedisCacheEntryFromClient(identity, client) {
     if (!encoded) return { status: 'miss' }
 
     const entry = await decodeRedisReportCachePayload(encoded)
-    const status = classifyCacheEntry(entry)
-    if (status === 'fresh' || status === 'stale') return { status, entry }
+    const result = normalizeRedisCacheRead(
+      identity,
+      { status: 'fresh', entry },
+      cacheTtlOptions
+    )
+    if (result.status === 'fresh' || result.status === 'stale') return result
 
     client.del(identity.cacheKey).catch(() => {})
-    return { status }
+    return { status: result.status }
   } catch (error) {
     process.stderr.write(
       `[report-service] WARN: Redis cache read failed for ${identity.scope}:${identity.hash}: ${formatError(error)}\n`
@@ -1806,13 +1886,13 @@ async function writeRedisCacheEntry(identity, entry) {
 }
 
 async function refreshReportCache(identity, load, options = {}) {
-  const existing = reportCache.get(identity.cacheKey)
+  const existing = touchReportCacheEntry(identity.cacheKey)
   if (existing?.promise && options.sharePromise !== false)
     return existing.promise
 
   const promise = refreshReportCacheUnshared(identity, load, options)
     .then((result) => {
-      const current = reportCache.get(identity.cacheKey)
+      const current = touchReportCacheEntry(identity.cacheKey)
       if (current?.promise === promise) {
         if (result.entry) {
           reportCache.set(identity.cacheKey, { entry: result.entry })
@@ -1826,7 +1906,7 @@ async function refreshReportCache(identity, load, options = {}) {
       return result
     })
     .catch((error) => {
-      if (reportCache.get(identity.cacheKey)?.promise === promise) {
+      if (touchReportCacheEntry(identity.cacheKey)?.promise === promise) {
         reportCache.delete(identity.cacheKey)
       }
       throw error
@@ -1839,6 +1919,7 @@ async function refreshReportCache(identity, load, options = {}) {
 
 async function refreshReportCacheUnshared(identity, load, options) {
   const useRedis = options.useRedis !== false && Boolean(redisClient?.isReady)
+  const cacheTtlOptions = { cacheTtlMs: options.cacheTtlMs }
   let lockToken = null
 
   try {
@@ -1855,7 +1936,10 @@ async function refreshReportCacheUnshared(identity, load, options) {
         const waitedEntry = await waitForRedisCacheEntry(
           identity,
           options.lockWaitMs,
-          { requireFresh: options.requireFreshOnLockWait }
+          {
+            requireFresh: options.requireFreshOnLockWait,
+            cacheTtlOptions,
+          }
         )
         if (waitedEntry) {
           setLocalReportCache(identity.cacheKey, waitedEntry.entry)
@@ -1961,7 +2045,10 @@ async function waitForRedisCacheEntry(
   const deadline = Date.now() + effectiveWaitMs
   while (Date.now() < deadline) {
     await sleep(Math.min(REPORT_CACHE_LOCK_POLL_MS, deadline - Date.now()))
-    const redisEntry = await readRedisCacheEntry(identity)
+    const redisEntry = await readRedisCacheEntry(
+      identity,
+      options.cacheTtlOptions
+    )
     if (redisEntry.status === 'fresh') {
       return redisEntry
     }
@@ -2369,39 +2456,19 @@ function normalizeDockerLogConfig(logConfig) {
   }
 }
 
-const pgBouncerAdminPoolsByKey = new Map()
-
-function pgBouncerAdminPoolCacheKey(sidecar) {
-  return JSON.stringify([sidecar.key, sidecar.adminDatabaseUrl])
-}
-
-function getOrCreatePgBouncerAdminPool(sidecar) {
-  const cacheKey = pgBouncerAdminPoolCacheKey(sidecar)
-  let adminPool = pgBouncerAdminPoolsByKey.get(cacheKey)
-  if (!adminPool) {
-    adminPool = new Pool({
-      connectionString: sidecar.adminDatabaseUrl,
-      application_name: 'dashboard-shell-pgbouncer-health',
-      max: 1,
-      idleTimeoutMillis: 1_000,
-      connectionTimeoutMillis: PGBOUNCER_ADMIN_QUERY_TIMEOUT_MS,
-      query_timeout: PGBOUNCER_ADMIN_QUERY_TIMEOUT_MS,
-    })
-    adminPool.on('error', (error) => {
-      process.stderr.write(
-        `[report-service] WARN: idle PgBouncer admin client error for ${sidecar.key}: ${formatError(error)}
-`
-      )
-    })
-    pgBouncerAdminPoolsByKey.set(cacheKey, adminPool)
-  }
-  return adminPool
-}
-
-async function cleanupPgBouncerAdminPools() {
-  const pools = [...pgBouncerAdminPoolsByKey.values()]
-  pgBouncerAdminPoolsByKey.clear()
-  await Promise.all(pools.map((pool) => pool.end().catch(() => {})))
+function createPgBouncerAdminClient(sidecar) {
+  const adminClient = new Client({
+    connectionString: sidecar.adminDatabaseUrl,
+    application_name: 'dashboard-shell-pgbouncer-health',
+    connectionTimeoutMillis: PGBOUNCER_ADMIN_QUERY_TIMEOUT_MS,
+    query_timeout: PGBOUNCER_ADMIN_QUERY_TIMEOUT_MS,
+  })
+  adminClient.on('error', (error) => {
+    process.stderr.write(
+      `[report-service] WARN: idle PgBouncer admin client error for ${sidecar.key}: ${formatError(error)}\n`
+    )
+  })
+  return adminClient
 }
 
 async function loadPgBouncerAdminSummary(sidecar) {
@@ -2419,31 +2486,27 @@ async function loadPgBouncerAdminSummary(sidecar) {
     }
   }
 
-  const adminPool = getOrCreatePgBouncerAdminPool(sidecar)
+  const adminClient = createPgBouncerAdminClient(sidecar)
 
   try {
-    const client = await adminPool.connect()
-    try {
-      const poolsResult = await client.query('SHOW POOLS;')
-      const statsResult = await client.query('SHOW STATS;')
-      const serversResult = await client.query('SHOW SERVERS;')
-      const pools = poolsResult.rows.map(normalizePgBouncerPoolRow)
-      const stats = statsResult.rows.map(normalizePgBouncerStatsRow)
-      const serverSummary = summarizePgBouncerServers(serversResult.rows)
+    await adminClient.connect()
+    const poolsResult = await adminClient.query('SHOW POOLS;')
+    const statsResult = await adminClient.query('SHOW STATS;')
+    const serversResult = await adminClient.query('SHOW SERVERS;')
+    const pools = poolsResult.rows.map(normalizePgBouncerPoolRow)
+    const stats = statsResult.rows.map(normalizePgBouncerStatsRow)
+    const serverSummary = summarizePgBouncerServers(serversResult.rows)
 
-      return {
-        configured: true,
-        status: 'ok',
-        endpoint: describeDatabaseUrl(sidecar.adminDatabaseUrl),
-        error: null,
-        poolSummary: summarizePgBouncerPools(pools),
-        statsSummary: summarizePgBouncerStats(stats),
-        serverSummary,
-        pools,
-        stats,
-      }
-    } finally {
-      client.release()
+    return {
+      configured: true,
+      status: 'ok',
+      endpoint: describeDatabaseUrl(sidecar.adminDatabaseUrl),
+      error: null,
+      poolSummary: summarizePgBouncerPools(pools),
+      statsSummary: summarizePgBouncerStats(stats, statsResult.rows),
+      serverSummary,
+      pools,
+      stats,
     }
   } catch (error) {
     return {
@@ -2457,6 +2520,8 @@ async function loadPgBouncerAdminSummary(sidecar) {
       pools: [],
       stats: [],
     }
+  } finally {
+    await adminClient.end().catch(() => {})
   }
 }
 
@@ -2536,7 +2601,22 @@ function emptyPgBouncerStatsSummary() {
   }
 }
 
-function summarizePgBouncerStats(stats) {
+function weightedAverage(values, weights) {
+  let weightedTotal = 0
+  let totalWeight = 0
+
+  for (let index = 0; index < values.length; index += 1) {
+    const value = normalizeNumber(values[index])
+    const weight = normalizeNumber(weights[index])
+    if (value === null || weight === null || weight <= 0) continue
+    weightedTotal += value * weight
+    totalWeight += weight
+  }
+
+  return totalWeight > 0 ? Math.round(weightedTotal / totalWeight) : 0
+}
+
+function summarizePgBouncerStats(stats, rawStats = stats) {
   if (!stats.length) return emptyPgBouncerStatsSummary()
   const totals = stats.reduce(
     (summary, row) => ({
@@ -2550,11 +2630,27 @@ function summarizePgBouncerStats(stats) {
     }),
     emptyPgBouncerStatsSummary()
   )
+  const rawRows = Array.isArray(rawStats) ? rawStats : []
+  const waitWeights = stats.map(
+    (row, index) =>
+      normalizeNumber(rawRows[index]?.total_server_assignment_count) ??
+      row.totalXactCount
+  )
+
   return {
     ...totals,
-    avgXactCount: Math.round(totals.avgXactCount / stats.length),
-    avgQueryCount: Math.round(totals.avgQueryCount / stats.length),
-    avgWaitTime: Math.round(totals.avgWaitTime / stats.length),
+    avgXactCount: weightedAverage(
+      stats.map((row) => row.avgXactCount),
+      stats.map((row) => row.totalXactCount)
+    ),
+    avgQueryCount: weightedAverage(
+      stats.map((row) => row.avgQueryCount),
+      stats.map((row) => row.totalQueryCount)
+    ),
+    avgWaitTime: weightedAverage(
+      stats.map((row) => row.avgWaitTime),
+      waitWeights
+    ),
   }
 }
 
@@ -2590,30 +2686,132 @@ function summarizePgBouncerServers(rows) {
   }
 }
 
-async function loadMaterializedViewHealthFromDatabase() {
-  const viewResult = await queryHealthDatabase(`
-WITH rel AS (
-  SELECT relname, GREATEST(reltuples, 0)::bigint AS estimated_row_count
-  FROM pg_class
-  WHERE oid IN (
-    'public.rate_limit_intervals'::regclass,
-    'public.provider_latency_health_5m'::regclass
-  )
+function buildMaterializedViewRelationLookupQuery() {
+  return {
+    sql: `
+WITH expected(view_name, category, relation_name) AS (
+  VALUES
+    ('rate_limit_intervals', 'quota', 'public.rate_limit_intervals'),
+    (
+      'provider_latency_health_5m',
+      'provider_health',
+      'public.provider_latency_health_5m'
+    )
 )
 SELECT
-  'rate_limit_intervals' AS view_name,
-  'quota' AS category,
-  (SELECT MAX(fromdate) FROM public.rate_limit_intervals) AS latest_data_at,
-  (SELECT estimated_row_count FROM rel WHERE relname = 'rate_limit_intervals') AS row_count
-UNION ALL
-SELECT
-  'provider_latency_health_5m' AS view_name,
-  'provider_health' AS category,
-  (SELECT MAX(bucket_start) FROM public.provider_latency_health_5m) AS latest_data_at,
-  (SELECT estimated_row_count FROM rel WHERE relname = 'provider_latency_health_5m') AS row_count
+  view_name,
+  category,
+  relation_name,
+  to_regclass(relation_name)::text AS resolved_relation_name
+FROM expected
 ORDER BY view_name ASC;
-`)
-  const jobResult = await queryHealthDatabase(`
+`,
+    values: [],
+  }
+}
+
+function buildMaterializedViewDataQuery(definition) {
+  return {
+    sql: `
+SELECT
+  MAX(${definition.latestColumn}) AS latest_data_at,
+  (
+    SELECT GREATEST(reltuples, 0)::bigint
+    FROM pg_class
+    WHERE oid = to_regclass('${definition.relationName}')
+  ) AS row_count
+FROM ${definition.relationName};
+`,
+    values: [],
+  }
+}
+
+function buildMaterializedViewHealthErrorReport(error) {
+  const errorMessage = formatError(error)
+  const views = MATERIALIZED_VIEW_HEALTH_DEFINITIONS.map((definition) =>
+    normalizeMaterializedViewHealthRow(
+      {
+        view_name: definition.viewName,
+        category: definition.category,
+        relation_present: null,
+        latest_data_at: null,
+        row_count: null,
+        error: errorMessage,
+      },
+      []
+    )
+  )
+  return {
+    status: 'unknown',
+    error: errorMessage,
+    checkedAt: new Date().toISOString(),
+    cacheTtlMs: MATERIALIZED_VIEW_HEALTH_CACHE_TTL_MS,
+    views,
+    cronJobs: [],
+  }
+}
+
+async function loadMaterializedViewHealthFromDatabase(
+  queryDatabase = queryHealthDatabase
+) {
+  const relationLookupQuery = buildMaterializedViewRelationLookupQuery()
+  const relationResult = await queryDatabase(
+    relationLookupQuery.sql,
+    relationLookupQuery.values
+  )
+  const relationsByView = new Map(
+    relationResult.rows.map((row) => [
+      row.view_name,
+      row.resolved_relation_name != null,
+    ])
+  )
+  const views = await Promise.all(
+    MATERIALIZED_VIEW_HEALTH_DEFINITIONS.map(async (definition) => {
+      const relationPresent = relationsByView.get(definition.viewName) ?? false
+      if (!relationPresent) {
+        return normalizeMaterializedViewHealthRow(
+          {
+            view_name: definition.viewName,
+            category: definition.category,
+            relation_present: false,
+            latest_data_at: null,
+            row_count: null,
+          },
+          []
+        )
+      }
+
+      try {
+        const dataQuery = buildMaterializedViewDataQuery(definition)
+        const result = await queryDatabase(dataQuery.sql, dataQuery.values)
+        return normalizeMaterializedViewHealthRow(
+          {
+            ...result.rows[0],
+            view_name: definition.viewName,
+            category: definition.category,
+            relation_present: true,
+          },
+          []
+        )
+      } catch (error) {
+        return normalizeMaterializedViewHealthRow(
+          {
+            view_name: definition.viewName,
+            category: definition.category,
+            relation_present: true,
+            latest_data_at: null,
+            row_count: null,
+            error: formatError(error),
+          },
+          []
+        )
+      }
+    })
+  )
+
+  let jobRows = []
+  try {
+    const jobResult = await queryDatabase(`
 WITH dashboard_jobs AS (
   SELECT jobid, schedule, command, active, jobname
   FROM cron.job
@@ -2677,7 +2875,14 @@ LEFT JOIN last_success ls USING (jobid)
 LEFT JOIN last_failure lf USING (jobid)
 ORDER BY j.jobid ASC;
 `)
-  const activeResult = await queryHealthDatabase(`
+    jobRows = jobResult.rows
+  } catch {
+    jobRows = []
+  }
+
+  let activeRows = []
+  try {
+    const activeResult = await queryDatabase(`
 SELECT
   pid,
   now() - query_start AS age,
@@ -2692,13 +2897,15 @@ WHERE datname = current_database()
 )
 ORDER BY query_start ASC NULLS LAST;
 `)
-
-  const activeRows = activeResult.rows.map((row) => ({
-    pid: normalizeNumber(row.pid),
-    age: row.age ? String(row.age) : null,
-    query: String(row.query ?? '').slice(0, 160),
-  }))
-  const cronJobs = jobResult.rows.map((row) =>
+    activeRows = activeResult.rows.map((row) => ({
+      pid: normalizeNumber(row.pid),
+      age: row.age ? String(row.age) : null,
+      query: String(row.query ?? '').slice(0, 160),
+    }))
+  } catch {
+    activeRows = []
+  }
+  const cronJobs = jobRows.map((row) =>
     normalizeMaterializedViewCronJob(row, activeRows)
   )
   const jobsByView = cronJobs.reduce((acc, job) => {
@@ -2708,12 +2915,13 @@ ORDER BY query_start ASC NULLS LAST;
     return acc
   }, {})
 
-  const views = viewResult.rows.map((row) =>
-    normalizeMaterializedViewHealthRow(row, jobsByView[row.view_name] ?? [])
-  )
-  const status = views.some((view) => view.status === 'stale')
+  const viewsWithJobs = views.map((view) => ({
+    ...view,
+    jobs: jobsByView[view.viewName] ?? [],
+  }))
+  const status = viewsWithJobs.some((view) => view.status === 'stale')
     ? 'stale'
-    : views.some((view) => view.status === 'unknown')
+    : viewsWithJobs.some((view) => view.status === 'unknown')
       ? 'unknown'
       : 'ok'
 
@@ -2721,7 +2929,7 @@ ORDER BY query_start ASC NULLS LAST;
     status,
     checkedAt: new Date().toISOString(),
     cacheTtlMs: MATERIALIZED_VIEW_HEALTH_CACHE_TTL_MS,
-    views,
+    views: viewsWithJobs,
     cronJobs,
   }
 }
@@ -2824,6 +3032,10 @@ function normalizeSourceTableHealthRow(row) {
 }
 
 function normalizeMaterializedViewHealthRow(row, jobs) {
+  const relationPresent =
+    row.relation_present === null || row.relation_present === undefined
+      ? null
+      : Boolean(row.relation_present)
   const latestDataAt = row.latest_data_at
     ? new Date(row.latest_data_at).toISOString()
     : null
@@ -2835,7 +3047,7 @@ function normalizeMaterializedViewHealthRow(row, jobs) {
       ? PROVIDER_HEALTH_MV_STALE_AFTER_MS
       : QUOTA_MV_STALE_AFTER_MS
   const status =
-    latestDataAgeMs === null
+    relationPresent === false || row.error || latestDataAgeMs === null
       ? 'unknown'
       : latestDataAgeMs > staleAfterMs
         ? 'stale'
@@ -2845,10 +3057,13 @@ function normalizeMaterializedViewHealthRow(row, jobs) {
     viewName: row.view_name,
     category: row.category,
     status,
+    present: relationPresent,
+    error: row.error ?? null,
     latestDataAt,
     latestDataAgeMinutes:
       latestDataAgeMs === null ? null : Math.round(latestDataAgeMs / 60_000),
-    rowCount: normalizeNumber(row.row_count) ?? 0,
+    rowCount:
+      relationPresent === false ? null : (normalizeNumber(row.row_count) ?? 0),
     staleAfterMinutes: Math.round(staleAfterMs / 60_000),
     refreshOwner: 'pg_cron',
     jobs,
@@ -3051,12 +3266,84 @@ function envSecret(...names) {
   return undefined
 }
 
+const SQL_TEXT_LITERAL_PATTERN = /^[A-Za-z0-9_./:-]+$/
+const SQL_COLUMN_REFERENCE_PATTERN =
+  /^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?$/
+
+// SQL text literals in this module are code-owned values only. Request data
+// must use PostgreSQL bind parameters instead of this helper.
+function sqlTextLiteral(value, label = 'SQL literal') {
+  if (
+    typeof value !== 'string' ||
+    value.length === 0 ||
+    !SQL_TEXT_LITERAL_PATTERN.test(value)
+  ) {
+    throw new TypeError(`${label} must be a static SQL literal`)
+  }
+  return `'${value}'`
+}
+
+function assertSqlIdentifier(value, label = 'SQL identifier') {
+  if (typeof value !== 'string' || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(value)) {
+    throw new TypeError(`${label} must be a static SQL identifier`)
+  }
+}
+
+function assertSqlColumnReference(value, label = 'SQL column reference') {
+  if (typeof value !== 'string' || !SQL_COLUMN_REFERENCE_PATTERN.test(value)) {
+    throw new TypeError(`${label} must be a static SQL column reference`)
+  }
+}
+
 const DASHBOARD_TIME_ZONE = 'America/New_York'
-const createdAtEastern = "(sh.created_at AT TIME ZONE 'America/New_York')"
+const DASHBOARD_TIME_ZONE_SQL_LITERAL = sqlTextLiteral(
+  DASHBOARD_TIME_ZONE,
+  'Dashboard time zone'
+)
+
+function dashboardDateBoundarySql(index) {
+  if (!Number.isInteger(index) || index < 1) {
+    throw new TypeError(
+      'Dashboard date-boundary indexes must be positive integers'
+    )
+  }
+  return `($${index.toString()}::date::timestamp AT TIME ZONE ${DASHBOARD_TIME_ZONE_SQL_LITERAL})`
+}
+
+// Column expressions are internal SQL fragments; values remain bound by the
+// caller. Keep this helper limited to code-owned expressions.
+function dashboardDateRangeWhereSql(
+  columnExpression,
+  fromIndex = 1,
+  toIndex = 2
+) {
+  assertSqlColumnReference(columnExpression, 'Dashboard date-range column')
+  return [
+    `${columnExpression} >= ${dashboardDateBoundarySql(fromIndex)}`,
+    `${columnExpression} < ${dashboardDateBoundarySql(toIndex)}`,
+  ]
+}
+
+function dashboardDateRangeOverlapSql(
+  startExpression,
+  endExpression,
+  fromIndex = 1,
+  toIndex = 2
+) {
+  assertSqlColumnReference(startExpression, 'Dashboard range start column')
+  assertSqlColumnReference(endExpression, 'Dashboard range end column')
+  return [
+    `${startExpression} < ${dashboardDateBoundarySql(toIndex)}`,
+    `${endExpression} >= ${dashboardDateBoundarySql(fromIndex)}`,
+  ]
+}
+
+const createdAtEastern = `(sh.created_at AT TIME ZONE ${DASHBOARD_TIME_ZONE_SQL_LITERAL})`
 function providerDimensionExpression(
   columnExpression = 'sh.provider',
   { includeAntigravity = false } = {}
 ) {
+  assertSqlColumnReference(columnExpression, 'Provider dimension column')
   const antigravityBranch = includeAntigravity
     ? `
     WHEN lower(COALESCE(${columnExpression}, 'unknown')) = 'antigravity' THEN 'antigravity'`
@@ -3101,6 +3388,7 @@ const agentIdDimension =
   "COALESCE(NULLIF(sh.agent_id, ''), 'uncaptured_agent_id')"
 
 function sessionHistoryTokenSignalExpression(alias = 'sh') {
+  assertSqlIdentifier(alias, 'Session history alias')
   return `(COALESCE(${alias}.input_tokens, 0)
     + COALESCE(${alias}.output_tokens, 0)
     + COALESCE(${alias}.cache_read_input_tokens, 0)
@@ -3110,11 +3398,27 @@ function sessionHistoryTokenSignalExpression(alias = 'sh') {
 }
 
 function sessionHistoryCostSignalExpression(alias = 'sh') {
+  assertSqlIdentifier(alias, 'Session history alias')
   return `(COALESCE(${alias}.response_cost_usd, 0)
     + COALESCE(${alias}.provider_cache_miss_cost_usd, 0))`
 }
 
+function sessionHistoryResponseCostRowsExpression(alias = 'sh') {
+  return `COUNT(${alias}.response_cost_usd)::double precision`
+}
+
 function sessionHistoryMetadataText(alias, key, fallback) {
+  assertSqlIdentifier(alias, 'Session history alias')
+  const metadataFallbacks = {
+    session_history_usage_record: 'true',
+    session_history_reporting_excluded: 'false',
+    session_history_model_reporting_excluded: 'false',
+  }
+  if (metadataFallbacks[key] !== fallback) {
+    throw new TypeError(
+      'Session-history metadata key and fallback must be code-owned literals'
+    )
+  }
   return `lower(btrim(COALESCE(${alias}.metadata->>${sqlTextLiteral(key)}, ${sqlTextLiteral(fallback)})))`
 }
 
@@ -3225,7 +3529,11 @@ export function compactUsageRow(row) {
 
   const compacted = {}
   for (const [key, value] of Object.entries(row)) {
-    if (!isEmptyUsageRowFieldValue(value)) {
+    // Cost availability is part of the public row contract: keep an explicit
+    // null so compact payloads cannot turn missing persisted cost into absent.
+    if (key === 'usd_cost') {
+      compacted[key] = value ?? null
+    } else if (!isEmptyUsageRowFieldValue(value)) {
       compacted[key] = value
     }
   }
@@ -3305,10 +3613,11 @@ export function parseUsageReportSort(searchParams) {
 
   return { sort, sortDirection, sortKey: rawSort }
 }
-const startTimeDateRangeWhere = [
-  "sh.start_time >= ($1::date::timestamp AT TIME ZONE 'America/New_York')",
-  "sh.start_time < ($2::date::timestamp AT TIME ZONE 'America/New_York')",
-]
+const startTimeDateRangeWhere = dashboardDateRangeWhereSql(
+  'sh.start_time',
+  1,
+  2
+)
 
 function appendStartTimeDateRangeWhere(whereParts, values, from, to) {
   const fromIndex = values.length + 1
@@ -3316,8 +3625,7 @@ function appendStartTimeDateRangeWhere(whereParts, values, from, to) {
   const toIndex = values.length + 1
   values.push(to)
   whereParts.push(
-    `sh.start_time >= ($${fromIndex.toString()}::date::timestamp AT TIME ZONE 'America/New_York')`,
-    `sh.start_time < ($${toIndex.toString()}::date::timestamp AT TIME ZONE 'America/New_York')`
+    ...dashboardDateRangeWhereSql('sh.start_time', fromIndex, toIndex)
   )
 }
 
@@ -3327,8 +3635,7 @@ function appendCreatedAtDateRangeWhere(whereParts, values, from, to) {
   const toIndex = values.length + 1
   values.push(to)
   whereParts.push(
-    `sh.created_at >= ($${fromIndex.toString()}::date::timestamp AT TIME ZONE 'America/New_York')`,
-    `sh.created_at < ($${toIndex.toString()}::date::timestamp AT TIME ZONE 'America/New_York')`
+    ...dashboardDateRangeWhereSql('sh.created_at', fromIndex, toIndex)
   )
 }
 
@@ -4152,9 +4459,14 @@ function parseCsv(value) {
 }
 
 function parseLimit(value) {
-  const parsed = Number(value ?? 200)
-  if (!Number.isFinite(parsed) || parsed < 1) return 200
-  return Math.min(Math.floor(parsed), MAX_LIMIT)
+  if (value == null || String(value).trim() === '') return 200
+
+  const rawValue = String(value).trim()
+  const parsed = Number(rawValue)
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    throw new BadRequestError(`Invalid limit: ${value}`)
+  }
+  return Math.min(parsed, MAX_LIMIT)
 }
 
 function parseSessionDiagnosticsLimit(value) {
@@ -4238,6 +4550,13 @@ function normalizeNumber(value) {
   return Number.isFinite(number) ? number : null
 }
 
+function normalizePersistedResponseCost(row) {
+  const cost = normalizeNumber(row.usd_cost)
+  const responseCostRows = normalizeNumber(row.response_cost_rows)
+  if (responseCostRows === 0 || cost === null) return null
+  return cost
+}
+
 function firstRow(result) {
   return result.rows[0] ?? {}
 }
@@ -4318,6 +4637,7 @@ const normalizeRowNumericKeys = [
   'token_total',
   'cache_miss_usd_cost',
   'usd_cost',
+  'response_cost_rows',
   'tool_calls',
   'git_commit',
   'git_push',
@@ -4453,6 +4773,7 @@ function normalizeRow(row) {
   for (const key of normalizeRowNumericKeys) {
     normalized[key] = normalizeNumber(normalized[key])
   }
+  normalized.usd_cost = normalizePersistedResponseCost(normalized)
   normalized.agent_score_reasons_bounded_min_id = normalizeNumber(
     normalized.agent_score_reasons_bounded_min_id
   )
@@ -4652,14 +4973,10 @@ SELECT
     SUM(COALESCE(sh.cache_creation_input_tokens, 0))::double precision AS token_cache_creation,
     SUM(COALESCE(sh.reasoning_tokens_reported, 0))::double precision AS token_reasoning_reported,
     SUM(COALESCE(sh.reasoning_tokens_estimated, 0))::double precision AS token_reasoning_estimated,
-    SUM(COALESCE(sh.input_tokens, 0)
-      + COALESCE(sh.output_tokens, 0)
-      + COALESCE(sh.cache_read_input_tokens, 0)
-      + COALESCE(sh.cache_creation_input_tokens, 0)
-      + COALESCE(sh.reasoning_tokens_reported, 0)
-      + COALESCE(sh.reasoning_tokens_estimated, 0))::double precision AS token_total,
+    SUM(${sessionHistoryTokenSignalExpression()})::double precision AS token_total,
     SUM(COALESCE(sh.provider_cache_miss_cost_usd, 0))::double precision AS cache_miss_usd_cost,
     SUM(COALESCE(sh.response_cost_usd, 0))::double precision AS usd_cost,
+    ${sessionHistoryResponseCostRowsExpression('sh')} AS response_cost_rows,
     SUM(COALESCE(sh.tool_call_count, 0))::double precision AS tool_calls,
     SUM(COALESCE(sh.git_commit_count, 0))::double precision AS git_commit,
     SUM(COALESCE(sh.git_push_count, 0))::double precision AS git_push,
@@ -4690,13 +5007,9 @@ SELECT
     COALESCE(sh.model, 'unknown') AS model,
     COALESCE(sh.tenant_id, 'unknown') AS repository,
     COUNT(*)::double precision AS traces,
-    SUM(COALESCE(sh.input_tokens, 0)
-      + COALESCE(sh.output_tokens, 0)
-      + COALESCE(sh.cache_read_input_tokens, 0)
-      + COALESCE(sh.cache_creation_input_tokens, 0)
-      + COALESCE(sh.reasoning_tokens_reported, 0)
-      + COALESCE(sh.reasoning_tokens_estimated, 0))::double precision AS token_total,
+    SUM(${sessionHistoryTokenSignalExpression()})::double precision AS token_total,
     SUM(COALESCE(sh.response_cost_usd, 0))::double precision AS usd_cost,
+    ${sessionHistoryResponseCostRowsExpression('sh')} AS response_cost_rows,
     SUM(COALESCE(sh.tool_call_count, 0))::double precision AS tool_calls,
     SUM(COALESCE(sh.git_commit_count, 0))::double precision AS git_commit,
     SUM(COALESCE(sh.git_push_count, 0))::double precision AS git_push
@@ -4722,17 +5035,12 @@ export function buildTokenTrendHoursQuery(searchParams) {
   const hourExpression = `EXTRACT(hour FROM ${createdAtEastern})::int`
 
   const sql = `
-SELECT
+  SELECT
     to_char(${dayExpression}, 'YYYY-MM-DD') AS day,
     ${hourExpression} AS hour,
     ${providerDimension} AS provider,
     COUNT(*)::double precision AS traces,
-    SUM(COALESCE(sh.input_tokens, 0)
-      + COALESCE(sh.output_tokens, 0)
-      + COALESCE(sh.cache_read_input_tokens, 0)
-      + COALESCE(sh.cache_creation_input_tokens, 0)
-      + COALESCE(sh.reasoning_tokens_reported, 0)
-      + COALESCE(sh.reasoning_tokens_estimated, 0))::double precision AS token_total,
+    SUM(${sessionHistoryTokenSignalExpression()})::double precision AS token_total,
     SUM(COALESCE(sh.response_cost_usd, 0))::double precision AS usd_cost,
     SUM(COALESCE(sh.tool_call_count, 0))::double precision AS tool_calls,
     SUM(COALESCE(sh.git_commit_count, 0))::double precision AS git_commit,
@@ -4779,7 +5087,7 @@ export function buildTokenTrendHealthQuery(searchParams) {
     whereParts.push(`${column} = ANY($${values.length.toString()}::text[])`)
   }
 
-  const bucketExpression = `date_trunc('hour', h.bucket_start AT TIME ZONE 'America/New_York')`
+  const bucketExpression = `date_trunc('hour', h.bucket_start AT TIME ZONE ${DASHBOARD_TIME_ZONE_SQL_LITERAL})`
 
   const sql = `
 SELECT
@@ -4899,10 +5207,6 @@ const tokenTrendVersionClientNames = [
   'xai-cli',
 ]
 
-function sqlTextLiteral(value) {
-  return `'${value.replaceAll("'", "''")}'`
-}
-
 const tokenTrendVersionClientNameList = tokenTrendVersionClientNames
   .map(sqlTextLiteral)
   .join(', ')
@@ -4956,12 +5260,7 @@ WITH version_usage AS (
       MIN(${localTimestampExpression}) AS first_seen_local,
       MAX(${localTimestampExpression}) AS last_seen_local,
       COUNT(*)::double precision AS traces,
-      SUM(COALESCE(sh.input_tokens, 0)
-        + COALESCE(sh.output_tokens, 0)
-        + COALESCE(sh.cache_read_input_tokens, 0)
-        + COALESCE(sh.cache_creation_input_tokens, 0)
-        + COALESCE(sh.reasoning_tokens_reported, 0)
-        + COALESCE(sh.reasoning_tokens_estimated, 0))::double precision AS token_total,
+      SUM(${sessionHistoryTokenSignalExpression()})::double precision AS token_total,
       SUM(COALESCE(sh.response_cost_usd, 0))::double precision AS usd_cost,
       SUM(COALESCE(sh.tool_call_count, 0))::double precision AS tool_calls,
       SUM(COALESCE(sh.git_commit_count, 0))::double precision AS git_commit,
@@ -5021,12 +5320,7 @@ WITH model_usage AS (
       MIN(sh.created_at) AS first_seen_at,
       MIN(${createdAtEastern}) AS first_seen_local,
       COUNT(*)::double precision AS observations,
-      SUM(COALESCE(sh.input_tokens, 0)
-        + COALESCE(sh.output_tokens, 0)
-        + COALESCE(sh.cache_read_input_tokens, 0)
-        + COALESCE(sh.cache_creation_input_tokens, 0)
-        + COALESCE(sh.reasoning_tokens_reported, 0)
-        + COALESCE(sh.reasoning_tokens_estimated, 0))::double precision AS token_total
+      SUM(${sessionHistoryTokenSignalExpression()})::double precision AS token_total
   FROM public.session_history sh
   WHERE ${modelWhereParts.join('\n    AND ')}
   GROUP BY
@@ -5070,12 +5364,7 @@ SELECT
     MIN(sh.created_at) AS first_seen_at,
     MAX(sh.created_at) AS last_seen_at,
     COUNT(*)::double precision AS traces,
-    SUM(COALESCE(sh.input_tokens, 0)
-      + COALESCE(sh.output_tokens, 0)
-      + COALESCE(sh.cache_read_input_tokens, 0)
-      + COALESCE(sh.cache_creation_input_tokens, 0)
-      + COALESCE(sh.reasoning_tokens_reported, 0)
-      + COALESCE(sh.reasoning_tokens_estimated, 0))::double precision AS token_total,
+    SUM(${sessionHistoryTokenSignalExpression()})::double precision AS token_total,
     SUM(COALESCE(sh.response_cost_usd, 0))::double precision AS usd_cost,
     SUM(COALESCE(sh.tool_call_count, 0))::double precision AS tool_calls,
     SUM(COALESCE(sh.git_commit_count, 0))::double precision AS git_commit,
@@ -5110,12 +5399,7 @@ SELECT
     MIN(sh.created_at) AS first_seen_at,
     MAX(sh.created_at) AS last_seen_at,
     COUNT(*)::double precision AS traces,
-    SUM(COALESCE(sh.input_tokens, 0)
-      + COALESCE(sh.output_tokens, 0)
-      + COALESCE(sh.cache_read_input_tokens, 0)
-      + COALESCE(sh.cache_creation_input_tokens, 0)
-      + COALESCE(sh.reasoning_tokens_reported, 0)
-      + COALESCE(sh.reasoning_tokens_estimated, 0))::double precision AS token_total,
+    SUM(${sessionHistoryTokenSignalExpression()})::double precision AS token_total,
     SUM(COALESCE(sh.response_cost_usd, 0))::double precision AS usd_cost,
     SUM(COALESCE(sh.tool_call_count, 0))::double precision AS tool_calls,
     SUM(COALESCE(sh.git_commit_count, 0))::double precision AS git_commit,
@@ -5307,9 +5591,8 @@ LIMIT $1;
 // was still capping at "now() - 14 days", causing silent under-counting for
 // any window > 14d (e.g. the default 30-day view). Now mirrors the same
 // from/to parameterisation used by buildSummaryQuery / buildClientUsageQuery.
-// MAX_PROVIDER_ERROR_ROWS remains 2_000 — at daily grain a 30-day window
-// with typical error rates stays well below this cap.
-function buildProviderErrorObservationQuery(searchParams) {
+// Return exact cap metadata so a saturated result is visible to consumers.
+export function buildProviderErrorObservationQuery(searchParams) {
   const fromDate = parseSearchDateOnly(
     searchParams.get('from'),
     defaultFromDate
@@ -5319,38 +5602,70 @@ function buildProviderErrorObservationQuery(searchParams) {
   const to = dashboardDateToUtcIso(toDate)
 
   const sql = `
+WITH candidate_observations AS MATERIALIZED (
+    SELECT
+        observed_at,
+        COALESCE(environment, 'unknown') AS environment,
+        COALESCE(provider, 'unknown') AS provider,
+        COALESCE(model, 'unknown') AS model,
+        COALESCE(model_group, 'unknown') AS model_group,
+        COALESCE(route_family, 'unknown') AS route_family,
+        status_code,
+        COALESCE(error_type, 'unknown') AS error_type,
+        COALESCE(error_code, 'unknown') AS error_code,
+        COALESCE(error_class, 'unknown') AS error_class,
+        LEFT(
+            COALESCE(
+                NULLIF(metadata->>'normalized_error_text', ''),
+                NULLIF(metadata->>'error_message', ''),
+                NULLIF(metadata->>'message', ''),
+                NULLIF(metadata #>> '{error,message}', ''),
+                NULLIF(metadata #>> '{error,error,message}', ''),
+                NULLIF(metadata #>> '{response,error,message}', '')
+            ),
+            280
+        ) AS error_message,
+        retry_after_seconds,
+        expected_reset_at
+    FROM public.provider_error_observations
+    WHERE observed_at >= $2::timestamptz
+      AND observed_at < $3::timestamptz
+    ORDER BY observed_at DESC
+    LIMIT ($1::bigint + 1)
+),
+cap_state AS (
+    SELECT
+        $1::bigint AS provider_error_observation_row_limit,
+        true AS provider_error_observation_cap_active,
+        COUNT(*) > $1::bigint AS provider_error_observation_cap_truncates_requested_window
+    FROM candidate_observations
+),
+bounded_observations AS (
+    SELECT *
+    FROM candidate_observations
+    ORDER BY observed_at DESC
+    LIMIT $1
+)
 SELECT
-    observed_at,
-    COALESCE(environment, 'unknown') AS environment,
-    COALESCE(provider, 'unknown') AS provider,
-    COALESCE(model, 'unknown') AS model,
-    COALESCE(model_group, 'unknown') AS model_group,
-    COALESCE(route_family, 'unknown') AS route_family,
-    status_code,
-    COALESCE(error_type, 'unknown') AS error_type,
-    COALESCE(error_code, 'unknown') AS error_code,
-    COALESCE(error_class, 'unknown') AS error_class,
-    LEFT(
-        COALESCE(
-            NULLIF(metadata->>'normalized_error_text', ''),
-            NULLIF(metadata->>'error_message', ''),
-            NULLIF(metadata->>'message', ''),
-            NULLIF(metadata #>> '{error,message}', ''),
-            NULLIF(metadata #>> '{error,error,message}', ''),
-            NULLIF(metadata #>> '{response,error,message}', '')
-        ),
-        280
-    ) AS error_message,
-    retry_after_seconds,
-    expected_reset_at
-FROM public.provider_error_observations
-WHERE observed_at >= $2::timestamptz
-  AND observed_at < $3::timestamptz
-ORDER BY observed_at DESC
-LIMIT $1;
+    observations.*,
+    cap.provider_error_observation_row_limit,
+    cap.provider_error_observation_cap_active,
+    cap.provider_error_observation_cap_truncates_requested_window
+FROM cap_state cap
+LEFT JOIN bounded_observations observations ON true
+ORDER BY observations.observed_at DESC NULLS LAST;
 `
 
-  return { sql, values: [MAX_PROVIDER_ERROR_ROWS, from, to] }
+  return {
+    sql,
+    values: [MAX_PROVIDER_ERROR_ROWS, from, to],
+    metadata: {
+      from: fromDate,
+      to: toDate,
+      providerErrorObservationRowLimit: MAX_PROVIDER_ERROR_ROWS,
+      providerErrorObservationCapActive: true,
+    },
+  }
 }
 
 // Wave 28-ServerCap: added searchParams parameter to thread the user's
@@ -5366,17 +5681,13 @@ export function buildProviderStatusUsageQuery(searchParams) {
   values.push(MAX_PROVIDER_STATUS_ROWS)
 
   const sql = `
-SELECT
+  SELECT
     ${providerDimension} AS provider,
     COALESCE(sh.model, 'unknown') AS model,
     COUNT(*)::double precision AS traces,
-    SUM(COALESCE(sh.input_tokens, 0)
-      + COALESCE(sh.output_tokens, 0)
-      + COALESCE(sh.cache_read_input_tokens, 0)
-      + COALESCE(sh.cache_creation_input_tokens, 0)
-      + COALESCE(sh.reasoning_tokens_reported, 0)
-      + COALESCE(sh.reasoning_tokens_estimated, 0))::double precision AS token_total,
+    SUM(${sessionHistoryTokenSignalExpression()})::double precision AS token_total,
     SUM(COALESCE(sh.response_cost_usd, 0))::double precision AS usd_cost,
+    ${sessionHistoryResponseCostRowsExpression('sh')} AS response_cost_rows,
     SUM(COALESCE(sh.tool_call_count, 0))::double precision AS tool_calls,
     SUM(COALESCE(sh.git_commit_count, 0))::double precision AS git_commit,
     SUM(COALESCE(sh.git_push_count, 0))::double precision AS git_push,
@@ -5409,6 +5720,7 @@ const XAI_GROK_BUILD_WEEKLY_CREDITS_KEY =
   'xai_grok_build_weekly_credits:credits'
 const XAI_GROK_BUILD_MONTHLY_REQUESTS_KEY =
   'xai_grok_build_monthly_requests:requests'
+const OPENAI_CODEX_SPARK_CURRENT_KEY = 'codex_spark:tokens'
 const ALIBABA_TOKEN_PLAN_PROVIDER = 'alibaba_token_plan'
 const ALIBABA_TOKEN_PLAN_SOURCE = 'alibaba_token_plan_usage'
 const ALIBABA_TOKEN_PLAN_5H_KEY = 'alibaba_token_plan_5h:credits'
@@ -5420,20 +5732,69 @@ const KIMI_CODE_CLIENT = 'kimi-code'
 const KIMI_CODE_5H_KEY = 'kimi_code_5h:quota_units'
 const KIMI_CODE_7D_KEY = 'kimi_code_7d:quota_units'
 const KIMI_CODE_QUOTA_UNIT = 'quota_units'
+const CURSOR_AGENT_PROVIDER = 'cursor_agent'
+const CURSOR_AGENT_SOURCE = 'cursor_agent_usage'
+const CURSOR_AGENT_CLIENT = 'cursor-agent'
+const CURSOR_AGENT_MODEL = 'cursor-agent'
+const CURSOR_AGENT_MONTHLY_KEY = 'cursor_agent_monthly:cents'
+const CURSOR_AGENT_QUOTA_TYPE = 'cents'
+const ZAI_CODING_PLAN_PROVIDER = 'zai_coding_plan'
+const ZAI_CODING_PLAN_SOURCE = 'zai_coding_plan_quota_poll'
+const ZAI_CODING_PLAN_CLIENT = 'zai-coding-plan'
+const ZAI_CODING_PLAN_MODEL = 'zai-coding-plan'
+const ZAI_CODING_PLAN_CONTRACTS = [
+  {
+    quotaKey: 'zai_coding_plan_5h:credits',
+    quotaPeriod: '5h',
+    quotaType: 'credits',
+  },
+  {
+    quotaKey: 'zai_coding_plan_5h:percent',
+    quotaPeriod: '5h',
+    quotaType: 'percent',
+  },
+  {
+    quotaKey: 'zai_coding_plan_5h:count',
+    quotaPeriod: '5h',
+    quotaType: 'count',
+  },
+  {
+    quotaKey: 'zai_coding_plan_7d:credits',
+    quotaPeriod: '7d',
+    quotaType: 'credits',
+  },
+  {
+    quotaKey: 'zai_coding_plan_7d:percent',
+    quotaPeriod: '7d',
+    quotaType: 'percent',
+  },
+  {
+    quotaKey: 'zai_coding_plan_7d:count',
+    quotaPeriod: '7d',
+    quotaType: 'count',
+  },
+]
 
 function quotaUnitCaseExpression(columnExpression = 'ri.quota_key') {
+  assertSqlColumnReference(columnExpression, 'Quota unit column')
   return `CASE
             WHEN ${columnExpression} = '${XAI_GROK_BUILD_WEEKLY_CREDITS_KEY}' THEN 'credits'
             WHEN ${columnExpression} = '${XAI_GROK_BUILD_MONTHLY_REQUESTS_KEY}' THEN 'requests'
+            WHEN ${columnExpression} = '${OPENAI_CODEX_SPARK_CURRENT_KEY}' THEN 'tokens'
             WHEN ${columnExpression} LIKE '%:credits' THEN 'credits'
             WHEN ${columnExpression} LIKE '%:requests' THEN 'requests'
             WHEN ${columnExpression} LIKE '%:quota_units' THEN 'quota_units'
+            WHEN ${columnExpression} LIKE '%:tokens' THEN 'tokens'
+            WHEN ${columnExpression} LIKE '%:cents' THEN 'cents'
+            WHEN ${columnExpression} LIKE '%:percent' THEN 'percent'
+            WHEN ${columnExpression} LIKE '%:count' THEN 'count'
             ELSE NULL
         END`
 }
 
 const RATE_LIMIT_QUOTA_UNIT_CASE = quotaUnitCaseExpression('ri.quota_key')
 const SELECTED_QUOTA_UNIT_CASE = quotaUnitCaseExpression('s.quota_key')
+const OBSERVATION_QUOTA_UNIT_CASE = quotaUnitCaseExpression('o.quota_key')
 
 const RATE_LIMIT_NORMALIZED_MODEL_CASE = `
         CASE
@@ -5473,8 +5834,17 @@ const RATE_LIMIT_NORMALIZED_QUOTA_TYPE_CASE = `
             ELSE ri.quota_type
         END`
 
-const QUOTA_KEY_INTERVAL_QUOTA_TYPES_SQL =
-  "('weekly', 'weekly_overage_included', 'weekly_special', 'short', 'short_special', 'requests', 'monthly', 'wtus')"
+const QUOTA_INTERVAL_TYPES = [
+  'weekly',
+  'weekly_overage_included',
+  'short',
+  'weekly_special',
+  'short_special',
+  'requests',
+  'monthly',
+  'wtus',
+]
+const QUOTA_INTERVAL_TYPES_SQL = `(${QUOTA_INTERVAL_TYPES.map(sqlTextLiteral).join(', ')})`
 const QUOTA_LANE_TYPES = [
   'weekly',
   'weekly_overage_included',
@@ -5485,6 +5855,349 @@ const QUOTA_LANE_TYPES = [
   'wtus',
 ]
 
+const QUOTA_ESTIMATOR_LANE_DEFINITIONS = [
+  {
+    provider: 'anthropic',
+    quotaKey: 'anthropic_unified_5h:5h',
+    quotaType: 'short',
+    quotaLane: 'anthropic_5h_all_model',
+  },
+  {
+    provider: 'anthropic',
+    quotaKey: 'anthropic_unified_7d:7d',
+    quotaType: 'weekly',
+    quotaLane: 'anthropic_weekly_all_model',
+  },
+  {
+    provider: 'anthropic',
+    quotaKey: 'anthropic_unified_7d_sonnet:7d_sonnet',
+    quotaType: 'special',
+    quotaLane: 'anthropic_weekly_sonnet',
+  },
+  {
+    provider: 'openai',
+    quotaKey: 'codex:primary',
+    quotaType: 'short',
+    quotaLane: 'openai_5h_all_model',
+  },
+  {
+    provider: 'openai',
+    quotaKey: 'codex:secondary',
+    quotaType: 'weekly',
+    quotaLane: 'openai_weekly_all_model',
+  },
+  {
+    provider: 'openai',
+    quotaKey: 'codex_bengalfox:primary',
+    quotaType: 'short_special',
+    quotaLane: 'openai_codex_spark_5h',
+  },
+  {
+    provider: 'openai',
+    quotaKey: 'codex_bengalfox:secondary',
+    quotaType: 'special',
+    quotaLane: 'openai_codex_spark_weekly',
+  },
+]
+const QUOTA_ESTIMATOR_PROVIDERS_SQL = `(${[
+  ...new Set(QUOTA_ESTIMATOR_LANE_DEFINITIONS.map(({ provider }) => provider)),
+]
+  .map(sqlTextLiteral)
+  .join(', ')})`
+const QUOTA_ESTIMATOR_QUOTA_KEYS_SQL = `(${QUOTA_ESTIMATOR_LANE_DEFINITIONS.map(
+  ({ quotaKey }) => sqlTextLiteral(quotaKey)
+).join(', ')})`
+const QUOTA_ESTIMATOR_QUOTA_TYPE_CASE = `CASE
+${QUOTA_ESTIMATOR_LANE_DEFINITIONS.map(
+  ({ provider, quotaKey, quotaType }) =>
+    `            WHEN o.provider = ${sqlTextLiteral(provider)} AND o.quota_key = ${sqlTextLiteral(quotaKey)} THEN ${sqlTextLiteral(quotaType)}`
+).join('\n')}
+            ELSE NULL
+        END`
+const QUOTA_ESTIMATOR_LANE_CASE = `CASE
+${QUOTA_ESTIMATOR_LANE_DEFINITIONS.map(
+  ({ provider, quotaKey, quotaLane }) =>
+    `            WHEN o.provider = ${sqlTextLiteral(provider)} AND o.quota_key = ${sqlTextLiteral(quotaKey)} THEN ${sqlTextLiteral(quotaLane)}`
+).join('\n')}
+            ELSE o.provider || '_unknown'
+        END`
+
+function quotaObservationQuotaTypeSql(alias = 'o') {
+  assertSqlIdentifier(alias, 'Quota observation alias')
+  return `CASE
+            WHEN ${alias}.provider = 'openai'
+              AND ${alias}.quota_key = '${OPENAI_CODEX_SPARK_CURRENT_KEY}'
+              AND ${alias}.quota_period = '5h' THEN 'short_special'
+            WHEN ${alias}.provider = 'openai'
+              AND ${alias}.quota_key = '${OPENAI_CODEX_SPARK_CURRENT_KEY}'
+              AND ${alias}.quota_period = '7d' THEN 'special'
+            WHEN ${alias}.quota_period = '5h' THEN 'short'
+            WHEN ${alias}.quota_period = '7d' THEN 'weekly'
+            WHEN ${alias}.quota_period = 'monthly' THEN 'monthly'
+            ELSE ${alias}.quota_type
+        END`
+}
+
+function quotaObservationIntervalStartSql(alias = 'o') {
+  assertSqlIdentifier(alias, 'Quota observation alias')
+  return `${alias}.expected_reset_at - CASE
+            WHEN ${alias}.quota_period = '5h' THEN INTERVAL '5 hours'
+            WHEN ${alias}.quota_period = '7d' THEN INTERVAL '7 days'
+            WHEN ${alias}.quota_period = 'monthly' THEN INTERVAL '1 month'
+            ELSE INTERVAL '7 days'
+        END`
+}
+
+function quotaObservationIntervalHoursSql(alias = 'o') {
+  assertSqlIdentifier(alias, 'Quota observation alias')
+  return `CASE
+            WHEN ${alias}.quota_period = '5h' THEN 5.0
+            WHEN ${alias}.quota_period = '7d' THEN 168.0
+            WHEN ${alias}.quota_period = 'monthly' THEN 720.0
+            ELSE 168.0
+        END`
+}
+
+function openaiSparkObservationPredicateSql(alias = 'o') {
+  assertSqlIdentifier(alias, 'Quota observation alias')
+  return `(
+        ${alias}.provider = 'openai'
+        AND ${alias}.quota_key = '${OPENAI_CODEX_SPARK_CURRENT_KEY}'
+        AND ${alias}.quota_period IN ('5h', '7d')
+      )`
+}
+
+function cursorAgentObservationPredicateSql(alias = 'o') {
+  assertSqlIdentifier(alias, 'Quota observation alias')
+  return `(
+        ${alias}.provider = '${CURSOR_AGENT_PROVIDER}'
+        AND ${alias}.source = '${CURSOR_AGENT_SOURCE}'
+        AND ${alias}.client = '${CURSOR_AGENT_CLIENT}'
+        AND ${alias}.model = '${CURSOR_AGENT_MODEL}'
+        AND ${alias}.quota_key = '${CURSOR_AGENT_MONTHLY_KEY}'
+        AND ${alias}.quota_period = 'monthly'
+        AND ${alias}.quota_type = '${CURSOR_AGENT_QUOTA_TYPE}'
+      )`
+}
+
+function zaiCodingPlanObservationPredicateSql(alias = 'o') {
+  assertSqlIdentifier(alias, 'Quota observation alias')
+  const contracts = ZAI_CODING_PLAN_CONTRACTS.map(
+    ({ quotaKey, quotaPeriod, quotaType }) =>
+      `(${alias}.quota_key = '${quotaKey}' AND ${alias}.quota_period = '${quotaPeriod}' AND ${alias}.quota_type = '${quotaType}')`
+  ).join('\n        OR ')
+  return `(
+        ${alias}.provider = '${ZAI_CODING_PLAN_PROVIDER}'
+        AND ${alias}.source = '${ZAI_CODING_PLAN_SOURCE}'
+        AND ${alias}.client = '${ZAI_CODING_PLAN_CLIENT}'
+        AND ${alias}.model = '${ZAI_CODING_PLAN_MODEL}'
+        AND (
+          ${contracts}
+        )
+      )`
+}
+
+function buildQuotaCurrentObservationCteSql(name, predicate) {
+  assertSqlIdentifier(name, 'Quota observation CTE name')
+  return `${name} AS (
+    SELECT DISTINCT ON (
+        o.provider, o.quota_key, o.quota_period, o.quota_type,
+        COALESCE(o.source, ''), COALESCE(o.account_hash, '')
+    )
+        o.provider AS raw_provider,
+        o.quota_type AS raw_quota_type,
+        o.quota_key,
+        o.provider AS provider,
+        NULLIF(o.model, '') AS model,
+        ${quotaObservationQuotaTypeSql()} AS quota_type,
+        o.expected_reset_at,
+        o.remaining_pct,
+        ${quotaObservationIntervalStartSql()} AS interval_start,
+        o.expected_reset_at AS interval_end,
+        ${quotaObservationActiveSql()} AS active,
+        o.account_hash,
+        NULLIF(TRIM(BOTH FROM COALESCE(o.source, '')), '') AS source,
+        o.quota_period,
+        1::bigint AS quota_rank
+    FROM public.rate_limit_observations o
+    WHERE ${predicate}
+      AND o.observed_at IS NOT NULL
+      AND o.expected_reset_at IS NOT NULL
+    ORDER BY
+        o.provider, o.quota_key, o.quota_period, o.quota_type,
+        COALESCE(o.source, ''), COALESCE(o.account_hash, ''),
+        o.observed_at DESC
+  )`
+}
+
+function buildQuotaVelocityObservationUnionSql(predicate) {
+  return `SELECT
+        o.provider AS raw_provider,
+        o.provider AS provider,
+        NULLIF(o.model, '') AS model,
+        ${quotaObservationQuotaTypeSql()} AS quota_type,
+        o.quota_type AS raw_quota_type,
+        o.quota_key,
+        o.expected_reset_at,
+        MIN(o.remaining_pct) AS remaining_pct,
+        ${quotaObservationIntervalStartSql()} AS interval_start,
+        o.expected_reset_at AS interval_end,
+        ${quotaObservationActiveSql()} AS active,
+        o.account_hash,
+        NULLIF(TRIM(BOTH FROM COALESCE(o.source, '')), '') AS source,
+        o.quota_period
+    FROM public.rate_limit_observations o
+    WHERE ${predicate}
+      AND o.observed_at IS NOT NULL
+      AND o.expected_reset_at IS NOT NULL
+    GROUP BY
+        o.provider,
+        o.quota_key,
+        o.quota_period,
+        o.quota_type,
+        o.model,
+        o.expected_reset_at,
+        o.account_hash,
+        o.source`
+}
+
+function buildQuotaHistoryObservationUnionSql(
+  predicate,
+  observationBounds = ''
+) {
+  return `(
+        SELECT DISTINCT ON (
+            o.provider,
+            o.quota_key,
+            o.quota_period,
+            o.quota_type,
+            COALESCE(o.source, ''),
+            COALESCE(o.account_hash, ''),
+            o.expected_reset_at
+        )
+            o.provider AS raw_provider,
+            o.quota_type AS raw_quota_type,
+            o.quota_key,
+            o.provider AS provider,
+            NULLIF(o.model, '') AS model,
+            ${quotaObservationQuotaTypeSql()} AS quota_type,
+            o.quota_key AS normalized_quota_key,
+            NULLIF(TRIM(BOTH FROM COALESCE(o.source, '')), '') AS source,
+            NULLIF(TRIM(BOTH FROM COALESCE(o.client, '')), '') AS client,
+            ${OBSERVATION_QUOTA_UNIT_CASE} AS quota_unit,
+            o.expected_reset_at,
+            o.remaining_pct,
+            ${quotaObservationIntervalStartSql()} AS interval_start,
+            ${quotaObservationIntervalHoursSql()} AS interval_hours,
+            o.account_hash,
+            o.quota_period,
+            o.observed_at,
+            o.quota_limit,
+            o.quota_used,
+            o.quota_remaining
+        FROM public.rate_limit_observations o
+        WHERE ${predicate}
+          AND o.observed_at IS NOT NULL
+          AND o.expected_reset_at IS NOT NULL${observationBounds}
+        ORDER BY
+            o.provider,
+            o.quota_key,
+            o.quota_period,
+            o.quota_type,
+            COALESCE(o.source, ''),
+            COALESCE(o.account_hash, ''),
+            o.expected_reset_at,
+            o.observed_at DESC
+    )`
+}
+
+function quotaObservationHistoryFallbackBoundsSql() {
+  const intervalHours = quotaObservationIntervalHoursSql()
+  return `
+          AND o.expected_reset_at >= now() - (
+            ${intervalHours} * 1.5 * INTERVAL '1 hour'
+          )
+          AND o.expected_reset_at < now() + (
+            LEAST(
+              ${intervalHours},
+              ${QUOTA_HISTORY_MAX_UPPER_HOURS}::double precision
+            ) * 2.0 * INTERVAL '1 hour'
+          )`
+}
+
+function buildQuotaRangeHistoryObservationUnionSql(
+  predicate,
+  observationDateRange = ''
+) {
+  return `SELECT
+        o.provider AS raw_provider,
+        o.provider AS provider,
+        NULLIF(o.model, '') AS model,
+        ${quotaObservationQuotaTypeSql()} AS quota_type,
+        o.quota_key AS normalized_quota_key,
+        NULLIF(TRIM(BOTH FROM COALESCE(o.source, '')), '') AS source,
+        NULLIF(TRIM(BOTH FROM COALESCE(o.client, '')), '') AS client,
+        ${OBSERVATION_QUOTA_UNIT_CASE} AS quota_unit,
+        o.expected_reset_at,
+        ${quotaObservationIntervalStartSql()} AS interval_start,
+        o.expected_reset_at AS interval_end,
+        o.remaining_pct,
+        o.quota_period,
+        o.account_hash,
+        o.observed_at,
+        o.quota_limit,
+        o.quota_used,
+        o.quota_remaining
+    FROM public.rate_limit_observations o
+    WHERE ${predicate}
+      AND o.observed_at IS NOT NULL
+      AND o.expected_reset_at IS NOT NULL${observationDateRange}`
+}
+
+function quotaObservationActiveSql(alias = 'o') {
+  assertSqlIdentifier(alias, 'Quota observation alias')
+  return `CASE
+            WHEN ${quotaObservationIntervalStartSql(alias)} <= now()
+             AND ${alias}.expected_reset_at > now()
+            THEN true
+            ELSE false
+        END`
+}
+
+function quotaHistoryIntervalHoursSql(
+  sourceAlias = 'ri',
+  intervalAlias = 'kh'
+) {
+  assertSqlIdentifier(sourceAlias, 'Quota interval alias')
+  assertSqlIdentifier(intervalAlias, 'Quota interval-hours alias')
+  return `LEAST(
+            GREATEST(
+                COALESCE(
+                    CASE WHEN ${intervalAlias}.gap_count >= 2 THEN ${intervalAlias}.interval_hours END,
+                    CASE
+                        WHEN ${sourceAlias}.quota_type = 'requests'
+                          AND lower(COALESCE(${sourceAlias}.provider, 'unknown')) NOT LIKE 'xai/%'
+                          AND lower(COALESCE(${sourceAlias}.provider, 'unknown')) NOT IN ('xai', 'x.ai')
+                        THEN 24.0
+                        WHEN ${sourceAlias}.quota_type = 'wtus' THEN 5.0
+                        WHEN ${sourceAlias}.quota_type IN ('short', 'short_special') THEN 5.0
+                        WHEN ${sourceAlias}.quota_type IN ('weekly', 'weekly_overage_included', 'weekly_special') THEN 168.0
+                        WHEN ${sourceAlias}.quota_type = 'requests'
+                          AND (
+                              lower(COALESCE(${sourceAlias}.provider, 'unknown')) LIKE 'xai/%'
+                              OR lower(COALESCE(${sourceAlias}.provider, 'unknown')) IN ('xai', 'x.ai')
+                          )
+                        THEN 720.0
+                        WHEN ${sourceAlias}.quota_type = 'monthly' THEN 720.0
+                        ELSE 168.0
+                    END
+                ),
+                1.0
+            ),
+            ${QUOTA_HISTORY_MAX_LOOKBACK_DAYS} * 24.0
+        )`
+}
+
 function buildQuotaLaneAggregateSelectSql() {
   return QUOTA_LANE_TYPES.map((quotaType) => {
     const predicate = `s.quota_type = '${quotaType}'`
@@ -5494,8 +6207,6 @@ function buildQuotaLaneAggregateSelectSql() {
       `    MAX(s.interval_start) FILTER (WHERE ${predicate}) AS ${quotaType}_interval_start`,
       `    MAX(s.interval_end) FILTER (WHERE ${predicate}) AS ${quotaType}_interval_end`,
       `    MAX(s.active::int) FILTER (WHERE ${predicate})::double precision AS ${quotaType}_active`,
-      `    0::double precision AS ${quotaType}_usage_tokens`,
-      `    '[]'::jsonb AS ${quotaType}_usage_breakdown`,
       `    MAX(billing.quota_limit) FILTER (WHERE ${predicate})::double precision AS ${quotaType}_quota_limit`,
       `    MAX(billing.quota_used) FILTER (WHERE ${predicate})::double precision AS ${quotaType}_quota_used`,
       `    MAX(billing.quota_remaining) FILTER (WHERE ${predicate})::double precision AS ${quotaType}_quota_remaining`,
@@ -5534,7 +6245,7 @@ quota_key_gaps AS (
     FROM (
         SELECT DISTINCT provider, quota_key, quota_type, expected_reset_at
         FROM public.rate_limit_intervals
-        WHERE quota_type IN ${QUOTA_KEY_INTERVAL_QUOTA_TYPES_SQL}
+        WHERE quota_type IN ${QUOTA_INTERVAL_TYPES_SQL}
           AND expected_reset_at IS NOT NULL${quotaKeyFilter}
     ) distinct_resets
 ),
@@ -5555,9 +6266,145 @@ function quotaObservationIntervalBoundsSql(
   intervalStartExpr,
   expectedResetExpr
 ) {
+  assertSqlColumnReference(intervalStartExpr, 'Quota interval-start column')
+  assertSqlColumnReference(expectedResetExpr, 'Quota reset-time column')
   return `
      AND o.observed_at >= ${intervalStartExpr} - INTERVAL '5 minutes'
      AND o.observed_at <= ${expectedResetExpr} + INTERVAL '5 minutes'`
+}
+
+function buildQuotaRangeHistoryNormalizedCteSql(providerMode) {
+  const providerDimension =
+    providerMode === 'range'
+      ? rateLimitRangeProviderDimension
+      : providerMode === 'fallback'
+        ? rateLimitProviderDimension
+        : null
+  if (!providerDimension) {
+    throw new TypeError('Unsupported quota range-history provider mode')
+  }
+
+  const rateLimitDateRange = dashboardDateRangeOverlapSql(
+    'ri.fromDate',
+    'ri.expected_reset_at'
+  ).join('\n      AND ')
+  const observationDateRange = `
+      AND ${quotaObservationIntervalStartSql()} < ${dashboardDateBoundarySql(2)}
+      AND o.expected_reset_at >= ${dashboardDateBoundarySql(1)}`
+
+  return `normalized AS (
+    SELECT
+        ri.provider AS raw_provider,
+        ${providerDimension} AS provider,
+        ${RATE_LIMIT_NORMALIZED_MODEL_CASE} AS model,
+        ${RATE_LIMIT_NORMALIZED_QUOTA_TYPE_CASE} AS quota_type,
+        ri.quota_key AS normalized_quota_key,
+        NULLIF(TRIM(BOTH FROM COALESCE(to_jsonb(ri)->>'source', '')), '') AS source,
+        NULLIF(TRIM(BOTH FROM COALESCE(to_jsonb(ri)->>'client', '')), '') AS client,
+        ${RATE_LIMIT_QUOTA_UNIT_CASE} AS quota_unit,
+        ri.expected_reset_at,
+        ri.fromDate AS interval_start,
+        ri.toDate AS interval_end,
+        ri.remaining_pct,
+        NULL::text AS quota_period,
+        NULL::text AS account_hash,
+        NULL::timestamp with time zone AS observed_at,
+        NULL::double precision AS quota_limit,
+        NULL::double precision AS quota_used,
+        NULL::double precision AS quota_remaining
+    FROM public.rate_limit_intervals ri
+    WHERE ri.quota_type IN ${QUOTA_INTERVAL_TYPES_SQL}
+      AND ri.expected_reset_at IS NOT NULL
+      AND ${rateLimitDateRange}
+      -- The Quota tab intentionally hides OpenAI/Anthropic 5-hour history
+      -- lanes. Exclude them before the session_history usage join so the
+      -- range read model does not spend statement-timeout budget building rows
+      -- the UI will never show.
+      AND NOT (
+          ri.quota_type IN ('short', 'short_special')
+          AND (
+              lower(COALESCE(ri.provider, 'unknown')) IN ('openai', 'anthropic', 'claude')
+              OR lower(COALESCE(ri.provider, 'unknown')) LIKE 'claude/%'
+              OR lower(COALESCE(ri.provider, 'unknown')) LIKE 'anthropic/%'
+          )
+      )
+    UNION ALL
+    ${buildQuotaRangeHistoryObservationUnionSql(
+      openaiSparkObservationPredicateSql(),
+      observationDateRange
+    )}
+    UNION ALL
+    ${buildQuotaRangeHistoryObservationUnionSql(
+      cursorAgentObservationPredicateSql(),
+      observationDateRange
+    )}
+    UNION ALL
+    ${buildQuotaRangeHistoryObservationUnionSql(
+      zaiCodingPlanObservationPredicateSql(),
+      observationDateRange
+    )}
+    UNION ALL
+    SELECT
+        o.provider AS raw_provider,
+        o.provider AS provider,
+        NULLIF(o.model, '') AS model,
+        ${quotaObservationQuotaTypeSql()} AS quota_type,
+        o.quota_key AS normalized_quota_key,
+        NULLIF(TRIM(BOTH FROM COALESCE(o.source, '')), '') AS source,
+        NULLIF(TRIM(BOTH FROM COALESCE(o.client, '')), '') AS client,
+        ${sqlTextLiteral(ALIBABA_TOKEN_PLAN_QUOTA_UNIT)}::text AS quota_unit,
+        o.expected_reset_at,
+        ${quotaObservationIntervalStartSql()} AS interval_start,
+        o.expected_reset_at AS interval_end,
+        o.remaining_pct,
+        o.quota_period,
+        o.account_hash,
+        o.observed_at,
+        o.quota_limit,
+        o.quota_used,
+        o.quota_remaining
+    FROM public.rate_limit_observations o
+    WHERE o.provider = '${ALIBABA_TOKEN_PLAN_PROVIDER}'
+      AND o.source = '${ALIBABA_TOKEN_PLAN_SOURCE}'
+      AND (
+          (o.quota_key = '${ALIBABA_TOKEN_PLAN_5H_KEY}' AND o.quota_period = '5h')
+          OR
+          (o.quota_key = '${ALIBABA_TOKEN_PLAN_7D_KEY}' AND o.quota_period = '7d')
+      )
+      AND o.observed_at IS NOT NULL
+      AND o.expected_reset_at IS NOT NULL${observationDateRange}
+    UNION ALL
+    SELECT
+        o.provider AS raw_provider,
+        o.provider AS provider,
+        NULLIF(o.model, '') AS model,
+        ${quotaObservationQuotaTypeSql()} AS quota_type,
+        o.quota_key AS normalized_quota_key,
+        NULLIF(TRIM(BOTH FROM COALESCE(o.source, '')), '') AS source,
+        NULLIF(TRIM(BOTH FROM COALESCE(o.client, '')), '') AS client,
+        ${sqlTextLiteral(KIMI_CODE_QUOTA_UNIT)}::text AS quota_unit,
+        o.expected_reset_at,
+        ${quotaObservationIntervalStartSql()} AS interval_start,
+        o.expected_reset_at AS interval_end,
+        o.remaining_pct,
+        o.quota_period,
+        o.account_hash,
+        o.observed_at,
+        o.quota_limit,
+        o.quota_used,
+        o.quota_remaining
+    FROM public.rate_limit_observations o
+    WHERE o.provider = '${KIMI_CODE_PROVIDER}'
+      AND o.source = '${KIMI_CODE_SOURCE}'
+      AND o.client = '${KIMI_CODE_CLIENT}'
+      AND (
+          (o.quota_key = '${KIMI_CODE_5H_KEY}' AND o.quota_period = '5h')
+          OR
+          (o.quota_key = '${KIMI_CODE_7D_KEY}' AND o.quota_period = '7d')
+      )
+      AND o.observed_at IS NOT NULL
+      AND o.expected_reset_at IS NOT NULL${observationDateRange}
+)`
 }
 
 export function buildQuotaQuery() {
@@ -5582,7 +6429,7 @@ WITH normalized AS (
         NULL::text AS source,
         NULL::text AS quota_period
     FROM public.rate_limit_intervals ri
-    WHERE ri.quota_type IN ('weekly', 'weekly_overage_included', 'short', 'weekly_special', 'short_special', 'requests', 'monthly', 'wtus')
+    WHERE ri.quota_type IN ${QUOTA_INTERVAL_TYPES_SQL}
 ),
 ranked AS (
     SELECT
@@ -5598,6 +6445,18 @@ selected AS (
     FROM ranked
     WHERE quota_rank = 1
 ),
+${buildQuotaCurrentObservationCteSql(
+  'openai_spark_observations',
+  openaiSparkObservationPredicateSql()
+)},
+${buildQuotaCurrentObservationCteSql(
+  'cursor_agent_observations',
+  cursorAgentObservationPredicateSql()
+)},
+${buildQuotaCurrentObservationCteSql(
+  'zai_coding_plan_observations',
+  zaiCodingPlanObservationPredicateSql()
+)},
 alibaba_observations AS (
     SELECT DISTINCT ON (
         o.provider, o.quota_key, o.quota_period, o.quota_type,
@@ -5608,29 +6467,12 @@ alibaba_observations AS (
         o.quota_key,
         o.provider AS provider,
         NULLIF(o.model, '') AS model,
-        CASE
-            WHEN o.quota_period = '5h' THEN 'short'
-            WHEN o.quota_period = '7d' THEN 'weekly'
-            ELSE o.quota_type
-        END AS quota_type,
+        ${quotaObservationQuotaTypeSql()} AS quota_type,
         o.expected_reset_at,
         o.remaining_pct,
-        o.expected_reset_at - CASE
-            WHEN o.quota_period = '5h' THEN INTERVAL '5 hours'
-            WHEN o.quota_period = '7d' THEN INTERVAL '7 days'
-            ELSE INTERVAL '7 days'
-        END AS interval_start,
+        ${quotaObservationIntervalStartSql()} AS interval_start,
         o.expected_reset_at AS interval_end,
-        CASE
-            WHEN o.expected_reset_at - CASE
-                    WHEN o.quota_period = '5h' THEN INTERVAL '5 hours'
-                    WHEN o.quota_period = '7d' THEN INTERVAL '7 days'
-                    ELSE INTERVAL '7 days'
-                 END <= now()
-             AND o.expected_reset_at > now()
-            THEN true
-            ELSE false
-        END AS active,
+        ${quotaObservationActiveSql()} AS active,
         o.account_hash,
         NULLIF(TRIM(BOTH FROM COALESCE(o.source, '')), '') AS source,
         o.quota_period,
@@ -5660,29 +6502,12 @@ kimi_code_observations AS (
         o.quota_key,
         o.provider AS provider,
         NULLIF(o.model, '') AS model,
-        CASE
-            WHEN o.quota_period = '5h' THEN 'short'
-            WHEN o.quota_period = '7d' THEN 'weekly'
-            ELSE o.quota_type
-        END AS quota_type,
+        ${quotaObservationQuotaTypeSql()} AS quota_type,
         o.expected_reset_at,
         o.remaining_pct,
-        o.expected_reset_at - CASE
-            WHEN o.quota_period = '5h' THEN INTERVAL '5 hours'
-            WHEN o.quota_period = '7d' THEN INTERVAL '7 days'
-            ELSE INTERVAL '7 days'
-        END AS interval_start,
+        ${quotaObservationIntervalStartSql()} AS interval_start,
         o.expected_reset_at AS interval_end,
-        CASE
-            WHEN o.expected_reset_at - CASE
-                    WHEN o.quota_period = '5h' THEN INTERVAL '5 hours'
-                    WHEN o.quota_period = '7d' THEN INTERVAL '7 days'
-                    ELSE INTERVAL '7 days'
-                 END <= now()
-             AND o.expected_reset_at > now()
-            THEN true
-            ELSE false
-        END AS active,
+        ${quotaObservationActiveSql()} AS active,
         o.account_hash,
         NULLIF(TRIM(BOTH FROM COALESCE(o.source, '')), '') AS source,
         o.quota_period,
@@ -5766,6 +6591,12 @@ selected_with_fallbacks AS (
     SELECT * FROM alibaba_observations
     UNION ALL
     SELECT * FROM kimi_code_observations
+    UNION ALL
+    SELECT * FROM openai_spark_observations
+    UNION ALL
+    SELECT * FROM cursor_agent_observations
+    UNION ALL
+    SELECT * FROM zai_coding_plan_observations
 ),
 billing_by_type AS (
     SELECT DISTINCT ON (
@@ -5849,7 +6680,12 @@ LEFT JOIN billing_by_type billing
  AND billing.selected_source IS NOT DISTINCT FROM s.source
  AND billing.selected_quota_period IS NOT DISTINCT FROM s.quota_period
  AND billing.quota_key IS NOT DISTINCT FROM s.quota_key
-GROUP BY s.provider, s.model, s.source, COALESCE(s.account_hash, '')
+GROUP BY s.provider, s.model, s.source, COALESCE(s.account_hash, ''),
+    CASE
+      WHEN s.provider = '${ZAI_CODING_PLAN_PROVIDER}'
+      THEN COALESCE(s.quota_key, '')
+      ELSE ''
+    END
 ORDER BY
     s.provider ASC,
     s.model ASC NULLS FIRST,
@@ -5884,37 +6720,32 @@ normalized AS (
         NULL::text AS source,
         NULL::text AS quota_period
     FROM public.rate_limit_intervals ri
-    WHERE ri.quota_type IN ('weekly', 'weekly_overage_included', 'short', 'weekly_special', 'short_special', 'requests', 'monthly', 'wtus')
+    WHERE ri.quota_type IN ${QUOTA_INTERVAL_TYPES_SQL}
+    UNION ALL
+    ${buildQuotaVelocityObservationUnionSql(
+      openaiSparkObservationPredicateSql()
+    )}
+    UNION ALL
+    ${buildQuotaVelocityObservationUnionSql(
+      cursorAgentObservationPredicateSql()
+    )}
+    UNION ALL
+    ${buildQuotaVelocityObservationUnionSql(
+      zaiCodingPlanObservationPredicateSql()
+    )}
     UNION ALL
     SELECT
         o.provider AS raw_provider,
         o.provider AS provider,
         NULLIF(o.model, '') AS model,
-        CASE
-            WHEN o.quota_period = '5h' THEN 'short'
-            WHEN o.quota_period = '7d' THEN 'weekly'
-            ELSE o.quota_type
-        END AS quota_type,
+        ${quotaObservationQuotaTypeSql()} AS quota_type,
         o.quota_type AS raw_quota_type,
         o.quota_key,
         o.expected_reset_at,
         MIN(o.remaining_pct) AS remaining_pct,
-        o.expected_reset_at - CASE
-            WHEN o.quota_period = '5h' THEN INTERVAL '5 hours'
-            WHEN o.quota_period = '7d' THEN INTERVAL '7 days'
-            ELSE INTERVAL '7 days'
-        END AS interval_start,
+        ${quotaObservationIntervalStartSql()} AS interval_start,
         o.expected_reset_at AS interval_end,
-        CASE
-            WHEN o.expected_reset_at - CASE
-                    WHEN o.quota_period = '5h' THEN INTERVAL '5 hours'
-                    WHEN o.quota_period = '7d' THEN INTERVAL '7 days'
-                    ELSE INTERVAL '7 days'
-                 END <= now()
-             AND o.expected_reset_at > now()
-            THEN true
-            ELSE false
-        END AS active,
+        ${quotaObservationActiveSql()} AS active,
         o.account_hash,
         NULLIF(TRIM(BOTH FROM COALESCE(o.source, '')), '') AS source,
         o.quota_period
@@ -5942,31 +6773,14 @@ normalized AS (
         o.provider AS raw_provider,
         o.provider AS provider,
         NULLIF(o.model, '') AS model,
-        CASE
-            WHEN o.quota_period = '5h' THEN 'short'
-            WHEN o.quota_period = '7d' THEN 'weekly'
-            ELSE o.quota_type
-        END AS quota_type,
+        ${quotaObservationQuotaTypeSql()} AS quota_type,
         o.quota_type AS raw_quota_type,
         o.quota_key,
         o.expected_reset_at,
         MIN(o.remaining_pct) AS remaining_pct,
-        o.expected_reset_at - CASE
-            WHEN o.quota_period = '5h' THEN INTERVAL '5 hours'
-            WHEN o.quota_period = '7d' THEN INTERVAL '7 days'
-            ELSE INTERVAL '7 days'
-        END AS interval_start,
+        ${quotaObservationIntervalStartSql()} AS interval_start,
         o.expected_reset_at AS interval_end,
-        CASE
-            WHEN o.expected_reset_at - CASE
-                    WHEN o.quota_period = '5h' THEN INTERVAL '5 hours'
-                    WHEN o.quota_period = '7d' THEN INTERVAL '7 days'
-                    ELSE INTERVAL '7 days'
-                 END <= now()
-             AND o.expected_reset_at > now()
-            THEN true
-            ELSE false
-        END AS active,
+        ${quotaObservationActiveSql()} AS active,
         o.account_hash,
         NULLIF(TRIM(BOTH FROM COALESCE(o.source, '')), '') AS source,
         o.quota_period
@@ -6277,6 +7091,7 @@ export function buildQuotaHistoryQuery(_searchParams) {
   // expected_reset_at values per (provider, quota_key), making lookback
   // proportional to the actual cadence rather than the type label.
 
+  const quotaHistoryIntervalHours = quotaHistoryIntervalHoursSql()
   const sql = `
 WITH
 -- Derive the canonical interval duration for each (provider, quota_key) by
@@ -6322,32 +7137,7 @@ normalized AS (
         --      a key whose median was dominated by sub-minute noise gaps).
         -- The CASE WHEN gap_count >= 2 guard ensures we never use a median
         -- derived from a single data point, which could be an outlier.
-        LEAST(
-            GREATEST(
-                COALESCE(
-                    CASE WHEN kh.gap_count >= 2 THEN kh.interval_hours END,
-                    CASE
-                        WHEN ri.quota_type = 'requests'
-                          AND lower(COALESCE(ri.provider, 'unknown')) NOT LIKE 'xai/%'
-                          AND lower(COALESCE(ri.provider, 'unknown')) NOT IN ('xai', 'x.ai')
-                        THEN 24.0
-                        WHEN ri.quota_type = 'wtus' THEN 5.0
-                        WHEN ri.quota_type IN ('short', 'short_special') THEN 5.0
-                        WHEN ri.quota_type IN ('weekly', 'weekly_overage_included', 'weekly_special') THEN 168.0
-                        WHEN ri.quota_type = 'requests'
-                          AND (
-                              lower(COALESCE(ri.provider, 'unknown')) LIKE 'xai/%'
-                              OR lower(COALESCE(ri.provider, 'unknown')) IN ('xai', 'x.ai')
-                          )
-                        THEN 720.0
-                        WHEN ri.quota_type = 'monthly'                    THEN 720.0
-                        ELSE                                                   168.0
-                    END
-                ),
-                1.0
-            ),
-            ${QUOTA_HISTORY_MAX_LOOKBACK_DAYS} * 24.0
-        ) AS interval_hours,
+        ${quotaHistoryIntervalHours} AS interval_hours,
         NULL::text AS account_hash,
         NULL::text AS quota_period,
         NULL::timestamp with time zone AS observed_at,
@@ -6358,8 +7148,20 @@ normalized AS (
     LEFT JOIN quota_key_interval_hours kh
            ON kh.provider  = ri.provider
           AND kh.quota_key = ri.quota_key
-    WHERE ri.quota_type IN ('weekly', 'weekly_overage_included', 'weekly_special', 'short', 'short_special', 'requests', 'monthly', 'wtus')
+    WHERE ri.quota_type IN ${QUOTA_INTERVAL_TYPES_SQL}
       AND ri.expected_reset_at IS NOT NULL
+    UNION ALL
+    ${buildQuotaHistoryObservationUnionSql(
+      openaiSparkObservationPredicateSql()
+    )}
+    UNION ALL
+    ${buildQuotaHistoryObservationUnionSql(
+      cursorAgentObservationPredicateSql()
+    )}
+    UNION ALL
+    ${buildQuotaHistoryObservationUnionSql(
+      zaiCodingPlanObservationPredicateSql()
+    )}
     UNION ALL
     (
         SELECT DISTINCT ON (
@@ -6376,27 +7178,15 @@ normalized AS (
             o.quota_key,
             o.provider AS provider,
             NULLIF(o.model, '') AS model,
-            CASE
-                WHEN o.quota_period = '5h' THEN 'short'
-                WHEN o.quota_period = '7d' THEN 'weekly'
-                ELSE o.quota_type
-            END AS quota_type,
+            ${quotaObservationQuotaTypeSql()} AS quota_type,
             o.quota_key AS normalized_quota_key,
             NULLIF(TRIM(BOTH FROM COALESCE(o.source, '')), '') AS source,
             NULLIF(TRIM(BOTH FROM COALESCE(o.client, '')), '') AS client,
             '${ALIBABA_TOKEN_PLAN_QUOTA_UNIT}'::text AS quota_unit,
             o.expected_reset_at,
             o.remaining_pct,
-            o.expected_reset_at - CASE
-                WHEN o.quota_period = '5h' THEN INTERVAL '5 hours'
-                WHEN o.quota_period = '7d' THEN INTERVAL '7 days'
-                ELSE INTERVAL '7 days'
-            END AS interval_start,
-            CASE
-                WHEN o.quota_period = '5h' THEN 5.0
-                WHEN o.quota_period = '7d' THEN 168.0
-                ELSE 168.0
-            END AS interval_hours,
+            ${quotaObservationIntervalStartSql()} AS interval_start,
+            ${quotaObservationIntervalHoursSql()} AS interval_hours,
             o.account_hash,
             o.quota_period,
             o.observed_at,
@@ -6439,27 +7229,15 @@ normalized AS (
             o.quota_key,
             o.provider AS provider,
             NULLIF(o.model, '') AS model,
-            CASE
-                WHEN o.quota_period = '5h' THEN 'short'
-                WHEN o.quota_period = '7d' THEN 'weekly'
-                ELSE o.quota_type
-            END AS quota_type,
+            ${quotaObservationQuotaTypeSql()} AS quota_type,
             o.quota_key AS normalized_quota_key,
             NULLIF(TRIM(BOTH FROM COALESCE(o.source, '')), '') AS source,
             NULLIF(TRIM(BOTH FROM COALESCE(o.client, '')), '') AS client,
             '${KIMI_CODE_QUOTA_UNIT}'::text AS quota_unit,
             o.expected_reset_at,
             o.remaining_pct,
-            o.expected_reset_at - CASE
-                WHEN o.quota_period = '5h' THEN INTERVAL '5 hours'
-                WHEN o.quota_period = '7d' THEN INTERVAL '7 days'
-                ELSE INTERVAL '7 days'
-            END AS interval_start,
-            CASE
-                WHEN o.quota_period = '5h' THEN 5.0
-                WHEN o.quota_period = '7d' THEN 168.0
-                ELSE 168.0
-            END AS interval_hours,
+            ${quotaObservationIntervalStartSql()} AS interval_start,
+            ${quotaObservationIntervalHoursSql()} AS interval_hours,
             o.account_hash,
             o.quota_period,
             o.observed_at,
@@ -6830,6 +7608,8 @@ usage_windows AS MATERIALIZED (
     WHERE wb.provider <> 'antigravity'
       AND wb.provider <> '${ALIBABA_TOKEN_PLAN_PROVIDER}'
       AND wb.provider <> '${KIMI_CODE_PROVIDER}'
+      AND wb.provider <> '${CURSOR_AGENT_PROVIDER}'
+      AND wb.provider <> '${ZAI_CODING_PLAN_PROVIDER}'
 ),
 -- One session_history envelope scan per (provider, model) group, then
 -- set-based half-open assignment back onto distinct usage windows.
@@ -6860,15 +7640,8 @@ grouped_session_usage AS MATERIALIZED (
             COALESCE(sh.start_time, sh.created_at) AS sh_timestamp,
             sh.model AS raw_model,
             COALESCE(sh.model, 'unknown') AS sh_model,
-            (
-                COALESCE(sh.input_tokens, 0)
-                + COALESCE(sh.output_tokens, 0)
-                + COALESCE(sh.cache_read_input_tokens, 0)
-                + COALESCE(sh.cache_creation_input_tokens, 0)
-                + COALESCE(sh.reasoning_tokens_reported, 0)
-                + COALESCE(sh.reasoning_tokens_estimated, 0)
-            )::double precision AS tokens,
-            COALESCE(sh.response_cost_usd, 0)::double precision AS cost
+            ${sessionHistoryTokenSignalExpression()}::double precision AS tokens,
+            sh.response_cost_usd::double precision AS cost
         FROM public.session_history sh
         WHERE ${providerDimensionForAlias('sh')} = g.provider
           -- Wave 35-C2 (⚠-7): use start_time (with created_at fallback) to match
@@ -6992,6 +7765,8 @@ ORDER BY wb.expected_reset_at DESC;
 }
 
 export function buildQuotaHistoryFallbackQuery(_searchParams) {
+  const quotaHistoryIntervalHours = quotaHistoryIntervalHoursSql()
+  const quotaObservationIntervalHours = quotaObservationIntervalHoursSql()
   const sql = `
 WITH
 ${buildQuotaKeyIntervalHoursCteSql()}
@@ -7009,32 +7784,7 @@ normalized AS (
         ${RATE_LIMIT_QUOTA_UNIT_CASE} AS quota_unit,
         ri.expected_reset_at,
         ri.fromDate AS interval_start,
-        LEAST(
-            GREATEST(
-                COALESCE(
-                    CASE WHEN kh.gap_count >= 2 THEN kh.interval_hours END,
-                    CASE
-                        WHEN ri.quota_type = 'requests'
-                          AND lower(COALESCE(ri.provider, 'unknown')) NOT LIKE 'xai/%'
-                          AND lower(COALESCE(ri.provider, 'unknown')) NOT IN ('xai', 'x.ai')
-                        THEN 24.0
-                        WHEN ri.quota_type = 'wtus' THEN 5.0
-                        WHEN ri.quota_type IN ('short', 'short_special') THEN 5.0
-                        WHEN ri.quota_type IN ('weekly', 'weekly_overage_included', 'weekly_special') THEN 168.0
-                        WHEN ri.quota_type = 'requests'
-                          AND (
-                              lower(COALESCE(ri.provider, 'unknown')) LIKE 'xai/%'
-                              OR lower(COALESCE(ri.provider, 'unknown')) IN ('xai', 'x.ai')
-                          )
-                        THEN 720.0
-                        WHEN ri.quota_type = 'monthly'                    THEN 720.0
-                        ELSE                                                   168.0
-                    END
-                ),
-                1.0
-            ),
-            ${QUOTA_HISTORY_MAX_LOOKBACK_DAYS} * 24.0
-        ) AS interval_hours,
+        ${quotaHistoryIntervalHours} AS interval_hours,
         LEAST(
             COALESCE(
                 ri.remaining_pct,
@@ -7052,67 +7802,32 @@ normalized AS (
     LEFT JOIN quota_key_interval_hours kh
            ON kh.provider  = ri.provider
           AND kh.quota_key = ri.quota_key
-    WHERE ri.quota_type IN ('weekly', 'weekly_overage_included', 'weekly_special', 'short', 'short_special', 'requests', 'monthly', 'wtus')
+    WHERE ri.quota_type IN ${QUOTA_INTERVAL_TYPES_SQL}
       AND ri.expected_reset_at IS NOT NULL
       AND ri.expected_reset_at >= now() - (
-            LEAST(
-                GREATEST(
-                    COALESCE(
-                        CASE WHEN kh.gap_count >= 2 THEN kh.interval_hours END,
-                        CASE
-                            WHEN ri.quota_type = 'requests'
-                              AND lower(COALESCE(ri.provider, 'unknown')) NOT LIKE 'xai/%'
-                              AND lower(COALESCE(ri.provider, 'unknown')) NOT IN ('xai', 'x.ai')
-                            THEN 24.0
-                            WHEN ri.quota_type = 'wtus' THEN 5.0
-                            WHEN ri.quota_type IN ('short', 'short_special') THEN 5.0
-                            WHEN ri.quota_type IN ('weekly', 'weekly_overage_included', 'weekly_special') THEN 168.0
-                            WHEN ri.quota_type = 'requests'
-                              AND (
-                                  lower(COALESCE(ri.provider, 'unknown')) LIKE 'xai/%'
-                                  OR lower(COALESCE(ri.provider, 'unknown')) IN ('xai', 'x.ai')
-                              )
-                            THEN 720.0
-                            WHEN ri.quota_type = 'monthly'                    THEN 720.0
-                            ELSE                                                   168.0
-                        END
-                    ),
-                    1.0
-                ),
-                ${QUOTA_HISTORY_MAX_LOOKBACK_DAYS} * 24.0
-            ) * 1.5 * INTERVAL '1 hour'
+            ${quotaHistoryIntervalHours} * 1.5 * INTERVAL '1 hour'
         )
       AND ri.expected_reset_at < now() + (
             LEAST(
-                LEAST(
-                    GREATEST(
-                        COALESCE(
-                            CASE WHEN kh.gap_count >= 2 THEN kh.interval_hours END,
-                            CASE
-                                WHEN ri.quota_type = 'requests'
-                                  AND lower(COALESCE(ri.provider, 'unknown')) NOT LIKE 'xai/%'
-                                  AND lower(COALESCE(ri.provider, 'unknown')) NOT IN ('xai', 'x.ai')
-                                THEN 24.0
-                                WHEN ri.quota_type = 'wtus' THEN 5.0
-                                WHEN ri.quota_type IN ('short', 'short_special') THEN 5.0
-                                WHEN ri.quota_type IN ('weekly', 'weekly_overage_included', 'weekly_special') THEN 168.0
-                                WHEN ri.quota_type = 'requests'
-                                  AND (
-                                      lower(COALESCE(ri.provider, 'unknown')) LIKE 'xai/%'
-                                      OR lower(COALESCE(ri.provider, 'unknown')) IN ('xai', 'x.ai')
-                                  )
-                                THEN 720.0
-                                WHEN ri.quota_type = 'monthly'                    THEN 720.0
-                                ELSE                                                   168.0
-                            END
-                        ),
-                        1.0
-                    ),
-                    ${QUOTA_HISTORY_MAX_LOOKBACK_DAYS} * 24.0
-                ),
+                ${quotaHistoryIntervalHours},
                 ${QUOTA_HISTORY_MAX_UPPER_HOURS}::double precision
             ) * 2.0 * INTERVAL '1 hour'
         )
+    UNION ALL
+    ${buildQuotaHistoryObservationUnionSql(
+      openaiSparkObservationPredicateSql(),
+      quotaObservationHistoryFallbackBoundsSql()
+    )}
+    UNION ALL
+    ${buildQuotaHistoryObservationUnionSql(
+      cursorAgentObservationPredicateSql(),
+      quotaObservationHistoryFallbackBoundsSql()
+    )}
+    UNION ALL
+    ${buildQuotaHistoryObservationUnionSql(
+      zaiCodingPlanObservationPredicateSql(),
+      quotaObservationHistoryFallbackBoundsSql()
+    )}
     UNION ALL
     (
         SELECT DISTINCT ON (
@@ -7129,26 +7844,14 @@ normalized AS (
             o.quota_key,
             o.provider AS provider,
             NULLIF(o.model, '') AS model,
-            CASE
-                WHEN o.quota_period = '5h' THEN 'short'
-                WHEN o.quota_period = '7d' THEN 'weekly'
-                ELSE o.quota_type
-            END AS quota_type,
+            ${quotaObservationQuotaTypeSql()} AS quota_type,
             o.quota_key AS normalized_quota_key,
             NULLIF(TRIM(BOTH FROM COALESCE(o.source, '')), '') AS source,
             NULLIF(TRIM(BOTH FROM COALESCE(o.client, '')), '') AS client,
             '${ALIBABA_TOKEN_PLAN_QUOTA_UNIT}'::text AS quota_unit,
             o.expected_reset_at,
-            o.expected_reset_at - CASE
-                WHEN o.quota_period = '5h' THEN INTERVAL '5 hours'
-                WHEN o.quota_period = '7d' THEN INTERVAL '7 days'
-                ELSE INTERVAL '7 days'
-            END AS interval_start,
-            CASE
-                WHEN o.quota_period = '5h' THEN 5.0
-                WHEN o.quota_period = '7d' THEN 168.0
-                ELSE 168.0
-            END AS interval_hours,
+            ${quotaObservationIntervalStartSql()} AS interval_start,
+            ${quotaObservationIntervalHoursSql()} AS interval_hours,
             LEAST(COALESCE(o.remaining_pct, 100), 100) AS remaining_pct,
             o.account_hash,
             o.quota_period,
@@ -7167,19 +7870,11 @@ normalized AS (
           AND o.observed_at IS NOT NULL
           AND o.expected_reset_at IS NOT NULL
           AND o.expected_reset_at >= now() - (
-                CASE
-                    WHEN o.quota_period = '5h' THEN 5.0
-                    WHEN o.quota_period = '7d' THEN 168.0
-                    ELSE 168.0
-                END * 1.5 * INTERVAL '1 hour'
+            ${quotaObservationIntervalHours} * 1.5 * INTERVAL '1 hour'
             )
           AND o.expected_reset_at < now() + (
                 LEAST(
-                    CASE
-                        WHEN o.quota_period = '5h' THEN 5.0
-                        WHEN o.quota_period = '7d' THEN 168.0
-                        ELSE 168.0
-                    END,
+                    ${quotaObservationIntervalHours},
                     ${QUOTA_HISTORY_MAX_UPPER_HOURS}::double precision
                 ) * 2.0 * INTERVAL '1 hour'
             )
@@ -7209,26 +7904,14 @@ normalized AS (
             o.quota_key,
             o.provider AS provider,
             NULLIF(o.model, '') AS model,
-            CASE
-                WHEN o.quota_period = '5h' THEN 'short'
-                WHEN o.quota_period = '7d' THEN 'weekly'
-                ELSE o.quota_type
-            END AS quota_type,
+            ${quotaObservationQuotaTypeSql()} AS quota_type,
             o.quota_key AS normalized_quota_key,
             NULLIF(TRIM(BOTH FROM COALESCE(o.source, '')), '') AS source,
             NULLIF(TRIM(BOTH FROM COALESCE(o.client, '')), '') AS client,
             '${KIMI_CODE_QUOTA_UNIT}'::text AS quota_unit,
             o.expected_reset_at,
-            o.expected_reset_at - CASE
-                WHEN o.quota_period = '5h' THEN INTERVAL '5 hours'
-                WHEN o.quota_period = '7d' THEN INTERVAL '7 days'
-                ELSE INTERVAL '7 days'
-            END AS interval_start,
-            CASE
-                WHEN o.quota_period = '5h' THEN 5.0
-                WHEN o.quota_period = '7d' THEN 168.0
-                ELSE 168.0
-            END AS interval_hours,
+            ${quotaObservationIntervalStartSql()} AS interval_start,
+            ${quotaObservationIntervalHoursSql()} AS interval_hours,
             LEAST(COALESCE(o.remaining_pct, 100), 100) AS remaining_pct,
             o.account_hash,
             o.quota_period,
@@ -7248,19 +7931,11 @@ normalized AS (
           AND o.observed_at IS NOT NULL
           AND o.expected_reset_at IS NOT NULL
           AND o.expected_reset_at >= now() - (
-                CASE
-                    WHEN o.quota_period = '5h' THEN 5.0
-                    WHEN o.quota_period = '7d' THEN 168.0
-                    ELSE 168.0
-                END * 1.5 * INTERVAL '1 hour'
+            ${quotaObservationIntervalHours} * 1.5 * INTERVAL '1 hour'
             )
           AND o.expected_reset_at < now() + (
                 LEAST(
-                    CASE
-                        WHEN o.quota_period = '5h' THEN 5.0
-                        WHEN o.quota_period = '7d' THEN 168.0
-                        ELSE 168.0
-                    END,
+                    ${quotaObservationIntervalHours},
                     ${QUOTA_HISTORY_MAX_UPPER_HOURS}::double precision
                 ) * 2.0 * INTERVAL '1 hour'
             )
@@ -7424,129 +8099,8 @@ export function buildQuotaRangeHistoryFallbackQuery(searchParams) {
   const to = parseSearchDateOnly(searchParams.get('to'), defaultToDate)
 
   const sql = `
-WITH normalized AS (
-    SELECT
-        ri.provider AS raw_provider,
-        ${rateLimitProviderDimension} AS provider,
-        ${RATE_LIMIT_NORMALIZED_MODEL_CASE} AS model,
-        ${RATE_LIMIT_NORMALIZED_QUOTA_TYPE_CASE} AS quota_type,
-        ri.quota_key AS normalized_quota_key,
-        NULLIF(TRIM(BOTH FROM COALESCE(to_jsonb(ri)->>'source', '')), '') AS source,
-        NULLIF(TRIM(BOTH FROM COALESCE(to_jsonb(ri)->>'client', '')), '') AS client,
-        ${RATE_LIMIT_QUOTA_UNIT_CASE} AS quota_unit,
-        ri.expected_reset_at,
-        ri.fromDate AS interval_start,
-        ri.toDate AS interval_end,
-        ri.remaining_pct,
-        NULL::text AS quota_period,
-        NULL::text AS account_hash,
-        NULL::timestamp with time zone AS observed_at,
-        NULL::double precision AS quota_limit,
-        NULL::double precision AS quota_used,
-        NULL::double precision AS quota_remaining
-    FROM public.rate_limit_intervals ri
-    WHERE ri.quota_type IN ('weekly', 'weekly_overage_included', 'weekly_special', 'short', 'short_special', 'requests', 'monthly', 'wtus')
-      AND ri.expected_reset_at IS NOT NULL
-      AND ri.fromDate < ($2::date::timestamp AT TIME ZONE 'America/New_York')
-      AND ri.expected_reset_at >= ($1::date::timestamp AT TIME ZONE 'America/New_York')
-      AND NOT (
-          ri.quota_type IN ('short', 'short_special')
-          AND (
-              lower(COALESCE(ri.provider, 'unknown')) IN ('openai', 'anthropic', 'claude')
-              OR lower(COALESCE(ri.provider, 'unknown')) LIKE 'claude/%'
-              OR lower(COALESCE(ri.provider, 'unknown')) LIKE 'anthropic/%'
-          )
-      )
-    UNION ALL
-    SELECT
-        o.provider AS raw_provider,
-        o.provider AS provider,
-        NULLIF(o.model, '') AS model,
-        CASE
-            WHEN o.quota_period = '5h' THEN 'short'
-            WHEN o.quota_period = '7d' THEN 'weekly'
-            ELSE o.quota_type
-        END AS quota_type,
-        o.quota_key AS normalized_quota_key,
-        NULLIF(TRIM(BOTH FROM COALESCE(o.source, '')), '') AS source,
-        NULLIF(TRIM(BOTH FROM COALESCE(o.client, '')), '') AS client,
-        '${ALIBABA_TOKEN_PLAN_QUOTA_UNIT}'::text AS quota_unit,
-        o.expected_reset_at,
-        o.expected_reset_at - CASE
-            WHEN o.quota_period = '5h' THEN INTERVAL '5 hours'
-            WHEN o.quota_period = '7d' THEN INTERVAL '7 days'
-            ELSE INTERVAL '7 days'
-        END AS interval_start,
-        o.expected_reset_at AS interval_end,
-        o.remaining_pct,
-        o.quota_period,
-        o.account_hash,
-        o.observed_at,
-        o.quota_limit,
-        o.quota_used,
-        o.quota_remaining
-    FROM public.rate_limit_observations o
-    WHERE o.provider = '${ALIBABA_TOKEN_PLAN_PROVIDER}'
-      AND o.source = '${ALIBABA_TOKEN_PLAN_SOURCE}'
-      AND (
-          (o.quota_key = '${ALIBABA_TOKEN_PLAN_5H_KEY}' AND o.quota_period = '5h')
-          OR
-          (o.quota_key = '${ALIBABA_TOKEN_PLAN_7D_KEY}' AND o.quota_period = '7d')
-      )
-      AND o.observed_at IS NOT NULL
-      AND o.expected_reset_at IS NOT NULL
-      AND o.expected_reset_at - CASE
-              WHEN o.quota_period = '5h' THEN INTERVAL '5 hours'
-              WHEN o.quota_period = '7d' THEN INTERVAL '7 days'
-              ELSE INTERVAL '7 days'
-          END < ($2::date::timestamp AT TIME ZONE 'America/New_York')
-      AND o.expected_reset_at >= ($1::date::timestamp AT TIME ZONE 'America/New_York')
-    UNION ALL
-    SELECT
-        o.provider AS raw_provider,
-        o.provider AS provider,
-        NULLIF(o.model, '') AS model,
-        CASE
-            WHEN o.quota_period = '5h' THEN 'short'
-            WHEN o.quota_period = '7d' THEN 'weekly'
-            ELSE o.quota_type
-        END AS quota_type,
-        o.quota_key AS normalized_quota_key,
-        NULLIF(TRIM(BOTH FROM COALESCE(o.source, '')), '') AS source,
-        NULLIF(TRIM(BOTH FROM COALESCE(o.client, '')), '') AS client,
-        '${KIMI_CODE_QUOTA_UNIT}'::text AS quota_unit,
-        o.expected_reset_at,
-        o.expected_reset_at - CASE
-            WHEN o.quota_period = '5h' THEN INTERVAL '5 hours'
-            WHEN o.quota_period = '7d' THEN INTERVAL '7 days'
-            ELSE INTERVAL '7 days'
-        END AS interval_start,
-        o.expected_reset_at AS interval_end,
-        o.remaining_pct,
-        o.quota_period,
-        o.account_hash,
-        o.observed_at,
-        o.quota_limit,
-        o.quota_used,
-        o.quota_remaining
-    FROM public.rate_limit_observations o
-    WHERE o.provider = '${KIMI_CODE_PROVIDER}'
-      AND o.source = '${KIMI_CODE_SOURCE}'
-      AND o.client = '${KIMI_CODE_CLIENT}'
-      AND (
-          (o.quota_key = '${KIMI_CODE_5H_KEY}' AND o.quota_period = '5h')
-          OR
-          (o.quota_key = '${KIMI_CODE_7D_KEY}' AND o.quota_period = '7d')
-      )
-      AND o.observed_at IS NOT NULL
-      AND o.expected_reset_at IS NOT NULL
-      AND o.expected_reset_at - CASE
-              WHEN o.quota_period = '5h' THEN INTERVAL '5 hours'
-              WHEN o.quota_period = '7d' THEN INTERVAL '7 days'
-              ELSE INTERVAL '7 days'
-          END < ($2::date::timestamp AT TIME ZONE 'America/New_York')
-      AND o.expected_reset_at >= ($1::date::timestamp AT TIME ZONE 'America/New_York')
-),
+WITH
+${buildQuotaRangeHistoryNormalizedCteSql('fallback')},
 observation_identity AS (
     SELECT DISTINCT ON (
         n.raw_provider,
@@ -7663,133 +8217,8 @@ export function buildQuotaRangeHistoryQuery(searchParams) {
   const to = parseSearchDateOnly(searchParams.get('to'), defaultToDate)
 
   const sql = `
-WITH normalized AS (
-    SELECT
-        ri.provider AS raw_provider,
-        ${rateLimitRangeProviderDimension} AS provider,
-        ${RATE_LIMIT_NORMALIZED_MODEL_CASE} AS model,
-        ${RATE_LIMIT_NORMALIZED_QUOTA_TYPE_CASE} AS quota_type,
-        ri.quota_key AS normalized_quota_key,
-        NULLIF(TRIM(BOTH FROM COALESCE(to_jsonb(ri)->>'source', '')), '') AS source,
-        NULLIF(TRIM(BOTH FROM COALESCE(to_jsonb(ri)->>'client', '')), '') AS client,
-        ${RATE_LIMIT_QUOTA_UNIT_CASE} AS quota_unit,
-        ri.expected_reset_at,
-        ri.fromDate AS interval_start,
-        ri.toDate AS interval_end,
-        ri.remaining_pct,
-        NULL::text AS quota_period,
-        NULL::text AS account_hash,
-        NULL::timestamp with time zone AS observed_at,
-        NULL::double precision AS quota_limit,
-        NULL::double precision AS quota_used,
-        NULL::double precision AS quota_remaining
-    FROM public.rate_limit_intervals ri
-    WHERE ri.quota_type IN ('weekly', 'weekly_overage_included', 'weekly_special', 'short', 'short_special', 'requests', 'monthly', 'wtus')
-      AND ri.expected_reset_at IS NOT NULL
-      AND ri.fromDate < ($2::date::timestamp AT TIME ZONE 'America/New_York')
-      AND ri.expected_reset_at >= ($1::date::timestamp AT TIME ZONE 'America/New_York')
-      -- The Quota tab intentionally hides OpenAI/Anthropic 5-hour history
-      -- lanes. Exclude them before the session_history usage join so the
-      -- range read model does not spend statement-timeout budget building rows
-      -- the UI will never show.
-      AND NOT (
-          ri.quota_type IN ('short', 'short_special')
-          AND (
-              lower(COALESCE(ri.provider, 'unknown')) IN ('openai', 'anthropic', 'claude')
-              OR lower(COALESCE(ri.provider, 'unknown')) LIKE 'claude/%'
-              OR lower(COALESCE(ri.provider, 'unknown')) LIKE 'anthropic/%'
-          )
-      )
-    UNION ALL
-    SELECT
-        o.provider AS raw_provider,
-        o.provider AS provider,
-        NULLIF(o.model, '') AS model,
-        CASE
-            WHEN o.quota_period = '5h' THEN 'short'
-            WHEN o.quota_period = '7d' THEN 'weekly'
-            ELSE o.quota_type
-        END AS quota_type,
-        o.quota_key AS normalized_quota_key,
-        NULLIF(TRIM(BOTH FROM COALESCE(o.source, '')), '') AS source,
-        NULLIF(TRIM(BOTH FROM COALESCE(o.client, '')), '') AS client,
-        '${ALIBABA_TOKEN_PLAN_QUOTA_UNIT}'::text AS quota_unit,
-        o.expected_reset_at,
-        o.expected_reset_at - CASE
-            WHEN o.quota_period = '5h' THEN INTERVAL '5 hours'
-            WHEN o.quota_period = '7d' THEN INTERVAL '7 days'
-            ELSE INTERVAL '7 days'
-        END AS interval_start,
-        o.expected_reset_at AS interval_end,
-        o.remaining_pct,
-        o.quota_period,
-        o.account_hash,
-        o.observed_at,
-        o.quota_limit,
-        o.quota_used,
-        o.quota_remaining
-    FROM public.rate_limit_observations o
-    WHERE o.provider = '${ALIBABA_TOKEN_PLAN_PROVIDER}'
-      AND o.source = '${ALIBABA_TOKEN_PLAN_SOURCE}'
-      AND (
-          (o.quota_key = '${ALIBABA_TOKEN_PLAN_5H_KEY}' AND o.quota_period = '5h')
-          OR
-          (o.quota_key = '${ALIBABA_TOKEN_PLAN_7D_KEY}' AND o.quota_period = '7d')
-      )
-      AND o.observed_at IS NOT NULL
-      AND o.expected_reset_at IS NOT NULL
-      AND o.expected_reset_at - CASE
-              WHEN o.quota_period = '5h' THEN INTERVAL '5 hours'
-              WHEN o.quota_period = '7d' THEN INTERVAL '7 days'
-              ELSE INTERVAL '7 days'
-          END < ($2::date::timestamp AT TIME ZONE 'America/New_York')
-      AND o.expected_reset_at >= ($1::date::timestamp AT TIME ZONE 'America/New_York')
-    UNION ALL
-    SELECT
-        o.provider AS raw_provider,
-        o.provider AS provider,
-        NULLIF(o.model, '') AS model,
-        CASE
-            WHEN o.quota_period = '5h' THEN 'short'
-            WHEN o.quota_period = '7d' THEN 'weekly'
-            ELSE o.quota_type
-        END AS quota_type,
-        o.quota_key AS normalized_quota_key,
-        NULLIF(TRIM(BOTH FROM COALESCE(o.source, '')), '') AS source,
-        NULLIF(TRIM(BOTH FROM COALESCE(o.client, '')), '') AS client,
-        '${KIMI_CODE_QUOTA_UNIT}'::text AS quota_unit,
-        o.expected_reset_at,
-        o.expected_reset_at - CASE
-            WHEN o.quota_period = '5h' THEN INTERVAL '5 hours'
-            WHEN o.quota_period = '7d' THEN INTERVAL '7 days'
-            ELSE INTERVAL '7 days'
-        END AS interval_start,
-        o.expected_reset_at AS interval_end,
-        o.remaining_pct,
-        o.quota_period,
-        o.account_hash,
-        o.observed_at,
-        o.quota_limit,
-        o.quota_used,
-        o.quota_remaining
-    FROM public.rate_limit_observations o
-    WHERE o.provider = '${KIMI_CODE_PROVIDER}'
-      AND o.source = '${KIMI_CODE_SOURCE}'
-      AND o.client = '${KIMI_CODE_CLIENT}'
-      AND (
-          (o.quota_key = '${KIMI_CODE_5H_KEY}' AND o.quota_period = '5h')
-          OR
-          (o.quota_key = '${KIMI_CODE_7D_KEY}' AND o.quota_period = '7d')
-      )
-      AND o.observed_at IS NOT NULL
-      AND o.expected_reset_at IS NOT NULL
-      AND o.expected_reset_at - CASE
-              WHEN o.quota_period = '5h' THEN INTERVAL '5 hours'
-              WHEN o.quota_period = '7d' THEN INTERVAL '7 days'
-              ELSE INTERVAL '7 days'
-          END < ($2::date::timestamp AT TIME ZONE 'America/New_York')
-      AND o.expected_reset_at >= ($1::date::timestamp AT TIME ZONE 'America/New_York')
-),
+WITH
+${buildQuotaRangeHistoryNormalizedCteSql('range')},
 observation_identity AS (
     SELECT DISTINCT ON (
         n.raw_provider,
@@ -7881,21 +8310,16 @@ per_model_usage AS (
         wb.account_hash,
         wb.expected_reset_at,
         COALESCE(sh.model, 'unknown') AS sh_model,
-        SUM(
-            COALESCE(sh.input_tokens, 0)
-            + COALESCE(sh.output_tokens, 0)
-            + COALESCE(sh.cache_read_input_tokens, 0)
-            + COALESCE(sh.cache_creation_input_tokens, 0)
-            + COALESCE(sh.reasoning_tokens_reported, 0)
-            + COALESCE(sh.reasoning_tokens_estimated, 0)
-        )::double precision AS tokens,
-        SUM(COALESCE(sh.response_cost_usd, 0))::double precision AS cost,
+        SUM(${sessionHistoryTokenSignalExpression()})::double precision AS tokens,
+        SUM(sh.response_cost_usd)::double precision AS cost,
         COUNT(*)::double precision AS traces
     FROM window_bounds wb
     JOIN public.session_history sh
       ON wb.provider <> 'antigravity'
-     AND wb.provider <> '${ALIBABA_TOKEN_PLAN_PROVIDER}'
-     AND wb.provider <> '${KIMI_CODE_PROVIDER}'
+      AND wb.provider <> '${ALIBABA_TOKEN_PLAN_PROVIDER}'
+      AND wb.provider <> '${KIMI_CODE_PROVIDER}'
+      AND wb.provider <> '${CURSOR_AGENT_PROVIDER}'
+      AND wb.provider <> '${ZAI_CODING_PLAN_PROVIDER}'
      AND ${providerDimension} = wb.provider
      AND COALESCE(sh.start_time, sh.created_at) >= wb.interval_start
      AND COALESCE(sh.start_time, sh.created_at) < wb.expected_reset_at
@@ -7999,16 +8423,8 @@ WITH reset_windows AS (
         MIN(ri.fromDate) AS reset_start_at,
         MAX(ri.toDate) AS reset_end_at
     FROM public.rate_limit_intervals ri
-    WHERE ri.provider IN ('anthropic', 'openai')
-      AND ri.quota_key IN (
-          'anthropic_unified_5h:5h',
-          'anthropic_unified_7d:7d',
-          'anthropic_unified_7d_sonnet:7d_sonnet',
-          'codex:primary',
-          'codex:secondary',
-          'codex_bengalfox:primary',
-          'codex_bengalfox:secondary'
-      )
+    WHERE ri.provider IN ${QUOTA_ESTIMATOR_PROVIDERS_SQL}
+      AND ri.quota_key IN ${QUOTA_ESTIMATOR_QUOTA_KEYS_SQL}
       AND ri.expected_reset_at IS NOT NULL
     GROUP BY ri.provider, ri.quota_key, ri.quota_type, ri.expected_reset_at
 ),
@@ -8017,26 +8433,8 @@ observations AS (
         o.provider AS raw_provider,
         ${providerDimensionExpression('o.provider', { includeAntigravity: true })} AS provider,
         o.quota_key,
-        CASE
-            WHEN o.provider = 'anthropic' AND o.quota_key = 'anthropic_unified_5h:5h' THEN 'short'
-            WHEN o.provider = 'anthropic' AND o.quota_key = 'anthropic_unified_7d:7d' THEN 'weekly'
-            WHEN o.provider = 'anthropic' AND o.quota_key = 'anthropic_unified_7d_sonnet:7d_sonnet' THEN 'special'
-            WHEN o.provider = 'openai' AND o.quota_key = 'codex:primary' THEN 'short'
-            WHEN o.provider = 'openai' AND o.quota_key = 'codex:secondary' THEN 'weekly'
-            WHEN o.provider = 'openai' AND o.quota_key = 'codex_bengalfox:primary' THEN 'short_special'
-            WHEN o.provider = 'openai' AND o.quota_key = 'codex_bengalfox:secondary' THEN 'special'
-            ELSE NULL
-        END AS quota_type,
-        CASE
-            WHEN o.provider = 'anthropic' AND o.quota_key = 'anthropic_unified_5h:5h' THEN 'anthropic_5h_all_model'
-            WHEN o.provider = 'anthropic' AND o.quota_key = 'anthropic_unified_7d:7d' THEN 'anthropic_weekly_all_model'
-            WHEN o.provider = 'anthropic' AND o.quota_key = 'anthropic_unified_7d_sonnet:7d_sonnet' THEN 'anthropic_weekly_sonnet'
-            WHEN o.provider = 'openai' AND o.quota_key = 'codex:primary' THEN 'openai_5h_all_model'
-            WHEN o.provider = 'openai' AND o.quota_key = 'codex:secondary' THEN 'openai_weekly_all_model'
-            WHEN o.provider = 'openai' AND o.quota_key = 'codex_bengalfox:primary' THEN 'openai_codex_spark_5h'
-            WHEN o.provider = 'openai' AND o.quota_key = 'codex_bengalfox:secondary' THEN 'openai_codex_spark_weekly'
-            ELSE o.provider || '_unknown'
-        END AS quota_lane,
+        ${QUOTA_ESTIMATOR_QUOTA_TYPE_CASE} AS quota_type,
+        ${QUOTA_ESTIMATOR_LANE_CASE} AS quota_lane,
         o.quota_type AS raw_observation_quota_type,
         o.expected_reset_at,
         o.observed_at,
@@ -8049,21 +8447,12 @@ observations AS (
         (ARRAY_AGG(COALESCE(o.raw_provider_fields, '{}'::jsonb) ORDER BY o.observed_at DESC))[1] AS raw_provider_fields,
         (ARRAY_AGG(COALESCE(o.evidence, '{}'::jsonb) ORDER BY o.observed_at DESC))[1] AS evidence
     FROM public.rate_limit_observations o
-    WHERE o.provider IN ('anthropic', 'openai')
-      AND o.quota_key IN (
-          'anthropic_unified_5h:5h',
-          'anthropic_unified_7d:7d',
-          'anthropic_unified_7d_sonnet:7d_sonnet',
-          'codex:primary',
-          'codex:secondary',
-          'codex_bengalfox:primary',
-          'codex_bengalfox:secondary'
-      )
+    WHERE o.provider IN ${QUOTA_ESTIMATOR_PROVIDERS_SQL}
+      AND o.quota_key IN ${QUOTA_ESTIMATOR_QUOTA_KEYS_SQL}
       AND o.remaining_pct IS NOT NULL
       AND o.remaining_pct >= 0
       AND o.observed_at IS NOT NULL
-      AND o.observed_at >= ($1::date::timestamp AT TIME ZONE 'America/New_York')
-      AND o.observed_at < ($2::date::timestamp AT TIME ZONE 'America/New_York')
+      AND ${dashboardDateRangeWhereSql('o.observed_at').join('\n      AND ')}
     GROUP BY
         o.provider,
         o.quota_key,
@@ -8140,8 +8529,8 @@ WITH usage_events AS (
         COALESCE(sh.response_cost_usd, 0)::double precision AS usd_cost,
         COALESCE(sh.tool_call_count, 0)::double precision AS tool_calls
     FROM public.session_history sh
-    WHERE COALESCE(sh.end_time, sh.start_time, sh.created_at) >= ($1::date::timestamp AT TIME ZONE 'America/New_York') - INTERVAL '1 hour'
-      AND COALESCE(sh.end_time, sh.start_time, sh.created_at) < ($2::date::timestamp AT TIME ZONE 'America/New_York') + INTERVAL '2 hours'
+    WHERE COALESCE(sh.end_time, sh.start_time, sh.created_at) >= ${dashboardDateBoundarySql(1)} - INTERVAL '1 hour'
+      AND COALESCE(sh.end_time, sh.start_time, sh.created_at) < ${dashboardDateBoundarySql(2)} + INTERVAL '2 hours'
       AND ${sessionHistoryReportablePredicate()}
       AND ${estimatorProviderDimension} IN ('anthropic', 'openai')
 )
@@ -8174,8 +8563,9 @@ function buildFreshnessQuery() {
 
 // Wave 33: per-(provider, model) tool-activity breakdown.
 // CTE 1 (outer_counts): raw call counts keyed by (provider, model, tool_kind, tool_name).
-// CTE 2 (shell_labels): normalized command labels for tool_kind='command' rows,
-//   skipping noise tokens and stripping flag-only second words.
+// CTE 2 (labeled_commands): computes normalized command labels for
+//   tool_kind='command' rows, skipping noise tokens and stripping flag-only
+//   second words. shell_labels aggregates those labels.
 // Final SELECT emits two kinds of rows:
 //   kind='outer' — one row per (provider, model, tool_name)
 //   kind='shell' — one row per (provider, model, cmd_label) for command rows
@@ -8225,8 +8615,7 @@ window_cap_state AS (
                 SELECT a.id
                 FROM public.session_history_tool_activity a
                 WHERE a.id <= b.min_id
-                  AND a.created_at >= ($1::date::timestamp AT TIME ZONE 'America/New_York')
-                  AND a.created_at < ($2::date::timestamp AT TIME ZONE 'America/New_York')
+                  AND ${dashboardDateRangeWhereSql('a.created_at').join('\n                  AND ')}
                 ORDER BY a.id DESC
                 LIMIT 1
             ) IS NOT NULL
@@ -8243,8 +8632,7 @@ recent_activity AS MATERIALIZED (
     FROM public.session_history_tool_activity a
     CROSS JOIN bounds b
     WHERE a.id > b.min_id
-      AND a.created_at >= ($1::date::timestamp AT TIME ZONE 'America/New_York')
-      AND a.created_at < ($2::date::timestamp AT TIME ZONE 'America/New_York')
+      AND ${dashboardDateRangeWhereSql('a.created_at').join('\n      AND ')}
 ),
 tool_rows AS MATERIALIZED (
     SELECT
@@ -8277,10 +8665,12 @@ outer_counts AS (
         tool_kind,
         tool_name
 ),
-shell_labels AS (
+labeled_commands AS (
     SELECT
         provider,
         model,
+        agent_name,
+        agent_id,
         trim(
             CASE
                 WHEN lower(split_part(trim(command_text), ' ', 1)) IN (
@@ -8299,10 +8689,7 @@ shell_labels AS (
                         ))
                 ELSE lower(split_part(trim(command_text), ' ', 1))
             END
-        ) AS cmd_label,
-        jsonb_agg(DISTINCT agent_name) FILTER (WHERE agent_name IS NOT NULL) AS agent_names,
-        jsonb_agg(DISTINCT agent_id) FILTER (WHERE agent_id IS NOT NULL) AS agent_ids,
-        COUNT(*)::bigint AS calls
+        ) AS cmd_label
     FROM tool_rows
     WHERE tool_kind = 'command'
       AND command_text IS NOT NULL
@@ -8310,28 +8697,20 @@ shell_labels AS (
       AND lower(split_part(trim(command_text), ' ', 1)) NOT IN (
           'cd','pwd','echo',':','true','false','exit'
       )
+),
+shell_labels AS (
+    SELECT
+        provider,
+        model,
+        cmd_label,
+        jsonb_agg(DISTINCT agent_name) FILTER (WHERE agent_name IS NOT NULL) AS agent_names,
+        jsonb_agg(DISTINCT agent_id) FILTER (WHERE agent_id IS NOT NULL) AS agent_ids,
+        COUNT(*)::bigint AS calls
+    FROM labeled_commands
     GROUP BY
         provider,
         model,
-        trim(
-            CASE
-                WHEN lower(split_part(trim(command_text), ' ', 1)) IN (
-                    'git','npm','pnpm','yarn','docker','kubectl','gh','pip',
-                    'poetry','uv','brew','apt','apt-get','systemctl','pytest',
-                    'make','aws','gcloud','terraform'
-                )
-                THEN lower(split_part(trim(command_text), ' ', 1))
-                     || ' '
-                     || lower(NULLIF(
-                            regexp_replace(
-                                split_part(trim(command_text), ' ', 2),
-                                '^-.*$', '', 'g'
-                            ),
-                            ''
-                        ))
-                ELSE lower(split_part(trim(command_text), ' ', 1))
-            END
-        )
+        cmd_label
 )
 SELECT
     activity_rows.provider,
@@ -10115,7 +10494,7 @@ function normalizeSummary(row) {
     token_reasoning_estimated:
       normalizeNumber(row.token_reasoning_estimated) ?? 0,
     token_total: normalizeNumber(row.token_total) ?? 0,
-    usd_cost: normalizeNumber(row.usd_cost) ?? 0,
+    usd_cost: normalizePersistedResponseCost(row),
     cache_miss_usd_cost: normalizeNumber(row.cache_miss_usd_cost) ?? 0,
     tool_calls: normalizeNumber(row.tool_calls) ?? 0,
     git_commit: normalizeNumber(row.git_commit) ?? 0,
@@ -10133,6 +10512,7 @@ function normalizeSummary(row) {
 }
 
 function normalizeTrendRow(row) {
+  const responseCostRows = normalizeNumber(row.response_cost_rows)
   return {
     bucket: row.bucket,
     provider: row.provider,
@@ -10140,7 +10520,8 @@ function normalizeTrendRow(row) {
     repository: row.repository,
     traces: normalizeNumber(row.traces) ?? 0,
     token_total: normalizeNumber(row.token_total) ?? 0,
-    usd_cost: normalizeNumber(row.usd_cost) ?? 0,
+    usd_cost: normalizePersistedResponseCost(row),
+    response_cost_rows: responseCostRows,
     tool_calls: normalizeNumber(row.tool_calls) ?? 0,
   }
 }
@@ -10394,7 +10775,7 @@ function normalizeProviderStatusUsageRow(row) {
     model: row.model ?? 'unknown',
     traces: normalizeNumber(row.traces) ?? 0,
     token_total: normalizeNumber(row.token_total) ?? 0,
-    usd_cost: normalizeNumber(row.usd_cost) ?? 0,
+    usd_cost: normalizePersistedResponseCost(row),
     ...normalizeLatencyAggregateFields(row),
     period_start: row.period_start ?? null,
     period_end: row.period_end ?? null,
@@ -10406,7 +10787,7 @@ function normalizeUsageBreakdown(value) {
   return value.map((item) => ({
     model: item?.model ?? 'unknown',
     tokens: normalizeNumber(item?.tokens) ?? 0,
-    cost: normalizeNumber(item?.cost) ?? 0,
+    cost: normalizeNumber(item?.cost),
     traces: normalizeNumber(item?.traces) ?? 0,
     recent_traces_90m: normalizeNumber(item?.recent_traces_90m) ?? 0,
   }))
@@ -10533,7 +10914,9 @@ function quotaVelocityLaneKey(
   const baseIdentity = [provider ?? 'unknown', model ?? '', quotaType]
   if (
     provider !== ALIBABA_TOKEN_PLAN_PROVIDER &&
-    provider !== KIMI_CODE_PROVIDER
+    provider !== KIMI_CODE_PROVIDER &&
+    provider !== CURSOR_AGENT_PROVIDER &&
+    provider !== ZAI_CODING_PLAN_PROVIDER
   ) {
     return baseIdentity.join('\u0000')
   }
@@ -10593,11 +10976,6 @@ function normalizeQuotaLaneFields(row, quotaType) {
     [`${quotaType}_active`]: Boolean(
       normalizeNumber(row[`${quotaType}_active`])
     ),
-    [`${quotaType}_usage_tokens`]:
-      normalizeNumber(row[`${quotaType}_usage_tokens`]) ?? 0,
-    [`${quotaType}_usage_breakdown`]: normalizeUsageBreakdown(
-      row[`${quotaType}_usage_breakdown`]
-    ),
     [`${quotaType}_velocity_segments`]: normalizeQuotaVelocitySegments(
       row[`${quotaType}_velocity_segments`]
     ),
@@ -10652,7 +11030,7 @@ function normalizeQuotaHistoryRow(row) {
       ? row.usage_breakdown.map((b) => ({
           model: b.model ?? 'unknown',
           tokens: normalizeNumber(b.tokens) ?? 0,
-          cost: normalizeNumber(b.cost) ?? 0,
+          cost: normalizeNumber(b.cost),
           traces: normalizeNumber(b.traces) ?? 0,
           recent_traces_90m: normalizeNumber(b.recent_traces_90m) ?? 0,
         }))
@@ -10928,16 +11306,27 @@ function quotaEstimatorResidualMetrics(samples, predictions, weights = []) {
   }
 }
 
+function quotaEstimatorIntervalEndTimestamp(value) {
+  if (value === null || value === undefined) return null
+  const timestamp = new Date(value).getTime()
+  return Number.isFinite(timestamp) ? timestamp : null
+}
+
 function quotaEstimatorWeights(samples, halfLifeHours) {
   if (!samples.length) return []
-  const latest = Math.max(
-    ...samples.map((sample) => new Date(sample.intervalEndAt).getTime())
+  const intervalEndTimestamps = samples.map((sample) =>
+    quotaEstimatorIntervalEndTimestamp(sample.intervalEndAt)
   )
-  return samples.map((sample) => {
-    const ageHours = Math.max(
-      0,
-      (latest - new Date(sample.intervalEndAt).getTime()) / 3_600_000
-    )
+  const validIntervalEndTimestamps = intervalEndTimestamps.filter(
+    (timestamp) => timestamp !== null
+  )
+  if (!validIntervalEndTimestamps.length) {
+    return samples.map(() => 0)
+  }
+  const latest = Math.max(...validIntervalEndTimestamps)
+  return intervalEndTimestamps.map((intervalEndTimestamp) => {
+    if (intervalEndTimestamp === null) return 0
+    const ageHours = Math.max(0, (latest - intervalEndTimestamp) / 3_600_000)
     return Math.exp((-Math.LN2 * ageHours) / Math.max(halfLifeHours, 1))
   })
 }
@@ -11345,6 +11734,57 @@ function quotaEstimatorUsageBucketMatchesLane(bucket, interval) {
   return true
 }
 
+// Sort provider buckets once so each interval reads only its effective time
+// range rather than rescanning the full two-year bucket set for every lag.
+function buildQuotaEstimatorUsageBucketsByProvider(usageBuckets) {
+  const bucketsByProvider = new Map()
+  for (const bucket of usageBuckets) {
+    if (bucket.bucket_start_at === null) continue
+    const providerBuckets = bucketsByProvider.get(bucket.provider) ?? []
+    providerBuckets.push(bucket)
+    bucketsByProvider.set(bucket.provider, providerBuckets)
+  }
+
+  for (const providerBuckets of bucketsByProvider.values()) {
+    providerBuckets.sort(
+      (a, b) =>
+        new Date(a.bucket_start_at).getTime() -
+        new Date(b.bucket_start_at).getTime()
+    )
+  }
+  return bucketsByProvider
+}
+
+function quotaEstimatorUsageBucketsInInterval(
+  providerBuckets,
+  interval,
+  lagMinutes
+) {
+  const startMs = new Date(interval.interval_start_at).getTime()
+  const endMs = new Date(interval.interval_end_at).getTime()
+  const earliestBucketMs = startMs - lagMinutes * 60_000
+  const latestBucketMs = endMs - lagMinutes * 60_000
+
+  let low = 0
+  let high = providerBuckets.length
+  while (low < high) {
+    const middle = Math.floor((low + high) / 2)
+    const bucketMs = new Date(providerBuckets[middle].bucket_start_at).getTime()
+    if (bucketMs < earliestBucketMs) low = middle + 1
+    else high = middle
+  }
+
+  const matches = []
+  for (let index = low; index < providerBuckets.length; index += 1) {
+    const bucket = providerBuckets[index]
+    const bucketMs = new Date(bucket.bucket_start_at).getTime()
+    if (bucketMs >= latestBucketMs) break
+    if (!quotaEstimatorUsageBucketMatchesLane(bucket, interval)) continue
+    matches.push(bucket)
+  }
+  return matches
+}
+
 function buildQuotaEstimatorRowsFromReadModels(observations, usageBuckets) {
   const observationsByLane = new Map()
   for (const observation of observations) {
@@ -11362,13 +11802,8 @@ function buildQuotaEstimatorRowsFromReadModels(observations, usageBuckets) {
     observationsByLane.set(key, laneObservations)
   }
 
-  const bucketsByProvider = new Map()
-  for (const bucket of usageBuckets) {
-    if (bucket.bucket_start_at === null) continue
-    const providerBuckets = bucketsByProvider.get(bucket.provider) ?? []
-    providerBuckets.push(bucket)
-    bucketsByProvider.set(bucket.provider, providerBuckets)
-  }
+  const bucketsByProvider =
+    buildQuotaEstimatorUsageBucketsByProvider(usageBuckets)
 
   const rows = []
   for (const laneObservations of observationsByLane.values()) {
@@ -11421,14 +11856,17 @@ function buildQuotaEstimatorRowsFromReadModels(observations, usageBuckets) {
       }
       const providerBuckets = bucketsByProvider.get(current.provider) ?? []
       for (const lagMinutes of QUOTA_ESTIMATOR_LAG_MINUTES) {
-        const startMs = new Date(previous.observed_at).getTime()
-        const endMs = new Date(current.observed_at).getTime()
+        const matchingBuckets = quotaEstimatorUsageBucketsInInterval(
+          providerBuckets,
+          {
+            ...current,
+            interval_start_at: previous.observed_at,
+            interval_end_at: current.observed_at,
+          },
+          lagMinutes
+        )
         const familyTotals = new Map()
-        for (const bucket of providerBuckets) {
-          if (!quotaEstimatorUsageBucketMatchesLane(bucket, current)) continue
-          const effectiveMs =
-            new Date(bucket.bucket_start_at).getTime() + lagMinutes * 60_000
-          if (effectiveMs < startMs || effectiveMs >= endMs) continue
+        for (const bucket of matchingBuckets) {
           const totals = familyTotals.get(bucket.model_family) ?? {
             traces: 0,
             uncached_input_tokens: 0,
@@ -11612,6 +12050,60 @@ async function readRequestBody(req) {
   return chunks.length ? Buffer.concat(chunks) : undefined
 }
 
+async function readBoundedUpstreamBody(body, signal) {
+  if (!body) return Buffer.alloc(0)
+
+  const reader = body.getReader()
+  const chunks = []
+  let totalBytes = 0
+  const cancelReader = () => {
+    void reader.cancel(signal?.reason).catch(() => {})
+  }
+
+  signal?.addEventListener('abort', cancelReader, { once: true })
+  if (signal?.aborted) {
+    cancelReader()
+  }
+
+  try {
+    while (totalBytes < UPSTREAM_ERROR_BODY_MAX_BYTES) {
+      if (signal?.aborted) {
+        throw signal.reason
+      }
+      const { done, value } = await reader.read()
+      if (signal?.aborted) {
+        throw signal.reason
+      }
+      if (done) break
+
+      const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value)
+      const remainingBytes = UPSTREAM_ERROR_BODY_MAX_BYTES - totalBytes
+      if (chunk.byteLength > remainingBytes) {
+        chunks.push(chunk.subarray(0, remainingBytes))
+        totalBytes += remainingBytes
+        await reader
+          .cancel('upstream error body size limit exceeded')
+          .catch(() => {})
+        break
+      }
+
+      chunks.push(chunk)
+      totalBytes += chunk.byteLength
+      if (totalBytes >= UPSTREAM_ERROR_BODY_MAX_BYTES) {
+        await reader
+          .cancel('upstream error body size limit exceeded')
+          .catch(() => {})
+        break
+      }
+    }
+  } finally {
+    signal?.removeEventListener('abort', cancelReader)
+    reader.releaseLock()
+  }
+
+  return Buffer.concat(chunks, totalBytes)
+}
+
 export function buildUsageQuery(searchParams) {
   const grain = searchParams.get('grain') ?? 'day'
   if (!grains[grain]) {
@@ -11688,14 +12180,10 @@ SELECT
     NULL::text AS cache_miss_reasons,
 
     SUM(COALESCE(sh.provider_cache_miss_token_count, 0))::double precision AS token_cache_miss,
-    SUM(COALESCE(sh.input_tokens, 0)
-      + COALESCE(sh.output_tokens, 0)
-      + COALESCE(sh.cache_read_input_tokens, 0)
-      + COALESCE(sh.cache_creation_input_tokens, 0)
-      + COALESCE(sh.reasoning_tokens_reported, 0)
-      + COALESCE(sh.reasoning_tokens_estimated, 0))::double precision AS token_total,
+    SUM(${sessionHistoryTokenSignalExpression()})::double precision AS token_total,
     SUM(COALESCE(sh.provider_cache_miss_cost_usd, 0))::double precision AS cache_miss_usd_cost,
     SUM(COALESCE(sh.response_cost_usd, 0))::double precision AS usd_cost,
+    ${sessionHistoryResponseCostRowsExpression('sh')} AS response_cost_rows,
     SUM(COALESCE(sh.tool_call_count, 0))::double precision AS tool_calls,
     SUM(COALESCE(sh.git_commit_count, 0))::double precision AS git_commit,
     SUM(COALESCE(sh.git_push_count, 0))::double precision AS git_push,
@@ -11843,8 +12331,9 @@ reason_cap_state AS (
         EXISTS (
             SELECT 1
             FROM public.session_history sh_window
-            WHERE sh_window.created_at >= ($1::date::timestamp AT TIME ZONE 'America/New_York')
-              AND sh_window.created_at < ($2::date::timestamp AT TIME ZONE 'America/New_York')
+            WHERE ${dashboardDateRangeWhereSql('sh_window.created_at').join(
+              '\n              AND '
+            )}
               AND sh_window.id <= rb.min_id
               AND sh_window.agent_score_reasons IS NOT NULL
               AND sh_window.agent_score_reasons <> '{}'::jsonb
@@ -12908,6 +13397,11 @@ async function loadUsageReport(searchParams, options = {}) {
     'provider_error_observations',
     { rows: [] }
   )
+  const providerErrorObservationCapTruncatesRequestedWindow =
+    providerErrorObservationResult.rows.find(
+      (row) =>
+        row.provider_error_observation_cap_truncates_requested_window != null
+    )?.provider_error_observation_cap_truncates_requested_window ?? false
   const providerStatusUsageResult = resolveUsageReportFanoutValue(
     fanoutResults,
     'provider_status_usage',
@@ -13048,6 +13542,13 @@ async function loadUsageReport(searchParams, options = {}) {
             scoreReasonsCapState?.agent_score_reasons_bounded_max_id
           ),
       agentScoreReasonsDegraded: scoreReasonsDegraded,
+      providerErrorObservationRowLimit:
+        providerErrorObservationQuery.metadata.providerErrorObservationRowLimit,
+      providerErrorObservationCapActive:
+        providerErrorObservationQuery.metadata
+          .providerErrorObservationCapActive,
+      providerErrorObservationCapTruncatesRequestedWindow:
+        providerErrorObservationCapTruncatesRequestedWindow,
       ...auxiliaryDegradedMetadata,
     },
     summary,
@@ -13056,9 +13557,9 @@ async function loadUsageReport(searchParams, options = {}) {
     providerLatencyHealth: providerLatencyHealthResult.rows.map(
       normalizeProviderLatencyHealthRow
     ),
-    providerErrorObservations: providerErrorObservationResult.rows.map(
-      normalizeProviderErrorObservationRow
-    ),
+    providerErrorObservations: providerErrorObservationResult.rows
+      .filter((row) => row.observed_at != null)
+      .map(normalizeProviderErrorObservationRow),
     dockerLogErrors: dockerLogErrors.map(normalizeDockerLogErrorRow),
     localHealth: localHealth.map(normalizeLocalHealthRow),
     providerStatusUsage: providerStatusUsageResult.rows.map(
@@ -13081,9 +13582,6 @@ async function loadUsageReport(searchParams, options = {}) {
       : normalizeProviderCreditLifecycleReport(
           providerCreditLifecycleResult.rows
         ),
-    quotas: [],
-    quotaHistory: [],
-    toolActivity: [],
     rows,
   }
 }
@@ -13546,11 +14044,13 @@ function startReportCachePrewarm() {
   }
 }
 
-async function prewarmReportCaches() {
-  if (!redisClient?.isReady || reportServiceShuttingDown) return
+async function prewarmReportCaches(options = {}) {
+  const redisReady = options.redisReady ?? Boolean(redisClient?.isReady)
+  if (!redisReady || reportServiceShuttingDown) return
 
   const lockKey = buildReportCachePrewarmLockKey()
-  const lockToken = await acquireRedisNamedLock(
+  const acquireLock = options.acquireLock ?? acquireRedisNamedLock
+  const lockToken = await acquireLock(
     lockKey,
     REPORT_CACHE_PREWARM_LOCK_TTL_MS,
     'prewarm'
@@ -13568,6 +14068,8 @@ async function prewarmReportCaches() {
       `[report-service] prewarming Redis report cache for ${windows.length} usage windows\n`
     )
 
+    let failedWindows = 0
+    const failureSummaries = []
     for (const window of windows) {
       if (reportServiceShuttingDown) break
       try {
@@ -13575,7 +14077,8 @@ async function prewarmReportCaches() {
           window.from,
           window.to
         )
-        const status = await prewarmCachedReport(
+        const prewarm = prewarmCachedReportTestImpl ?? prewarmCachedReport
+        const status = await prewarm(
           USAGE_REPORT_CACHE_SCOPE,
           searchParams,
           () => loadUsageReport(searchParams)
@@ -13584,17 +14087,26 @@ async function prewarmReportCaches() {
           `[report-service] prewarm usage cache window=${window.name} status=${status} from=${window.from} to=${window.to}\n`
         )
       } catch (error) {
+        failedWindows += 1
+        failureSummaries.push(
+          `${window.name}: ${error instanceof Error ? error.message : String(error)}`
+        )
         if (!shouldSuppressCacheRefreshFailureDuringShutdown(error)) {
           process.stderr.write(
             `[report-service] WARN: prewarm usage cache failed window=${window.name} from=${window.from} to=${window.to}: ${formatError(error)}\n`
           )
         }
-        break
       }
+    }
+    if (failedWindows > 0) {
+      process.stderr.write(
+        `[report-service] WARN: prewarm usage cache completed with ${failedWindows}/${windows.length} failed windows: ${failureSummaries.join('; ')}\n`
+      )
     }
 
     try {
-      const quotaStatus = await prewarmCachedReport(
+      const prewarmQuota = prewarmCachedReportTestImpl ?? prewarmCachedReport
+      const quotaStatus = await prewarmQuota(
         'quotas',
         undefined,
         loadQuotaReportWithDatabaseTimeoutHandling
@@ -13629,7 +14141,11 @@ function buildPrewarmUsageWindows() {
   const today = formatDashboardDate(new Date())
   const tomorrow = addDaysToDateString(today, 1)
   const yearStart = `${today.slice(0, 4)}-01-01`
-  const twoYearStart = `${(Number(today.slice(0, 4)) - 2).toString()}${today.slice(4)}`
+  const [year, month, day] = today.split('-').map(Number)
+  // Date.UTC normalizes a nonexistent Feb 29 start forward to Mar 1.
+  const twoYearStart = new Date(Date.UTC(year - 2, month - 1, day))
+    .toISOString()
+    .slice(0, 10)
 
   return [
     {
@@ -13674,7 +14190,7 @@ export function findUpstreamApiProxy(pathname) {
   )
 }
 
-async function handleUpstreamApiProxy(req, res, proxyConfig) {
+export async function handleUpstreamApiProxy(req, res, proxyConfig) {
   const upstreamSecretCheck = evaluateUpstreamProxySecret(req.headers)
   if (!upstreamSecretCheck.ok) {
     await sendJson(req, res, upstreamSecretCheck.status, {
@@ -13684,39 +14200,96 @@ async function handleUpstreamApiProxy(req, res, proxyConfig) {
   }
 
   const controller = new AbortController()
-  const timeout = setTimeout(
-    () => controller.abort(),
-    UPSTREAM_FETCH_TIMEOUT_MS
-  )
-  let upstreamResponse
+  let upstreamTimedOut = false
+  let clientDisconnected = false
+  let responseFinished = Boolean(res.writableEnded || res.writableFinished)
+  const markResponseFinished = () => {
+    responseFinished = true
+  }
+  const abortUpstream = () => {
+    if (responseFinished) return
+    clientDisconnected = true
+    controller.abort()
+  }
+  res.once('finish', markResponseFinished)
+  res.once('close', abortUpstream)
+  if (res.destroyed && !responseFinished) {
+    abortUpstream()
+  }
+  const timeout = setTimeout(() => {
+    upstreamTimedOut = true
+    controller.abort()
+  }, UPSTREAM_FETCH_TIMEOUT_MS)
   try {
-    upstreamResponse = await fetch(proxyTargetUrl(req, proxyConfig), {
-      method: req.method,
-      headers: proxyHeaders(req, proxyConfig),
-      signal: controller.signal,
-      body:
-        req.method === 'GET' || req.method === 'HEAD'
-          ? undefined
-          : await readRequestBody(req),
-    })
-  } catch (error) {
-    if (error instanceof Error && error.name === 'AbortError') {
-      await sendJson(req, res, 504, {
-        error: `${proxyConfig.displayName} upstream timed out after ${UPSTREAM_FETCH_TIMEOUT_MS}ms.`,
+    if (clientDisconnected) return
+    let upstreamResponse
+    try {
+      upstreamResponse = await fetch(proxyTargetUrl(req, proxyConfig), {
+        method: req.method,
+        headers: proxyHeaders(req, proxyConfig),
+        signal: controller.signal,
+        body:
+          req.method === 'GET' || req.method === 'HEAD'
+            ? undefined
+            : await readRequestBody(req),
       })
+    } catch (error) {
+      if (error instanceof Error && error.name === 'AbortError') {
+        if (clientDisconnected) return
+        await sendJson(req, res, 504, {
+          error: `${proxyConfig.displayName} upstream timed out after ${UPSTREAM_FETCH_TIMEOUT_MS}ms.`,
+        })
+        return
+      }
+      throw error
+    }
+
+    const headers = responseHeaders(upstreamResponse.headers)
+    if (!upstreamResponse.ok || !upstreamResponse.body) {
+      let body
+      try {
+        body = await readBoundedUpstreamBody(
+          upstreamResponse.body,
+          controller.signal
+        )
+      } catch (error) {
+        if (clientDisconnected) return
+        if (upstreamTimedOut) {
+          await sendJson(req, res, 504, {
+            error: `${proxyConfig.displayName} upstream timed out after ${UPSTREAM_FETCH_TIMEOUT_MS}ms.`,
+          })
+          return
+        }
+        throw error
+      }
+      if (clientDisconnected) return
+      if (upstreamTimedOut) {
+        await sendJson(req, res, 504, {
+          error: `${proxyConfig.displayName} upstream timed out after ${UPSTREAM_FETCH_TIMEOUT_MS}ms.`,
+        })
+        return
+      }
+      res.writeHead(upstreamResponse.status, headers)
+      res.end(body)
       return
     }
-    throw error
+
+    if (clientDisconnected) return
+    res.writeHead(upstreamResponse.status, headers)
+    try {
+      await pipeline(Readable.fromWeb(upstreamResponse.body), res, {
+        signal: controller.signal,
+      })
+    } catch (error) {
+      if (clientDisconnected) return
+      if (upstreamTimedOut) return
+      throw error
+    }
   } finally {
     clearTimeout(timeout)
+    res.off('finish', markResponseFinished)
+    res.off('close', abortUpstream)
   }
-
-  const body = Buffer.from(await upstreamResponse.arrayBuffer())
-  res.writeHead(
-    upstreamResponse.status,
-    responseHeaders(upstreamResponse.headers)
-  )
-  res.end(body)
 }
 
 async function buildShellHealthPayload({ loaders = {} } = {}) {
@@ -13910,7 +14483,6 @@ async function shutdown() {
         if (redisClient?.isOpen) {
           await redisClient.quit()
         }
-        await cleanupPgBouncerAdminPools()
         await healthPool?.end()
         await pool?.end()
       } catch (error) {
@@ -13946,6 +14518,9 @@ export const __reportCacheInternals = {
   },
   getReportCacheEntry(cacheKey) {
     return reportCache.get(cacheKey)
+  },
+  getReportCacheEntryKeys() {
+    return reportCache.keys()
   },
   setMaxReportCacheEntriesForTests(maxEntries) {
     reportCacheMaxEntries = Math.max(
@@ -14128,23 +14703,34 @@ export const __usageReportTestHelpers = {
 }
 
 export const __quotaReportTestHelpers = {
+  buildQuotaEstimatorReport,
+  buildQuotaEstimatorRowsFromReadModels,
   buildQuotaVelocityRowsByLane,
   attachQuotaVelocityRows,
   normalizeQuotaHistoryRow,
+  quotaEstimatorWeights,
+}
+
+export const __prewarmReportTestHelpers = {
+  buildPrewarmUsageWindows,
+  prewarmReportCaches,
+  setPrewarmCachedReportTestImpl(impl) {
+    prewarmCachedReportTestImpl = impl
+  },
+  resetPrewarmCachedReportTestImpl() {
+    prewarmCachedReportTestImpl = null
+  },
 }
 
 export { buildShellHealthPayload }
 
 export const __shellHealthTestHelpers = {
   buildShellHealthPayload,
+  loadMaterializedViewHealthFromDatabase,
 }
 
 export const __pgBouncerAdminTestHelpers = {
-  cleanupPgBouncerAdminPools,
-  getOrCreatePgBouncerAdminPool,
-  getPgBouncerAdminPoolCacheSize() {
-    return pgBouncerAdminPoolsByKey.size
-  },
+  createPgBouncerAdminClient,
   loadPgBouncerAdminSummaryForTests: loadPgBouncerAdminSummary,
 }
 

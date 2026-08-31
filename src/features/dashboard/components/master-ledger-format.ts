@@ -1,34 +1,11 @@
 /**
  * Master ledger display formatters and severity colors (W11 split).
  */
-import {
-  canonicalProvider,
-  formatModelDisplayName,
-} from '../lib/usage-report-display'
+import { providerDisplayLabel } from '../lib/usage-report-display'
 import type { ModelRow } from './master-ledger-aggregation'
 
 export function providerDisplayName(provider: string): string {
-  const key = canonicalProvider(provider)
-  switch (key) {
-    case 'anthropic':
-      return 'Anthropic'
-    case 'openai':
-      return 'OpenAI'
-    case 'google':
-      return 'Google'
-    case 'xai':
-      return 'xAI'
-    case 'openrouter':
-      return 'OpenRouter'
-    case 'nvidia_nim':
-      return 'NVIDIA'
-    case 'local':
-      return 'Local'
-    case 'alibaba_token_plan':
-      return 'Alibaba Token Plan'
-    default:
-      return formatModelDisplayName(provider)
-  }
+  return providerDisplayLabel(provider)
 }
 /**
  * Returns the CSS color variable for sparkline tinting (still needed for
@@ -41,14 +18,14 @@ export function rowSeverityColor(row: ModelRow): string {
   if (err === undefined) return 'var(--accent-cool)'
   if (err >= 2) return 'var(--accent-hot)'
   if (err >= 0.5) return 'var(--accent-warm)'
-  if (row.cost_usd >= 1) return 'var(--accent-teal)'
+  if ((row.cost_usd ?? 0) >= 1) return 'var(--accent-teal)'
   return 'var(--accent-cool)'
 }
 
 /** Returns cost cell color based on cost_usd severity thresholds (C6). */
-export function costColor(cost: number): string {
-  if (cost >= 5) return 'var(--accent-hot)'
-  if (cost >= 1) return 'var(--accent-warm)'
+export function costColor(cost: number | null): string {
+  if ((cost ?? 0) >= 5) return 'var(--accent-hot)'
+  if ((cost ?? 0) >= 1) return 'var(--accent-warm)'
   return 'var(--accent-cool)'
 }
 

@@ -17,8 +17,8 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import {
   render,
   act,
-  fireEvent,
   waitFor,
+  fireEvent,
   screen,
   within,
 } from '@testing-library/react'
@@ -37,6 +37,13 @@ import type {
   UsageReportSessionDiagnosticsResponse,
   ShellHealthResponse,
 } from '../api/usage-report'
+import { ANTHROPIC_PROVIDER_STATUS_ENV_VAR } from '../lib/provider-status-visibility'
+import {
+  ALIBABA_TOKEN_PLAN_5H_CREDITS_KEY,
+  ALIBABA_TOKEN_PLAN_7D_CREDITS_KEY,
+  KIMI_CODE_5H_QUOTA_UNITS_KEY,
+  KIMI_CODE_7D_QUOTA_UNITS_KEY,
+} from '../lib/quota-bars/lane-defs'
 import PhosphorDashboard from './phosphor-dashboard'
 import {
   padHealthCells,
@@ -60,7 +67,7 @@ function makeClient(): QueryClient {
   })
 }
 
-test('D1-492 keeps Kimi Code out of Token Trend provider-series seeding', () => {
+test('D1-495 adds Kimi Code and Cursor Agent to Token Trend provider-series seeding', () => {
   const source = readFileSync(
     resolve(
       process.cwd(),
@@ -75,8 +82,10 @@ test('D1-492 keeps Kimi Code out of Token Trend provider-series seeding', () => 
   )
 
   expect(providerSeries).toBeDefined()
-  expect(providerSeries).not.toContain("key: 'kimi_code'")
-  expect(providerSeries).not.toContain('tt-kimi')
+  expect(providerSeries).toContain("key: 'kimi_code'")
+  expect(providerSeries).toContain('tt-kimi-code')
+  expect(providerSeries).toContain("key: 'cursor_agent'")
+  expect(providerSeries).toContain('tt-cursor-agent')
   expect(styles).not.toContain('.tt-slice.tt-kimi')
 })
 
@@ -196,6 +205,9 @@ const MOCK_REPORT: UsageReportResponse = {
     latestRecordAgeMinutes: 0,
     latestRecordStale: false,
     staleRecordThresholdMinutes: 60,
+    providerErrorObservationRowLimit: 2000,
+    providerErrorObservationCapActive: true,
+    providerErrorObservationCapTruncatesRequestedWindow: false,
   },
   summary: {
     traces: 100,
@@ -222,11 +234,333 @@ const MOCK_REPORT: UsageReportResponse = {
   providerLatencyHealth: [],
   providerErrorObservations: [],
   providerStatusUsage: [],
-  quotas: [],
-  quotaHistory: [],
-  toolActivity: [],
   rows: [],
 }
+
+const D1_498_REPORT: UsageReportResponse = {
+  ...MOCK_REPORT,
+  providerStatusUsage: [
+    {
+      provider: 'anthropic',
+      model: 'claude-sonnet-4-5',
+      traces: 2,
+      token_total: 200,
+      usd_cost: 0.02,
+      period_start: '2026-05-20',
+      period_end: '2026-05-21',
+    },
+  ],
+  trend: [
+    {
+      bucket: '2026-05-20T00:00:00.000Z',
+      provider: 'anthropic',
+      model: 'claude-sonnet-4-5',
+      repository: 'dashboard-shell',
+      traces: 2,
+      token_total: 200,
+      usd_cost: 0.02,
+      response_cost_rows: 1,
+    },
+  ],
+}
+
+describe('D1-498 — Anthropic current-status visibility', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs()
+  })
+
+  async function renderDashboard(): Promise<HTMLElement> {
+    let container!: HTMLElement
+    await act(async () => {
+      container = render(
+        <Wrapper>
+          <PhosphorDashboard
+            from='2026-05-20'
+            to='2026-05-21'
+            report={D1_498_REPORT}
+            reportLoading={false}
+            showComparison={false}
+            quotas={[]}
+            quotaHistory={[]}
+          />
+        </Wrapper>
+      ).container
+    })
+    return container
+  }
+
+  test('test_default_config_omits_anthropic_provider_health_card', async () => {
+    vi.stubEnv(ANTHROPIC_PROVIDER_STATUS_ENV_VAR, 'false')
+
+    const container = await renderDashboard()
+    const providerNames = Array.from(
+      container.querySelectorAll(
+        'section#status .provider-card:not(.aggregate) .provider-name'
+      )
+    ).map((node) => node.textContent?.trim())
+
+    expect(providerNames).not.toContain('ANTHROPIC')
+  })
+
+  test('test_true_config_restores_anthropic_provider_health_card', async () => {
+    vi.stubEnv(ANTHROPIC_PROVIDER_STATUS_ENV_VAR, 'true')
+
+    const container = await renderDashboard()
+    const providerNames = Array.from(
+      container.querySelectorAll(
+        'section#status .provider-card:not(.aggregate) .provider-name'
+      )
+    ).map((node) => node.textContent?.trim())
+
+    expect(providerNames).toContain('ANTHROPIC')
+  })
+
+  test('test_historical_anthropic_trend_and_provider_options_remain_available', async () => {
+    vi.stubEnv(ANTHROPIC_PROVIDER_STATUS_ENV_VAR, 'false')
+    const onOptionsReady = vi.fn()
+
+    await act(async () => {
+      render(
+        <Wrapper>
+          <PhosphorDashboard
+            from='2026-05-20'
+            to='2026-05-21'
+            report={D1_498_REPORT}
+            reportLoading={false}
+            showComparison={false}
+            quotas={[]}
+            quotaHistory={[]}
+            onOptionsReady={onOptionsReady}
+          />
+        </Wrapper>
+      )
+    })
+
+    await waitFor(() => {
+      expect(onOptionsReady).toHaveBeenCalled()
+    })
+
+    const options = onOptionsReady.mock.calls.at(-1)?.[0] as
+      | { providers: string[] }
+      | undefined
+    expect(options?.providers).toContain('anthropic')
+
+    const tokens = document.querySelector('#tokens')
+    expect(tokens).not.toBeNull()
+    expect(
+      within(tokens as HTMLElement).getByText('Anthropic')
+    ).toBeInTheDocument()
+  })
+})
+
+function makeQuotaOnlyRow(
+  provider: string,
+  billingDetails: NonNullable<UsageReportQuotaRow['billing_details']>,
+  accountRef: string
+): UsageReportQuotaRow {
+  return {
+    provider,
+    model: null,
+    account_ref: accountRef,
+    billing_details: billingDetails,
+    weekly_remaining_pct: 90,
+    weekly_reset_at: '2026-08-30T12:00:00.000Z',
+    weekly_interval_start: '2026-08-23T12:00:00.000Z',
+    weekly_interval_end: '2026-08-30T12:00:00.000Z',
+    weekly_active: true,
+    weekly_usage_tokens: 0,
+    weekly_usage_breakdown: [],
+    weekly_overage_included_remaining_pct: null,
+    weekly_overage_included_reset_at: null,
+    weekly_overage_included_interval_start: null,
+    weekly_overage_included_interval_end: null,
+    weekly_overage_included_active: false,
+    weekly_overage_included_usage_tokens: 0,
+    weekly_overage_included_usage_breakdown: [],
+    short_remaining_pct: 90,
+    short_reset_at: '2026-08-30T17:00:00.000Z',
+    short_interval_start: '2026-08-30T12:00:00.000Z',
+    short_interval_end: '2026-08-30T17:00:00.000Z',
+    short_active: true,
+    short_usage_tokens: 0,
+    short_usage_breakdown: [],
+    special_remaining_pct: null,
+    special_reset_at: null,
+    special_interval_start: null,
+    special_interval_end: null,
+    special_active: false,
+    special_usage_tokens: 0,
+    special_usage_breakdown: [],
+    short_special_remaining_pct: null,
+    short_special_reset_at: null,
+    short_special_interval_start: null,
+    short_special_interval_end: null,
+    short_special_active: false,
+    short_special_usage_tokens: 0,
+    short_special_usage_breakdown: [],
+    monthly_remaining_pct: null,
+    monthly_reset_at: null,
+    monthly_interval_start: null,
+    monthly_interval_end: null,
+    monthly_active: false,
+    monthly_usage_tokens: 0,
+    monthly_usage_breakdown: [],
+  }
+}
+
+test('D1-495 includes trend-only providers in the token trend series', async () => {
+  const report: UsageReportResponse = {
+    ...MOCK_REPORT,
+    trend: [
+      {
+        bucket: '2026-08-30T12:00:00.000Z',
+        provider: 'trend_only_provider',
+        model: 'trend-model',
+        repository: 'trend-repo',
+        traces: 1,
+        token_total: 42,
+        usd_cost: 0,
+      },
+    ],
+  }
+
+  await act(async () => {
+    render(
+      <Wrapper>
+        <PhosphorDashboard
+          from='2026-08-30'
+          to='2026-08-30'
+          report={report}
+          reportLoading={false}
+          showComparison={false}
+          quotas={[]}
+          quotaHistory={[]}
+        />
+      </Wrapper>
+    )
+  })
+
+  const legend = document.querySelector('.tt-legend')
+  expect(legend).not.toBeNull()
+  expect(
+    within(legend as HTMLElement).getByText('trend_only_provider')
+  ).toBeInTheDocument()
+})
+
+test('D1-495 discovers error-only providers and deduplicates quota-only cards', async () => {
+  const errorObservation = {
+    observed_at: '2026-08-30T12:01:00.000Z',
+    environment: 'test',
+    provider: 'error_only_provider',
+    model: 'error-model',
+    model_group: 'unknown',
+    route_family: 'test',
+    status_code: 503,
+    error_type: 'HTTPException',
+    error_code: 'provider_error',
+    error_class: 'provider_5xx',
+    error_message: 'provider unavailable',
+    retry_after_seconds: null,
+    expected_reset_at: null,
+  } satisfies UsageReportProviderErrorObservationRow
+  const report: UsageReportResponse = {
+    ...MOCK_REPORT,
+    providerErrorObservations: [
+      errorObservation,
+      { ...errorObservation, provider: 'alibaba-token-plan' },
+      { ...errorObservation, provider: 'kimi-code' },
+    ],
+  }
+  const quotas: UsageReportQuotaRow[] = [
+    makeQuotaOnlyRow(
+      'alibaba-token-plan',
+      {
+        short: {
+          quota_key: ALIBABA_TOKEN_PLAN_5H_CREDITS_KEY,
+          quota_period: '5h',
+        },
+        weekly: {
+          quota_key: ALIBABA_TOKEN_PLAN_7D_CREDITS_KEY,
+          quota_period: '7d',
+        },
+      },
+      'a1b2c3d4'
+    ),
+    makeQuotaOnlyRow(
+      'kimi-code',
+      {
+        short: {
+          quota_key: KIMI_CODE_5H_QUOTA_UNITS_KEY,
+          quota_period: '5h',
+          source: 'kimi_code_usage',
+          client: 'kimi-code',
+          quota_unit: 'quota_units',
+          quota_limit: 100,
+          quota_used: 10,
+          quota_remaining: 90,
+        },
+        weekly: {
+          quota_key: KIMI_CODE_7D_QUOTA_UNITS_KEY,
+          quota_period: '7d',
+          source: 'kimi_code_usage',
+          client: 'kimi-code',
+          quota_unit: 'quota_units',
+          quota_limit: 100,
+          quota_used: 10,
+          quota_remaining: 90,
+        },
+      },
+      '119f6a46bf29'
+    ),
+  ]
+  const onOptionsReady = vi.fn()
+  let container!: HTMLElement
+
+  await act(async () => {
+    const result = render(
+      <Wrapper>
+        <PhosphorDashboard
+          from='2026-08-30'
+          to='2026-08-30'
+          report={report}
+          reportLoading={false}
+          showComparison={false}
+          quotas={quotas}
+          quotaHistory={[]}
+          onOptionsReady={onOptionsReady}
+        />
+      </Wrapper>
+    )
+    container = result.container
+  })
+
+  await waitFor(() => {
+    expect(onOptionsReady).toHaveBeenCalled()
+  })
+
+  const options = onOptionsReady.mock.calls.at(-1)?.[0] as
+    | { providers: string[] }
+    | undefined
+  expect(options?.providers).toEqual(
+    expect.arrayContaining([
+      'error_only_provider',
+      'alibaba_token_plan',
+      'kimi_code',
+    ])
+  )
+  expect(new Set(options?.providers).size).toBe(options?.providers.length)
+
+  const providerNames = Array.from(
+    container.querySelectorAll(
+      'section#status .provider-card:not(.aggregate) .provider-name'
+    )
+  ).map((node) => node.textContent?.trim())
+  expect(providerNames).toContain('ERROR_ONLY_PROVIDER')
+  expect(
+    providerNames.filter((name) => name === 'ALIBABA TOKEN PLAN')
+  ).toHaveLength(1)
+  expect(providerNames.filter((name) => name === 'KIMI CODE')).toHaveLength(1)
+})
 
 // ---------------------------------------------------------------------------
 // TCG-1: Hoisted-query bypass — internal useQuery must NOT fire
@@ -411,43 +745,31 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
       weekly_interval_start: null,
       weekly_interval_end: null,
       weekly_active: false,
-      weekly_usage_tokens: 0,
-      weekly_usage_breakdown: [],
       short_remaining_pct: 55,
       short_reset_at: '2026-05-24T00:00:00.000Z',
       short_interval_start: '2026-05-23T00:00:00.000Z',
       short_interval_end: '2026-05-24T00:00:00.000Z',
       short_active: true,
-      short_usage_tokens: 1000,
-      short_usage_breakdown: [],
       special_remaining_pct: null,
       special_reset_at: null,
       special_interval_start: null,
       special_interval_end: null,
       special_active: false,
-      special_usage_tokens: 0,
-      special_usage_breakdown: [],
       short_special_remaining_pct: null,
       short_special_reset_at: null,
       short_special_interval_start: null,
       short_special_interval_end: null,
       short_special_active: false,
-      short_special_usage_tokens: 0,
-      short_special_usage_breakdown: [],
       monthly_remaining_pct: null,
       monthly_reset_at: null,
       monthly_interval_start: null,
       monthly_interval_end: null,
       monthly_active: false,
-      monthly_usage_tokens: 0,
-      monthly_usage_breakdown: [],
       wtus_remaining_pct: null,
       wtus_reset_at: null,
       wtus_interval_start: null,
       wtus_interval_end: null,
       wtus_active: false,
-      wtus_usage_tokens: 0,
-      wtus_usage_breakdown: [],
     })
     const makeAntigravityQuotaRow = (
       quotaKey: string,

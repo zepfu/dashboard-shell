@@ -272,6 +272,9 @@ declare module './report-service' {
   export const buildUsageQuery: (
     searchParams: SearchParamsLike
   ) => QueryResultWithMetadata
+  export const buildProviderErrorObservationQuery: (
+    searchParams: SearchParamsLike
+  ) => QueryResultWithMetadata
   export const buildUsageScoreReasonsQuery: (
     searchParams: SearchParamsLike
   ) => QueryResultWithMetadata
@@ -317,4 +320,15 @@ declare module './report-service' {
     req: ProxyRequest,
     proxyConfig: UpstreamApiProxyConfig
   ) => URL
+
+  export const buildSummaryQuery: (
+    searchParams: SearchParamsLike
+  ) => QueryResult
+  export const buildTrendQuery: (searchParams: SearchParamsLike) => QueryResult
+  export const buildClientUsageQuery: (
+    searchParams: SearchParamsLike
+  ) => QueryResult
+  export const buildProviderStatusUsageQuery: (
+    searchParams: SearchParamsLike
+  ) => QueryResult
 }

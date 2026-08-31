@@ -115,7 +115,13 @@ export function buildProviderMetrics(
     (s, r) => s + (r.token_out ?? 0),
     0
   )
-  const cost_usd = providerUsageRows.reduce((s, r) => s + (r.usd_cost ?? 0), 0)
+  const persistedProviderCost = providerUsageRows.filter(
+    (row) => row.usd_cost !== null && row.usd_cost !== undefined
+  )
+  const cost_usd = persistedProviderCost.reduce(
+    (sum, row) => sum + (row.usd_cost ?? 0),
+    0
+  )
   const traces = providerUsageRows.reduce((s, r) => s + (r.traces ?? 0), 0)
   const cache_input = providerUsageRows.reduce(
     (s, r) => s + (r.token_cache_input ?? 0),
@@ -141,7 +147,7 @@ export function buildProviderMetrics(
   return {
     tokens_in,
     tokens_out,
-    cost_usd,
+    cost_usd: persistedProviderCost.length > 0 ? cost_usd : null,
     requests,
     errors,
     p95_ms: p95,
@@ -205,7 +211,7 @@ export function buildAggregateMetrics(
   // zeros for these fields.
   const tokens_in = summary?.token_in ?? 0
   const tokens_out = summary?.token_out ?? 0
-  const cost_usd = summary?.usd_cost ?? 0
+  const cost_usd = summary?.usd_cost ?? null
   const traces = summary?.traces ?? 0
   const cache_input = summary?.token_cache_input ?? 0
   const cache_creation = summary?.token_cache_creation ?? 0

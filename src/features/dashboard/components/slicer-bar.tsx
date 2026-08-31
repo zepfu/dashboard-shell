@@ -26,6 +26,7 @@ import {
   type KeyboardEvent,
   type ReactElement,
 } from 'react'
+import { providerDisplayLabel } from '../lib/usage-report-display'
 import { handleListboxArrowKey } from './slicer-bar-keyboard'
 
 // ---------------------------------------------------------------------------
@@ -86,10 +87,16 @@ interface DimensionConfig {
   key: keyof SlicerFilters
   optionsKey: keyof SlicerOptions
   label: string
+  formatOption?: (value: string) => string
 }
 
 const DIMENSIONS: DimensionConfig[] = [
-  { key: 'providers', optionsKey: 'providers', label: 'Provider' },
+  {
+    key: 'providers',
+    optionsKey: 'providers',
+    label: 'Provider',
+    formatOption: providerDisplayLabel,
+  },
   { key: 'repositories', optionsKey: 'repositories', label: 'Repository' },
   { key: 'clients', optionsKey: 'clients', label: 'Client' },
   { key: 'environments', optionsKey: 'environments', label: 'Environment' },
@@ -104,6 +111,7 @@ interface DimensionDropdownProps {
   label: string
   selected: string[]
   options: string[]
+  formatOption?: (value: string) => string
   onToggle: (value: string) => void
   onClear: () => void
   shortcutTarget?: string
@@ -119,6 +127,7 @@ const DimensionDropdown = memo(function DimensionDropdown({
   label,
   selected,
   options,
+  formatOption,
   onToggle,
   onClear,
   shortcutTarget,
@@ -340,6 +349,7 @@ const DimensionDropdown = memo(function DimensionDropdown({
               {options.map((opt, index) => {
                 const isSelected = selected.includes(opt)
                 const isActive = index === activeOptionIndex
+                const optionLabel = formatOption?.(opt) ?? opt
                 return (
                   <li
                     key={opt}
@@ -379,7 +389,7 @@ const DimensionDropdown = memo(function DimensionDropdown({
                     <span className='slicer-option-check' aria-hidden='true'>
                       {isSelected ? '✓' : ' '}
                     </span>
-                    <span className='slicer-option-label'>{opt}</span>
+                    <span className='slicer-option-label'>{optionLabel}</span>
                   </li>
                 )
               })}
@@ -489,6 +499,7 @@ export function SlicerBar({
           label={dim.label}
           selected={filters[dim.key]}
           options={options[dim.optionsKey]}
+          formatOption={dim.formatOption}
           shortcutTarget={index === 0 ? 'first-filter' : undefined}
           onToggle={dimensionHandlers[dim.key].onToggle}
           onClear={dimensionHandlers[dim.key].onClear}

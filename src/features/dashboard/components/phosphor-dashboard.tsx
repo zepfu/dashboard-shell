@@ -60,6 +60,8 @@ import {
 } from '../api/usage-report'
 import { useAnomalyDetection } from '../hooks/use-anomaly-detection'
 import { computePriorReportWindow } from '../lib/dashboard-date-range'
+import { groupByCanonicalProvider } from '../lib/provider-identity'
+import { isAnthropicProviderStatusVisible } from '../lib/provider-status-visibility'
 import {
   buildTokenTrendDayEnvelopes,
   normalizeTrendData,
@@ -72,6 +74,7 @@ import {
   canonicalProvider,
   computeFleetErrors,
   computeFleetP95,
+  providerDisplayLabel,
   providerBrandHex,
   providerAliases,
   QUOTA_ONLY_PROVIDERS,
@@ -216,12 +219,73 @@ const PROVIDER_SERIES: ProviderSeries[] = [
     cssClass: 'tt-alibaba',
   },
   {
+    key: 'cursor_agent',
+    label: 'Cursor Agent',
+    color: '#a855f7',
+    cssClass: 'tt-cursor-agent',
+  },
+  {
+    key: 'zai_coding_plan',
+    label: 'Z.ai Coding Plan',
+    color: '#ea580c',
+    cssClass: 'tt-zai-coding-plan',
+  },
+  {
+    key: 'kimi_code',
+    label: 'Kimi Code',
+    color: '#0ea5e9',
+    cssClass: 'tt-kimi-code',
+  },
+  {
+    key: 'opencode_go',
+    label: 'OpenCode Go',
+    color: '#16a34a',
+    cssClass: 'tt-opencode-go',
+  },
+  {
+    key: 'opencode_zen',
+    label: 'OpenCode Zen',
+    color: '#14b8a6',
+    cssClass: 'tt-opencode-zen',
+  },
+  {
+    key: 'cohere',
+    label: 'Cohere',
+    color: '#d97706',
+    cssClass: 'tt-cohere',
+  },
+  {
     key: 'unknown',
     label: 'Unknown',
     color: '#64748b',
     cssClass: 'tt-unknown',
   },
 ]
+
+const PROVIDER_SERIES_KEYS = new Set(
+  PROVIDER_SERIES.map((provider) => provider.key)
+)
+
+function deriveProviderSeries(
+  observedProviders: readonly string[]
+): ProviderSeries[] {
+  const observed = new Set<string>()
+  for (const provider of observedProviders) {
+    const key = canonicalProvider(provider)
+    if (key === '' || PROVIDER_SERIES_KEYS.has(key)) continue
+    if (providerAliases(key).includes(key)) observed.add(key)
+  }
+
+  return [
+    ...PROVIDER_SERIES,
+    ...[...observed].sort().map((provider) => ({
+      key: provider,
+      label: providerDisplayLabel(provider),
+      color: providerBrandHex(provider),
+      cssClass: 'tt-provider',
+    })),
+  ]
+}
 
 function shouldShowTokenTrendDegradedBadge(
   metadata?: {
@@ -1012,15 +1076,28 @@ export default function PhosphorDashboard({
     gcTime: LIVE_DASHBOARD_HEAVY_REPORT_GC_TIME_MS,
   })
 
-  const providers = useMemo(() => deriveProviders(), [])
+  const providers = useMemo(
+    () =>
+      deriveProviders([
+        ...healthRows.map((row) => row.provider),
+        ...providerStatusUsage.map((row) => row.provider),
+        ...providerErrorObservations.map((row) => row.provider),
+      ]),
+    [healthRows, providerErrorObservations, providerStatusUsage]
+  )
+  const showAnthropicProviderStatus = isAnthropicProviderStatusVisible()
   const providerHealthCardProviders = useMemo(
     () => [
-      ...providers.filter(
-        (provider) => !STATUS_HEALTH_CARD_OMIT_PROVIDERS.has(provider)
-      ),
-      ...QUOTA_ONLY_PROVIDERS,
+      ...new Set([
+        ...providers.filter(
+          (provider) =>
+            !STATUS_HEALTH_CARD_OMIT_PROVIDERS.has(provider) &&
+            (showAnthropicProviderStatus || provider !== 'anthropic')
+        ),
+        ...QUOTA_ONLY_PROVIDERS,
+      ]),
     ],
-    [providers]
+    [providers, showAnthropicProviderStatus]
   )
 
   const [providerHealthColumnCount, setProviderHealthColumnCount] = useState(
@@ -1043,23 +1120,15 @@ export default function PhosphorDashboard({
   }, [])
 
   // Wave 37 SF-1: prefer parent-supplied quotas (dedup fix); fall back to the
-  // internal quotasData query result (standalone usage) then report?.quotas.
+  // internal quotasData query result for standalone usage.
   const quotaRows = useMemo(
-    () => quotasProp ?? quotasData?.quotas ?? report?.quotas ?? [],
-    [quotasProp, quotasData?.quotas, report?.quotas]
+    () => quotasProp ?? quotasData?.quotas ?? [],
+    [quotasProp, quotasData?.quotas]
   )
 
   const quotaHistoryRows = useMemo(
-    () =>
-      quotaHistoryProp ??
-      internalQuotaHistoryData?.quotaHistory ??
-      report?.quotaHistory ??
-      [],
-    [
-      quotaHistoryProp,
-      internalQuotaHistoryData?.quotaHistory,
-      report?.quotaHistory,
-    ]
+    () => quotaHistoryProp ?? internalQuotaHistoryData?.quotaHistory ?? [],
+    [quotaHistoryProp, internalQuotaHistoryData?.quotaHistory]
   )
 
   const providerLanesByProvider = useMemo(() => {
@@ -1073,43 +1142,56 @@ export default function PhosphorDashboard({
     return map
   }, [providerHealthCardProviders, quotaRows, quotaHistoryRows])
 
+  const providerStatusRowsByProvider = useMemo(
+    () => ({
+      health: groupByCanonicalProvider(healthRows),
+      usage: groupByCanonicalProvider(report?.rows ?? []),
+      statusUsage: groupByCanonicalProvider(providerStatusUsage),
+      errorObservations: groupByCanonicalProvider(providerErrorObservations),
+    }),
+    [healthRows, report?.rows, providerStatusUsage, providerErrorObservations]
+  )
+
   const providerHealthCardRows = useMemo(
     () =>
       providerHealthCardProviders.flatMap((provider) => {
         const lanes = providerLanesByProvider.get(provider) ?? []
         const quotaOnly = QUOTA_ONLY_PROVIDERS.includes(provider)
         if (quotaOnly && lanes.length === 0) return []
+        const providerHealthRows =
+          providerStatusRowsByProvider.health.get(provider) ?? []
+        const providerUsageRows =
+          providerStatusRowsByProvider.usage.get(provider) ?? []
+        const providerStatusUsageRows =
+          providerStatusRowsByProvider.statusUsage.get(provider) ?? []
+        const providerErrorRows =
+          providerStatusRowsByProvider.errorObservations.get(provider) ?? []
 
         const config: ProviderCardConfig = {
           provider,
           // Wave 12 Fix 1: use reference brand hex for card header name color
           color: providerBrandHex(provider),
-          displayName:
-            provider === 'alibaba_token_plan'
-              ? 'Alibaba Token Plan'
-              : provider === 'kimi_code'
-                ? 'Kimi Code'
-                : undefined,
+          displayName: providerDisplayLabel(provider),
           quotaOnly,
         }
         const aliases = providerAliases(provider)
         const metrics = buildProviderMetrics(
           provider,
-          healthRows,
-          report?.rows ?? [],
+          providerHealthRows,
+          providerUsageRows,
           undefined,
           aliases
         )
         const cells = padHealthCells(
-          healthRows,
+          providerHealthRows,
           provider,
-          providerErrorObservations,
+          providerErrorRows,
           aliases
         )
         const topModels = buildTopModels(
-          providerStatusUsage,
+          providerStatusUsageRows,
           provider,
-          healthRows,
+          providerHealthRows,
           aliases
         )
         return {
@@ -1126,11 +1208,24 @@ export default function PhosphorDashboard({
     [
       providerHealthCardProviders,
       providerLanesByProvider,
-      healthRows,
-      providerErrorObservations,
-      providerStatusUsage,
+      providerStatusRowsByProvider,
       report?.localHealth,
-      report?.rows,
+    ]
+  )
+
+  const providerSeries = useMemo(
+    () =>
+      deriveProviderSeries([
+        ...providerStatusUsage.map((row) => row.provider),
+        ...tokenTrendHealthRows.map((row) => row.provider),
+        ...tokenTrendScoreRows.map((row) => row.provider),
+        ...(report?.trend ?? []).map((row) => row.provider),
+      ]),
+    [
+      providerStatusUsage,
+      report?.trend,
+      tokenTrendHealthRows,
+      tokenTrendScoreRows,
     ]
   )
 
@@ -1154,23 +1249,21 @@ export default function PhosphorDashboard({
         providerStatusUsage,
         healthRows,
         report?.rows ?? [], // 15-B.3: real token_in/token_out
-        quotaRows, // 15-B.5: quota_pct from quota rows
         report?.trend ?? [], // Wave 30 Track 4: real 24h sparkline data
-        toolActivityData?.toolActivity ?? report?.toolActivity ?? [] // W33: tool activity for TOOL cell hover
+        toolActivityData?.toolActivity ?? [] // W33: tool activity for TOOL cell hover
       ),
     [
       providerStatusUsage,
       healthRows,
       report?.rows,
-      quotaRows,
       report?.trend,
       toolActivityData?.toolActivity,
-      report?.toolActivity,
     ]
   )
 
   // 15-D.3: Derive slicer option universes from the current report data.
-  // Providers:    distinct canonical provider names from providerLatencyHealth
+  // Providers:    distinct canonical provider names from provider health,
+  //               status usage, and error observations
   // Repositories: distinct repository strings from report.rows
   // Clients:      distinct client_name strings from report.clients
   // Environments: distinct environment strings from providerLatencyHealth
@@ -1180,13 +1273,20 @@ export default function PhosphorDashboard({
     const healthRows = report?.providerLatencyHealth ?? []
     const clientData = report?.clients ?? []
     const statusUsage = report?.providerStatusUsage ?? []
+    const errorObservations = report?.providerErrorObservations ?? []
 
     const uniqueSorted = (arr: string[]): string[] =>
       [...new Set(arr.filter(Boolean))].sort()
 
     return {
       providers: uniqueSorted(
-        healthRows.map((r) => canonicalProvider(r.provider)).filter(Boolean)
+        [
+          ...healthRows.map((r) => r.provider),
+          ...statusUsage.map((r) => r.provider),
+          ...errorObservations.map((r) => r.provider),
+        ]
+          .map((r) => canonicalProvider(r))
+          .filter(Boolean)
       ),
       repositories: uniqueSorted(
         rows.map((r) => r.repository ?? '').filter(Boolean)
@@ -1202,6 +1302,7 @@ export default function PhosphorDashboard({
   }, [
     report?.rows,
     report?.providerLatencyHealth,
+    report?.providerErrorObservations,
     report?.clients,
     report?.providerStatusUsage,
   ])
@@ -1339,8 +1440,6 @@ export default function PhosphorDashboard({
       priorReport.providerStatusUsage ?? [],
       priorReport.providerLatencyHealth ?? [],
       priorReport.rows ?? [],
-      // Quota rows are not relevant for delta computation; pass empty array.
-      [],
       priorReport.trend ?? [],
       // Tool activity not needed for delta computation; pass empty array.
       []
@@ -1721,7 +1820,7 @@ export default function PhosphorDashboard({
         ) : (
           <TokenTrendChart
             data={trendData}
-            series={PROVIDER_SERIES}
+            series={providerSeries}
             dayEnvelopes={
               tokenTrendDayEnvelopes.length > 0
                 ? tokenTrendDayEnvelopes

@@ -89,3 +89,32 @@ test('test_sumSpark_mixed_axes_aligns_by_date', () => {
   expect(result).toEqual([10, 20])
   expect(result).not.toEqual([1010, 20])
 })
+
+test('test_aggregateRows_preserves_unavailable_and_measured_zero_tokens', () => {
+  const overrides = {
+    ledgerLevel: 'provider' as const,
+    ledgerId: 'provider:anthropic',
+    ledgerLabel: 'Anthropic',
+    providerKey: 'anthropic',
+    childCount: 2,
+    exactModelCount: 2,
+    isExpandable: true,
+  }
+  const aggregated = _aggregateRowsForTest(
+    [
+      makeRow({ tokens_in: undefined, tokens_out: 0 }),
+      makeRow({ tokens_in: 0, tokens_out: undefined }),
+    ],
+    overrides
+  )
+
+  expect(aggregated.tokens_in).toBe(0)
+  expect(aggregated.tokens_out).toBe(0)
+
+  const unavailable = _aggregateRowsForTest(
+    [makeRow({ tokens_in: undefined, tokens_out: undefined })],
+    { ...overrides, childCount: 1, exactModelCount: 1 }
+  )
+  expect(unavailable.tokens_in).toBeUndefined()
+  expect(unavailable.tokens_out).toBeUndefined()
+})

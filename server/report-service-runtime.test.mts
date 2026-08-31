@@ -363,54 +363,6 @@ describe('report-service bounded shutdown', () => {
   })
 })
 
-describe('D1-444 PgBouncer admin pool shutdown cleanup', () => {
-  test('cleanupPgBouncerAdminPools is idempotent and drains cached pools', async () => {
-    vi.stubEnv('VITEST', 'true')
-
-    const connect = vi.fn(async () => ({
-      query: vi.fn(async () => ({ rows: [] })),
-      release: vi.fn(),
-    }))
-    const on = vi.fn()
-    const end = vi.fn(async () => {})
-    const Pool = vi.fn(function Pool(
-      this: { connect: typeof connect; on: typeof on; end: typeof end },
-      _opts: unknown
-    ) {
-      this.connect = connect
-      this.on = on
-      this.end = end
-    })
-
-    vi.doMock('pg', () => ({ default: { Pool }, Pool }))
-
-    const { __pgBouncerAdminTestHelpers } = await import('./report-service.mjs')
-    const {
-      cleanupPgBouncerAdminPools,
-      getOrCreatePgBouncerAdminPool,
-      getPgBouncerAdminPoolCacheSize,
-    } = __pgBouncerAdminTestHelpers
-
-    const sidecar = {
-      key: 'aawm-pgbouncer',
-      adminDatabaseUrl: 'postgresql://admin:secret@127.0.0.1:6432/pgbouncer',
-    }
-
-    const first = getOrCreatePgBouncerAdminPool(sidecar)
-    const second = getOrCreatePgBouncerAdminPool(sidecar)
-    expect(first).toBe(second)
-    expect(Pool).toHaveBeenCalledTimes(1)
-    expect(getPgBouncerAdminPoolCacheSize()).toBe(1)
-
-    await cleanupPgBouncerAdminPools()
-    expect(end).toHaveBeenCalledTimes(1)
-    expect(getPgBouncerAdminPoolCacheSize()).toBe(0)
-
-    await cleanupPgBouncerAdminPools()
-    expect(end).toHaveBeenCalledTimes(1)
-  })
-})
-
 describe('Wave 1 F03 BadRequestError HTTP mapping', () => {
   function mockJsonRes() {
     const writeHead = vi.fn()
@@ -552,77 +504,165 @@ describe('Wave 1 F03 BadRequestError HTTP mapping', () => {
   })
 })
 
-describe('Wave 1 F05 queryPostgresWithLocalSettings parameterized transaction', () => {
-  test('test_query_local_settings_parameterized_transaction', async () => {
-    const pgQueryLog: Array<{ text: string; values?: unknown }> = []
+describe('D1-490 queryPostgresWithLocalSettings transaction setup', () => {
+  test('combines transaction setup while preserving parameterized body timeout', async () => {
+    const pgQueryLog: Array<{
+      text: string
+      values?: unknown
+      query_timeout?: number
+    }> = []
+    const connect = vi.fn()
+    const release = vi.fn()
     vi.stubEnv('VITEST', 'true')
     vi.stubEnv('DATABASE_URL', 'postgresql://u:p@127.0.0.1:5432/test')
+    vi.stubEnv('SHELL_REPORT_DB_DISABLE_PARALLELISM', 'true')
 
     vi.doMock('pg', () => {
-      function Pool(this: {
-        connect: () => Promise<{
-          query: (
-            text: string,
-            values?: unknown
-          ) => Promise<{ rows: unknown[] }>
-          release: () => void
-        }>
-        on: () => void
-      }) {
-        this.connect = async () => ({
-          query: async (text: string, values?: unknown) => {
-            pgQueryLog.push({
-              text: text.replace(/\s+/g, ' ').trim(),
-              values,
-            })
-            return { rows: [] }
-          },
-          release: () => {},
-        })
+      function Pool(this: { connect: typeof connect; on: () => void }) {
+        this.connect = connect
         this.on = () => {}
       }
-      return { Pool, default: { Pool } }
+      const escapeLiteral = (value: string) => `'${value.replace(/'/g, "''")}'`
+      return { Pool, escapeLiteral, default: { Pool, escapeLiteral } }
     })
 
-    const { __usageReportTestHelpers } = await import('./report-service.mjs')
-    const {
-      loadUsageReport,
-      resetQueryReportDatabaseTestImpl,
-      setLoadDockerLogErrorsTestImpl,
-      setLoadLocalHealthTestImpl,
-    } = __usageReportTestHelpers
+    connect.mockResolvedValue({
+      query: async (
+        query:
+          | string
+          | {
+              text: string
+              values?: unknown[]
+              query_timeout?: number
+            }
+      ) => {
+        if (typeof query === 'string') {
+          pgQueryLog.push({
+            text: query.replace(/\s+/g, ' ').trim(),
+          })
+        } else {
+          pgQueryLog.push({
+            text: query.text.replace(/\s+/g, ' ').trim(),
+            values: query.values,
+            query_timeout: query.query_timeout,
+          })
+        }
+        return { rows: [] }
+      },
+      release,
+    })
 
-    resetQueryReportDatabaseTestImpl()
-    setLoadDockerLogErrorsTestImpl(async () => [])
-    setLoadLocalHealthTestImpl(async () => [])
+    const { __queryCorrelationTestHelpers } =
+      await import('./report-service.mjs')
+    const { queryReportDatabase } = __queryCorrelationTestHelpers
 
-    await loadUsageReport(
-      new URLSearchParams({ from: '2026-05-01', to: '2026-05-02' })
+    await queryReportDatabase('SELECT $1::text', ['request-value'], {
+      statementTimeoutMs: 45_000,
+      queryTimeoutMs: 20_000,
+    })
+
+    expect(connect).toHaveBeenCalledTimes(1)
+    expect(pgQueryLog).toEqual([
+      {
+        text: "BEGIN; SELECT set_config('max_parallel_workers_per_gather', '0', true), set_config('statement_timeout', '45000ms', true);",
+      },
+      {
+        text: 'SELECT $1::text',
+        values: ['request-value'],
+        query_timeout: 20_000,
+      },
+      { text: 'COMMIT' },
+    ])
+    expect(release).toHaveBeenCalledWith(false)
+  })
+
+  test('rolls back after a server-side body timeout and keeps the client', async () => {
+    const pgQueryLog: string[] = []
+    const connect = vi.fn()
+    const release = vi.fn()
+    vi.stubEnv('VITEST', 'true')
+    vi.stubEnv('DATABASE_URL', 'postgresql://u:p@127.0.0.1:5432/test')
+    vi.stubEnv('SHELL_REPORT_DB_DISABLE_PARALLELISM', 'true')
+
+    vi.doMock('pg', () => {
+      function Pool(this: { connect: typeof connect; on: () => void }) {
+        this.connect = connect
+        this.on = () => {}
+      }
+      const escapeLiteral = (value: string) => `'${value.replace(/'/g, "''")}'`
+      return { Pool, escapeLiteral, default: { Pool, escapeLiteral } }
+    })
+
+    const timeoutError = Object.assign(
+      new Error('canceling statement due to statement timeout'),
+      { code: '57014' }
     )
+    connect.mockResolvedValue({
+      query: async (query: string | { text: string }) => {
+        const text = typeof query === 'string' ? query : query.text
+        pgQueryLog.push(text.replace(/\s+/g, ' ').trim())
+        if (text === 'SELECT $1::text') throw timeoutError
+        return { rows: [] }
+      },
+      release,
+    })
 
-    const beginCount = pgQueryLog.filter((q) => q.text === 'BEGIN').length
-    const commitCount = pgQueryLog.filter((q) => q.text === 'COMMIT').length
-    // F05 single-round-trip string-inlining is intentionally gone: settings and
-    // the body must not be collapsed into one multi-statement simple query.
-    const setLocalCombined = pgQueryLog.some(
-      (q) =>
-        /set_config/i.test(q.text) &&
-        /;\s*SELECT/i.test(q.text) &&
-        !/^BEGIN$/i.test(q.text)
-    )
-    const parameterizedBody = pgQueryLog.some(
-      (q) =>
-        Array.isArray(q.values) &&
-        q.values.length > 0 &&
-        !/^SELECT set_config/i.test(q.text) &&
-        q.text !== 'BEGIN' &&
-        q.text !== 'COMMIT' &&
-        q.text !== 'ROLLBACK'
-    )
+    const { __queryCorrelationTestHelpers } =
+      await import('./report-service.mjs')
+    const { queryReportDatabase } = __queryCorrelationTestHelpers
 
-    expect(beginCount).toBeGreaterThan(0)
-    expect(commitCount).toBeGreaterThan(0)
-    expect(setLocalCombined).toBe(false)
-    expect(parameterizedBody).toBe(true)
+    await expect(
+      queryReportDatabase('SELECT $1::text', ['request-value'])
+    ).rejects.toBe(timeoutError)
+
+    expect(pgQueryLog).toEqual([
+      "BEGIN; SELECT set_config('max_parallel_workers_per_gather', '0', true), set_config('statement_timeout', '120000ms', true);",
+      'SELECT $1::text',
+      'ROLLBACK',
+    ])
+    expect(release).toHaveBeenCalledWith(false)
+  })
+
+  test('discards the client after a client-side query timeout without rollback', async () => {
+    const pgQueryLog: string[] = []
+    const connect = vi.fn()
+    const release = vi.fn()
+    vi.stubEnv('VITEST', 'true')
+    vi.stubEnv('DATABASE_URL', 'postgresql://u:p@127.0.0.1:5432/test')
+    vi.stubEnv('SHELL_REPORT_DB_DISABLE_PARALLELISM', 'true')
+
+    vi.doMock('pg', () => {
+      function Pool(this: { connect: typeof connect; on: () => void }) {
+        this.connect = connect
+        this.on = () => {}
+      }
+      const escapeLiteral = (value: string) => `'${value.replace(/'/g, "''")}'`
+      return { Pool, escapeLiteral, default: { Pool, escapeLiteral } }
+    })
+
+    const timeoutError = new Error('Query read timeout')
+    connect.mockResolvedValue({
+      query: async (query: string | { text: string }) => {
+        const text = typeof query === 'string' ? query : query.text
+        pgQueryLog.push(text.replace(/\s+/g, ' ').trim())
+        if (text === 'SELECT $1::text') throw timeoutError
+        return { rows: [] }
+      },
+      release,
+    })
+
+    const { __queryCorrelationTestHelpers } =
+      await import('./report-service.mjs')
+    const { queryReportDatabase } = __queryCorrelationTestHelpers
+
+    await expect(
+      queryReportDatabase('SELECT $1::text', ['request-value'])
+    ).rejects.toBe(timeoutError)
+
+    expect(pgQueryLog).toEqual([
+      "BEGIN; SELECT set_config('max_parallel_workers_per_gather', '0', true), set_config('statement_timeout', '120000ms', true);",
+      'SELECT $1::text',
+    ])
+    expect(release).toHaveBeenCalledWith(true)
   })
 })

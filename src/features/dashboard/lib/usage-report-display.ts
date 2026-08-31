@@ -1,6 +1,12 @@
 /**
  * Shared dashboard display helpers. Canonical provider identity helpers remain in
  * provider-identity.ts and are re-exported here for compatibility.
+ *
+ * Timezone contract: these helpers mirror the dashboard date logic in
+ * `server/report-service.mjs` (`formatDashboardDate`, `addDaysToDateString`,
+ * and `dashboardDateToUtcIso`) for `DASHBOARD_TIME_ZONE`. They run in separate
+ * runtimes, so update both copies together rather than moving this browser
+ * contract into a server import.
  */
 const DASHBOARD_TIME_ZONE = 'America/New_York'
 
@@ -146,6 +152,7 @@ export function formatDashboardIntervalCompact(start: Date, end: Date): string {
 // Re-export here so existing import sites can continue using usage-report-display.
 export {
   canonicalProvider,
+  providerDisplayLabel,
   providerAliases,
   QUOTA_ONLY_PROVIDERS,
 } from './provider-identity'
@@ -165,6 +172,11 @@ const providerColorsByKey: Record<string, string> = {
   chatgpt: '#475569',
   alibaba_token_plan: '#d97706',
   kimi_code: '#0284c7',
+  cohere: '#dc2626',
+  cursor_agent: '#9333ea',
+  opencode_go: '#16a34a',
+  opencode_zen: '#0d9488',
+  zai_coding_plan: '#7c2d12',
 }
 
 /** Reference brand-identity colors for provider labels and headers. */
@@ -179,6 +191,11 @@ export const PROVIDER_BRAND_HEX: Record<string, string> = {
   local: '#64748b',
   alibaba_token_plan: '#ff6a00',
   kimi_code: '#0ea5e9',
+  cohere: '#d97706',
+  cursor_agent: '#a855f7',
+  opencode_go: '#16a34a',
+  opencode_zen: '#14b8a6',
+  zai_coding_plan: '#ea580c',
 }
 
 /** Returns brand color for a provider, falling back to `'var(--fg)'`. */
@@ -510,7 +527,7 @@ export function formatResetDistance(iso: string | null | undefined): string {
   try {
     const date = new Date(iso)
     if (Number.isNaN(date.getTime())) return '—'
-    // date-fns formatDistanceToNow is not available; use native fallback
+    // Native fallback avoids importing date-fns for this lightweight component.
     const diffMs = date.getTime() - Date.now()
     if (diffMs <= 0) return 'now'
     const totalMins = Math.floor(diffMs / 60_000)

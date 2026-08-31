@@ -151,6 +151,9 @@ const MOCK_REPORT: UsageReportResponse = {
     latestRecordAgeMinutes: 0,
     latestRecordStale: false,
     staleRecordThresholdMinutes: 60,
+    providerErrorObservationRowLimit: 2000,
+    providerErrorObservationCapActive: true,
+    providerErrorObservationCapTruncatesRequestedWindow: false,
   },
   summary: {
     traces: 100,
@@ -177,9 +180,6 @@ const MOCK_REPORT: UsageReportResponse = {
   providerLatencyHealth: [],
   providerErrorObservations: [],
   providerStatusUsage: [],
-  quotas: [],
-  quotaHistory: [],
-  toolActivity: [],
   rows: [],
 }
 
@@ -194,6 +194,31 @@ function makeClient(): QueryClient {
       queries: { retry: false, gcTime: 0 },
     },
   })
+}
+
+function queryKeyHasTimestampCacheBust(queryKey: readonly unknown[]): boolean {
+  return queryKey.some(
+    (part) => typeof part === 'string' && /^\d{13}$/.test(part)
+  )
+}
+
+function getQueriesByPrefix(client: QueryClient, prefix: string) {
+  return client
+    .getQueryCache()
+    .getAll()
+    .filter((query) => query.queryKey[0] === prefix)
+}
+
+function getTemporaryQueries(client: QueryClient, prefix: string) {
+  return getQueriesByPrefix(client, prefix).filter((query) =>
+    queryKeyHasTimestampCacheBust(query.queryKey)
+  )
+}
+
+function getStableQuery(client: QueryClient, prefix: string) {
+  return getQueriesByPrefix(client, prefix).find(
+    (query) => !queryKeyHasTimestampCacheBust(query.queryKey)
+  )
 }
 
 /**
@@ -544,14 +569,42 @@ describe('Dashboard — TCG-2: cold-load render path', () => {
     expect(usageCallCount).toBe(1)
   })
 
-  test('test_force_refresh_button_adds_cache_bust_to_usage_request', async () => {
+  test('test_force_refresh_cleans_report_and_token_trend_temporary_queries', async () => {
     const usageUrls: string[] = []
     const tokenTrendUrls: string[] = []
     const quotaHistoryUrls: string[] = []
     const quotaRangeUrls: string[] = []
-    registerTokenTrendSummaryHandler((url) => {
-      tokenTrendUrls.push(url)
-    })
+    server.use(
+      http.get(
+        '/api/shell/reports/usage/token-trend-summary',
+        ({ request }) => {
+          const parsedUrl = new URL(request.url)
+          const hasCacheBust = parsedUrl.searchParams.has('cache_bust')
+          tokenTrendUrls.push(parsedUrl.toString())
+          return HttpResponse.json({
+            metadata: {
+              from: parsedUrl.searchParams.get('from') ?? '2026-04-19',
+              to: parsedUrl.searchParams.get('to') ?? '2026-05-19',
+              generatedAt: hasCacheBust
+                ? '2026-05-19T00:00:10.000Z'
+                : '2026-05-19T00:00:00.000Z',
+            },
+            tokenTrendHours: [
+              {
+                day: '2026-05-19',
+                hour: hasCacheBust ? 12 : 8,
+                provider: 'anthropic',
+                traces: 1,
+                token_total: hasCacheBust ? 2_000 : 1_000,
+                usd_cost: hasCacheBust ? 0.2 : 0.1,
+                tool_calls: 0,
+              },
+            ],
+            tokenTrendVersions: [],
+          })
+        }
+      )
+    )
     registerQuotaHistoryHandler((url) => {
       quotaHistoryUrls.push(url)
     })
@@ -637,30 +690,6 @@ describe('Dashboard — TCG-2: cold-load render path', () => {
       { timeout: 5000 }
     )
 
-    fireEvent.click(screen.getByLabelText('Force refresh dashboard data'))
-
-    await waitFor(
-      () => {
-        expect(
-          usageUrls.some((url) => new URL(url).searchParams.has('cache_bust'))
-        ).toBe(true)
-      },
-      { timeout: 3000 }
-    )
-    await waitFor(
-      () => {
-        expect(
-          tokenTrendUrls.some((url) =>
-            new URL(url).searchParams.has('cache_bust')
-          )
-        ).toBe(true)
-      },
-      { timeout: 3000 }
-    )
-    const cacheBust = usageUrls
-      .map((url) => new URL(url).searchParams.get('cache_bust'))
-      .find((value): value is string => value !== null)
-    expect(cacheBust).toBeDefined()
     expect(quotaRangeUrls).toHaveLength(0)
     expect(quotaHistoryUrls).toHaveLength(quotaHistoryRequestsBeforeRefresh)
     expect(
@@ -668,39 +697,78 @@ describe('Dashboard — TCG-2: cold-load render path', () => {
         new URL(url).searchParams.has('cache_bust')
       )
     ).toBe(false)
-    await waitFor(
-      () => {
-        const refreshedUsage = usageBaseQueryKey
-          ? (client.getQueryData(
-              usageBaseQueryKey as
-                | (string | number | boolean | undefined | null)[]
-                | undefined
-            ) as
-              | {
-                  metadata?: { generatedAt?: string }
-                  summary?: { token_total?: number }
-                }
-              | undefined)
-          : undefined
-        expect(refreshedUsage?.metadata?.generatedAt).toBe(
-          '2026-05-19T00:00:10.000Z'
+
+    let nextCacheBust = 1_800_000_000_000
+    const dateNowSpy = vi
+      .spyOn(Date, 'now')
+      .mockImplementation(() => nextCacheBust++)
+    try {
+      for (const refreshCount of [1, 2]) {
+        await waitFor(
+          () => {
+            expect(
+              screen.getByLabelText('Force refresh dashboard data')
+            ).toBeEnabled()
+          },
+          { timeout: 3000 }
         )
-        expect(refreshedUsage?.summary?.token_total).toBe(3_200)
-      },
-      { timeout: 5000 }
-    )
-    const tokenTrendRefreshedQueries = client
-      .getQueryCache()
-      .getAll()
-      .filter(
-        (query) =>
-          Array.isArray(query.queryKey) &&
-          query.queryKey[0] === 'usage-report-token-trend-summary' &&
-          cacheBust !== undefined &&
-          query.queryKey.includes(cacheBust) &&
-          query.state.data !== undefined
-      )
-    expect(tokenTrendRefreshedQueries).toHaveLength(1)
+        fireEvent.click(screen.getByLabelText('Force refresh dashboard data'))
+
+        await waitFor(
+          () => {
+            expect(
+              usageUrls.filter((url) =>
+                new URL(url).searchParams.has('cache_bust')
+              )
+            ).toHaveLength(refreshCount)
+            expect(
+              tokenTrendUrls.filter((url) =>
+                new URL(url).searchParams.has('cache_bust')
+              )
+            ).toHaveLength(refreshCount)
+          },
+          { timeout: 3000 }
+        )
+        await waitFor(
+          () => {
+            const refreshedUsage = usageBaseQueryKey
+              ? (client.getQueryData(
+                  usageBaseQueryKey as
+                    | (string | number | boolean | undefined | null)[]
+                    | undefined
+                ) as
+                  | {
+                      metadata?: { generatedAt?: string }
+                      summary?: { token_total?: number }
+                    }
+                  | undefined)
+              : undefined
+            expect(refreshedUsage?.metadata?.generatedAt).toBe(
+              '2026-05-19T00:00:10.000Z'
+            )
+            expect(refreshedUsage?.summary?.token_total).toBe(3_200)
+
+            const stableTokenTrendQuery = getStableQuery(
+              client,
+              'usage-report-token-trend-summary'
+            )
+            const stableTokenTrend = stableTokenTrendQuery?.state.data as
+              | { tokenTrendHours?: Array<{ hour?: number }> }
+              | undefined
+            expect(stableTokenTrend?.tokenTrendHours?.[0]?.hour).toBe(12)
+            expect(
+              getTemporaryQueries(client, 'usage-report-phosphor')
+            ).toHaveLength(0)
+            expect(
+              getTemporaryQueries(client, 'usage-report-token-trend-summary')
+            ).toHaveLength(0)
+          },
+          { timeout: 5000 }
+        )
+      }
+    } finally {
+      dateNowSpy.mockRestore()
+    }
   })
 
   // D1-451 Wave 3 C-1 (host): user-applied range must survive 60s sync tick.
@@ -1515,6 +1583,232 @@ describe('Dashboard — S4-21/S4-22: refresh handlers and cache key discipline',
         (query.queryKey as unknown[]).includes(refreshBustValue)
       )
       expect(hasCacheBustQuery).toBe(false)
+    }
+  })
+
+  test('test_history_refreshes_update_stable_keys_and_clean_temporary_queries', async () => {
+    const quotaRangeUrls: string[] = []
+    const quotaHistoryUrls: string[] = []
+    let quotaRangeRefreshCount = 0
+    let quotaHistoryRefreshCount = 0
+    let quotaHistoryFailureCount = 0
+
+    server.use(
+      http.get('/api/shell/reports/usage', () => HttpResponse.json(MOCK_REPORT))
+    )
+    server.use(
+      http.get('/api/shell/reports/quotas', () =>
+        HttpResponse.json({
+          metadata: {
+            generatedAt: '2026-05-19T00:00:00.000Z',
+            latestRecordAt: null,
+            latestRecordAgeMinutes: null,
+            latestRecordStale: false,
+            staleRecordThresholdMinutes: 60,
+          },
+          quotas: [],
+        })
+      )
+    )
+    registerTokenTrendSummaryHandler()
+    server.use(
+      http.get(
+        '/api/shell/reports/usage/quota-range-history',
+        ({ request }) => {
+          const parsedUrl = new URL(request.url)
+          const hasCacheBust = parsedUrl.searchParams.has('cache_bust')
+          const generatedAt = hasCacheBust
+            ? `2026-05-19T00:00:${String(
+                ++quotaRangeRefreshCount * 10
+              ).padStart(2, '0')}.000Z`
+            : '2026-05-19T00:00:00.000Z'
+          quotaRangeUrls.push(parsedUrl.toString())
+          return HttpResponse.json({
+            metadata: {
+              from: parsedUrl.searchParams.get('from') ?? '2026-04-19',
+              to: parsedUrl.searchParams.get('to') ?? '2026-05-19',
+              generatedAt,
+            },
+            quotaRangeHistory: [],
+          })
+        }
+      )
+    )
+    server.use(
+      http.get('/api/shell/reports/usage/quota-history', ({ request }) => {
+        const parsedUrl = new URL(request.url)
+        const hasCacheBust = parsedUrl.searchParams.has('cache_bust')
+        quotaHistoryUrls.push(parsedUrl.toString())
+        if (hasCacheBust) {
+          const refreshNumber = ++quotaHistoryRefreshCount
+          if (refreshNumber === 3) {
+            quotaHistoryFailureCount += 1
+            return HttpResponse.json(
+              { error: 'quota history refresh failed' },
+              { status: 500 }
+            )
+          }
+          return HttpResponse.json({
+            metadata: {
+              generatedAt: `2026-05-19T00:00:${String(
+                refreshNumber * 10
+              ).padStart(2, '0')}.000Z`,
+            },
+            quotaHistory: [],
+          })
+        }
+        return HttpResponse.json({
+          metadata: { generatedAt: '2026-05-19T00:00:00.000Z' },
+          quotaHistory: [],
+        })
+      })
+    )
+
+    const client = makeClient()
+    const Dashboard = await importDashboard()
+    renderWithClient(Dashboard, client)
+
+    await waitFor(
+      () => {
+        expect(screen.getByRole('heading', { name: 'STATUS' })).toBeVisible()
+      },
+      { timeout: 3000 }
+    )
+    const statusTabs = screen.getByRole('tablist', { name: 'Status view' })
+    const refreshButton = () =>
+      screen.getByRole('button', { name: /refresh provider data/i })
+    const refreshUrls = (urls: string[]) =>
+      urls.filter((url) => new URL(url).searchParams.has('cache_bust'))
+
+    let nextCacheBust = 1_800_000_000_000
+    const dateNowSpy = vi
+      .spyOn(Date, 'now')
+      .mockImplementation(() => nextCacheBust++)
+    try {
+      fireEvent.click(within(statusTabs).getByRole('tab', { name: 'Quota' }))
+      await waitFor(
+        () => {
+          expect(refreshUrls(quotaRangeUrls)).toHaveLength(0)
+          expect(quotaRangeUrls).toHaveLength(1)
+          expect(refreshButton()).toBeEnabled()
+        },
+        { timeout: 3000 }
+      )
+
+      for (const refreshCount of [1, 2]) {
+        fireEvent.click(refreshButton())
+        await waitFor(
+          () => {
+            expect(refreshUrls(quotaRangeUrls)).toHaveLength(refreshCount)
+          },
+          { timeout: 3000 }
+        )
+        await waitFor(
+          () => {
+            const stableData = getStableQuery(
+              client,
+              'usage-report-quota-range-history'
+            )?.state.data as { metadata?: { generatedAt?: string } } | undefined
+            expect(stableData?.metadata?.generatedAt).toBe(
+              `2026-05-19T00:00:${String(refreshCount * 10).padStart(
+                2,
+                '0'
+              )}.000Z`
+            )
+            expect(
+              getTemporaryQueries(client, 'usage-report-quota-range-history')
+            ).toHaveLength(0)
+          },
+          { timeout: 5000 }
+        )
+      }
+
+      fireEvent.click(within(statusTabs).getByRole('tab', { name: 'Health' }))
+      await waitFor(
+        () => {
+          expect(refreshButton()).toBeEnabled()
+        },
+        { timeout: 3000 }
+      )
+      await waitFor(
+        () => {
+          expect(
+            quotaHistoryUrls.some(
+              (url) => !new URL(url).searchParams.has('cache_bust')
+            )
+          ).toBe(true)
+        },
+        { timeout: 3000 }
+      )
+
+      for (const refreshCount of [1, 2]) {
+        fireEvent.click(refreshButton())
+        await waitFor(
+          () => {
+            expect(refreshUrls(quotaHistoryUrls)).toHaveLength(refreshCount)
+          },
+          { timeout: 3000 }
+        )
+        await waitFor(
+          () => {
+            const stableData = getStableQuery(
+              client,
+              'usage-report-quota-history'
+            )?.state.data as { metadata?: { generatedAt?: string } } | undefined
+            expect(stableData?.metadata?.generatedAt).toBe(
+              `2026-05-19T00:00:${String(refreshCount * 10).padStart(
+                2,
+                '0'
+              )}.000Z`
+            )
+            expect(
+              getTemporaryQueries(client, 'usage-report-quota-history')
+            ).toHaveLength(0)
+          },
+          { timeout: 5000 }
+        )
+      }
+
+      const handleUnhandledRejection = (event: PromiseRejectionEvent): void => {
+        event.preventDefault()
+      }
+      const handleProcessUnhandledRejection = (): void => undefined
+      window.addEventListener('unhandledrejection', handleUnhandledRejection)
+      process.on('unhandledRejection', handleProcessUnhandledRejection)
+      try {
+        fireEvent.click(refreshButton())
+        await waitFor(
+          () => {
+            expect(refreshUrls(quotaHistoryUrls)).toHaveLength(3)
+            expect(quotaHistoryFailureCount).toBe(1)
+          },
+          { timeout: 3000 }
+        )
+        await waitFor(
+          () => {
+            const stableData = getStableQuery(
+              client,
+              'usage-report-quota-history'
+            )?.state.data as { metadata?: { generatedAt?: string } } | undefined
+            expect(stableData?.metadata?.generatedAt).toBe(
+              '2026-05-19T00:00:20.000Z'
+            )
+            expect(
+              getTemporaryQueries(client, 'usage-report-quota-history')
+            ).toHaveLength(0)
+            expect(refreshButton()).toBeEnabled()
+          },
+          { timeout: 5000 }
+        )
+      } finally {
+        process.off('unhandledRejection', handleProcessUnhandledRejection)
+        window.removeEventListener(
+          'unhandledrejection',
+          handleUnhandledRejection
+        )
+      }
+    } finally {
+      dateNowSpy.mockRestore()
     }
   })
 

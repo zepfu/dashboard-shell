@@ -2,7 +2,9 @@ import { describe, expect, test } from 'vitest'
 import {
   agentQualityFromFlatRow,
   agentQualityIssueSortValue,
+  agentQualitySeverityMetrics,
   combineAgentQualitySummaries,
+  type AgentQualitySummary,
 } from './agent-quality'
 
 test('agent_quality_from_flat_row_preserves_discovery_and_terminal_scores', () => {
@@ -96,8 +98,16 @@ test('combine_agent_quality_summaries_keeps_null_discovery_scores_out_of_failure
       afterUserPushbackCount: 0,
       repeatedCount: 0,
     },
+    compactSummary: {
+      eventCount: 0,
+      threadCount: 0,
+      idCount: 0,
+      resumeContextCount: 0,
+      verifyContextCount: 0,
+      sourceCounts: {},
+    },
     reasons: [],
-  } as const
+  } satisfies AgentQualitySummary
 
   const combined = combineAgentQualitySummaries([
     base,
@@ -225,7 +235,7 @@ test('combine_agent_quality_summaries_sums_compact_source_counts', () => {
       sourceCounts: { codex: 1 },
     },
     reasons: [],
-  } as const
+  } satisfies AgentQualitySummary
 
   const combined = combineAgentQualitySummaries([
     base,
@@ -447,6 +457,35 @@ test('test_agentQualityIssueSortValue_discovery_terminal_not_double_counted', ()
   // INTENDED total = 20 + 30 + 300 + 0 + 0 = 350
   //
   expect(sortValue).toBe(350)
+})
+
+test('agent_quality_severity_metrics_count_discovery_and_terminal_once', () => {
+  const summary = agentQualityFromFlatRow({
+    traces: 1,
+    agent_score_rows: 1,
+    agent_quality_score: 1,
+    agent_quality_evaluated: 1,
+    agent_quality_possible: 1,
+    agent_quality_failures: 0,
+    agent_discovery_inventory_coverage_score: 1,
+    agent_discovery_inventory_coverage_evaluated: 4,
+    agent_discovery_inventory_coverage_possible: 4,
+    agent_discovery_inventory_coverage_failures: 2,
+    agent_discovery_inventory_missing_count: 3,
+    agent_terminal_completion_score: 1,
+    agent_terminal_completion_evaluated: 4,
+    agent_terminal_completion_possible: 4,
+    agent_terminal_completion_failures: 1,
+  })
+
+  expect(summary).toBeDefined()
+  expect(agentQualitySeverityMetrics(summary!)).toMatchObject({
+    discoveryIssueCount: 6,
+    handoffIssueCount: 0,
+    handoffAttemptCount: 0,
+    totalIssueCount: 6,
+  })
+  expect(agentQualityIssueSortValue(summary!)).toBe(300)
 })
 
 // ─────────────────────────────────────────────────────────────────────────────

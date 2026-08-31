@@ -18,6 +18,10 @@ import {
   canonicalProvider,
   formatDashboardIntervalCompact,
 } from '../usage-report-display'
+import {
+  CURSOR_AGENT_MONTHLY_CENTS_KEY,
+  OPENAI_CODEX_SPARK_CURRENT_KEY,
+} from './lane-defs'
 
 export function ivClassForConsumed(
   consumedPct: number
@@ -269,11 +273,17 @@ function quotaDurationHours(
   return 168
 }
 
-function quotaUnitFromKey(quotaKey: string | null | undefined): string | null {
+export function quotaUnitFromKey(
+  quotaKey: string | null | undefined
+): string | null {
   if (quotaKey === undefined || quotaKey === null) return null
+  if (quotaKey === OPENAI_CODEX_SPARK_CURRENT_KEY) return 'tokens'
   if (quotaKey.endsWith(':credits')) return 'credits'
   if (quotaKey.endsWith(':requests')) return 'requests'
   if (quotaKey.endsWith(':quota_units')) return 'quota_units'
+  if (quotaKey.endsWith(':cents')) return 'cents'
+  if (quotaKey.endsWith(':percent')) return 'percent'
+  if (quotaKey.endsWith(':count')) return 'count'
   return null
 }
 
@@ -390,6 +400,48 @@ export function matchesKimiCodeQuotaContract(
     fields.source === 'kimi_code_usage' &&
     fields.quota_unit === 'quota_units' &&
     fields.client === 'kimi-code'
+  )
+}
+
+interface ProviderQuotaContractFields {
+  quota_key?: string | null
+  quota_period?: string | null
+  source?: string | null
+  quota_unit?: string | null
+  client?: string | null
+}
+
+/** Exact frontend contract for a Cursor Agent monthly quota window. */
+export function matchesCursorAgentQuotaContract(
+  fields: ProviderQuotaContractFields | null | undefined,
+  model: string | null | undefined
+): boolean {
+  return (
+    model === 'cursor-agent' &&
+    fields?.quota_key === CURSOR_AGENT_MONTHLY_CENTS_KEY &&
+    fields.quota_period === 'monthly' &&
+    fields.source === 'cursor_agent_usage' &&
+    fields.quota_unit === 'cents' &&
+    fields.client === 'cursor-agent'
+  )
+}
+
+/** Exact frontend contract for a Z.ai Coding Plan quota window. */
+export function matchesZaiCodingPlanQuotaContract(
+  fields: ProviderQuotaContractFields | null | undefined,
+  model: string | null | undefined,
+  quotaKey: string,
+  quotaPeriod: '5h' | '7d'
+): boolean {
+  const expectedUnit = quotaUnitFromKey(quotaKey)
+  return (
+    model === 'zai-coding-plan' &&
+    expectedUnit !== null &&
+    fields?.quota_key === quotaKey &&
+    fields.quota_period === quotaPeriod &&
+    fields.source === 'zai_coding_plan_quota_poll' &&
+    fields.quota_unit === expectedUnit &&
+    fields.client === 'zai-coding-plan'
   )
 }
 
@@ -596,6 +648,27 @@ export function formatTipVelocity(
 export const _formatTipWindowForTest = formatTipWindow
 export const _formatTipVelocityForTest = formatTipVelocity
 
+function mergeNullableCost(
+  current: number | null | undefined,
+  next: number | null
+): number | null {
+  if (next === null) return current ?? null
+  return current == null ? next : current + next
+}
+
+function compareNullableCosts(
+  [, left]: [string, number | null],
+  [, right]: [string, number | null]
+): number {
+  if (left === null) return right === null ? 0 : 1
+  if (right === null) return -1
+  return right - left
+}
+
+function formatTipCost(cost: number | null): string {
+  return cost === null ? '—' : `$${cost.toFixed(2)}`
+}
+
 /**
  * Derives top-3 tipModels from a UsageReportQuotaUsageBreakdown array.
  *
@@ -609,14 +682,14 @@ export function tipModelsFromBreakdown(
   if (breakdown.length === 0) return undefined
 
   // Aggregate per model (breakdown may have duplicates from multiple rows).
-  const costByModel = new Map<string, number>()
+  const costByModel = new Map<string, number | null>()
   const requestsByModel = new Map<string, number>()
   const recentRequests90mByModel = new Map<string, number>()
   for (const entry of breakdown) {
     if (!entry.model) continue
     costByModel.set(
       entry.model,
-      (costByModel.get(entry.model) ?? 0) + entry.cost
+      mergeNullableCost(costByModel.get(entry.model), entry.cost)
     )
     requestsByModel.set(
       entry.model,
@@ -631,11 +704,11 @@ export function tipModelsFromBreakdown(
   if (costByModel.size === 0) return undefined
 
   return [...costByModel.entries()]
-    .sort(([, a], [, b]) => b - a)
+    .sort(compareNullableCosts)
     .slice(0, 3)
     .map(([model, cost]) => ({
       model,
-      costDelta: `$${cost.toFixed(2)}`,
+      costDelta: formatTipCost(cost),
       requests: requestsByModel.get(model) ?? 0,
       recentRequests90m: recentRequests90mByModel.get(model) ?? 0,
     }))
@@ -673,7 +746,7 @@ export function tipModelsFromBreakdownGoogleAggregated(
   if (breakdown.length === 0) return undefined
 
   // Aggregate cost into Gemini class buckets.
-  const costByClass = new Map<string, number>()
+  const costByClass = new Map<string, number | null>()
   const requestsByClass = new Map<string, number>()
   const recentRequests90mByClass = new Map<string, number>()
   for (const entry of breakdown) {
@@ -690,7 +763,7 @@ export function tipModelsFromBreakdownGoogleAggregated(
     } else {
       cls = 'other'
     }
-    costByClass.set(cls, (costByClass.get(cls) ?? 0) + entry.cost)
+    costByClass.set(cls, mergeNullableCost(costByClass.get(cls), entry.cost))
     requestsByClass.set(cls, (requestsByClass.get(cls) ?? 0) + entry.traces)
     recentRequests90mByClass.set(
       cls,
@@ -700,11 +773,11 @@ export function tipModelsFromBreakdownGoogleAggregated(
   if (costByClass.size === 0) return undefined
 
   return [...costByClass.entries()]
-    .sort(([, a], [, b]) => b - a)
+    .sort(compareNullableCosts)
     .slice(0, 3)
     .map(([cls, cost]) => ({
       model: cls,
-      costDelta: `$${cost.toFixed(2)}`,
+      costDelta: formatTipCost(cost),
       requests: requestsByClass.get(cls) ?? 0,
       recentRequests90m: recentRequests90mByClass.get(cls) ?? 0,
     }))
@@ -727,7 +800,10 @@ export function tipModelsFromBreakdownSingleLabel(
   displayLabel: string
 ): QuotaTipModel[] | undefined {
   if (breakdown.length === 0) return undefined
-  const totalCost = breakdown.reduce((s, e) => s + e.cost, 0)
+  const totalCost = breakdown.reduce<number | null>(
+    (sum, entry) => mergeNullableCost(sum, entry.cost),
+    null
+  )
   const requests = breakdown.reduce((s, e) => s + e.traces, 0)
   const recentRequests90m = breakdown.reduce(
     (s, e) => s + (e.recent_traces_90m ?? 0),
@@ -736,7 +812,7 @@ export function tipModelsFromBreakdownSingleLabel(
   return [
     {
       model: displayLabel,
-      costDelta: `$${totalCost.toFixed(2)}`,
+      costDelta: formatTipCost(totalCost),
       requests,
       recentRequests90m,
     },
@@ -792,46 +868,39 @@ export function makeQuotaBarGroup(
   const durationHours = quotaDurationHours(row.provider, interval)
   const billingDetail = row.billing_details?.[interval]
 
-  // F1b: interval_start/end for tipWindow, breakdown for tipModels.
+  // F1b: interval_start/end for tipWindow. Current quota rows intentionally do
+  // not carry usage breakdowns; historical rows remain usage-enriched.
   let intervalStart: string | null = null
   let intervalEnd: string | null = null
-  let breakdown: UsageReportQuotaUsageBreakdown[] = []
   switch (interval) {
     case 'short':
       intervalStart = row.short_interval_start
       intervalEnd = row.short_interval_end
-      breakdown = row.short_usage_breakdown
       break
 
     case 'weekly_overage_included':
       intervalStart = row.weekly_overage_included_interval_start
       intervalEnd = row.weekly_overage_included_interval_end
-      breakdown = row.weekly_overage_included_usage_breakdown
       break
     case 'weekly':
       intervalStart = row.weekly_interval_start
       intervalEnd = row.weekly_interval_end
-      breakdown = row.weekly_usage_breakdown
       break
     case 'special':
       intervalStart = row.special_interval_start
       intervalEnd = row.special_interval_end
-      breakdown = row.special_usage_breakdown
       break
     case 'short_special':
       intervalStart = row.short_special_interval_start
       intervalEnd = row.short_special_interval_end
-      breakdown = row.short_special_usage_breakdown
       break
     case 'monthly':
       intervalStart = row.monthly_interval_start
       intervalEnd = row.monthly_interval_end
-      breakdown = row.monthly_usage_breakdown
       break
     case 'wtus':
       intervalStart = row.wtus_interval_start ?? null
       intervalEnd = row.wtus_interval_end ?? null
-      breakdown = row.wtus_usage_breakdown ?? []
       break
   }
 
@@ -855,9 +924,6 @@ export function makeQuotaBarGroup(
       durationHours
     ),
     tipIdentity: quotaIdentityForInterval(row, interval),
-    tipModels: tipModelsFromBreakdown(breakdown),
-    tipRequestTotal: tipRequestTotalFromBreakdown(breakdown),
-    tipRecentRequestTotal90m: tipRecentRequestTotal90mFromBreakdown(breakdown),
     tipObservedAt: billingDetail?.billing_observed_at ?? undefined,
     tipQuotaLimit: billingDetail?.quota_limit,
     tipQuotaUsed: billingDetail?.quota_used,
@@ -895,43 +961,35 @@ export function makeQuotaBarGroupAlways(
   // Interval is inactive or pct is null — emit a 0%-consumed placeholder bar.
   let intervalStart: string | null = null
   let intervalEnd: string | null = null
-  let breakdown: UsageReportQuotaUsageBreakdown[] = []
   switch (interval) {
     case 'short':
       intervalStart = row.short_interval_start
       intervalEnd = row.short_interval_end
-      breakdown = row.short_usage_breakdown
       break
 
     case 'weekly_overage_included':
       intervalStart = row.weekly_overage_included_interval_start
       intervalEnd = row.weekly_overage_included_interval_end
-      breakdown = row.weekly_overage_included_usage_breakdown
       break
     case 'weekly':
       intervalStart = row.weekly_interval_start
       intervalEnd = row.weekly_interval_end
-      breakdown = row.weekly_usage_breakdown
       break
     case 'special':
       intervalStart = row.special_interval_start
       intervalEnd = row.special_interval_end
-      breakdown = row.special_usage_breakdown
       break
     case 'short_special':
       intervalStart = row.short_special_interval_start
       intervalEnd = row.short_special_interval_end
-      breakdown = row.short_special_usage_breakdown
       break
     case 'monthly':
       intervalStart = row.monthly_interval_start
       intervalEnd = row.monthly_interval_end
-      breakdown = row.monthly_usage_breakdown
       break
     case 'wtus':
       intervalStart = row.wtus_interval_start ?? null
       intervalEnd = row.wtus_interval_end ?? null
-      breakdown = row.wtus_usage_breakdown ?? []
       break
   }
 
@@ -948,9 +1006,6 @@ export function makeQuotaBarGroupAlways(
       durationHours
     ),
     tipIdentity: quotaIdentityForInterval(row, interval),
-    tipModels: tipModelsFromBreakdown(breakdown),
-    tipRequestTotal: tipRequestTotalFromBreakdown(breakdown),
-    tipRecentRequestTotal90m: tipRecentRequestTotal90mFromBreakdown(breakdown),
     tipObservedAt: billingDetail?.billing_observed_at ?? undefined,
     tipQuotaLimit: billingDetail?.quota_limit,
     tipQuotaUsed: billingDetail?.quota_used,

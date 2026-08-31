@@ -71,9 +71,29 @@ test('test_slicer_bar_opening_dropdown_shows_options', () => {
   const providerTrigger = screen.getByRole('button', { name: /provider/i })
   fireEvent.click(providerTrigger)
 
-  expect(screen.getByText('anthropic')).toBeInTheDocument()
-  expect(screen.getByText('openai')).toBeInTheDocument()
-  expect(screen.getByText('google')).toBeInTheDocument()
+  expect(screen.getByText('Anthropic')).toBeInTheDocument()
+  expect(screen.getByText('OpenAI')).toBeInTheDocument()
+  expect(screen.getByText('Google')).toBeInTheDocument()
+})
+
+test('test_slicer_provider_option_uses_display_label_and_canonical_value', () => {
+  const onChange = vi.fn()
+  renderBar(
+    { ...SLICER_EMPTY_FILTERS },
+    { ...OPTIONS, providers: ['alibaba_token_plan'] },
+    onChange
+  )
+
+  fireEvent.click(screen.getByRole('button', { name: /provider/i }))
+
+  const option = screen.getByRole('option', { name: 'Alibaba Token Plan' })
+  expect(option).toHaveTextContent('Alibaba Token Plan')
+  expect(option).not.toHaveTextContent('alibaba_token_plan')
+
+  fireEvent.click(option)
+
+  const [nextFilters] = onChange.mock.calls[0] as [SlicerFilters]
+  expect(nextFilters.providers).toEqual(['alibaba_token_plan'])
 })
 
 test('test_slicer_bar_selecting_value_calls_onchange', () => {
@@ -83,7 +103,7 @@ test('test_slicer_bar_selecting_value_calls_onchange', () => {
   const providerTrigger = screen.getByRole('button', { name: /provider/i })
   fireEvent.click(providerTrigger)
 
-  const anthropicOption = screen.getByText('anthropic')
+  const anthropicOption = screen.getByText('Anthropic')
   fireEvent.click(anthropicOption)
 
   expect(onChange).toHaveBeenCalledTimes(1)
@@ -214,7 +234,7 @@ test('test_slicer_no_double_toggle_on_enter', () => {
   fireEvent.click(providerTrigger)
 
   // Find the 'anthropic' option list item
-  const anthropicOption = screen.getByText('anthropic').closest('li')
+  const anthropicOption = screen.getByText('Anthropic').closest('li')
   expect(anthropicOption).not.toBeNull()
 
   // Simulate the double-fire: Enter keyDown + click (browser behaviour)
@@ -511,11 +531,11 @@ test('test_slicer_click_after_keyboard_enter_not_swallowed', () => {
   renderBar({ ...SLICER_EMPTY_FILTERS }, OPTIONS, onChange)
 
   fireEvent.click(screen.getByRole('button', { name: /provider/i }))
-  const openaiOption = screen.getByText('openai').closest('li')!
+  const openaiOption = screen.getByText('OpenAI').closest('li')!
   fireEvent.keyDown(openaiOption, { key: 'Enter', code: 'Enter' })
   expect(onChange).toHaveBeenCalledTimes(1)
 
-  fireEvent.click(screen.getByText('google').closest('li')!)
+  fireEvent.click(screen.getByText('Google').closest('li')!)
   expect(onChange).toHaveBeenCalledTimes(2)
   const last = onChange.mock.calls[1]![0] as SlicerFilters
   expect(last.providers).toContain('google')
@@ -575,7 +595,7 @@ test('test_slicer_stale_chip_cleared_on_reselect', () => {
     <SlicerBar filters={filters} options={OPTIONS} onChange={onChange} />
   )
   fireEvent.click(screen.getByRole('button', { name: /provider/i }))
-  fireEvent.click(screen.getByText('anthropic'))
+  fireEvent.click(screen.getByText('Anthropic'))
   rerender(
     <SlicerBar filters={filters} options={OPTIONS} onChange={onChange} />
   )

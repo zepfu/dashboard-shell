@@ -2,9 +2,12 @@
  * D1-451 Wave 4 — provider-metrics (C3 headline p95, C4 packet_loss).
  */
 import { describe, expect, test } from 'vitest'
-import type { UsageReportProviderLatencyHealthRow } from '../api/usage-report'
+import type {
+  UsageReportProviderLatencyHealthRow,
+  UsageReportSummary,
+} from '../api/usage-report'
 import { padHealthCells } from './health-cells'
-import { buildProviderMetrics } from './provider-metrics'
+import { buildAggregateMetrics, buildProviderMetrics } from './provider-metrics'
 
 function healthRow(
   overrides: Partial<UsageReportProviderLatencyHealthRow>
@@ -118,4 +121,49 @@ describe('D1-451 C4 — packet_loss weighting or documented window', () => {
     expect(metrics.packet_loss_pct).not.toBeCloseTo(flatMean, 5)
     expect(metrics.packet_loss_pct).toBeGreaterThan(50)
   })
+})
+
+test('D1-498 aggregate metrics retain Anthropic health contributions', () => {
+  const healthRows = [
+    healthRow({
+      provider: 'openai',
+      requests: 3,
+      upstream_p95_ms: 100,
+      total_p95_ms: 100,
+    }),
+    healthRow({
+      provider: 'anthropic',
+      requests: 7,
+      upstream_p95_ms: 200,
+      total_p95_ms: 200,
+      provider_error_events: 2,
+    }),
+  ]
+  const summary: UsageReportSummary = {
+    traces: 12,
+    token_in: 1200,
+    token_out: 600,
+    token_cache_input: 40,
+    token_cache_creation: 20,
+    token_reasoning_reported: 10,
+    token_reasoning_estimated: 5,
+    token_total: 1800,
+    usd_cost: 1.25,
+    cache_miss_usd_cost: 0.15,
+    tool_calls: 0,
+    git_commit: 0,
+    git_push: 0,
+    period_start: '2026-05-20',
+    period_end: '2026-05-21',
+    latest_record_at: '2026-05-21T00:00:00.000Z',
+  }
+
+  const metrics = buildAggregateMetrics(healthRows, summary)
+
+  expect(metrics.requests).toBe(10)
+  expect(metrics.errors).toBe(2)
+  expect(metrics.tokens_in).toBe(summary.token_in)
+  expect(metrics.tokens_out).toBe(summary.token_out)
+  expect(metrics.cost_usd).toBe(summary.usd_cost)
+  expect(metrics.traces).toBe(summary.traces)
 })

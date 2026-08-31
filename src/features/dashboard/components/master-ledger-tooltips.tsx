@@ -2,10 +2,12 @@
  * Master ledger hover tooltips and score/latency cell renderers (W11 split).
  */
 import { type ReactElement } from 'react'
-import type {
-  AgentQualityFamilyKey,
-  AgentQualityFamilySummary,
-  AgentQualitySummary,
+import {
+  AGENT_QUALITY_PASS_FAMILY_KEYS,
+  agentQualitySeverityMetrics,
+  type AgentQualityFamilyKey,
+  type AgentQualityFamilySummary,
+  type AgentQualitySummary,
 } from '../lib/agent-quality'
 import { numFmt } from '../lib/format-utils'
 import { formatLatency } from '../lib/usage-report-display'
@@ -72,21 +74,11 @@ const AGENT_NO_DATA_COLOR = 'var(--accent-cool, #38bdf8)'
 function summarizeAgentQuality(
   summary: AgentQualitySummary
 ): AgentQualityDisplaySummary {
-  const passFamilies: AgentQualityFamilyKey[] = [
-    'quality',
-    'instruction',
-    'tool',
-    'contract',
-    'progress',
-  ]
-  const passScores = passFamilies
-    .map((family) => summary[family].score)
-    .filter((score): score is number => score !== null)
+  const passFamilies = AGENT_QUALITY_PASS_FAMILY_KEYS
   const discovery = summary.discoveryInventoryCoverage
   const terminal = summary.terminalCompletion
-  if (discovery.score !== null) passScores.push(discovery.score)
-  if (terminal.score !== null) passScores.push(terminal.score)
-  const worstPassScore = passScores.length > 0 ? Math.min(...passScores) : null
+  const severity = agentQualitySeverityMetrics(summary)
+  const worstPassScore = severity.displayWorstPassScore
   const evaluated = passFamilies.reduce(
     (sum, family) => sum + summary[family].evaluated,
     0
@@ -96,29 +88,9 @@ function summarizeAgentQuality(
     0
   )
   const coveragePct = possible > 0 ? (evaluated / possible) * 100 : null
-  const riskScore = summary.risk.score ?? 0
-  const handoffIncidentCount =
-    (summary.ignoredPathTracking?.violationCount ?? 0) +
-    (summary.baselineDeflection?.incidentIncidents ?? 0) +
-    (summary.sleepWellnessInterruption?.incidentIncidents ?? 0) +
-    discovery.issueCount +
-    terminal.issueCount
-  const handoffAttemptCount =
-    (summary.baselineDeflection?.attemptedIncidents ?? 0) +
-    (summary.sleepWellnessInterruption?.attemptedIncidents ?? 0)
-  const issueCount =
-    passFamilies.reduce((sum, family) => sum + summary[family].issueCount, 0) +
-    summary.risk.issueCount +
-    discovery.issueCount +
-    summary.discoveryInventoryMissingCount +
-    terminal.issueCount +
-    summary.emptyCompletionFailures +
-    summary.invalidToolCallErrors +
-    summary.destructiveCheckoutFailures +
-    summary.largePayloadRisks +
-    summary.readOnlyPolicyViolations +
-    handoffIncidentCount +
-    handoffAttemptCount
+  const riskScore = severity.riskScore
+  const handoffIncidentCount = severity.handoffIssueCount
+  const issueCount = severity.totalIssueCount
 
   if (
     summary.destructiveCheckoutFailures > 0 ||
@@ -219,6 +191,7 @@ function renderAgentQualityTooltip(summary: AgentQualitySummary): ReactElement {
   }
   const discovery = summary.discoveryInventoryCoverage
   const terminal = summary.terminalCompletion
+  // Keep older summary objects renderable while compactSummary rolls out.
   const compact = summary.compactSummary ?? {
     eventCount: 0,
     threadCount: 0,

@@ -17,7 +17,8 @@
  * Legacy category aliases ('normal'→blue, 'teal'→green, 'warning'→orange)
  * remain for backward compat.
  */
-import { fireEvent, render } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { expect, test } from 'vitest'
 import {
   BUCKET_MS,
@@ -42,6 +43,42 @@ function openHealthStripTooltip(container: HTMLElement): void {
   }
 }
 
+function recentErrorCell(): CellDef {
+  return {
+    color: 'var(--accent-hot)',
+    category: 'red',
+    bucketStart: new Date(Date.now() - 5 * 60 * 1000).toISOString(),
+    eventCount: 1,
+    events: [
+      {
+        time: new Date(Date.now() - 5 * 60 * 1000).toISOString(),
+        model: 'gpt-5',
+        errorType: 'provider_error',
+        count: 1,
+      },
+    ],
+  }
+}
+
+function recentErrorCells(): CellDef[] {
+  const cells: CellDef[] = Array.from({ length: CELL_COUNT }, () => ({
+    color: 'var(--card-2)',
+  }))
+  cells[CELL_COUNT - 1] = recentErrorCell()
+  return cells
+}
+
+const recentErrorSummary =
+  'Provider health: service errors detected in 1 interval; 1 of 288 intervals have data; 1 event; 0 degraded signals'
+
+function productionNoDataCells(): CellDef[] {
+  return Array.from({ length: CELL_COUNT }, () => ({
+    color: 'var(--card-2)',
+    rawP95Ms: null,
+    rawErrorCount: 0,
+  }))
+}
+
 test('test_health_strip_renders_288_cells', () => {
   const cells = Array.from({ length: CELL_COUNT }, () => ({
     color: 'var(--card-2)',
@@ -54,6 +91,77 @@ test('test_health_strip_renders_288_cells', () => {
       : container.querySelectorAll('[data-testid="health-strip-cell"]')
 
   expect(cellEls.length).toBe(288)
+})
+
+test('test_vertical_health_strip_exposes_semantic_summary', () => {
+  const { container } = render(
+    <HealthStrip cells={recentErrorCells()} orientation='vertical' />
+  )
+
+  const strip = screen.getByRole('img', { name: recentErrorSummary })
+  expect(strip).toBe(container.querySelector('.health-strip-wrapper'))
+  expect(strip.getAttribute('aria-hidden')).not.toBe('true')
+})
+
+test('test_vertical_health_strip_classifies_production_null_metrics_as_no_data', () => {
+  render(<HealthStrip cells={productionNoDataCells()} orientation='vertical' />)
+
+  expect(
+    screen.getByRole('img', {
+      name: 'Provider health: no data in the last 24 hours.',
+    })
+  ).toBeTruthy()
+})
+
+test('test_vertical_health_strip_tooltip_opens_with_keyboard', async () => {
+  const user = userEvent.setup()
+  render(<HealthStrip cells={recentErrorCells()} orientation='vertical' />)
+
+  const strip = screen.getByRole('img', { name: recentErrorSummary })
+  await user.tab()
+  expect(strip).toHaveFocus()
+
+  const tooltip = document.body.querySelector('[role="tooltip"]')
+  expect(tooltip).not.toBeNull()
+  expect(tooltip?.textContent).toContain('provider_error')
+  expect(strip.getAttribute('aria-describedby')).toBe(
+    tooltip?.getAttribute('id')
+  )
+
+  await user.keyboard('{Escape}')
+  expect(document.body.querySelector('[role="tooltip"]')).toBeNull()
+})
+
+test('test_vertical_health_strip_tooltip_closes_when_focus_leaves', async () => {
+  render(
+    <>
+      <HealthStrip cells={recentErrorCells()} orientation='vertical' />
+      <button type='button'>after strip</button>
+    </>
+  )
+
+  const strip = screen.getByRole('img', { name: recentErrorSummary })
+  fireEvent.focus(strip)
+  expect(document.body.querySelector('[role="tooltip"]')).not.toBeNull()
+
+  fireEvent.blur(strip)
+  expect(document.body.querySelector('[role="tooltip"]')).toBeNull()
+})
+
+test('test_vertical_health_strip_preserves_pointer_tooltip', () => {
+  render(<HealthStrip cells={recentErrorCells()} orientation='vertical' />)
+
+  const strip = screen.getByRole('img', { name: recentErrorSummary })
+  fireEvent.pointerEnter(strip)
+
+  const tooltip = document.body.querySelector('[role="tooltip"]')
+  expect(tooltip).not.toBeNull()
+  expect(strip.getAttribute('aria-describedby')).toBe(
+    tooltip?.getAttribute('id')
+  )
+
+  fireEvent.pointerLeave(strip)
+  expect(document.body.querySelector('[role="tooltip"]')).toBeNull()
 })
 
 test('test_health_strip_cell_bg_color_applied', () => {
@@ -798,7 +906,8 @@ test('test_health_strip_vertical_shell_has_pointer_events_none', () => {
     />
   )
 
-  // The shell is the outermost element — aria-hidden, position:absolute.
+  // The shell is the outermost positioning element; its strip trigger remains
+  // exposed so the shared focusable HoverTooltip can open and be described.
   const shell = container.firstChild as HTMLElement | null
   expect(shell).not.toBeNull()
   expect(shell?.style.pointerEvents).toBe('none')

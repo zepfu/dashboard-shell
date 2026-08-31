@@ -23,28 +23,24 @@ import {
   type ReactElement,
 } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { RefreshCw } from 'lucide-react'
 import { ConfigDrawer } from '@/components/config-drawer'
 import { ProfileDropdown } from '@/components/profile-dropdown'
 import { Search } from '@/components/search'
 import {
-  fetchShellHealth,
   fetchUsageReport,
   fetchUsageReportQuotaHistory,
   fetchUsageReportQuotaRangeHistory,
   fetchUsageReportTokenTrendSummary,
   LIVE_DASHBOARD_HEAVY_REFETCH_INTERVAL_MS,
   LIVE_DASHBOARD_HEAVY_REPORT_GC_TIME_MS,
-  LIVE_DASHBOARD_QUOTAS_REFETCH_INTERVAL_MS,
   usageReportQuotasQueryOptions,
   type UsageReportGrain,
-  type UsageReportProviderLatencyHealthRow,
-  type UsageReportQuotaRow,
   type UsageReportQuotaHistoryResponse,
   type UsageReportQuotaRangeHistoryResponse,
 } from './api/usage-report'
 import AnchorBar from './components/anchor-bar'
 import { computeDeltaPct } from './components/comparison-panel.index'
+import { DashboardRecencyClock } from './components/dashboard-recency-clock'
 import { DateControls } from './components/date-controls'
 import { KpiStrip } from './components/kpi-strip'
 import type { LedgerView } from './components/master-ledger-aggregation'
@@ -60,15 +56,8 @@ import {
   SLICER_EMPTY_FILTERS,
 } from './components/slicer-bar'
 import type { LowerLaneMode } from './components/token-trend-chart'
-import { useDashboardAlertSummary } from './hooks/use-alerts-from-anomalies'
 import { useAnomalyDetection } from './hooks/use-anomaly-detection'
 import { computePriorReportWindow } from './lib/dashboard-date-range'
-import {
-  formatDashboardFreshness,
-  formatRecencyValue,
-  maxIsoTimestamp,
-  selectSessionFreshnessTimestamp,
-} from './lib/freshness'
 import {
   usageFilterKeyParts,
   usageFilterParams,
@@ -173,54 +162,16 @@ function buildUsageReportQueryFn({
         grain,
         groupBy: ['provider', 'model', 'repository'],
         ...usageFilterParams(slicerFilters),
-        includeQuotas: false,
-        includeQuotaHistory: false,
-        includeToolActivity: false,
         cacheBust,
       },
       signal
     )
 }
 
-interface RecencyBreakoutItem {
-  label: string
-  value: string
-}
-
-function latestQuotaObservationAt(rows: UsageReportQuotaRow[]): string | null {
-  return maxIsoTimestamp(
-    rows.flatMap((row) => [
-      row.weekly_interval_start,
-      row.short_interval_start,
-      row.special_interval_start,
-      row.short_special_interval_start,
-      row.monthly_interval_start,
-    ])
-  )
-}
-
-function latestHealthBucketAt(
-  rows: UsageReportProviderLatencyHealthRow[]
-): string | null {
-  return maxIsoTimestamp(rows.map((row) => row.bucket_start))
-}
-
 function scrollDashboardTargetIntoView(targetId: string): void {
   if (typeof document === 'undefined') return
   const el = document.getElementById(targetId)
   el?.scrollIntoView?.({ behavior: 'smooth' })
-}
-
-function quantizeDashboardNowToMinute(now: Date): Date {
-  return new Date(
-    now.getFullYear(),
-    now.getMonth(),
-    now.getDate(),
-    now.getHours(),
-    now.getMinutes(),
-    0,
-    0
-  )
 }
 
 function focusDashboardShortcutTarget(selector: string): void {
@@ -237,7 +188,7 @@ function focusDashboardShortcutTarget(selector: string): void {
 interface KpiSummaryShape {
   token_in: number
   token_out: number
-  cost_usd: number
+  cost_usd: number | null
   requests: number
   errors: number
   p95_ms: number
@@ -250,7 +201,12 @@ interface KpiSummaryShape {
  */
 function toKpiSummary(
   summary:
-    | { token_in: number; token_out: number; usd_cost: number; traces: number }
+    | {
+        token_in: number
+        token_out: number
+        usd_cost: number | null
+        traces: number
+      }
     | undefined,
   fleetP95Ms: number,
   fleetErrors: number
@@ -307,17 +263,6 @@ export function Dashboard(): ReactElement {
   const [quotaHistoryCacheBust, setQuotaHistoryCacheBust] = useState<
     string | undefined
   >(undefined)
-  const [recencyNow, setRecencyNow] = useState(() => new Date())
-
-  useEffect(() => {
-    const id = setInterval(() => {
-      setRecencyNow(new Date())
-    }, 10_000)
-    return () => {
-      clearInterval(id)
-    }
-  }, [])
-
   useEffect(() => {
     const syncRangeToEasternDay = (): void => {
       if (userAdjustedDateRange) return
@@ -410,6 +355,15 @@ export function Dashboard(): ReactElement {
       slicerFilters.repositories,
     ]
   )
+  const tokenTrendSummaryBaseQueryKey = useMemo(
+    () =>
+      [
+        'usage-report-token-trend-summary',
+        tokenTrendScopeKey,
+        undefined,
+      ] as const,
+    [tokenTrendScopeKey]
+  )
 
   // Wave 36 Fix 1: queryKey now matches PhosphorDashboard's key shape exactly
   // (includes filter arrays) so React Query deduplicates both subscribers into a
@@ -438,19 +392,6 @@ export function Dashboard(): ReactElement {
     gcTime: LIVE_DASHBOARD_HEAVY_REPORT_GC_TIME_MS,
   })
 
-  const { data: shellHealthData } = useQuery({
-    queryKey: ['shell-health-pgbouncer'],
-    queryFn: ({ signal }) => fetchShellHealth(signal),
-    staleTime: 15_000,
-    refetchInterval: LIVE_DASHBOARD_QUOTAS_REFETCH_INTERVAL_MS,
-    refetchIntervalInBackground: false,
-  })
-
-  const sessionFreshnessAt = useMemo(
-    () => selectSessionFreshnessTimestamp(shellHealthData, summaryReport),
-    [shellHealthData, summaryReport]
-  )
-
   // Wave 36 Fix 4: showComparison gates the priorReport query in PhosphorDashboard
   // so the prior-window API call is only made when the ComparisonPanel is visible
   // (viewport ≥3840px). Initialised synchronously to avoid a false-trigger flash.
@@ -470,28 +411,6 @@ export function Dashboard(): ReactElement {
       mq.removeEventListener('change', onChange)
     }
   }, [])
-
-  // 14-B.2: freshness format per mockup line 2384:
-  //   "FETCHED HH:MM:SS UTC · Xs ago"
-  // Re-evaluate every 10 s so relative time stays current.
-  //
-  // D1-219: prefer /api/shell/health source-table freshness for Session
-  // recency so a slow or stale usage-report cache cannot make the dashboard
-  // claim session_history is hours behind while the source table is current.
-  // Fall back to usage metadata, then dataUpdatedAt when health is unavailable.
-  const [freshnessStr, setFreshnessStr] = useState<string>('Loading…')
-  useEffect(() => {
-    const compute = (): void => {
-      setFreshnessStr(
-        formatDashboardFreshness(sessionFreshnessAt, dataUpdatedAt, new Date())
-      )
-    }
-    compute()
-    const id = setInterval(compute, 10_000)
-    return () => {
-      clearInterval(id)
-    }
-  }, [dataUpdatedAt, sessionFreshnessAt])
 
   // B3 fix: Compute fleet-wide P95 from all provider latency health rows
   // using a requests-weighted average (replaces the former Math.max that was
@@ -543,9 +462,6 @@ export function Dashboard(): ReactElement {
           grain,
           groupBy: ['provider', 'model', 'repository'],
           ...usageFilterParams(slicerFilters),
-          includeQuotas: false,
-          includeQuotaHistory: false,
-          includeToolActivity: false,
         },
         signal
       ),
@@ -584,7 +500,10 @@ export function Dashboard(): ReactElement {
       return {}
     }
     const raw = {
-      cost_usd: computeDeltaPct(kpiSummary.cost_usd, priorSummary.usd_cost),
+      cost_usd:
+        kpiSummary.cost_usd !== null && priorSummary.usd_cost !== null
+          ? computeDeltaPct(kpiSummary.cost_usd, priorSummary.usd_cost)
+          : null,
       requests: computeDeltaPct(kpiSummary.requests, priorSummary.traces),
       token_in: computeDeltaPct(kpiSummary.token_in, priorSummary.token_in),
       token_out: computeDeltaPct(kpiSummary.token_out, priorSummary.token_out),
@@ -630,7 +549,7 @@ export function Dashboard(): ReactElement {
   })
 
   const quotaRangeHistoryBaseQueryKey = useMemo(
-    () => ['usage-report-quota-range-history', from, to],
+    () => ['usage-report-quota-range-history', from, to, undefined] as const,
     [from, to]
   )
   const { data: quotaRangeHistoryData, isFetching: quotaRangeHistoryFetching } =
@@ -657,7 +576,7 @@ export function Dashboard(): ReactElement {
     })
 
   const quotaHistoryBaseQueryKey = useMemo(
-    () => ['usage-report-quota-history'],
+    () => ['usage-report-quota-history', undefined] as const,
     []
   )
   const { data: quotaHistoryData, isFetching: quotaHistoryFetching } = useQuery(
@@ -678,87 +597,69 @@ export function Dashboard(): ReactElement {
   )
 
   const quotaRows = useMemo(
-    () => quotasData?.quotas ?? summaryReport?.quotas ?? [],
-    [quotasData?.quotas, summaryReport?.quotas]
+    () => quotasData?.quotas ?? [],
+    [quotasData?.quotas]
   )
-
-  const recencyBreakout = useMemo<RecencyBreakoutItem[]>(() => {
-    const sessionAt = sessionFreshnessAt
-    const quotaAt = latestQuotaObservationAt(quotaRows)
-    const healthAt = latestHealthBucketAt(
-      summaryReport?.providerLatencyHealth ?? []
-    )
-    return [
-      {
-        label: 'Session',
-        value: formatRecencyValue(sessionAt, recencyNow),
-      },
-      {
-        label: 'Quota',
-        value: formatRecencyValue(quotaAt, recencyNow),
-      },
-      {
-        label: 'Health',
-        value: formatRecencyValue(healthAt, recencyNow),
-      },
-    ]
-  }, [
-    quotaRows,
-    recencyNow,
-    sessionFreshnessAt,
-    summaryReport?.providerLatencyHealth,
-  ])
 
   const handleForceFreshnessRefresh = useCallback(async (): Promise<void> => {
     const cacheBust = Date.now().toString()
+    const summaryQueryKey = buildUsageReportQueryKey(
+      from,
+      to,
+      grain,
+      slicerFilters,
+      cacheBust
+    )
+    const tokenTrendSummaryQueryKey = [
+      'usage-report-token-trend-summary',
+      tokenTrendScopeKey,
+      cacheBust,
+    ] as const
     await runWithOneShotCacheBust(setReportCacheBust, cacheBust, async () => {
-      const refreshedSummary = await queryClient.fetchQuery({
-        queryKey: buildUsageReportQueryKey(
-          from,
-          to,
-          grain,
-          slicerFilters,
-          cacheBust
-        ),
-        queryFn: buildUsageReportQueryFn({
-          from,
-          to,
-          grain,
-          slicerFilters,
-          cacheBust,
-        }),
-        staleTime: LIVE_DASHBOARD_HEAVY_REFETCH_INTERVAL_MS,
-      })
-      queryClient.setQueryData(usageReportBaseQueryKey, refreshedSummary)
-      const tokenTrendSummaryQueryKey = [
-        'usage-report-token-trend-summary',
-        tokenTrendScopeKey,
-        cacheBust,
-      ] as const
-      // P6: scope serialized in tokenTrendScopeKey
-      // eslint-disable-next-line @tanstack/query/exhaustive-deps -- fetchQuery options
-      const refreshedTokenTrendSummary = await queryClient.fetchQuery({
-        queryKey: tokenTrendSummaryQueryKey,
-        queryFn: ({ signal }) =>
-          fetchUsageReportTokenTrendSummary(
-            {
-              from,
-              to,
-              provider: slicerFilters.providers,
-              repository: slicerFilters.repositories,
-              client: slicerFilters.clients,
-              environment: slicerFilters.environments,
-              model: slicerFilters.models,
-              cacheBust,
-            },
-            signal
-          ),
-        staleTime: LIVE_DASHBOARD_HEAVY_REFETCH_INTERVAL_MS,
-      })
-      queryClient.setQueryData(
-        tokenTrendSummaryQueryKey,
-        refreshedTokenTrendSummary
-      )
+      try {
+        const refreshedSummary = await queryClient.fetchQuery({
+          queryKey: summaryQueryKey,
+          queryFn: buildUsageReportQueryFn({
+            from,
+            to,
+            grain,
+            slicerFilters,
+            cacheBust,
+          }),
+          staleTime: LIVE_DASHBOARD_HEAVY_REFETCH_INTERVAL_MS,
+        })
+        queryClient.setQueryData(usageReportBaseQueryKey, refreshedSummary)
+        // P6: scope serialized in tokenTrendScopeKey
+        // eslint-disable-next-line @tanstack/query/exhaustive-deps -- fetchQuery options
+        const refreshedTokenTrendSummary = await queryClient.fetchQuery({
+          queryKey: tokenTrendSummaryQueryKey,
+          queryFn: ({ signal }) =>
+            fetchUsageReportTokenTrendSummary(
+              {
+                from,
+                to,
+                provider: slicerFilters.providers,
+                repository: slicerFilters.repositories,
+                client: slicerFilters.clients,
+                environment: slicerFilters.environments,
+                model: slicerFilters.models,
+                cacheBust,
+              },
+              signal
+            ),
+          staleTime: LIVE_DASHBOARD_HEAVY_REFETCH_INTERVAL_MS,
+        })
+        queryClient.setQueryData(
+          tokenTrendSummaryBaseQueryKey,
+          refreshedTokenTrendSummary
+        )
+      } finally {
+        queryClient.removeQueries({ queryKey: summaryQueryKey, exact: true })
+        queryClient.removeQueries({
+          queryKey: tokenTrendSummaryQueryKey,
+          exact: true,
+        })
+      }
     })
   }, [
     from,
@@ -767,52 +668,68 @@ export function Dashboard(): ReactElement {
     slicerFilters,
     to,
     tokenTrendScopeKey,
+    tokenTrendSummaryBaseQueryKey,
     usageReportBaseQueryKey,
   ])
 
   const handleQuotaRangeHistoryRefresh =
     useCallback(async (): Promise<void> => {
       const cacheBust = Date.now().toString()
+      const queryKey = [
+        'usage-report-quota-range-history',
+        from,
+        to,
+        cacheBust,
+      ] as const
       await runWithOneShotCacheBust(
         setQuotaRangeHistoryCacheBust,
         cacheBust,
         async () => {
-          const refreshed = await queryClient.fetchQuery({
-            queryKey: ['usage-report-quota-range-history', from, to, cacheBust],
-            queryFn: ({ signal }) =>
-              fetchUsageReportQuotaRangeHistory(
-                {
-                  from,
-                  to,
-                  cacheBust,
-                },
-                signal
-              ),
-            staleTime: LIVE_DASHBOARD_HEAVY_REFETCH_INTERVAL_MS,
-          })
-          queryClient.setQueryData(quotaRangeHistoryBaseQueryKey, refreshed)
+          try {
+            const refreshed = await queryClient.fetchQuery({
+              queryKey,
+              queryFn: ({ signal }) =>
+                fetchUsageReportQuotaRangeHistory(
+                  {
+                    from,
+                    to,
+                    cacheBust,
+                  },
+                  signal
+                ),
+              staleTime: LIVE_DASHBOARD_HEAVY_REFETCH_INTERVAL_MS,
+            })
+            queryClient.setQueryData(quotaRangeHistoryBaseQueryKey, refreshed)
+          } finally {
+            queryClient.removeQueries({ queryKey, exact: true })
+          }
         }
       )
     }, [from, queryClient, quotaRangeHistoryBaseQueryKey, to])
 
   const handleQuotaHistoryRefresh = useCallback(async (): Promise<void> => {
     const cacheBust = Date.now().toString()
+    const queryKey = ['usage-report-quota-history', cacheBust] as const
     await runWithOneShotCacheBust(
       setQuotaHistoryCacheBust,
       cacheBust,
       async () => {
-        const refreshed = await queryClient.fetchQuery({
-          queryKey: ['usage-report-quota-history', cacheBust],
-          queryFn: ({ signal }) =>
-            fetchUsageReportQuotaHistory(
-              {
-                cacheBust,
-              },
-              signal
-            ),
-          staleTime: LIVE_DASHBOARD_HEAVY_REFETCH_INTERVAL_MS,
-        })
-        queryClient.setQueryData(quotaHistoryBaseQueryKey, refreshed)
+        try {
+          const refreshed = await queryClient.fetchQuery({
+            queryKey,
+            queryFn: ({ signal }) =>
+              fetchUsageReportQuotaHistory(
+                {
+                  cacheBust,
+                },
+                signal
+              ),
+            staleTime: LIVE_DASHBOARD_HEAVY_REFETCH_INTERVAL_MS,
+          })
+          queryClient.setQueryData(quotaHistoryBaseQueryKey, refreshed)
+        } finally {
+          queryClient.removeQueries({ queryKey, exact: true })
+        }
       }
     )
   }, [queryClient, quotaHistoryBaseQueryKey])
@@ -884,19 +801,20 @@ export function Dashboard(): ReactElement {
     })
   }, [from, queryClient, quotaQueryBase.queryKey, to])
 
-  const dashboardAlerts = useDashboardAlertSummary(
-    anomalies,
-    summaryReport?.summary,
-    quotaRows,
-    summaryReport?.providerErrorObservations,
-    summaryReport?.dockerLogErrors,
-    summaryReport?.providerLatencyHealth,
-    quantizeDashboardNowToMinute(recencyNow)
-  )
-
   return (
     <PhosphorLayout
-      sidebar={<PhosphorSidebar dashboardAlerts={dashboardAlerts} />}
+      sidebar={
+        <PhosphorSidebar
+          alertInput={{
+            anomalies,
+            summary: summaryReport?.summary,
+            quotas: quotaRows,
+            providerErrorObservations: summaryReport?.providerErrorObservations,
+            dockerLogErrors: summaryReport?.dockerLogErrors,
+            providerLatencyHealth: summaryReport?.providerLatencyHealth,
+          }}
+        />
+      }
       header={
         <div
           style={{
@@ -979,56 +897,14 @@ export function Dashboard(): ReactElement {
               }}
             >
               {'LiteLLM usage, quota, cost, and repository activity · '}
-              <span
-                className='freshness-indicator'
-                style={{
-                  fontSize: '9px',
-                  color: 'var(--fg-muted)',
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: '4px',
-                }}
-              >
-                <span className='pulse-dot' />
-                {freshnessStr}
-              </span>
-              <button
-                type='button'
-                className='section-refresh-button freshness-refresh-button'
-                aria-label='Force refresh dashboard data'
-                title='Force refresh dashboard data'
-                disabled={summaryFetching}
-                onClick={handleForceFreshnessRefresh}
-              >
-                <RefreshCw
-                  aria-hidden='true'
-                  className={
-                    summaryFetching
-                      ? 'section-refresh-icon is-updating'
-                      : 'section-refresh-icon'
-                  }
-                  size={12}
-                  strokeWidth={1.8}
-                />
-                <span className='section-refresh-status'>
-                  {summaryFetching ? 'Updating' : 'Refresh'}
-                </span>
-              </button>
-              <span
-                className='freshness-breakout'
-                aria-label='Underlying data recency'
-              >
-                {recencyBreakout.map((item) => (
-                  <span className='freshness-breakout-item' key={item.label}>
-                    <span className='freshness-breakout-label'>
-                      {item.label}
-                    </span>
-                    <span className='freshness-breakout-value'>
-                      {item.value}
-                    </span>
-                  </span>
-                ))}
-              </span>
+              <DashboardRecencyClock
+                report={summaryReport}
+                reportLatencyHealth={summaryReport?.providerLatencyHealth}
+                quotaRows={quotaRows}
+                dataUpdatedAt={dataUpdatedAt}
+                summaryFetching={summaryFetching}
+                onRefreshReport={handleForceFreshnessRefresh}
+              />
             </div>
           </div>
 
