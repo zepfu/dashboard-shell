@@ -211,6 +211,73 @@ async function expectParsableSQL(sql: string): Promise<void> {
   expect(parsed.stmts.length).toBeGreaterThan(0)
 }
 
+type ParsedSqlNode = Record<string, unknown>
+
+function parsedSelectStmt(value: unknown): ParsedSqlNode {
+  if (!isRecord(value)) {
+    throw new TypeError('pgsql-parser returned an invalid SELECT node')
+  }
+  return isRecord(value.SelectStmt) ? value.SelectStmt : value
+}
+
+function parsedUnionTargetLists(value: unknown): Array<unknown[]> {
+  const selectStmt = parsedSelectStmt(value)
+  if (selectStmt.op === 'SETOP_UNION') {
+    return [
+      ...parsedUnionTargetLists(selectStmt.larg),
+      ...parsedUnionTargetLists(selectStmt.rarg),
+    ]
+  }
+
+  if (!Array.isArray(selectStmt.targetList)) {
+    throw new TypeError('pgsql-parser SELECT node has no target list')
+  }
+  return [selectStmt.targetList]
+}
+
+function parsedTargetName(value: unknown): string | undefined {
+  if (!isRecord(value) || !isRecord(value.ResTarget)) return undefined
+  const target = value.ResTarget
+  if (typeof target.name === 'string') return target.name
+  if (!isRecord(target.val) || !isRecord(target.val.ColumnRef)) {
+    return undefined
+  }
+  const fields = target.val.ColumnRef.fields
+  if (!Array.isArray(fields) || fields.length === 0) return undefined
+  const lastField = fields[fields.length - 1]
+  if (!isRecord(lastField) || !isRecord(lastField.String)) return undefined
+  return typeof lastField.String.sval === 'string'
+    ? lastField.String.sval
+    : undefined
+}
+
+function findParsedCteQuery(
+  parsed: { stmts: unknown[] },
+  cteName: string
+): unknown {
+  const firstStatement = parsed.stmts[0]
+  if (!isRecord(firstStatement)) {
+    throw new TypeError('pgsql-parser returned an invalid statement')
+  }
+  const selectStmt = parsedSelectStmt(firstStatement.stmt)
+  if (
+    !isRecord(selectStmt.withClause) ||
+    !Array.isArray(selectStmt.withClause.ctes)
+  ) {
+    throw new TypeError('pgsql-parser SELECT node has no CTEs')
+  }
+  const cte = selectStmt.withClause.ctes.find((candidate) => {
+    if (!isRecord(candidate) || !isRecord(candidate.CommonTableExpr)) {
+      return false
+    }
+    return candidate.CommonTableExpr.ctename === cteName
+  })
+  if (!isRecord(cte) || !isRecord(cte.CommonTableExpr)) {
+    throw new TypeError(`missing ${cteName} CTE`)
+  }
+  return cte.CommonTableExpr.ctequery
+}
+
 // ---------------------------------------------------------------------------
 // Helper: reportable-session-history filter assertions
 // ---------------------------------------------------------------------------
@@ -4522,6 +4589,24 @@ describe('D1-489 alibaba_token_plan quota support', () => {
     expect(compactWhitespace(query.sql)).toContain(
       "UNION ALL ( SELECT DISTINCT ON ( o.provider, o.quota_key, o.quota_period, o.quota_type, COALESCE(o.source, ''), COALESCE(o.account_hash, ''), o.expected_reset_at )"
     )
+  })
+
+  test('D1-499_buildQuotaHistoryFallbackQuery_aligns_normalized_union_column_types', async () => {
+    const query = buildQuotaHistoryFallbackQuery(new URLSearchParams())
+    const parsed = await parseSQL(query.sql)
+    const normalizedQuery = findParsedCteQuery(parsed, 'normalized')
+    const targetLists = parsedUnionTargetLists(normalizedQuery)
+
+    expect(targetLists.length).toBeGreaterThan(0)
+    for (const targetList of targetLists) {
+      expect(targetList).toHaveLength(20)
+      expect(targetList.slice(10, 14).map(parsedTargetName)).toEqual([
+        'expected_reset_at',
+        'remaining_pct',
+        'interval_start',
+        'interval_hours',
+      ])
+    }
   })
 
   test('test_buildQuotaHistoryFallbackQuery_sql_is_parsable', async () => {
