@@ -324,6 +324,55 @@ describe('SessionDiagnosticsPanel — E3 displayKey', () => {
   })
 })
 
+describe('SessionDiagnosticsPanel — D1-488 host attribution', () => {
+  test('prefers_host_name_shows_distinct_client_ip_fallback_and_omits_absent_host', () => {
+    const response: UsageReportSessionDiagnosticsResponse = {
+      metadata: { from: '2026-05-20', to: '2026-05-21', limit: 10 },
+      sessionDiagnostics: [
+        makeDiagnosticsRow({
+          session_id: 'host-preferred',
+          host_name: '  build-host  ',
+          client_ip: '10.0.0.1',
+        }),
+        makeDiagnosticsRow({
+          session_id: 'same-attribution',
+          host_name: 'same-host',
+          client_ip: 'same-host',
+        }),
+        makeDiagnosticsRow({
+          session_id: 'ip-fallback',
+          host_name: '   ',
+          client_ip: ' 10.0.0.2 ',
+        }),
+        makeDiagnosticsRow({
+          session_id: 'legacy-row',
+          host_name: null,
+          client_ip: null,
+        }),
+      ],
+    }
+
+    const { container } = render(
+      <SessionDiagnosticsPanel response={response} loading={false} />
+    )
+    const cards = Array.from(
+      container.querySelectorAll<HTMLElement>('.status-diagnostics-card')
+    )
+    expect(cards).toHaveLength(4)
+
+    const hostText = (card: HTMLElement) =>
+      card.querySelector('.status-diagnostics-host')?.textContent ?? ''
+
+    expect(hostText(cards[0])).toContain('host: build-host')
+    expect(hostText(cards[0])).toContain('client_ip: 10.0.0.1')
+    expect(hostText(cards[1])).toContain('host: same-host')
+    expect(hostText(cards[1])).not.toContain('client_ip:')
+    expect(hostText(cards[2])).toContain('host: 10.0.0.2')
+    expect(hostText(cards[2])).not.toContain('client_ip:')
+    expect(cards[3].querySelector('.status-diagnostics-host')).toBeNull()
+  })
+})
+
 // ---------------------------------------------------------------------------
 // G2 / G3 — PgBouncer default branch + vocab alignment
 // ---------------------------------------------------------------------------

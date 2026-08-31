@@ -1037,6 +1037,8 @@ export interface UsageReportSessionDiagnosticsRow {
   model?: string | null
   model_group?: string | null
   repository?: string | null
+  host_name?: string | null
+  client_ip?: string | null
   client?: string | null
   client_version?: string | null
   environment?: string | null
@@ -2168,6 +2170,8 @@ function normalizeUsageReportSessionDiagnosticsRow(
 ): UsageReportSessionDiagnosticsRow {
   return {
     ...row,
+    host_name: row.host_name ?? null,
+    client_ip: row.client_ip ?? null,
     grok_oauth: row.grok_oauth
       ? {
           ...row.grok_oauth,

@@ -713,6 +713,24 @@ Diagnostics tab behavior is unchanged: session diagnostics continues to expose
 full `alias_route_events` for operator drill-down; Provider Health uses only the
 sanitized `providerAliasRouting` sibling field.
 
+## Session Diagnostics Host Attribution
+
+`/api/shell/reports/usage/session-diagnostics` directly projects the nullable
+`public.session_history.host_name` and `public.session_history.client_ip`
+columns for each diagnostic row. Server and client normalization preserve
+nulls and blank strings. These fields are display-only: repository identity,
+filters, and grouping continue to use `COALESCE(sh.tenant_id, 'unknown')`;
+`client_ip` is not a repository fallback or inference source.
+
+The existing diagnostics card renders host attribution as follows:
+
+- Use trimmed, non-empty `host_name` as the primary host value.
+- Show trimmed `client_ip` as secondary detail only when it is present and
+  different from the trimmed host name.
+- Use trimmed `client_ip` as the primary host value when `host_name` is null
+  or blank.
+- Render no host attribution line when both values are absent or blank.
+
 ## Session Diagnostics (Grok Side-Channel)
 
 `/api/shell/reports/usage/session-diagnostics` exposes redacted Grok native

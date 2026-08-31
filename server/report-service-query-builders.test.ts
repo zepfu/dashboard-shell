@@ -1205,6 +1205,25 @@ describe('D1-429 tenant_id authoritative repository dimension contract', () => {
     expectNoForbiddenRepositoryInferenceSources(query.sql)
   })
 
+  test('buildSessionDiagnosticsQuery_projects_nullable_host_attribution_without_repository_coalescing', () => {
+    const query = buildSessionDiagnosticsQuery(
+      new URLSearchParams({
+        from: '2026-05-01',
+        to: '2026-05-08',
+        repository: 'tenant-repo-a',
+        limit: '100',
+      })
+    )
+
+    expect(query.sql).toContain('sh.host_name AS host_name')
+    expect(query.sql).toContain('sh.client_ip AS client_ip')
+    expect(query.sql).toContain(`${tenantBackedRepositoryExpr} AS repository`)
+    expect(query.sql).toContain(`${tenantBackedRepositoryExpr} = ANY(`)
+    expect(query.sql).not.toContain('COALESCE(sh.host_name')
+    expect(query.sql).not.toContain('COALESCE(sh.client_ip')
+    expectNoForbiddenRepositoryInferenceSources(query.sql)
+  })
+
   test('buildToolActivityQuery_applies_tenant_id_backed_repository_filter_on_joined_session_history', () => {
     const query = buildToolActivityQuery(
       new URLSearchParams({

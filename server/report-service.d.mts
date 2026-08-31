@@ -737,6 +737,7 @@ declare module './report-service.mjs' {
     USAGE_REPORT_REQUEST_BUDGET_MS: number
     USAGE_REPORT_RESPONSE_HEADROOM_MS: number
     normalizeRow: (row: unknown) => RecordRow
+    normalizeSessionDiagnosticsRow: (row: RecordRow) => RecordRow
     AGENT_SCORE_REASON_RECENT_ROW_LIMIT: number
     setQueryReportDatabaseTestImpl: (
       impl:

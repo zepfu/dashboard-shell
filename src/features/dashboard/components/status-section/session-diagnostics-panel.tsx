@@ -22,6 +22,31 @@ function displayKey(key: string): string {
   return key.replace(/^usage_output_contract_/, '').replace(/^xai_/, '')
 }
 
+function trimmedNonEmptyString(
+  value: string | null | undefined
+): string | null {
+  if (typeof value !== 'string') return null
+  const trimmed = value.trim()
+  return trimmed || null
+}
+
+function sessionDiagnosticsHostAttribution(
+  row: UsageReportSessionDiagnosticsRow
+): { primary: string; secondaryClientIp: string | null } | null {
+  const hostName = trimmedNonEmptyString(row.host_name)
+  const clientIp = trimmedNonEmptyString(row.client_ip)
+  const primary = hostName ?? clientIp
+  if (primary === null) return null
+
+  return {
+    primary,
+    secondaryClientIp:
+      hostName !== null && clientIp !== null && clientIp !== hostName
+        ? clientIp
+        : null,
+  }
+}
+
 function asRecord(value: unknown): JsonRecord | null {
   if (value === null || value === undefined) return null
   if (typeof value !== 'object' || Array.isArray(value)) return null
@@ -314,6 +339,7 @@ const SessionDiagnosticsCard = memo(function SessionDiagnosticsCard({
   const flags = row.diagnostic_flags ?? []
   const categories = row.diagnostic_categories ?? []
   const provider = row.provider ?? 'unknown'
+  const hostAttribution = sessionDiagnosticsHostAttribution(row)
   const transcriptDetail = asRecord(
     row.transcript_attribution?.session_history_transcript_attribution
   )
@@ -362,6 +388,18 @@ const SessionDiagnosticsCard = memo(function SessionDiagnosticsCard({
         {row.repository ?? 'unknown'} · {row.client ?? 'unknown'} ·{' '}
         {row.created_at ?? 'time unknown'}
       </div>
+      {hostAttribution ? (
+        <div className='status-diagnostics-host'>
+          <span>
+            host: <strong>{hostAttribution.primary}</strong>
+          </span>
+          {hostAttribution.secondaryClientIp ? (
+            <span>
+              client_ip: <strong>{hostAttribution.secondaryClientIp}</strong>
+            </span>
+          ) : null}
+        </div>
+      ) : null}
       <div className='status-diagnostics-chip-row'>
         {[...flags, ...categories].slice(0, 10).map((flag) => (
           <span key={flag} className='status-diagnostics-chip'>

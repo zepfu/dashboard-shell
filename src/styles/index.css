@@ -2912,6 +2912,18 @@
   white-space: nowrap;
 }
 
+.status-diagnostics-host {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  color: var(--fg-muted);
+}
+
+.status-diagnostics-host strong {
+  color: var(--fg);
+  font-weight: 600;
+}
+
 .status-estimator-lane-state {
   display: inline-flex;
   align-items: center;

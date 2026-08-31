@@ -1585,6 +1585,8 @@ describe('D1-212/215/213/178/221/222 session diagnostics API contracts', () => {
       sessionDiagnostics: Array<UsageReportSessionDiagnosticsRow>
     }>()
     expectTypeOf<UsageReportSessionDiagnosticsRow>().toMatchTypeOf<{
+      host_name?: string | null
+      client_ip?: string | null
       diagnostic_flags?: string[]
       diagnostic_categories?: string[]
       grok_oauth?: {
@@ -1696,6 +1698,55 @@ describe('D1-212/215/213/178/221/222 session diagnostics API contracts', () => {
         classification: { label: 'extended_1m', evidence: 'suffix' },
       },
     })
+  })
+
+  test('test_fetchUsageReportSessionDiagnostics_preserves_nullable_host_attribution_fields', async () => {
+    server.use(
+      http.get('/api/shell/reports/usage/session-diagnostics', () =>
+        HttpResponse.json(
+          usageReportSessionDiagnosticsPayload({
+            sessionDiagnostics: [
+              {
+                session_id: 'host-row',
+                host_name: '  build-host  ',
+                client_ip: '10.0.0.1',
+              },
+              {
+                session_id: 'legacy-row',
+                host_name: null,
+                client_ip: null,
+              },
+              {
+                session_id: 'blank-row',
+                host_name: '   ',
+                client_ip: '',
+              },
+            ],
+          })
+        )
+      )
+    )
+
+    const response = await fetchUsageReportSessionDiagnostics({
+      from: '2026-05-20',
+      to: '2026-05-21',
+      limit: 3,
+    })
+
+    expect(response.sessionDiagnostics).toEqual([
+      expect.objectContaining({
+        host_name: '  build-host  ',
+        client_ip: '10.0.0.1',
+      }),
+      expect.objectContaining({
+        host_name: null,
+        client_ip: null,
+      }),
+      expect.objectContaining({
+        host_name: '   ',
+        client_ip: '',
+      }),
+    ])
   })
 
   test('test_fetchUsageReportSessionDiagnostics_normalizes_stringish_boolean_fields', async () => {

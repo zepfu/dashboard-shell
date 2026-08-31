@@ -56,6 +56,31 @@ describe('report-service normalizeRow', () => {
     expect(out.agent_score_reasons).toEqual(['scope', 'tool'])
   })
 
+  test('preserves nullable session diagnostics host attribution fields', async () => {
+    const { __usageReportTestHelpers } = await import('./report-service.mjs')
+    const { normalizeSessionDiagnosticsRow } = __usageReportTestHelpers
+
+    expect(
+      normalizeSessionDiagnosticsRow({
+        host_name: '  build-host  ',
+        client_ip: '',
+      })
+    ).toMatchObject({
+      host_name: '  build-host  ',
+      client_ip: '',
+    })
+
+    expect(
+      normalizeSessionDiagnosticsRow({
+        host_name: null,
+        client_ip: null,
+      })
+    ).toMatchObject({
+      host_name: null,
+      client_ip: null,
+    })
+  })
+
   test('agent_score_reasons_recent_row_limit falls back to module default when missing or invalid', async () => {
     const { __usageReportTestHelpers } = await import('./report-service.mjs')
     const { normalizeRow, AGENT_SCORE_REASON_RECENT_ROW_LIMIT } =
