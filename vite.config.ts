@@ -63,6 +63,17 @@ const UPSTREAM_SHELL_REPORT_PROXY_PATHS = [
 const dashboardShellDevPort = Number(
   process.env.DASHBOARD_SHELL_DEV_PORT ?? 3006
 )
+const devRemoteEntryPorts: Readonly<Record<string, string>> = {
+  '/modules/aawm-tap/remoteEntry.js':
+    process.env.AAWM_TAP_REMOTE_DEV_PORT ?? '5173',
+  '/modules/aegis/remoteEntry.js': process.env.AEGIS_REMOTE_DEV_PORT ?? '5174',
+  '/modules/sluice/remoteEntry.js':
+    process.env.SLUICE_REMOTE_DEV_PORT ?? '5175',
+  '/modules/aawm/remoteEntry.js':
+    process.env.AAWM_DASHBOARD_REMOTE_DEV_PORT ?? '5176',
+  '/modules/aawm-observe/remoteEntry.js':
+    process.env.AAWM_OBSERVE_REMOTE_DEV_PORT ?? '5177',
+}
 const repoRoot = path.resolve(__dirname)
 const ignoredDevWatchPathNames = new Set([
   '.analysis',
@@ -100,9 +111,53 @@ const noStoreDevServerResponses = (): Plugin => ({
   },
 })
 
+export const buildDevRemoteEntryRedirect = (
+  requestHost: string | undefined,
+  pathname: string
+) => {
+  const remotePort = devRemoteEntryPorts[pathname]
+  if (!remotePort) return null
+
+  try {
+    const hostname = new URL(`http://${requestHost ?? 'localhost'}`).hostname
+    const formattedHostname =
+      hostname.includes(':') && !hostname.startsWith('[')
+        ? `[${hostname}]`
+        : hostname
+    return `http://${formattedHostname}:${remotePort}/remoteEntry.js`
+  } catch {
+    return null
+  }
+}
+
+const redirectDevRemoteEntries = (): Plugin => ({
+  name: 'dashboard-shell-dev-remote-entry-redirects',
+  apply: 'serve',
+  configureServer(server) {
+    server.middlewares.use((request, response, next) => {
+      const pathname = new URL(request.url ?? '/', 'http://localhost').pathname
+      const redirectLocation = buildDevRemoteEntryRedirect(
+        request.headers.host,
+        pathname
+      )
+
+      if (!redirectLocation) {
+        next()
+        return
+      }
+
+      response.statusCode = 307
+      response.setHeader('Cache-Control', 'no-store')
+      response.setHeader('Location', redirectLocation)
+      response.end()
+    })
+  },
+})
+
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [
+    redirectDevRemoteEntries(),
     noStoreDevServerResponses(),
     tanstackRouter({
       target: 'react',

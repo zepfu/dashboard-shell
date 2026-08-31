@@ -22,7 +22,8 @@ Local compose and dev defaults use `SHELL_REPORT_PROXY_SHARED_SECRET=dashboard-s
   - If Redis client configuration exists but startup connect fails, startup logs emit `WARN: Redis report cache unavailable; falling back to SQL/local cache`, and health payload reports `redisPackageAvailable: true`, `redisStatus: disconnected`, `redisConfigured: true`, `redisReady: false`.
   - If the `redis` package is unavailable at startup, report-service writes one startup/runtime warning: `Redis package is unavailable; report-service is falling back to local/SQL cache`, and health payload reports `redisPackageAvailable: false`, `redisStatus: missing-package`.
   - In all failure modes, report cache fallback remains local/SQL.
-- Dev compose ports are intentionally loopback-bound by default (`127.0.0.1`), with an intentional override path (`DASHBOARD_DEV_BIND_HOST`) for LAN operator sessions.
+- Main and dev shell ports default to all-interface bindings (`0.0.0.0`) through `DASHBOARD_SHELL_BIND_HOST` and `DASHBOARD_DEV_BIND_HOST`, respectively, so both physical LAN and Tailscale ingress are accepted. Operators can set either variable to `127.0.0.1` for loopback-only sessions.
+- Dev federated remote entry requests preserve the hostname used to reach the shell and redirect to the corresponding published remote port. This avoids client-side `localhost` references when the browser is on another LAN or Tailscale node.
 
 ## Nginx and Public Surface Contract
 

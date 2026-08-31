@@ -23,16 +23,16 @@ pnpm docker:dev
 
 Then open the shell-mounted routes:
 
-- `http://localhost:3006/aawm`
-- `http://localhost:3006/aawm-tap/overview`
-- `http://localhost:3006/aawm-observe/overview`
-- `http://localhost:3006/aegis`
-- `http://localhost:3006/sluice/overview`
+- `http://<host>:3006/aawm`
+- `http://<host>:3006/aawm-tap/overview`
+- `http://<host>:3006/aawm-observe/overview`
+- `http://<host>:3006/aegis`
+- `http://<host>:3006/sluice/overview`
 
 In `docker-compose.dev.yml`, all dev stack publish entries default to
-`127.0.0.1` loopback via `DASHBOARD_DEV_BIND_HOST`. If you need intentional LAN
-access, set `DASHBOARD_DEV_BIND_HOST=0.0.0.0` for the shell and remote dev
-services before running `pnpm docker:dev`.
+`0.0.0.0` via `DASHBOARD_DEV_BIND_HOST` so the shell and remote dev services
+accept LAN and Tailscale ingress. Set `DASHBOARD_DEV_BIND_HOST=127.0.0.1` to
+restrict the stack to loopback.
 
 This stack runs Vite servers in containers with bind-mounted source from this
 repo and the sibling dashboard repos, so changes in any checkout are served live
@@ -143,9 +143,11 @@ Run the container stack:
 pnpm docker:up
 ```
 
-Then open `http://localhost:3005/aawm`, `http://localhost:3005/aawm-tap/overview`,
-`http://localhost:3005/aawm-observe/overview`, `http://localhost:3005/aegis`,
-or `http://localhost:3005/sluice/overview`. Set
+Then open `http://<host>:3005/aawm`, `http://<host>:3005/aawm-tap/overview`,
+`http://<host>:3005/aawm-observe/overview`, `http://<host>:3005/aegis`,
+or `http://<host>:3005/sluice/overview`. The main shell defaults to
+`DASHBOARD_SHELL_BIND_HOST=0.0.0.0`; set it to `127.0.0.1` to restrict ingress.
+Set
 `DASHBOARD_SHELL_PORT=3000` if you want to publish the container on port 3000.
 The compose services run detached and use `restart: unless-stopped`, so Docker
 will bring the shell and remotes back after a system restart unless they were
@@ -167,13 +169,13 @@ service bind-mounts `./server` into the container, so
 rebuild. Dependency changes under `server/package.json` still require rebuilding
 the report image.
 
-The shell defaults to loading remotes through `/modules/<base>/remoteEntry.js`,
-which `nginx.conf.template` (the single nginx source; the image COPYs it into
-`/etc/nginx/templates/default.conf.template`) proxies to the sibling static
-containers. For local Vite development, the dev compose file sets
-browser-accessible localhost remote entries such as
-`AAWM_DASHBOARD_REMOTE_ENTRY`, `AAWM_TAP_REMOTE_ENTRY`,
-`AAWM_OBSERVE_REMOTE_ENTRY`, `AEGIS_REMOTE_ENTRY`, and `SLUICE_REMOTE_ENTRY`.
+The shell defaults to loading remotes through `/modules/<base>/remoteEntry.js`.
+For the main stack, `nginx.conf.template` (the single nginx source; the image
+COPYs it into `/etc/nginx/templates/default.conf.template`) proxies those paths
+to the sibling static containers. For Vite development, the shell redirects
+each remote entry request to the same browser-selected hostname on that
+remote's published dev port, so LAN and Tailscale URLs work without a fixed
+hostname.
 `AEGIS_DB_PASSWORD` in `.env.example` remains the local-dev default only; treat it as non-production and
 override it for non-local operators before starting either compose stack.
 

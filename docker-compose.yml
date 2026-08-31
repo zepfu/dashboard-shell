@@ -12,7 +12,7 @@ services:
     volumes:
       - ./.analysis:/dashboard-shell-analysis
     ports:
-      - '${DASHBOARD_SHELL_PORT:-3005}:80'
+      - '${DASHBOARD_SHELL_BIND_HOST:-0.0.0.0}:${DASHBOARD_SHELL_PORT:-3005}:80'
     depends_on:
       aawm-dashboard:
         condition: service_healthy
