@@ -1904,12 +1904,12 @@ describe('report-service query builders', () => {
 
   test('test_pgbouncer_admin_url_and_row_normalizers_sanitize_admin_payload', () => {
     const adminUrl = buildPgBouncerAdminDatabaseUrl(
-      'postgresql://aawm:secret@aawm-pgbouncer:6432/aawm_tristore?sslmode=disable'
+      'postgresql://aawm:secret@pgbouncer-aawm-dev:6432/aawm_tristore?sslmode=disable'
     )
     const parsedUrl = new URL(adminUrl!)
 
     expect(parsedUrl.pathname).toBe('/pgbouncer')
-    expect(parsedUrl.hostname).toBe('aawm-pgbouncer')
+    expect(parsedUrl.hostname).toBe('pgbouncer-aawm-dev')
     expect(parsedUrl.port).toBe('6432')
     expect(parsedUrl.searchParams.get('sslmode')).toBe('disable')
     expect(buildPgBouncerAdminDatabaseUrl('not a url')).toBeUndefined()

@@ -15,6 +15,16 @@ Local compose and dev defaults use `SHELL_REPORT_PROXY_SHARED_SECRET=dashboard-s
 - The report-service env surface is intentionally mirrored between
   `docker-compose.yml` and `docker-compose.dev.yml` (same variable names and
   local defaults) for drift visibility, not YAML factoring.
+- Both report services retain `aawm-tap_default`, `aawm_default`, and
+  `aegis_default`; only the report services also join the external
+  `aawm-infrastructure_default` network. `aawm_default` remains the AAWM API
+  proxying network.
+- The local AAWM report database is `aawm_tristore` behind
+  `thoth-aawm-dev-pgbouncer`, whose container alias is
+  `pgbouncer-aawm-dev:6432`, host-published endpoint is `127.0.0.1:6435`, and
+  upstream PostgreSQL endpoint is `aawm-dev-postgresql:5432`. Compose defaults
+  rewrite localhost database URLs from the host endpoint to the container
+  endpoint.
 - Redis dependency/runtime follow-up work is owned by server-package/report-service TODOs.
 - Redis cache support is optional for the report-service process:
   - If `redis` package import/connectivity is healthy, cached report payloads use Redis where configured.

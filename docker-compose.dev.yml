@@ -104,7 +104,7 @@ services:
       VITE_TAP_ACCESS_TOKEN: '${VITE_TAP_ACCESS_TOKEN:-}'
       VITE_TAP_API_KEY: '${VITE_TAP_API_KEY:-}'
       DATABASE_URL: '${DATABASE_URL:-}'
-      SHELL_REPORT_DATABASE_HOST_REWRITE: '${SHELL_REPORT_DATABASE_HOST_REWRITE:-aawm-pgbouncer}'
+      SHELL_REPORT_DATABASE_HOST_REWRITE: '${SHELL_REPORT_DATABASE_HOST_REWRITE:-pgbouncer-aawm-dev}'
       SHELL_REPORT_DATABASE_PORT_REWRITE: '${SHELL_REPORT_DATABASE_PORT_REWRITE:-6432}'
       SHELL_REPORT_AAWM_PGBOUNCER_DATABASE_URL: '${SHELL_REPORT_AAWM_PGBOUNCER_DATABASE_URL:-}'
       SHELL_REPORT_AEGIS_PGBOUNCER_DATABASE_URL: '${SHELL_REPORT_AEGIS_PGBOUNCER_DATABASE_URL:-}'
@@ -145,6 +145,7 @@ services:
       - aawm_tap
       - aawm_core
       - aegis_core
+      - aawm_infrastructure
     volumes:
       - ./scripts/container-error-intake.sh:/usr/local/bin/container-error-intake.sh:ro
       - ./.analysis:/dashboard-shell-analysis
@@ -442,4 +443,7 @@ networks:
     external: true
   aegis_core:
     name: aegis_default
+    external: true
+  aawm_infrastructure:
+    name: aawm-infrastructure_default
     external: true

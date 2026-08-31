@@ -309,7 +309,8 @@ describe('D1-489 PgBouncer admin direct client and weighted stats', () => {
 
     const sidecar = {
       key: 'aawm-pgbouncer',
-      adminDatabaseUrl: 'postgresql://admin:secret@127.0.0.1:6432/pgbouncer',
+      adminDatabaseUrl:
+        'postgresql://admin:secret@pgbouncer-aawm-dev:6432/pgbouncer',
     }
 
     await loadPgBouncerAdminSummaryForTests(sidecar)
@@ -378,7 +379,8 @@ describe('D1-489 PgBouncer admin direct client and weighted stats', () => {
     const { loadPgBouncerAdminSummaryForTests } = __pgBouncerAdminTestHelpers
     const summary = (await loadPgBouncerAdminSummaryForTests({
       key: 'aawm-pgbouncer',
-      adminDatabaseUrl: 'postgresql://admin:secret@127.0.0.1:6432/pgbouncer',
+      adminDatabaseUrl:
+        'postgresql://admin:secret@pgbouncer-aawm-dev:6432/pgbouncer',
     })) as {
       statsSummary: Record<string, number>
     }

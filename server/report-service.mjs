@@ -703,10 +703,10 @@ const PGBOUNCER_SIDECARS = [
   {
     key: 'aawm-pgbouncer',
     label: 'AAWM PgBouncer',
-    containerName: 'aawm-pgbouncer',
-    hostEndpoint: '127.0.0.1:6432',
-    runtimeAliases: ['aawm_tristore', 'aawm_tap_dev'],
-    upstreamPostgres: 'aawm-postgres18:5432',
+    containerName: 'thoth-aawm-dev-pgbouncer',
+    hostEndpoint: '127.0.0.1:6435',
+    runtimeAliases: ['aawm_tristore'],
+    upstreamPostgres: 'aawm-dev-postgresql:5432',
     adminDatabaseUrl:
       optionalEnvValue(process.env.SHELL_REPORT_AAWM_PGBOUNCER_DATABASE_URL) ??
       buildPgBouncerAdminDatabaseUrl(DATABASE_URL),

@@ -1036,10 +1036,10 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
               {
                 key: 'aawm-pgbouncer',
                 label: 'AAWM PgBouncer',
-                containerName: 'aawm-pgbouncer',
-                hostEndpoint: '127.0.0.1:6432',
-                runtimeAliases: ['aawm_tristore', 'aawm_tap_dev'],
-                upstreamPostgres: 'aawm-postgres18:5432',
+                containerName: 'thoth-aawm-dev-pgbouncer',
+                hostEndpoint: '127.0.0.1:6435',
+                runtimeAliases: ['aawm_tristore'],
+                upstreamPostgres: 'aawm-dev-postgresql:5432',
                 status: 'green',
                 container: {
                   present: true,
@@ -1060,7 +1060,7 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
                   status: 'ok',
                   endpoint: {
                     database: 'pgbouncer',
-                    host: 'aawm-pgbouncer',
+                    host: 'pgbouncer-aawm-dev',
                     port: '6432',
                   },
                   error: null,

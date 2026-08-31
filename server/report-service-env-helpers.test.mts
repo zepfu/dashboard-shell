@@ -17,13 +17,13 @@ describe('report-service env and date helpers', () => {
   })
 
   test('normalizeDatabaseUrl rewrites localhost host and port when configured', async () => {
-    vi.stubEnv('SHELL_REPORT_DATABASE_HOST_REWRITE', 'aawm-postgres18')
-    vi.stubEnv('SHELL_REPORT_DATABASE_PORT_REWRITE', '5432')
+    vi.stubEnv('SHELL_REPORT_DATABASE_HOST_REWRITE', 'pgbouncer-aawm-dev')
+    vi.stubEnv('SHELL_REPORT_DATABASE_PORT_REWRITE', '6432')
     const { __envTestHelpers } = await import('./report-service.mjs')
     const input = 'postgresql://user:pass@localhost:5434/aawm_tristore'
     const out = __envTestHelpers.normalizeDatabaseUrl(input)
-    expect(out).toContain('aawm-postgres18')
-    expect(out).toContain(':5432/')
+    expect(out).toContain('pgbouncer-aawm-dev')
+    expect(out).toContain(':6432/')
     expect(out).toContain('user:pass')
   })
 

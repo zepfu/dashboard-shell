@@ -93,7 +93,7 @@ describe('probe-ingestion-durability', () => {
   test('summarizes red status for dropped records and stale session source', () => {
     const health = {
       databaseEndpoint: {
-        host: 'aawm-pgbouncer',
+        host: 'pgbouncer-aawm-dev',
         port: '6432',
         database: 'aawm_tristore',
       },
