@@ -21,10 +21,19 @@ import {
   type SidebarQuotaItem,
 } from './sidebar-quota-items'
 
-export function SidebarQuotaRemaining() {
+interface SidebarQuotaRemainingProps {
+  enabled?: boolean
+}
+
+export function SidebarQuotaRemaining({
+  enabled = true,
+}: SidebarQuotaRemainingProps) {
   const { state } = useSidebar()
   const collapsed = state === 'collapsed'
-  const quotaQuery = useQuery(usageReportQuotasQueryOptions({}))
+  const quotaQuery = useQuery({
+    ...usageReportQuotasQueryOptions({}),
+    enabled,
+  })
   const items = useMemo(
     () => buildSidebarQuotaItems(quotaQuery.data?.quotas),
     [quotaQuery.data?.quotas]

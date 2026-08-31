@@ -36,6 +36,7 @@ interface NavSection {
 
 interface PhosphorSidebarProps {
   dashboardAlerts?: DashboardAlertSummary
+  quotaQueryEnabled?: boolean
   alertInput?: {
     anomalies: Parameters<typeof useDashboardAlertSummary>[0]
     summary?: Parameters<typeof useDashboardAlertSummary>[1]
@@ -51,9 +52,11 @@ const ALERT_CLOCK_INTERVAL_MS = 10_000
 function DashboardSidebarAlerts({
   input,
   pathname,
+  quotaQueryEnabled,
 }: {
   input: NonNullable<PhosphorSidebarProps['alertInput']>
   pathname: string
+  quotaQueryEnabled: boolean
 }): ReactElement {
   const [now, setNow] = useState(() => new Date())
 
@@ -76,15 +79,21 @@ function DashboardSidebarAlerts({
     now
   )
 
-  return <PhosphorSidebarShell {...{ dashboardAlerts, pathname }} />
+  return (
+    <PhosphorSidebarShell
+      {...{ dashboardAlerts, pathname, quotaQueryEnabled }}
+    />
+  )
 }
 
 function PhosphorSidebarShell({
   dashboardAlerts,
   pathname,
+  quotaQueryEnabled,
 }: {
   dashboardAlerts?: DashboardAlertSummary
   pathname: string
+  quotaQueryEnabled: boolean
 }): ReactElement {
   return (
     <>
@@ -121,7 +130,7 @@ function PhosphorSidebarShell({
       <div className='sidebar-section'>
         <div className='sidebar-group-title'>Quota remaining</div>
         <SidebarProvider>
-          <SidebarQuotaRemaining />
+          <SidebarQuotaRemaining enabled={quotaQueryEnabled} />
         </SidebarProvider>
       </div>
 
@@ -171,15 +180,26 @@ const NAV_SECTIONS: readonly NavSection[] = [
 export function PhosphorSidebar({
   dashboardAlerts,
   alertInput,
+  quotaQueryEnabled = true,
 }: PhosphorSidebarProps): ReactElement {
   const location = useLocation()
   const pathname = location.pathname
 
   if (dashboardAlerts === undefined && alertInput !== undefined) {
-    return <DashboardSidebarAlerts input={alertInput} pathname={pathname} />
+    return (
+      <DashboardSidebarAlerts
+        input={alertInput}
+        pathname={pathname}
+        quotaQueryEnabled={quotaQueryEnabled}
+      />
+    )
   }
 
-  return <PhosphorSidebarShell {...{ dashboardAlerts, pathname }} />
+  return (
+    <PhosphorSidebarShell
+      {...{ dashboardAlerts, pathname, quotaQueryEnabled }}
+    />
+  )
 }
 
 function SidebarAlertDot({

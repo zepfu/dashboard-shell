@@ -485,6 +485,72 @@ describe('Dashboard — TCG-2: cold-load render path', () => {
     resolveUsageRequest?.()
   }, 15_000)
 
+  test('test_dashboard_defers_quota_requests_until_main_usage_resolves', async () => {
+    let usageRequestCount = 0
+    let resolveUsageRequest: (() => void) | null = null
+    const quotaUrls: string[] = []
+    const quotaHistoryUrls: string[] = []
+
+    registerTokenTrendSummaryHandler()
+    registerQuotaHistoryHandler((url) => {
+      quotaHistoryUrls.push(url)
+    })
+    server.use(
+      http.get('/api/shell/reports/usage', () => {
+        usageRequestCount += 1
+        if (usageRequestCount === 1) {
+          return new Promise<Response>((resolve) => {
+            resolveUsageRequest = () => {
+              resolve(HttpResponse.json(MOCK_REPORT) as unknown as Response)
+            }
+          })
+        }
+        return HttpResponse.json(MOCK_REPORT)
+      }),
+      http.get('/api/shell/reports/quotas', ({ request }) => {
+        quotaUrls.push(request.url)
+        return HttpResponse.json({
+          metadata: {
+            generatedAt: '2026-05-19T00:00:00.000Z',
+            latestRecordAt: null,
+            latestRecordAgeMinutes: null,
+            latestRecordStale: false,
+            staleRecordThresholdMinutes: 60,
+          },
+          quotas: [],
+        })
+      })
+    )
+
+    const Dashboard = await importDashboard()
+    renderWithClient(Dashboard, makeClient())
+
+    await waitFor(
+      () => {
+        expect(usageRequestCount).toBe(1)
+      },
+      { timeout: 3000 }
+    )
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50))
+    })
+
+    expect(quotaUrls).toHaveLength(0)
+    expect(quotaHistoryUrls).toHaveLength(0)
+
+    await act(async () => {
+      resolveUsageRequest?.()
+    })
+
+    await waitFor(
+      () => {
+        expect(quotaUrls).toHaveLength(1)
+        expect(quotaHistoryUrls).toHaveLength(1)
+      },
+      { timeout: 3000 }
+    )
+  }, 15_000)
+
   test('test_dashboard_renders_full_sections_after_data_arrives', async () => {
     registerTokenTrendSummaryHandler()
     // Immediately resolve the usage query with data.
@@ -2031,7 +2097,12 @@ describe('Dashboard — D1-436: heavy query polling guardrails', () => {
     )
     expect(normalQuotaQueries).toHaveLength(1)
     expect(sidebarQuotaQueries).toHaveLength(0)
-    expect(quotasCallCount).toBe(1)
+    await waitFor(
+      () => {
+        expect(quotasCallCount).toBe(1)
+      },
+      { timeout: 5_000 }
+    )
 
     const statusTabs = screen.getByRole('tablist', { name: 'Status view' })
     fireEvent.click(within(statusTabs).getByRole('tab', { name: 'Quota' }))

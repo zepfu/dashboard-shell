@@ -391,6 +391,8 @@ export function Dashboard(): ReactElement {
     refetchIntervalInBackground: false,
     gcTime: LIVE_DASHBOARD_HEAVY_REPORT_GC_TIME_MS,
   })
+  const secondaryReportQueriesEnabled =
+    !summaryLoading && summaryReport !== undefined
 
   // Wave 36 Fix 4: showComparison gates the priorReport query in PhosphorDashboard
   // so the prior-window API call is only made when the ComparisonPanel is visible
@@ -465,7 +467,7 @@ export function Dashboard(): ReactElement {
         },
         signal
       ),
-    enabled: !summaryLoading && summaryReport !== undefined,
+    enabled: secondaryReportQueriesEnabled,
     staleTime: LIVE_DASHBOARD_HEAVY_REFETCH_INTERVAL_MS,
     refetchInterval: false,
     refetchIntervalInBackground: false,
@@ -545,6 +547,7 @@ export function Dashboard(): ReactElement {
   const quotaQueryBase = usageReportQuotasQueryOptions({ from, to })
   const { data: quotasData, isFetching: quotasFetching } = useQuery({
     ...quotaQueryBase,
+    enabled: secondaryReportQueriesEnabled,
     refetchIntervalInBackground: false,
   })
 
@@ -589,7 +592,8 @@ export function Dashboard(): ReactElement {
           },
           signal
         ),
-      enabled: providerSectionView === 'health',
+      enabled:
+        secondaryReportQueriesEnabled && providerSectionView === 'health',
       staleTime: LIVE_DASHBOARD_HEAVY_REFETCH_INTERVAL_MS,
       refetchInterval: false,
       refetchIntervalInBackground: false,
@@ -805,6 +809,7 @@ export function Dashboard(): ReactElement {
     <PhosphorLayout
       sidebar={
         <PhosphorSidebar
+          quotaQueryEnabled={secondaryReportQueriesEnabled}
           alertInput={{
             anomalies,
             summary: summaryReport?.summary,
@@ -966,7 +971,7 @@ export function Dashboard(): ReactElement {
             reportLoading={summaryLoading}
             showComparison={showComparison}
             reportRefreshKey={reportCacheBust}
-            quotas={quotasData?.quotas}
+            quotas={quotaRows}
             reportFetching={summaryFetching}
             quotasFetching={quotasFetching}
             quotaHistory={quotaHistoryData?.quotaHistory ?? EMPTY_QUOTA_HISTORY}
