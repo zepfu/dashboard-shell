@@ -145,40 +145,10 @@ describe('report-service env and date helpers', () => {
     expect(expression).toContain('sh_recent.provider')
     expect(expression).not.toContain('sh.provider')
   })
-
-  test('sessionHistoryMetadataText accepts only code-owned literal inputs', async () => {
-    const { __envTestHelpers } = await import('./report-service.mjs')
-
-    const expression = __envTestHelpers.sessionHistoryMetadataText(
-      'sh',
-      'session_history_usage_record',
-      'true'
-    )
-
-    expect(expression).toContain("sh.metadata->>'session_history_usage_record'")
-    expect(expression).toContain("'true'")
-    expect(() =>
-      __envTestHelpers.sessionHistoryMetadataText('sh', "unsafe'key", 'true')
-    ).toThrow('code-owned literals')
-    expect(() =>
-      __envTestHelpers.sessionHistoryMetadataText(
-        'sh',
-        'session_history_usage_record',
-        "unsafe'fallback"
-      )
-    ).toThrow('code-owned literals')
-    expect(() =>
-      __envTestHelpers.sessionHistoryMetadataText(
-        'sh; DROP TABLE session_history',
-        'session_history_usage_record',
-        'true'
-      )
-    ).toThrow('SQL identifier')
-  })
 })
 
 describe('D1-496 sql fanout concurrency defaults', () => {
-  test('defaults fanout concurrency to 4 with max clamp 4, pool max 4, parallelism disabled, 120s timeout', async () => {
+  test('defaults fanout concurrency to 4 with max clamp 4, pool max 4, parallelism enabled, 120s timeout', async () => {
     vi.stubEnv('VITEST', 'true')
     delete process.env.SHELL_REPORT_SQL_FANOUT_CONCURRENCY
     delete process.env.SHELL_REPORT_DB_POOL_MAX
@@ -188,7 +158,7 @@ describe('D1-496 sql fanout concurrency defaults', () => {
     const { __envTestHelpers } = await import('./report-service.mjs')
     expect(__envTestHelpers.REPORT_SQL_FANOUT_CONCURRENCY).toBe(4)
     expect(__envTestHelpers.REPORT_DB_POOL_MAX).toBe(4)
-    expect(__envTestHelpers.REPORT_DB_DISABLE_PARALLELISM).toBe(true)
+    expect(__envTestHelpers.REPORT_DB_DISABLE_PARALLELISM).toBe(false)
     expect(__envTestHelpers.REPORT_DB_STATEMENT_TIMEOUT_MS).toBe(120_000)
     expect(__envTestHelpers.REPORT_DB_STATEMENT_TIMEOUT_CEILING_MS).toBe(
       120_000
@@ -196,15 +166,12 @@ describe('D1-496 sql fanout concurrency defaults', () => {
     expect(__envTestHelpers.USAGE_REPORT_REQUEST_BUDGET_MS).toBe(115_000)
     expect(__envTestHelpers.USAGE_REPORT_RESPONSE_HEADROOM_MS).toBe(5_000)
     expect(__envTestHelpers.buildPostgresLocalSettings()).toEqual([
-      ['max_parallel_workers_per_gather', '0'],
       ['statement_timeout', '120000ms'],
     ])
     expect(__envTestHelpers.buildPostgresLocalSettings(115_000)).toEqual([
-      ['max_parallel_workers_per_gather', '0'],
       ['statement_timeout', '115000ms'],
     ])
     expect(__envTestHelpers.buildPostgresLocalSettings(999_999)).toEqual([
-      ['max_parallel_workers_per_gather', '0'],
       ['statement_timeout', '120000ms'],
     ])
   })

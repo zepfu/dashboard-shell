@@ -415,7 +415,7 @@ const REPORT_SQL_FANOUT_MAX = 4
 const REPORT_DB_STATEMENT_TIMEOUT_CEILING_MS = 120_000
 const REPORT_DB_DISABLE_PARALLELISM = parseBooleanEnv(
   'SHELL_REPORT_DB_DISABLE_PARALLELISM',
-  true
+  false
 )
 const REPORT_SQL_FANOUT_CONCURRENCY = boundedIntegerEnv(
   'SHELL_REPORT_SQL_FANOUT_CONCURRENCY',
@@ -3407,48 +3407,15 @@ function sessionHistoryResponseCostRowsExpression(alias = 'sh') {
   return `COUNT(${alias}.response_cost_usd)::double precision`
 }
 
-function sessionHistoryMetadataText(alias, key, fallback) {
-  assertSqlIdentifier(alias, 'Session history alias')
-  const metadataFallbacks = {
-    session_history_usage_record: 'true',
-    session_history_reporting_excluded: 'false',
-    session_history_model_reporting_excluded: 'false',
-  }
-  if (metadataFallbacks[key] !== fallback) {
-    throw new TypeError(
-      'Session-history metadata key and fallback must be code-owned literals'
-    )
-  }
-  return `lower(btrim(COALESCE(${alias}.metadata->>${sqlTextLiteral(key)}, ${sqlTextLiteral(fallback)})))`
-}
-
-function legacyGrokSideChannelPredicate(alias = 'sh') {
-  return `(
-    ${providerDimensionForAlias(alias)} = 'xai'
-    AND lower(COALESCE(${alias}.client_name, '')) = 'grok-build'
-    AND COALESCE(NULLIF(${alias}.model, ''), 'unknown') = 'unknown'
-    AND ${sessionHistoryTokenSignalExpression(alias)} = 0
-    AND ${sessionHistoryCostSignalExpression(alias)} = 0
-    AND COALESCE(${alias}.tool_call_count, 0) = 0
-    AND lower(COALESCE(
-      NULLIF(${alias}.metadata->>'passthrough_route_family', ''),
-      NULLIF(${alias}.metadata->>'route_family', ''),
-      ''
-    )) = 'grok_cli_chat_proxy'
-)`
-}
-
 function sessionHistoryReportablePredicate(alias = 'sh') {
   return `(
-    ${sessionHistoryMetadataText(alias, 'session_history_usage_record', 'true')} <> 'false'
-    AND ${sessionHistoryMetadataText(alias, 'session_history_reporting_excluded', 'false')} <> 'true'
-    AND ${sessionHistoryMetadataText(alias, 'session_history_model_reporting_excluded', 'false')} <> 'true'
-    AND (
+    (
       ${sessionHistoryTokenSignalExpression(alias)} > 0
       OR ${sessionHistoryCostSignalExpression(alias)} > 0
       OR COALESCE(${alias}.tool_call_count, 0) > 0
     )
-    AND NOT ${legacyGrokSideChannelPredicate(alias)}
+    AND lower(COALESCE(${alias}.call_type, '')) <> 'codex_transcript'
+    AND lower(COALESCE(NULLIF(${alias}.model, ''), 'unknown')) <> 'unknown'
 )`
 }
 
@@ -3457,7 +3424,7 @@ function appendReportableSessionHistoryWhere(whereParts, alias = 'sh') {
 }
 
 // Canonical row eligibility for all usage aggregates and token-trend/health surfaces:
-// sessionHistoryReportablePredicate (metadata exclusions + legacy grok side-channel).
+// sessionHistoryReportablePredicate (direct-column signal and exclusions).
 
 const grains = {
   day: `${createdAtEastern}::date`,
@@ -14586,7 +14553,6 @@ export const __envTestHelpers = {
   formatDashboardDate,
   providerDimensionExpression,
   providerDimensionForAlias,
-  sessionHistoryMetadataText,
   REPORT_SQL_FANOUT_CONCURRENCY,
   REPORT_DB_POOL_MAX,
   REPORT_DB_DISABLE_PARALLELISM,

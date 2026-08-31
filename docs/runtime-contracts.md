@@ -437,8 +437,8 @@ enrichment times out, the existing degraded fallback behavior still applies.
 Usage/report SQL fanout defaults to
 `SHELL_REPORT_SQL_FANOUT_CONCURRENCY=4` and is clamped to a maximum of `4`.
 `SHELL_REPORT_DB_POOL_MAX` also defaults to and is clamped at `4`. PostgreSQL
-intra-query parallelism remains disabled by default
-(`SHELL_REPORT_DB_DISABLE_PARALLELISM=true`), and the global transaction-local
+intra-query parallelism is enabled by default
+(`SHELL_REPORT_DB_DISABLE_PARALLELISM=false`), and the global transaction-local
 statement timeout is clamped to a maximum of 120000ms. Usage-report tasks receive
 the tighter remaining-budget timeout described above. Distinguish HTTP wall time
 from `reportQueryPressure` timeout/error counters: wall-clock latency is not by
@@ -770,8 +770,8 @@ Optional query filters:
 - `grok_side_channel_endpoint_type` — comma-separated endpoint type filter
 
 Side-channel diagnostic rows are included in session diagnostics when shape
-metadata is present; they remain excluded from billable usage aggregation via
-existing `no_usage` / reportable-session rules on usage totals.
+metadata is present; zero-signal side-channel rows remain excluded from billable
+usage aggregation by the reportable-session token/cost/tool signal gate.
 
 ## Session Diagnostics (Anthropic Context Window)
 

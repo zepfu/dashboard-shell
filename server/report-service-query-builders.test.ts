@@ -216,12 +216,18 @@ async function expectParsableSQL(sql: string): Promise<void> {
 // ---------------------------------------------------------------------------
 
 function expectReportableSessionHistoryFilter(sql: string, alias = 'sh') {
-  expect(sql).toContain(`${alias}.metadata->>'session_history_usage_record'`)
+  for (const key of [
+    'session_history_usage_record',
+    'session_history_reporting_excluded',
+    'session_history_model_reporting_excluded',
+  ]) {
+    expect(sql).not.toContain(key)
+  }
   expect(sql).toContain(
-    `${alias}.metadata->>'session_history_reporting_excluded'`
+    `lower(COALESCE(${alias}.call_type, '')) <> 'codex_transcript'`
   )
   expect(sql).toContain(
-    `${alias}.metadata->>'session_history_model_reporting_excluded'`
+    `lower(COALESCE(NULLIF(${alias}.model, ''), 'unknown')) <> 'unknown'`
   )
   expect(sql).toContain(`COALESCE(${alias}.input_tokens, 0)`)
   expect(sql).toContain(`COALESCE(${alias}.output_tokens, 0)`)
@@ -232,9 +238,9 @@ function expectReportableSessionHistoryFilter(sql: string, alias = 'sh') {
   expect(sql).toContain(`COALESCE(${alias}.response_cost_usd, 0)`)
   expect(sql).toContain(`COALESCE(${alias}.provider_cache_miss_cost_usd, 0)`)
   expect(sql).toContain(`COALESCE(${alias}.tool_call_count, 0) > 0`)
-  expect(sql).toContain(`${alias}.metadata->>'passthrough_route_family'`)
-  expect(sql).toContain(`${alias}.metadata->>'route_family'`)
-  expect(sql).toContain('grok_cli_chat_proxy')
+  expect(sql).not.toContain(`${alias}.metadata->>'passthrough_route_family'`)
+  expect(sql).not.toContain(`${alias}.metadata->>'route_family'`)
+  expect(sql).not.toContain('grok_cli_chat_proxy')
 }
 
 describe('D1-497 recorded response cost availability', () => {
@@ -308,16 +314,6 @@ describe('D1-497 recorded response cost availability', () => {
         recent_traces_90m: 0,
       },
     ])
-  })
-
-  test('legacy Grok side-channel eligibility remains based on all cost signals', async () => {
-    const { buildSummaryQuery } = await import('./report-service.mjs')
-    const query = buildSummaryQuery(new URLSearchParams())
-
-    expect(query.sql).toContain(
-      'COALESCE(sh.response_cost_usd, 0)\n    + COALESCE(sh.provider_cache_miss_cost_usd, 0)'
-    )
-    expect(query.sql).toContain('grok_cli_chat_proxy')
   })
 })
 
@@ -2937,9 +2933,24 @@ describe('report-service query builders', () => {
       provider: 'openai,anthropic',
     })
     const queries = [
+      buildSummaryQuery(params),
+      buildTrendQuery(params),
+      buildClientUsageQuery(params),
+      buildProviderStatusUsageQuery(params),
+      buildUsageQuery(params),
+      buildUsageDiagnosticStringsQuery(params),
+      buildUsageScoreReasonsQuery(params),
       buildTokenTrendHoursQuery(params),
       buildTokenTrendScoreQuery(params),
       buildTokenTrendModelFirstSeenQuery(params),
+      buildTokenTrendDayDetailQuery(
+        new URLSearchParams({
+          from: '2026-05-01',
+          to: '2026-05-08',
+          date: '2026-05-03',
+          provider: 'openai,anthropic',
+        })
+      ),
       buildQuotaHistoryQuery(params),
       buildQuotaRangeHistoryQuery(params),
       buildQuotaEstimatorUsageBucketQuery(params),
