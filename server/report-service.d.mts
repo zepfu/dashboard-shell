@@ -618,6 +618,10 @@ declare module './report-service.mjs' {
     parseBooleanEnv: (name: string, fallback: boolean) => boolean
     parseFiniteNumberEnv: (name: string, fallback: number) => number
     normalizeDatabaseUrl: (value: string) => string
+    buildCronHealthDatabaseUrl: (
+      value: string | undefined,
+      env?: Record<string, string | undefined>
+    ) => string | undefined
     parseDateParam: (value: string | null, fallback: () => string) => string
     resolveDefaultToDateString: (referenceDate?: Date) => string
     addDaysToDateString: (date: string, days: number) => string
@@ -783,6 +787,10 @@ declare module './report-service.mjs' {
     buildShellHealthPayload: typeof buildShellHealthPayload
     loadMaterializedViewHealthFromDatabase: (
       queryDatabase: (
+        sql: string,
+        values?: unknown[]
+      ) => Promise<{ rows: Array<Record<string, unknown>> }>,
+      queryCronDatabase?: (
         sql: string,
         values?: unknown[]
       ) => Promise<{ rows: Array<Record<string, unknown>> }>

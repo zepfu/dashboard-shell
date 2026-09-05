@@ -743,17 +743,37 @@ function optionalEnvValue(value) {
   return trimmed.length > 0 ? trimmed : undefined
 }
 
+function buildCronHealthDatabaseUrl(value, env = process.env) {
+  const normalizedValue = normalizeDatabaseUrl(value)
+  if (!normalizedValue) return undefined
+
+  try {
+    const databaseUrl = new URL(normalizedValue)
+    const host = optionalEnvValue(env.SHELL_REPORT_CRON_DATABASE_HOST)
+    if (host) databaseUrl.hostname = host
+    const port = optionalEnvValue(env.SHELL_REPORT_CRON_DATABASE_PORT)
+    if (port) databaseUrl.port = port
+    databaseUrl.pathname = `/${
+      optionalEnvValue(env.SHELL_REPORT_CRON_DATABASE_NAME) ?? 'postgres'
+    }`
+    return databaseUrl.toString()
+  } catch {
+    return undefined
+  }
+}
+
 function buildPostgresPoolOptions(
   applicationName,
   {
     max,
+    connectionString = DATABASE_URL,
     connectionTimeoutMillis = REPORT_DB_CONNECTION_TIMEOUT_MS,
     statementTimeoutMs = REPORT_DB_STATEMENT_TIMEOUT_MS,
     queryTimeoutMs = statementTimeoutMs > 0 ? statementTimeoutMs + 5_000 : 0,
   }
 ) {
   return {
-    connectionString: DATABASE_URL,
+    connectionString,
     application_name: applicationName,
     max,
     idleTimeoutMillis: 30_000,
@@ -902,6 +922,8 @@ function isClientSideDatabaseTimeoutError(error) {
   )
 }
 
+const CRON_DATABASE_URL = buildCronHealthDatabaseUrl(DATABASE_URL)
+
 const pool = DATABASE_URL
   ? new Pool(
       buildPostgresPoolOptions('dashboard-shell-report-service', {
@@ -912,6 +934,17 @@ const pool = DATABASE_URL
 const healthPool = DATABASE_URL
   ? new Pool(
       buildPostgresPoolOptions('dashboard-shell-health', {
+        max: 1,
+        connectionTimeoutMillis: HEALTH_DB_CONNECTION_TIMEOUT_MS,
+        statementTimeoutMs: HEALTH_DB_STATEMENT_TIMEOUT_MS,
+        queryTimeoutMs: HEALTH_DB_STATEMENT_TIMEOUT_MS + 500,
+      })
+    )
+  : null
+const cronHealthPool = CRON_DATABASE_URL
+  ? new Pool(
+      buildPostgresPoolOptions('dashboard-shell-cron-health', {
+        connectionString: CRON_DATABASE_URL,
         max: 1,
         connectionTimeoutMillis: HEALTH_DB_CONNECTION_TIMEOUT_MS,
         statementTimeoutMs: HEALTH_DB_STATEMENT_TIMEOUT_MS,
@@ -931,6 +964,13 @@ if (healthPool) {
   healthPool.on('error', (error) => {
     process.stderr.write(
       `[report-service] WARN: idle health database client error: ${formatError(error)}\n`
+    )
+  })
+}
+if (cronHealthPool) {
+  cronHealthPool.on('error', (error) => {
+    process.stderr.write(
+      `[report-service] WARN: idle cron health database client error: ${formatError(error)}\n`
     )
   })
 }
@@ -1305,6 +1345,21 @@ async function queryHealthDatabase(sql, values) {
     HEALTH_DB_STATEMENT_TIMEOUT_MS
   )
 }
+
+async function queryCronHealthDatabase(sql, values) {
+  if (!cronHealthPool) {
+    throw new Error(
+      'Cron health database is not configured for the shell report service.'
+    )
+  }
+  return queryPostgresWithLocalSettings(
+    cronHealthPool,
+    sql,
+    values,
+    HEALTH_DB_STATEMENT_TIMEOUT_MS
+  )
+}
+
 const reportCache = new Map()
 const releaseCacheLockScript = `
 if redis.call("GET", KEYS[1]) == ARGV[1] then
@@ -2752,8 +2807,14 @@ function buildMaterializedViewHealthErrorReport(error) {
 }
 
 async function loadMaterializedViewHealthFromDatabase(
-  queryDatabase = queryHealthDatabase
+  queryDatabase = queryHealthDatabase,
+  queryCronDatabase
 ) {
+  const cronQueryDatabase =
+    queryCronDatabase ??
+    (queryDatabase === queryHealthDatabase
+      ? queryCronHealthDatabase
+      : queryDatabase)
   const relationLookupQuery = buildMaterializedViewRelationLookupQuery()
   const relationResult = await queryDatabase(
     relationLookupQuery.sql,
@@ -2811,7 +2872,7 @@ async function loadMaterializedViewHealthFromDatabase(
 
   let jobRows = []
   try {
-    const jobResult = await queryDatabase(`
+    const jobResult = await cronQueryDatabase(`
 WITH dashboard_jobs AS (
   SELECT jobid, schedule, command, active, jobname
   FROM cron.job
@@ -14457,6 +14518,7 @@ async function shutdown() {
           await redisClient.quit()
         }
         await healthPool?.end()
+        await cronHealthPool?.end()
         await pool?.end()
       } catch (error) {
         process.stderr.write(
@@ -14547,6 +14609,7 @@ export const __envTestHelpers = {
   parseBooleanEnv,
   parseFiniteNumberEnv,
   normalizeDatabaseUrl,
+  buildCronHealthDatabaseUrl,
   parseDateParam,
   resolveDefaultToDateString,
   addDaysToDateString,

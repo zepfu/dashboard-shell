@@ -448,6 +448,23 @@ The normal report pool connection-acquisition timeout defaults to
 `SHELL_REPORT_DB_CONNECTION_TIMEOUT_MS=30000`; the separate health pool retains
 its fail-fast `SHELL_REPORT_HEALTH_DB_CONNECTION_TIMEOUT_MS=1000` default.
 
+Materialized-view health keeps application data and `pg_stat_activity` on the
+health pool's report database, then reads `cron.job` and
+`cron.job_run_details` through a separate single-connection cron health pool.
+The cron pool preserves the username, password, and connection parameters from
+`DATABASE_URL` while targeting the configured catalog database:
+
+- `SHELL_REPORT_CRON_DATABASE_HOST` (Compose default
+  `aawm-dev-postgresql`)
+- `SHELL_REPORT_CRON_DATABASE_PORT` (Compose default `5432`)
+- `SHELL_REPORT_CRON_DATABASE_NAME` (Compose default `postgres`)
+
+The report role must have `USAGE ON SCHEMA cron` and `SELECT` on the required
+cron catalog tables (`cron.job` and `cron.job_run_details`) in that PostgreSQL
+database. Compose does not grant these
+permissions automatically; apply the existing least-privilege grant in the
+target `postgres` database before enabling the health read.
+
 `GET /api/shell/reports/usage` returns compact usage rows by default. The report
 service omits row properties whose normalized value is `null`, `undefined`, or
 an empty string, and marks the response with:

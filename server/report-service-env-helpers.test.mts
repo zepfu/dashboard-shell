@@ -27,6 +27,29 @@ describe('report-service env and date helpers', () => {
     expect(out).toContain('user:pass')
   })
 
+  test('buildCronHealthDatabaseUrl overrides or preserves the target while keeping credentials', async () => {
+    const { __envTestHelpers } = await import('./report-service.mjs')
+    const overridden = __envTestHelpers.buildCronHealthDatabaseUrl(
+      'postgresql://aawm:secret@pgbouncer-aawm-dev:6432/aawm_tristore?sslmode=disable',
+      {
+        SHELL_REPORT_CRON_DATABASE_HOST: 'aawm-dev-postgresql',
+        SHELL_REPORT_CRON_DATABASE_PORT: '5432',
+        SHELL_REPORT_CRON_DATABASE_NAME: 'postgres',
+      }
+    )
+    const preserved = __envTestHelpers.buildCronHealthDatabaseUrl(
+      'postgresql://aawm:secret@standalone-postgresql:5544/aawm_tristore?sslmode=disable',
+      { SHELL_REPORT_CRON_DATABASE_NAME: 'postgres' }
+    )
+
+    expect(overridden).toBe(
+      'postgresql://aawm:secret@aawm-dev-postgresql:5432/postgres?sslmode=disable'
+    )
+    expect(preserved).toBe(
+      'postgresql://aawm:secret@standalone-postgresql:5544/postgres?sslmode=disable'
+    )
+  })
+
   test('module load does not throw when DATABASE_URL is malformed under host rewrite', async () => {
     vi.stubEnv('SHELL_REPORT_DATABASE_HOST_REWRITE', 'host.docker.internal')
     vi.stubEnv('DATABASE_URL', '%%%not-a-valid-url%%%')

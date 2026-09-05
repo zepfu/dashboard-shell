@@ -196,7 +196,7 @@ describe('D1-444 /api/shell/health parallel health checks', () => {
 })
 
 describe('D1-489 materialized view health degradation', () => {
-  test('keeps sibling views observable when one materialized view is missing', async () => {
+  test('keeps sibling views observable and splits cron catalog routing', async () => {
     vi.stubEnv('VITEST', 'true')
 
     const { __shellHealthTestHelpers } = await import('./report-service.mjs')
@@ -207,15 +207,20 @@ describe('D1-489 materialized view health degradation', () => {
       queryDatabase: (
         sql: string,
         values?: unknown[]
+      ) => Promise<{ rows: Array<Record<string, unknown>> }>,
+      queryCronDatabase?: (
+        sql: string,
+        values?: unknown[]
       ) => Promise<{ rows: Array<Record<string, unknown>> }>
     ) => Promise<Record<string, unknown>>
 
-    const calls: string[] = []
+    const appCalls: string[] = []
+    const cronCalls: string[] = []
     const queryDatabase = vi.fn(
       async (
         sql: string
       ): Promise<{ rows: Array<Record<string, unknown>> }> => {
-        calls.push(sql)
+        appCalls.push(sql)
         if (sql.includes('to_regclass(relation_name)')) {
           return {
             rows: [
@@ -240,13 +245,24 @@ describe('D1-489 materialized view health degradation', () => {
             ],
           }
         }
-        if (sql.includes('FROM cron.job')) return { rows: [] }
         if (sql.includes('FROM pg_stat_activity')) return { rows: [] }
         throw new Error(`unexpected health query: ${sql}`)
       }
     )
+    const queryCronDatabase = vi.fn(
+      async (
+        sql: string
+      ): Promise<{ rows: Array<Record<string, unknown>> }> => {
+        cronCalls.push(sql)
+        if (sql.includes('FROM cron.job')) return { rows: [] }
+        throw new Error(`unexpected cron health query: ${sql}`)
+      }
+    )
 
-    const report = await loadMaterializedViewHealthFromDatabase(queryDatabase)
+    const report = await loadMaterializedViewHealthFromDatabase(
+      queryDatabase,
+      queryCronDatabase
+    )
     const views = report.views as Array<Record<string, unknown>>
 
     expect(report.status).toBe('unknown')
@@ -267,9 +283,16 @@ describe('D1-489 materialized view health degradation', () => {
         rowCount: 12,
       }),
     ])
-    expect(calls[0]).toContain('to_regclass(relation_name)')
-    expect(calls[0]).not.toContain('::regclass')
-    expect(calls.some((sql) => sql.includes('MAX(fromdate)'))).toBe(false)
+    expect(appCalls[0]).toContain('to_regclass(relation_name)')
+    expect(appCalls[0]).not.toContain('::regclass')
+    expect(appCalls.some((sql) => sql.includes('MAX(fromdate)'))).toBe(false)
+    expect(appCalls.some((sql) => sql.includes('FROM pg_stat_activity'))).toBe(
+      true
+    )
+    expect(appCalls.some((sql) => sql.includes('FROM cron.job'))).toBe(false)
+    expect(cronCalls).toHaveLength(1)
+    expect(cronCalls[0]).toContain('FROM cron.job')
+    expect(cronCalls[0]).toContain('FROM cron.job_run_details')
   })
 })
 
