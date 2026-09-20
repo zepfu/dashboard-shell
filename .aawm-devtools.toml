@@ -1,0 +1,12 @@
+[todo]
+root = ".analysis"
+current_filename = "current.jsonl"
+manifest_filename = "todo-manifest.json"
+agent_event_filename = "todo-agent-events.jsonl"
+archive_directory_pattern = "archive/{year}"
+archive_filename_pattern = "{prefix}-{year}.jsonl"
+archive_timezone = "UTC"
+
+[todo.prefixes]
+D1 = 3
+LEDGER = 3
