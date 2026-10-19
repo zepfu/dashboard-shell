@@ -160,6 +160,13 @@ declare module './report-service' {
     searchParams: SearchParamsLike
   ) => QueryResult
   export const buildQuotaQuery: () => QueryResult
+  export const buildCohereLocalUsagePresenceQuery: () => QueryResult
+  export const buildCohereLocalUsageQuery: () => QueryResult
+  export const normalizeCohereLocalUsageReport: (
+    row: RecordRow | null,
+    options?: { staleAfterMinutes?: number }
+  ) => RecordRow
+  export const unavailableCohereLocalUsageReport: (reason?: string) => RecordRow
   export const normalizeQuotaRow: (row: RecordRow) => RecordRow & {
     provider: string
     model: string | null
@@ -190,6 +197,7 @@ declare module './report-service' {
   export const buildDegradedQuotaReport: () => {
     metadata: RecordRow
     quotas: RecordRow[]
+    cohereLocalUsage: RecordRow
   } & QueryResult
   export const buildDegradedUsageTokenTrendSummaryReport: (
     searchParams: SearchParamsLike,

@@ -3,6 +3,9 @@
  * Wave 11: extracted from phosphor-dashboard.testkit.ts
  */
 import type {
+  CohereLocalUsageReport,
+  CohereLocalUsageRoute,
+  CohereLocalUsageWindow,
   UsageReportQuotaHistoryRow,
   UsageReportQuotaRow,
 } from '../../api/usage-report'
@@ -36,7 +39,129 @@ import {
   tipRecentRequestTotal90mFromBreakdown,
   tipRequestTotalFromBreakdown,
 } from './fields'
-import { PROVIDER_LANE_DEFS } from './lane-defs'
+import {
+  COHERE_LOCAL_OBSERVATION_SOURCE,
+  PROVIDER_LANE_DEFS,
+} from './lane-defs'
+
+export interface CohereLocalUsageLane {
+  laneKey: string
+  laneLabel: string
+  window: 'monthly' | 'rpm'
+  accountRef: string
+  model: string | null
+  modelScoped: boolean
+  windowSeconds: number | null
+  used: number
+  limit: number | null
+  remaining: number | null
+  limitState: 'known' | 'missing'
+  dataState: 'known'
+  unit: 'requests'
+  observationSource: typeof COHERE_LOCAL_OBSERVATION_SOURCE
+  sourceFreshness: CohereLocalUsageReport['sourceFreshness']
+  routes: CohereLocalUsageRoute[]
+}
+
+function cohereLaneModelKey(model: string | null, index: number): string {
+  if (model !== null && /^[A-Za-z0-9_./:-]{1,160}$/.test(model)) return model
+  return `model-unavailable-${index.toString()}`
+}
+
+/**
+ * Builds locally counted Cohere lanes from a ledger report.
+ * Unknown counts are omitted here so a missing read cannot become a zero
+ * lane. Missing RPM limits stay on the lane with a null limit.
+ */
+export function buildCohereLocalUsageLanes(
+  report: CohereLocalUsageReport | null | undefined
+): CohereLocalUsageLane[] {
+  if (
+    report == null ||
+    report.readStatus !== 'ok' ||
+    report.observationSource !== COHERE_LOCAL_OBSERVATION_SOURCE ||
+    report.provider !== 'cohere'
+  ) {
+    return []
+  }
+
+  const lanes: CohereLocalUsageLane[] = []
+  const showAccount = report.scopes.length > 1
+  for (const scope of report.scopes) {
+    const accountRef = normalizeQuotaAccountRef(scope.accountRef)
+    if (accountRef === null || accountRef.length !== 12) continue
+    const accountLabel = formatQuotaAccountSuffix(accountRef)
+    scope.windows.forEach((window, index) => {
+      const lane = cohereWindowToLane(
+        window,
+        accountRef,
+        scope.routes,
+        report.sourceFreshness,
+        showAccount ? accountLabel : null,
+        index
+      )
+      if (lane !== null) lanes.push(lane)
+    })
+  }
+  return lanes
+}
+
+function cohereWindowToLane(
+  window: CohereLocalUsageWindow,
+  accountRef: string,
+  routes: CohereLocalUsageRoute[],
+  sourceFreshness: CohereLocalUsageReport['sourceFreshness'],
+  accountLabel: string | null,
+  index: number
+): CohereLocalUsageLane | null {
+  if (window.dataState !== 'known' || typeof window.used !== 'number') {
+    return null
+  }
+  if (window.window === 'rpm' && window.limitState === 'missing') {
+    if (window.limit !== null || window.remaining !== null) return null
+  }
+  if (window.window === 'monthly' && window.model !== null) return null
+  if (window.window !== 'monthly' && window.window !== 'rpm') return null
+
+  const accountSuffix =
+    accountLabel === null ? '' : ` · account ${accountLabel}`
+  const laneLabel =
+    window.window === 'monthly'
+      ? `UTC month · locally counted${accountSuffix}`
+      : window.model === null
+        ? `Model unavailable · 60s RPM · locally counted${accountSuffix}`
+        : `${window.model} · 60s RPM · locally counted${accountSuffix}`
+
+  return {
+    laneKey:
+      window.window === 'monthly'
+        ? `cohere/locally_counted/${accountRef}/monthly`
+        : `cohere/locally_counted/${accountRef}/rpm/${cohereLaneModelKey(window.model, index)}`,
+    laneLabel,
+    window: window.window,
+    accountRef,
+    model: window.model,
+    modelScoped: window.modelScoped,
+    windowSeconds: window.windowSeconds,
+    used: window.used,
+    limit: window.limitState === 'known' ? window.limit : null,
+    remaining: window.limitState === 'known' ? window.remaining : null,
+    limitState: window.limitState,
+    dataState: 'known',
+    unit: 'requests',
+    observationSource: COHERE_LOCAL_OBSERVATION_SOURCE,
+    sourceFreshness,
+    routes,
+  }
+}
+
+export function cohereLocalUsageCardTarget(
+  providerKeys: readonly string[],
+  report: CohereLocalUsageReport | null | undefined
+): 'existing' | 'separate' | 'hidden' {
+  if (report == null) return 'hidden'
+  return providerKeys.includes('cohere') ? 'existing' : 'separate'
+}
 
 type QuotaBarInterval = Parameters<typeof makeQuotaBarGroup>[2]
 type ResolvedQuotaAccountIdentity = ReturnType<

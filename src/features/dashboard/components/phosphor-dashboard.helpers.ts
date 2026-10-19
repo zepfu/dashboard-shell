@@ -30,6 +30,7 @@ export {
 export {
   buildPriorBarFromHistory,
   buildProviderLanes,
+  cohereLocalUsageCardTarget,
 } from '../lib/quota-bars/lanes'
 export {
   formatCompactQuantity,

@@ -1280,6 +1280,71 @@ export interface UsageReportResponse {
   rows: UsageReportRow[]
 }
 
+export type CohereLocalUsageFreshness =
+  | 'fresh'
+  | 'stale'
+  | 'unknown'
+  | 'unavailable'
+
+export type CohereLocalUsageReadStatus = 'ok' | 'unavailable'
+
+export type CohereLocalUsageUnavailableReason =
+  | 'relation_absent'
+  | 'read_failed'
+  | null
+
+export interface CohereLocalUsageRoute {
+  lane: string | null
+  source: string | null
+}
+
+export interface CohereLocalUsageWindow {
+  window: 'monthly' | 'rpm'
+  period: 'monthly' | 'rolling_seconds'
+  model: string | null
+  modelScoped: boolean
+  windowSeconds: number | null
+  used: number | null
+  limit: number | null
+  remaining: number | null
+  limitState: 'known' | 'missing'
+  dataState: 'known' | 'unknown'
+  unit: 'requests'
+}
+
+export interface CohereLocalUsageScope {
+  accountRef: string
+  routes: CohereLocalUsageRoute[]
+  windows: CohereLocalUsageWindow[]
+}
+
+/**
+ * Bounded Cohere accepted-call accounting from
+ * public.locally_counted_accepted_calls. Counts are local ledger totals.
+ * The monthly cap is the local trial constant. RPM limits are omitted when
+ * the ledger has no configured per-model limit.
+ */
+export interface CohereLocalUsageReport {
+  provider: 'cohere'
+  observationSource: 'locally_counted'
+  accounting: 'accepted_success'
+  readStatus: CohereLocalUsageReadStatus
+  unavailableReason: CohereLocalUsageUnavailableReason
+  sourceFreshness: CohereLocalUsageFreshness
+  observedAt: string | null
+  monthStart: string | null
+  monthEnd: string | null
+  latestAcceptedAt: string | null
+  latestPersistedAt: string | null
+  monthlyLimit: number
+  rpmWindowSeconds: number
+  rpmLimitState: 'missing'
+  scopesTruncated: boolean
+  routesTruncated: boolean
+  modelsTruncated: boolean
+  scopes: CohereLocalUsageScope[]
+}
+
 export interface UsageReportQuotasResponse {
   metadata: {
     generatedAt: string
@@ -1289,6 +1354,7 @@ export interface UsageReportQuotasResponse {
     staleRecordThresholdMinutes: number
   }
   quotas: UsageReportQuotaRow[]
+  cohereLocalUsage?: CohereLocalUsageReport
 }
 
 export interface UsageReportQuotaRangeHistoryResponse {
@@ -1989,6 +2055,169 @@ function assertUsageReportMetadataResponse(json: unknown): void {
   assertUsageReportRows(record.rows)
 }
 
+const COHERE_LOCAL_USAGE_FORBIDDEN_KEYS = new Set([
+  'credential_scope',
+  'credentialScope',
+  'session_id',
+  'sessionId',
+  'trace_id',
+  'traceId',
+  'litellm_call_id',
+  'litellmCallId',
+  'evidence',
+  'account_hash',
+  'accountHash',
+  'api_key',
+  'access_token',
+  'password',
+  'secret',
+])
+
+function assertCohereLocalUsageHasNoCredentialMaterial(
+  value: unknown,
+  depth = 0
+): void {
+  if (depth > 6) {
+    throw new Error('Invalid Cohere local usage: payload is too deep')
+  }
+  if (Array.isArray(value)) {
+    if (value.length > 100) {
+      throw new Error('Invalid Cohere local usage: payload is too large')
+    }
+    for (const entry of value) {
+      assertCohereLocalUsageHasNoCredentialMaterial(entry, depth + 1)
+    }
+    return
+  }
+  if (!isRecord(value)) return
+  for (const [key, entry] of Object.entries(value)) {
+    if (COHERE_LOCAL_USAGE_FORBIDDEN_KEYS.has(key)) {
+      throw new Error('Invalid Cohere local usage: private field')
+    }
+    assertCohereLocalUsageHasNoCredentialMaterial(entry, depth + 1)
+  }
+}
+
+function assertCohereLocalUsageWindow(value: unknown): void {
+  assertRecord(value, 'Cohere local usage window')
+  const windowName = value.window
+  if (windowName !== 'monthly' && windowName !== 'rpm') {
+    throw new Error('Invalid Cohere local usage window')
+  }
+  if (
+    value.period !== (windowName === 'monthly' ? 'monthly' : 'rolling_seconds')
+  ) {
+    throw new Error('Invalid Cohere local usage window period')
+  }
+  if (typeof value.modelScoped !== 'boolean') {
+    throw new Error('Invalid Cohere local usage window scope')
+  }
+  if (value.model !== null && typeof value.model !== 'string') {
+    throw new Error('Invalid Cohere local usage model')
+  }
+  if (value.unit !== 'requests') {
+    throw new Error('Invalid Cohere local usage unit')
+  }
+  if (value.limitState !== 'known' && value.limitState !== 'missing') {
+    throw new Error('Invalid Cohere local usage limit state')
+  }
+  if (value.dataState !== 'known' && value.dataState !== 'unknown') {
+    throw new Error('Invalid Cohere local usage data state')
+  }
+  const used = value.used
+  const limit = value.limit
+  const remaining = value.remaining
+  if (value.dataState === 'unknown' && used !== null) {
+    throw new Error('Invalid Cohere local usage: unknown data has a count')
+  }
+  if (value.dataState === 'known' && typeof used !== 'number') {
+    throw new Error('Invalid Cohere local usage count')
+  }
+  if (value.limitState === 'missing') {
+    if (limit !== null || remaining !== null) {
+      throw new Error('Invalid Cohere local usage: missing limit has a value')
+    }
+  } else if (typeof limit !== 'number') {
+    throw new Error('Invalid Cohere local usage limit')
+  } else if (value.dataState === 'known' && typeof remaining !== 'number') {
+    throw new Error('Invalid Cohere local usage remaining')
+  } else if (value.dataState === 'unknown' && remaining !== null) {
+    throw new Error('Invalid Cohere local usage: unknown data has remaining')
+  }
+  if (windowName === 'monthly') {
+    if (value.model !== null || value.modelScoped !== false) {
+      throw new Error('Invalid Cohere local usage monthly scope')
+    }
+    if (value.windowSeconds !== null) {
+      throw new Error('Invalid Cohere local usage monthly window')
+    }
+  } else if (value.modelScoped !== true || value.windowSeconds !== 60) {
+    throw new Error('Invalid Cohere local usage RPM window')
+  }
+}
+
+function assertCohereLocalUsageReport(value: unknown): void {
+  assertCohereLocalUsageHasNoCredentialMaterial(value)
+  assertRecord(value, 'Cohere local usage')
+  if (
+    value.provider !== 'cohere' ||
+    value.observationSource !== 'locally_counted' ||
+    value.accounting !== 'accepted_success' ||
+    value.rpmLimitState !== 'missing' ||
+    value.unit === 'balance'
+  ) {
+    throw new Error('Invalid Cohere local usage label')
+  }
+  if (value.readStatus !== 'ok' && value.readStatus !== 'unavailable') {
+    throw new Error('Invalid Cohere local usage read status')
+  }
+  if (
+    value.sourceFreshness !== 'fresh' &&
+    value.sourceFreshness !== 'stale' &&
+    value.sourceFreshness !== 'unknown' &&
+    value.sourceFreshness !== 'unavailable'
+  ) {
+    throw new Error('Invalid Cohere local usage freshness')
+  }
+  if (
+    value.unavailableReason !== null &&
+    value.unavailableReason !== 'relation_absent' &&
+    value.unavailableReason !== 'read_failed'
+  ) {
+    throw new Error('Invalid Cohere local usage unavailable reason')
+  }
+  if (typeof value.monthlyLimit !== 'number' || value.rpmWindowSeconds !== 60) {
+    throw new Error('Invalid Cohere local usage contract')
+  }
+  for (const flag of [
+    'scopesTruncated',
+    'routesTruncated',
+    'modelsTruncated',
+  ] as const) {
+    if (typeof value[flag] !== 'boolean') {
+      throw new Error('Invalid Cohere local usage bound')
+    }
+  }
+  assertArray(value.scopes, 'Cohere local usage scopes')
+  if (value.readStatus === 'unavailable' && value.scopes.length > 0) {
+    throw new Error('Invalid Cohere local usage: unavailable source has scopes')
+  }
+  for (const scope of value.scopes) {
+    assertRecord(scope, 'Cohere local usage scope')
+    if (
+      typeof scope.accountRef !== 'string' ||
+      !/^[a-f0-9]{12}$/.test(scope.accountRef)
+    ) {
+      throw new Error('Invalid Cohere local usage account reference')
+    }
+    assertArray(scope.routes, 'Cohere local usage routes')
+    assertArray(scope.windows, 'Cohere local usage windows')
+    for (const window of scope.windows) {
+      assertCohereLocalUsageWindow(window)
+    }
+  }
+}
+
 function assertUsageReportQuotasResponse(json: unknown): void {
   assertUsageReportSpotCheck(json, {
     metadataKeys: [
@@ -2001,6 +2230,10 @@ function assertUsageReportQuotasResponse(json: unknown): void {
     metadataShape: USAGE_REPORT_QUOTAS_METADATA_SHAPE,
     requireArrays: ['quotas'],
   })
+  const record = json as UsageReportJsonRecord
+  if (record.cohereLocalUsage !== undefined) {
+    assertCohereLocalUsageReport(record.cohereLocalUsage)
+  }
 }
 
 function assertUsageReportQuotaRangeHistoryResponse(json: unknown): void {

@@ -972,6 +972,7 @@ export function Dashboard(): ReactElement {
             showComparison={showComparison}
             reportRefreshKey={reportCacheBust}
             quotas={quotaRows}
+            cohereLocalUsage={quotasData?.cohereLocalUsage}
             reportFetching={summaryFetching}
             quotasFetching={quotasFetching}
             quotaHistory={quotaHistoryData?.quotaHistory ?? EMPTY_QUOTA_HISTORY}

@@ -5760,6 +5760,20 @@ const KIMI_CODE_CLIENT = 'kimi-code'
 const KIMI_CODE_5H_KEY = 'kimi_code_5h:quota_units'
 const KIMI_CODE_7D_KEY = 'kimi_code_7d:quota_units'
 const KIMI_CODE_QUOTA_UNIT = 'quota_units'
+// Mirrors LiteLLM COHERE_MONTHLY_LIMIT / COHERE_RPM_WINDOW_SECONDS. The ledger
+// stores accepted calls only; the monthly cap is a local accounting constant
+// and per-model RPM limits are not persisted.
+const COHERE_LOCAL_PROVIDER = 'cohere'
+const COHERE_LOCAL_OBSERVATION_SOURCE = 'locally_counted'
+const COHERE_LOCAL_ACCOUNTING = 'accepted_success'
+const COHERE_LOCAL_MONTHLY_REQUEST_LIMIT = 1000
+const COHERE_LOCAL_RPM_WINDOW_SECONDS = 60
+const COHERE_LOCAL_SCOPE_LIMIT = 20
+const COHERE_LOCAL_ROUTE_LIMIT = 40
+const COHERE_LOCAL_MODEL_LIMIT = 50
+const COHERE_LOCAL_ACCOUNT_REF = /^[a-f0-9]{12}$/
+const COHERE_LOCAL_ROUTE_TEXT = /^[A-Za-z0-9_./:-]{1,80}$/
+const COHERE_LOCAL_MODEL_TEXT = /^[A-Za-z0-9_./:-]{1,160}$/
 const CURSOR_AGENT_PROVIDER = 'cursor_agent'
 const CURSOR_AGENT_SOURCE = 'cursor_agent_usage'
 const CURSOR_AGENT_CLIENT = 'cursor-agent'
@@ -6433,6 +6447,488 @@ function buildQuotaRangeHistoryNormalizedCteSql(providerMode) {
       AND o.observed_at IS NOT NULL
       AND o.expected_reset_at IS NOT NULL${observationDateRange}
 )`
+}
+
+function sqlPositiveInteger(value, label, maximum) {
+  if (!Number.isInteger(value) || value < 1 || value > maximum) {
+    throw new TypeError(`${label} must be a positive integer`)
+  }
+  return String(value)
+}
+
+export function buildCohereLocalUsagePresenceQuery() {
+  return {
+    sql: "SELECT to_regclass('public.locally_counted_accepted_calls') AS ledger_relation",
+    values: [],
+  }
+}
+
+export function buildCohereLocalUsageQuery() {
+  const provider = sqlTextLiteral(COHERE_LOCAL_PROVIDER, 'Cohere provider')
+  const rpmSeconds = sqlPositiveInteger(
+    COHERE_LOCAL_RPM_WINDOW_SECONDS,
+    'Cohere RPM window',
+    3600
+  )
+  const scopeLimit = sqlPositiveInteger(
+    COHERE_LOCAL_SCOPE_LIMIT,
+    'Cohere scope limit',
+    100
+  )
+  const routeLimit = sqlPositiveInteger(
+    COHERE_LOCAL_ROUTE_LIMIT,
+    'Cohere route limit',
+    200
+  )
+  const modelLimit = sqlPositiveInteger(
+    COHERE_LOCAL_MODEL_LIMIT,
+    'Cohere model limit',
+    200
+  )
+  const scopeFetch = sqlPositiveInteger(
+    COHERE_LOCAL_SCOPE_LIMIT + 1,
+    'Cohere scope fetch',
+    101
+  )
+  const routeFetch = sqlPositiveInteger(
+    COHERE_LOCAL_ROUTE_LIMIT + 1,
+    'Cohere route fetch',
+    201
+  )
+  const modelFetch = sqlPositiveInteger(
+    COHERE_LOCAL_MODEL_LIMIT + 1,
+    'Cohere model fetch',
+    201
+  )
+  // Terminal-success rows only: LiteLLM inserts after result == "complete"
+  // and ignores duplicate call ids. This read does not consult
+  // rate_limit_observations or session_history. credential_scope is hashed
+  // in-query and is not projected. RPM limits are not stored on the ledger.
+  const sql = `
+WITH bounds AS (
+    SELECT
+        now() AS observed_at,
+        (date_trunc('month', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC') AS month_start,
+        ((date_trunc('month', now() AT TIME ZONE 'UTC') + INTERVAL '1 month') AT TIME ZONE 'UTC') AS month_end
+),
+freshness AS (
+    SELECT
+        accepted_at AS latest_accepted_at,
+        created_at AS latest_persisted_at
+    FROM public.locally_counted_accepted_calls
+    WHERE provider = ${provider}
+    ORDER BY accepted_at DESC
+    LIMIT 1
+),
+month_rows AS (
+    SELECT
+        NULLIF(left(md5(credential_scope), 12), left(md5(''), 12)) AS account_ref,
+        NULLIF(left(btrim(COALESCE(lane, '')), 80), '') AS lane,
+        NULLIF(left(btrim(COALESCE(source, '')), 80), '') AS source
+    FROM public.locally_counted_accepted_calls
+    WHERE provider = ${provider}
+      AND accepted_at >= (SELECT month_start FROM bounds)
+      AND accepted_at < (SELECT month_end FROM bounds)
+),
+monthly AS (
+    SELECT account_ref, COUNT(*)::integer AS used
+    FROM month_rows
+    WHERE account_ref IS NOT NULL
+    GROUP BY account_ref
+),
+monthly_bounded AS (
+    SELECT account_ref, used
+    FROM monthly
+    ORDER BY account_ref
+    LIMIT ${scopeFetch}
+),
+routes AS (
+    SELECT account_ref, lane, source
+    FROM month_rows
+    WHERE account_ref IS NOT NULL
+    GROUP BY account_ref, lane, source
+),
+routes_bounded AS (
+    SELECT account_ref, lane, source
+    FROM routes
+    ORDER BY account_ref, lane NULLS LAST, source NULLS LAST
+    LIMIT ${routeFetch}
+),
+rpm AS (
+    SELECT
+        NULLIF(left(md5(credential_scope), 12), left(md5(''), 12)) AS account_ref,
+        NULLIF(left(btrim(COALESCE(model, '')), 160), '') AS model,
+        COUNT(*)::integer AS used
+    FROM public.locally_counted_accepted_calls
+    WHERE provider = ${provider}
+      AND accepted_at > (SELECT observed_at FROM bounds) - (${rpmSeconds} * INTERVAL '1 second')
+      AND accepted_at <= (SELECT observed_at FROM bounds)
+    GROUP BY 1, 2
+),
+rpm_bounded AS (
+    SELECT account_ref, model, used
+    FROM rpm
+    WHERE account_ref IS NOT NULL
+    ORDER BY used DESC, account_ref, model NULLS LAST
+    LIMIT ${modelFetch}
+)
+SELECT
+    (SELECT observed_at FROM bounds) AS observed_at,
+    (SELECT month_start FROM bounds) AS month_start,
+    (SELECT month_end FROM bounds) AS month_end,
+    (SELECT latest_accepted_at FROM freshness) AS latest_accepted_at,
+    (SELECT latest_persisted_at FROM freshness) AS latest_persisted_at,
+    (SELECT COUNT(*)::integer FROM monthly_bounded) AS monthly_row_count,
+    (SELECT COUNT(*)::integer FROM routes_bounded) AS route_row_count,
+    (SELECT COUNT(*)::integer FROM rpm_bounded) AS rpm_row_count,
+    COALESCE((
+        SELECT json_agg(
+            json_build_object('account_ref', account_ref, 'used', used)
+            ORDER BY account_ref
+        )
+        FROM (
+            SELECT account_ref, used
+            FROM monthly_bounded
+            ORDER BY account_ref
+            LIMIT ${scopeLimit}
+        ) monthly_page
+    ), '[]'::json) AS monthly_counts,
+    COALESCE((
+        SELECT json_agg(
+            json_build_object(
+                'account_ref', account_ref,
+                'lane', lane,
+                'source', source
+            )
+            ORDER BY account_ref, lane, source
+        )
+        FROM (
+            SELECT account_ref, lane, source
+            FROM routes_bounded
+            ORDER BY account_ref, lane NULLS LAST, source NULLS LAST
+            LIMIT ${routeLimit}
+        ) route_page
+    ), '[]'::json) AS routes,
+    COALESCE((
+        SELECT json_agg(
+            json_build_object(
+                'account_ref', account_ref,
+                'model', model,
+                'used', used
+            )
+            ORDER BY used DESC, account_ref, model
+        )
+        FROM (
+            SELECT account_ref, model, used
+            FROM rpm_bounded
+            ORDER BY used DESC, account_ref, model NULLS LAST
+            LIMIT ${modelLimit}
+        ) rpm_page
+    ), '[]'::json) AS rpm_counts
+`
+  return { sql, values: [] }
+}
+
+function cohereTimestamp(value) {
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? null : value.toISOString()
+  }
+  if (typeof value !== 'string' || value.trim() === '') return null
+  const parsed = new Date(value)
+  return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString()
+}
+
+function cohereCount(value) {
+  if (typeof value === 'string' && /^[0-9]+$/.test(value)) {
+    const parsed = Number(value)
+    return Number.isSafeInteger(parsed) ? parsed : null
+  }
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
+    return null
+  }
+  return value
+}
+
+function cohereJsonList(value) {
+  if (typeof value === 'string') {
+    try {
+      value = JSON.parse(value)
+    } catch {
+      return null
+    }
+  }
+  return Array.isArray(value) ? value : null
+}
+
+function cohereAccountRef(value) {
+  if (typeof value !== 'string') return null
+  const normalized = value.trim().toLowerCase()
+  return COHERE_LOCAL_ACCOUNT_REF.test(normalized) ? normalized : null
+}
+
+function cohereRouteText(value) {
+  if (typeof value !== 'string') return null
+  const trimmed = value.trim()
+  return COHERE_LOCAL_ROUTE_TEXT.test(trimmed) ? trimmed : null
+}
+
+function cohereModelText(value) {
+  if (value == null) return null
+  if (typeof value !== 'string') return null
+  const trimmed = value.trim()
+  if (trimmed === '') return null
+  return COHERE_LOCAL_MODEL_TEXT.test(trimmed) ? trimmed : null
+}
+
+function cohereMonthlyWindow(used) {
+  if (used === null) {
+    return {
+      window: 'monthly',
+      period: 'monthly',
+      model: null,
+      modelScoped: false,
+      windowSeconds: null,
+      used: null,
+      limit: COHERE_LOCAL_MONTHLY_REQUEST_LIMIT,
+      remaining: null,
+      limitState: 'known',
+      dataState: 'unknown',
+      unit: 'requests',
+    }
+  }
+  return {
+    window: 'monthly',
+    period: 'monthly',
+    model: null,
+    modelScoped: false,
+    windowSeconds: null,
+    used,
+    limit: COHERE_LOCAL_MONTHLY_REQUEST_LIMIT,
+    remaining: Math.max(0, COHERE_LOCAL_MONTHLY_REQUEST_LIMIT - used),
+    limitState: 'known',
+    dataState: 'known',
+    unit: 'requests',
+  }
+}
+
+function cohereRpmWindow(used, model) {
+  return {
+    window: 'rpm',
+    period: 'rolling_seconds',
+    model,
+    modelScoped: true,
+    windowSeconds: COHERE_LOCAL_RPM_WINDOW_SECONDS,
+    used,
+    limit: null,
+    remaining: null,
+    limitState: 'missing',
+    dataState: used === null ? 'unknown' : 'known',
+    unit: 'requests',
+  }
+}
+
+function classifyCohereSourceFreshness({
+  observedAt,
+  latestPersistedAt,
+  latestAcceptedAt,
+  staleAfterMinutes,
+}) {
+  const latest = latestPersistedAt ?? latestAcceptedAt
+  if (latest === null) return 'unknown'
+  const ageMs = new Date(observedAt).getTime() - new Date(latest).getTime()
+  if (!Number.isFinite(ageMs)) return 'unknown'
+  if (ageMs > staleAfterMinutes * 60_000) return 'stale'
+  return 'fresh'
+}
+
+export function unavailableCohereLocalUsageReport(reason = 'read_failed') {
+  return {
+    provider: COHERE_LOCAL_PROVIDER,
+    observationSource: COHERE_LOCAL_OBSERVATION_SOURCE,
+    accounting: COHERE_LOCAL_ACCOUNTING,
+    readStatus: 'unavailable',
+    unavailableReason:
+      reason === 'relation_absent' ? 'relation_absent' : 'read_failed',
+    sourceFreshness: 'unavailable',
+    observedAt: null,
+    monthStart: null,
+    monthEnd: null,
+    latestAcceptedAt: null,
+    latestPersistedAt: null,
+    monthlyLimit: COHERE_LOCAL_MONTHLY_REQUEST_LIMIT,
+    rpmWindowSeconds: COHERE_LOCAL_RPM_WINDOW_SECONDS,
+    rpmLimitState: 'missing',
+    scopesTruncated: false,
+    routesTruncated: false,
+    modelsTruncated: false,
+    scopes: [],
+  }
+}
+
+export function normalizeCohereLocalUsageReport(row, options = {}) {
+  const staleAfterMinutes = Number.isInteger(options.staleAfterMinutes)
+    ? options.staleAfterMinutes
+    : STALE_RECORD_THRESHOLD_MINUTES
+  if (row == null || typeof row !== 'object') {
+    return unavailableCohereLocalUsageReport('read_failed')
+  }
+  const observedAt = cohereTimestamp(row.observed_at)
+  const monthStart = cohereTimestamp(row.month_start)
+  const monthEnd = cohereTimestamp(row.month_end)
+  const latestAcceptedAt = cohereTimestamp(row.latest_accepted_at)
+  const latestPersistedAt = cohereTimestamp(row.latest_persisted_at)
+  const monthlyCounts = cohereJsonList(row.monthly_counts)
+  const routes = cohereJsonList(row.routes)
+  const rpmCounts = cohereJsonList(row.rpm_counts)
+  if (
+    observedAt === null ||
+    monthStart === null ||
+    monthEnd === null ||
+    monthlyCounts === null ||
+    routes === null ||
+    rpmCounts === null
+  ) {
+    return unavailableCohereLocalUsageReport('read_failed')
+  }
+
+  const monthlyRowCount = cohereCount(row.monthly_row_count)
+  const routeRowCount = cohereCount(row.route_row_count)
+  const rpmRowCount = cohereCount(row.rpm_row_count)
+  const scopesTruncated =
+    monthlyRowCount === null || monthlyRowCount > COHERE_LOCAL_SCOPE_LIMIT
+  const routesTruncated =
+    routeRowCount === null || routeRowCount > COHERE_LOCAL_ROUTE_LIMIT
+  const modelsTruncated =
+    rpmRowCount === null || rpmRowCount > COHERE_LOCAL_MODEL_LIMIT
+
+  const scopes = new Map()
+  const ensureScope = (accountRef) => {
+    const existing = scopes.get(accountRef)
+    if (existing !== undefined) return existing
+    const created = {
+      accountRef,
+      routes: [],
+      monthlyUsed: undefined,
+      rpmWindows: [],
+    }
+    scopes.set(accountRef, created)
+    return created
+  }
+
+  for (const entry of monthlyCounts) {
+    if (entry == null || typeof entry !== 'object') continue
+    const accountRef = cohereAccountRef(entry.account_ref)
+    const used = cohereCount(entry.used)
+    if (accountRef === null || used === null) continue
+    ensureScope(accountRef).monthlyUsed = used
+  }
+
+  for (const entry of routes) {
+    if (entry == null || typeof entry !== 'object') continue
+    const accountRef = cohereAccountRef(entry.account_ref)
+    if (accountRef === null) continue
+    const scope = ensureScope(accountRef)
+    if (scope.routes.length >= 8) continue
+    const lane = cohereRouteText(entry.lane)
+    const source = cohereRouteText(entry.source)
+    if (lane === null && source === null) continue
+    const duplicate = scope.routes.some(
+      (route) => route.lane === lane && route.source === source
+    )
+    if (!duplicate) scope.routes.push({ lane, source })
+  }
+
+  for (const entry of rpmCounts) {
+    if (entry == null || typeof entry !== 'object') continue
+    const accountRef = cohereAccountRef(entry.account_ref)
+    const used = cohereCount(entry.used)
+    if (accountRef === null || used === null) continue
+    const rawModel = entry.model
+    const model =
+      rawModel == null || rawModel === '' ? null : cohereModelText(rawModel)
+    const modelUnparsed = rawModel != null && rawModel !== '' && model === null
+    ensureScope(accountRef).rpmWindows.push({
+      model: modelUnparsed ? null : model,
+      modelUnparsed,
+      used,
+    })
+  }
+
+  if (!scopesTruncated) {
+    for (const scope of scopes.values()) {
+      if (scope.monthlyUsed === undefined && scope.rpmWindows.length > 0) {
+        scope.monthlyUsed = 0
+      }
+    }
+  }
+
+  const normalizedScopes = [...scopes.values()]
+    .sort((left, right) => left.accountRef.localeCompare(right.accountRef))
+    .map((scope) => ({
+      accountRef: scope.accountRef,
+      routes: scope.routes,
+      windows: [
+        cohereMonthlyWindow(
+          scope.monthlyUsed === undefined ? null : scope.monthlyUsed
+        ),
+        ...scope.rpmWindows.map((rpmWindow) =>
+          cohereRpmWindow(
+            rpmWindow.used,
+            rpmWindow.modelUnparsed ? null : rpmWindow.model
+          )
+        ),
+      ],
+    }))
+
+  return {
+    provider: COHERE_LOCAL_PROVIDER,
+    observationSource: COHERE_LOCAL_OBSERVATION_SOURCE,
+    accounting: COHERE_LOCAL_ACCOUNTING,
+    readStatus: 'ok',
+    unavailableReason: null,
+    sourceFreshness: classifyCohereSourceFreshness({
+      observedAt,
+      latestPersistedAt,
+      latestAcceptedAt,
+      staleAfterMinutes,
+    }),
+    observedAt,
+    monthStart,
+    monthEnd,
+    latestAcceptedAt,
+    latestPersistedAt,
+    monthlyLimit: COHERE_LOCAL_MONTHLY_REQUEST_LIMIT,
+    rpmWindowSeconds: COHERE_LOCAL_RPM_WINDOW_SECONDS,
+    rpmLimitState: 'missing',
+    scopesTruncated,
+    routesTruncated,
+    modelsTruncated,
+    scopes: normalizedScopes,
+  }
+}
+
+async function loadCohereLocalUsageReport() {
+  try {
+    const presenceQuery = buildCohereLocalUsagePresenceQuery()
+    const presenceResult = await queryReportDatabase(
+      presenceQuery.sql,
+      presenceQuery.values
+    )
+    const relation = firstRow(presenceResult).ledger_relation
+    if (relation == null || relation === '') {
+      return unavailableCohereLocalUsageReport('relation_absent')
+    }
+    const usageQuery = buildCohereLocalUsageQuery()
+    const usageResult = await queryReportDatabase(
+      usageQuery.sql,
+      usageQuery.values
+    )
+    return normalizeCohereLocalUsageReport(firstRow(usageResult), {
+      staleAfterMinutes: STALE_RECORD_THRESHOLD_MINUTES,
+    })
+  } catch {
+    return unavailableCohereLocalUsageReport('read_failed')
+  }
 }
 
 export function buildQuotaQuery() {
@@ -8903,6 +9399,7 @@ export function buildDegradedQuotaReport() {
       quotaReportStatementTimeoutMs: REPORT_DB_STATEMENT_TIMEOUT_MS,
     },
     quotas: [],
+    cohereLocalUsage: unavailableCohereLocalUsageReport('read_failed'),
   }
 }
 
@@ -10485,7 +10982,7 @@ async function loadQuotaReportFromDatabase() {
   const quotaQuery = buildQuotaQuery()
   const quotaVelocityQuery = buildQuotaVelocityQuery()
   const freshnessQuery = buildFreshnessQuery()
-  const [quotaResult, quotaVelocityResult, freshnessResult] =
+  const [quotaResult, quotaVelocityResult, freshnessResult, cohereLocalUsage] =
     await runTasksWithConcurrency(
       [
         () => queryReportDatabase(quotaQuery.sql, quotaQuery.values),
@@ -10495,6 +10992,7 @@ async function loadQuotaReportFromDatabase() {
             quotaVelocityQuery.values
           ),
         () => queryReportDatabase(freshnessQuery.sql, freshnessQuery.values),
+        () => loadCohereLocalUsageReport(),
       ],
       REPORT_SQL_FANOUT_CONCURRENCY
     )
@@ -10513,6 +11011,7 @@ async function loadQuotaReportFromDatabase() {
     quotas: quotaResult.rows
       .map((row) => attachQuotaVelocityRows(row, quotaVelocityRowsByLane))
       .map(normalizeQuotaRow),
+    cohereLocalUsage,
   }
 }
 
