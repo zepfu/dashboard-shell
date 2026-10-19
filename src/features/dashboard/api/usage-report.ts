@@ -1037,6 +1037,12 @@ export interface UsageReportAliasRouteEvent {
   cooldown_until?: string | null
   redispatch_required?: boolean | string | null
   last_resort?: boolean | string | null
+  failure_phase?: string | null
+  selection_reason?: string | null
+  session_owner_mismatch_reason?: string | null
+  attempted_provider_call?: boolean | string | null
+  replay_safety?: UsageReportAliasReplaySafety | null
+  egress_disposition?: UsageReportAliasTerminalEgress | null
   details?: Record<string, unknown> | null
 }
 
@@ -1107,6 +1113,28 @@ export interface RequestWaitCheckpointDiagnostics {
   provider_response_id: string | null
   history_empty_completion_failure: boolean | null
   generated_at: string | null
+}
+
+export type UsageReportAliasTerminalEgress =
+  | 'local_guard'
+  | 'replay_rejection'
+  | 'attempted_provider_egress'
+  | 'unavailable'
+
+export interface UsageReportAliasReplaySafety {
+  field_path?: string | null
+  classification?: string | null
+}
+
+export interface UsageReportAuditIdentity {
+  source: 'alias_routing_audit'
+  history_row: 'absent'
+  session_id: 'recorded' | 'unavailable'
+  trace_id: 'recorded' | 'unavailable'
+  litellm_call_id: 'recorded' | 'unavailable'
+  provider: 'recorded' | 'unavailable'
+  model: 'recorded' | 'unavailable'
+  repository: 'recorded' | 'unavailable'
 }
 
 export interface UsageReportSessionDiagnosticsRow {
@@ -1204,6 +1232,7 @@ export interface UsageReportSessionDiagnosticsRow {
     tool_definition_snapshot?: unknown
   } | null
   alias_route_events?: UsageReportAliasRouteEvent[]
+  audit_identity?: UsageReportAuditIdentity | null
   anthropic_context_window?: UsageReportAnthropicContextWindowDiagnostics | null
   stream_diagnostics?: UsageReportSessionDiagnosticsStream | null
   request_wait_checkpoint?: RequestWaitCheckpointDiagnostics | null
@@ -2294,6 +2323,260 @@ function normalizeRequestWaitCheckpoint(
   }
 }
 
+const ALIAS_TERMINAL_REPLAY_CLASSIFICATIONS = new Set([
+  'previous_response_id',
+  'id_only_reasoning_reference',
+  'explicit_item_reference',
+  'invalid_body_shape',
+])
+
+function boundedAliasText(value: unknown, max: number): string | null {
+  if (typeof value !== 'string' && typeof value !== 'number') return null
+  const text = String(value).trim()
+  if (!text) return null
+  return text.slice(0, max)
+}
+
+function boundedAliasLabel(value: unknown, max: number): string | null {
+  const text = boundedAliasText(value, max * 4)
+  if (!text) return null
+  const cleaned = text.replace(/[^\w.\-:/ ]+/g, '').trim()
+  if (!cleaned) return null
+  return cleaned.slice(0, max)
+}
+
+function parseAttemptedProviderCall(value: unknown): boolean | null {
+  if (value === undefined || value === null || value === '') return null
+  const normalized = normalizeBooleanishString(value)
+  return typeof normalized === 'boolean' ? normalized : null
+}
+
+export function sanitizeUsageReportReplaySafety(
+  value: unknown
+): UsageReportAliasReplaySafety | null {
+  if (value === null || value === undefined) return null
+  if (typeof value !== 'object' || Array.isArray(value)) return null
+  const record = value as Record<string, unknown>
+  const classification = boundedAliasLabel(record.classification, 64)
+  if (
+    !classification ||
+    !ALIAS_TERMINAL_REPLAY_CLASSIFICATIONS.has(classification)
+  ) {
+    return null
+  }
+  const fieldPath = boundedAliasText(record.field_path, 256)
+  const safePath =
+    fieldPath && /^[A-Za-z0-9_$.[\]*-]+$/.test(fieldPath) ? fieldPath : null
+  return {
+    classification,
+    field_path: safePath,
+  }
+}
+
+function aliasReplayEvidence(
+  event: Pick<UsageReportAliasRouteEvent, 'failure_phase' | 'replay_safety'>
+): boolean {
+  if (sanitizeUsageReportReplaySafety(event.replay_safety)) return true
+  return Boolean(event.failure_phase?.includes('replay'))
+}
+
+function isTerminalAliasRouteEvent(event: UsageReportAliasRouteEvent): boolean {
+  if (event.event_type === 'redispatch_required') return true
+  if (event.failure_class === 'session_owner_redispatch') return true
+  if (event.failure_phase?.startsWith('session_owner')) return true
+  if (sanitizeUsageReportReplaySafety(event.replay_safety)) return true
+  if (event.session_owner_mismatch_reason) return true
+  if (parseAttemptedProviderCall(event.attempted_provider_call) !== null) {
+    return true
+  }
+  return false
+}
+
+export function classifyAliasTerminalEgress(
+  event: UsageReportAliasRouteEvent | null | undefined
+): UsageReportAliasTerminalEgress | null {
+  if (!event || !isTerminalAliasRouteEvent(event)) return null
+  const attempted = parseAttemptedProviderCall(event.attempted_provider_call)
+  if (attempted === true) return 'attempted_provider_egress'
+  if (attempted === false && aliasReplayEvidence(event)) {
+    return 'replay_rejection'
+  }
+  if (attempted === false) return 'local_guard'
+  return 'unavailable'
+}
+
+export function projectUsageReportAliasRouteEvent(
+  event: UsageReportAliasRouteEvent
+): UsageReportAliasRouteEvent {
+  const projected: UsageReportAliasRouteEvent = {}
+  const textFields = [
+    'observed_at',
+    'session_id',
+    'trace_id',
+    'litellm_call_id',
+    'alias_model',
+    'alias_family',
+    'provider',
+    'model',
+    'route_family',
+    'event_type',
+    'failure_class',
+    'cooldown_state',
+    'cooldown_until',
+  ] as const
+  for (const field of textFields) {
+    const text = boundedAliasText(event[field], 256)
+    if (text != null) projected[field] = text
+  }
+  if (
+    typeof event.attempt_number === 'number' &&
+    Number.isFinite(event.attempt_number)
+  ) {
+    projected.attempt_number = event.attempt_number
+  } else if (typeof event.attempt_number === 'string') {
+    const attempt = boundedAliasText(event.attempt_number, 32)
+    if (attempt != null) projected.attempt_number = attempt
+  }
+  if (event.redispatch_required !== undefined) {
+    projected.redispatch_required = normalizeBooleanishString(
+      event.redispatch_required
+    )
+  }
+  if (event.last_resort !== undefined) {
+    projected.last_resort = normalizeBooleanishString(event.last_resort)
+  }
+  const phase = boundedAliasLabel(event.failure_phase, 128)
+  if (phase) projected.failure_phase = phase
+  const selection = boundedAliasLabel(event.selection_reason, 240)
+  if (selection) projected.selection_reason = selection
+  const reason = boundedAliasLabel(event.session_owner_mismatch_reason, 240)
+  if (reason) projected.session_owner_mismatch_reason = reason
+  if (
+    event.attempted_provider_call !== undefined &&
+    event.attempted_provider_call !== null &&
+    event.attempted_provider_call !== ''
+  ) {
+    const attempted = parseAttemptedProviderCall(event.attempted_provider_call)
+    if (attempted !== null) projected.attempted_provider_call = attempted
+  }
+  const replay = sanitizeUsageReportReplaySafety(event.replay_safety)
+  if (replay) projected.replay_safety = replay
+  const disposition = classifyAliasTerminalEgress(projected)
+  if (disposition) projected.egress_disposition = disposition
+  return projected
+}
+
+function aliasEventCorrelationIdentity(
+  event: UsageReportAliasRouteEvent,
+  row?: Pick<
+    UsageReportSessionDiagnosticsRow,
+    'litellm_call_id' | 'trace_id' | 'session_id'
+  >
+): string {
+  const call = boundedAliasText(
+    event.litellm_call_id ?? row?.litellm_call_id,
+    256
+  )
+  const trace = boundedAliasText(event.trace_id ?? row?.trace_id, 256)
+  const session = boundedAliasText(event.session_id ?? row?.session_id, 256)
+  if (call) return `call:${call}`
+  if (trace) return `trace:${trace}`
+  if (session) return `session:${session}`
+  return ''
+}
+
+function aliasEventTimestamp(value: unknown): number | null {
+  const text = boundedAliasText(value, 64)
+  if (!text) return null
+  const parsed = Date.parse(text)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+function sameRepresentedAliasEvent(
+  left: UsageReportAliasRouteEvent,
+  right: UsageReportAliasRouteEvent,
+  row?: UsageReportSessionDiagnosticsRow
+): boolean {
+  const leftIdentity = aliasEventCorrelationIdentity(left, row)
+  const rightIdentity = aliasEventCorrelationIdentity(right, row)
+  if (!leftIdentity || leftIdentity !== rightIdentity) return false
+  if ((left.event_type ?? '') !== (right.event_type ?? '')) return false
+  if (
+    String(left.attempt_number ?? '') !== String(right.attempt_number ?? '')
+  ) {
+    return false
+  }
+  const leftTime = aliasEventTimestamp(left.observed_at)
+  const rightTime = aliasEventTimestamp(right.observed_at)
+  if (leftTime != null && rightTime != null) return leftTime === rightTime
+  return true
+}
+
+export function dedupeUsageReportAliasRouteEvents(
+  events: readonly UsageReportAliasRouteEvent[] | undefined,
+  row?: UsageReportSessionDiagnosticsRow
+): UsageReportAliasRouteEvent[] {
+  const deduped: UsageReportAliasRouteEvent[] = []
+  for (const event of events ?? []) {
+    const existing = deduped.find((candidate) =>
+      sameRepresentedAliasEvent(candidate, event, row)
+    )
+    if (existing) {
+      supplementAliasTerminalEvidence(existing, event)
+      continue
+    }
+    deduped.push(event)
+  }
+  return deduped
+}
+
+function supplementAliasTerminalEvidence(
+  existing: UsageReportAliasRouteEvent,
+  incoming: UsageReportAliasRouteEvent
+): void {
+  const fields = [
+    'failure_phase',
+    'failure_class',
+    'selection_reason',
+    'session_owner_mismatch_reason',
+    'attempted_provider_call',
+    'replay_safety',
+  ] as const
+  for (const field of fields) {
+    if (
+      (existing[field] === undefined || existing[field] === null) &&
+      incoming[field] !== undefined &&
+      incoming[field] !== null
+    ) {
+      existing[field] = incoming[field] as never
+    }
+  }
+  const disposition = classifyAliasTerminalEgress(existing)
+  if (disposition) existing.egress_disposition = disposition
+}
+
+export function sanitizeUsageReportAuditIdentity(
+  value: unknown
+): UsageReportAuditIdentity | null {
+  if (value === null || value === undefined) return null
+  if (typeof value !== 'object' || Array.isArray(value)) return null
+  const record = value as Record<string, unknown>
+  if (record.source !== 'alias_routing_audit') return null
+  if (record.history_row !== 'absent') return null
+  const status = (field: string): 'recorded' | 'unavailable' =>
+    record[field] === 'recorded' ? 'recorded' : 'unavailable'
+  return {
+    source: 'alias_routing_audit',
+    history_row: 'absent',
+    session_id: status('session_id'),
+    trace_id: status('trace_id'),
+    litellm_call_id: status('litellm_call_id'),
+    provider: status('provider'),
+    model: status('model'),
+    repository: status('repository'),
+  }
+}
+
 function normalizeUsageReportSessionDiagnosticsRow(
   row: UsageReportSessionDiagnosticsRow
 ): UsageReportSessionDiagnosticsRow {
@@ -2351,11 +2634,15 @@ function normalizeUsageReportSessionDiagnosticsRow(
           ),
         }
       : row.tool_definitions,
-    alias_route_events: row.alias_route_events?.map((event) => ({
-      ...event,
-      redispatch_required: normalizeBooleanishString(event.redispatch_required),
-      last_resort: normalizeBooleanishString(event.last_resort),
-    })),
+    alias_route_events: Array.isArray(row.alias_route_events)
+      ? dedupeUsageReportAliasRouteEvents(
+          row.alias_route_events.map((event) =>
+            projectUsageReportAliasRouteEvent(event)
+          ),
+          row
+        )
+      : row.alias_route_events,
+    audit_identity: sanitizeUsageReportAuditIdentity(row.audit_identity),
     stream_diagnostics: normalizeSessionDiagnosticsStream(
       row.stream_diagnostics
     ),

@@ -43,6 +43,14 @@ import {
   buildRequestWaitCheckpointQuery,
 } from './request-wait-checkpoint-query.mjs'
 import {
+  aliasAuditTerminalEvidenceSql,
+  buildSessionDiagnosticsAuditTerminalQuery as buildAuditTerminalSessionDiagnosticsQuery,
+  mergeSessionDiagnosticsWithAuditTerminalRows,
+  normalizeAuditTerminalDiagnosticRow,
+  sanitizeAliasRouteEvents,
+  sanitizeAuditIdentity,
+} from './session-diagnostics-audit-terminal.mjs'
+import {
   normalizeSessionDiagnosticsStream,
   sessionDiagnosticsStreamCategorySql,
   sessionDiagnosticsStreamFlagSql,
@@ -10151,6 +10159,15 @@ export function normalizeProviderCreditLifecycleReport(rows, options = {}) {
   }
 }
 
+export function buildSessionDiagnosticsAuditTerminalQuery(searchParams) {
+  const { from, to } = buildSessionDiagnosticsWhere(searchParams)
+  return buildAuditTerminalSessionDiagnosticsQuery(searchParams, {
+    from,
+    to,
+    limit: parseSessionDiagnosticsLimit(searchParams.get('limit')),
+  })
+}
+
 export function buildSessionDiagnosticsQuery(searchParams) {
   const { from, to, values, whereParts } =
     buildSessionDiagnosticsWhere(searchParams)
@@ -10227,7 +10244,8 @@ diagnostic_rows AS (
                         'cooldown_until', to_jsonb(aa)->>'cooldown_until',
                         'redispatch_required', to_jsonb(aa)->>'redispatch_required',
                         'last_resort', to_jsonb(aa)->>'last_resort',
-                        'details', to_jsonb(aa)->'details'
+                        'details', to_jsonb(aa)->'details',
+                        ${aliasAuditTerminalEvidenceSql('aa')}
                     )
                 )
                 ORDER BY observed_at
@@ -10593,9 +10611,8 @@ function normalizeSessionDiagnosticsRow(row) {
       row.stream_diagnostics
     ),
     reasoning_effort: normalizeReasoningEffortDiagnostics(row.reasoning_effort),
-    alias_route_events: Array.isArray(row.alias_route_events)
-      ? row.alias_route_events
-      : [],
+    alias_route_events: sanitizeAliasRouteEvents(row.alias_route_events),
+    audit_identity: sanitizeAuditIdentity(row.audit_identity),
   }
 }
 
@@ -13898,20 +13915,35 @@ async function loadUsageSessionDiagnostics(searchParams) {
     to: query.metadata.to,
     limit: query.metadata.limit,
   })
-  const [result, checkpointResult] = await runTasksWithConcurrency(
+  const auditQuery = buildSessionDiagnosticsAuditTerminalQuery(searchParams)
+  const [result, checkpointResult, auditResult] = await runTasksWithConcurrency(
     [
       () => queryReportDatabase(query.sql, query.values),
       () => queryReportDatabase(checkpointQuery.sql, checkpointQuery.values),
+      () => queryReportDatabase(auditQuery.sql, auditQuery.values),
     ],
     REPORT_SQL_FANOUT_CONCURRENCY
   )
   const generatedAt = new Date().toISOString()
+  const historyRows = (result.rows ?? []).map(normalizeSessionDiagnosticsRow)
+  const auditRows = (auditResult.rows ?? [])
+    .map(normalizeAuditTerminalDiagnosticRow)
+    .filter((row) => row.alias_route_events.length > 0)
   return assembleRequestWaitDiagnostics({
     metadata: {
       ...query.metadata,
+      auditTerminal: {
+        dataSource: auditQuery.metadata.dataSource,
+        limit: auditQuery.metadata.limit,
+        excludedFilters: auditQuery.metadata.excludedFilters,
+      },
       generatedAt,
     },
-    sessionDiagnostics: (result.rows ?? []).map(normalizeSessionDiagnosticsRow),
+    sessionDiagnostics: mergeSessionDiagnosticsWithAuditTerminalRows(
+      historyRows,
+      auditRows,
+      query.metadata.limit
+    ),
     checkpointRows: checkpointResult.rows ?? [],
     generatedAt,
   })

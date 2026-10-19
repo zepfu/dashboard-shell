@@ -1,8 +1,12 @@
 import { memo, useState, type ReactElement, type ReactNode } from 'react'
-import type {
-  RequestWaitCheckpointDiagnostics,
-  UsageReportSessionDiagnosticsResponse,
-  UsageReportSessionDiagnosticsRow,
+import {
+  classifyAliasTerminalEgress,
+  dedupeUsageReportAliasRouteEvents,
+  projectUsageReportAliasRouteEvent,
+  type RequestWaitCheckpointDiagnostics,
+  type UsageReportAliasTerminalEgress,
+  type UsageReportSessionDiagnosticsResponse,
+  type UsageReportSessionDiagnosticsRow,
 } from '../../api/usage-report'
 import { sessionDiagnosticsRequestIdentity } from '../../lib/session-diagnostics-zen-account'
 import { displaySessionIdentityValue } from '../../lib/session-identity'
@@ -261,62 +265,129 @@ function aliasRouteEventKey(event: AliasRouteEvent): string {
 }
 
 function aliasTimelineEvents(
-  events: UsageReportSessionDiagnosticsRow['alias_route_events']
+  events: UsageReportSessionDiagnosticsRow['alias_route_events'],
+  row?: UsageReportSessionDiagnosticsRow
 ): AliasRouteEvent[] {
-  if (!Array.isArray(events)) return []
-  return [...events].sort((left, right) =>
+  const projected = dedupeUsageReportAliasRouteEvents(
+    (events ?? []).map((event) => projectUsageReportAliasRouteEvent(event)),
+    row
+  )
+  return projected.sort((left, right) =>
     String(left.observed_at ?? '').localeCompare(
       String(right.observed_at ?? '')
     )
   )
 }
 
+function egressLabel(disposition: UsageReportAliasTerminalEgress): string {
+  switch (disposition) {
+    case 'local_guard':
+      return 'local guard'
+    case 'replay_rejection':
+      return 'replay rejection'
+    case 'attempted_provider_egress':
+      return 'attempted provider egress'
+    default:
+      return 'unavailable'
+  }
+}
+
+function recordedDiagnosticLabel(
+  value: string | null | undefined,
+  status: 'recorded' | 'unavailable' | undefined,
+  historyFallback: string
+): string {
+  if (status === 'unavailable') return 'unavailable'
+  const trimmed = typeof value === 'string' ? value.trim() : ''
+  if (status === 'recorded') return trimmed || 'unavailable'
+  return trimmed || historyFallback
+}
+
 function AliasRouteTimeline({
   events,
+  row,
 }: {
   events: UsageReportSessionDiagnosticsRow['alias_route_events']
+  row?: UsageReportSessionDiagnosticsRow
 }): ReactElement | null {
-  const timeline = aliasTimelineEvents(events)
+  const timeline = aliasTimelineEvents(events, row)
   if (timeline.length === 0) return null
 
   return (
     <div className='status-diagnostics-timeline'>
-      {timeline.map((event) => (
-        <div
-          key={aliasRouteEventKey(event)}
-          className='status-diagnostics-timeline-row'
-        >
-          <div className='status-diagnostics-timeline-main'>
-            <span>{event.observed_at ?? 'time unknown'}</span>
-            <strong>{event.event_type ?? 'event'}</strong>
-            <span>
-              {[event.alias_model, event.provider, event.model]
-                .filter(Boolean)
-                .join(' -> ') || 'route unknown'}
-            </span>
+      {timeline.map((event) => {
+        const egress = classifyAliasTerminalEgress(event)
+        return (
+          <div
+            key={aliasRouteEventKey(event)}
+            className='status-diagnostics-timeline-row'
+          >
+            <div className='status-diagnostics-timeline-main'>
+              <span>{event.observed_at ?? 'time unknown'}</span>
+              <strong>{event.event_type ?? 'event'}</strong>
+              <span>
+                {[event.alias_model, event.provider, event.model]
+                  .filter(Boolean)
+                  .join(' -> ') || 'route unknown'}
+              </span>
+            </div>
+            <div className='status-diagnostics-timeline-meta'>
+              <span>
+                attempt{' '}
+                <strong>{formatDiagnosticValue(event.attempt_number)}</strong>
+              </span>
+              <span>
+                cooldown{' '}
+                <strong>{formatDiagnosticValue(event.cooldown_state)}</strong>
+              </span>
+              <span>
+                redispatch{' '}
+                <strong>
+                  {formatDiagnosticValue(event.redispatch_required)}
+                </strong>
+              </span>
+              <span>
+                last resort{' '}
+                <strong>{formatDiagnosticValue(event.last_resort)}</strong>
+              </span>
+              {egress ? (
+                <>
+                  <span>
+                    egress <strong>{egressLabel(egress)}</strong>
+                  </span>
+                  <span>
+                    provider call{' '}
+                    <strong>
+                      {event.attempted_provider_call === true
+                        ? 'true'
+                        : event.attempted_provider_call === false
+                          ? 'false'
+                          : 'unavailable'}
+                    </strong>
+                  </span>
+                  {event.failure_phase ? (
+                    <span>
+                      phase <strong>{event.failure_phase}</strong>
+                    </span>
+                  ) : null}
+                  {event.session_owner_mismatch_reason ? (
+                    <span>
+                      reason{' '}
+                      <strong>{event.session_owner_mismatch_reason}</strong>
+                    </span>
+                  ) : null}
+                  {event.replay_safety?.classification ? (
+                    <span>
+                      replay{' '}
+                      <strong>{event.replay_safety.classification}</strong>
+                    </span>
+                  ) : null}
+                </>
+              ) : null}
+            </div>
           </div>
-          <div className='status-diagnostics-timeline-meta'>
-            <span>
-              attempt{' '}
-              <strong>{formatDiagnosticValue(event.attempt_number)}</strong>
-            </span>
-            <span>
-              cooldown{' '}
-              <strong>{formatDiagnosticValue(event.cooldown_state)}</strong>
-            </span>
-            <span>
-              redispatch{' '}
-              <strong>
-                {formatDiagnosticValue(event.redispatch_required)}
-              </strong>
-            </span>
-            <span>
-              last resort{' '}
-              <strong>{formatDiagnosticValue(event.last_resort)}</strong>
-            </span>
-          </div>
-        </div>
-      ))}
+        )
+      })}
     </div>
   )
 }
@@ -563,7 +634,26 @@ const SessionDiagnosticsCard = memo(function SessionDiagnosticsCard({
 }): ReactElement {
   const flags = row.diagnostic_flags ?? []
   const categories = row.diagnostic_categories ?? []
-  const provider = row.provider ?? 'unknown'
+  const auditOnly = row.audit_identity?.history_row === 'absent'
+  const provider = recordedDiagnosticLabel(
+    row.provider,
+    auditOnly ? row.audit_identity?.provider : undefined,
+    'unknown'
+  )
+  const providerLabel =
+    provider === 'unavailable' ? 'unavailable' : canonicalProvider(provider)
+  const modelLabel = recordedDiagnosticLabel(
+    row.model,
+    auditOnly ? row.audit_identity?.model : undefined,
+    'unknown'
+  )
+  const repositoryLabel = recordedDiagnosticLabel(
+    row.repository,
+    auditOnly ? row.audit_identity?.repository : undefined,
+    'unknown'
+  )
+  const clientLabel = auditOnly ? 'unavailable' : (row.client ?? 'unknown')
+  const aliasRouteEvents = aliasTimelineEvents(row.alias_route_events, row)
   const hostAttribution = sessionDiagnosticsHostAttribution(row)
   const requestIdentity = sessionDiagnosticsRequestIdentity(row)
   const transcriptDetail = asRecord(
@@ -605,8 +695,8 @@ const SessionDiagnosticsCard = memo(function SessionDiagnosticsCard({
   return (
     <article className='status-estimator-lane status-diagnostics-card'>
       <div className='status-estimator-lane-head'>
-        <span style={{ color: providerBrandHex(provider) }}>
-          {canonicalProvider(provider)}
+        <span style={{ color: providerBrandHex(providerLabel) }}>
+          {providerLabel}
         </span>
       </div>
       <div
@@ -617,15 +707,24 @@ const SessionDiagnosticsCard = memo(function SessionDiagnosticsCard({
           <span key={field}>
             {field}{' '}
             <strong data-identity={field}>
-              {displaySessionIdentityValue(row[field])}
+              {field === 'model'
+                ? modelLabel
+                : displaySessionIdentityValue(row[field])}
             </strong>
           </span>
         ))}
       </div>
       <div className='status-estimator-lane-key'>
-        {row.repository ?? 'unknown'} · {row.client ?? 'unknown'} ·{' '}
-        {row.created_at ?? 'time unknown'}
+        {repositoryLabel} · {clientLabel} · {row.created_at ?? 'time unknown'}
       </div>
+      {auditOnly && row.audit_identity ? (
+        <div className='status-diagnostics-audit-identity'>
+          <span>audit-only terminal</span>
+          <span>session {row.audit_identity.session_id}</span>
+          <span>trace {row.audit_identity.trace_id}</span>
+          <span>litellm_call_id {row.audit_identity.litellm_call_id}</span>
+        </div>
+      ) : null}
       {hostAttribution ? (
         <div className='status-diagnostics-host'>
           <span>
@@ -797,12 +896,12 @@ const SessionDiagnosticsCard = memo(function SessionDiagnosticsCard({
       <div className='status-estimator-block'>
         <strong>Alias routing</strong>
         <span className='status-estimator-muted'>
-          {(row.alias_route_events ?? []).length.toLocaleString()} audit events
+          {aliasRouteEvents.length.toLocaleString()} audit events
         </span>
-        <AliasRouteTimeline events={row.alias_route_events} />
+        <AliasRouteTimeline events={aliasRouteEvents} />
         <DiagnosticDetails
           label='alias route events'
-          value={row.alias_route_events}
+          value={aliasRouteEvents}
         />
       </div>
 
