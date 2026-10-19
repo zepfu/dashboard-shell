@@ -23,6 +23,13 @@ import {
   stripAnsi,
 } from './docker-log-error-intake.mjs'
 import {
+  normalizeReasoningEffortDiagnostics,
+  reasoningEffortDiagnosticCategorySql,
+  reasoningEffortDiagnosticFlagSql,
+  reasoningEffortDiagnosticsProjectionSql,
+  reasoningEffortMetadataPresentSql,
+} from './reasoning-effort-diagnostics.mjs'
+import {
   buildReportCacheEntry,
   buildReportCacheIdentity,
   buildReportCachePrewarmLockKey,
@@ -4952,6 +4959,7 @@ function sessionDiagnosticsMetadataPresentClause(columnPrefix = '') {
     OR ${grokSideChannelMetadataPresentClause(p)}
     OR ${sessionDiagnosticsStreamMetadataPresentSql(`${p}metadata`)}
     OR ${zenAccount.admissionSql}
+    OR ${reasoningEffortMetadataPresentSql(p)}
   )`
 }
 
@@ -10339,7 +10347,8 @@ SELECT
              THEN 'anthropic_context_window'::text END,
         ${sessionDiagnosticsStreamFlagSql('metadata')},
         CASE WHEN ${zenAccount.admissionSql}
-             THEN 'zen_account'::text END
+             THEN 'zen_account'::text END,
+        ${reasoningEffortDiagnosticFlagSql('')}
     ], NULL) AS diagnostic_flags,
     ARRAY_REMOVE(ARRAY[
         CASE WHEN metadata->>'credential_family' IS NOT NULL
@@ -10372,7 +10381,8 @@ SELECT
              THEN 'context_window'::text END,
         ${sessionDiagnosticsStreamCategorySql('metadata')},
         CASE WHEN ${zenAccount.admissionSql}
-             THEN 'account_identity'::text END
+             THEN 'account_identity'::text END,
+        ${reasoningEffortDiagnosticCategorySql('')}
     ], NULL) AS diagnostic_categories,
     jsonb_strip_nulls(jsonb_build_object(
         'credential_family', NULLIF(metadata->>'credential_family', ''),
@@ -10495,6 +10505,7 @@ SELECT
         )
     )) AS anthropic_context_window,
     ${sessionDiagnosticsStreamProjectionSql('metadata')} AS stream_diagnostics,
+    ${reasoningEffortDiagnosticsProjectionSql('metadata')} AS reasoning_effort,
     COALESCE(
         alias_route_events,
         metadata->'aawm_alias_routing_audit_events',
@@ -10581,6 +10592,7 @@ function normalizeSessionDiagnosticsRow(row) {
     stream_diagnostics: normalizeSessionDiagnosticsStream(
       row.stream_diagnostics
     ),
+    reasoning_effort: normalizeReasoningEffortDiagnostics(row.reasoning_effort),
     alias_route_events: Array.isArray(row.alias_route_events)
       ? row.alias_route_events
       : [],

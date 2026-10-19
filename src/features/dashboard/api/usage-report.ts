@@ -1,5 +1,9 @@
 import { queryOptions } from '@tanstack/react-query'
 import {
+  type ReasoningEffortDiagnostics,
+  normalizeReasoningEffortDiagnostics,
+} from '../../../../server/reasoning-effort-diagnostics.mjs'
+import {
   normalizeSessionDiagnosticsStream,
   type UsageReportSessionDiagnosticsStream,
 } from '../components/status-section/session-diagnostics-stream'
@@ -1203,6 +1207,7 @@ export interface UsageReportSessionDiagnosticsRow {
   anthropic_context_window?: UsageReportAnthropicContextWindowDiagnostics | null
   stream_diagnostics?: UsageReportSessionDiagnosticsStream | null
   request_wait_checkpoint?: RequestWaitCheckpointDiagnostics | null
+  reasoning_effort?: ReasoningEffortDiagnostics | null
 }
 
 export type UsageReportProviderAliasRoutingStateSource =
@@ -2354,6 +2359,7 @@ function normalizeUsageReportSessionDiagnosticsRow(
     stream_diagnostics: normalizeSessionDiagnosticsStream(
       row.stream_diagnostics
     ),
+    reasoning_effort: normalizeReasoningEffortDiagnostics(row.reasoning_effort),
   }
   if (!Object.prototype.hasOwnProperty.call(row, 'stream_diagnostics')) {
     delete normalized.stream_diagnostics

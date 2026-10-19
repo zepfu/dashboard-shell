@@ -10,6 +10,7 @@ import {
   canonicalProvider,
   providerBrandHex,
 } from '../../lib/usage-report-display'
+import { ReasoningEffortMapping } from './reasoning-effort-diagnostics'
 import { STATUS_PILL_FALLBACK, StatusPanel, statusPill } from './section-chrome'
 import { SessionDiagnosticsStreamBlock } from './session-diagnostics-stream-block'
 
@@ -662,6 +663,8 @@ const SessionDiagnosticsCard = memo(function SessionDiagnosticsCard({
         stream={row.stream_diagnostics}
         diagnosticFlags={flags}
       />
+
+      <ReasoningEffortMapping value={row.reasoning_effort} />
 
       {row.grok_oauth ? (
         <div className='status-estimator-block'>
