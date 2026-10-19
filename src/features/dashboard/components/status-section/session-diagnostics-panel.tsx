@@ -1,5 +1,6 @@
 import { memo, useState, type ReactElement, type ReactNode } from 'react'
 import type {
+  UsageReportCodexReviewDecisionsResponse,
   UsageReportSessionDiagnosticsResponse,
   UsageReportSessionDiagnosticsRow,
 } from '../../api/usage-report'
@@ -7,6 +8,7 @@ import {
   canonicalProvider,
   providerBrandHex,
 } from '../../lib/usage-report-display'
+import { CodexReviewDecisionsPanel } from './codex-review-decisions-panel'
 import { STATUS_PILL_FALLBACK, StatusPanel, statusPill } from './section-chrome'
 
 const SESSION_DIAGNOSTICS_HEAD_PILL = {
@@ -623,5 +625,30 @@ export function SessionDiagnosticsPanel({
         ))}
       </div>
     </StatusPanel>
+  )
+}
+
+export function OperatorDiagnosticsPanels({
+  sessionDiagnostics,
+  sessionDiagnosticsLoading,
+  codexReviewDecisions,
+  codexReviewDecisionsLoading,
+}: {
+  sessionDiagnostics: UsageReportSessionDiagnosticsResponse | undefined
+  sessionDiagnosticsLoading: boolean
+  codexReviewDecisions: UsageReportCodexReviewDecisionsResponse | undefined
+  codexReviewDecisionsLoading: boolean
+}): ReactElement {
+  return (
+    <>
+      <CodexReviewDecisionsPanel
+        response={codexReviewDecisions}
+        loading={codexReviewDecisionsLoading}
+      />
+      <SessionDiagnosticsPanel
+        response={sessionDiagnostics}
+        loading={sessionDiagnosticsLoading}
+      />
+    </>
   )
 }

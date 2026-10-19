@@ -12,6 +12,10 @@ import { promisify } from 'node:util'
 import { gzip as gzipCallback, gunzip as gunzipCallback } from 'node:zlib'
 import pg from 'pg'
 import {
+  buildCodexReviewDecisionsQuery,
+  normalizeCodexReviewDecisionRows,
+} from './codex-review-decisions-query.mjs'
+import {
   appendDockerLogErrorsToIntake,
   extractDockerLogErrorsFromTail,
   selectNewDockerLogErrors,
@@ -13765,6 +13769,26 @@ async function loadUsageSessionDiagnostics(searchParams) {
   }
 }
 
+async function loadUsageCodexReviewDecisions(searchParams) {
+  const from = parseDateParam(searchParams.get('from'), defaultFromDate)
+  const to = parseDateParam(searchParams.get('to'), defaultToDate)
+  const query = buildCodexReviewDecisionsQuery(searchParams, { from, to })
+  const result = await queryReportDatabase(query.sql, query.values)
+  const decisions = normalizeCodexReviewDecisionRows(result.rows)
+  return {
+    metadata: {
+      from: query.metadata.from,
+      to: query.metadata.to,
+      limit: query.metadata.limit,
+      decisionKey: query.metadata.decisionKey,
+      detail: query.metadata.detail,
+      generatedAt: new Date().toISOString(),
+    },
+    decisions,
+    decision: query.metadata.detail ? (decisions[0] ?? null) : null,
+  }
+}
+
 async function loadUsageTokenTrendSummary(searchParams) {
   const includeTokenTrendHealth = shouldIncludeTokenTrendHealth(searchParams)
   const hoursQuery = buildTokenTrendHoursQuery(searchParams)
@@ -14008,6 +14032,22 @@ async function handleUsageSessionDiagnostics(req, res) {
     res,
     'usage-session-diagnostics-v1',
     loadUsageSessionDiagnostics
+  )
+}
+
+async function handleUsageCodexReviewDecisions(req, res) {
+  // The report cache helper only checks that a pool value is present.
+  // Vitest binds the query executor without opening a database pool.
+  const testPool =
+    isReportQueryTestRuntime() && queryReportDatabaseTestImpl
+      ? { codexReviewDecisionsTestPool: true }
+      : undefined
+  await handleCachedUsageSubreport(
+    req,
+    res,
+    'usage-codex-review-decisions-v1',
+    loadUsageCodexReviewDecisions,
+    testPool ? { pool: testPool } : {}
   )
 }
 
@@ -14452,6 +14492,14 @@ async function handleRequest(req, res) {
 
   if (
     req.method === 'GET' &&
+    requestUrl.pathname === '/api/shell/reports/usage/codex-review-decisions'
+  ) {
+    await handleUsageCodexReviewDecisions(req, res)
+    return
+  }
+
+  if (
+    req.method === 'GET' &&
     requestUrl.pathname === '/api/shell/reports/usage/token-trend-day'
   ) {
     await handleUsageTokenTrendDay(req, res)
@@ -14718,6 +14766,8 @@ export const __usageReportTestHelpers = {
   USAGE_REPORT_RESPONSE_HEADROOM_MS,
   normalizeRow,
   normalizeSessionDiagnosticsRow,
+  loadUsageCodexReviewDecisions,
+  handleUsageCodexReviewDecisions,
   buildUsageScoreReasonsMergeKey,
   AGENT_SCORE_REASON_RECENT_ROW_LIMIT,
   setQueryReportDatabaseTestImpl(impl) {

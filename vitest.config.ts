@@ -1,6 +1,14 @@
 import path from 'path'
 import react from '@vitejs/plugin-react-swc'
+import { fileURLToPath } from 'node:url'
 import { defineConfig } from 'vitest/config'
+
+// Vite's default config bundle injects CJS __dirname. The ESM runner loader
+// does not, so fall back to this file's URL.
+const configDir =
+  typeof __dirname === 'string'
+    ? __dirname
+    : path.dirname(fileURLToPath(import.meta.url))
 
 // NOTE: We intentionally do NOT import the @module-federation/vite plugin here.
 // The federation plugin is incompatible with Vitest's test runner (it expects a
@@ -10,7 +18,7 @@ export default defineConfig({
   plugins: [react()],
   resolve: {
     alias: {
-      '@': path.resolve(__dirname, './src'),
+      '@': path.resolve(configDir, './src'),
     },
   },
   test: {
