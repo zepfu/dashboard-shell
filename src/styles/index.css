@@ -3005,6 +3005,38 @@
   font-size: 10px;
 }
 
+.status-forecast-panel {
+  margin-bottom: 8px;
+}
+
+.status-forecast-note {
+  margin: 0 0 8px;
+  color: var(--fg-muted);
+  font-family: var(--font-mono);
+  font-size: 9px;
+}
+
+.status-forecast-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+
+.status-forecast-filter {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--fg-muted);
+  padding: 2px 6px;
+}
+
+.status-forecast-filter.is-selected {
+  color: var(--fg);
+  border-color: var(--accent-chrome);
+}
+
 .status-diagnostics-grid {
   grid-template-columns: repeat(1, minmax(0, 1fr));
 }

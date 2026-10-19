@@ -1500,6 +1500,17 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
 
     await waitFor(() => {
       expect(screen.getByText('Phase 0-2 estimator detail')).toBeInTheDocument()
+      expect(
+        screen.getByText('Phase 2 quota burn forecast')
+      ).toBeInTheDocument()
+      expect(
+        screen.getByText(/does not replace those bars/i)
+      ).toBeInTheDocument()
+      expect(
+        screen.getByText(
+          /interval-censored and state-space confidence are not used/i
+        )
+      ).toBeInTheDocument()
     })
     expect(seenFrom).toBe('2026-05-20')
     expect(seenTo).toBe('2026-05-21')
