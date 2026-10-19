@@ -22,6 +22,7 @@ import {
   filterDockerLogErrorsForCentralizedIntake,
   stripAnsi,
 } from './docker-log-error-intake.mjs'
+import { buildQuotaPhase3Report } from './quota-phase3.mjs'
 import {
   buildReportCacheEntry,
   buildReportCacheIdentity,
@@ -11966,6 +11967,19 @@ export function buildQuotaEstimatorReport(rows, metadata = {}) {
     lanes.set(key, laneIntervals)
   }
 
+  const estimates = [...lanes.values()].map(buildQuotaEstimatorLaneEstimate)
+  const selectedLagByLane = {}
+  for (const estimate of estimates) {
+    selectedLagByLane[
+      [
+        estimate.provider,
+        estimate.quota_key,
+        estimate.quota_type,
+        estimate.quota_lane,
+      ].join('|')
+    ] = estimate.selected_lag_minutes
+  }
+
   return {
     metadata: {
       from: metadata.from ?? null,
@@ -11976,7 +11990,13 @@ export function buildQuotaEstimatorReport(rows, metadata = {}) {
       estimatorVersion: 'quota-weight-phase0-2-v1',
     },
     phase0Audit: buildQuotaEstimatorPhase0Audit(),
-    estimates: [...lanes.values()].map(buildQuotaEstimatorLaneEstimate),
+    estimates,
+    phase3: buildQuotaPhase3Report(intervals, {
+      from: metadata.from ?? null,
+      to: metadata.to ?? null,
+      selectedLagByLane,
+      phase2Estimates: estimates,
+    }),
   }
 }
 
@@ -13988,7 +14008,7 @@ async function handleUsageQuotaEstimator(req, res) {
   await handleCachedUsageSubreport(
     req,
     res,
-    'usage-quota-estimator-v1',
+    'usage-quota-estimator-v2',
     loadUsageQuotaEstimator
   )
 }

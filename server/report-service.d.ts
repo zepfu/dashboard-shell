@@ -119,6 +119,7 @@ declare module './report-service' {
   }
 
   interface QuotaEstimatorReport {
+    metadata?: { phase?: string; estimatorVersion?: string }
     estimates: Array<{
       coefficients: QuotaEstimatorEstimate[]
       cache_read_vs_uncached_workload_ratio: number
@@ -130,6 +131,17 @@ declare module './report-service' {
       }>
     }>
     phase0Audit: { known_missing_fields: string[] }
+    phase3?: {
+      phase: string
+      estimator_version: string
+      live_evaluation: {
+        status: string
+        better_reset_window_calibration: string
+        lower_interval_residual_autocorrelation: string
+        evidence_search: Record<string, string>
+      }
+      estimates: Array<Record<string, unknown>>
+    }
   }
 
   export const USAGE_TOKEN_TREND_SUMMARY_SUBQUERY_KEYS: readonly string[]

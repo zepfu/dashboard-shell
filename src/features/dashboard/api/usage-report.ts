@@ -1399,6 +1399,40 @@ export interface UsageReportQuotaEstimatorEstimate {
   diagnostics: UsageReportQuotaEstimatorDiagnostic[]
 }
 
+export interface UsageReportQuotaPhase3Response {
+  phase: '3'
+  estimator_version: string
+  model: 'cumulative_interval_censored_state_space'
+  live_evaluation: {
+    status: 'unmet'
+    better_reset_window_calibration: 'unmet'
+    lower_interval_residual_autocorrelation: 'unmet'
+    clear_uncertainty_intervals: 'met'
+    reason: string
+  }
+  cache_read_prior: {
+    numeric_ratio: null
+    strength: 'weak'
+    evidence: string
+  }
+  cache_write_policy: {
+    duration_split: 'unavailable'
+    generic_feature: 'cache_create'
+    coefficients_not_estimated: string[]
+  }
+  phase2_comparison: {
+    scope: string
+    live_evaluation_status: 'unmet'
+    acceptance: {
+      better_reset_window_calibration: 'unmet'
+      lower_interval_residual_autocorrelation: 'unmet'
+      clear_uncertainty_intervals: 'met'
+    }
+    metrics: Record<string, number | null>
+  }
+  estimates: Array<Record<string, unknown>>
+}
+
 export interface UsageReportQuotaEstimatorResponse {
   metadata: {
     from: string | null
@@ -1416,6 +1450,7 @@ export interface UsageReportQuotaEstimatorResponse {
     known_missing_fields: string[]
   }
   estimates: UsageReportQuotaEstimatorEstimate[]
+  phase3?: UsageReportQuotaPhase3Response
 }
 
 export interface UsageReportToolActivityResponse {
