@@ -4,10 +4,13 @@
  * Phase 0-2 regresses exact deltas of rounded displayed percentages. This
  * module treats each displayed percent as a band around latent burn since the
  * reset anchor, keeps token categories separate, and lets coefficients follow
- * a random walk that is smoothed backward. Live improvement over the Phase 2
- * rolling estimator is not claimed: this repository has no verified Phase 0-2
- * residual report, lag-sensitivity artifact, identifiability score, or
- * rolling-versus-static backtest to compare against.
+ * a random walk that is smoothed backward. The autocorrelation compared with
+ * Phase 2 is the innovation of a one-step forecast of the displayed quota
+ * change, not the gap between latent level and displayed percent. Live
+ * improvement over the Phase 2 rolling estimator is not claimed: this
+ * repository has no verified Phase 0-2 residual report, lag-sensitivity
+ * artifact, identifiability score, or rolling-versus-static backtest to
+ * compare against.
  */
 
 const INTERIOR_TIE_BREAK_WEIGHT = 1e-6
@@ -134,7 +137,8 @@ export function compareQuotaPhase3ToPhase2({
     metric_definitions: {
       phase2_interval_residual:
         'displayed_delta_minus_phase2_rolling_prediction',
-      phase3_interval_residual: 'latent_level_minus_displayed_percent',
+      phase3_interval_residual:
+        'displayed_delta_minus_phase3_one_step_forecast',
       phase2_reset: 'mean_absolute_error_of_summed_trainable_deltas',
       phase3_reset: 'mean_distance_outside_the_censored_reset_band',
     },
@@ -245,6 +249,14 @@ function buildLaneEstimate(lane, phase2Coefficients) {
   for (const rule of DISPLAY_RULES) {
     byRule[rule] = fitDisplayRule(compiled, rule, semantics)
   }
+  const forecastAutocorrelation = quotaPhase3Lag1Autocorrelation(
+    quotaPhase3OneStepDisplayedChangeResiduals(lane.intervals, {
+      featureNames: compiled.featureNames,
+    })
+  )
+  for (const rule of DISPLAY_RULES) {
+    byRule[rule].interval_residual_autocorrelation = forecastAutocorrelation
+  }
   const comparison = compareDisplayRules(byRule)
   const phase2Summary = summarizePhase2(lane.intervals, phase2Coefficients)
   const summarySource = comparison.preferred_rule
@@ -347,7 +359,6 @@ function fitDisplayRule(compiled, rule, semantics) {
     identifiability,
   })
   const observationDistances = []
-  const residuals = []
   const resetBandDistances = []
   const resetPointErrors = []
   for (let index = 0; index < epochs.length; index += 1) {
@@ -362,7 +373,6 @@ function fitDisplayRule(compiled, rule, semantics) {
       observationDistances.push(
         quotaPhase3BandDistance(prediction, observation.band) ?? 0
       )
-      residuals.push(prediction - observation.displayed)
     }
     if (epoch.resetTarget) {
       const predictedBurn = dot(epoch.resetTarget.total, beta)
@@ -386,8 +396,7 @@ function fitDisplayRule(compiled, rule, semantics) {
     mean_observation_band_distance: meanOf(observationDistances),
     mean_reset_window_band_distance: meanOf(resetBandDistances),
     mean_reset_window_point_abs_error: meanOf(resetPointErrors),
-    interval_residual_autocorrelation:
-      quotaPhase3Lag1Autocorrelation(residuals),
+    interval_residual_autocorrelation: null,
     holdout_mean_band_distance: holdout,
     selection_distance:
       holdout === null ? meanOf(observationDistances) : holdout,
@@ -1213,6 +1222,149 @@ function collectDiagnostics(byRule, laneInterval, comparison) {
     })
   }
   return diagnostics
+}
+
+const FORECAST_MIN_TRAIN = 4
+const FORECAST_RIDGE = 1e-6
+const FORECAST_SOLVE_ITERATIONS = 80
+const FORECAST_PHI_PRIOR = 12
+const FORECAST_PHI_LIMIT = 0.95
+const FORECAST_HALF_LIFE_HOURS = {
+  short: 5,
+  short_special: 5,
+  weekly: 72,
+  special: 72,
+  monthly: 168,
+}
+
+function forecastHalfLifeHours(quotaType) {
+  return FORECAST_HALF_LIFE_HOURS[quotaType] ?? 72
+}
+
+function scaleVector(vector, factor) {
+  for (let index = 0; index < vector.length; index += 1) {
+    vector[index] *= factor
+  }
+}
+
+function scaleMatrix(matrix, factor) {
+  for (const row of matrix) scaleVector(row, factor)
+}
+
+function rankOneUpdate(gram, xty, features, target, weight) {
+  for (let left = 0; left < features.length; left += 1) {
+    const leftValue = features[left] ?? 0
+    if (leftValue === 0) continue
+    xty[left] += weight * leftValue * target
+    for (let right = 0; right < features.length; right += 1) {
+      gram[left][right] += weight * leftValue * (features[right] ?? 0)
+    }
+  }
+}
+
+function solveNonNegativeNormal(gram, xty, warm) {
+  const count = xty.length
+  const beta = warm ? warm.slice() : Array(count).fill(0)
+  for (
+    let iteration = 0;
+    iteration < FORECAST_SOLVE_ITERATIONS;
+    iteration += 1
+  ) {
+    let maxChange = 0
+    for (let featureIndex = 0; featureIndex < count; featureIndex += 1) {
+      let adjustment = 0
+      const row = gram[featureIndex]
+      for (let other = 0; other < count; other += 1) {
+        if (other === featureIndex) continue
+        adjustment += (row?.[other] ?? 0) * (beta[other] ?? 0)
+      }
+      const denominator = (row?.[featureIndex] ?? 0) + FORECAST_RIDGE
+      if (denominator <= 0) continue
+      const next = Math.max(
+        0,
+        ((xty[featureIndex] ?? 0) - adjustment) / denominator
+      )
+      const change = next - beta[featureIndex]
+      beta[featureIndex] = next
+      maxChange = Math.max(maxChange, Math.abs(change))
+    }
+    if (maxChange < 1e-10) break
+  }
+  return beta
+}
+
+function shrunkChangePersistence(residuals) {
+  const raw = quotaPhase3Lag1Autocorrelation(residuals)
+  if (raw === null) return 0
+  const shrunk =
+    raw * (residuals.length / (residuals.length + FORECAST_PHI_PRIOR))
+  return Math.max(-FORECAST_PHI_LIMIT, Math.min(FORECAST_PHI_LIMIT, shrunk))
+}
+
+export function quotaPhase3OneStepDisplayedChangeResiduals(
+  intervals,
+  options = {}
+) {
+  const trainable = [...(intervals ?? [])]
+    .filter(
+      (interval) =>
+        interval.trainable &&
+        !isBoundaryInterval(interval) &&
+        Number.isFinite(Number(interval.deltaPct))
+    )
+    .sort(compareIntervalTime)
+  const featureNames = [
+    ...(options.featureNames ??
+      collectFeatureNames(
+        trainable.filter((interval) => !isBoundaryInterval(interval))
+      )),
+  ]
+  if (!featureNames.length || trainable.length <= FORECAST_MIN_TRAIN) return []
+
+  const featureCount = featureNames.length
+  const gram = Array.from({ length: featureCount }, () =>
+    Array(featureCount).fill(0)
+  )
+  const xty = Array(featureCount).fill(0)
+  let beta = Array(featureCount).fill(0)
+  let trained = 0
+  let lastTime = null
+  const halfLife = forecastHalfLifeHours(trainable[0]?.quotaType)
+  const regressionResiduals = []
+  const innovations = []
+
+  for (const interval of trainable) {
+    const time = Date.parse(interval.intervalEndAt ?? '')
+    const finiteTime = Number.isFinite(time) ? time : null
+    if (
+      trained > 0 &&
+      finiteTime !== null &&
+      lastTime !== null &&
+      finiteTime !== lastTime
+    ) {
+      const ageHours = Math.max(0, (finiteTime - lastTime) / 3_600_000)
+      const decay = Math.exp((-Math.LN2 * ageHours) / Math.max(halfLife, 1))
+      scaleMatrix(gram, decay)
+      scaleVector(xty, decay)
+    }
+    const features = featureVector(interval, featureNames)
+    const displayedDelta = Number(interval.deltaPct)
+    if (trained >= FORECAST_MIN_TRAIN) {
+      beta = solveNonNegativeNormal(gram, xty, beta)
+      const regressionResidual = displayedDelta - dot(features, beta)
+      const persistence =
+        regressionResiduals.length === 0
+          ? 0
+          : shrunkChangePersistence(regressionResiduals) *
+            regressionResiduals[regressionResiduals.length - 1]
+      innovations.push(regressionResidual - persistence)
+      regressionResiduals.push(regressionResidual)
+    }
+    rankOneUpdate(gram, xty, features, displayedDelta, 1)
+    trained += 1
+    if (finiteTime !== null) lastTime = finiteTime
+  }
+  return innovations
 }
 
 function summarizePhase2(intervals, coefficients) {

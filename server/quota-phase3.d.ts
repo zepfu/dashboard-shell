@@ -102,6 +102,11 @@ export interface QuotaPhase3Estimate {
       better_reset_window_calibration: string
       lower_interval_residual_autocorrelation: string
     }
+    metric_definitions?: {
+      phase2_interval_residual: string
+      phase3_interval_residual: string
+    }
+    metrics?: Record<string, number | null>
   }
 }
 
@@ -135,6 +140,12 @@ export interface QuotaPhase3Report {
       lower_interval_residual_autocorrelation: string
       clear_uncertainty_intervals: string
     }
+    metric_definitions: {
+      phase2_interval_residual: string
+      phase3_interval_residual: string
+      phase2_reset: string
+      phase3_reset: string
+    }
     metrics: Record<string, number | null>
     note: string
   }
@@ -150,6 +161,12 @@ export interface QuotaPhase3Comparison {
     clear_uncertainty_intervals: string
   }
   note: string
+  metric_definitions: {
+    phase2_interval_residual: string
+    phase3_interval_residual: string
+    phase2_reset: string
+    phase3_reset: string
+  }
   metrics: Record<string, number | null>
 }
 
@@ -167,6 +184,11 @@ export function quotaPhase3BandDistance(
 export function quotaPhase3Lag1Autocorrelation(
   values: readonly number[]
 ): number | null
+
+export function quotaPhase3OneStepDisplayedChangeResiduals(
+  intervals: readonly object[],
+  options?: { featureNames?: readonly string[] }
+): number[]
 
 export function compareQuotaPhase3ToPhase2(input?: {
   scope?: string
