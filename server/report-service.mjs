@@ -14507,6 +14507,526 @@ function resolveRedisHealthStatus() {
   return redisClient.isReady ? 'ready' : 'disconnected'
 }
 
+// LiteLLM session-transfer registry retention (registry.py). Absence after
+// these windows is expiry, not a completed, failed, or zero-work transfer.
+const SESSION_TRANSFER_SCHEMA_VERSION = 'session-transfer-status.v1'
+const SESSION_TRANSFER_UPSTREAM_PATH = '/internal/aawm/session-transfer-status'
+export const SESSION_TRANSFER_BROWSER_PATH =
+  '/api/shell/reports/usage/session-transfer-status'
+const SESSION_TRANSFER_ACTIVE_TTL_SECONDS = 180
+const SESSION_TRANSFER_TERMINAL_TTL_SECONDS = 45
+const SESSION_TRANSFER_STALE_AFTER_SECONDS = 30
+const SESSION_TRANSFER_QUERY_LIMIT = 20
+const SESSION_TRANSFER_UPSTREAM_TIMEOUT_MS = 4_000
+const SESSION_TRANSFER_DEFAULT_TARGET = 'http://aawm-litellm:4000'
+const SESSION_TRANSFER_IDENTITY_KEYS = [
+  'session_id',
+  'codex_session_id',
+  'canonical_session_id',
+]
+const SESSION_TRANSFER_PHASES = new Set([
+  'request_received',
+  'request_preparing',
+  'awaiting_upstream',
+  'response_streaming',
+  'finalizing',
+  'completed',
+  'failed',
+  'cancelled',
+  'disconnected',
+  'timed_out',
+])
+const SESSION_TRANSFER_TERMINAL_PHASES = new Set([
+  'completed',
+  'failed',
+  'cancelled',
+  'disconnected',
+  'timed_out',
+])
+const SESSION_TRANSFER_FRESHNESS = new Set([
+  'live',
+  'stale',
+  'terminal',
+  'unavailable',
+])
+const SESSION_TRANSFER_SECRET_PREFIXES = [
+  'bearer ',
+  'sk-',
+  'pk-',
+  'xai-',
+  'ya29.',
+]
+export const SESSION_TRANSFER_RETENTION = Object.freeze({
+  active_ttl_seconds: SESSION_TRANSFER_ACTIVE_TTL_SECONDS,
+  terminal_ttl_seconds: SESSION_TRANSFER_TERMINAL_TTL_SECONDS,
+  stale_after_seconds: SESSION_TRANSFER_STALE_AFTER_SECONDS,
+})
+
+function readEnvSecret(env, ...names) {
+  for (const name of names) {
+    const value = env?.[name]
+    if (typeof value === 'string' && value.trim() !== '') {
+      return value.trim()
+    }
+  }
+  return undefined
+}
+
+function isAbortError(error) {
+  return Boolean(error) && error.name === 'AbortError'
+}
+
+function sessionTransferSelectionEnvelope(selection) {
+  return {
+    session_id: selection?.session_id ?? null,
+    codex_session_id: selection?.codex_session_id ?? null,
+    canonical_session_id: selection?.canonical_session_id ?? null,
+  }
+}
+
+function sessionTransferEnvelope({
+  selection,
+  availability,
+  reason = null,
+  registry = null,
+  truncated = false,
+  transfers = [],
+}) {
+  return {
+    schema_version: SESSION_TRANSFER_SCHEMA_VERSION,
+    availability,
+    reason,
+    retention: SESSION_TRANSFER_RETENTION,
+    selection: sessionTransferSelectionEnvelope(selection),
+    registry,
+    observed_at: new Date().toISOString(),
+    truncated: Boolean(truncated),
+    transfers,
+  }
+}
+
+export function readSessionTransferSelection(searchParams) {
+  const selection = {}
+  for (const key of SESSION_TRANSFER_IDENTITY_KEYS) {
+    const raw = searchParams.get(key)
+    if (raw == null) continue
+    const cleaned = String(raw)
+      .replace(/[\r\n\t]/g, ' ')
+      .trim()
+      .replace(/\s+/g, ' ')
+    if (!cleaned) continue
+    if (cleaned.length > 240) {
+      throw new BadRequestError('Session identity is too long.')
+    }
+    const lower = cleaned.toLowerCase()
+    if (
+      SESSION_TRANSFER_SECRET_PREFIXES.some((prefix) =>
+        lower.startsWith(prefix)
+      )
+    ) {
+      throw new BadRequestError('Session identity is not usable.')
+    }
+    selection[key] = cleaned
+  }
+  if (Object.keys(selection).length === 0) {
+    throw new BadRequestError(
+      'A session_id, codex_session_id, or canonical_session_id is required.'
+    )
+  }
+  return selection
+}
+
+export function buildSessionTransferUpstreamUrl(target, selection) {
+  let base
+  try {
+    base = new URL(target)
+  } catch {
+    throw new TypeError('LiteLLM target is not a valid URL')
+  }
+  if (base.protocol !== 'http:' && base.protocol !== 'https:') {
+    throw new TypeError('LiteLLM target must be http(s)')
+  }
+  const url = new URL(SESSION_TRANSFER_UPSTREAM_PATH, base)
+  for (const key of SESSION_TRANSFER_IDENTITY_KEYS) {
+    if (selection[key]) url.searchParams.set(key, selection[key])
+  }
+  url.searchParams.set('limit', String(SESSION_TRANSFER_QUERY_LIMIT))
+  return url
+}
+
+export function sessionTransferAuthHeaders(credential) {
+  const headers = proxyHeaders({ headers: {} }, { accessToken: credential })
+  if (credential && headers.Authorization) {
+    headers['x-litellm-api-key'] = headers.Authorization
+  }
+  return headers
+}
+
+function resolveSessionTransferAccess(env = process.env) {
+  return {
+    target:
+      readEnvSecret(env, 'LITELLM_API_TARGET') ??
+      SESSION_TRANSFER_DEFAULT_TARGET,
+    credential: readEnvSecret(
+      env,
+      'LITELLM_ACCESS_TOKEN',
+      'LITELLM_API_KEY',
+      'LITELLM_MASTER_KEY'
+    ),
+  }
+}
+
+function publicSessionTransferIdentity(value) {
+  if (typeof value !== 'string') return null
+  const cleaned = value
+    .replace(/[\r\n\t]/g, ' ')
+    .trim()
+    .replace(/\s+/g, ' ')
+  if (!cleaned || cleaned.length > 240) return null
+  const lower = cleaned.toLowerCase()
+  if (
+    SESSION_TRANSFER_SECRET_PREFIXES.some((prefix) => lower.startsWith(prefix))
+  ) {
+    return null
+  }
+  return cleaned
+}
+
+function publicSessionTransferLabel(value) {
+  const cleaned = publicSessionTransferIdentity(value)
+  if (!cleaned) return null
+  return cleaned.length > 120 ? `${cleaned.slice(0, 117)}...` : cleaned
+}
+
+function publicSessionTransferTimestamp(value) {
+  if (typeof value !== 'string') return null
+  const cleaned = value.trim()
+  if (cleaned.length > 40) return null
+  if (!/^\d{4}-\d{2}-\d{2}T[0-9:.+-]+Z?$/.test(cleaned)) return null
+  return cleaned
+}
+
+function publicSessionTransferCounter(value) {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+    return null
+  }
+  return Math.floor(value)
+}
+
+function unavailableTransferRecord() {
+  return {
+    phase: null,
+    freshness: 'unavailable',
+    active: false,
+    stale: false,
+    terminal_state: null,
+    upstream_chunk_count: null,
+    upstream_byte_count: null,
+    downstream_chunk_count: null,
+    downstream_byte_count: null,
+    last_heartbeat_at: null,
+    finalized_at: null,
+    received_at: null,
+    litellm_call_id: null,
+    session_id: null,
+    codex_session_id: null,
+    canonical_session_id: null,
+    provider: null,
+    model: null,
+  }
+}
+
+function normalizeSessionTransferRecord(record) {
+  if (!record || typeof record !== 'object' || Array.isArray(record)) {
+    return unavailableTransferRecord()
+  }
+  const phase = SESSION_TRANSFER_PHASES.has(record.phase) ? record.phase : null
+  const freshness = SESSION_TRANSFER_FRESHNESS.has(record.freshness)
+    ? record.freshness
+    : null
+  if (!phase || !freshness || freshness === 'unavailable') {
+    return unavailableTransferRecord()
+  }
+  const terminal = freshness === 'terminal'
+  const terminalState =
+    terminal && SESSION_TRANSFER_TERMINAL_PHASES.has(record.terminal_state)
+      ? record.terminal_state
+      : terminal && SESSION_TRANSFER_TERMINAL_PHASES.has(phase)
+        ? phase
+        : null
+  return {
+    phase,
+    freshness,
+    active: freshness === 'live',
+    stale: freshness === 'stale',
+    terminal_state: terminalState,
+    upstream_chunk_count: publicSessionTransferCounter(
+      record.upstream_chunk_count
+    ),
+    upstream_byte_count: publicSessionTransferCounter(
+      record.upstream_byte_count
+    ),
+    downstream_chunk_count: publicSessionTransferCounter(
+      record.downstream_chunk_count
+    ),
+    downstream_byte_count: publicSessionTransferCounter(
+      record.downstream_byte_count
+    ),
+    last_heartbeat_at: publicSessionTransferTimestamp(record.last_heartbeat_at),
+    finalized_at: publicSessionTransferTimestamp(record.finalized_at),
+    received_at: publicSessionTransferTimestamp(record.received_at),
+    litellm_call_id: publicSessionTransferIdentity(record.litellm_call_id),
+    session_id: publicSessionTransferIdentity(record.session_id),
+    codex_session_id: publicSessionTransferIdentity(record.codex_session_id),
+    canonical_session_id: publicSessionTransferIdentity(
+      record.canonical_session_id
+    ),
+    provider: publicSessionTransferLabel(record.provider),
+    model: publicSessionTransferLabel(record.model),
+  }
+}
+
+function publicSessionTransferRegistry(registry) {
+  if (!registry || typeof registry !== 'object' || Array.isArray(registry)) {
+    return null
+  }
+  if (
+    registry.state !== 'ok' &&
+    registry.state !== 'degraded' &&
+    registry.state !== 'unavailable'
+  ) {
+    return null
+  }
+  return { state: registry.state }
+}
+
+function deriveSessionTransferAvailability(registryState, transfers) {
+  if (transfers.length === 0) {
+    if (registryState === 'ok') {
+      return { availability: 'expired', reason: 'retention_elapsed' }
+    }
+    return { availability: 'unavailable', reason: 'registry_unavailable' }
+  }
+  if (transfers.every((transfer) => transfer.freshness === 'unavailable')) {
+    return { availability: 'unavailable', reason: 'registry_unavailable' }
+  }
+  if (transfers.some((transfer) => transfer.freshness === 'live')) {
+    return { availability: 'live', reason: null }
+  }
+  if (transfers.some((transfer) => transfer.freshness === 'stale')) {
+    return { availability: 'stale', reason: null }
+  }
+  if (transfers.some((transfer) => transfer.freshness === 'terminal')) {
+    return { availability: 'terminal', reason: null }
+  }
+  return { availability: 'unavailable', reason: 'registry_unavailable' }
+}
+
+export function normalizeSessionTransferUpstream(body, selection) {
+  const supported =
+    Boolean(body) &&
+    typeof body === 'object' &&
+    !Array.isArray(body) &&
+    body.schema_version === SESSION_TRANSFER_SCHEMA_VERSION &&
+    Array.isArray(body.transfers)
+  if (!supported) {
+    return sessionTransferEnvelope({
+      selection,
+      availability: 'unsupported',
+      reason: 'schema_unsupported',
+    })
+  }
+  const registry = publicSessionTransferRegistry(body.registry)
+  const transfers = body.transfers
+    .slice(0, SESSION_TRANSFER_QUERY_LIMIT)
+    .map((record) => normalizeSessionTransferRecord(record))
+  const derived = deriveSessionTransferAvailability(
+    registry?.state ?? null,
+    transfers
+  )
+  const visibleTransfers =
+    derived.availability === 'live' ||
+    derived.availability === 'stale' ||
+    derived.availability === 'terminal'
+      ? transfers
+      : []
+  return sessionTransferEnvelope({
+    selection,
+    availability: derived.availability,
+    reason: derived.reason,
+    registry,
+    truncated:
+      Boolean(body.truncated) || body.transfers.length > transfers.length,
+    transfers: visibleTransfers,
+  })
+}
+
+export async function loadSessionTransferStatus({
+  selection,
+  fetchImpl = globalThis.fetch,
+  env = process.env,
+  timeoutMs = SESSION_TRANSFER_UPSTREAM_TIMEOUT_MS,
+  signal,
+} = {}) {
+  if (signal?.aborted) return { aborted: true }
+  const access = resolveSessionTransferAccess(env)
+  if (!access.credential) {
+    return {
+      body: sessionTransferEnvelope({
+        selection,
+        availability: 'unavailable',
+        reason: 'credentials_unconfigured',
+      }),
+    }
+  }
+
+  let url
+  try {
+    url = buildSessionTransferUpstreamUrl(access.target, selection)
+  } catch {
+    return {
+      body: sessionTransferEnvelope({
+        selection,
+        availability: 'unavailable',
+        reason: 'upstream_unreachable',
+      }),
+    }
+  }
+
+  const controller = new AbortController()
+  let timedOut = false
+  const timeout = setTimeout(() => {
+    timedOut = true
+    controller.abort()
+  }, timeoutMs)
+  const abortFromCaller = () => controller.abort()
+  signal?.addEventListener('abort', abortFromCaller)
+  try {
+    const response = await fetchImpl(url, {
+      method: 'GET',
+      headers: sessionTransferAuthHeaders(access.credential),
+      signal: controller.signal,
+    })
+    if (signal?.aborted) return { aborted: true }
+    if (
+      response.status === 404 ||
+      response.status === 405 ||
+      response.status === 501
+    ) {
+      await response.body?.cancel().catch(() => {})
+      return {
+        body: sessionTransferEnvelope({
+          selection,
+          availability: 'unsupported',
+          reason: 'schema_unsupported',
+        }),
+      }
+    }
+    if (response.status === 401 || response.status === 403) {
+      await response.body?.cancel().catch(() => {})
+      return {
+        body: sessionTransferEnvelope({
+          selection,
+          availability: 'unavailable',
+          reason: 'upstream_unauthorized',
+        }),
+      }
+    }
+    const raw = await readBoundedUpstreamBody(response.body, controller.signal)
+    if (signal?.aborted) return { aborted: true }
+    if (!response.ok) {
+      return {
+        body: sessionTransferEnvelope({
+          selection,
+          availability: 'unavailable',
+          reason: 'upstream_error',
+        }),
+      }
+    }
+    let parsed
+    try {
+      parsed = JSON.parse(raw.toString('utf8'))
+    } catch {
+      return {
+        body: sessionTransferEnvelope({
+          selection,
+          availability: 'unsupported',
+          reason: 'schema_unsupported',
+        }),
+      }
+    }
+    return { body: normalizeSessionTransferUpstream(parsed, selection) }
+  } catch (error) {
+    if (signal?.aborted) return { aborted: true }
+    if (isAbortError(error) && timedOut) {
+      return {
+        body: sessionTransferEnvelope({
+          selection,
+          availability: 'unavailable',
+          reason: 'upstream_unreachable',
+        }),
+      }
+    }
+    if (isAbortError(error)) return { aborted: true }
+    return {
+      body: sessionTransferEnvelope({
+        selection,
+        availability: 'unavailable',
+        reason: 'upstream_unreachable',
+      }),
+    }
+  } finally {
+    clearTimeout(timeout)
+    signal?.removeEventListener('abort', abortFromCaller)
+  }
+}
+
+export async function handleSessionTransferStatus(req, res, deps = {}) {
+  if (req.method !== 'GET') {
+    await sendJson(req, res, 405, { error: 'Method not allowed.' })
+    return
+  }
+  const requestUrl = new URL(
+    req.url,
+    `http://${req.headers?.host ?? 'localhost'}`
+  )
+  let selection
+  try {
+    selection = readSessionTransferSelection(requestUrl.searchParams)
+  } catch (error) {
+    await respondWithRequestError(req, res, error)
+    return
+  }
+
+  const controller = new AbortController()
+  let clientDisconnected = false
+  let responseFinished = Boolean(res.writableEnded || res.writableFinished)
+  const markResponseFinished = () => {
+    responseFinished = true
+  }
+  const abortUpstream = () => {
+    if (responseFinished) return
+    clientDisconnected = true
+    controller.abort()
+  }
+  res.once?.('finish', markResponseFinished)
+  res.once?.('close', abortUpstream)
+  try {
+    const result = await loadSessionTransferStatus({
+      selection,
+      signal: controller.signal,
+      fetchImpl: deps.fetchImpl,
+      env: deps.env,
+      timeoutMs: deps.timeoutMs,
+    })
+    if (clientDisconnected || result?.aborted) return
+    await sendJson(req, res, 200, result.body)
+  } finally {
+    res.off?.('finish', markResponseFinished)
+    res.off?.('close', abortUpstream)
+  }
+}
+
 async function handleRequest(req, res) {
   const requestUrl = new URL(req.url, `http://${req.headers.host}`)
 
@@ -14568,6 +15088,11 @@ async function handleRequest(req, res) {
     requestUrl.pathname === '/api/shell/reports/usage/session-diagnostics'
   ) {
     await handleUsageSessionDiagnostics(req, res)
+    return
+  }
+
+  if (requestUrl.pathname === SESSION_TRANSFER_BROWSER_PATH) {
+    await handleSessionTransferStatus(req, res)
     return
   }
 
