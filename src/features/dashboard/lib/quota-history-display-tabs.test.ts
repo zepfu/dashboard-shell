@@ -6,6 +6,7 @@ import type { UsageReportQuotaHistoryRow } from '../api/usage-report'
 import {
   ALIBABA_TOKEN_PLAN_5H_CREDITS_KEY,
   ALIBABA_TOKEN_PLAN_7D_CREDITS_KEY,
+  ALIBABA_TOKEN_PLAN_MONTHLY_CREDITS_KEY,
   CURSOR_AGENT_MONTHLY_CENTS_KEY,
   KIMI_CODE_5H_QUOTA_UNITS_KEY,
   KIMI_CODE_7D_QUOTA_UNITS_KEY,
@@ -212,11 +213,14 @@ describe('D1-489 — Alibaba Token Plan quota history tabs', () => {
     expect(tabs.map((tab) => tab.tabKey)).toEqual([
       'alibaba_token_plan/5h-credits',
       'alibaba_token_plan/7d-credits',
+      'alibaba_token_plan/monthly-credits',
     ])
     expect(tabs[0].label).toBe('5-hour Credits')
     expect(tabs[1].label).toBe('7-day Credits')
+    expect(tabs[2].label).toBe('Monthly Credits')
     expect(tabs[0].rows).toHaveLength(1)
     expect(tabs[1].rows).toHaveLength(1)
+    expect(tabs[2].rows).toHaveLength(0)
     expect(tabs[0].rows[0].quota_key).toBe(ALIBABA_TOKEN_PLAN_5H_CREDITS_KEY)
     expect(tabs[1].rows[0].quota_key).toBe(ALIBABA_TOKEN_PLAN_7D_CREDITS_KEY)
   })
@@ -528,6 +532,149 @@ describe('D1-489 — Alibaba Token Plan quota history tabs', () => {
     expect(rows).toHaveLength(1)
     expect(rows?.[0].account_ref).toBeNull()
     expect(JSON.stringify(tabs)).not.toContain(fullHash)
+  })
+})
+
+describe('D1-507 — Alibaba Token Plan monthly history tabs', () => {
+  function monthlyHistory(
+    overrides: Partial<UsageReportQuotaHistoryRow> = {}
+  ): UsageReportQuotaHistoryRow {
+    return makeHistoryRow({
+      provider: 'alibaba_token_plan',
+      model: null,
+      quota_type: 'monthly',
+      quota_key: ALIBABA_TOKEN_PLAN_MONTHLY_CREDITS_KEY,
+      quota_period: 'monthly',
+      source: 'alibaba_token_plan_usage',
+      account_ref: 'a1b2c3d4',
+      client: 'qwen-cloud-console',
+      quota_unit: 'credits',
+      quota_limit: null,
+      quota_used: null,
+      quota_remaining: null,
+      expected_reset_at: '2026-08-01T00:00:00Z',
+      interval_start: '2026-07-01T00:00:00Z',
+      interval_end: '2026-08-01T00:00:00Z',
+      min_remaining_pct: 64.5,
+      max_remaining_pct: 80,
+      usage_tokens: 0,
+      usage_breakdown: [],
+      ...overrides,
+    })
+  }
+
+  test('test_monthly_history_keeps_source_identity_percentage_and_reset', () => {
+    const tabs = buildProviderQuotaHistoryTabs('alibaba_token_plan', [
+      monthlyHistory(),
+      makeHistoryRow({
+        provider: 'alibaba_token_plan',
+        model: null,
+        quota_type: 'short',
+        quota_key: ALIBABA_TOKEN_PLAN_5H_CREDITS_KEY,
+        quota_period: '5h',
+        source: 'alibaba_token_plan_usage',
+        account_ref: 'a1b2c3d4',
+        expected_reset_at: '2026-07-22T02:22:00Z',
+        interval_start: '2026-07-21T21:22:00Z',
+        min_remaining_pct: 99.96,
+        usage_tokens: 0,
+        usage_breakdown: [],
+      }),
+    ])
+    const monthly = tabs.find(
+      (tab) => tab.tabKey === 'alibaba_token_plan/monthly-credits'
+    )
+    const short = tabs.find(
+      (tab) => tab.tabKey === 'alibaba_token_plan/5h-credits'
+    )
+
+    expect(monthly?.label).toBe('Monthly Credits')
+    expect(monthly?.rows).toHaveLength(1)
+    expect(monthly?.rows[0]).toMatchObject({
+      quota_key: ALIBABA_TOKEN_PLAN_MONTHLY_CREDITS_KEY,
+      quota_period: 'monthly',
+      source: 'alibaba_token_plan_usage',
+      account_ref: 'a1b2c3d4',
+      quota_unit: 'credits',
+      quota_limit: null,
+      quota_used: null,
+      quota_remaining: null,
+      min_remaining_pct: 64.5,
+      expected_reset_at: '2026-08-01T00:00:00Z',
+      interval_start: '2026-07-01T00:00:00Z',
+      usage_tokens: 0,
+    })
+    expect(short?.rows).toHaveLength(1)
+    expect(short?.rows[0].quota_key).toBe(ALIBABA_TOKEN_PLAN_5H_CREDITS_KEY)
+    expect(
+      tabs.find((tab) => tab.tabKey === 'alibaba_token_plan/7d-credits')?.rows
+    ).toHaveLength(0)
+  })
+
+  test('test_missing_monthly_history_adds_no_zero_row', () => {
+    const tabs = buildProviderQuotaHistoryTabs('alibaba_token_plan', [
+      makeHistoryRow({
+        provider: 'alibaba_token_plan',
+        quota_type: 'short',
+        quota_key: ALIBABA_TOKEN_PLAN_5H_CREDITS_KEY,
+        quota_period: '5h',
+        source: 'alibaba_token_plan_usage',
+        min_remaining_pct: 90,
+        usage_tokens: 0,
+        usage_breakdown: [],
+      }),
+    ])
+    const monthly = tabs.find(
+      (tab) => tab.tabKey === 'alibaba_token_plan/monthly-credits'
+    )
+    expect(monthly?.rows).toEqual([])
+  })
+
+  test('test_distinct_monthly_subscriptions_stay_separate', () => {
+    const tabs = buildProviderQuotaHistoryTabs('alibaba_token_plan', [
+      monthlyHistory({ account_ref: 'a1b2c3d4', min_remaining_pct: 64.5 }),
+      monthlyHistory({ account_ref: 'e5f6a7b8', min_remaining_pct: 12.5 }),
+    ])
+    const rows = tabs.find(
+      (tab) => tab.tabKey === 'alibaba_token_plan/monthly-credits'
+    )?.rows
+
+    expect(rows).toHaveLength(2)
+    expect(
+      rows
+        ?.map((row) => [row.account_ref, row.min_remaining_pct] as const)
+        .sort((left, right) => String(left[0]).localeCompare(String(right[0])))
+    ).toEqual([
+      ['a1b2c3d4', 64.5],
+      ['e5f6a7b8', 12.5],
+    ])
+    expect(rows?.every((row) => row.quota_limit === null)).toBe(true)
+    expect(rows?.every((row) => row.quota_used === null)).toBe(true)
+    expect(rows?.every((row) => row.quota_remaining === null)).toBe(true)
+  })
+
+  test('test_incompatible_window_does_not_join_monthly_or_5h', () => {
+    const tabs = buildProviderQuotaHistoryTabs('alibaba_token_plan', [
+      monthlyHistory({ quota_period: '5h', min_remaining_pct: 10 }),
+      makeHistoryRow({
+        provider: 'alibaba_token_plan',
+        quota_type: 'short',
+        quota_key: ALIBABA_TOKEN_PLAN_5H_CREDITS_KEY,
+        quota_period: 'monthly',
+        source: 'alibaba_token_plan_usage',
+        min_remaining_pct: 20,
+        usage_tokens: 0,
+        usage_breakdown: [],
+      }),
+    ])
+
+    expect(
+      tabs.find((tab) => tab.tabKey === 'alibaba_token_plan/monthly-credits')
+        ?.rows
+    ).toEqual([])
+    expect(
+      tabs.find((tab) => tab.tabKey === 'alibaba_token_plan/5h-credits')?.rows
+    ).toEqual([])
   })
 })
 

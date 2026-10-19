@@ -12,6 +12,7 @@ import { ANTHROPIC_PROVIDER_STATUS_ENV_VAR } from '@/features/dashboard/lib/prov
 import {
   ALIBABA_TOKEN_PLAN_5H_CREDITS_KEY,
   ALIBABA_TOKEN_PLAN_7D_CREDITS_KEY,
+  ALIBABA_TOKEN_PLAN_MONTHLY_CREDITS_KEY,
   KIMI_CODE_5H_QUOTA_UNITS_KEY,
   KIMI_CODE_7D_QUOTA_UNITS_KEY,
 } from '@/features/dashboard/lib/quota-bars/lane-defs'
@@ -312,6 +313,113 @@ describe('D1-489 — Alibaba Token Plan sidebar separation', () => {
       'alibaba-7d-credits-unidentified-2',
     ])
     expect(items.map((item) => item.percent)).toEqual([91, 81, 72, 62])
+  })
+
+  test('test_monthly_item_sits_beside_5h_and_7d', () => {
+    const items = buildSidebarQuotaItems([
+      alibabaRow({
+        billing_details: {
+          short: { quota_key: ALIBABA_TOKEN_PLAN_5H_CREDITS_KEY },
+          weekly: { quota_key: ALIBABA_TOKEN_PLAN_7D_CREDITS_KEY },
+          monthly: {
+            quota_key: ALIBABA_TOKEN_PLAN_MONTHLY_CREDITS_KEY,
+            quota_period: 'monthly',
+            source: 'alibaba_token_plan_usage',
+          },
+        },
+        monthly_remaining_pct: 64.5,
+        monthly_active: true,
+      }),
+    ]).filter((item) => item.key.startsWith('alibaba'))
+
+    expect(items.map((item) => item.key)).toEqual([
+      'alibaba-5h-credits',
+      'alibaba-7d-credits',
+      'alibaba-monthly-credits',
+    ])
+    expect(items.map((item) => item.label)).toEqual([
+      'Alibaba 5h Credits',
+      'Alibaba 7d Credits',
+      'Alibaba Monthly Credits',
+    ])
+    expect(items.map((item) => item.percent)).toEqual([99.96, 99.87, 64.5])
+  })
+
+  test('test_missing_monthly_percent_omits_the_item', () => {
+    const items = buildSidebarQuotaItems([
+      alibabaRow({
+        billing_details: {
+          short: { quota_key: ALIBABA_TOKEN_PLAN_5H_CREDITS_KEY },
+          weekly: { quota_key: ALIBABA_TOKEN_PLAN_7D_CREDITS_KEY },
+          monthly: {
+            quota_key: ALIBABA_TOKEN_PLAN_MONTHLY_CREDITS_KEY,
+            quota_period: 'monthly',
+          },
+        },
+        monthly_remaining_pct: null,
+        monthly_active: false,
+      }),
+    ])
+    expect(items.find((item) => item.key === 'alibaba-monthly-credits')).toBe(
+      undefined
+    )
+    expect(items.find((item) => item.percent === 0)).toBeUndefined()
+  })
+
+  test('test_monthly_only_subscription_does_not_invent_other_windows', () => {
+    const items = buildSidebarQuotaItems([
+      alibabaRow({
+        billing_details: {
+          monthly: {
+            quota_key: ALIBABA_TOKEN_PLAN_MONTHLY_CREDITS_KEY,
+            quota_period: 'monthly',
+          },
+        },
+        short_remaining_pct: null,
+        short_active: false,
+        weekly_remaining_pct: null,
+        weekly_active: false,
+        monthly_remaining_pct: 41.25,
+        monthly_active: true,
+      }),
+    ])
+    expect(items.map((item) => item.key)).toEqual(['alibaba-monthly-credits'])
+    expect(items[0].percent).toBe(41.25)
+  })
+
+  test('test_distinct_subscriptions_keep_monthly_percentages_apart', () => {
+    const items = buildSidebarQuotaItems([
+      alibabaRow({
+        account_ref: 'a1b2c3d4',
+        billing_details: {
+          monthly: {
+            quota_key: ALIBABA_TOKEN_PLAN_MONTHLY_CREDITS_KEY,
+            quota_period: 'monthly',
+          },
+        },
+        short_remaining_pct: null,
+        weekly_remaining_pct: null,
+        monthly_remaining_pct: 41.25,
+        monthly_active: true,
+      }),
+      alibabaRow({
+        account_ref: 'e5f6a7b8',
+        billing_details: {
+          short: {
+            quota_key: ALIBABA_TOKEN_PLAN_5H_CREDITS_KEY,
+            quota_period: '5h',
+          },
+        },
+        short_remaining_pct: 90,
+        weekly_remaining_pct: null,
+        monthly_remaining_pct: null,
+      }),
+    ]).filter((item) => item.key.startsWith('alibaba'))
+
+    expect(items.map((item) => [item.key, item.percent])).toEqual([
+      ['alibaba-monthly-credits-a1b2c3d4', 41.25],
+      ['alibaba-5h-credits-e5f6a7b8', 90],
+    ])
   })
 })
 

@@ -10,6 +10,7 @@ import type {
 import {
   ALIBABA_TOKEN_PLAN_5H_CREDITS_KEY,
   ALIBABA_TOKEN_PLAN_7D_CREDITS_KEY,
+  ALIBABA_TOKEN_PLAN_MONTHLY_CREDITS_KEY,
   CURSOR_AGENT_MONTHLY_CENTS_KEY,
   KIMI_CODE_5H_QUOTA_UNITS_KEY,
   KIMI_CODE_7D_QUOTA_UNITS_KEY,
@@ -478,6 +479,305 @@ describe('D1-489 — Alibaba Token Plan lane separation', () => {
     expect(shortLanes.map((lane) => lane.currentBar?.remainingPct)).toEqual([
       91, 72,
     ])
+  })
+
+  function monthlyBilling(quotaPeriod = 'monthly') {
+    return {
+      quota_key: ALIBABA_TOKEN_PLAN_MONTHLY_CREDITS_KEY,
+      quota_period: quotaPeriod,
+      source: 'alibaba_token_plan_usage',
+      client: 'qwen-cloud-console',
+      quota_unit: 'credits',
+      quota_limit: null,
+      quota_used: null,
+      quota_remaining: null,
+      billing_observed_at: '2026-07-21T22:39:00.000Z',
+    }
+  }
+
+  test('test_monthly_lane_sits_beside_5h_and_7d_as_percentage_only', () => {
+    const lanes = buildProviderLanes(
+      'alibaba_token_plan',
+      [
+        alibabaQuotaRow({
+          billing_details: {
+            short: {
+              quota_key: ALIBABA_TOKEN_PLAN_5H_CREDITS_KEY,
+              quota_period: '5h',
+              source: 'alibaba_token_plan_usage',
+              client: 'qwen-cloud-console',
+              quota_unit: 'credits',
+              quota_limit: null,
+              quota_used: null,
+              quota_remaining: null,
+              billing_observed_at: '2026-07-21T22:39:00.000Z',
+            },
+            weekly: {
+              quota_key: ALIBABA_TOKEN_PLAN_7D_CREDITS_KEY,
+              quota_period: '7d',
+              source: 'alibaba_token_plan_usage',
+              client: 'qwen-cloud-console',
+              quota_unit: 'credits',
+              quota_limit: null,
+              quota_used: null,
+              quota_remaining: null,
+              billing_observed_at: '2026-07-21T22:39:00.000Z',
+            },
+            monthly: monthlyBilling(),
+          },
+          monthly_remaining_pct: 64.5,
+          monthly_reset_at: '2026-08-01T00:00:00.000Z',
+          monthly_interval_start: '2026-07-01T00:00:00.000Z',
+          monthly_interval_end: '2026-08-01T00:00:00.000Z',
+          monthly_active: true,
+        }),
+      ],
+      []
+    )
+
+    expect(lanes.map((lane) => lane.laneKey)).toEqual([
+      'alibaba_token_plan/5h-credits',
+      'alibaba_token_plan/7d-credits',
+      'alibaba_token_plan/monthly-credits',
+    ])
+    expect(lanes.map((lane) => lane.laneLabel)).toEqual([
+      '5-hour Credits',
+      '7-day Credits',
+      'Monthly Credits',
+    ])
+    expect(lanes.map((lane) => lane.currentBar?.remainingPct)).toEqual([
+      99.96, 99.87, 64.5,
+    ])
+    const monthly = lanes[2].currentBar
+    expect(monthly?.consumedPct).toBe(35.5)
+    expect(monthly?.resetAt).toBe('2026-08-01T00:00:00.000Z')
+    expect(monthly?.tipObservedAt).toBe('2026-07-21T22:39:00.000Z')
+    expect(monthly?.tipAbsolutesUnavailable).toBe(true)
+    expect(monthly?.tipQuotaLimit).toBeNull()
+    expect(monthly?.tipQuotaUsed).toBeNull()
+    expect(monthly?.tipQuotaRemaining).toBeNull()
+    expect(monthly?.tipQuotaUnit).toBe('credits')
+    expect(monthly?.showSubPercentPrecision).toBe(true)
+    expect(monthly?.tipIdentity).toContain(
+      ALIBABA_TOKEN_PLAN_MONTHLY_CREDITS_KEY
+    )
+    expect(monthly?.tipIdentity).toContain('alibaba_token_plan_usage')
+    expect(monthly?.tipIdentity?.join(' ')).not.toMatch(/[a-f0-9]{64}/)
+  })
+
+  test('test_missing_monthly_window_omits_the_lane', () => {
+    const lanes = buildProviderLanes(
+      'alibaba_token_plan',
+      [alibabaQuotaRow()],
+      []
+    )
+    expect(lanes.map((lane) => lane.laneKey)).toEqual([
+      'alibaba_token_plan/5h-credits',
+      'alibaba_token_plan/7d-credits',
+    ])
+    expect(lanes.some((lane) => lane.laneKey.includes('monthly'))).toBe(false)
+    expect(lanes.some((lane) => lane.currentBar?.remainingPct === 0)).toBe(
+      false
+    )
+  })
+
+  test('test_observed_zero_monthly_remaining_stays_zero', () => {
+    const lanes = buildProviderLanes(
+      'alibaba_token_plan',
+      [
+        alibabaQuotaRow({
+          billing_details: { monthly: monthlyBilling() },
+          short_remaining_pct: null,
+          short_active: false,
+          weekly_remaining_pct: null,
+          weekly_active: false,
+          monthly_remaining_pct: 0,
+          monthly_reset_at: '2026-08-01T00:00:00.000Z',
+          monthly_interval_start: '2026-07-01T00:00:00.000Z',
+          monthly_interval_end: '2026-08-01T00:00:00.000Z',
+          monthly_active: true,
+        }),
+      ],
+      []
+    )
+    expect(lanes).toHaveLength(1)
+    expect(lanes[0].laneKey).toBe('alibaba_token_plan/monthly-credits')
+    expect(lanes[0].currentBar?.remainingPct).toBe(0)
+    expect(lanes[0].currentBar?.consumedPct).toBe(100)
+    expect(lanes[0].currentBar?.tipAbsolutesUnavailable).toBe(true)
+  })
+
+  test('test_distinct_subscriptions_keep_incompatible_windows_apart', () => {
+    const lanes = buildProviderLanes(
+      'alibaba_token_plan',
+      [
+        alibabaQuotaRow({
+          account_ref: 'a1b2c3d4',
+          billing_details: {
+            short: {
+              quota_key: ALIBABA_TOKEN_PLAN_5H_CREDITS_KEY,
+              quota_period: '5h',
+              source: 'alibaba_token_plan_usage',
+              quota_unit: 'credits',
+              quota_limit: null,
+              quota_used: null,
+              quota_remaining: null,
+              billing_observed_at: '2026-07-21T22:39:00.000Z',
+            },
+            monthly: monthlyBilling(),
+          },
+          short_remaining_pct: 90,
+          weekly_remaining_pct: null,
+          weekly_active: false,
+          monthly_remaining_pct: 41.25,
+          monthly_reset_at: '2026-08-01T00:00:00.000Z',
+          monthly_interval_start: '2026-07-01T00:00:00.000Z',
+          monthly_interval_end: '2026-08-01T00:00:00.000Z',
+          monthly_active: true,
+        }),
+        alibabaQuotaRow({
+          account_ref: 'e5f6a7b8',
+          billing_details: { monthly: monthlyBilling() },
+          short_remaining_pct: null,
+          short_active: false,
+          weekly_remaining_pct: null,
+          weekly_active: false,
+          monthly_remaining_pct: 12.5,
+          monthly_reset_at: '2026-08-15T00:00:00.000Z',
+          monthly_interval_start: '2026-07-15T00:00:00.000Z',
+          monthly_interval_end: '2026-08-15T00:00:00.000Z',
+          monthly_active: true,
+        }),
+      ],
+      []
+    )
+
+    expect(lanes.map((lane) => lane.laneKey)).toEqual([
+      'alibaba_token_plan/5h-credits',
+      'alibaba_token_plan/monthly-credits/a1b2c3d4',
+      'alibaba_token_plan/monthly-credits/e5f6a7b8',
+    ])
+    expect(lanes.map((lane) => lane.currentBar?.remainingPct)).toEqual([
+      90, 41.25, 12.5,
+    ])
+    expect(lanes[0].laneLabel).toBe('5-hour Credits')
+    expect(lanes[1].laneLabel).toBe('Monthly Credits · …c3d4')
+    expect(lanes[2].laneLabel).toBe('Monthly Credits · …a7b8')
+    expect(lanes[0].currentBar?.tipIdentity).toContain('account …c3d4')
+    expect(lanes[0].currentBar?.tipIdentity).not.toContain(
+      ALIBABA_TOKEN_PLAN_MONTHLY_CREDITS_KEY
+    )
+    expect(lanes[2].currentBar?.tipIdentity).toContain(
+      ALIBABA_TOKEN_PLAN_MONTHLY_CREDITS_KEY
+    )
+    expect(lanes[2].currentBar?.tipIdentity).toContain('account …a7b8')
+    expect(lanes[2].currentBar?.tipIdentity).not.toContain(
+      ALIBABA_TOKEN_PLAN_5H_CREDITS_KEY
+    )
+  })
+
+  test('test_monthly_key_on_incompatible_period_does_not_join_a_lane', () => {
+    const lanes = buildProviderLanes(
+      'alibaba_token_plan',
+      [
+        alibabaQuotaRow({
+          billing_details: { monthly: monthlyBilling('5h') },
+          short_remaining_pct: null,
+          short_active: false,
+          weekly_remaining_pct: null,
+          weekly_active: false,
+          monthly_remaining_pct: 10,
+          monthly_active: true,
+        }),
+      ],
+      []
+    )
+    expect(lanes).toHaveLength(0)
+  })
+
+  test('test_monthly_prior_bars_stay_on_the_monthly_lane', () => {
+    const lanes = buildProviderLanes(
+      'alibaba_token_plan',
+      [
+        alibabaQuotaRow({
+          billing_details: {
+            short: {
+              quota_key: ALIBABA_TOKEN_PLAN_5H_CREDITS_KEY,
+              quota_period: '5h',
+              source: 'alibaba_token_plan_usage',
+              quota_unit: 'credits',
+              quota_limit: null,
+              quota_used: null,
+              quota_remaining: null,
+            },
+            weekly: {
+              quota_key: ALIBABA_TOKEN_PLAN_7D_CREDITS_KEY,
+              quota_period: '7d',
+              source: 'alibaba_token_plan_usage',
+              quota_unit: 'credits',
+              quota_limit: null,
+              quota_used: null,
+              quota_remaining: null,
+            },
+            monthly: monthlyBilling(),
+          },
+          monthly_remaining_pct: 64.5,
+          monthly_reset_at: '2026-08-01T00:00:00.000Z',
+          monthly_interval_start: '2026-07-01T00:00:00.000Z',
+          monthly_interval_end: '2026-08-01T00:00:00.000Z',
+          monthly_active: true,
+        }),
+      ],
+      [
+        historyRow({
+          provider: 'alibaba_token_plan',
+          model: null,
+          quota_type: 'monthly',
+          quota_key: ALIBABA_TOKEN_PLAN_MONTHLY_CREDITS_KEY,
+          quota_period: 'monthly',
+          source: 'alibaba_token_plan_usage',
+          account_ref: 'a1b2c3d4',
+          quota_unit: 'credits',
+          quota_limit: null,
+          quota_used: null,
+          quota_remaining: null,
+          expected_reset_at: '2026-07-01T00:00:00.000Z',
+          interval_start: '2026-06-01T00:00:00.000Z',
+          interval_end: '2026-07-01T00:00:00.000Z',
+          min_remaining_pct: 55,
+          max_remaining_pct: 100,
+          usage_tokens: 0,
+          usage_breakdown: [],
+        }),
+        historyRow({
+          provider: 'alibaba_token_plan',
+          model: null,
+          quota_type: 'short',
+          quota_key: ALIBABA_TOKEN_PLAN_5H_CREDITS_KEY,
+          quota_period: '5h',
+          source: 'alibaba_token_plan_usage',
+          account_ref: 'a1b2c3d4',
+          expected_reset_at: '2026-07-21T21:00:00.000Z',
+          interval_start: '2026-07-21T16:00:00.000Z',
+          min_remaining_pct: 80,
+          max_remaining_pct: 100,
+          usage_tokens: 0,
+          usage_breakdown: [],
+        }),
+      ]
+    )
+
+    const monthly = lanes.find(
+      (lane) => lane.laneKey === 'alibaba_token_plan/monthly-credits'
+    )
+    const short = lanes.find(
+      (lane) => lane.laneKey === 'alibaba_token_plan/5h-credits'
+    )
+    expect(monthly?.priorBars).toHaveLength(1)
+    expect(monthly?.priorBars[0].remainingPct).toBe(55)
+    expect(monthly?.priorBars[0].tipQuotaLimit).toBeNull()
+    expect(short?.priorBars).toHaveLength(1)
+    expect(short?.priorBars[0].remainingPct).toBe(80)
   })
 })
 

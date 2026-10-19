@@ -4985,6 +4985,357 @@ describe('D1-489 alibaba_token_plan quota support', () => {
 })
 
 // ---------------------------------------------------------------------------
+// D1-507: Alibaba Token Plan monthly quota
+// ---------------------------------------------------------------------------
+describe('D1-507 alibaba_token_plan monthly quota', () => {
+  const MONTHLY_KEY = 'alibaba_token_plan_monthly:credits'
+  const MONTHLY_PREDICATE = `(o.quota_key = '${MONTHLY_KEY}' AND o.quota_period = 'monthly')`
+
+  function quotaQueries() {
+    const range = new URLSearchParams({ from: '2026-07-01', to: '2026-07-24' })
+    return [
+      {
+        name: 'current',
+        query: buildQuotaQuery(),
+        projectsAbsolutes: false,
+        latestObservation: true,
+      },
+      {
+        name: 'velocity',
+        query: buildQuotaVelocityQuery(),
+        projectsAbsolutes: false,
+        latestObservation: false,
+      },
+      {
+        name: 'history',
+        query: buildQuotaHistoryQuery(new URLSearchParams()),
+        projectsAbsolutes: true,
+        latestObservation: true,
+      },
+      {
+        name: 'history-fallback',
+        query: buildQuotaHistoryFallbackQuery(new URLSearchParams()),
+        projectsAbsolutes: true,
+        latestObservation: true,
+      },
+      {
+        name: 'range',
+        query: buildQuotaRangeHistoryQuery(range),
+        projectsAbsolutes: true,
+        latestObservation: true,
+      },
+      {
+        name: 'range-fallback',
+        query: buildQuotaRangeHistoryFallbackQuery(range),
+        projectsAbsolutes: true,
+        latestObservation: true,
+      },
+    ]
+  }
+
+  function alibabaBranch(sql: string): string {
+    const providerAt = sql.indexOf("o.provider = 'alibaba_token_plan'")
+    expect(providerAt).toBeGreaterThanOrEqual(0)
+    const namedCte = sql.lastIndexOf('alibaba_observations AS', providerAt)
+    const unionAt = sql.lastIndexOf('UNION ALL', providerAt)
+    const branchStart = Math.max(namedCte, unionAt, 0)
+    const kimiAt = sql.indexOf("o.provider = 'kimi_code'", providerAt)
+    return sql.slice(branchStart, kimiAt === -1 ? undefined : kimiAt)
+  }
+
+  test('test_monthly_window_is_admitted_with_reset_boundary_and_freshness', () => {
+    for (const {
+      name,
+      query,
+      projectsAbsolutes,
+      latestObservation,
+    } of quotaQueries()) {
+      const compact = compactWhitespace(query.sql)
+      const branch = compactWhitespace(alibabaBranch(query.sql))
+      expect(branch, name).toContain("o.provider = 'alibaba_token_plan'")
+      expect(branch, name).toContain("o.source = 'alibaba_token_plan_usage'")
+      expect(branch, name).toContain(MONTHLY_PREDICATE)
+      expect(branch, name).toContain(
+        "(o.quota_key = 'alibaba_token_plan_5h:credits' AND o.quota_period = '5h')"
+      )
+      expect(branch, name).toContain(
+        "(o.quota_key = 'alibaba_token_plan_7d:credits' AND o.quota_period = '7d')"
+      )
+      expect(branch, name).toContain('o.account_hash')
+      expect(branch, name).toContain('o.remaining_pct')
+      expect(branch, name).toContain('o.observed_at')
+      expect(branch, name).not.toContain('COALESCE(o.quota_limit, 0)')
+      expect(branch, name).not.toContain('COALESCE(o.quota_used, 0)')
+      expect(branch, name).not.toContain('COALESCE(o.quota_remaining, 0)')
+      expect(branch, name).not.toContain('0::double precision AS remaining_pct')
+      if (projectsAbsolutes) {
+        expect(branch, name).toContain('o.quota_limit')
+        expect(branch, name).toContain('o.quota_used')
+        expect(branch, name).toContain('o.quota_remaining')
+      }
+      expect(compact, name).toContain(
+        "WHEN o.quota_period = 'monthly' THEN 'monthly'"
+      )
+      expect(compact, name).toContain(
+        "WHEN o.quota_period = 'monthly' THEN INTERVAL '1 month'"
+      )
+      if (name === 'history' || name === 'history-fallback') {
+        expect(compact, name).toContain(
+          "WHEN o.quota_period = 'monthly' THEN 720.0"
+        )
+      }
+      if (name === 'velocity') {
+        expect(compact, name).toContain(
+          "WHEN s.quota_type = 'monthly' THEN 720.0"
+        )
+      }
+      if (latestObservation) {
+        expect(compact, name).toContain('o.observed_at DESC')
+      } else {
+        expect(compact, name).toContain('ORDER BY observed_at ASC')
+        expect(compact, name).toContain('100 - o.remaining_pct')
+      }
+    }
+
+    const current = buildQuotaQuery().sql
+    expect(current).toContain('o.quota_limit AS quota_limit')
+    expect(current).toContain('o.quota_used AS quota_used')
+    expect(current).toContain('o.quota_remaining AS quota_remaining')
+    expect(current).toContain('o.observed_at AS billing_observed_at')
+    expect(current).toContain('AS monthly_quota_period')
+    expect(current).toContain('AS monthly_billing_observed_at')
+    expect(current).not.toContain('COALESCE(o.quota_limit, 0)')
+  })
+
+  test('test_current_monthly_normalization_keeps_percentage_identity_and_null_absolutes', () => {
+    const normalized = normalizeQuotaRowForTest({
+      provider: 'alibaba_token_plan',
+      model: null,
+      account_ref: 'a1b2c3d4',
+      short_quota_key: 'alibaba_token_plan_5h:credits',
+      short_quota_period: '5h',
+      short_source: 'alibaba_token_plan_usage',
+      short_remaining_pct: 99.96,
+      short_reset_at: '2026-07-22T02:22:00.000Z',
+      short_interval_start: '2026-07-21T21:22:00.000Z',
+      short_interval_end: '2026-07-22T02:22:00.000Z',
+      short_active: 1,
+      weekly_quota_key: 'alibaba_token_plan_7d:credits',
+      weekly_quota_period: '7d',
+      weekly_source: 'alibaba_token_plan_usage',
+      weekly_remaining_pct: 99.87,
+      weekly_active: 1,
+      monthly_quota_key: MONTHLY_KEY,
+      monthly_quota_period: 'monthly',
+      monthly_source: 'alibaba_token_plan_usage',
+      monthly_client: 'qwen-cloud-console',
+      monthly_quota_unit: 'Credits',
+      monthly_quota_limit: null,
+      monthly_quota_used: null,
+      monthly_quota_remaining: null,
+      monthly_billing_observed_at: '2026-07-21T22:39:00.000Z',
+      monthly_billing_period_start_at: null,
+      monthly_billing_period_end_at: null,
+      monthly_raw_provider_fields: {
+        subscription_identity: 'subscription-a',
+        window: 'monthly',
+      },
+      monthly_evidence: { telemetry_status: 'valid' },
+      monthly_remaining_pct: 64.5,
+      monthly_reset_at: '2026-08-01T00:00:00.000Z',
+      monthly_interval_start: '2026-07-01T00:00:00.000Z',
+      monthly_interval_end: '2026-08-01T00:00:00.000Z',
+      monthly_active: 1,
+    })
+    const monthly = requireQuotaBillingDetail(normalized, 'monthly')
+
+    expect(normalized.account_ref).toBe('a1b2c3d4')
+    expect(normalized).not.toHaveProperty('account_hash')
+    expect(normalized.monthly_remaining_pct).toBe(64.5)
+    expect(normalized.monthly_reset_at).toBe('2026-08-01T00:00:00.000Z')
+    expect(normalized.monthly_interval_start).toBe('2026-07-01T00:00:00.000Z')
+    expect(normalized.monthly_interval_end).toBe('2026-08-01T00:00:00.000Z')
+    expect(normalized.monthly_active).toBe(true)
+    expect(normalized.short_remaining_pct).toBe(99.96)
+    expect(monthly).toMatchObject({
+      quota_key: MONTHLY_KEY,
+      quota_period: 'monthly',
+      source: 'alibaba_token_plan_usage',
+      client: 'qwen-cloud-console',
+      quota_unit: 'Credits',
+      quota_limit: null,
+      quota_used: null,
+      quota_remaining: null,
+      billing_observed_at: '2026-07-21T22:39:00.000Z',
+    })
+  })
+
+  test('test_missing_monthly_window_stays_null', () => {
+    const normalized = normalizeQuotaRowForTest({
+      provider: 'alibaba_token_plan',
+      model: null,
+      account_ref: 'a1b2c3d4',
+      short_quota_key: 'alibaba_token_plan_5h:credits',
+      short_quota_period: '5h',
+      short_source: 'alibaba_token_plan_usage',
+      short_remaining_pct: 99.96,
+      short_active: 1,
+    })
+
+    expect(normalized.billing_details.monthly).toBeUndefined()
+    expect(normalized.monthly_remaining_pct).toBeNull()
+    expect(normalized.monthly_active).toBe(false)
+    expect(normalized.monthly_reset_at).toBeNull()
+    expect(normalized.short_remaining_pct).toBe(99.96)
+  })
+
+  test('test_distinct_subscriptions_keep_separate_monthly_percentages', () => {
+    const velocityByLane = buildQuotaVelocityRowsByLane([
+      {
+        provider: 'alibaba_token_plan',
+        model: null,
+        quota_type: 'monthly',
+        quota_key: MONTHLY_KEY,
+        quota_period: 'monthly',
+        source: 'alibaba_token_plan_usage',
+        account_identity: 'account-identity-a',
+        velocity_sample_count: 7,
+        velocity_segments: [true],
+        velocity_scores: [64],
+      },
+      {
+        provider: 'alibaba_token_plan',
+        model: null,
+        quota_type: 'monthly',
+        quota_key: MONTHLY_KEY,
+        quota_period: 'monthly',
+        source: 'alibaba_token_plan_usage',
+        account_identity: 'account-identity-b',
+        velocity_sample_count: 8,
+        velocity_segments: [false],
+        velocity_scores: [12],
+      },
+    ])
+    const rows = [
+      {
+        provider: 'alibaba_token_plan',
+        model: null,
+        account_identity: 'account-identity-a',
+        account_ref: 'account-ref-a',
+        monthly_quota_key: MONTHLY_KEY,
+        monthly_quota_period: 'monthly',
+        monthly_source: 'alibaba_token_plan_usage',
+        monthly_quota_unit: 'Credits',
+        monthly_quota_limit: null,
+        monthly_quota_used: null,
+        monthly_quota_remaining: null,
+        monthly_remaining_pct: 64.5,
+        monthly_active: 1,
+      },
+      {
+        provider: 'alibaba_token_plan',
+        model: null,
+        account_identity: 'account-identity-b',
+        account_ref: 'account-ref-b',
+        monthly_quota_key: MONTHLY_KEY,
+        monthly_quota_period: 'monthly',
+        monthly_source: 'alibaba_token_plan_usage',
+        monthly_quota_unit: 'Credits',
+        monthly_quota_limit: null,
+        monthly_quota_used: null,
+        monthly_quota_remaining: null,
+        monthly_remaining_pct: 12.5,
+        monthly_active: 1,
+      },
+    ].map((row) =>
+      normalizeQuotaRowForTest(attachQuotaVelocityRows(row, velocityByLane))
+    )
+
+    expect(rows.map((row) => row.account_ref)).toEqual([
+      'account-ref-a',
+      'account-ref-b',
+    ])
+    expect(rows.map((row) => row.monthly_remaining_pct)).toEqual([64.5, 12.5])
+    expect(rows.map((row) => row.monthly_velocity_sample_count)).toEqual([7, 8])
+    expect(
+      rows.map((row) => requireQuotaBillingDetail(row, 'monthly').quota_key)
+    ).toEqual([MONTHLY_KEY, MONTHLY_KEY])
+    expect(
+      rows.every(
+        (row) =>
+          requireQuotaBillingDetail(row, 'monthly').quota_limit === null &&
+          requireQuotaBillingDetail(row, 'monthly').quota_used === null &&
+          requireQuotaBillingDetail(row, 'monthly').quota_remaining === null
+      )
+    ).toBe(true)
+    expect(rows[0]).not.toHaveProperty('account_identity')
+    expect(rows[0]).not.toHaveProperty('account_hash')
+  })
+
+  test('test_monthly_history_normalization_preserves_window_and_null_absolutes', () => {
+    const normalized = [
+      {
+        provider: 'alibaba_token_plan',
+        model: null,
+        quota_type: 'monthly',
+        quota_key: MONTHLY_KEY,
+        quota_period: 'monthly',
+        source: 'alibaba_token_plan_usage',
+        quota_unit: 'Credits',
+        account_ref: 'account-ref-a',
+        expected_reset_at: '2026-08-01T00:00:00.000Z',
+        interval_start: '2026-07-01T00:00:00.000Z',
+        observed_at: '2026-07-21T22:39:00.000Z',
+        quota_limit: null,
+        quota_used: null,
+        quota_remaining: null,
+        min_remaining_pct: 64.5,
+      },
+      {
+        provider: 'alibaba_token_plan',
+        model: null,
+        quota_type: 'monthly',
+        quota_key: MONTHLY_KEY,
+        quota_period: 'monthly',
+        source: 'alibaba_token_plan_usage',
+        quota_unit: 'Credits',
+        account_ref: 'account-ref-b',
+        expected_reset_at: '2026-08-01T00:00:00.000Z',
+        interval_start: '2026-07-01T00:00:00.000Z',
+        observed_at: '2026-07-21T22:40:00.000Z',
+        quota_limit: null,
+        quota_used: null,
+        quota_remaining: null,
+        min_remaining_pct: 12.5,
+      },
+    ].map(normalizeQuotaHistoryRow)
+
+    expect(normalized).toHaveLength(2)
+    expect(normalized.map((row) => row.account_ref)).toEqual([
+      'account-ref-a',
+      'account-ref-b',
+    ])
+    expect(normalized.map((row) => row.min_remaining_pct)).toEqual([64.5, 12.5])
+    expect(normalized.map((row) => row.observed_at)).toEqual([
+      '2026-07-21T22:39:00.000Z',
+      '2026-07-21T22:40:00.000Z',
+    ])
+    expect(
+      normalized.every(
+        (row) =>
+          row.quota_key === MONTHLY_KEY &&
+          row.quota_period === 'monthly' &&
+          row.source === 'alibaba_token_plan_usage' &&
+          row.quota_limit === null &&
+          row.quota_used === null &&
+          row.quota_remaining === null &&
+          !('account_hash' in row)
+      )
+    ).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
 // D1-492: kimi_code (Moonshot/Kimi) quota support
 // ---------------------------------------------------------------------------
 describe('D1-492 kimi_code quota support', () => {
