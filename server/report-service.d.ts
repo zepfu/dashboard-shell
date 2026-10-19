@@ -321,6 +321,32 @@ declare module './report-service' {
     proxyConfig: UpstreamApiProxyConfig
   ) => URL
 
+  export const __usageReportTestHelpers: {
+    setQueryReportDatabaseTestImpl(
+      impl: (
+        sql: string,
+        values?: unknown[]
+      ) => Promise<{ rows: Record<string, unknown>[] }>
+    ): void
+    resetQueryReportDatabaseTestImpl(): void
+    loadUsageSessionDiagnostics(searchParams: SearchParamsLike): Promise<{
+      metadata: {
+        requestWaitCheckpointFreshnessSeconds?: number
+        [key: string]: unknown
+      }
+      sessionDiagnostics: Record<string, unknown>[]
+      requestWaitCheckpoints: Array<{
+        record_attribution?: string
+        qualifying_session_history?: boolean
+        activity?: string
+        durations_ms?: Record<string, number>
+        summed_duration_ms?: number | null
+        provider_content_outcome?: string
+        final_delivery_outcome?: string
+      }>
+    }>
+  }
+
   export const buildSummaryQuery: (
     searchParams: SearchParamsLike
   ) => QueryResult

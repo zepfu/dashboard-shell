@@ -31,6 +31,10 @@ import {
   REPORT_CACHE_VERSION,
   resolveReportCacheTtlMs,
 } from './report-cache-identity.mjs'
+import {
+  assembleRequestWaitDiagnostics,
+  buildRequestWaitCheckpointQuery,
+} from './request-wait-checkpoint-query.mjs'
 
 // Dynamic import for redis so that the module can be imported in environments
 // where the 'redis' package is not installed (for example, environments that
@@ -13755,14 +13759,28 @@ async function loadUsageToolActivity(searchParams) {
 
 async function loadUsageSessionDiagnostics(searchParams) {
   const query = buildSessionDiagnosticsQuery(searchParams)
-  const result = await queryReportDatabase(query.sql, query.values)
-  return {
+  const checkpointQuery = buildRequestWaitCheckpointQuery(searchParams, {
+    from: query.metadata.from,
+    to: query.metadata.to,
+    limit: query.metadata.limit,
+  })
+  const [result, checkpointResult] = await runTasksWithConcurrency(
+    [
+      () => queryReportDatabase(query.sql, query.values),
+      () => queryReportDatabase(checkpointQuery.sql, checkpointQuery.values),
+    ],
+    REPORT_SQL_FANOUT_CONCURRENCY
+  )
+  const generatedAt = new Date().toISOString()
+  return assembleRequestWaitDiagnostics({
     metadata: {
       ...query.metadata,
-      generatedAt: new Date().toISOString(),
+      generatedAt,
     },
-    sessionDiagnostics: result.rows.map(normalizeSessionDiagnosticsRow),
-  }
+    sessionDiagnostics: (result.rows ?? []).map(normalizeSessionDiagnosticsRow),
+    checkpointRows: checkpointResult.rows ?? [],
+    generatedAt,
+  })
 }
 
 async function loadUsageTokenTrendSummary(searchParams) {
@@ -14006,7 +14024,8 @@ async function handleUsageSessionDiagnostics(req, res) {
   await handleCachedUsageSubreport(
     req,
     res,
-    'usage-session-diagnostics-v1',
+    // v2 adds the durable wait-checkpoint read model. v1 entries omit it.
+    'usage-session-diagnostics-v2',
     loadUsageSessionDiagnostics
   )
 }
@@ -14708,6 +14727,7 @@ export const __queryCorrelationTestHelpers = {
 
 export const __usageReportTestHelpers = {
   loadUsageReport,
+  loadUsageSessionDiagnostics,
   runUsageReportFanoutTasks,
   buildUsageReportAuxiliaryDegradedMetadata,
   resolveUsageReportTaskStatementTimeoutMs,

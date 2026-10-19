@@ -1,5 +1,6 @@
 import { memo, useState, type ReactElement, type ReactNode } from 'react'
 import type {
+  RequestWaitCheckpointDiagnostics,
   UsageReportSessionDiagnosticsResponse,
   UsageReportSessionDiagnosticsRow,
 } from '../../api/usage-report'
@@ -316,6 +317,219 @@ function AliasRouteTimeline({
   )
 }
 
+function waitActivityLabel(
+  checkpoint: RequestWaitCheckpointDiagnostics
+): string {
+  switch (checkpoint.activity) {
+    case 'missing':
+      return 'No current wait checkpoint'
+    case 'active':
+      return 'Current active waits'
+    case 'stale':
+      return 'Stale checkpoint'
+    case 'completed_asgi':
+      return checkpoint.checkpoint_status
+        ? `Completed ASGI processing (${checkpoint.checkpoint_status})`
+        : 'Completed ASGI processing'
+    case 'recorded':
+      return 'Checkpoint recorded'
+  }
+}
+
+function waitAttributionLabel(
+  checkpoint: RequestWaitCheckpointDiagnostics
+): string {
+  switch (checkpoint.record_attribution) {
+    case 'missing':
+      return checkpoint.missing_reason === 'no_litellm_call_id'
+        ? 'Missing durable wait checkpoint: no request id to correlate'
+        : 'Missing durable wait checkpoint'
+    case 'checkpoint_only':
+      return 'Checkpoint-only record'
+    case 'correlated_session_history':
+      return 'Correlated session history'
+  }
+}
+
+function waitDurationLabels(
+  checkpoint: RequestWaitCheckpointDiagnostics
+): string[] {
+  const labels: string[] = []
+  const seen = new Set<string>()
+  for (const [kind, duration] of Object.entries(checkpoint.durations_ms)) {
+    seen.add(kind)
+    const count = checkpoint.counts[kind]
+    labels.push(`${kind}: ${duration} ms, count ${count ?? 'unavailable'}`)
+  }
+  for (const [kind, count] of Object.entries(checkpoint.counts)) {
+    if (seen.has(kind)) continue
+    labels.push(`${kind}: duration unavailable, count ${count}`)
+  }
+  return labels
+}
+
+function RequestWaitCheckpointBlock({
+  checkpoint,
+}: {
+  checkpoint: RequestWaitCheckpointDiagnostics
+}): ReactElement {
+  const durationLabels = waitDurationLabels(checkpoint)
+  const showActiveWaits =
+    checkpoint.activity === 'active' || checkpoint.activity === 'stale'
+
+  return (
+    <div
+      className='status-estimator-block'
+      data-testid='request-wait-checkpoint'
+      data-wait-attribution={checkpoint.record_attribution}
+      data-wait-activity={checkpoint.activity}
+      data-litellm-call-id={checkpoint.litellm_call_id ?? ''}
+    >
+      <strong>Request wait checkpoint</strong>
+      <div className='status-diagnostics-chip-row'>
+        <span className='status-diagnostics-chip'>
+          {waitAttributionLabel(checkpoint)}
+        </span>
+        <span className='status-diagnostics-chip'>
+          {waitActivityLabel(checkpoint)}
+        </span>
+      </div>
+      {checkpoint.record_attribution === 'checkpoint_only' ? (
+        <span>No qualifying session history row</span>
+      ) : null}
+      {checkpoint.record_attribution === 'correlated_session_history' ? (
+        <span>Qualifying session history row is present</span>
+      ) : null}
+      {checkpoint.record_attribution === 'missing' ? (
+        <span>
+          {checkpoint.missing_reason === 'no_litellm_call_id'
+            ? 'No request id to correlate a wait checkpoint.'
+            : 'No durable checkpoint row for this request.'}
+        </span>
+      ) : null}
+      <div className='status-estimator-meta-grid'>
+        <span>
+          freshness {checkpoint.freshness}
+          {checkpoint.freshness_age_seconds != null
+            ? ` (${checkpoint.freshness_age_seconds}s)`
+            : ''}
+          , threshold {checkpoint.freshness_threshold_seconds}s
+        </span>
+        <span>sequence {checkpoint.sequence ?? 'unavailable'}</span>
+        <span>ASGI status {checkpoint.checkpoint_status ?? 'unavailable'}</span>
+        <span>
+          ASGI completion {checkpoint.asgi_completion_at ?? 'unavailable'}
+        </span>
+        <span>
+          History completion{' '}
+          {checkpoint.session_history_end_time ?? 'unavailable'}
+        </span>
+        <span>
+          Provider content:{' '}
+          <strong>
+            {checkpoint.provider_content_outcome === 'empty_completion_recorded'
+              ? 'empty completion recorded on session history'
+              : 'not established'}
+          </strong>
+        </span>
+        <span>
+          Final delivery: <strong>not established</strong>
+        </span>
+      </div>
+      {checkpoint.activity === 'stale' ? (
+        <span>
+          Stale checkpoint age is observation freshness, not a request timeout.
+        </span>
+      ) : null}
+      <div>
+        <strong>
+          {showActiveWaits
+            ? 'Last recorded active waits'
+            : 'Recorded wait categories'}
+        </strong>
+        {checkpoint.active_wait_categories.length === 0 ? (
+          <span> none</span>
+        ) : (
+          checkpoint.active_wait_categories.map((wait, index) => (
+            <span key={`${wait.type}:${wait.started_at ?? ''}:${index}`}>
+              {' '}
+              {wait.type}
+              {wait.started_at ? ` since ${wait.started_at}` : ''}
+            </span>
+          ))
+        )}
+      </div>
+      <div>
+        <strong>Recorded durations</strong>
+        {durationLabels.length === 0 ? (
+          <span> none</span>
+        ) : (
+          durationLabels.map((label) => <span key={label}> {label}</span>)
+        )}
+      </div>
+      <span className='status-estimator-muted'>{checkpoint.outcome_note}</span>
+    </div>
+  )
+}
+
+function waitCheckpointCardKey(
+  checkpoint: RequestWaitCheckpointDiagnostics
+): string {
+  return [
+    'wait',
+    checkpoint.litellm_call_id,
+    checkpoint.session_id,
+    checkpoint.sequence,
+    checkpoint.checkpoint_updated_at,
+  ]
+    .filter((part) => part !== undefined && part !== null && part !== '')
+    .join('|')
+}
+
+function unattachedWaitCheckpoints(
+  rows: UsageReportSessionDiagnosticsRow[],
+  checkpoints: RequestWaitCheckpointDiagnostics[] | undefined
+): RequestWaitCheckpointDiagnostics[] {
+  if (!checkpoints?.length) return []
+  const shown = new Set(
+    rows
+      .filter((row) => row.request_wait_checkpoint)
+      .map((row) => row.request_wait_checkpoint?.litellm_call_id)
+      .filter((callId): callId is string => Boolean(callId))
+  )
+  return checkpoints.filter((checkpoint) => {
+    if (!checkpoint.litellm_call_id) return true
+    return !shown.has(checkpoint.litellm_call_id)
+  })
+}
+
+const WaitCheckpointCard = memo(function WaitCheckpointCard({
+  checkpoint,
+}: {
+  checkpoint: RequestWaitCheckpointDiagnostics
+}): ReactElement {
+  const provider = checkpoint.provider ?? 'unknown'
+  return (
+    <article className='status-estimator-lane status-diagnostics-card'>
+      <div className='status-estimator-lane-head'>
+        <span style={{ color: providerBrandHex(provider) }}>
+          {canonicalProvider(provider)}
+        </span>
+        <span>{checkpoint.model ?? 'unknown'}</span>
+      </div>
+      <div className='status-estimator-lane-key'>
+        {checkpoint.repository ?? 'unknown'} · {checkpoint.client ?? 'unknown'}{' '}
+        · {checkpoint.created_at ?? 'time unknown'}
+      </div>
+      <div className='status-estimator-lane-key'>
+        {checkpoint.litellm_call_id ?? 'call id unavailable'} ·{' '}
+        {checkpoint.session_id ?? 'session unavailable'}
+      </div>
+      <RequestWaitCheckpointBlock checkpoint={checkpoint} />
+    </article>
+  )
+})
+
 function sessionDiagnosticsCardKey(
   row: UsageReportSessionDiagnosticsRow
 ): string {
@@ -568,6 +782,10 @@ const SessionDiagnosticsCard = memo(function SessionDiagnosticsCard({
           }
         />
       </div>
+
+      {row.request_wait_checkpoint ? (
+        <RequestWaitCheckpointBlock checkpoint={row.request_wait_checkpoint} />
+      ) : null}
     </article>
   )
 })
@@ -580,8 +798,12 @@ export function SessionDiagnosticsPanel({
   loading: boolean
 }): ReactElement {
   const rows = response?.sessionDiagnostics ?? []
+  const extraCheckpoints = unattachedWaitCheckpoints(
+    rows,
+    response?.requestWaitCheckpoints
+  )
 
-  if (loading && rows.length === 0) {
+  if (loading && rows.length === 0 && extraCheckpoints.length === 0) {
     return (
       <div className='status-estimator-empty' role='status'>
         Loading session diagnostics...
@@ -589,7 +811,7 @@ export function SessionDiagnosticsPanel({
     )
   }
 
-  if (!loading && rows.length === 0) {
+  if (!loading && rows.length === 0 && extraCheckpoints.length === 0) {
     return (
       <div className='status-estimator-empty' role='status'>
         No session diagnostics for the selected range.
@@ -597,9 +819,10 @@ export function SessionDiagnosticsPanel({
     )
   }
 
-  const subLabel = `${rows.length.toLocaleString()} rows · limit ${
-    response?.metadata.limit?.toLocaleString() ?? 'unknown'
-  }`
+  const limitLabel = response?.metadata.limit?.toLocaleString() ?? 'unknown'
+  const subLabel = response?.requestWaitCheckpoints
+    ? `${rows.length.toLocaleString()} rows · ${response.requestWaitCheckpoints.length.toLocaleString()} wait checkpoints · limit ${limitLabel}`
+    : `${rows.length.toLocaleString()} rows · limit ${limitLabel}`
   const headPill = statusPill(
     SESSION_DIAGNOSTICS_HEAD_PILL,
     'loaded',
@@ -619,6 +842,12 @@ export function SessionDiagnosticsPanel({
           <SessionDiagnosticsCard
             key={sessionDiagnosticsCardKey(row)}
             row={row}
+          />
+        ))}
+        {extraCheckpoints.map((checkpoint) => (
+          <WaitCheckpointCard
+            key={waitCheckpointCardKey(checkpoint)}
+            checkpoint={checkpoint}
           />
         ))}
       </div>

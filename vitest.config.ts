@@ -1,6 +1,9 @@
-import path from 'path'
 import react from '@vitejs/plugin-react-swc'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { defineConfig } from 'vitest/config'
+
+const rootDir = path.dirname(fileURLToPath(import.meta.url))
 
 // NOTE: We intentionally do NOT import the @module-federation/vite plugin here.
 // The federation plugin is incompatible with Vitest's test runner (it expects a
@@ -10,7 +13,7 @@ export default defineConfig({
   plugins: [react()],
   resolve: {
     alias: {
-      '@': path.resolve(__dirname, './src'),
+      '@': path.resolve(rootDir, './src'),
     },
   },
   test: {
