@@ -7,6 +7,7 @@ import {
   canonicalProvider,
   providerBrandHex,
 } from '../../lib/usage-report-display'
+import { ReasoningEffortMapping } from './reasoning-effort-diagnostics'
 import { STATUS_PILL_FALLBACK, StatusPanel, statusPill } from './section-chrome'
 
 const SESSION_DIAGNOSTICS_HEAD_PILL = {
@@ -407,6 +408,8 @@ const SessionDiagnosticsCard = memo(function SessionDiagnosticsCard({
           </span>
         ))}
       </div>
+
+      <ReasoningEffortMapping value={row.reasoning_effort} />
 
       {row.grok_oauth ? (
         <div className='status-estimator-block'>

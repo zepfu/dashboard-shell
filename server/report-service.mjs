@@ -23,6 +23,13 @@ import {
   stripAnsi,
 } from './docker-log-error-intake.mjs'
 import {
+  normalizeReasoningEffortDiagnostics,
+  reasoningEffortDiagnosticCategorySql,
+  reasoningEffortDiagnosticFlagSql,
+  reasoningEffortDiagnosticsProjectionSql,
+  reasoningEffortMetadataPresentSql,
+} from './reasoning-effort-diagnostics.mjs'
+import {
   buildReportCacheEntry,
   buildReportCacheIdentity,
   buildReportCachePrewarmLockKey,
@@ -4930,6 +4937,7 @@ function sessionDiagnosticsMetadataPresentClause(columnPrefix = '') {
     OR ${p}metadata->>'anthropic_context_window_beta' IS NOT NULL
     OR ${p}metadata->>'anthropic_context_window_classification' IS NOT NULL
     OR ${grokSideChannelMetadataPresentClause(p)}
+    OR ${reasoningEffortMetadataPresentSql(p)}
   )`
 }
 
@@ -10221,7 +10229,8 @@ SELECT
              OR metadata->>'anthropic_context_window_source' IS NOT NULL
              OR metadata->>'anthropic_context_window_beta' IS NOT NULL
              OR metadata->>'anthropic_context_window_classification' IS NOT NULL
-             THEN 'anthropic_context_window'::text END
+             THEN 'anthropic_context_window'::text END,
+        ${reasoningEffortDiagnosticFlagSql('')}
     ], NULL) AS diagnostic_flags,
     ARRAY_REMOVE(ARRAY[
         CASE WHEN metadata->>'credential_family' IS NOT NULL
@@ -10251,7 +10260,8 @@ SELECT
              OR metadata->>'anthropic_context_window_source' IS NOT NULL
              OR metadata->>'anthropic_context_window_beta' IS NOT NULL
              OR metadata->>'anthropic_context_window_classification' IS NOT NULL
-             THEN 'context_window'::text END
+             THEN 'context_window'::text END,
+        ${reasoningEffortDiagnosticCategorySql('')}
     ], NULL) AS diagnostic_categories,
     jsonb_strip_nulls(jsonb_build_object(
         'credential_family', NULLIF(metadata->>'credential_family', ''),
@@ -10373,6 +10383,7 @@ SELECT
             to_jsonb(NULLIF(metadata->>'anthropic_context_window_classification', ''))
         )
     )) AS anthropic_context_window,
+    ${reasoningEffortDiagnosticsProjectionSql('metadata')} AS reasoning_effort,
     COALESCE(
         alias_route_events,
         metadata->'aawm_alias_routing_audit_events',
@@ -10455,6 +10466,7 @@ function normalizeSessionDiagnosticsRow(row) {
     anthropic_context_window: normalizeAnthropicContextWindow(
       row.anthropic_context_window
     ),
+    reasoning_effort: normalizeReasoningEffortDiagnostics(row.reasoning_effort),
     alias_route_events: Array.isArray(row.alias_route_events)
       ? row.alias_route_events
       : [],

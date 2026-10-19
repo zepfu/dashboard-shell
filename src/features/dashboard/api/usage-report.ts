@@ -1,4 +1,8 @@
 import { queryOptions } from '@tanstack/react-query'
+import {
+  type ReasoningEffortDiagnostics,
+  normalizeReasoningEffortDiagnostics,
+} from '../../../../server/reasoning-effort-diagnostics.mjs'
 
 export const LIVE_DASHBOARD_QUOTAS_REFETCH_INTERVAL_MS = 60_000
 export const LIVE_DASHBOARD_HEAVY_REFETCH_INTERVAL_MS = 120_000
@@ -1120,6 +1124,7 @@ export interface UsageReportSessionDiagnosticsRow {
   } | null
   alias_route_events?: UsageReportAliasRouteEvent[]
   anthropic_context_window?: UsageReportAnthropicContextWindowDiagnostics | null
+  reasoning_effort?: ReasoningEffortDiagnostics | null
 }
 
 export type UsageReportProviderAliasRoutingStateSource =
@@ -2220,6 +2225,7 @@ function normalizeUsageReportSessionDiagnosticsRow(
       redispatch_required: normalizeBooleanishString(event.redispatch_required),
       last_resort: normalizeBooleanishString(event.last_resort),
     })),
+    reasoning_effort: normalizeReasoningEffortDiagnostics(row.reasoning_effort),
   }
 }
 
