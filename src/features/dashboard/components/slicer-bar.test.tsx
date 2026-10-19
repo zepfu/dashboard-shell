@@ -17,7 +17,7 @@
  * Wave 8 (S5-6) — a11y red-phase additions:
  *  - Arrow-key navigation through listbox options (roving tabindex / ArrowDown/Up)
  *  - Focus restored to trigger button on dropdown close (Escape)
- *  - Unique dropdown IDs across all dimensions
+ *  - Unique dropdown IDs across usage, identity, and config-change dimensions
  *  - aria-controls on trigger points to a listbox with matching id
  */
 import { render, screen, fireEvent } from '@testing-library/react'
@@ -487,8 +487,8 @@ test('test_slicer_focus_restored_to_trigger_on_escape', () => {
 /**
  * S5-6 — Every dimension dropdown has a unique id.
  *
- * Each dimension dropdown must have a distinct `id` attribute so that the
- * trigger's `aria-controls` points to the correct listbox unambiguously.
+ * Usage, identity, and config-change dimensions each need a distinct listbox
+ * `id` so that the trigger's `aria-controls` points to the correct listbox.
  *
  * EXPECTED FAIL: if the id is derived from a non-unique suffix (e.g. always
  * 'slicer-dropdown') without including the dimension label, all five dropdowns
@@ -502,11 +502,11 @@ test('test_slicer_focus_restored_to_trigger_on_escape', () => {
 test('test_slicer_dropdown_ids_are_unique_per_dimension', () => {
   const { container } = renderBar()
 
-  // Open all five dropdowns by clicking each trigger in sequence.
+  // Open every dropdown by clicking each trigger in sequence.
   // Because dropdowns are conditionally rendered only when open, we must open
   // them one at a time and record each id before closing.
   const dimensions = container.querySelectorAll('.slicer-dimension')
-  expect(dimensions.length).toBe(7)
+  expect(dimensions.length).toBe(11)
 
   const seenIds = new Set<string>()
 
@@ -528,7 +528,7 @@ test('test_slicer_dropdown_ids_are_unique_per_dimension', () => {
     fireEvent.click(trigger!)
   }
 
-  expect(seenIds.size).toBe(7)
+  expect(seenIds.size).toBe(11)
 })
 
 /**

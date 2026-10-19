@@ -5,6 +5,7 @@
  * shape into fetch params + React Query key parts. Keeping the mapping in one
  * place prevents the six inlined call sites from drifting.
  */
+import type { UsageReportConfigChangeFilterValue } from '../api/usage-report'
 import type { SlicerFilters } from '../components/slicer-bar'
 
 /** API param names are singular (provider/repository/…) per report-service. */
@@ -16,6 +17,10 @@ export interface UsageFilterParams {
   model: string[] | undefined
   agent_id: string[] | undefined
   inbound_model_alias: string[] | undefined
+  changed_pre_commit_config: UsageReportConfigChangeFilterValue[] | undefined
+  changed_env_file: UsageReportConfigChangeFilterValue[] | undefined
+  changed_pyproject_toml: UsageReportConfigChangeFilterValue[] | undefined
+  changed_gitignore: UsageReportConfigChangeFilterValue[] | undefined
 }
 
 type UsageFilterSource = Pick<
@@ -27,6 +32,10 @@ type UsageFilterSource = Pick<
   | 'models'
   | 'agentIds'
   | 'inboundModelAliases'
+  | 'changed_pre_commit_config'
+  | 'changed_env_file'
+  | 'changed_pyproject_toml'
+  | 'changed_gitignore'
 >
 
 /**
@@ -44,6 +53,10 @@ export function usageFilterParams(
     model: filters?.models,
     agent_id: filters?.agentIds,
     inbound_model_alias: filters?.inboundModelAliases,
+    changed_pre_commit_config: filters?.changed_pre_commit_config,
+    changed_env_file: filters?.changed_env_file,
+    changed_pyproject_toml: filters?.changed_pyproject_toml,
+    changed_gitignore: filters?.changed_gitignore,
   }
 }
 
@@ -61,6 +74,10 @@ export function usageFilterKeyParts(
   string[] | undefined,
   string[] | undefined,
   string[] | undefined,
+  UsageReportConfigChangeFilterValue[] | undefined,
+  UsageReportConfigChangeFilterValue[] | undefined,
+  UsageReportConfigChangeFilterValue[] | undefined,
+  UsageReportConfigChangeFilterValue[] | undefined,
 ] {
   return [
     filters?.providers,
@@ -70,5 +87,9 @@ export function usageFilterKeyParts(
     filters?.models,
     filters?.agentIds,
     filters?.inboundModelAliases,
+    filters?.changed_pre_commit_config,
+    filters?.changed_env_file,
+    filters?.changed_pyproject_toml,
+    filters?.changed_gitignore,
   ]
 }
