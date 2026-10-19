@@ -35,6 +35,15 @@ import {
   reasoningEffortMetadataPresentSql,
 } from './reasoning-effort-diagnostics.mjs'
 import {
+  attachReferencePricingDetail,
+  projectReferencePricingAggregate,
+  projectReferencePricingSelected,
+  referencePricingAggregateSelectSql,
+  referencePricingContractPresentSql,
+  referencePricingFilteredColumnSelectSql,
+  referencePricingSelectedObjectSql,
+} from './reference-pricing-projection.mjs'
+import {
   buildReportCacheEntry,
   buildReportCacheIdentity,
   buildReportCachePrewarmLockKey,
@@ -3606,9 +3615,10 @@ export function compactUsageRow(row) {
 
   const compacted = {}
   for (const [key, value] of Object.entries(row)) {
-    // Cost availability is part of the public row contract: keep an explicit
-    // null so compact payloads cannot turn missing persisted cost into absent.
-    if (key === 'usd_cost') {
+    // Recorded cost and the labelled reference-pricing detail stay explicit.
+    // Compact payloads must not drop a null invoice cost or that separate
+    // estimate, and must not turn either one into an absent field.
+    if (key === 'usd_cost' || key === 'reference_pricing') {
       compacted[key] = value ?? null
     } else if (!isEmptyUsageRowFieldValue(value)) {
       compacted[key] = value
@@ -4869,7 +4879,7 @@ function normalizeRow(row) {
   ) {
     normalized.agent_score_reasons_recent_id_cap_truncates_requested_window = false
   }
-  return normalized
+  return attachReferencePricingDetail(normalized)
 }
 
 function buildFilteredWhere(searchParams, options = {}) {
@@ -5063,6 +5073,7 @@ SELECT
     SUM(COALESCE(sh.provider_cache_miss_cost_usd, 0))::double precision AS cache_miss_usd_cost,
     SUM(COALESCE(sh.response_cost_usd, 0))::double precision AS usd_cost,
     ${sessionHistoryResponseCostRowsExpression('sh')} AS response_cost_rows,
+    ${referencePricingAggregateSelectSql('sh')},
     SUM(COALESCE(sh.tool_call_count, 0))::double precision AS tool_calls,
     SUM(COALESCE(sh.git_commit_count, 0))::double precision AS git_commit,
     SUM(COALESCE(sh.git_push_count, 0))::double precision AS git_push,
@@ -5774,6 +5785,7 @@ export function buildProviderStatusUsageQuery(searchParams) {
     SUM(${sessionHistoryTokenSignalExpression()})::double precision AS token_total,
     SUM(COALESCE(sh.response_cost_usd, 0))::double precision AS usd_cost,
     ${sessionHistoryResponseCostRowsExpression('sh')} AS response_cost_rows,
+    ${referencePricingAggregateSelectSql('sh')},
     SUM(COALESCE(sh.tool_call_count, 0))::double precision AS tool_calls,
     SUM(COALESCE(sh.git_commit_count, 0))::double precision AS git_commit,
     SUM(COALESCE(sh.git_push_count, 0))::double precision AS git_push,
@@ -10696,6 +10708,7 @@ export function buildSessionDiagnosticsQuery(searchParams) {
     metadataExpression: 'metadata',
     providerExpression: 'provider',
   })
+  const referenceContractSql = referencePricingContractPresentSql('metadata')
 
   const sql = `
 WITH candidate_sessions AS MATERIALIZED (
@@ -10718,6 +10731,7 @@ WITH candidate_sessions AS MATERIALIZED (
         NULLIF(sh.inbound_model_alias, '') AS inbound_model_alias,
         NULLIF(sh.agent_name, '') AS agent_name,
         NULLIF(sh.agent_id, '') AS agent_id,
+        sh.response_cost_usd::double precision AS response_cost_usd,
         COALESCE(sh.metadata, '{}'::jsonb) AS metadata,
         COALESCE(sh.agent_score_reasons, '{}'::jsonb) AS agent_score_reasons
     FROM public.session_history sh
@@ -10881,7 +10895,9 @@ SELECT
         ${sessionDiagnosticsStreamFlagSql('metadata')},
         CASE WHEN ${zenAccount.admissionSql}
              THEN 'zen_account'::text END,
-        ${reasoningEffortDiagnosticFlagSql('')}
+        ${reasoningEffortDiagnosticFlagSql('')},
+        CASE WHEN ${referenceContractSql}
+             THEN 'reference_pricing'::text END
     ], NULL) AS diagnostic_flags,
     ARRAY_REMOVE(ARRAY[
         CASE WHEN metadata->>'credential_family' IS NOT NULL
@@ -10915,7 +10931,9 @@ SELECT
         ${sessionDiagnosticsStreamCategorySql('metadata')},
         CASE WHEN ${zenAccount.admissionSql}
              THEN 'account_identity'::text END,
-        ${reasoningEffortDiagnosticCategorySql('')}
+        ${reasoningEffortDiagnosticCategorySql('')},
+        CASE WHEN ${referenceContractSql}
+             THEN 'cost_detail'::text END
     ], NULL) AS diagnostic_categories,
     jsonb_strip_nulls(jsonb_build_object(
         'credential_family', NULLIF(metadata->>'credential_family', ''),
@@ -11037,6 +11055,8 @@ SELECT
             to_jsonb(NULLIF(metadata->>'anthropic_context_window_classification', ''))
         )
     )) AS anthropic_context_window,
+    response_cost_usd,
+    ${referencePricingSelectedObjectSql('metadata')} AS reference_pricing_selected,
     ${sessionDiagnosticsStreamProjectionSql('metadata')} AS stream_diagnostics,
     ${reasoningEffortDiagnosticsProjectionSql('metadata')} AS reasoning_effort,
     COALESCE(
@@ -11126,6 +11146,10 @@ function normalizeSessionDiagnosticsRow(row) {
       row.stream_diagnostics
     ),
     reasoning_effort: normalizeReasoningEffortDiagnostics(row.reasoning_effort),
+    response_cost_usd: normalizeNumber(row.response_cost_usd),
+    reference_pricing: projectReferencePricingSelected(
+      row.reference_pricing_selected
+    ),
     alias_route_events: sanitizeAliasRouteEvents(row.alias_route_events),
     audit_identity: sanitizeAuditIdentity(row.audit_identity),
   }
@@ -11201,6 +11225,7 @@ function normalizeSummary(row) {
       normalizeNumber(row.token_reasoning_estimated) ?? 0,
     token_total: normalizeNumber(row.token_total) ?? 0,
     usd_cost: normalizePersistedResponseCost(row),
+    reference_pricing: projectReferencePricingAggregate(row),
     cache_miss_usd_cost: normalizeNumber(row.cache_miss_usd_cost) ?? 0,
     tool_calls: normalizeNumber(row.tool_calls) ?? 0,
     git_commit: normalizeNumber(row.git_commit) ?? 0,
@@ -11482,6 +11507,7 @@ function normalizeProviderStatusUsageRow(row) {
     traces: normalizeNumber(row.traces) ?? 0,
     token_total: normalizeNumber(row.token_total) ?? 0,
     usd_cost: normalizePersistedResponseCost(row),
+    reference_pricing: projectReferencePricingAggregate(row),
     ...normalizeLatencyAggregateFields(row),
     period_start: row.period_start ?? null,
     period_end: row.period_end ?? null,
@@ -13534,7 +13560,8 @@ export function buildUsageQuery(searchParams) {
   const sql = `
 WITH filtered AS (
     SELECT
-${usageFilteredColumnSelects.join(',\n')}
+${usageFilteredColumnSelects.join(',\n')},
+${referencePricingFilteredColumnSelectSql('sh')}
     FROM public.session_history sh
     WHERE ${whereParts.join('\n      AND ')}
 ),
@@ -13583,6 +13610,7 @@ SELECT
     SUM(COALESCE(sh.provider_cache_miss_cost_usd, 0))::double precision AS cache_miss_usd_cost,
     SUM(COALESCE(sh.response_cost_usd, 0))::double precision AS usd_cost,
     ${sessionHistoryResponseCostRowsExpression('sh')} AS response_cost_rows,
+    ${referencePricingAggregateSelectSql('sh', { fromFiltered: true })},
     SUM(COALESCE(sh.tool_call_count, 0))::double precision AS tool_calls,
     SUM(COALESCE(sh.git_commit_count, 0))::double precision AS git_commit,
     SUM(COALESCE(sh.git_push_count, 0))::double precision AS git_push,

@@ -453,6 +453,9 @@ export function buildModelRows(
       p95_ms: ledgerP95Ms(latencySummary, health?.p95),
       error_pct: errorPct,
       cost_usd: row.usd_cost,
+      ...(row.reference_pricing
+        ? { reference_pricing: row.reference_pricing }
+        : {}),
       cache_pct,
       cache_miss_pct,
       cache_miss_usd_cost:

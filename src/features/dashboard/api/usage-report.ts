@@ -4,6 +4,10 @@ import {
   normalizeReasoningEffortDiagnostics,
 } from '../../../../server/reasoning-effort-diagnostics.mjs'
 import {
+  type ReferencePricingDetail,
+  sanitizeReferencePricingDetail,
+} from '../../../../server/reference-pricing-projection.mjs'
+import {
   normalizeSessionDiagnosticsStream,
   type UsageReportSessionDiagnosticsStream,
 } from '../components/status-section/session-diagnostics-stream'
@@ -394,7 +398,10 @@ export interface UsageReportRow
   token_cache_miss: number | null
   token_total: number | null
   cache_miss_usd_cost: number | null
+  /** Null means no row in the group persisted response_cost_usd. */
   usd_cost: number | null
+  /** Labelled reference estimate. It is not recorded or invoice spend. */
+  reference_pricing?: ReferencePricingDetail
   tool_calls: number | null
   git_commit: number | null
   git_push: number | null
@@ -547,6 +554,8 @@ export interface UsageReportSummary extends UsageReportConfigChangeFields {
   token_total: number
   /** Null means no row in the group persisted response_cost_usd. */
   usd_cost: number | null
+  /** Labelled reference estimate. It is not recorded or invoice spend. */
+  reference_pricing?: ReferencePricingDetail
   cache_miss_usd_cost: number
   tool_calls: number
   git_commit: number
@@ -830,6 +839,8 @@ export interface UsageReportProviderStatusUsageRow extends UsageReportLatencyFie
   token_total: number
   /** Null means no row in the group persisted response_cost_usd. */
   usd_cost: number | null
+  /** Labelled reference estimate. It is not recorded or invoice spend. */
+  reference_pricing?: ReferencePricingDetail
   period_start: string | null
   period_end: string | null
 }
@@ -1238,6 +1249,10 @@ export interface UsageReportSessionDiagnosticsRow {
   stream_diagnostics?: UsageReportSessionDiagnosticsStream | null
   request_wait_checkpoint?: RequestWaitCheckpointDiagnostics | null
   reasoning_effort?: ReasoningEffortDiagnostics | null
+  /** Recorded response_cost_usd. Null means the persisted invoice cost is unknown. */
+  response_cost_usd?: number | null
+  /** Labelled reference estimate. It is not recorded or invoice spend. */
+  reference_pricing?: ReferencePricingDetail
 }
 
 export type UsageReportProviderAliasRoutingStateSource =
@@ -3102,7 +3117,27 @@ function normalizeUsageReportSessionDiagnosticsRow(
   if (!Object.prototype.hasOwnProperty.call(row, 'stream_diagnostics')) {
     delete normalized.stream_diagnostics
   }
+  const referencePricing = sanitizeReferencePricingDetail(
+    safeRow.reference_pricing
+  )
+  if (referencePricing) {
+    normalized.reference_pricing = referencePricing
+  } else {
+    delete normalized.reference_pricing
+  }
+  if (Object.prototype.hasOwnProperty.call(row, 'response_cost_usd')) {
+    normalized.response_cost_usd = normalizeRecordedResponseCost(
+      row.response_cost_usd
+    )
+  }
   return normalized
+}
+
+function normalizeRecordedResponseCost(value: unknown): number | null {
+  if (value === null || value === undefined || value === '') return null
+  if (typeof value === 'boolean') return null
+  const number = typeof value === 'number' ? value : Number(value)
+  return Number.isFinite(number) ? number : null
 }
 
 function normalizeUsageReportSessionDiagnosticsResponse(

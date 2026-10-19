@@ -1,3 +1,4 @@
+import type { ReferencePricingDetail } from '../../../../server/reference-pricing-projection.mjs'
 import {
   agentQualityIssueSortValue,
   combineAgentQualitySummaries,
@@ -56,6 +57,8 @@ export interface ModelRow {
   /** Raw rate; round only at display. Undefined = no error data (repository leaves). */
   error_pct?: number
   cost_usd: number | null
+  /** Labelled reference estimate. It is not added to cost_usd. */
+  reference_pricing?: ReferencePricingDetail
   cache_pct?: number
   cache_miss_pct?: number
   cache_miss_usd_cost?: number

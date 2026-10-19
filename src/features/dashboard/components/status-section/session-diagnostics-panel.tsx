@@ -15,6 +15,7 @@ import {
   canonicalProvider,
   providerBrandHex,
 } from '../../lib/usage-report-display'
+import { ReferencePricingDetail } from '../reference-pricing-detail'
 import { CodexReviewDecisionsPanel } from './codex-review-decisions-panel'
 import { ReasoningEffortMapping } from './reasoning-effort-diagnostics'
 import { STATUS_PILL_FALLBACK, StatusPanel, statusPill } from './section-chrome'
@@ -766,6 +767,14 @@ const SessionDiagnosticsCard = memo(function SessionDiagnosticsCard({
       />
 
       <ReasoningEffortMapping value={row.reasoning_effort} />
+      <ReferencePricingDetail
+        detail={row.reference_pricing}
+        recordedResponseCostUsd={
+          Object.prototype.hasOwnProperty.call(row, 'response_cost_usd')
+            ? (row.response_cost_usd ?? null)
+            : undefined
+        }
+      />
 
       {row.grok_oauth ? (
         <div className='status-estimator-block'>

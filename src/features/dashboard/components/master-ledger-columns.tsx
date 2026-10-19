@@ -16,6 +16,7 @@ import {
   renderLatencyCell,
 } from './master-ledger-tooltips'
 import { ReasoningTokenValue } from './primitives/reasoning-token-value'
+import { LedgerRecordedCost } from './reference-pricing-detail'
 
 const helper = createColumnHelper<LedgerDisplayRow>()
 
@@ -121,7 +122,12 @@ const latencyCostColumns = [
   }),
   helper.accessor('cost_usd', {
     header: 'Cost',
-    cell: (info) => formatUsd(info.getValue() as number | null),
+    cell: ({ row, getValue }) => (
+      <LedgerRecordedCost
+        recordedCostUsd={getValue() as number | null}
+        referencePricing={row.original.reference_pricing}
+      />
+    ),
   }),
 ]
 
