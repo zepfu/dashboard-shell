@@ -5,7 +5,7 @@
  * Exports: SlicerBar (named), SlicerFilters, SlicerOptions, SLICER_EMPTY_FILTERS
  *
  * Tests cover:
- *  - Renders all 5 dimension labels
+ *  - Renders all dimension labels
  *  - Opening a dimension dropdown shows its options
  *  - Selecting a value calls onChange with the updated filter
  *  - Selecting a value shows a chip with the × remove button
@@ -17,7 +17,7 @@
  * Wave 8 (S5-6) — a11y red-phase additions:
  *  - Arrow-key navigation through listbox options (roving tabindex / ArrowDown/Up)
  *  - Focus restored to trigger button on dropdown close (Escape)
- *  - Unique dropdown IDs across all five dimensions
+ *  - Unique dropdown IDs across all dimensions
  *  - aria-controls on trigger points to a listbox with matching id
  */
 import { render, screen, fireEvent } from '@testing-library/react'
@@ -35,6 +35,8 @@ const OPTIONS: SlicerOptions = {
   clients: ['claude-code', 'cursor'],
   environments: ['prod', 'staging'],
   models: ['claude-3-5-sonnet', 'gpt-4o'],
+  agentIds: ['agent_harness', 'uncaptured_agent_id'],
+  inboundModelAliases: ['aawm-read-anthropic', 'unknown_inbound_model'],
 }
 
 const EMPTY_OPTIONS: SlicerOptions = {
@@ -55,14 +57,22 @@ function renderBar(
   )
 }
 
-test('test_slicer_bar_renders_five_dimension_labels', () => {
+test('test_slicer_bar_renders_dimension_labels', () => {
   renderBar()
 
   expect(screen.getByText(/provider/i)).toBeInTheDocument()
   expect(screen.getByText(/repository/i)).toBeInTheDocument()
   expect(screen.getByText(/client/i)).toBeInTheDocument()
   expect(screen.getByText(/environment/i)).toBeInTheDocument()
-  expect(screen.getByText(/model/i)).toBeInTheDocument()
+  expect(
+    screen.getByRole('button', { name: 'Model dimension' })
+  ).toBeInTheDocument()
+  expect(
+    screen.getByRole('button', { name: 'Agent ID dimension' })
+  ).toBeInTheDocument()
+  expect(
+    screen.getByRole('button', { name: 'Inbound alias dimension' })
+  ).toBeInTheDocument()
 })
 
 test('test_slicer_bar_opening_dropdown_shows_options', () => {
@@ -181,7 +191,13 @@ test('test_slicer_bar_clear_all_not_shown_when_no_filters', () => {
 test('test_slicer_bar_clear_all_shown_and_resets_all_filters', () => {
   const onChange = vi.fn()
   renderBar(
-    { ...SLICER_EMPTY_FILTERS, providers: ['anthropic'], models: ['gpt-4o'] },
+    {
+      ...SLICER_EMPTY_FILTERS,
+      providers: ['anthropic'],
+      models: ['gpt-4o'],
+      agentIds: ['agent_harness'],
+      inboundModelAliases: ['aawm-read-anthropic'],
+    },
     OPTIONS,
     onChange
   )
@@ -197,6 +213,84 @@ test('test_slicer_bar_clear_all_shown_and_resets_all_filters', () => {
   expect(nextFilters.providers).toHaveLength(0)
   expect(nextFilters.models).toHaveLength(0)
   expect(nextFilters.repositories).toHaveLength(0)
+  expect(nextFilters.agentIds).toEqual([])
+  expect(nextFilters.inboundModelAliases).toEqual([])
+})
+
+test('test_slicer_agent_id_and_inbound_alias_filters_are_visible_and_clearable', () => {
+  let filters: SlicerFilters = {
+    ...SLICER_EMPTY_FILTERS,
+    providers: ['anthropic'],
+  }
+  const onChange = vi.fn((next: SlicerFilters) => {
+    filters = next
+  })
+  const { rerender } = render(
+    <SlicerBar filters={filters} options={OPTIONS} onChange={onChange} />
+  )
+
+  fireEvent.click(screen.getByRole('button', { name: 'Agent ID dimension' }))
+  fireEvent.click(screen.getByRole('option', { name: 'agent_harness' }))
+  rerender(
+    <SlicerBar filters={filters} options={OPTIONS} onChange={onChange} />
+  )
+  expect(screen.getByLabelText('Agent ID filter chips')).toHaveTextContent(
+    'agent_harness'
+  )
+
+  fireEvent.click(
+    screen.getByRole('button', { name: 'Inbound alias dimension' })
+  )
+  fireEvent.change(
+    screen.getByRole('textbox', { name: 'Add Inbound alias filter' }),
+    {
+      target: { value: '  aawm-read-anthropic  ' },
+    }
+  )
+  fireEvent.click(screen.getByRole('button', { name: 'Add' }))
+  rerender(
+    <SlicerBar filters={filters} options={OPTIONS} onChange={onChange} />
+  )
+
+  expect(filters.agentIds).toEqual(['agent_harness'])
+  expect(filters.inboundModelAliases).toEqual(['aawm-read-anthropic'])
+  expect(filters.providers).toEqual(['anthropic'])
+  expect(screen.getByLabelText('Inbound alias filter chips')).toHaveTextContent(
+    'aawm-read-anthropic'
+  )
+
+  fireEvent.click(
+    screen.getByRole('button', {
+      name: 'Remove agent_harness from Agent ID filter',
+    })
+  )
+  rerender(
+    <SlicerBar filters={filters} options={OPTIONS} onChange={onChange} />
+  )
+  expect(filters.agentIds).toEqual([])
+  expect(filters.inboundModelAliases).toEqual(['aawm-read-anthropic'])
+  expect(
+    screen.queryByLabelText('Agent ID filter chips')
+  ).not.toBeInTheDocument()
+
+  fireEvent.click(
+    screen.getByRole('button', { name: 'Inbound alias dimension' })
+  )
+  fireEvent.click(screen.getByRole('button', { name: 'Clear' }))
+  expect(filters.inboundModelAliases).toEqual([])
+  expect(filters.providers).toEqual(['anthropic'])
+
+  fireEvent.click(
+    screen.getByRole('button', { name: 'Inbound alias dimension' })
+  )
+  fireEvent.change(
+    screen.getByRole('textbox', { name: 'Add Inbound alias filter' }),
+    {
+      target: { value: 'unknown' },
+    }
+  )
+  fireEvent.click(screen.getByRole('button', { name: 'Add' }))
+  expect(filters.inboundModelAliases).toEqual(['unknown'])
 })
 
 test('test_slicer_bar_empty_options_shows_no_options_message', () => {
@@ -393,9 +487,8 @@ test('test_slicer_focus_restored_to_trigger_on_escape', () => {
 /**
  * S5-6 — Every dimension dropdown has a unique id.
  *
- * With five dimension dropdowns (Provider, Repository, Client, Environment,
- * Model), each listbox must have a distinct `id` attribute so that the trigger's
- * `aria-controls` points to the correct listbox unambiguously.
+ * Each dimension dropdown must have a distinct `id` attribute so that the
+ * trigger's `aria-controls` points to the correct listbox unambiguously.
  *
  * EXPECTED FAIL: if the id is derived from a non-unique suffix (e.g. always
  * 'slicer-dropdown') without including the dimension label, all five dropdowns
@@ -413,7 +506,7 @@ test('test_slicer_dropdown_ids_are_unique_per_dimension', () => {
   // Because dropdowns are conditionally rendered only when open, we must open
   // them one at a time and record each id before closing.
   const dimensions = container.querySelectorAll('.slicer-dimension')
-  expect(dimensions.length).toBe(5)
+  expect(dimensions.length).toBe(7)
 
   const seenIds = new Set<string>()
 
@@ -435,7 +528,7 @@ test('test_slicer_dropdown_ids_are_unique_per_dimension', () => {
     fireEvent.click(trigger!)
   }
 
-  expect(seenIds.size).toBe(5)
+  expect(seenIds.size).toBe(7)
 })
 
 /**

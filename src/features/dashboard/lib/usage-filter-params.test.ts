@@ -11,6 +11,8 @@ const SAMPLE_FILTERS: SlicerFilters = {
   clients: ['claude-code'],
   environments: ['production'],
   models: ['claude-sonnet-4-6'],
+  agentIds: ['agent_harness'],
+  inboundModelAliases: ['aawm-read-anthropic'],
 }
 
 describe('usage filter shared helpers — P04-F07', () => {
@@ -24,6 +26,8 @@ describe('usage filter shared helpers — P04-F07', () => {
       client: SAMPLE_FILTERS.clients,
       environment: SAMPLE_FILTERS.environments,
       model: SAMPLE_FILTERS.models,
+      agent_id: SAMPLE_FILTERS.agentIds,
+      inbound_model_alias: SAMPLE_FILTERS.inboundModelAliases,
     })
 
     expect(keyParts).toEqual([
@@ -32,6 +36,8 @@ describe('usage filter shared helpers — P04-F07', () => {
       SAMPLE_FILTERS.clients,
       SAMPLE_FILTERS.environments,
       SAMPLE_FILTERS.models,
+      SAMPLE_FILTERS.agentIds,
+      SAMPLE_FILTERS.inboundModelAliases,
     ])
 
     expect(keyParts).toEqual([
@@ -40,6 +46,8 @@ describe('usage filter shared helpers — P04-F07', () => {
       params.client,
       params.environment,
       params.model,
+      params.agent_id,
+      params.inbound_model_alias,
     ])
   })
 })

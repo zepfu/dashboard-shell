@@ -1024,6 +1024,58 @@ describe('D1-223/224/225 usage identity and billing contracts', () => {
     )
   })
 
+  test('test_session_diagnostics_filters_agent_id_and_inbound_alias_without_changing_usage_identity', () => {
+    const params = new URLSearchParams({
+      from: '2026-05-01',
+      to: '2026-05-08',
+      grain: 'day',
+      group_by: 'provider,model,repository',
+      inbound_model_alias: 'aawm-read-anthropic,unknown_inbound_model',
+      agent_id: 'agent_harness,uncaptured_agent_id',
+      limit: '25',
+    })
+    const usage = buildUsageQuery(params)
+    const summary = buildSummaryQuery(params)
+    const session = buildSessionDiagnosticsQuery(params)
+
+    expect(usage.metadata.groupBy).toEqual(['provider', 'model', 'repository'])
+    for (const query of [usage, summary, session]) {
+      expect(query.values).toContainEqual([
+        'aawm-read-anthropic',
+        'unknown_inbound_model',
+      ])
+      expect(query.values).toContainEqual([
+        'agent_harness',
+        'uncaptured_agent_id',
+      ])
+      expect(query.sql).toContain(
+        "COALESCE(NULLIF(sh.inbound_model_alias, ''), 'unknown_inbound_model') = ANY("
+      )
+      expect(query.sql).toContain(
+        "COALESCE(NULLIF(sh.agent_id, ''), 'uncaptured_agent_id') = ANY("
+      )
+    }
+
+    expect(session.sql).toContain(
+      "NULLIF(sh.inbound_model_alias, '') AS inbound_model_alias"
+    )
+    expect(session.sql).toContain("NULLIF(sh.agent_name, '') AS agent_name")
+    expect(session.sql).toContain("NULLIF(sh.agent_id, '') AS agent_id")
+    expect(session.sql).toContain("COALESCE(sh.model, 'unknown') AS model")
+    expect(session.sql).not.toContain('unknown_agent_name')
+    expect(session.sql).not.toContain(
+      "COALESCE(sh.model, 'unknown') AS inbound_model_alias"
+    )
+    expect(session.values).toEqual([
+      '2026-05-01',
+      '2026-05-08',
+      ['aawm-read-anthropic', 'unknown_inbound_model'],
+      ['agent_harness', 'uncaptured_agent_id'],
+      50000,
+      25,
+    ])
+  })
+
   test('test_buildUsageQuery_decodes_percent_encoded_csv_filter_elements', () => {
     const encodedClient = 'claude-cli%20%5B2.0.1%5D'
     const encodedProviderModel = 'openai%2Fgpt-4.1'

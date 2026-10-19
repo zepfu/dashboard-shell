@@ -63,6 +63,11 @@ import { computePriorReportWindow } from '../lib/dashboard-date-range'
 import { groupByCanonicalProvider } from '../lib/provider-identity'
 import { isAnthropicProviderStatusVisible } from '../lib/provider-status-visibility'
 import {
+  UNCAPTURED_AGENT_ID_FILTER,
+  UNKNOWN_INBOUND_MODEL_FILTER,
+  sessionIdentityFilterOptions,
+} from '../lib/session-identity'
+import {
   buildTokenTrendDayEnvelopes,
   normalizeTrendData,
 } from '../lib/trend-utils'
@@ -820,6 +825,8 @@ export default function PhosphorDashboard({
         clients: filters?.clients,
         environments: filters?.environments,
         models: filters?.models,
+        agentIds: filters?.agentIds,
+        inboundModelAliases: filters?.inboundModelAliases,
       }),
     [
       resolvedFrom,
@@ -829,6 +836,8 @@ export default function PhosphorDashboard({
       filters?.clients,
       filters?.environments,
       filters?.models,
+      filters?.agentIds,
+      filters?.inboundModelAliases,
     ]
   )
 
@@ -1298,6 +1307,29 @@ export default function PhosphorDashboard({
         healthRows.map((r) => r.environment).filter(Boolean)
       ),
       models: uniqueSorted(statusUsage.map((r) => r.model).filter(Boolean)),
+      agentIds: sessionIdentityFilterOptions(
+        [
+          ...(sessionDiagnosticsData?.sessionDiagnostics ?? []).map(
+            (row) => row.agent_id
+          ),
+          ...rows.map((row) => row.agent_id),
+          ...(toolActivityData?.toolActivity ?? []).flatMap(
+            (row) => row.agent_ids ?? []
+          ),
+        ],
+        UNCAPTURED_AGENT_ID_FILTER,
+        filters?.agentIds
+      ),
+      inboundModelAliases: sessionIdentityFilterOptions(
+        [
+          ...(sessionDiagnosticsData?.sessionDiagnostics ?? []).map(
+            (row) => row.inbound_model_alias
+          ),
+          ...rows.map((row) => row.inbound_model_alias),
+        ],
+        UNKNOWN_INBOUND_MODEL_FILTER,
+        filters?.inboundModelAliases
+      ),
     }
   }, [
     report?.rows,
@@ -1305,6 +1337,10 @@ export default function PhosphorDashboard({
     report?.providerErrorObservations,
     report?.clients,
     report?.providerStatusUsage,
+    sessionDiagnosticsData?.sessionDiagnostics,
+    toolActivityData?.toolActivity,
+    filters?.agentIds,
+    filters?.inboundModelAliases,
   ])
 
   // 15-D.3: Notify parent of available slicer options whenever they change.
