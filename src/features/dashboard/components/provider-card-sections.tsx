@@ -563,6 +563,7 @@ export function ProviderCardMetricsBody({
           config={config}
           anomalies={anomalies}
         />
+        {extraPaneLeft}
       </div>
     )
   }

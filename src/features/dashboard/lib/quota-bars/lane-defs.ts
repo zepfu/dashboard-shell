@@ -297,6 +297,17 @@ const ZAI_CODING_PLAN_LANE_DEFS: LaneDef[] = [
   },
 ]
 
+/**
+ * Cohere trial accounting is locally counted accepted calls, not a provider
+ * quota lane. PROVIDER_LANE_DEFS stays limited to rate-limit telemetry.
+ * Monthly counts are credential-wide UTC months. RPM counts are exact-model
+ * 60-second windows. The monthly cap mirrors LiteLLM COHERE_MONTHLY_LIMIT.
+ * Per-model RPM limits are not part of this lane contract.
+ */
+export const COHERE_LOCAL_OBSERVATION_SOURCE = 'locally_counted' as const
+export const COHERE_LOCAL_MONTHLY_REQUEST_LIMIT = 1000
+export const COHERE_LOCAL_RPM_WINDOW_SECONDS = 60
+
 export const PROVIDER_LANE_DEFS: Readonly<Record<string, LaneDef[]>> = {
   anthropic: ANTHROPIC_LANE_DEFS,
   openai: OPENAI_LANE_DEFS,

@@ -31,6 +31,7 @@ import {
   useMemo,
   useState,
   type ReactElement,
+  type ReactNode,
 } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import {
@@ -53,6 +54,7 @@ import {
   type UsageReportQuotaHistoryRow,
   type UsageReportQuotaHistoryResponse,
   type UsageReportQuotaRangeHistoryResponse,
+  type CohereLocalUsageReport,
   type UsageReportQuotaRow,
   type UsageReportResponse,
   type UsageReportSummary,
@@ -87,6 +89,7 @@ import {
 } from '../lib/usage-report-display'
 import { useControllableState } from '../lib/use-controllable-state'
 import { AggregateCard } from './aggregate-card'
+import { CohereLocalUsagePanel } from './cohere-local-usage-panel'
 import {
   buildCurrentStats,
   ComparisonPanel,
@@ -100,6 +103,7 @@ import {
   buildModelRows,
   buildProviderMetrics,
   buildProviderLanes,
+  cohereLocalUsageCardTarget,
   buildTopModels,
   deriveProviders,
   padHealthCells,
@@ -340,6 +344,7 @@ type ProviderHealthCardRow = {
   lanes: ReturnType<typeof buildProviderLanes> | undefined
   topModels: ReturnType<typeof buildTopModels>
   localHealthItems: UsageReportResponse['localHealth']
+  extraPaneLeft?: ReactNode
 }
 
 const ProviderHealthColumns = memo(function ProviderHealthColumns({
@@ -388,6 +393,7 @@ const ProviderHealthColumns = memo(function ProviderHealthColumns({
               anomalies={anomalies}
               topModels={card.topModels}
               localHealthItems={card.localHealthItems}
+              extraPaneLeft={card.extraPaneLeft}
             />
           ))}
           {columnIndex === columnCount - 1 ? (
@@ -519,6 +525,8 @@ export interface PhosphorDashboardProps {
    * When provided, the internal quotas useQuery is bypassed.
    */
   quotas?: UsageReportQuotaRow[]
+  /** Locally counted Cohere accepted-call report from the quotas response. */
+  cohereLocalUsage?: CohereLocalUsageReport
   /** True whenever the quota query is fetching/refetching. */
   quotasFetching?: boolean
   /** Recent quota history rows for Provider Status health-tab quota lanes. */
@@ -585,6 +593,7 @@ export default function PhosphorDashboard({
   reportRefreshKey,
   showComparison = false,
   quotas: quotasProp,
+  cohereLocalUsage: cohereLocalUsageProp,
   quotasFetching: quotasFetchingProp = false,
   quotaHistory: quotaHistoryProp,
   quotaHistoryMetadata: quotaHistoryMetadataProp,
@@ -709,6 +718,9 @@ export default function PhosphorDashboard({
   const quotasFetching = internalQuotasEnabled
     ? internalQuotasFetching
     : quotasFetchingProp
+  const resolvedCohereLocalUsage = internalQuotasEnabled
+    ? quotasData?.cohereLocalUsage
+    : cohereLocalUsageProp
 
   const internalQuotaHistoryEnabled = quotaHistoryProp === undefined
   const {
@@ -1212,66 +1224,97 @@ export default function PhosphorDashboard({
     [healthRows, report?.rows, providerStatusUsage, providerErrorObservations]
   )
 
-  const providerHealthCardRows = useMemo(
-    () =>
-      providerHealthCardProviders.flatMap((provider) => {
-        const lanes = providerLanesByProvider.get(provider) ?? []
-        const quotaOnly = QUOTA_ONLY_PROVIDERS.includes(provider)
-        if (quotaOnly && lanes.length === 0) return []
-        const providerHealthRows =
-          providerStatusRowsByProvider.health.get(provider) ?? []
-        const providerUsageRows =
-          providerStatusRowsByProvider.usage.get(provider) ?? []
-        const providerStatusUsageRows =
-          providerStatusRowsByProvider.statusUsage.get(provider) ?? []
-        const providerErrorRows =
-          providerStatusRowsByProvider.errorObservations.get(provider) ?? []
+  const providerHealthCardRows = useMemo(() => {
+    const rows = providerHealthCardProviders.flatMap((provider) => {
+      const lanes = providerLanesByProvider.get(provider) ?? []
+      const quotaOnly = QUOTA_ONLY_PROVIDERS.includes(provider)
+      if (quotaOnly && lanes.length === 0) return []
+      const providerHealthRows =
+        providerStatusRowsByProvider.health.get(provider) ?? []
+      const providerUsageRows =
+        providerStatusRowsByProvider.usage.get(provider) ?? []
+      const providerStatusUsageRows =
+        providerStatusRowsByProvider.statusUsage.get(provider) ?? []
+      const providerErrorRows =
+        providerStatusRowsByProvider.errorObservations.get(provider) ?? []
 
-        const config: ProviderCardConfig = {
-          provider,
-          // Wave 12 Fix 1: use reference brand hex for card header name color
-          color: providerBrandHex(provider),
-          displayName: providerDisplayLabel(provider),
-          quotaOnly,
-        }
-        const aliases = providerAliases(provider)
-        const metrics = buildProviderMetrics(
-          provider,
-          providerHealthRows,
-          providerUsageRows,
-          undefined,
-          aliases
-        )
-        const cells = padHealthCells(
-          providerHealthRows,
-          provider,
-          providerErrorRows,
-          aliases
-        )
-        const topModels = buildTopModels(
-          providerStatusUsageRows,
-          provider,
-          providerHealthRows,
-          aliases
-        )
-        return {
-          provider,
-          config,
-          metrics,
-          cells,
-          lanes: lanes.length > 0 ? lanes : undefined,
-          topModels,
-          localHealthItems:
-            provider === 'local' ? (report?.localHealth ?? []) : [],
-        }
-      }),
-    [
-      providerHealthCardProviders,
-      providerLanesByProvider,
-      providerStatusRowsByProvider,
-      report?.localHealth,
-    ]
-  )
+      const config: ProviderCardConfig = {
+        provider,
+        // Wave 12 Fix 1: use reference brand hex for card header name color
+        color: providerBrandHex(provider),
+        displayName: providerDisplayLabel(provider),
+        quotaOnly,
+      }
+      const aliases = providerAliases(provider)
+      const metrics = buildProviderMetrics(
+        provider,
+        providerHealthRows,
+        providerUsageRows,
+        undefined,
+        aliases
+      )
+      const cells = padHealthCells(
+        providerHealthRows,
+        provider,
+        providerErrorRows,
+        aliases
+      )
+      const topModels = buildTopModels(
+        providerStatusUsageRows,
+        provider,
+        providerHealthRows,
+        aliases
+      )
+      return {
+        provider,
+        config,
+        metrics,
+        cells,
+        lanes: lanes.length > 0 ? lanes : undefined,
+        topModels,
+        localHealthItems:
+          provider === 'local' ? (report?.localHealth ?? []) : [],
+        extraPaneLeft:
+          provider === 'cohere' && resolvedCohereLocalUsage !== undefined ? (
+            <CohereLocalUsagePanel report={resolvedCohereLocalUsage} />
+          ) : undefined,
+      }
+    })
+    const cohereCardTarget = cohereLocalUsageCardTarget(
+      rows.map((row) => row.provider),
+      resolvedCohereLocalUsage
+    )
+    if (
+      cohereCardTarget === 'separate' &&
+      resolvedCohereLocalUsage !== undefined
+    ) {
+      const aliases = providerAliases('cohere')
+      rows.push({
+        provider: 'cohere',
+        config: {
+          provider: 'cohere',
+          color: providerBrandHex('cohere'),
+          displayName: providerDisplayLabel('cohere'),
+          quotaOnly: true,
+        },
+        metrics: buildProviderMetrics('cohere', [], [], undefined, aliases),
+        cells: padHealthCells([], 'cohere', [], aliases),
+        lanes: undefined,
+        topModels: [],
+        localHealthItems: [],
+        extraPaneLeft: (
+          <CohereLocalUsagePanel report={resolvedCohereLocalUsage} />
+        ),
+      })
+    }
+    return rows
+  }, [
+    providerHealthCardProviders,
+    providerLanesByProvider,
+    providerStatusRowsByProvider,
+    report?.localHealth,
+    resolvedCohereLocalUsage,
+  ])
 
   const providerSeries = useMemo(
     () =>
