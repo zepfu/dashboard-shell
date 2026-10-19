@@ -16,7 +16,10 @@ import {
   resolveQuotaAccountIdentities,
   roundToNearest30Min,
 } from './quota-bars/fields'
-import { PROVIDER_LANE_DEFS } from './quota-bars/lane-defs'
+import {
+  KIMI_CODE_MONTHLY_QUOTA_UNITS_KEY,
+  PROVIDER_LANE_DEFS,
+} from './quota-bars/lane-defs'
 import {
   canonicalProvider,
   providerAliases,
@@ -62,6 +65,18 @@ function quotaHistoryHasUsage(row: UsageReportQuotaHistoryRow): boolean {
   if (
     QUOTA_ONLY_PROVIDERS.includes(canonicalProvider(row.provider)) &&
     (row.min_remaining_pct !== null || row.max_remaining_pct !== null)
+  ) {
+    return true
+  }
+  if (
+    matchesKimiCodeQuotaContract(
+      row,
+      KIMI_CODE_MONTHLY_QUOTA_UNITS_KEY,
+      'monthly'
+    ) &&
+    (row.quota_limit != null ||
+      row.quota_used != null ||
+      row.quota_remaining != null)
   ) {
     return true
   }
@@ -127,16 +142,27 @@ function quotaHistoryRowMatchesLane(
     QUOTA_ONLY_PROVIDERS.includes(laneProvider) &&
     def.quotaKey !== undefined
   ) {
+    const laneQuotaType = quotaTypeToLaneKey(def.quotaType)
     const expectedQuotaPeriod =
-      quotaTypeToLaneKey(def.quotaType) === 'short'
+      laneQuotaType === 'short'
         ? '5h'
-        : quotaTypeToLaneKey(def.quotaType) === 'weekly'
+        : laneQuotaType === 'weekly'
           ? '7d'
-          : null
+          : laneQuotaType === 'monthly'
+            ? 'monthly'
+            : null
     if (laneProvider === 'kimi_code') {
-      return (
-        expectedQuotaPeriod !== null &&
-        matchesKimiCodeQuotaContract(row, def.quotaKey, expectedQuotaPeriod)
+      if (
+        expectedQuotaPeriod !== '5h' &&
+        expectedQuotaPeriod !== '7d' &&
+        expectedQuotaPeriod !== 'monthly'
+      ) {
+        return false
+      }
+      return matchesKimiCodeQuotaContract(
+        row,
+        def.quotaKey,
+        expectedQuotaPeriod
       )
     }
     if (laneProvider === 'cursor_agent') {
@@ -360,6 +386,7 @@ function aggregateQuotaHistoryRowsByReset(
         expected_reset_at: resetAt,
         interval_start: minIso(group.map((row) => row.interval_start)),
         interval_end: resetAt ?? maxIso(group.map((row) => row.interval_end)),
+        observed_at: maxIso(group.map((row) => row.observed_at ?? null)),
         min_remaining_pct: minNullableNumber(
           group.map((row) => row.min_remaining_pct)
         ),

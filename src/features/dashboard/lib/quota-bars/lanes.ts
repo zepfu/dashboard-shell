@@ -103,10 +103,14 @@ function quotaOnlyCurrentRowMatchesContract(
     )
   }
   if (provider === 'kimi_code') {
-    return (
-      quotaPeriod !== null &&
-      matchesKimiCodeQuotaContract(detail, quotaKey, quotaPeriod as '5h' | '7d')
-    )
+    if (
+      quotaPeriod !== '5h' &&
+      quotaPeriod !== '7d' &&
+      quotaPeriod !== 'monthly'
+    ) {
+      return false
+    }
+    return matchesKimiCodeQuotaContract(detail, quotaKey, quotaPeriod)
   }
 
   return (
@@ -124,10 +128,14 @@ function quotaOnlyHistoryRowMatchesContract(
   quotaPeriod: string | null
 ): boolean {
   if (provider === 'kimi_code') {
-    return (
-      quotaPeriod !== null &&
-      matchesKimiCodeQuotaContract(row, quotaKey, quotaPeriod as '5h' | '7d')
-    )
+    if (
+      quotaPeriod !== '5h' &&
+      quotaPeriod !== '7d' &&
+      quotaPeriod !== 'monthly'
+    ) {
+      return false
+    }
+    return matchesKimiCodeQuotaContract(row, quotaKey, quotaPeriod)
   }
 
   return (
@@ -257,6 +265,10 @@ export function buildPriorBarFromHistory(
       : null
   const timeAgoLabel =
     roundedSlotDate !== null ? formatTimeAgo(roundedSlotDate) : '—'
+  const observedAt =
+    typeof h.observed_at === 'string' && h.observed_at.trim() !== ''
+      ? h.observed_at
+      : undefined
 
   if (h.min_remaining_pct === null) {
     return {
@@ -272,6 +284,7 @@ export function buildPriorBarFromHistory(
       tipQuotaRemaining: h.quota_remaining,
       tipQuotaUnit: h.quota_unit ?? undefined,
       tipAbsolutesUnavailable: quotaHistoryAbsolutesUnavailable(h),
+      tipObservedAt: observedAt,
       tipModels: undefined,
       tipRequestTotal: tipRequestTotalFromBreakdown(h.usage_breakdown),
       tipRecentRequestTotal90m: tipRecentRequestTotal90mFromBreakdown(
@@ -334,6 +347,7 @@ export function buildPriorBarFromHistory(
     tipQuotaRemaining: h.quota_remaining,
     tipQuotaUnit: h.quota_unit ?? undefined,
     tipAbsolutesUnavailable: quotaHistoryAbsolutesUnavailable(h),
+    tipObservedAt: observedAt,
     tipModels,
     tipRequestTotal: tipRequestTotalFromBreakdown(h.usage_breakdown),
     tipRecentRequestTotal90m: tipRecentRequestTotal90mFromBreakdown(

@@ -165,4 +165,33 @@ describe('D1-492 Kimi Code quota contract', () => {
       ).toBe(false)
     }
   )
+
+  test('accepts the native monthly quota-units contract', () => {
+    expect(
+      matchesKimiCodeQuotaContract(
+        {
+          quota_key: 'kimi_code_monthly:quota_units',
+          quota_period: 'monthly',
+          source: 'kimi_code_usage',
+          quota_unit: 'quota_units',
+          client: 'kimi-code',
+        },
+        'kimi_code_monthly:quota_units',
+        'monthly'
+      )
+    ).toBe(true)
+    expect(
+      matchesKimiCodeQuotaContract(
+        {
+          quota_key: 'kimi_code_monthly:tokens',
+          quota_period: 'monthly',
+          source: 'kimi_code_usage',
+          quota_unit: 'tokens',
+          client: 'kimi-code',
+        },
+        'kimi_code_monthly:tokens',
+        'monthly'
+      )
+    ).toBe(false)
+  })
 })

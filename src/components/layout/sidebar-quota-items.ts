@@ -13,6 +13,7 @@ import {
   ALIBABA_TOKEN_PLAN_7D_CREDITS_KEY,
   KIMI_CODE_5H_QUOTA_UNITS_KEY,
   KIMI_CODE_7D_QUOTA_UNITS_KEY,
+  KIMI_CODE_MONTHLY_QUOTA_UNITS_KEY,
 } from '@/features/dashboard/lib/quota-bars/lane-defs'
 import {
   googleQuotaClass,
@@ -36,13 +37,14 @@ type QuotaOnlySidebarConfig = {
   labelUnit: string
   shortQuotaKey: string
   weeklyQuotaKey: string
+  monthlyQuotaKey?: string
 }
 
 function quotaOnlySidebarDetailMatches(
   config: QuotaOnlySidebarConfig,
   detail: UsageReportQuotaBillingDetail | undefined,
   quotaKey: string,
-  quotaPeriod: '5h' | '7d'
+  quotaPeriod: '5h' | '7d' | 'monthly'
 ): boolean {
   if (config.provider === 'kimi_code') {
     return matchesKimiCodeQuotaContract(detail, quotaKey, quotaPeriod)
@@ -74,8 +76,19 @@ function appendQuotaOnlySidebarItems(
         config.weeklyQuotaKey,
         '7d'
       ),
+      monthlyMatches:
+        config.monthlyQuotaKey !== undefined &&
+        quotaOnlySidebarDetailMatches(
+          config,
+          row.billing_details?.monthly,
+          config.monthlyQuotaKey,
+          'monthly'
+        ),
     }))
-    .filter(({ shortMatches, weeklyMatches }) => shortMatches || weeklyMatches)
+    .filter(
+      ({ shortMatches, weeklyMatches, monthlyMatches }) =>
+        shortMatches || weeklyMatches || monthlyMatches
+    )
   const identities = resolveQuotaAccountIdentities(
     providerRows.map(({ row }) => row.account_ref)
   )
@@ -125,49 +138,68 @@ function appendQuotaOnlySidebarItems(
     items.push({ ...item, key: distinctKey })
   }
 
-  providerRows.forEach(({ row, shortMatches, weeklyMatches }, rowIndex) => {
-    const identity = identities[rowIndex]
-    const includeAccountKey =
-      identity.accountRef !== null ||
-      Boolean(row.account_ref?.trim()) ||
-      showAccountSuffix
-    const accountKeySuffix = includeAccountKey ? `-${identity.publicKey}` : ''
-    const accountSuffix = formatQuotaAccountSuffix(identity.accountRef)
-    const identityLabel =
-      accountSuffix ??
-      (identity.publicKey.startsWith('unidentified-')
-        ? identity.publicKey.replace('-', ' ')
-        : null)
-    const labelSuffix =
-      showAccountSuffix && identityLabel !== null ? ` · ${identityLabel}` : ''
+  providerRows.forEach(
+    ({ row, shortMatches, weeklyMatches, monthlyMatches }, rowIndex) => {
+      const identity = identities[rowIndex]
+      const includeAccountKey =
+        identity.accountRef !== null ||
+        Boolean(row.account_ref?.trim()) ||
+        showAccountSuffix
+      const accountKeySuffix = includeAccountKey ? `-${identity.publicKey}` : ''
+      const accountSuffix = formatQuotaAccountSuffix(identity.accountRef)
+      const identityLabel =
+        accountSuffix ??
+        (identity.publicKey.startsWith('unidentified-')
+          ? identity.publicKey.replace('-', ' ')
+          : null)
+      const labelSuffix =
+        showAccountSuffix && identityLabel !== null ? ` · ${identityLabel}` : ''
 
-    if (shortMatches && row.short_remaining_pct != null) {
-      const key = `${config.keyPrefix}-5h-${config.keyUnit}${accountKeySuffix}`
-      appendItem(
-        key,
-        {
+      if (shortMatches && row.short_remaining_pct != null) {
+        const key = `${config.keyPrefix}-5h-${config.keyUnit}${accountKeySuffix}`
+        appendItem(
           key,
-          label: `${config.labelPrefix} 5h ${config.labelUnit}${labelSuffix}`,
-          percent: row.short_remaining_pct,
-          color,
-        },
-        rowIndex
-      )
-    }
-    if (weeklyMatches && row.weekly_remaining_pct != null) {
-      const key = `${config.keyPrefix}-7d-${config.keyUnit}${accountKeySuffix}`
-      appendItem(
-        key,
-        {
+          {
+            key,
+            label: `${config.labelPrefix} 5h ${config.labelUnit}${labelSuffix}`,
+            percent: row.short_remaining_pct,
+            color,
+          },
+          rowIndex
+        )
+      }
+      if (weeklyMatches && row.weekly_remaining_pct != null) {
+        const key = `${config.keyPrefix}-7d-${config.keyUnit}${accountKeySuffix}`
+        appendItem(
           key,
-          label: `${config.labelPrefix} 7d ${config.labelUnit}${labelSuffix}`,
-          percent: row.weekly_remaining_pct,
-          color,
-        },
-        rowIndex
-      )
+          {
+            key,
+            label: `${config.labelPrefix} 7d ${config.labelUnit}${labelSuffix}`,
+            percent: row.weekly_remaining_pct,
+            color,
+          },
+          rowIndex
+        )
+      }
+      if (
+        monthlyMatches &&
+        config.monthlyQuotaKey !== undefined &&
+        row.monthly_remaining_pct != null
+      ) {
+        const key = `${config.keyPrefix}-monthly-${config.keyUnit}${accountKeySuffix}`
+        appendItem(
+          key,
+          {
+            key,
+            label: `${config.labelPrefix} Monthly ${config.labelUnit}${labelSuffix}`,
+            percent: row.monthly_remaining_pct,
+            color,
+          },
+          rowIndex
+        )
+      }
     }
-  })
+  )
 }
 
 export function buildSidebarQuotaItems(
@@ -263,6 +295,7 @@ export function buildSidebarQuotaItems(
     labelUnit: 'Quota Units',
     shortQuotaKey: KIMI_CODE_5H_QUOTA_UNITS_KEY,
     weeklyQuotaKey: KIMI_CODE_7D_QUOTA_UNITS_KEY,
+    monthlyQuotaKey: KIMI_CODE_MONTHLY_QUOTA_UNITS_KEY,
   })
 
   return items

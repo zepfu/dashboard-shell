@@ -959,6 +959,8 @@ export interface UsageReportQuotaHistoryRow {
   interval_start: string | null
   /** ISO timestamp equal to expected_reset_at (the window close boundary). */
   interval_end: string | null
+  /** ISO timestamp of the latest quota observation in this window, when supplied. */
+  observed_at?: string | null
   /** Lowest remaining_pct observed within this window (peak consumption). */
   min_remaining_pct: number | null
   /** Highest remaining_pct observed (typically near-100 just after reset). */
