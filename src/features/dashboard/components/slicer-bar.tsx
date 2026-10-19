@@ -1,8 +1,8 @@
 /**
  * SlicerBar — Wave 15-D multi-dimension filter bar.
  *
- * Renders five inline pill multi-select dropdowns, one per API dimension:
- *   Provider · Repository · Client · Environment · Model
+ * Renders inline pill multi-select dropdowns, one per API dimension:
+ *   Provider · Repository · Client · Environment · Model · Agent ID · Inbound alias
  *
  * Design: Phosphor 12px mono aesthetic. Each dimension renders as a label
  * with a caret that opens a checkbox dropdown. Selected values appear as
@@ -45,6 +45,10 @@ export interface SlicerFilters {
   environments: string[]
   /** Filter by model (empty = all). */
   models: string[]
+  /** Filter by opaque session agent id (empty = all). */
+  agentIds?: string[]
+  /** Filter by the original inbound model alias (empty = all). */
+  inboundModelAliases?: string[]
 }
 
 /** Available values for each dimension, derived from the current API response. */
@@ -54,6 +58,8 @@ export interface SlicerOptions {
   clients: string[]
   environments: string[]
   models: string[]
+  agentIds?: string[]
+  inboundModelAliases?: string[]
 }
 
 export type SlicerOnChange = (
@@ -81,6 +87,8 @@ const EMPTY_FILTERS: SlicerFilters = {
   clients: [],
   environments: [],
   models: [],
+  agentIds: [],
+  inboundModelAliases: [],
 }
 
 interface DimensionConfig {
@@ -88,6 +96,8 @@ interface DimensionConfig {
   optionsKey: keyof SlicerOptions
   label: string
   formatOption?: (value: string) => string
+  /** Accept an exact typed value when the option list is incomplete. */
+  exactEntry?: boolean
 }
 
 const DIMENSIONS: DimensionConfig[] = [
@@ -101,6 +111,18 @@ const DIMENSIONS: DimensionConfig[] = [
   { key: 'clients', optionsKey: 'clients', label: 'Client' },
   { key: 'environments', optionsKey: 'environments', label: 'Environment' },
   { key: 'models', optionsKey: 'models', label: 'Model' },
+  {
+    key: 'agentIds',
+    optionsKey: 'agentIds',
+    label: 'Agent ID',
+    exactEntry: true,
+  },
+  {
+    key: 'inboundModelAliases',
+    optionsKey: 'inboundModelAliases',
+    label: 'Inbound alias',
+    exactEntry: true,
+  },
 ]
 
 // ---------------------------------------------------------------------------
@@ -112,7 +134,9 @@ interface DimensionDropdownProps {
   selected: string[]
   options: string[]
   formatOption?: (value: string) => string
+  exactEntry?: boolean
   onToggle: (value: string) => void
+  onAddExact: (value: string) => void
   onClear: () => void
   shortcutTarget?: string
 }
@@ -128,12 +152,15 @@ const DimensionDropdown = memo(function DimensionDropdown({
   selected,
   options,
   formatOption,
+  exactEntry = false,
   onToggle,
+  onAddExact,
   onClear,
   shortcutTarget,
 }: DimensionDropdownProps): ReactElement {
   const [open, setOpen] = useState(false)
   const [activeOptionIndex, setActiveOptionIndex] = useState(0)
+  const [exactDraft, setExactDraft] = useState('')
   const [staleChips, setStaleChips] = useState<ReadonlySet<string>>(new Set())
   const wrapperRef = useRef<HTMLDivElement>(null)
   const triggerRef = useRef<HTMLButtonElement>(null)
@@ -335,6 +362,40 @@ const DimensionDropdown = memo(function DimensionDropdown({
               Clear
             </button>
           </div>
+          {exactEntry ? (
+            <form
+              className='slicer-exact-entry'
+              onSubmit={(event) => {
+                event.preventDefault()
+                const value = exactDraft.trim()
+                if (value === '') return
+                onAddExact(value)
+                setExactDraft('')
+                setOpen(false)
+              }}
+            >
+              <input
+                type='text'
+                className='slicer-exact-input'
+                aria-label={`Add ${label} filter`}
+                autoComplete='off'
+                spellCheck={false}
+                value={exactDraft}
+                onChange={(event) => {
+                  setExactDraft(event.target.value)
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === 'Escape') {
+                    event.stopPropagation()
+                    closeDropdown()
+                  }
+                }}
+              />
+              <button type='submit' className='slicer-clear-btn'>
+                Add
+              </button>
+            </form>
+          ) : null}
           {options.length === 0 ? (
             <div className='slicer-empty'>No options</div>
           ) : (
@@ -406,9 +467,9 @@ const DimensionDropdown = memo(function DimensionDropdown({
 // ---------------------------------------------------------------------------
 
 /**
- * SlicerBar renders five DimensionDropdown controls for Provider, Repository,
- * Client, Environment, and Model. Calls `onChange` with the updated filter
- * state whenever any dimension is modified.
+ * SlicerBar renders DimensionDropdown controls for Provider, Repository,
+ * Client, Environment, Model, Agent ID, and Inbound alias. Calls `onChange`
+ * with the updated filter state whenever any dimension is modified.
  *
  * When all arrays are empty, no filters are sent to the API (all data shown).
  */
@@ -441,11 +502,22 @@ export function SlicerBar({
   const handleToggle = useCallback(
     (key: keyof SlicerFilters, value: string): void => {
       emitFilters((prev) => {
-        const current = prev[key]
+        const current = prev[key] ?? []
         const next = current.includes(value)
           ? current.filter((v) => v !== value)
           : [...current, value]
         return { ...prev, [key]: next }
+      })
+    },
+    [emitFilters]
+  )
+
+  const handleAddExact = useCallback(
+    (key: keyof SlicerFilters, value: string): void => {
+      emitFilters((prev) => {
+        const current = prev[key] ?? []
+        if (current.includes(value)) return prev
+        return { ...prev, [key]: [...current, value] }
       })
     },
     [emitFilters]
@@ -462,7 +534,7 @@ export function SlicerBar({
     emitFilters({ ...EMPTY_FILTERS })
   }, [emitFilters])
 
-  const hasAnyFilter = DIMENSIONS.some((d) => filters[d.key].length > 0)
+  const hasAnyFilter = DIMENSIONS.some((d) => (filters[d.key] ?? []).length > 0)
 
   const dimensionHandlers = useMemo(
     () =>
@@ -473,6 +545,9 @@ export function SlicerBar({
             onToggle: (value: string) => {
               handleToggle(dim.key, value)
             },
+            onAddExact: (value: string) => {
+              handleAddExact(dim.key, value)
+            },
             onClear: () => {
               handleClear(dim.key)
             },
@@ -480,9 +555,13 @@ export function SlicerBar({
         ])
       ) as Record<
         keyof SlicerFilters,
-        { onToggle: (value: string) => void; onClear: () => void }
+        {
+          onToggle: (value: string) => void
+          onAddExact: (value: string) => void
+          onClear: () => void
+        }
       >,
-    [handleToggle, handleClear]
+    [handleToggle, handleAddExact, handleClear]
   )
 
   return (
@@ -497,11 +576,13 @@ export function SlicerBar({
         <DimensionDropdown
           key={dim.key}
           label={dim.label}
-          selected={filters[dim.key]}
-          options={options[dim.optionsKey]}
+          selected={filters[dim.key] ?? []}
+          options={options[dim.optionsKey] ?? []}
           formatOption={dim.formatOption}
+          exactEntry={dim.exactEntry}
           shortcutTarget={index === 0 ? 'first-filter' : undefined}
           onToggle={dimensionHandlers[dim.key].onToggle}
+          onAddExact={dimensionHandlers[dim.key].onAddExact}
           onClear={dimensionHandlers[dim.key].onClear}
         />
       ))}

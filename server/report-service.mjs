@@ -4946,6 +4946,8 @@ function buildSessionDiagnosticsWhere(searchParams) {
     'repository',
     'client',
     'environment',
+    'inbound_model_alias',
+    'agent_id',
   ]) {
     appendSessionDiagnosticsFilter(searchParams, key, whereParts, values)
   }

@@ -1700,6 +1700,70 @@ describe('D1-212/215/213/178/221/222 session diagnostics API contracts', () => {
     })
   })
 
+  test('test_fetchUsageReportSessionDiagnostics_forwards_agent_identity_filters_and_preserves_nulls', async () => {
+    let capturedUrl: URL | null = null
+
+    server.use(
+      http.get(
+        '/api/shell/reports/usage/session-diagnostics',
+        ({ request }) => {
+          capturedUrl = new URL(request.url)
+          return HttpResponse.json(
+            usageReportSessionDiagnosticsPayload({
+              sessionDiagnostics: [
+                {
+                  ...BASE_USAGE_REPORT_SESSION_DIAGNOSTIC_ROW,
+                  agent_name: 'orchestrator',
+                  agent_id: 'agent_harness',
+                  inbound_model_alias: 'aawm-read-anthropic',
+                  model: 'claude-sonnet-4-6',
+                },
+                {
+                  ...BASE_USAGE_REPORT_SESSION_DIAGNOSTIC_ROW,
+                  session_id: 'missing-identity',
+                  agent_name: null,
+                  agent_id: null,
+                  inbound_model_alias: null,
+                  model: 'claude-sonnet-4-6',
+                },
+              ],
+            })
+          )
+        }
+      )
+    )
+
+    const response = await fetchUsageReportSessionDiagnostics({
+      from: '2026-05-20',
+      to: '2026-05-21',
+      inbound_model_alias: ['aawm-read-anthropic', 'unknown_inbound_model'],
+      agent_id: ['agent_harness', 'uncaptured_agent_id'],
+    })
+
+    expect(capturedUrl?.searchParams.get('inbound_model_alias')).toBe(
+      'aawm-read-anthropic,unknown_inbound_model'
+    )
+    expect(capturedUrl?.searchParams.get('agent_id')).toBe(
+      'agent_harness,uncaptured_agent_id'
+    )
+    expect(response.sessionDiagnostics[0]).toMatchObject({
+      agent_name: 'orchestrator',
+      agent_id: 'agent_harness',
+      inbound_model_alias: 'aawm-read-anthropic',
+      model: 'claude-sonnet-4-6',
+    })
+    expect(response.sessionDiagnostics[1]).toMatchObject({
+      agent_name: null,
+      agent_id: null,
+      inbound_model_alias: null,
+      model: 'claude-sonnet-4-6',
+    })
+    expect(response.sessionDiagnostics[1]?.agent_id).not.toBe('orchestrator')
+    expect(response.sessionDiagnostics[1]?.inbound_model_alias).not.toBe(
+      'claude-sonnet-4-6'
+    )
+  })
+
   test('test_fetchUsageReportSessionDiagnostics_preserves_nullable_host_attribution_fields', async () => {
     server.use(
       http.get('/api/shell/reports/usage/session-diagnostics', () =>

@@ -14,11 +14,19 @@ export interface UsageFilterParams {
   client: string[] | undefined
   environment: string[] | undefined
   model: string[] | undefined
+  agent_id: string[] | undefined
+  inbound_model_alias: string[] | undefined
 }
 
 type UsageFilterSource = Pick<
   SlicerFilters,
-  'providers' | 'repositories' | 'clients' | 'environments' | 'models'
+  | 'providers'
+  | 'repositories'
+  | 'clients'
+  | 'environments'
+  | 'models'
+  | 'agentIds'
+  | 'inboundModelAliases'
 >
 
 /**
@@ -34,16 +42,20 @@ export function usageFilterParams(
     client: filters?.clients,
     environment: filters?.environments,
     model: filters?.models,
+    agent_id: filters?.agentIds,
+    inbound_model_alias: filters?.inboundModelAliases,
   }
 }
 
 /**
- * Stable React Query key fragment for the five slicer dimensions, in the same
+ * Stable React Query key fragment for the slicer dimensions, in the same
  * order used by every usage-report queryKey in the dashboard.
  */
 export function usageFilterKeyParts(
   filters?: UsageFilterSource | null
 ): readonly [
+  string[] | undefined,
+  string[] | undefined,
   string[] | undefined,
   string[] | undefined,
   string[] | undefined,
@@ -56,5 +68,7 @@ export function usageFilterKeyParts(
     filters?.clients,
     filters?.environments,
     filters?.models,
+    filters?.agentIds,
+    filters?.inboundModelAliases,
   ]
 }

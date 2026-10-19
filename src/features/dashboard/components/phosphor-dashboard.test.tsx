@@ -1523,6 +1523,8 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
     let seenModel: string | null = null
     let seenRepository: string | null = null
     let seenClient: string | null = null
+    let seenAgentId: string | null = null
+    let seenInboundAlias: string | null = null
     let seenLimit: string | null = null
 
     server.use(
@@ -1536,6 +1538,8 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
           seenModel = url.searchParams.get('model')
           seenRepository = url.searchParams.get('repository')
           seenClient = url.searchParams.get('client')
+          seenAgentId = url.searchParams.get('agent_id')
+          seenInboundAlias = url.searchParams.get('inbound_model_alias')
           seenLimit = url.searchParams.get('limit')
           return HttpResponse.json({
             metadata: {
@@ -1686,6 +1690,8 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
               clients: ['grok-build'],
               environments: [],
               models: ['grok-composer-2.5-fast'],
+              agentIds: ['agent_harness'],
+              inboundModelAliases: ['aawm-read-anthropic'],
             }}
             report={MOCK_REPORT}
             reportLoading={false}
@@ -1711,6 +1717,8 @@ describe('PhosphorDashboard — TCG-1: hoisted-query bypass', () => {
     expect(seenModel).toBe('grok-composer-2.5-fast')
     expect(seenRepository).toBe('dashboard-shell')
     expect(seenClient).toBe('grok-build')
+    expect(seenAgentId).toBe('agent_harness')
+    expect(seenInboundAlias).toBe('aawm-read-anthropic')
     expect(seenLimit).toBe('100')
     const diagnosticsCard = (
       await screen.findByText('grok-composer-2.5-fast')

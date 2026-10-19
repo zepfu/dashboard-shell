@@ -373,6 +373,81 @@ describe('SessionDiagnosticsPanel — D1-488 host attribution', () => {
   })
 })
 
+describe('SessionDiagnosticsPanel — D1-500 identity', () => {
+  function identityText(card: HTMLElement, field: string): string {
+    return card.querySelector(`[data-identity="${field}"]`)?.textContent ?? ''
+  }
+
+  test('renders known and unknown agent identity apart from the selected model', () => {
+    const response: UsageReportSessionDiagnosticsResponse = {
+      metadata: { from: '2026-05-20', to: '2026-05-21', limit: 10 },
+      sessionDiagnostics: [
+        makeDiagnosticsRow({
+          session_id: 'known-identity',
+          agent_name: 'orchestrator',
+          agent_id: 'agent_harness',
+          inbound_model_alias: 'aawm-read-anthropic',
+          model: 'claude-sonnet-4-6',
+        }),
+        makeDiagnosticsRow({
+          session_id: 'missing-identity',
+          agent_name: null,
+          agent_id: null,
+          inbound_model_alias: '',
+          model: 'claude-sonnet-4-6',
+        }),
+        makeDiagnosticsRow({
+          session_id: 'name-without-id',
+          agent_name: 'orchestrator',
+          agent_id: null,
+          inbound_model_alias: null,
+          model: 'gpt-5',
+        }),
+        makeDiagnosticsRow({
+          session_id: 'historical-spaced-id',
+          agent_name: 'orchestrator',
+          agent_id: '  agent_harness  ',
+          inbound_model_alias: '  aawm-read-anthropic  ',
+          model: 'claude-opus-4-8',
+        }),
+      ],
+    }
+
+    const { container } = render(
+      <SessionDiagnosticsPanel response={response} loading={false} />
+    )
+    const cards = Array.from(
+      container.querySelectorAll<HTMLElement>('.status-diagnostics-card')
+    )
+    expect(cards).toHaveLength(4)
+
+    expect(identityText(cards[0], 'agent_name')).toBe('orchestrator')
+    expect(identityText(cards[0], 'agent_id')).toBe('agent_harness')
+    expect(identityText(cards[0], 'inbound_model_alias')).toBe(
+      'aawm-read-anthropic'
+    )
+    expect(identityText(cards[0], 'model')).toBe('claude-sonnet-4-6')
+
+    expect(identityText(cards[1], 'agent_name')).toBe('unknown')
+    expect(identityText(cards[1], 'agent_id')).toBe('unknown')
+    expect(identityText(cards[1], 'inbound_model_alias')).toBe('unknown')
+    expect(identityText(cards[1], 'model')).toBe('claude-sonnet-4-6')
+
+    expect(identityText(cards[2], 'agent_name')).toBe('orchestrator')
+    expect(identityText(cards[2], 'agent_id')).toBe('unknown')
+    expect(identityText(cards[2], 'agent_id')).not.toBe('orchestrator')
+    expect(identityText(cards[2], 'inbound_model_alias')).toBe('unknown')
+    expect(identityText(cards[2], 'inbound_model_alias')).not.toBe('gpt-5')
+    expect(identityText(cards[2], 'model')).toBe('gpt-5')
+
+    expect(identityText(cards[3], 'agent_id')).toBe('  agent_harness  ')
+    expect(identityText(cards[3], 'inbound_model_alias')).toBe(
+      '  aawm-read-anthropic  '
+    )
+    expect(identityText(cards[3], 'model')).toBe('claude-opus-4-8')
+  })
+})
+
 // ---------------------------------------------------------------------------
 // G2 / G3 — PgBouncer default branch + vocab alignment
 // ---------------------------------------------------------------------------

@@ -3,6 +3,7 @@ import type {
   UsageReportSessionDiagnosticsResponse,
   UsageReportSessionDiagnosticsRow,
 } from '../../api/usage-report'
+import { displaySessionIdentityValue } from '../../lib/session-identity'
 import {
   canonicalProvider,
   providerBrandHex,
@@ -316,6 +317,13 @@ function AliasRouteTimeline({
   )
 }
 
+const SESSION_IDENTITY_FIELDS = [
+  'agent_name',
+  'agent_id',
+  'inbound_model_alias',
+  'model',
+] as const
+
 function sessionDiagnosticsCardKey(
   row: UsageReportSessionDiagnosticsRow
 ): string {
@@ -382,7 +390,19 @@ const SessionDiagnosticsCard = memo(function SessionDiagnosticsCard({
         <span style={{ color: providerBrandHex(provider) }}>
           {canonicalProvider(provider)}
         </span>
-        <span>{row.model ?? 'unknown'}</span>
+      </div>
+      <div
+        className='status-diagnostics-identity'
+        aria-label='Session identity'
+      >
+        {SESSION_IDENTITY_FIELDS.map((field) => (
+          <span key={field}>
+            {field}{' '}
+            <strong data-identity={field}>
+              {displaySessionIdentityValue(row[field])}
+            </strong>
+          </span>
+        ))}
       </div>
       <div className='status-estimator-lane-key'>
         {row.repository ?? 'unknown'} · {row.client ?? 'unknown'} ·{' '}

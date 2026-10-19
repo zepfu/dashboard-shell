@@ -344,6 +344,8 @@ export function Dashboard(): ReactElement {
         clients: slicerFilters.clients,
         environments: slicerFilters.environments,
         models: slicerFilters.models,
+        agentIds: slicerFilters.agentIds,
+        inboundModelAliases: slicerFilters.inboundModelAliases,
       }),
     [
       from,
@@ -353,6 +355,8 @@ export function Dashboard(): ReactElement {
       slicerFilters.models,
       slicerFilters.providers,
       slicerFilters.repositories,
+      slicerFilters.agentIds,
+      slicerFilters.inboundModelAliases,
     ]
   )
   const tokenTrendSummaryBaseQueryKey = useMemo(
@@ -642,11 +646,7 @@ export function Dashboard(): ReactElement {
               {
                 from,
                 to,
-                provider: slicerFilters.providers,
-                repository: slicerFilters.repositories,
-                client: slicerFilters.clients,
-                environment: slicerFilters.environments,
-                model: slicerFilters.models,
+                ...usageFilterParams(slicerFilters),
                 cacheBust,
               },
               signal

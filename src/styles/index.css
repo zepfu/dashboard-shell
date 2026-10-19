@@ -2924,6 +2924,18 @@
   font-weight: 600;
 }
 
+.status-diagnostics-identity {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  color: var(--fg-muted);
+}
+
+.status-diagnostics-identity strong {
+  color: var(--fg);
+  font-weight: 600;
+}
+
 .status-estimator-lane-state {
   display: inline-flex;
   align-items: center;
@@ -3707,6 +3719,24 @@ tbody tr {
   justify-content: flex-end;
   padding: 4px 8px;
   border-bottom: 1px solid var(--border);
+}
+
+.slicer-exact-entry {
+  display: flex;
+  gap: 4px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.slicer-exact-input {
+  flex: 1;
+  min-width: 0;
+  background: var(--card-2);
+  border: 1px solid var(--border);
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  padding: 2px 4px;
 }
 
 .slicer-clear-btn {
