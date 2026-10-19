@@ -2912,14 +2912,16 @@
   white-space: nowrap;
 }
 
-.status-diagnostics-host {
+.status-diagnostics-host,
+.status-diagnostics-request {
   display: flex;
   flex-wrap: wrap;
   gap: 4px 8px;
   color: var(--fg-muted);
 }
 
-.status-diagnostics-host strong {
+.status-diagnostics-host strong,
+.status-diagnostics-request strong {
   color: var(--fg);
   font-weight: 600;
 }

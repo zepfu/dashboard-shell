@@ -13,6 +13,7 @@ import {
   within,
 } from '@testing-library/react'
 import { describe, expect, test, vi } from 'vitest'
+import { quotaAccountRefFromAccountHash } from '../../../../../server/session-diagnostics-zen-account.mjs'
 import type {
   ShellPgBouncerHealth,
   ShellPgBouncerSidecar,
@@ -370,6 +371,133 @@ describe('SessionDiagnosticsPanel — D1-488 host attribution', () => {
     expect(hostText(cards[2])).toContain('host: 10.0.0.2')
     expect(hostText(cards[2])).not.toContain('client_ip:')
     expect(cards[3].querySelector('.status-diagnostics-host')).toBeNull()
+  })
+})
+
+describe('SessionDiagnosticsPanel — D1-504 Zen account refs', () => {
+  const digestA = `sha256:${'ab'.repeat(32)}`
+  const digestB = `sha256:${'cd'.repeat(32)}`
+
+  function identityLine(card: HTMLElement, label: string): string {
+    const line = within(card).getByText((_, element) => {
+      if (!(element instanceof HTMLSpanElement)) return false
+      if (
+        element.parentElement?.classList.contains(
+          'status-diagnostics-request'
+        ) !== true
+      ) {
+        return false
+      }
+      return (element.textContent ?? '').startsWith(`${label}:`)
+    })
+    return line.textContent ?? ''
+  }
+
+  test('shows two Zen quota refs with request identity and unknown invalid sources', () => {
+    const refA = quotaAccountRefFromAccountHash(digestA)
+    const refB = quotaAccountRefFromAccountHash(digestB)
+    if (refA === null || refB === null) {
+      throw new Error('expected distinct Zen quota refs')
+    }
+    expect(refA).toBe('36f6769913c7')
+    expect(refB).toBe('27b7269c6ae2')
+
+    const response: UsageReportSessionDiagnosticsResponse = {
+      metadata: { from: '2026-05-20', to: '2026-05-21', limit: 10 },
+      sessionDiagnostics: [
+        makeDiagnosticsRow({
+          session_id: 'sess-zen-a',
+          trace_id: 'trace-zen-a',
+          litellm_call_id: 'call-zen-a',
+          provider: 'opencode_zen',
+          zen_account_ref: refA,
+          provider_account_hash: digestA,
+          caller_identity_hash: 'caller-secret-a',
+          agent_id: 'agent-a',
+          grok_oauth: {
+            credential_family: 'opencode_zen',
+            passthrough_route_family: 'opencode_zen',
+            route_family: 'opencode_zen',
+            auth_mode: 'api_key',
+            provider_account_hash: digestA,
+          },
+        } as UsageReportSessionDiagnosticsRow),
+        makeDiagnosticsRow({
+          session_id: 'sess-zen-b',
+          trace_id: 'trace-zen-b',
+          litellm_call_id: 'call-zen-b',
+          provider: 'opencode_zen',
+          zen_account_ref: refB,
+          grok_oauth: {
+            credential_family: 'opencode_zen',
+            route_family: 'opencode-zen',
+            auth_mode: 'bearer',
+          },
+        }),
+        makeDiagnosticsRow({
+          session_id: 'sess-invalid',
+          trace_id: 'trace-invalid',
+          litellm_call_id: 'call-invalid',
+          zen_account_ref: digestA,
+          provider_account_hash: 'raw-account-label',
+          caller_identity_hash: 'caller-secret-b',
+          agent_id: 'agent-invalid',
+          account_label: 'raw-account-label',
+          grok_oauth: {
+            credential_family: 'xai_grok_oidc',
+            passthrough_route_family: 'grok_cli_chat_proxy',
+            route_family: 'grok',
+            auth_mode: 'oidc',
+            provider_account_hash: digestB,
+          },
+        } as UsageReportSessionDiagnosticsRow),
+      ],
+    }
+
+    const { container } = render(
+      <SessionDiagnosticsPanel response={response} loading={false} />
+    )
+    const cards = Array.from(
+      container.querySelectorAll<HTMLElement>('.status-diagnostics-card')
+    )
+    expect(cards).toHaveLength(3)
+
+    expect(identityLine(cards[0]!, 'session')).toContain('sess-zen-a')
+    expect(identityLine(cards[0]!, 'trace')).toContain('trace-zen-a')
+    expect(identityLine(cards[0]!, 'request')).toContain('call-zen-a')
+    expect(identityLine(cards[0]!, 'zen account')).toContain(refA)
+    expect(identityLine(cards[0]!, 'zen account')).not.toContain(refB)
+    expect(within(cards[0]!).getByText(/credential_family/)).toBeInTheDocument()
+    expect(within(cards[0]!).getByText(/auth_mode/)).toBeInTheDocument()
+    expect(within(cards[0]!).getByText('api_key')).toBeInTheDocument()
+    expect(
+      within(cards[0]!).getAllByText('opencode_zen').length
+    ).toBeGreaterThan(0)
+    expect(cards[0]!.textContent ?? '').not.toContain(digestA)
+    expect(cards[0]!.textContent ?? '').not.toContain('caller-secret-a')
+    expect(cards[0]!.textContent ?? '').not.toContain('agent-a')
+
+    expect(identityLine(cards[1]!, 'session')).toContain('sess-zen-b')
+    expect(identityLine(cards[1]!, 'request')).toContain('call-zen-b')
+    expect(identityLine(cards[1]!, 'zen account')).toContain(refB)
+    expect(within(cards[1]!).getByText('bearer')).toBeInTheDocument()
+    expect(within(cards[1]!).getByText('opencode-zen')).toBeInTheDocument()
+
+    expect(identityLine(cards[2]!, 'session')).toContain('sess-invalid')
+    expect(identityLine(cards[2]!, 'request')).toContain('call-invalid')
+    expect(identityLine(cards[2]!, 'zen account')).toContain('unknown')
+    expect(identityLine(cards[2]!, 'zen account')).not.toContain(digestA)
+    expect(within(cards[2]!).getByText('xai_grok_oidc')).toBeInTheDocument()
+    expect(
+      within(cards[2]!).getByText('grok_cli_chat_proxy')
+    ).toBeInTheDocument()
+    expect(within(cards[2]!).getByText('oidc')).toBeInTheDocument()
+    const invalidText = cards[2]!.textContent ?? ''
+    expect(invalidText).not.toContain(digestA)
+    expect(invalidText).not.toContain(digestB)
+    expect(invalidText).not.toContain('raw-account-label')
+    expect(invalidText).not.toContain('caller-secret-b')
+    expect(invalidText).not.toContain('agent-invalid')
   })
 })
 

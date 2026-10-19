@@ -1,4 +1,8 @@
 import { queryOptions } from '@tanstack/react-query'
+import {
+  normalizeSessionDiagnosticsZenAccountRef,
+  omitRawSessionAccountFields,
+} from '../lib/session-diagnostics-zen-account'
 
 export const LIVE_DASHBOARD_QUOTAS_REFETCH_INTERVAL_MS = 60_000
 export const LIVE_DASHBOARD_HEAVY_REFETCH_INTERVAL_MS = 120_000
@@ -1045,6 +1049,8 @@ export interface UsageReportSessionDiagnosticsRow {
   inbound_model_alias?: string | null
   agent_name?: string | null
   agent_id?: string | null
+  /** Verified Zen quota ref, `left(md5(account_hash), 12)`. */
+  zen_account_ref?: string | null
   diagnostic_flags?: string[]
   diagnostic_categories?: string[]
   grok_oauth?: {
@@ -2168,18 +2174,22 @@ function normalizeBooleanishString(
 function normalizeUsageReportSessionDiagnosticsRow(
   row: UsageReportSessionDiagnosticsRow
 ): UsageReportSessionDiagnosticsRow {
+  const safeRow = omitRawSessionAccountFields(row)
   return {
-    ...row,
-    host_name: row.host_name ?? null,
-    client_ip: row.client_ip ?? null,
-    grok_oauth: row.grok_oauth
+    ...safeRow,
+    host_name: safeRow.host_name ?? null,
+    client_ip: safeRow.client_ip ?? null,
+    zen_account_ref: normalizeSessionDiagnosticsZenAccountRef(
+      safeRow.zen_account_ref
+    ),
+    grok_oauth: safeRow.grok_oauth
       ? {
-          ...row.grok_oauth,
+          ...omitRawSessionAccountFields(safeRow.grok_oauth),
           grok_native_oauth_managed: normalizeBooleanishString(
-            row.grok_oauth.grok_native_oauth_managed
+            safeRow.grok_oauth.grok_native_oauth_managed
           ),
         }
-      : row.grok_oauth,
+      : safeRow.grok_oauth,
     grok_side_channel: row.grok_side_channel
       ? {
           ...row.grok_side_channel,
@@ -2201,7 +2211,7 @@ function normalizeUsageReportSessionDiagnosticsRow(
       : row.output_contract,
     xai_sanitizer: row.xai_sanitizer
       ? {
-          ...row.xai_sanitizer,
+          ...omitRawSessionAccountFields(row.xai_sanitizer),
           xai_responses_request_sanitized: normalizeBooleanishString(
             row.xai_sanitizer.xai_responses_request_sanitized
           ),
