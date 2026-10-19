@@ -7,6 +7,7 @@ import {
   normalizeSessionDiagnosticsStream,
   type UsageReportSessionDiagnosticsStream,
 } from '../components/status-section/session-diagnostics-stream'
+import { sanitizeCodexReviewDecisionRationale } from '../lib/codex-review-decision-text'
 import {
   normalizeSessionDiagnosticsZenAccountRef,
   omitRawSessionAccountFields,
@@ -1561,6 +1562,74 @@ export interface UsageReportSessionDiagnosticsResponse {
   requestWaitCheckpoints?: RequestWaitCheckpointDiagnostics[]
 }
 
+export interface UsageReportCodexReviewDecisionMetadata {
+  source?: string | null
+  capture_source?: string | null
+  producer_version?: string | null
+  event_index?: number | null
+  session_history_provider?: string | null
+  session_history_model?: string | null
+}
+
+export interface UsageReportCodexReviewDecision {
+  created_at: string | null
+  decision_key: string
+  reviewer_litellm_call_id: string
+  reviewer_session_id: string | null
+  reviewer_trace_id: string | null
+  reviewer_model: string | null
+  reviewer_agent_name: string | null
+  reviewer_agent_id: string | null
+  outcome: 'allow' | 'deny'
+  rationale: string | null
+  rationale_truncated: boolean
+  risk_level: string | null
+  user_authorization: string | null
+  session_id: string | null
+  parent_litellm_call_id: string | null
+  parent_session_id: string | null
+  parent_thread_id: string | null
+  parent_agent_name: string | null
+  parent_agent_id: string | null
+  correlation_status: 'attributed' | 'unattributed' | 'unknown'
+  parser_version: string | null
+  contract_version: string | null
+  review_attempt_number: number | null
+  review_attempt_key: string | null
+  governed_tool_call_id: string | null
+  governed_tool_activity_key: string | null
+  governed_tool_attribution_status: 'unknown' | 'producer_supplied'
+  metadata: UsageReportCodexReviewDecisionMetadata | null
+}
+
+export interface UsageReportCodexReviewDecisionsResponse {
+  metadata: {
+    from: string
+    to: string
+    limit: number
+    decisionKey?: string | null
+    detail?: boolean
+    generatedAt?: string
+  } & ReportCacheMetadata
+  decisions: UsageReportCodexReviewDecision[]
+  decision: UsageReportCodexReviewDecision | null
+}
+
+export interface UsageReportCodexReviewDecisionsParams {
+  from: string
+  to: string
+  limit?: number
+  decision_key?: string
+  outcome?: 'allow' | 'deny'
+  correlation_status?: 'attributed' | 'unattributed' | 'unknown'
+  tool_attribution?: 'unknown' | 'producer_supplied'
+  session_id?: readonly string[]
+  reviewer_litellm_call_id?: readonly string[]
+  parent_litellm_call_id?: readonly string[]
+  review_attempt_key?: readonly string[]
+  cacheBust?: string
+}
+
 export interface UsageReportTokenTrendDayParams extends UsageReportFilterParams {
   from: string
   to: string
@@ -2164,6 +2233,17 @@ function assertUsageReportSessionDiagnosticsResponse(json: unknown): void {
       numbers: ['limit'],
     },
     requireArrays: ['sessionDiagnostics'],
+  })
+}
+
+function assertUsageReportCodexReviewDecisionsResponse(json: unknown): void {
+  assertUsageReportSpotCheck(json, {
+    metadataKeys: ['from', 'to', 'limit'],
+    metadataShape: {
+      strings: ['from', 'to'],
+      numbers: ['limit'],
+    },
+    requireArrays: ['decisions'],
   })
 }
 
@@ -2869,6 +2949,232 @@ export async function fetchUsageReportSessionDiagnostics(
       validate: assertUsageReportSessionDiagnosticsResponse,
     })
   return normalizeUsageReportSessionDiagnosticsResponse(response)
+}
+
+const CODEX_REVIEW_DECISION_IDENTITY_MAX_CHARS = 256
+const CODEX_REVIEW_DECISION_RISK_LEVELS = [
+  'low',
+  'medium',
+  'high',
+  'critical',
+] as const
+const CODEX_REVIEW_DECISION_USER_AUTHORIZATIONS = [
+  'unknown',
+  'low',
+  'medium',
+  'high',
+] as const
+
+function boundedCodexReviewIdentity(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  const trimmed = value.trim()
+  if (!trimmed || trimmed.length > CODEX_REVIEW_DECISION_IDENTITY_MAX_CHARS) {
+    return null
+  }
+  return trimmed
+}
+
+function boundedCodexReviewTimestamp(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  const trimmed = value.trim()
+  if (!trimmed || trimmed.length > 64) return null
+  const parsed = new Date(trimmed)
+  if (Number.isNaN(parsed.getTime())) return null
+  return parsed.toISOString()
+}
+
+function boundedCodexReviewAttempt(value: unknown): number | null {
+  const parsed =
+    typeof value === 'number'
+      ? value
+      : typeof value === 'string' && /^[0-9]+$/.test(value)
+        ? Number(value)
+        : Number.NaN
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 1_000_000) {
+    return null
+  }
+  return parsed
+}
+
+function boundedCodexReviewEnum(
+  value: unknown,
+  allowed: readonly string[]
+): string | null {
+  if (typeof value !== 'string') return null
+  const normalized = value.trim().toLowerCase()
+  return allowed.includes(normalized) ? normalized : null
+}
+
+function normalizeCodexReviewDecisionMetadata(
+  value: unknown
+): UsageReportCodexReviewDecisionMetadata | null {
+  if (value == null || typeof value !== 'object' || Array.isArray(value)) {
+    return null
+  }
+  const record = value as Record<string, unknown>
+  const metadata: UsageReportCodexReviewDecisionMetadata = {}
+  for (const key of [
+    'source',
+    'capture_source',
+    'producer_version',
+    'session_history_provider',
+    'session_history_model',
+  ] as const) {
+    const bounded = boundedCodexReviewIdentity(record[key])
+    if (bounded != null) metadata[key] = bounded
+  }
+  const eventIndex = record.event_index
+  if (
+    typeof eventIndex === 'number' &&
+    Number.isInteger(eventIndex) &&
+    eventIndex >= 0 &&
+    eventIndex <= 999_999_999
+  ) {
+    metadata.event_index = eventIndex
+  }
+  return Object.keys(metadata).length > 0 ? metadata : null
+}
+
+function normalizeUsageReportCodexReviewDecision(
+  row: unknown
+): UsageReportCodexReviewDecision | null {
+  if (row == null || typeof row !== 'object' || Array.isArray(row)) return null
+  const record = row as Record<string, unknown>
+  const outcome =
+    record.outcome === 'allow' || record.outcome === 'deny'
+      ? record.outcome
+      : null
+  const decisionKey = boundedCodexReviewIdentity(record.decision_key)
+  const reviewerId = boundedCodexReviewIdentity(record.reviewer_litellm_call_id)
+  if (outcome == null || decisionKey == null || reviewerId == null) return null
+  const rationale = sanitizeCodexReviewDecisionRationale(record.rationale)
+  const governedToolCallId = boundedCodexReviewIdentity(
+    record.governed_tool_call_id
+  )
+  const governedToolActivityKey = boundedCodexReviewIdentity(
+    record.governed_tool_activity_key
+  )
+  const correlation =
+    record.correlation_status === 'attributed' ||
+    record.correlation_status === 'unattributed'
+      ? record.correlation_status
+      : null
+  return {
+    created_at: boundedCodexReviewTimestamp(record.created_at),
+    decision_key: decisionKey,
+    reviewer_litellm_call_id: reviewerId,
+    reviewer_session_id: boundedCodexReviewIdentity(record.reviewer_session_id),
+    reviewer_trace_id: boundedCodexReviewIdentity(record.reviewer_trace_id),
+    reviewer_model: boundedCodexReviewIdentity(record.reviewer_model),
+    reviewer_agent_name: boundedCodexReviewIdentity(record.reviewer_agent_name),
+    reviewer_agent_id: boundedCodexReviewIdentity(record.reviewer_agent_id),
+    outcome,
+    rationale: rationale.text,
+    rationale_truncated:
+      record.rationale_truncated === true || rationale.truncated,
+    risk_level: boundedCodexReviewEnum(
+      record.risk_level,
+      CODEX_REVIEW_DECISION_RISK_LEVELS
+    ),
+    user_authorization: boundedCodexReviewEnum(
+      record.user_authorization,
+      CODEX_REVIEW_DECISION_USER_AUTHORIZATIONS
+    ),
+    session_id: boundedCodexReviewIdentity(record.session_id),
+    parent_litellm_call_id: boundedCodexReviewIdentity(
+      record.parent_litellm_call_id
+    ),
+    parent_session_id: boundedCodexReviewIdentity(record.parent_session_id),
+    parent_thread_id: boundedCodexReviewIdentity(record.parent_thread_id),
+    parent_agent_name: boundedCodexReviewIdentity(record.parent_agent_name),
+    parent_agent_id: boundedCodexReviewIdentity(record.parent_agent_id),
+    correlation_status: correlation ?? 'unknown',
+    parser_version: boundedCodexReviewIdentity(record.parser_version),
+    contract_version: boundedCodexReviewIdentity(record.contract_version),
+    review_attempt_number: boundedCodexReviewAttempt(
+      record.review_attempt_number
+    ),
+    review_attempt_key: boundedCodexReviewIdentity(record.review_attempt_key),
+    governed_tool_call_id: governedToolCallId,
+    governed_tool_activity_key: governedToolActivityKey,
+    governed_tool_attribution_status:
+      governedToolCallId == null && governedToolActivityKey == null
+        ? 'unknown'
+        : 'producer_supplied',
+    metadata: normalizeCodexReviewDecisionMetadata(record.metadata),
+  }
+}
+
+function normalizeUsageReportCodexReviewDecisionsResponse(
+  response: UsageReportCodexReviewDecisionsResponse
+): UsageReportCodexReviewDecisionsResponse {
+  const decisions = (
+    Array.isArray(response.decisions) ? response.decisions : []
+  )
+    .map((row) => normalizeUsageReportCodexReviewDecision(row))
+    .filter((row): row is UsageReportCodexReviewDecision => row !== null)
+  const decision =
+    response.decision == null
+      ? null
+      : normalizeUsageReportCodexReviewDecision(response.decision)
+  return {
+    ...response,
+    decisions,
+    decision,
+  }
+}
+
+export async function fetchUsageReportCodexReviewDecisions(
+  params: UsageReportCodexReviewDecisionsParams,
+  signal?: AbortSignal
+): Promise<UsageReportCodexReviewDecisionsResponse> {
+  const searchParams = new URLSearchParams({
+    from: params.from,
+    to: params.to,
+  })
+  if (params.limit !== undefined) {
+    searchParams.set('limit', String(params.limit))
+  }
+  if (params.decision_key) {
+    searchParams.set('decision_key', params.decision_key)
+  }
+  if (params.outcome) {
+    searchParams.set('outcome', params.outcome)
+  }
+  if (params.correlation_status) {
+    searchParams.set('correlation_status', params.correlation_status)
+  }
+  if (params.tool_attribution) {
+    searchParams.set('tool_attribution', params.tool_attribution)
+  }
+  appendStringArrayParam(searchParams, 'session_id', params.session_id)
+  appendStringArrayParam(
+    searchParams,
+    'reviewer_litellm_call_id',
+    params.reviewer_litellm_call_id
+  )
+  appendStringArrayParam(
+    searchParams,
+    'parent_litellm_call_id',
+    params.parent_litellm_call_id
+  )
+  appendStringArrayParam(
+    searchParams,
+    'review_attempt_key',
+    params.review_attempt_key
+  )
+  if (params.cacheBust !== undefined && params.cacheBust !== '') {
+    searchParams.set('cache_bust', params.cacheBust)
+  }
+
+  const response =
+    await fetchDashboardJson<UsageReportCodexReviewDecisionsResponse>({
+      url: `/api/shell/reports/usage/codex-review-decisions?${searchParams}`,
+      signal,
+      errorMessage: 'Codex review decisions request failed with',
+      validate: assertUsageReportCodexReviewDecisionsResponse,
+    })
+  return normalizeUsageReportCodexReviewDecisionsResponse(response)
 }
 
 export async function fetchUsageReportTokenTrendSummary(

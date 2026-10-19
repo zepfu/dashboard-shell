@@ -130,6 +130,20 @@ beforeEach(() => {
         },
         sessionDiagnostics: [],
       })
+    ),
+    http.get('/api/shell/reports/usage/codex-review-decisions', () =>
+      HttpResponse.json({
+        metadata: {
+          from: '2026-04-19',
+          to: '2026-05-19',
+          limit: 100,
+          decisionKey: null,
+          detail: false,
+          generatedAt: '2026-05-19T00:00:00.000Z',
+        },
+        decisions: [],
+        decision: null,
+      })
     )
   )
   registerQuotaHistoryHandler()

@@ -837,6 +837,19 @@ declare module './report-service.mjs' {
     USAGE_REPORT_RESPONSE_HEADROOM_MS: number
     normalizeRow: (row: unknown) => RecordRow
     normalizeSessionDiagnosticsRow: (row: RecordRow) => RecordRow
+    loadUsageCodexReviewDecisions: (
+      searchParams: URLSearchParams
+    ) => Promise<Record<string, unknown>>
+    handleUsageCodexReviewDecisions: (
+      req: {
+        url?: string
+        headers?: Record<string, string | undefined>
+      },
+      res: {
+        writeHead: (status: number, headers: Record<string, string>) => void
+        end: (body: string | Uint8Array) => void
+      }
+    ) => Promise<void>
     AGENT_SCORE_REASON_RECENT_ROW_LIMIT: number
     setQueryReportDatabaseTestImpl: (
       impl:

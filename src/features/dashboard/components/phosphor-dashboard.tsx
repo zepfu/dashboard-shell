@@ -38,6 +38,7 @@ import {
   fetchUsageReport,
   fetchUsageReportQuotaEstimator,
   fetchUsageReportQuotaHistory,
+  fetchUsageReportCodexReviewDecisions,
   fetchUsageReportSessionDiagnostics,
   LIVE_DASHBOARD_HEAVY_REFETCH_INTERVAL_MS,
   LIVE_DASHBOARD_HEAVY_REPORT_GC_TIME_MS,
@@ -119,7 +120,7 @@ import {
   SectionTabs,
   SectionSkeleton,
 } from './status-section/section-chrome'
-import { SessionDiagnosticsPanel } from './status-section/session-diagnostics-panel'
+import { OperatorDiagnosticsPanels } from './status-section/session-diagnostics-panel'
 import { SessionTransferStatusView } from './status-section/session-transfer-status-panel'
 import {
   TokenTrendChart,
@@ -811,6 +812,34 @@ export default function PhosphorDashboard({
     }
     return ids
   }, [sessionDiagnosticsData])
+
+  const {
+    data: codexReviewDecisionsData,
+    isFetching: codexReviewDecisionsFetching,
+    isLoading: codexReviewDecisionsLoading,
+    refetch: refetchCodexReviewDecisions,
+  } = useQuery({
+    queryKey: [
+      'usage-report-codex-review-decisions',
+      resolvedFrom,
+      resolvedTo,
+      reportRefreshKey,
+    ],
+    queryFn: ({ signal }) =>
+      fetchUsageReportCodexReviewDecisions(
+        {
+          from: resolvedFrom,
+          to: resolvedTo,
+          limit: 100,
+          cacheBust: reportRefreshKey,
+        },
+        signal
+      ),
+    enabled: providerSectionView === 'diagnostics',
+    staleTime: LIVE_DASHBOARD_HEAVY_REFETCH_INTERVAL_MS,
+    refetchInterval: false,
+    refetchIntervalInBackground: false,
+  })
 
   const anomalyLatencyRows = useMemo(
     () =>
@@ -1577,6 +1606,10 @@ export default function PhosphorDashboard({
     await refetchSessionDiagnostics()
   }, [refetchSessionDiagnostics])
 
+  const refreshCodexReviewDecisions = useCallback(async (): Promise<void> => {
+    await refetchCodexReviewDecisions()
+  }, [refetchCodexReviewDecisions])
+
   const statusSectionActivity = useMemo(
     (): Record<
       ProviderSectionView,
@@ -1634,9 +1667,12 @@ export default function PhosphorDashboard({
         },
       },
       diagnostics: {
-        updating: sessionDiagnosticsFetching,
+        updating: sessionDiagnosticsFetching || codexReviewDecisionsFetching,
         refresh: async () => {
-          await refreshSessionDiagnostics()
+          await Promise.all([
+            refreshSessionDiagnostics(),
+            refreshCodexReviewDecisions(),
+          ])
         },
       },
     }),
@@ -1651,6 +1687,8 @@ export default function PhosphorDashboard({
       refreshQuotaRangeHistory,
       refreshQuotas,
       refreshReport,
+      codexReviewDecisionsFetching,
+      refreshCodexReviewDecisions,
       refreshSessionDiagnostics,
       reportFetching,
       sessionDiagnosticsFetching,
@@ -1839,9 +1877,15 @@ export default function PhosphorDashboard({
             <SessionTransferStatusView
               suggestedSessionIds={sessionTransferSuggestions}
             />
-            <SessionDiagnosticsPanel
-              response={sessionDiagnosticsData}
-              loading={sessionDiagnosticsLoading || sessionDiagnosticsFetching}
+            <OperatorDiagnosticsPanels
+              sessionDiagnostics={sessionDiagnosticsData}
+              sessionDiagnosticsLoading={
+                sessionDiagnosticsLoading || sessionDiagnosticsFetching
+              }
+              codexReviewDecisions={codexReviewDecisionsData}
+              codexReviewDecisionsLoading={
+                codexReviewDecisionsLoading || codexReviewDecisionsFetching
+              }
             />
           </div>
         )}

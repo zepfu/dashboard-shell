@@ -5,6 +5,7 @@ import {
   projectUsageReportAliasRouteEvent,
   type RequestWaitCheckpointDiagnostics,
   type UsageReportAliasTerminalEgress,
+  type UsageReportCodexReviewDecisionsResponse,
   type UsageReportSessionDiagnosticsResponse,
   type UsageReportSessionDiagnosticsRow,
 } from '../../api/usage-report'
@@ -14,6 +15,7 @@ import {
   canonicalProvider,
   providerBrandHex,
 } from '../../lib/usage-report-display'
+import { CodexReviewDecisionsPanel } from './codex-review-decisions-panel'
 import { ReasoningEffortMapping } from './reasoning-effort-diagnostics'
 import { STATUS_PILL_FALLBACK, StatusPanel, statusPill } from './section-chrome'
 import { SessionDiagnosticsStreamBlock } from './session-diagnostics-stream-block'
@@ -995,5 +997,30 @@ export function SessionDiagnosticsPanel({
         ))}
       </div>
     </StatusPanel>
+  )
+}
+
+export function OperatorDiagnosticsPanels({
+  sessionDiagnostics,
+  sessionDiagnosticsLoading,
+  codexReviewDecisions,
+  codexReviewDecisionsLoading,
+}: {
+  sessionDiagnostics: UsageReportSessionDiagnosticsResponse | undefined
+  sessionDiagnosticsLoading: boolean
+  codexReviewDecisions: UsageReportCodexReviewDecisionsResponse | undefined
+  codexReviewDecisionsLoading: boolean
+}): ReactElement {
+  return (
+    <>
+      <CodexReviewDecisionsPanel
+        response={codexReviewDecisions}
+        loading={codexReviewDecisionsLoading}
+      />
+      <SessionDiagnosticsPanel
+        response={sessionDiagnostics}
+        loading={sessionDiagnosticsLoading}
+      />
+    </>
   )
 }
