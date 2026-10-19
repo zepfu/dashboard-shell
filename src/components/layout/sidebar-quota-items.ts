@@ -14,6 +14,7 @@ import {
   ALIBABA_TOKEN_PLAN_MONTHLY_CREDITS_KEY,
   KIMI_CODE_5H_QUOTA_UNITS_KEY,
   KIMI_CODE_7D_QUOTA_UNITS_KEY,
+  KIMI_CODE_MONTHLY_QUOTA_UNITS_KEY,
 } from '@/features/dashboard/lib/quota-bars/lane-defs'
 import {
   googleQuotaClass,
@@ -47,7 +48,13 @@ function quotaOnlySidebarDetailMatches(
   quotaPeriod: '5h' | '7d' | 'monthly'
 ): boolean {
   if (config.provider === 'kimi_code') {
-    if (quotaPeriod !== '5h' && quotaPeriod !== '7d') return false
+    if (
+      quotaPeriod !== '5h' &&
+      quotaPeriod !== '7d' &&
+      quotaPeriod !== 'monthly'
+    ) {
+      return false
+    }
     return matchesKimiCodeQuotaContract(detail, quotaKey, quotaPeriod)
   }
   return (
@@ -182,7 +189,11 @@ function appendQuotaOnlySidebarItems(
           rowIndex
         )
       }
-      if (monthlyMatches && row.monthly_remaining_pct != null) {
+      if (
+        monthlyMatches &&
+        config.monthlyQuotaKey !== undefined &&
+        row.monthly_remaining_pct != null
+      ) {
         const key = `${config.keyPrefix}-monthly-${config.keyUnit}${accountKeySuffix}`
         appendItem(
           key,
@@ -293,6 +304,7 @@ export function buildSidebarQuotaItems(
     labelUnit: 'Quota Units',
     shortQuotaKey: KIMI_CODE_5H_QUOTA_UNITS_KEY,
     weeklyQuotaKey: KIMI_CODE_7D_QUOTA_UNITS_KEY,
+    monthlyQuotaKey: KIMI_CODE_MONTHLY_QUOTA_UNITS_KEY,
   })
 
   return items

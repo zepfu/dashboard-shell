@@ -392,7 +392,7 @@ interface KimiCodeQuotaContractFields {
 export function matchesKimiCodeQuotaContract(
   fields: KimiCodeQuotaContractFields | null | undefined,
   quotaKey: string,
-  quotaPeriod: '5h' | '7d'
+  quotaPeriod: '5h' | '7d' | 'monthly'
 ): boolean {
   return (
     fields?.quota_key === quotaKey &&

@@ -14,6 +14,7 @@ import {
   CURSOR_AGENT_MONTHLY_CENTS_KEY,
   KIMI_CODE_5H_QUOTA_UNITS_KEY,
   KIMI_CODE_7D_QUOTA_UNITS_KEY,
+  KIMI_CODE_MONTHLY_QUOTA_UNITS_KEY,
   ZAI_CODING_PLAN_5H_COUNT_KEY,
   ZAI_CODING_PLAN_5H_CREDITS_KEY,
   ZAI_CODING_PLAN_5H_PERCENT_KEY,
@@ -1274,6 +1275,204 @@ describe('D1-492 — Kimi Code lane separation', () => {
       expect.arrayContaining([expect.stringContaining(fullHash)])
     )
     expect(JSON.stringify(lanes)).not.toContain(fullHash)
+  })
+
+  test('test_monthly_lane_renders_native_quota_units_when_supplied', () => {
+    const base = kimiQuotaRow()
+    const lanes = buildProviderLanes(
+      'kimi_code',
+      [
+        kimiQuotaRow({
+          billing_details: {
+            ...base.billing_details,
+            monthly: {
+              quota_key: KIMI_CODE_MONTHLY_QUOTA_UNITS_KEY,
+              quota_period: 'monthly',
+              source: 'kimi_code_usage',
+              client: 'kimi-code',
+              quota_unit: 'quota_units',
+              quota_limit: 3000,
+              quota_used: 600,
+              quota_remaining: 2400,
+              billing_observed_at: '2026-07-19T16:05:00.000Z',
+            },
+          },
+          monthly_remaining_pct: 80,
+          monthly_reset_at: '2026-08-01T00:00:00.000Z',
+          monthly_interval_start: '2026-07-01T00:00:00.000Z',
+          monthly_interval_end: '2026-08-01T00:00:00.000Z',
+          monthly_active: true,
+        }),
+      ],
+      []
+    )
+
+    const monthly = lanes.find(
+      (lane) => lane.laneKey === 'kimi_code/monthly-quota-units'
+    )
+    expect(lanes.map((lane) => lane.laneKey)).toEqual([
+      'kimi_code/5h-quota-units',
+      'kimi_code/7d-quota-units',
+      'kimi_code/monthly-quota-units',
+    ])
+    expect(monthly?.laneLabel).toBe('Monthly Quota Units')
+    expect(monthly?.currentBar).toMatchObject({
+      remainingPct: 80,
+      resetAt: '2026-08-01T00:00:00.000Z',
+      tipQuotaLimit: 3000,
+      tipQuotaUsed: 600,
+      tipQuotaRemaining: 2400,
+      tipQuotaUnit: 'quota_units',
+      tipObservedAt: '2026-07-19T16:05:00.000Z',
+    })
+    expect(monthly?.currentBar?.tipIdentity).toEqual(
+      expect.arrayContaining([
+        KIMI_CODE_MONTHLY_QUOTA_UNITS_KEY,
+        'kimi_code_usage',
+        'kimi-code',
+        'quota_units',
+        'account …bf29',
+      ])
+    )
+    expect(monthly?.currentBar?.tipIdentity).not.toContain(
+      KIMI_CODE_5H_QUOTA_UNITS_KEY
+    )
+    expect(lanes[0].currentBar?.tipQuotaLimit).toBe(100)
+  })
+
+  test('test_monthly_lane_preserves_unknown_reset_and_usage', () => {
+    const lanes = buildProviderLanes(
+      'kimi_code',
+      [
+        kimiQuotaRow({
+          billing_details: {
+            monthly: {
+              quota_key: KIMI_CODE_MONTHLY_QUOTA_UNITS_KEY,
+              quota_period: 'monthly',
+              source: 'kimi_code_usage',
+              client: 'kimi-code',
+              quota_unit: 'quota_units',
+              quota_limit: 3000,
+              quota_used: null,
+              quota_remaining: 2400,
+              billing_observed_at: '2026-07-19T16:05:00.000Z',
+            },
+          },
+          short_remaining_pct: null,
+          short_active: false,
+          weekly_remaining_pct: null,
+          weekly_active: false,
+          monthly_remaining_pct: 80,
+          monthly_reset_at: null,
+          monthly_interval_start: null,
+          monthly_interval_end: null,
+          monthly_active: true,
+        }),
+      ],
+      [
+        {
+          provider: 'kimi_code',
+          model: null,
+          quota_type: 'monthly',
+          quota_key: KIMI_CODE_MONTHLY_QUOTA_UNITS_KEY,
+          quota_period: 'monthly',
+          source: 'kimi_code_usage',
+          account_ref: '119f6a46bf29',
+          client: 'kimi-code',
+          quota_unit: 'quota_units',
+          quota_limit: 3000,
+          quota_used: null,
+          quota_remaining: 2400,
+          expected_reset_at: null,
+          interval_start: null,
+          interval_end: null,
+          observed_at: '2026-07-01T00:00:00.000Z',
+          min_remaining_pct: 90,
+          max_remaining_pct: 90,
+          usage_tokens: 0,
+          usage_breakdown: [],
+        },
+      ]
+    )
+
+    expect(lanes).toHaveLength(1)
+    expect(lanes[0].laneKey).toBe('kimi_code/monthly-quota-units')
+    expect(lanes[0].currentBar?.resetAt).toBeUndefined()
+    expect(lanes[0].currentBar?.tipQuotaUsed).toBeNull()
+    expect(lanes[0].currentBar?.tipQuotaRemaining).toBe(2400)
+    expect(lanes[0].currentBar?.remainingPct).toBe(80)
+    expect(lanes[0].currentBar?.tipVelocity).toBeUndefined()
+    expect(lanes[0].priorBars[0]).toMatchObject({
+      resetAt: undefined,
+      tipQuotaUsed: null,
+      tipQuotaRemaining: 2400,
+      tipObservedAt: '2026-07-01T00:00:00.000Z',
+      remainingPct: 90,
+    })
+    expect(JSON.stringify(lanes)).not.toMatch(/2026-08-01/)
+  })
+
+  test('test_absent_monthly_does_not_invent_a_lane', () => {
+    const lanes = buildProviderLanes('kimi_code', [kimiQuotaRow()], [])
+    expect(lanes.map((lane) => lane.laneKey)).toEqual([
+      'kimi_code/5h-quota-units',
+      'kimi_code/7d-quota-units',
+    ])
+    expect(JSON.stringify(lanes)).not.toContain('monthly-quota-units')
+    expect(JSON.stringify(lanes)).not.toContain('"remainingPct":100')
+  })
+
+  test('test_monthly_account_stays_distinct_from_5h_and_7d', () => {
+    const lanes = buildProviderLanes(
+      'kimi_code',
+      [
+        kimiQuotaRow({ account_ref: '119f6a46bf29' }),
+        kimiQuotaRow({
+          account_ref: '22aa33bb44cc',
+          short_remaining_pct: null,
+          short_active: false,
+          weekly_remaining_pct: null,
+          weekly_active: false,
+          billing_details: {
+            monthly: {
+              quota_key: KIMI_CODE_MONTHLY_QUOTA_UNITS_KEY,
+              quota_period: 'monthly',
+              source: 'kimi_code_usage',
+              client: 'kimi-code',
+              quota_unit: 'quota_units',
+              quota_limit: 3000,
+              quota_used: 200,
+              quota_remaining: 2800,
+              billing_observed_at: '2026-07-19T16:05:00.000Z',
+            },
+          },
+          monthly_remaining_pct: 93.3333,
+          monthly_reset_at: null,
+          monthly_interval_start: null,
+          monthly_interval_end: null,
+          monthly_active: true,
+        }),
+      ],
+      []
+    )
+
+    const monthly = lanes.find((lane) =>
+      lane.laneKey.startsWith('kimi_code/monthly-quota-units')
+    )
+    const short = lanes.find((lane) =>
+      lane.laneKey.startsWith('kimi_code/5h-quota-units')
+    )
+    expect(monthly?.currentBar?.tipIdentity).toContain('account …44cc')
+    expect(monthly?.currentBar?.tipIdentity).toContain(
+      KIMI_CODE_MONTHLY_QUOTA_UNITS_KEY
+    )
+    expect(monthly?.currentBar?.tipQuotaRemaining).toBe(2800)
+    expect(short?.currentBar?.tipIdentity).toContain('account …bf29')
+    expect(short?.currentBar?.tipIdentity).not.toContain('account …44cc')
+    expect(short?.currentBar?.tipQuotaRemaining).toBe(99.96)
+    expect(monthly?.currentBar?.tipIdentity).not.toContain(
+      KIMI_CODE_5H_QUOTA_UNITS_KEY
+    )
   })
 })
 

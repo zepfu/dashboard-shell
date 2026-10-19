@@ -164,6 +164,8 @@ export const ALIBABA_TOKEN_PLAN_MONTHLY_CREDITS_KEY =
   'alibaba_token_plan_monthly:credits' as const
 export const KIMI_CODE_5H_QUOTA_UNITS_KEY = 'kimi_code_5h:quota_units' as const
 export const KIMI_CODE_7D_QUOTA_UNITS_KEY = 'kimi_code_7d:quota_units' as const
+export const KIMI_CODE_MONTHLY_QUOTA_UNITS_KEY =
+  'kimi_code_monthly:quota_units' as const
 
 export const CURSOR_AGENT_MONTHLY_CENTS_KEY =
   'cursor_agent_monthly:cents' as const
@@ -209,11 +211,12 @@ const ALIBABA_TOKEN_PLAN_LANE_DEFS: LaneDef[] = [
 ]
 
 /**
- * D1-492: Kimi Code (Moonshot AI) subscription quota windows. The stored
- * contract reports one row per window with quota_type/unit `quota_units`,
- * periods `5h`/`7d`, and absolute quota_limit/used/remaining values —
- * unlike Alibaba Token Plan's percentage-only credits. Do not alias to
- * Moonshot API or any other subscription product.
+ * D1-492 / D1-515: Kimi Code (Moonshot AI) subscription quota windows. The
+ * stored contract reports one row per window with quota_type/unit
+ * `quota_units`, periods `5h`/`7d`/`monthly`, and absolute
+ * quota_limit/used/remaining values — unlike Alibaba Token Plan's
+ * percentage-only credits. Monthly values stay native quota units. Do not
+ * alias to Moonshot API or any other subscription product.
  */
 const KIMI_CODE_LANE_DEFS: LaneDef[] = [
   {
@@ -229,6 +232,13 @@ const KIMI_CODE_LANE_DEFS: LaneDef[] = [
     quotaType: 'weekly',
     googleClass: null,
     quotaKey: KIMI_CODE_7D_QUOTA_UNITS_KEY,
+  },
+  {
+    laneKey: 'kimi_code/monthly-quota-units',
+    laneLabel: 'Monthly Quota Units',
+    quotaType: 'monthly',
+    googleClass: null,
+    quotaKey: KIMI_CODE_MONTHLY_QUOTA_UNITS_KEY,
   },
 ]
 

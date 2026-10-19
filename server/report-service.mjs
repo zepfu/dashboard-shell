@@ -5770,7 +5770,99 @@ const KIMI_CODE_SOURCE = 'kimi_code_usage'
 const KIMI_CODE_CLIENT = 'kimi-code'
 const KIMI_CODE_5H_KEY = 'kimi_code_5h:quota_units'
 const KIMI_CODE_7D_KEY = 'kimi_code_7d:quota_units'
+const KIMI_CODE_MONTHLY_KEY = 'kimi_code_monthly:quota_units'
 const KIMI_CODE_QUOTA_UNIT = 'quota_units'
+
+function kimiCodeKnownResetWindowSql(alias = 'o') {
+  assertSqlIdentifier(alias, 'Quota observation alias')
+  return `(
+          (
+              (${alias}.quota_key = '${KIMI_CODE_5H_KEY}' AND ${alias}.quota_period = '5h')
+              OR
+              (${alias}.quota_key = '${KIMI_CODE_7D_KEY}' AND ${alias}.quota_period = '7d')
+              OR
+              (${alias}.quota_key = '${KIMI_CODE_MONTHLY_KEY}' AND ${alias}.quota_period = 'monthly')
+          )
+          AND ${alias}.expected_reset_at IS NOT NULL
+      )`
+}
+
+function kimiCodeUnknownMonthlyResetSql(alias = 'o') {
+  assertSqlIdentifier(alias, 'Quota observation alias')
+  return `(
+          ${alias}.quota_key = '${KIMI_CODE_MONTHLY_KEY}'
+          AND ${alias}.quota_period = 'monthly'
+          AND ${alias}.expected_reset_at IS NULL
+      )`
+}
+
+function kimiCodeCurrentAdmissionSql(alias = 'o') {
+  assertSqlIdentifier(alias, 'Quota observation alias')
+  return `AND ${alias}.observed_at IS NOT NULL
+      AND (
+          ${kimiCodeKnownResetWindowSql(alias)}
+          OR
+          ${kimiCodeUnknownMonthlyResetSql(alias)}
+      )`
+}
+
+function kimiCodeKnownResetAdmissionSql(alias = 'o') {
+  assertSqlIdentifier(alias, 'Quota observation alias')
+  return `AND ${alias}.observed_at IS NOT NULL
+      AND ${kimiCodeKnownResetWindowSql(alias)}`
+}
+
+function kimiCodeHistoryAdmissionSql(alias = 'o') {
+  assertSqlIdentifier(alias, 'Quota observation alias')
+  const intervalHours = quotaObservationIntervalHoursSql(alias)
+  return `AND ${alias}.observed_at IS NOT NULL
+      AND (
+          ${kimiCodeKnownResetWindowSql(alias)}
+          OR
+          (
+              ${kimiCodeUnknownMonthlyResetSql(alias)}
+              AND ${alias}.observed_at >= now() - (${intervalHours} * 1.5 * INTERVAL '1 hour')
+              AND ${alias}.observed_at < now() + INTERVAL '5 minutes'
+          )
+      )`
+}
+
+function kimiCodeRangeAdmissionSql(observationDateRange, alias = 'o') {
+  assertSqlIdentifier(alias, 'Quota observation alias')
+  return `AND ${alias}.observed_at IS NOT NULL
+      AND (
+          (
+              ${kimiCodeKnownResetWindowSql(alias)}
+              ${observationDateRange}
+          )
+          OR
+          (
+              ${kimiCodeUnknownMonthlyResetSql(alias)}
+              AND ${alias}.observed_at >= ${dashboardDateBoundarySql(1)}
+              AND ${alias}.observed_at < ${dashboardDateBoundarySql(2)}
+          )
+      )`
+}
+
+function kimiCodeCurrentActiveSql(alias = 'o') {
+  assertSqlIdentifier(alias, 'Quota observation alias')
+  return `CASE
+            WHEN ${alias}.quota_key = '${KIMI_CODE_MONTHLY_KEY}'
+             AND ${alias}.expected_reset_at IS NULL
+             AND ${alias}.remaining_pct IS NOT NULL
+            THEN true
+            ELSE ${quotaObservationActiveSql(alias)}
+        END`
+}
+
+function kimiCodeFallbackRemainingPctSql(alias = 'o') {
+  assertSqlIdentifier(alias, 'Quota observation alias')
+  return `CASE
+            WHEN ${alias}.quota_period = 'monthly' THEN ${alias}.remaining_pct
+            ELSE LEAST(COALESCE(${alias}.remaining_pct, 100), 100)
+        END`
+}
+
 const CURSOR_AGENT_PROVIDER = 'cursor_agent'
 const CURSOR_AGENT_SOURCE = 'cursor_agent_usage'
 const CURSOR_AGENT_CLIENT = 'cursor-agent'
@@ -6441,13 +6533,7 @@ function buildQuotaRangeHistoryNormalizedCteSql(providerMode) {
     WHERE o.provider = '${KIMI_CODE_PROVIDER}'
       AND o.source = '${KIMI_CODE_SOURCE}'
       AND o.client = '${KIMI_CODE_CLIENT}'
-      AND (
-          (o.quota_key = '${KIMI_CODE_5H_KEY}' AND o.quota_period = '5h')
-          OR
-          (o.quota_key = '${KIMI_CODE_7D_KEY}' AND o.quota_period = '7d')
-      )
-      AND o.observed_at IS NOT NULL
-      AND o.expected_reset_at IS NOT NULL${observationDateRange}
+      ${kimiCodeRangeAdmissionSql(observationDateRange)}
 )`
 }
 
@@ -6549,7 +6635,7 @@ kimi_code_observations AS (
         o.remaining_pct,
         ${quotaObservationIntervalStartSql()} AS interval_start,
         o.expected_reset_at AS interval_end,
-        ${quotaObservationActiveSql()} AS active,
+        ${kimiCodeCurrentActiveSql()} AS active,
         o.account_hash,
         NULLIF(TRIM(BOTH FROM COALESCE(o.source, '')), '') AS source,
         o.quota_period,
@@ -6558,13 +6644,7 @@ kimi_code_observations AS (
     WHERE o.provider = '${KIMI_CODE_PROVIDER}'
       AND o.source = '${KIMI_CODE_SOURCE}'
       AND o.client = '${KIMI_CODE_CLIENT}'
-      AND (
-          (o.quota_key = '${KIMI_CODE_5H_KEY}' AND o.quota_period = '5h')
-          OR
-          (o.quota_key = '${KIMI_CODE_7D_KEY}' AND o.quota_period = '7d')
-      )
-      AND o.observed_at IS NOT NULL
-      AND o.expected_reset_at IS NOT NULL
+      ${kimiCodeCurrentAdmissionSql()}
     ORDER BY
         o.provider, o.quota_key, o.quota_period, o.quota_type,
         COALESCE(o.source, ''), COALESCE(o.account_hash, ''),
@@ -6828,13 +6908,7 @@ normalized AS (
     WHERE o.provider = '${KIMI_CODE_PROVIDER}'
       AND o.source = '${KIMI_CODE_SOURCE}'
       AND o.client = '${KIMI_CODE_CLIENT}'
-      AND (
-          (o.quota_key = '${KIMI_CODE_5H_KEY}' AND o.quota_period = '5h')
-          OR
-          (o.quota_key = '${KIMI_CODE_7D_KEY}' AND o.quota_period = '7d')
-      )
-      AND o.observed_at IS NOT NULL
-      AND o.expected_reset_at IS NOT NULL
+      ${kimiCodeKnownResetAdmissionSql()}
     GROUP BY
         o.provider,
         o.quota_key,
@@ -7286,13 +7360,7 @@ normalized AS (
         WHERE o.provider = '${KIMI_CODE_PROVIDER}'
           AND o.source = '${KIMI_CODE_SOURCE}'
           AND o.client = '${KIMI_CODE_CLIENT}'
-          AND (
-              (o.quota_key = '${KIMI_CODE_5H_KEY}' AND o.quota_period = '5h')
-              OR
-              (o.quota_key = '${KIMI_CODE_7D_KEY}' AND o.quota_period = '7d')
-          )
-          AND o.observed_at IS NOT NULL
-          AND o.expected_reset_at IS NOT NULL
+          ${kimiCodeHistoryAdmissionSql()}
         ORDER BY
             o.provider,
             o.quota_key,
@@ -7326,11 +7394,23 @@ scoped_normalized AS (
     --   OpenAI/Anthropic weekly → upper +14 d
     --   Google short (24 h)     → upper +48 h
     --   xAI monthly (30 d)      → upper +60 d
-    WHERE n.expected_reset_at >= now() - (n.interval_hours * 1.5 * INTERVAL '1 hour')
-      AND n.expected_reset_at < now() + (
+    WHERE (
+        n.expected_reset_at >= now() - (n.interval_hours * 1.5 * INTERVAL '1 hour')
+        AND n.expected_reset_at < now() + (
               LEAST(n.interval_hours * 2.0, ${QUOTA_HISTORY_MAX_UPPER_HOURS}::double precision)
               * INTERVAL '1 hour'
           )
+    ) OR (
+        n.provider = '${KIMI_CODE_PROVIDER}'
+        AND n.normalized_quota_key = '${KIMI_CODE_MONTHLY_KEY}'
+        AND n.quota_period = 'monthly'
+        AND n.source = '${KIMI_CODE_SOURCE}'
+        AND n.client = '${KIMI_CODE_CLIENT}'
+        AND n.expected_reset_at IS NULL
+        AND n.observed_at IS NOT NULL
+        AND n.observed_at >= now() - (n.interval_hours * 1.5 * INTERVAL '1 hour')
+        AND n.observed_at < now() + INTERVAL '5 minutes'
+    )
 ),
 bounded_normalized AS (
     SELECT
@@ -7946,7 +8026,7 @@ normalized AS (
             NULLIF(TRIM(BOTH FROM COALESCE(o.client, '')), '') AS client,
             '${KIMI_CODE_QUOTA_UNIT}'::text AS quota_unit,
             o.expected_reset_at,
-            LEAST(COALESCE(o.remaining_pct, 100), 100) AS remaining_pct,
+            ${kimiCodeFallbackRemainingPctSql()} AS remaining_pct,
             ${quotaObservationIntervalStartSql()} AS interval_start,
             ${quotaObservationIntervalHoursSql()} AS interval_hours,
             o.account_hash,
@@ -7960,21 +8040,29 @@ normalized AS (
           AND o.source = '${KIMI_CODE_SOURCE}'
           AND o.client = '${KIMI_CODE_CLIENT}'
           AND (
-              (o.quota_key = '${KIMI_CODE_5H_KEY}' AND o.quota_period = '5h')
+              (
+                  ${kimiCodeKnownResetWindowSql('o')}
+                  AND o.observed_at IS NOT NULL
+                  AND o.expected_reset_at >= now() - (
+                    ${quotaObservationIntervalHours} * 1.5 * INTERVAL '1 hour'
+                  )
+                  AND o.expected_reset_at < now() + (
+                        LEAST(
+                            ${quotaObservationIntervalHours},
+                            ${QUOTA_HISTORY_MAX_UPPER_HOURS}::double precision
+                        ) * 2.0 * INTERVAL '1 hour'
+                  )
+              )
               OR
-              (o.quota_key = '${KIMI_CODE_7D_KEY}' AND o.quota_period = '7d')
+              (
+                  ${kimiCodeUnknownMonthlyResetSql('o')}
+                  AND o.observed_at IS NOT NULL
+                  AND o.observed_at >= now() - (
+                    ${quotaObservationIntervalHours} * 1.5 * INTERVAL '1 hour'
+                  )
+                  AND o.observed_at < now() + INTERVAL '5 minutes'
+              )
           )
-          AND o.observed_at IS NOT NULL
-          AND o.expected_reset_at IS NOT NULL
-          AND o.expected_reset_at >= now() - (
-            ${quotaObservationIntervalHours} * 1.5 * INTERVAL '1 hour'
-            )
-          AND o.expected_reset_at < now() + (
-                LEAST(
-                    ${quotaObservationIntervalHours},
-                    ${QUOTA_HISTORY_MAX_UPPER_HOURS}::double precision
-                ) * 2.0 * INTERVAL '1 hour'
-            )
         ORDER BY
             o.provider,
             o.quota_key,

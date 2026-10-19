@@ -10,6 +10,7 @@ import {
   CURSOR_AGENT_MONTHLY_CENTS_KEY,
   KIMI_CODE_5H_QUOTA_UNITS_KEY,
   KIMI_CODE_7D_QUOTA_UNITS_KEY,
+  KIMI_CODE_MONTHLY_QUOTA_UNITS_KEY,
   ZAI_CODING_PLAN_5H_COUNT_KEY,
   ZAI_CODING_PLAN_5H_CREDITS_KEY,
   ZAI_CODING_PLAN_5H_PERCENT_KEY,
@@ -722,7 +723,9 @@ describe('D1-492 — Kimi Code quota history tabs', () => {
     expect(tabs.map((tab) => tab.tabKey)).toEqual([
       'kimi_code/5h-quota-units',
       'kimi_code/7d-quota-units',
+      'kimi_code/monthly-quota-units',
     ])
+    expect(tabs[2].rows).toHaveLength(0)
     expect(tabs[0].label).toBe('5-hour Quota Units')
     expect(tabs[1].label).toBe('7-day Quota Units')
     expect(tabs[0].rows).toHaveLength(1)
@@ -849,6 +852,146 @@ describe('D1-492 — Kimi Code quota history tabs', () => {
     expect(rows?.map((row) => row.min_remaining_pct).sort()).toEqual([80, 90])
     expect(JSON.stringify(tabs)).not.toContain(firstHash)
     expect(JSON.stringify(tabs)).not.toContain(secondHash)
+  })
+
+  test('test_monthly_history_keeps_native_units_and_distinct_account', () => {
+    const tabs = buildProviderQuotaHistoryTabs('kimi_code', [
+      makeHistoryRow({
+        provider: 'kimi_code',
+        model: null,
+        quota_type: 'short',
+        quota_key: KIMI_CODE_5H_QUOTA_UNITS_KEY,
+        quota_period: '5h',
+        source: 'kimi_code_usage',
+        account_ref: '119f6a46bf29',
+        client: 'kimi-code',
+        quota_unit: 'quota_units',
+        quota_limit: 100,
+        quota_used: 20,
+        quota_remaining: 80,
+        expected_reset_at: '2026-07-19T21:00:00.000Z',
+        interval_start: '2026-07-19T16:00:00.000Z',
+        interval_end: '2026-07-19T21:00:00.000Z',
+        min_remaining_pct: 80,
+        usage_tokens: 0,
+        usage_breakdown: [],
+      }),
+      makeHistoryRow({
+        provider: 'kimi_code',
+        model: null,
+        quota_type: 'monthly',
+        quota_key: KIMI_CODE_MONTHLY_QUOTA_UNITS_KEY,
+        quota_period: 'monthly',
+        source: 'kimi_code_usage',
+        account_ref: '22aa33bb44cc',
+        client: 'kimi-code',
+        quota_unit: 'quota_units',
+        quota_limit: 3000,
+        quota_used: 600,
+        quota_remaining: 2400,
+        expected_reset_at: '2026-08-01T00:00:00.000Z',
+        interval_start: '2026-07-01T00:00:00.000Z',
+        interval_end: '2026-08-01T00:00:00.000Z',
+        observed_at: '2026-07-19T16:05:00.000Z',
+        min_remaining_pct: 80,
+        max_remaining_pct: 80,
+        usage_tokens: 0,
+        usage_breakdown: [],
+      }),
+    ])
+
+    const monthly = tabs.find(
+      (tab) => tab.tabKey === 'kimi_code/monthly-quota-units'
+    )
+    const short = tabs.find((tab) => tab.tabKey === 'kimi_code/5h-quota-units')
+    expect(monthly?.label).toBe('Monthly Quota Units')
+    expect(monthly?.rows).toHaveLength(1)
+    expect(monthly?.rows[0]).toMatchObject({
+      quota_key: KIMI_CODE_MONTHLY_QUOTA_UNITS_KEY,
+      quota_period: 'monthly',
+      source: 'kimi_code_usage',
+      client: 'kimi-code',
+      quota_unit: 'quota_units',
+      account_ref: '22aa33bb44cc',
+      quota_limit: 3000,
+      quota_used: 600,
+      quota_remaining: 2400,
+      expected_reset_at: '2026-08-01T00:00:00.000Z',
+      observed_at: '2026-07-19T16:05:00.000Z',
+      usage_tokens: 0,
+    })
+    expect(short?.rows[0]?.account_ref).toBe('119f6a46bf29')
+    expect(short?.rows[0]?.quota_key).toBe(KIMI_CODE_5H_QUOTA_UNITS_KEY)
+    expect(JSON.stringify(monthly?.rows)).not.toContain(
+      KIMI_CODE_5H_QUOTA_UNITS_KEY
+    )
+    expect(JSON.stringify(short?.rows)).not.toContain(
+      KIMI_CODE_MONTHLY_QUOTA_UNITS_KEY
+    )
+  })
+
+  test('test_monthly_history_preserves_unknown_reset_usage_and_absent_rows', () => {
+    const tabs = buildProviderQuotaHistoryTabs('kimi_code', [
+      makeHistoryRow({
+        provider: 'kimi_code',
+        model: null,
+        quota_type: 'monthly',
+        quota_key: KIMI_CODE_MONTHLY_QUOTA_UNITS_KEY,
+        quota_period: 'monthly',
+        source: 'kimi_code_usage',
+        account_ref: '22aa33bb44cc',
+        client: 'kimi-code',
+        quota_unit: 'quota_units',
+        quota_limit: 3000,
+        quota_used: null,
+        quota_remaining: 2400,
+        expected_reset_at: null,
+        interval_start: null,
+        interval_end: null,
+        observed_at: '2026-07-19T16:05:00.000Z',
+        min_remaining_pct: null,
+        max_remaining_pct: null,
+        usage_tokens: 0,
+        usage_breakdown: [],
+      }),
+    ])
+
+    const monthly = tabs.find(
+      (tab) => tab.tabKey === 'kimi_code/monthly-quota-units'
+    )?.rows
+    expect(monthly).toHaveLength(1)
+    expect(monthly?.[0]).toMatchObject({
+      quota_used: null,
+      quota_remaining: 2400,
+      quota_limit: 3000,
+      expected_reset_at: null,
+      interval_start: null,
+      interval_end: null,
+      min_remaining_pct: null,
+      max_remaining_pct: null,
+      observed_at: '2026-07-19T16:05:00.000Z',
+      usage_tokens: 0,
+    })
+    expect(monthly?.[0]?.usage_tokens).not.toBe(3000)
+
+    const absent = buildProviderQuotaHistoryTabs('kimi_code', [
+      makeHistoryRow({
+        provider: 'kimi_code',
+        model: null,
+        quota_type: 'short',
+        quota_key: KIMI_CODE_5H_QUOTA_UNITS_KEY,
+        quota_period: '5h',
+        source: 'kimi_code_usage',
+        client: 'kimi-code',
+        quota_unit: 'quota_units',
+        min_remaining_pct: 90,
+        usage_tokens: 0,
+        usage_breakdown: [],
+      }),
+    ])
+    expect(
+      absent.find((tab) => tab.tabKey === 'kimi_code/monthly-quota-units')?.rows
+    ).toEqual([])
   })
 })
 

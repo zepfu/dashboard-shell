@@ -15,6 +15,7 @@ import {
   ALIBABA_TOKEN_PLAN_MONTHLY_CREDITS_KEY,
   KIMI_CODE_5H_QUOTA_UNITS_KEY,
   KIMI_CODE_7D_QUOTA_UNITS_KEY,
+  KIMI_CODE_MONTHLY_QUOTA_UNITS_KEY,
 } from '@/features/dashboard/lib/quota-bars/lane-defs'
 import { buildSidebarQuotaItems } from './sidebar-quota-items'
 
@@ -658,5 +659,73 @@ describe('D1-492 — Kimi Code sidebar separation', () => {
       'Kimi Code 7d Quota Units',
     ])
     expect(JSON.stringify(items)).not.toContain(fullHash)
+  })
+
+  test('test_monthly_sidebar_item_is_distinct_and_omitted_when_absent', () => {
+    const supplied = buildSidebarQuotaItems([
+      kimiRow(),
+      kimiRow({
+        account_ref: '22aa33bb44cc',
+        short_remaining_pct: null,
+        short_active: false,
+        weekly_remaining_pct: null,
+        weekly_active: false,
+        monthly_remaining_pct: 80,
+        monthly_reset_at: null,
+        monthly_active: true,
+        billing_details: {
+          monthly: {
+            quota_key: KIMI_CODE_MONTHLY_QUOTA_UNITS_KEY,
+            quota_period: 'monthly',
+            source: 'kimi_code_usage',
+            client: 'kimi-code',
+            quota_unit: 'quota_units',
+            quota_limit: 3000,
+            quota_used: null,
+            quota_remaining: 2400,
+          },
+        },
+      }),
+    ]).filter((item) => item.key.startsWith('kimi'))
+
+    const monthly = supplied.find(
+      (item) => item.key === 'kimi-monthly-quota-units-22aa33bb44cc'
+    )
+    expect(monthly).toMatchObject({
+      label: 'Kimi Code Monthly Quota Units · …44cc',
+      percent: 80,
+    })
+    expect(
+      supplied.find(
+        (item) =>
+          item.key.includes('119f6a46bf29') && item.key.includes('monthly')
+      )
+    ).toBeUndefined()
+    expect(
+      supplied.find((item) => item.key.startsWith('kimi-5h'))?.percent
+    ).toBe(99.96)
+
+    const unknownPercent = buildSidebarQuotaItems([
+      kimiRow({
+        monthly_remaining_pct: null,
+        monthly_active: false,
+        billing_details: {
+          ...kimiRow().billing_details,
+          monthly: {
+            quota_key: KIMI_CODE_MONTHLY_QUOTA_UNITS_KEY,
+            quota_period: 'monthly',
+            source: 'kimi_code_usage',
+            client: 'kimi-code',
+            quota_unit: 'quota_units',
+            quota_limit: 3000,
+            quota_used: null,
+            quota_remaining: null,
+          },
+        },
+      }),
+    ])
+    expect(
+      unknownPercent.find((item) => item.key.includes('monthly'))
+    ).toBeUndefined()
   })
 })

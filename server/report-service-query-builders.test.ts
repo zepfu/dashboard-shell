@@ -6039,6 +6039,238 @@ describe('D1-492 kimi_code quota support', () => {
 })
 
 // ---------------------------------------------------------------------------
+// D1-515: Kimi Code monthly quota units
+// ---------------------------------------------------------------------------
+describe('D1-515 kimi_code monthly quota', () => {
+  function quotaQueries() {
+    return [
+      buildQuotaQuery(),
+      buildQuotaVelocityQuery(),
+      buildQuotaHistoryQuery(new URLSearchParams()),
+      buildQuotaHistoryFallbackQuery(new URLSearchParams()),
+      buildQuotaRangeHistoryQuery(
+        new URLSearchParams({ from: '2026-07-01', to: '2026-08-01' })
+      ),
+      buildQuotaRangeHistoryFallbackQuery(
+        new URLSearchParams({ from: '2026-07-01', to: '2026-08-01' })
+      ),
+    ]
+  }
+
+  test('test_queries_include_kimi_monthly_quota_units_contract', () => {
+    const velocitySql = compactWhitespace(buildQuotaVelocityQuery().sql)
+    for (const query of quotaQueries()) {
+      const compact = compactWhitespace(query.sql)
+      expect(compact).toContain("o.provider = 'kimi_code'")
+      expect(compact).toContain("o.source = 'kimi_code_usage'")
+      expect(compact).toContain("o.client = 'kimi-code'")
+      expect(compact).toContain(
+        "o.quota_key = 'kimi_code_monthly:quota_units' AND o.quota_period = 'monthly'"
+      )
+      expect(compact).toContain(
+        "WHEN o.quota_period = 'monthly' THEN 'monthly'"
+      )
+      expect(compact).toContain(
+        "WHEN o.quota_period = 'monthly' THEN INTERVAL '1 month'"
+      )
+      if (compact !== velocitySql) {
+        expect(compact).toContain("'quota_units'")
+      }
+      expect(compact).not.toContain('COALESCE(o.expected_reset_at')
+      expect(compact).not.toContain('COALESCE(o.quota_used, 0)')
+      expect(compact).not.toContain('COALESCE(o.quota_remaining, 0)')
+      expect(compact).not.toContain('kimi_code_monthly:tokens')
+      expect(compact).not.toContain('kimi_code_monthly:credits')
+    }
+    expect(
+      compactWhitespace(buildQuotaHistoryQuery(new URLSearchParams()).sql)
+    ).toContain("WHEN o.quota_period = 'monthly' THEN 720.0")
+    expect(buildQuotaHistoryQuery(new URLSearchParams()).sql).toContain(
+      "wb.provider <> 'kimi_code'"
+    )
+    expect(
+      buildQuotaRangeHistoryQuery(
+        new URLSearchParams({ from: '2026-07-01', to: '2026-08-01' })
+      ).sql
+    ).toContain("wb.provider <> 'kimi_code'")
+  })
+
+  test('test_unknown_monthly_reset_is_admitted_without_a_fabricated_reset', () => {
+    const unknownReset =
+      "o.quota_key = 'kimi_code_monthly:quota_units' AND o.quota_period = 'monthly' AND o.expected_reset_at IS NULL"
+    for (const query of [
+      buildQuotaQuery(),
+      buildQuotaHistoryQuery(new URLSearchParams()),
+      buildQuotaHistoryFallbackQuery(new URLSearchParams()),
+      buildQuotaRangeHistoryQuery(
+        new URLSearchParams({ from: '2026-07-01', to: '2026-08-01' })
+      ),
+      buildQuotaRangeHistoryFallbackQuery(
+        new URLSearchParams({ from: '2026-07-01', to: '2026-08-01' })
+      ),
+    ]) {
+      expect(compactWhitespace(query.sql)).toContain(unknownReset)
+    }
+
+    const velocity = compactWhitespace(buildQuotaVelocityQuery().sql)
+    expect(velocity).toContain("o.quota_key = 'kimi_code_monthly:quota_units'")
+    expect(velocity).not.toContain(unknownReset)
+    expect(compactWhitespace(buildQuotaQuery().sql)).toContain(
+      "WHEN o.quota_key = 'kimi_code_monthly:quota_units' AND o.expected_reset_at IS NULL AND o.remaining_pct IS NOT NULL THEN true"
+    )
+    expect(
+      compactWhitespace(
+        buildQuotaRangeHistoryQuery(
+          new URLSearchParams({ from: '2026-07-01', to: '2026-08-01' })
+        ).sql
+      )
+    ).toContain('o.expected_reset_at IS NULL ) AND o.observed_at >=')
+    expect(
+      compactWhitespace(
+        buildQuotaHistoryFallbackQuery(new URLSearchParams()).sql
+      )
+    ).toContain("WHEN o.quota_period = 'monthly' THEN o.remaining_pct")
+  })
+
+  test('test_normalizeQuotaRow_preserves_monthly_natives_and_absent_window', () => {
+    const supplied = normalizeQuotaRowForTest({
+      provider: 'kimi_code',
+      model: null,
+      account_ref: '22aa33bb44cc',
+      short_quota_key: 'kimi_code_5h:quota_units',
+      short_quota_period: '5h',
+      short_source: 'kimi_code_usage',
+      short_client: 'kimi-code',
+      short_quota_unit: 'quota_units',
+      short_quota_limit: 100,
+      short_quota_used: 20,
+      short_quota_remaining: 80,
+      short_billing_observed_at: '2026-07-19T16:00:00.000Z',
+      short_remaining_pct: 80,
+      short_reset_at: '2026-07-19T21:00:00.000Z',
+      short_interval_start: '2026-07-19T16:00:00.000Z',
+      short_interval_end: '2026-07-19T21:00:00.000Z',
+      short_active: 1,
+      monthly_quota_key: 'kimi_code_monthly:quota_units',
+      monthly_quota_period: 'monthly',
+      monthly_source: 'kimi_code_usage',
+      monthly_client: 'kimi-code',
+      monthly_quota_unit: 'quota_units',
+      monthly_quota_limit: 3000,
+      monthly_quota_used: null,
+      monthly_quota_remaining: 2400,
+      monthly_billing_observed_at: '2026-07-19T16:05:00.000Z',
+      monthly_remaining_pct: 80,
+      monthly_reset_at: null,
+      monthly_interval_start: null,
+      monthly_interval_end: null,
+      monthly_active: 1,
+    })
+    const monthly = requireQuotaBillingDetail(supplied, 'monthly')
+    const short = requireQuotaBillingDetail(supplied, 'short')
+    expect(monthly).toEqual({
+      quota_key: 'kimi_code_monthly:quota_units',
+      quota_period: 'monthly',
+      source: 'kimi_code_usage',
+      client: 'kimi-code',
+      quota_unit: 'quota_units',
+      quota_limit: 3000,
+      quota_used: null,
+      quota_remaining: 2400,
+      billing_observed_at: '2026-07-19T16:05:00.000Z',
+      billing_period_start_at: null,
+      billing_period_end_at: null,
+      raw_provider_fields: {},
+      evidence: {},
+    })
+    expect(short.quota_used).toBe(20)
+    expect(short.quota_key).toBe('kimi_code_5h:quota_units')
+    expect(supplied.monthly_reset_at).toBeNull()
+    expect(supplied.monthly_interval_start).toBeNull()
+    expect(supplied.monthly_interval_end).toBeNull()
+    expect(supplied.monthly_remaining_pct).toBe(80)
+    expect(supplied.monthly_active).toBe(true)
+    expect(supplied.account_ref).toBe('22aa33bb44cc')
+
+    const absent = normalizeQuotaRowForTest({
+      provider: 'kimi_code',
+      model: null,
+      account_ref: '119f6a46bf29',
+      short_quota_key: 'kimi_code_5h:quota_units',
+      short_quota_period: '5h',
+      short_source: 'kimi_code_usage',
+      short_client: 'kimi-code',
+      short_quota_unit: 'quota_units',
+      short_quota_limit: 100,
+      short_quota_used: 20,
+      short_quota_remaining: 80,
+      short_remaining_pct: 80,
+      short_reset_at: '2026-07-19T21:00:00.000Z',
+      short_active: 1,
+    })
+    expect(absent.billing_details.monthly).toBeUndefined()
+    expect(absent.monthly_remaining_pct).toBeNull()
+    expect(absent.monthly_reset_at).toBeNull()
+    expect(absent.monthly_active).toBe(false)
+  })
+
+  test('test_normalizeQuotaHistoryRow_preserves_unknown_monthly_reset_and_usage', () => {
+    const row = normalizeQuotaHistoryRow({
+      provider: 'kimi_code',
+      model: null,
+      quota_type: 'monthly',
+      quota_key: 'kimi_code_monthly:quota_units',
+      quota_period: 'monthly',
+      source: 'kimi_code_usage',
+      client: 'kimi-code',
+      quota_unit: 'quota_units',
+      account_ref: '22aa33bb44cc',
+      account_hash: 'f'.repeat(64),
+      expected_reset_at: null,
+      interval_start: null,
+      interval_end: null,
+      observed_at: '2026-07-19T16:05:00.000Z',
+      quota_limit: 3000,
+      quota_used: null,
+      quota_remaining: 2400,
+      min_remaining_pct: null,
+      max_remaining_pct: null,
+      usage_tokens: null,
+      usage_breakdown: [],
+    })
+
+    expect(row).toMatchObject({
+      provider: 'kimi_code',
+      quota_key: 'kimi_code_monthly:quota_units',
+      quota_period: 'monthly',
+      source: 'kimi_code_usage',
+      client: 'kimi-code',
+      quota_unit: 'quota_units',
+      account_ref: '22aa33bb44cc',
+      expected_reset_at: null,
+      interval_start: null,
+      interval_end: null,
+      observed_at: '2026-07-19T16:05:00.000Z',
+      quota_limit: 3000,
+      quota_used: null,
+      quota_remaining: 2400,
+      min_remaining_pct: null,
+      max_remaining_pct: null,
+      usage_tokens: 0,
+    })
+    expect(row).not.toHaveProperty('account_hash')
+    expect(row.usage_tokens).not.toBe(3000)
+    expect(row.quota_used).not.toBe(0)
+  })
+
+  test('test_kimi_monthly_queries_remain_parsable', async () => {
+    for (const query of quotaQueries()) {
+      await expectParsableSQL(query.sql)
+    }
+  })
+})
+
+// ---------------------------------------------------------------------------
 // D1-496: current provider quota contracts
 // ---------------------------------------------------------------------------
 describe('D1-496 current provider quota contracts', () => {
