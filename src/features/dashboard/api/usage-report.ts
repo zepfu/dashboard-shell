@@ -1032,6 +1032,75 @@ export interface UsageReportAliasRouteEvent {
   details?: Record<string, unknown> | null
 }
 
+export interface RequestWaitCategoryDiagnostic {
+  type: string
+  started_at?: string | null
+}
+
+export type RequestWaitCheckpointAttribution =
+  | 'missing'
+  | 'checkpoint_only'
+  | 'correlated_session_history'
+
+export type RequestWaitCheckpointActivity =
+  | 'missing'
+  | 'active'
+  | 'stale'
+  | 'completed_asgi'
+  | 'recorded'
+
+export type RequestWaitCheckpointFreshness =
+  | 'fresh'
+  | 'stale'
+  | 'unknown'
+  | 'missing'
+
+export interface RequestWaitCheckpointDiagnostics {
+  litellm_call_id: string | null
+  session_id: string | null
+  record_attribution: RequestWaitCheckpointAttribution
+  missing_reason: 'no_durable_checkpoint' | 'no_litellm_call_id' | null
+  activity: RequestWaitCheckpointActivity
+  display_states: string[]
+  checkpoint_status: string | null
+  freshness: RequestWaitCheckpointFreshness
+  freshness_age_seconds: number | null
+  freshness_threshold_seconds: number
+  freshness_basis: 'checkpoint_updated_at'
+  sequence: number | null
+  checkpoint_started_at: string | null
+  checkpoint_updated_at: string | null
+  asgi_completion_at: string | null
+  session_history_start_time: string | null
+  session_history_end_time: string | null
+  active_wait_categories: RequestWaitCategoryDiagnostic[]
+  durations_ms: Record<string, number>
+  counts: Record<string, number>
+  durations_are_disjoint: false
+  summed_duration_ms: null
+  duration_accounting: 'overlapping_categories'
+  accounting_duration_is_timeout: false
+  asgi_establishes_provider_success: false
+  asgi_establishes_final_delivery: false
+  provider_content_outcome: 'not_established' | 'empty_completion_recorded'
+  provider_content_source: string
+  final_delivery_outcome: 'not_established'
+  outcome_note: string
+  qualifying_session_history: boolean
+  provider: string | null
+  model: string | null
+  created_at: string | null
+  repository: string | null
+  client: string | null
+  environment: string | null
+  trace_id: string | null
+  host_name: string | null
+  client_ip: string | null
+  provider_response_id: string | null
+  history_empty_completion_failure: boolean | null
+  generated_at: string | null
+}
+
 export interface UsageReportSessionDiagnosticsRow {
   created_at?: string | null
   start_time?: string | null
@@ -1127,6 +1196,7 @@ export interface UsageReportSessionDiagnosticsRow {
   alias_route_events?: UsageReportAliasRouteEvent[]
   anthropic_context_window?: UsageReportAnthropicContextWindowDiagnostics | null
   stream_diagnostics?: UsageReportSessionDiagnosticsStream | null
+  request_wait_checkpoint?: RequestWaitCheckpointDiagnostics | null
 }
 
 export type UsageReportProviderAliasRoutingStateSource =
@@ -1444,8 +1514,11 @@ export interface UsageReportSessionDiagnosticsResponse {
     to: string
     limit: number
     generatedAt?: string
+    requestWaitCheckpointFreshnessSeconds?: number
+    requestWaitCheckpointCount?: number
   } & ReportCacheMetadata
   sessionDiagnostics: UsageReportSessionDiagnosticsRow[]
+  requestWaitCheckpoints?: RequestWaitCheckpointDiagnostics[]
 }
 
 export interface UsageReportTokenTrendDayParams extends UsageReportFilterParams {
@@ -2172,11 +2245,52 @@ function normalizeBooleanishString(
   return value
 }
 
+function normalizeRequestWaitCheckpoint(
+  checkpoint: RequestWaitCheckpointDiagnostics
+): RequestWaitCheckpointDiagnostics {
+  const providerContentOutcome =
+    checkpoint.provider_content_outcome === 'empty_completion_recorded'
+      ? 'empty_completion_recorded'
+      : 'not_established'
+  return {
+    ...checkpoint,
+    active_wait_categories: Array.isArray(checkpoint.active_wait_categories)
+      ? checkpoint.active_wait_categories.map((wait) => ({
+          type: wait.type,
+          started_at: wait.started_at ?? null,
+        }))
+      : [],
+    durations_ms:
+      checkpoint.durations_ms && typeof checkpoint.durations_ms === 'object'
+        ? { ...checkpoint.durations_ms }
+        : {},
+    counts:
+      checkpoint.counts && typeof checkpoint.counts === 'object'
+        ? { ...checkpoint.counts }
+        : {},
+    durations_are_disjoint: false,
+    summed_duration_ms: null,
+    duration_accounting: 'overlapping_categories',
+    accounting_duration_is_timeout: false,
+    asgi_establishes_provider_success: false,
+    asgi_establishes_final_delivery: false,
+    provider_content_outcome: providerContentOutcome,
+    provider_content_source:
+      providerContentOutcome === 'empty_completion_recorded'
+        ? 'session_history.empty_completion_failure'
+        : 'unavailable',
+    final_delivery_outcome: 'not_established',
+  }
+}
+
 function normalizeUsageReportSessionDiagnosticsRow(
   row: UsageReportSessionDiagnosticsRow
 ): UsageReportSessionDiagnosticsRow {
   const normalized: UsageReportSessionDiagnosticsRow = {
     ...row,
+    request_wait_checkpoint: row.request_wait_checkpoint
+      ? normalizeRequestWaitCheckpoint(row.request_wait_checkpoint)
+      : row.request_wait_checkpoint,
     host_name: row.host_name ?? null,
     client_ip: row.client_ip ?? null,
     grok_oauth: row.grok_oauth
@@ -2240,7 +2354,13 @@ function normalizeUsageReportSessionDiagnosticsRow(
 function normalizeUsageReportSessionDiagnosticsResponse(
   response: UsageReportSessionDiagnosticsResponse
 ): UsageReportSessionDiagnosticsResponse {
-  if (response.sessionDiagnostics.length === 0) {
+  const requestWaitCheckpoints = response.requestWaitCheckpoints?.map(
+    normalizeRequestWaitCheckpoint
+  )
+  if (
+    response.sessionDiagnostics.length === 0 &&
+    requestWaitCheckpoints == null
+  ) {
     return response
   }
   return {
@@ -2248,6 +2368,7 @@ function normalizeUsageReportSessionDiagnosticsResponse(
     sessionDiagnostics: response.sessionDiagnostics.map(
       normalizeUsageReportSessionDiagnosticsRow
     ),
+    ...(requestWaitCheckpoints ? { requestWaitCheckpoints } : {}),
   }
 }
 

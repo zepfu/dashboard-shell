@@ -1,5 +1,5 @@
-import path from 'path'
 import react from '@vitejs/plugin-react-swc'
+import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { defineConfig } from 'vitest/config'
 
