@@ -5,6 +5,7 @@ import {
   quotaPhase3BandDistance,
   quotaPhase3DisplayBand,
   quotaPhase3Lag1Autocorrelation,
+  quotaPhase3OneStepDisplayedChangeResiduals,
   type QuotaPhase3Coefficient,
   type QuotaPhase3History,
   type QuotaPhase3Report,
@@ -641,5 +642,61 @@ describe('quota phase 3 interval-censored model', () => {
     expect(
       report.phase3?.live_evaluation.evidence_search.d1_092_todo_record
     ).toBe('not_in_todo_store')
+  })
+
+  test('compares a displayed-change forecast residual, not a persistent level gap', () => {
+    const intervals: EstimatorInterval[] = []
+    let offset = 4
+    for (let index = 0; index < 18; index += 1) {
+      offset += index % 3 === 0 ? 0.2 : 0.05
+      const displayed = 30 + offset
+      const totals = emptyTotals()
+      totals.uncachedInputMtok = 1
+      intervals.push(
+        makeInterval({
+          previousConsumedPct: displayed - 2,
+          currentConsumedPct: displayed,
+          intervalEndAt: atMinute((index + 1) * 10),
+          featureTotals: { sonnet: totals },
+        })
+      )
+    }
+
+    const report = reportFor(intervals)
+    const residuals = quotaPhase3OneStepDisplayedChangeResiduals(intervals)
+    const opening = intervals[0]?.previousConsumedPct ?? 0
+    let consumed = 0
+    const levelGaps = intervals.map((interval) => {
+      consumed += 1
+      return opening + consumed * 2 - interval.currentConsumedPct
+    })
+    const forecastAutocorrelation =
+      quotaPhase3Lag1Autocorrelation(residuals) ?? 1
+    const levelGapAutocorrelation =
+      quotaPhase3Lag1Autocorrelation(levelGaps) ?? 0
+    const meanAbsolute = (values: number[]) =>
+      values.reduce((sum, value) => sum + Math.abs(value), 0) / values.length
+
+    expect(
+      report.phase2_comparison.metric_definitions.phase3_interval_residual
+    ).toBe('displayed_delta_minus_phase3_one_step_forecast')
+    expect(
+      report.phase2_comparison.metric_definitions.phase2_interval_residual
+    ).toBe('displayed_delta_minus_phase2_rolling_prediction')
+    expect(residuals.length).toBeGreaterThan(3)
+    expect(meanAbsolute(residuals)).toBeLessThan(0.05)
+    expect(meanAbsolute(levelGaps)).toBeGreaterThan(5)
+    expect(Math.abs(forecastAutocorrelation)).toBeLessThan(0.2)
+    expect(levelGapAutocorrelation).toBeGreaterThan(0.8)
+    expect(Math.abs(forecastAutocorrelation)).toBeLessThan(
+      levelGapAutocorrelation
+    )
+    expect(
+      report.phase2_comparison.metrics.phase3_interval_residual_autocorrelation
+    ).toBeCloseTo(forecastAutocorrelation, 8)
+    expect(report.phase2_comparison.live_evaluation_status).toBe('unmet')
+    expect(report.live_evaluation.lower_interval_residual_autocorrelation).toBe(
+      'unmet'
+    )
   })
 })
