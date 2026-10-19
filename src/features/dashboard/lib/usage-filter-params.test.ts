@@ -24,6 +24,10 @@ describe('usage filter shared helpers — P04-F07', () => {
       client: SAMPLE_FILTERS.clients,
       environment: SAMPLE_FILTERS.environments,
       model: SAMPLE_FILTERS.models,
+      changed_pre_commit_config: undefined,
+      changed_env_file: undefined,
+      changed_pyproject_toml: undefined,
+      changed_gitignore: undefined,
     })
 
     expect(keyParts).toEqual([
@@ -32,6 +36,10 @@ describe('usage filter shared helpers — P04-F07', () => {
       SAMPLE_FILTERS.clients,
       SAMPLE_FILTERS.environments,
       SAMPLE_FILTERS.models,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
     ])
 
     expect(keyParts).toEqual([
@@ -40,6 +48,32 @@ describe('usage filter shared helpers — P04-F07', () => {
       params.client,
       params.environment,
       params.model,
+      params.changed_pre_commit_config,
+      params.changed_env_file,
+      params.changed_pyproject_toml,
+      params.changed_gitignore,
+    ])
+  })
+
+  test('test_usage_filter_params_forwards_config_change_filters', () => {
+    const filters: SlicerFilters = {
+      ...SAMPLE_FILTERS,
+      changed_pre_commit_config: ['true', 'false'],
+      changed_env_file: ['false'],
+      changed_pyproject_toml: ['unknown'],
+      changed_gitignore: ['evaluated'],
+    }
+    const params = usageFilterParams(filters)
+
+    expect(params.changed_pre_commit_config).toEqual(['true', 'false'])
+    expect(params.changed_env_file).toEqual(['false'])
+    expect(params.changed_pyproject_toml).toEqual(['unknown'])
+    expect(params.changed_gitignore).toEqual(['evaluated'])
+    expect(usageFilterKeyParts(filters).slice(5)).toEqual([
+      ['true', 'false'],
+      ['false'],
+      ['unknown'],
+      ['evaluated'],
     ])
   })
 })

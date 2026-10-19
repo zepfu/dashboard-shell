@@ -40,6 +40,7 @@ import {
 } from './api/usage-report'
 import AnchorBar from './components/anchor-bar'
 import { computeDeltaPct } from './components/comparison-panel.index'
+import { ConfigChangeCoverage } from './components/config-change-coverage'
 import { DashboardRecencyClock } from './components/dashboard-recency-clock'
 import { DateControls } from './components/date-controls'
 import { KpiStrip } from './components/kpi-strip'
@@ -344,6 +345,10 @@ export function Dashboard(): ReactElement {
         clients: slicerFilters.clients,
         environments: slicerFilters.environments,
         models: slicerFilters.models,
+        changed_pre_commit_config: slicerFilters.changed_pre_commit_config,
+        changed_env_file: slicerFilters.changed_env_file,
+        changed_pyproject_toml: slicerFilters.changed_pyproject_toml,
+        changed_gitignore: slicerFilters.changed_gitignore,
       }),
     [
       from,
@@ -353,6 +358,10 @@ export function Dashboard(): ReactElement {
       slicerFilters.models,
       slicerFilters.providers,
       slicerFilters.repositories,
+      slicerFilters.changed_pre_commit_config,
+      slicerFilters.changed_env_file,
+      slicerFilters.changed_pyproject_toml,
+      slicerFilters.changed_gitignore,
     ]
   )
   const tokenTrendSummaryBaseQueryKey = useMemo(
@@ -642,11 +651,7 @@ export function Dashboard(): ReactElement {
               {
                 from,
                 to,
-                provider: slicerFilters.providers,
-                repository: slicerFilters.repositories,
-                client: slicerFilters.clients,
-                environment: slicerFilters.environments,
-                model: slicerFilters.models,
+                ...usageFilterParams(slicerFilters),
                 cacheBust,
               },
               signal
@@ -949,6 +954,7 @@ export function Dashboard(): ReactElement {
               onRangeChange={handleRangeChange}
             />
           </div>
+          <ConfigChangeCoverage summary={summaryReport?.summary} />
 
           {/* Main dashboard content */}
           {/* 15-C.4: searchTerm passed for client-side row filtering */}

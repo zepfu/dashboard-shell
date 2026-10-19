@@ -3935,3 +3935,60 @@ tbody tr {
   }
 }
 /* End Wave 36 Fix 3 */
+
+/* Config-change filters and selected-scope coverage (D1-503). */
+.slicer-config-changes {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.config-change-coverage {
+  background: var(--card);
+  border: 1px solid var(--border);
+  padding: 6px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--fg-muted);
+}
+
+.config-change-coverage-title,
+.config-change-coverage-scope-label {
+  margin: 0;
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.config-change-coverage-title {
+  color: var(--fg);
+}
+
+.config-change-coverage-scope,
+.config-change-coverage-categories {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.config-change-coverage-categories > li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.config-change-coverage-category {
+  color: var(--fg);
+}
+
+.config-change-coverage-note {
+  margin: 0;
+  max-width: 72rem;
+}

@@ -620,7 +620,7 @@ export default function PhosphorDashboard({
   // that omits the refresh callback during cold load does not re-trigger a
   // duplicate /usage fetch. Standalone Storybook/tests omit all of these.
   // P04-F07: shared filter fan-out (filterKeyParts keys the cache; filterParams
-  // maps the same five arrays onto singular API names).
+  // maps slicer arrays and config-change filters onto the usage API).
   const filterParams = usageFilterParams(filters)
   const filterKeyParts = usageFilterKeyParts(filters)
   const internalQueryEnabled =
@@ -634,7 +634,7 @@ export default function PhosphorDashboard({
     isFetching: internalFetching,
     refetch: refetchInternalReport,
     // P04-F07: filter dimensions serialized via filterKeyParts; filterParams is
-    // the same five arrays under singular API names.
+    // the same slicer and config-change arrays under API names.
     // eslint-disable-next-line @tanstack/query/exhaustive-deps
   } = useQuery({
     // 15-D.4: Include filter arrays directly in queryKey so React Query creates
@@ -807,9 +807,9 @@ export default function PhosphorDashboard({
     [report?.trend]
   )
 
-  // P04-F07: depend on the five slicer arrays from filters (stable identities)
-  // rather than the per-render filterParams object, so React Compiler can
-  // preserve the memoization.
+  // P04-F07: depend on slicer arrays plus config-change filters (stable
+  // identities) rather than the per-render filterParams object, so React
+  // Compiler can preserve the memoization.
   const tokenTrendScopeKey = useMemo(
     () =>
       JSON.stringify({
@@ -820,6 +820,10 @@ export default function PhosphorDashboard({
         clients: filters?.clients,
         environments: filters?.environments,
         models: filters?.models,
+        changed_pre_commit_config: filters?.changed_pre_commit_config,
+        changed_env_file: filters?.changed_env_file,
+        changed_pyproject_toml: filters?.changed_pyproject_toml,
+        changed_gitignore: filters?.changed_gitignore,
       }),
     [
       resolvedFrom,
@@ -829,6 +833,10 @@ export default function PhosphorDashboard({
       filters?.clients,
       filters?.environments,
       filters?.models,
+      filters?.changed_pre_commit_config,
+      filters?.changed_env_file,
+      filters?.changed_pyproject_toml,
+      filters?.changed_gitignore,
     ]
   )
 

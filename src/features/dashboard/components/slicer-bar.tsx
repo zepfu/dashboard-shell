@@ -1,8 +1,10 @@
 /**
  * SlicerBar — Wave 15-D multi-dimension filter bar.
  *
- * Renders five inline pill multi-select dropdowns, one per API dimension:
+ * Renders inline pill multi-select dropdowns for the usage-report filters:
  *   Provider · Repository · Client · Environment · Model
+ *   and the four config-change categories (true / false /
+ *   unknown-or-unevaluated / evaluated).
  *
  * Design: Phosphor 12px mono aesthetic. Each dimension renders as a label
  * with a caret that opens a checkbox dropdown. Selected values appear as
@@ -26,6 +28,14 @@ import {
   type KeyboardEvent,
   type ReactElement,
 } from 'react'
+import type { UsageReportConfigChangeFilterValue } from '../api/usage-report'
+import {
+  CONFIG_CHANGE_CATEGORIES,
+  CONFIG_CHANGE_FILTER_OPTIONS,
+  formatConfigChangeFilterValue,
+  isConfigChangeFilterValue,
+  type ConfigChangeFilterKey,
+} from '../lib/config-change-reporting'
 import { providerDisplayLabel } from '../lib/usage-report-display'
 import { handleListboxArrowKey } from './slicer-bar-keyboard'
 
@@ -45,6 +55,14 @@ export interface SlicerFilters {
   environments: string[]
   /** Filter by model (empty = all). */
   models: string[]
+  /** Filter by pre-commit config change flag. Empty = all. */
+  changed_pre_commit_config?: UsageReportConfigChangeFilterValue[]
+  /** Filter by env-file change flag. Empty = all. */
+  changed_env_file?: UsageReportConfigChangeFilterValue[]
+  /** Filter by pyproject change flag. Empty = all. */
+  changed_pyproject_toml?: UsageReportConfigChangeFilterValue[]
+  /** Filter by gitignore change flag. Empty = all. */
+  changed_gitignore?: UsageReportConfigChangeFilterValue[]
 }
 
 /** Available values for each dimension, derived from the current API response. */
@@ -81,10 +99,16 @@ const EMPTY_FILTERS: SlicerFilters = {
   clients: [],
   environments: [],
   models: [],
+  changed_pre_commit_config: [],
+  changed_env_file: [],
+  changed_pyproject_toml: [],
+  changed_gitignore: [],
 }
 
+type UsageSlicerDimensionKey = keyof SlicerOptions
+
 interface DimensionConfig {
-  key: keyof SlicerFilters
+  key: UsageSlicerDimensionKey
   optionsKey: keyof SlicerOptions
   label: string
   formatOption?: (value: string) => string
@@ -112,6 +136,7 @@ interface DimensionDropdownProps {
   selected: string[]
   options: string[]
   formatOption?: (value: string) => string
+  formatSelected?: (value: string) => string
   onToggle: (value: string) => void
   onClear: () => void
   shortcutTarget?: string
@@ -128,6 +153,7 @@ const DimensionDropdown = memo(function DimensionDropdown({
   selected,
   options,
   formatOption,
+  formatSelected,
   onToggle,
   onClear,
   shortcutTarget,
@@ -290,31 +316,34 @@ const DimensionDropdown = memo(function DimensionDropdown({
 
       {hasSelections && !open && (
         <div className='slicer-chips' aria-label={`${label} filter chips`}>
-          {selected.map((v) => (
-            <span
-              key={v}
-              className={[
-                'slicer-chip',
-                staleChips.has(v) ? 'slicer-chip--stale' : '',
-                staleChips.has(v) ? 'slicer-chip--muted' : '',
-              ]
-                .filter(Boolean)
-                .join(' ')}
-            >
-              <span className='slicer-chip-text'>{v}</span>
-              <button
-                type='button'
-                className='slicer-chip-remove'
-                aria-label={`Remove ${v} from ${label} filter`}
-                onClick={() => {
-                  setStaleChips((prev) => new Set(prev).add(v))
-                  onToggle(v)
-                }}
+          {selected.map((v) => {
+            const chipLabel = formatSelected?.(v) ?? v
+            return (
+              <span
+                key={v}
+                className={[
+                  'slicer-chip',
+                  staleChips.has(v) ? 'slicer-chip--stale' : '',
+                  staleChips.has(v) ? 'slicer-chip--muted' : '',
+                ]
+                  .filter(Boolean)
+                  .join(' ')}
               >
-                ×
-              </button>
-            </span>
-          ))}
+                <span className='slicer-chip-text'>{chipLabel}</span>
+                <button
+                  type='button'
+                  className='slicer-chip-remove'
+                  aria-label={`Remove ${chipLabel} from ${label} filter`}
+                  onClick={() => {
+                    setStaleChips((prev) => new Set(prev).add(v))
+                    onToggle(v)
+                  }}
+                >
+                  ×
+                </button>
+              </span>
+            )
+          })}
         </div>
       )}
 
@@ -439,7 +468,7 @@ export function SlicerBar({
   )
 
   const handleToggle = useCallback(
-    (key: keyof SlicerFilters, value: string): void => {
+    (key: UsageSlicerDimensionKey, value: string): void => {
       emitFilters((prev) => {
         const current = prev[key]
         const next = current.includes(value)
@@ -452,7 +481,30 @@ export function SlicerBar({
   )
 
   const handleClear = useCallback(
-    (key: keyof SlicerFilters): void => {
+    (key: UsageSlicerDimensionKey): void => {
+      emitFilters((prev) => ({ ...prev, [key]: [] }))
+    },
+    [emitFilters]
+  )
+
+  const handleConfigToggle = useCallback(
+    (
+      key: ConfigChangeFilterKey,
+      value: UsageReportConfigChangeFilterValue
+    ): void => {
+      emitFilters((prev) => {
+        const current = prev[key] ?? []
+        const next = current.includes(value)
+          ? current.filter((item) => item !== value)
+          : [...current, value]
+        return { ...prev, [key]: next }
+      })
+    },
+    [emitFilters]
+  )
+
+  const handleConfigClear = useCallback(
+    (key: ConfigChangeFilterKey): void => {
       emitFilters((prev) => ({ ...prev, [key]: [] }))
     },
     [emitFilters]
@@ -462,7 +514,11 @@ export function SlicerBar({
     emitFilters({ ...EMPTY_FILTERS })
   }, [emitFilters])
 
-  const hasAnyFilter = DIMENSIONS.some((d) => filters[d.key].length > 0)
+  const hasAnyFilter =
+    DIMENSIONS.some((dimension) => filters[dimension.key].length > 0) ||
+    CONFIG_CHANGE_CATEGORIES.some(
+      (category) => (filters[category.key]?.length ?? 0) > 0
+    )
 
   const dimensionHandlers = useMemo(
     () =>
@@ -479,10 +535,32 @@ export function SlicerBar({
           },
         ])
       ) as Record<
-        keyof SlicerFilters,
+        UsageSlicerDimensionKey,
         { onToggle: (value: string) => void; onClear: () => void }
       >,
     [handleToggle, handleClear]
+  )
+
+  const configHandlers = useMemo(
+    () =>
+      Object.fromEntries(
+        CONFIG_CHANGE_CATEGORIES.map((category) => [
+          category.key,
+          {
+            onToggle: (value: string) => {
+              if (!isConfigChangeFilterValue(value)) return
+              handleConfigToggle(category.key, value)
+            },
+            onClear: () => {
+              handleConfigClear(category.key)
+            },
+          },
+        ])
+      ) as Record<
+        ConfigChangeFilterKey,
+        { onToggle: (value: string) => void; onClear: () => void }
+      >,
+    [handleConfigClear, handleConfigToggle]
   )
 
   return (
@@ -505,6 +583,26 @@ export function SlicerBar({
           onClear={dimensionHandlers[dim.key].onClear}
         />
       ))}
+
+      <div
+        className='slicer-config-changes'
+        role='group'
+        aria-label='Config change filters'
+      >
+        <span className='slicer-bar-label'>Config</span>
+        {CONFIG_CHANGE_CATEGORIES.map((category) => (
+          <DimensionDropdown
+            key={category.key}
+            label={category.label}
+            selected={filters[category.key] ?? []}
+            options={[...CONFIG_CHANGE_FILTER_OPTIONS]}
+            formatOption={formatConfigChangeFilterValue}
+            formatSelected={formatConfigChangeFilterValue}
+            onToggle={configHandlers[category.key].onToggle}
+            onClear={configHandlers[category.key].onClear}
+          />
+        ))}
+      </div>
 
       {/* Global clear — only visible when any filter is active */}
       {hasAnyFilter && (
