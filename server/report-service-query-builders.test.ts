@@ -69,6 +69,13 @@ import {
   buildUsageReportRowSerializationMetadata,
   proxyTargetUrl,
 } from './report-service'
+import {
+  normalizeSessionDiagnosticsStream,
+  sessionDiagnosticsStreamCategorySql,
+  sessionDiagnosticsStreamFlagSql,
+  sessionDiagnosticsStreamMetadataPresentSql,
+  sessionDiagnosticsStreamProjectionSql,
+} from './session-diagnostics-stream.mjs'
 
 type QuotaBillingDetailForTest = {
   quota_key?: string | null
@@ -1588,6 +1595,161 @@ describe('D1-212/215/213/178/221/222 session diagnostics contracts', () => {
     expect(query.sql).toContain('AS anthropic_context_window')
     expect(query.sql).toContain("'anthropic_context_window'::text")
     expect(query.sql).toContain("'context_window'::text")
+  })
+})
+
+describe('D1-501 session diagnostics stream completeness', () => {
+  const searchParams = new URLSearchParams({
+    from: '2026-05-01',
+    to: '2026-05-08',
+    limit: '25',
+  })
+
+  test('test_buildSessionDiagnosticsQuery_admits_stream_only_rows_and_projects_safe_scalars', () => {
+    const query = buildSessionDiagnosticsQuery(searchParams)
+    const predicate = sessionDiagnosticsStreamMetadataPresentSql('metadata')
+    const recentStart = query.sql.indexOf('recent_sessions AS MATERIALIZED')
+    const recentEnd = query.sql.indexOf('diagnostic_rows AS')
+    const recentSql = query.sql.slice(recentStart, recentEnd)
+    const projectionSql = sessionDiagnosticsStreamProjectionSql('metadata')
+
+    expect(recentStart).toBeGreaterThan(-1)
+    expect(recentEnd).toBeGreaterThan(recentStart)
+    expect(predicate).not.toContain('credential_family')
+    expect(predicate).toContain(
+      "jsonb_typeof(metadata->'aawm_stream_tracker_state') = 'object'"
+    )
+    expect(predicate).toContain(
+      "metadata->>'aawm_stream_synthetic_terminal' IS NOT NULL"
+    )
+    expect(predicate).toContain(
+      "NULLIF(btrim(metadata->>'aawm_stream_incomplete_reason'), '') IS NOT NULL"
+    )
+    expect(predicate).toContain(
+      "NULLIF(btrim(metadata->>'aawm_stream_recovery_outcome'), '') IS NOT NULL"
+    )
+    expect(predicate).toContain(
+      "NULLIF(btrim(metadata->>'aawm_stream_recovery_parent_litellm_call_id'), '') IS NOT NULL"
+    )
+    expect(predicate).toContain(
+      "NULLIF(btrim(metadata->>'aawm_stream_recovery_previous_response_id'), '') IS NOT NULL"
+    )
+    expect(recentSql).toContain(`OR ${predicate}`)
+
+    expect(query.sql).toContain(sessionDiagnosticsStreamFlagSql('metadata'))
+    expect(query.sql).toContain(sessionDiagnosticsStreamCategorySql('metadata'))
+    expect(query.sql).toContain(`${projectionSql} AS stream_diagnostics`)
+    expect(projectionSql).toContain('jsonb_strip_nulls(jsonb_build_object(')
+    for (const key of [
+      'provider_terminal_event_type',
+      'provider_terminal_observed',
+      'synthetic_terminal_event_type',
+      'parse_ambiguity',
+      'partial_frame',
+      'sequence_ambiguity',
+      'state_omitted',
+      'aawm_stream_synthetic_terminal',
+      'aawm_stream_incomplete_reason',
+      'aawm_stream_terminal_event_type',
+      'aawm_stream_recovery_outcome',
+      'aawm_stream_recovery_parent_litellm_call_id',
+      'aawm_stream_recovery_previous_response_id',
+    ]) {
+      expect(projectionSql).toContain(`'${key}'`)
+    }
+    expect(projectionSql).toContain(
+      "jsonb_typeof((metadata->'aawm_stream_tracker_state')->'provider_terminal_observed') = 'boolean'"
+    )
+    expect(projectionSql).toContain(
+      "jsonb_typeof((metadata->'aawm_stream_tracker_state')->'parse_ambiguity') = 'boolean'"
+    )
+    expect(projectionSql).not.toContain(
+      "COALESCE((metadata->'aawm_stream_tracker_state')->>'provider_terminal_observed', 'false')"
+    )
+    expect(projectionSql).not.toContain('tool_argument_summaries')
+    expect(projectionSql).not.toContain('omission_metadata')
+    expect(projectionSql).not.toContain('unsupported_event_types')
+    expect(projectionSql).not.toContain('aawm_failure_origin')
+    expect(projectionSql).not.toContain(
+      'aawm_responses_stream_failure_retryable'
+    )
+    expect(projectionSql).not.toContain('aawm_delivered_disposition')
+    expect(projectionSql).not.toContain('aawm_provider_terminal_payload')
+    expect(query.sql).not.toContain('tool_argument_summaries')
+    expect(query.sql).not.toContain('aawm_failure_origin')
+    expect(query.sql).not.toContain('aawm_responses_stream_failure_retryable')
+    expect(query.sql).not.toContain('aawm_delivered_disposition')
+    expect(query.sql).not.toMatch(/metadata::text/i)
+  })
+
+  test('test_normalizeSessionDiagnosticsStream_preserves_false_and_drops_unsafe_producer_fields', () => {
+    const normalized = normalizeSessionDiagnosticsStream({
+      provider_terminal_event_type: 'response.incomplete',
+      provider_terminal_observed: false,
+      synthetic_terminal_event_type: 'response.incomplete',
+      parse_ambiguity: true,
+      partial_frame: false,
+      sequence_ambiguity: false,
+      state_omitted: false,
+      aawm_stream_synthetic_terminal: true,
+      aawm_stream_incomplete_reason: ` ${'upstream_stream_parse_ambiguity'}${'y'.repeat(200)}`,
+      aawm_stream_recovery_outcome: 'exhausted',
+      aawm_stream_recovery_parent_litellm_call_id: 'call-originating',
+      aawm_stream_recovery_previous_response_id: 'resp-previous',
+      aawm_stream_terminal_event_type: 'response.incomplete',
+      tool_argument_summaries: [{ arguments: 'SECRET_TOOL_ARG' }],
+      omission_metadata: { raw: 'PAYLOAD' },
+      unsupported_event_types: ['response.custom'],
+      item_status_counts: { completed: 1 },
+      open_state_counts: { output_items: 1 },
+      authorization: 'Bearer secret-token',
+      api_key: 'sk-secret',
+      aawm_failure_origin: 'local_missing_terminal',
+      aawm_responses_stream_failure_retryable: true,
+      aawm_delivered_disposition: 'incomplete',
+      aawm_provider_terminal_payload: { status: 'failed' },
+    })
+
+    expect(normalized).toMatchObject({
+      provider_terminal_event_type: 'response.incomplete',
+      provider_terminal_observed: false,
+      synthetic_terminal_event_type: 'response.incomplete',
+      parse_ambiguity: true,
+      partial_frame: false,
+      sequence_ambiguity: false,
+      state_omitted: false,
+      aawm_stream_synthetic_terminal: true,
+      aawm_stream_recovery_outcome: 'exhausted',
+      aawm_stream_recovery_parent_litellm_call_id: 'call-originating',
+      aawm_stream_recovery_previous_response_id: 'resp-previous',
+      aawm_stream_terminal_event_type: 'response.incomplete',
+    })
+    expect(normalized?.aawm_stream_incomplete_reason).toHaveLength(160)
+    expect(JSON.stringify(normalized)).not.toContain('SECRET_TOOL_ARG')
+    expect(JSON.stringify(normalized)).not.toContain('Bearer')
+    expect(JSON.stringify(normalized)).not.toContain('sk-secret')
+    expect(normalized).not.toHaveProperty('tool_argument_summaries')
+    expect(normalized).not.toHaveProperty('aawm_failure_origin')
+    expect(normalized).not.toHaveProperty(
+      'aawm_responses_stream_failure_retryable'
+    )
+    expect(normalized).not.toHaveProperty('aawm_delivered_disposition')
+
+    const absentVersusFalse = normalizeSessionDiagnosticsStream({
+      provider_terminal_observed: false,
+    })
+    expect(absentVersusFalse).toEqual({ provider_terminal_observed: false })
+    expect(absentVersusFalse).not.toHaveProperty('parse_ambiguity')
+    expect(absentVersusFalse).not.toHaveProperty('partial_frame')
+    expect(normalizeSessionDiagnosticsStream({})).toBeNull()
+    expect(normalizeSessionDiagnosticsStream(null)).toBeNull()
+    expect(
+      normalizeSessionDiagnosticsStream({
+        provider_terminal_event_type: ['response.completed'],
+        provider_terminal_observed: true,
+        aawm_stream_incomplete_reason: 'Bearer secret-token',
+      })
+    ).toEqual({ provider_terminal_observed: true })
   })
 })
 

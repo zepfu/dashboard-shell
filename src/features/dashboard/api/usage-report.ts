@@ -1,4 +1,8 @@
 import { queryOptions } from '@tanstack/react-query'
+import {
+  normalizeSessionDiagnosticsStream,
+  type UsageReportSessionDiagnosticsStream,
+} from '../components/status-section/session-diagnostics-stream'
 
 export const LIVE_DASHBOARD_QUOTAS_REFETCH_INTERVAL_MS = 60_000
 export const LIVE_DASHBOARD_HEAVY_REFETCH_INTERVAL_MS = 120_000
@@ -1120,6 +1124,7 @@ export interface UsageReportSessionDiagnosticsRow {
   } | null
   alias_route_events?: UsageReportAliasRouteEvent[]
   anthropic_context_window?: UsageReportAnthropicContextWindowDiagnostics | null
+  stream_diagnostics?: UsageReportSessionDiagnosticsStream | null
 }
 
 export type UsageReportProviderAliasRoutingStateSource =
@@ -2168,7 +2173,7 @@ function normalizeBooleanishString(
 function normalizeUsageReportSessionDiagnosticsRow(
   row: UsageReportSessionDiagnosticsRow
 ): UsageReportSessionDiagnosticsRow {
-  return {
+  const normalized: UsageReportSessionDiagnosticsRow = {
     ...row,
     host_name: row.host_name ?? null,
     client_ip: row.client_ip ?? null,
@@ -2220,7 +2225,14 @@ function normalizeUsageReportSessionDiagnosticsRow(
       redispatch_required: normalizeBooleanishString(event.redispatch_required),
       last_resort: normalizeBooleanishString(event.last_resort),
     })),
+    stream_diagnostics: normalizeSessionDiagnosticsStream(
+      row.stream_diagnostics
+    ),
   }
+  if (!Object.prototype.hasOwnProperty.call(row, 'stream_diagnostics')) {
+    delete normalized.stream_diagnostics
+  }
+  return normalized
 }
 
 function normalizeUsageReportSessionDiagnosticsResponse(

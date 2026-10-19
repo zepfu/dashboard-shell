@@ -1837,6 +1837,156 @@ describe('D1-212/215/213/178/221/222 session diagnostics API contracts', () => {
   })
 })
 
+describe('D1-501 session diagnostics stream completeness API', () => {
+  test('test_fetchUsageReportSessionDiagnostics_projects_stream_only_producer_scalars', async () => {
+    server.use(
+      http.get('/api/shell/reports/usage/session-diagnostics', () =>
+        HttpResponse.json(
+          usageReportSessionDiagnosticsPayload({
+            sessionDiagnostics: [
+              {
+                session_id: 'stream-only-observed',
+                provider: 'openai',
+                model: 'gpt-5.4',
+                diagnostic_flags: ['stream'],
+                diagnostic_categories: ['stream_completeness'],
+                stream_diagnostics: {
+                  provider_terminal_event_type: 'response.completed',
+                  provider_terminal_observed: 'true',
+                  parse_ambiguity: 'false',
+                  partial_frame: '0',
+                  aawm_stream_synthetic_terminal: 'false',
+                  tool_argument_summaries: [{ arguments: 'SECRET_TOOL_ARG' }],
+                  omission_metadata: { raw: 'PAYLOAD' },
+                  unsupported_event_types: ['response.custom'],
+                  authorization: 'Bearer secret-token',
+                  aawm_failure_origin: 'provider',
+                  aawm_responses_stream_failure_retryable: true,
+                  aawm_delivered_disposition: 'completed',
+                },
+              },
+              {
+                session_id: 'stream-synthetic',
+                provider: 'openai',
+                model: 'gpt-5.4',
+                diagnostic_flags: ['stream'],
+                stream_diagnostics: {
+                  provider_terminal_observed: false,
+                  synthetic_terminal_event_type: 'response.completed',
+                  aawm_stream_synthetic_terminal: true,
+                  aawm_stream_terminal_event_type: 'response.completed',
+                },
+              },
+              {
+                session_id: 'stream-ambiguity',
+                provider: 'openai',
+                model: 'gpt-5.4',
+                diagnostic_flags: ['stream'],
+                stream_diagnostics: {
+                  provider_terminal_observed: 'false',
+                  synthetic_terminal_event_type: 'response.incomplete',
+                  parse_ambiguity: '1',
+                  sequence_ambiguity: false,
+                  aawm_stream_synthetic_terminal: true,
+                  aawm_stream_incomplete_reason:
+                    'upstream_stream_parse_ambiguity',
+                  aawm_stream_recovery_outcome: 'exhausted',
+                  aawm_stream_recovery_parent_litellm_call_id:
+                    'call-originating',
+                  aawm_stream_recovery_previous_response_id: 'resp-previous',
+                },
+              },
+              {
+                session_id: 'missing-stream-metadata',
+                provider: 'openai',
+                model: 'gpt-5.4',
+                diagnostic_flags: ['output_contract'],
+              },
+            ],
+          })
+        )
+      )
+    )
+
+    const response = await fetchUsageReportSessionDiagnostics({
+      from: '2026-05-20',
+      to: '2026-05-21',
+      limit: 4,
+    })
+    const [observed, synthetic, ambiguity, missing] =
+      response.sessionDiagnostics
+
+    expect(observed?.diagnostic_flags).toEqual(['stream'])
+    expect(observed?.stream_diagnostics).toEqual({
+      provider_terminal_event_type: 'response.completed',
+      provider_terminal_observed: true,
+      parse_ambiguity: false,
+      partial_frame: false,
+      aawm_stream_synthetic_terminal: false,
+    })
+    expect(observed?.stream_diagnostics).not.toHaveProperty(
+      'sequence_ambiguity'
+    )
+    expect(observed?.stream_diagnostics).not.toHaveProperty('state_omitted')
+    expect(observed?.stream_diagnostics).not.toHaveProperty(
+      'tool_argument_summaries'
+    )
+    expect(observed?.stream_diagnostics).not.toHaveProperty(
+      'aawm_failure_origin'
+    )
+    expect(observed?.stream_diagnostics).not.toHaveProperty(
+      'aawm_responses_stream_failure_retryable'
+    )
+    expect(observed?.stream_diagnostics).not.toHaveProperty(
+      'aawm_delivered_disposition'
+    )
+    expect(JSON.stringify(observed?.stream_diagnostics)).not.toContain(
+      'SECRET_TOOL_ARG'
+    )
+
+    expect(synthetic?.stream_diagnostics).toEqual({
+      provider_terminal_observed: false,
+      synthetic_terminal_event_type: 'response.completed',
+      aawm_stream_synthetic_terminal: true,
+      aawm_stream_terminal_event_type: 'response.completed',
+    })
+
+    expect(ambiguity?.stream_diagnostics).toMatchObject({
+      provider_terminal_observed: false,
+      synthetic_terminal_event_type: 'response.incomplete',
+      parse_ambiguity: true,
+      sequence_ambiguity: false,
+      aawm_stream_incomplete_reason: 'upstream_stream_parse_ambiguity',
+      aawm_stream_recovery_outcome: 'exhausted',
+      aawm_stream_recovery_parent_litellm_call_id: 'call-originating',
+      aawm_stream_recovery_previous_response_id: 'resp-previous',
+    })
+    expect(ambiguity?.stream_diagnostics).not.toHaveProperty('partial_frame')
+    expect(ambiguity?.stream_diagnostics).not.toHaveProperty('state_omitted')
+
+    expect(missing).not.toHaveProperty('stream_diagnostics')
+  })
+
+  test('test_usage_report_types_expose_stream_diagnostics_scalars', async () => {
+    expectTypeOf<UsageReportSessionDiagnosticsRow>().toMatchTypeOf<{
+      stream_diagnostics?: {
+        provider_terminal_event_type?: string | null
+        provider_terminal_observed?: boolean | string | null
+        synthetic_terminal_event_type?: string | null
+        parse_ambiguity?: boolean | string | null
+        partial_frame?: boolean | string | null
+        sequence_ambiguity?: boolean | string | null
+        state_omitted?: boolean | string | null
+        aawm_stream_synthetic_terminal?: boolean | string | null
+        aawm_stream_incomplete_reason?: string | null
+        aawm_stream_recovery_outcome?: string | null
+        aawm_stream_recovery_parent_litellm_call_id?: string | null
+        aawm_stream_recovery_previous_response_id?: string | null
+      } | null
+    }>()
+  })
+})
+
 test('test_fetchShellHealth_validates_shell_health_payload_shape', async () => {
   server.use(
     http.get('/api/shell/health', () =>
