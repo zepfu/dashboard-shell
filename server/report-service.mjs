@@ -42,6 +42,11 @@ import {
   sessionDiagnosticsStreamMetadataPresentSql,
   sessionDiagnosticsStreamProjectionSql,
 } from './session-diagnostics-stream.mjs'
+import {
+  omitRawAccountFields,
+  resolveSessionDiagnosticsZenAccountRef,
+  sessionDiagnosticsZenAccountSql,
+} from './session-diagnostics-zen-account.mjs'
 
 // Dynamic import for redis so that the module can be imported in environments
 // where the 'redis' package is not installed (for example, environments that
@@ -4912,6 +4917,10 @@ function appendGrokSideChannelDiagnosticsFilters(
 
 function sessionDiagnosticsMetadataPresentClause(columnPrefix = '') {
   const p = columnPrefix
+  const zenAccount = sessionDiagnosticsZenAccountSql({
+    metadataExpression: `${p}metadata`,
+    providerExpression: `${p}provider`,
+  })
   return `(
     ${p}metadata->>'credential_family' IS NOT NULL
     OR ${p}metadata->>'grok_native_oauth_managed' IS NOT NULL
@@ -4942,6 +4951,7 @@ function sessionDiagnosticsMetadataPresentClause(columnPrefix = '') {
     OR ${p}metadata->>'anthropic_context_window_classification' IS NOT NULL
     OR ${grokSideChannelMetadataPresentClause(p)}
     OR ${sessionDiagnosticsStreamMetadataPresentSql(`${p}metadata`)}
+    OR ${zenAccount.admissionSql}
   )`
 }
 
@@ -10142,6 +10152,10 @@ export function buildSessionDiagnosticsQuery(searchParams) {
   const candidateLimitPlaceholder = `$${values.length.toString()}`
   values.push(limit)
   const limitPlaceholder = `$${values.length.toString()}`
+  const zenAccount = sessionDiagnosticsZenAccountSql({
+    metadataExpression: 'metadata',
+    providerExpression: 'provider',
+  })
 
   const sql = `
 WITH candidate_sessions AS MATERIALIZED (
@@ -10283,6 +10297,7 @@ SELECT
     inbound_model_alias,
     agent_name,
     agent_id,
+    ${zenAccount.projectionSql} AS zen_account_ref,
     ARRAY_REMOVE(ARRAY[
         CASE WHEN metadata->>'credential_family' IS NOT NULL
              OR metadata->>'grok_native_oauth_managed' IS NOT NULL
@@ -10322,7 +10337,9 @@ SELECT
              OR metadata->>'anthropic_context_window_beta' IS NOT NULL
              OR metadata->>'anthropic_context_window_classification' IS NOT NULL
              THEN 'anthropic_context_window'::text END,
-        ${sessionDiagnosticsStreamFlagSql('metadata')}
+        ${sessionDiagnosticsStreamFlagSql('metadata')},
+        CASE WHEN ${zenAccount.admissionSql}
+             THEN 'zen_account'::text END
     ], NULL) AS diagnostic_flags,
     ARRAY_REMOVE(ARRAY[
         CASE WHEN metadata->>'credential_family' IS NOT NULL
@@ -10353,7 +10370,9 @@ SELECT
              OR metadata->>'anthropic_context_window_beta' IS NOT NULL
              OR metadata->>'anthropic_context_window_classification' IS NOT NULL
              THEN 'context_window'::text END,
-        ${sessionDiagnosticsStreamCategorySql('metadata')}
+        ${sessionDiagnosticsStreamCategorySql('metadata')},
+        CASE WHEN ${zenAccount.admissionSql}
+             THEN 'account_identity'::text END
     ], NULL) AS diagnostic_categories,
     jsonb_strip_nulls(jsonb_build_object(
         'credential_family', NULLIF(metadata->>'credential_family', ''),
@@ -10547,12 +10566,13 @@ function normalizeSessionDiagnosticsRow(row) {
     inbound_model_alias: row.inbound_model_alias ?? null,
     agent_name: row.agent_name ?? null,
     agent_id: row.agent_id ?? null,
+    zen_account_ref: resolveSessionDiagnosticsZenAccountRef(row),
     diagnostic_flags: normalizeStringArray(row.diagnostic_flags),
     diagnostic_categories: normalizeStringArray(row.diagnostic_categories),
-    grok_oauth: normalizeJsonRecord(row.grok_oauth),
+    grok_oauth: omitRawAccountFields(normalizeJsonRecord(row.grok_oauth)),
     grok_side_channel: normalizeJsonRecord(row.grok_side_channel),
     output_contract: normalizeJsonRecord(row.output_contract),
-    xai_sanitizer: normalizeJsonRecord(row.xai_sanitizer),
+    xai_sanitizer: omitRawAccountFields(normalizeJsonRecord(row.xai_sanitizer)),
     transcript_attribution: normalizeJsonRecord(row.transcript_attribution),
     tool_definitions: normalizeJsonRecord(row.tool_definitions),
     anthropic_context_window: normalizeAnthropicContextWindow(

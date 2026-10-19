@@ -1,6 +1,11 @@
 import { http, HttpResponse } from 'msw'
 import { expectTypeOf } from 'vitest'
+import {
+  EMPTY_QUOTA_ACCOUNT_REF as SERVER_EMPTY_QUOTA_ACCOUNT_REF,
+  quotaAccountRefFromAccountHash,
+} from '../../../../server/session-diagnostics-zen-account.mjs'
 import { server } from '../../../test/setup'
+import { EMPTY_QUOTA_ACCOUNT_REF } from '../lib/session-diagnostics-zen-account'
 import {
   type ReportCacheMetadata,
   type UsageReportTokenTrendSummaryResponse,
@@ -2292,5 +2297,153 @@ describe('D1-451 G4 — UsageReportProviderCreditLifecycleStatus', () => {
     expectTypeOf<UsageReportProviderCreditLifecycleStatus>().not.toEqualTypeOf<
       'available' | 'used' | 'expired'
     >()
+  })
+})
+
+describe('D1-504 session diagnostics Zen account refs', () => {
+  const digestA = `sha256:${'ab'.repeat(32)}`
+  const digestB = `sha256:${'cd'.repeat(32)}`
+  const refA = '36f6769913c7'
+  const refB = '27b7269c6ae2'
+
+  test('returns two Zen quota refs and unknown results for invalid sources', async () => {
+    expect(SERVER_EMPTY_QUOTA_ACCOUNT_REF).toBe(EMPTY_QUOTA_ACCOUNT_REF)
+    expect(quotaAccountRefFromAccountHash(digestA)).toBe(refA)
+    expect(quotaAccountRefFromAccountHash(digestB)).toBe(refB)
+
+    server.use(
+      http.get('/api/shell/reports/usage/session-diagnostics', () =>
+        HttpResponse.json({
+          metadata: {
+            from: '2026-05-20',
+            to: '2026-05-21',
+            limit: 5,
+            generatedAt: '2026-05-21T00:00:00.000Z',
+          },
+          sessionDiagnostics: [
+            {
+              session_id: 'sess-zen-a',
+              trace_id: 'trace-zen-a',
+              litellm_call_id: 'call-zen-a',
+              provider: 'opencode_zen',
+              zen_account_ref: refA,
+              provider_account_hash: digestA,
+              caller_identity_hash: 'caller-a',
+              account_hash: digestA,
+              agent_id: 'agent-a',
+              grok_oauth: {
+                credential_family: 'opencode_zen',
+                passthrough_route_family: 'opencode_zen',
+                route_family: 'opencode_zen',
+                auth_mode: 'api_key',
+                provider_account_hash: digestA,
+              },
+            },
+            {
+              session_id: 'sess-zen-b',
+              trace_id: 'trace-zen-b',
+              litellm_call_id: 'call-zen-b',
+              provider: 'opencode_zen',
+              zen_account_ref: quotaAccountRefFromAccountHash(digestB),
+              grok_oauth: {
+                credential_family: 'opencode_zen',
+                route_family: 'opencode-zen',
+                auth_mode: 'bearer',
+              },
+            },
+            {
+              session_id: 'sess-missing',
+              litellm_call_id: 'call-missing',
+              zen_account_ref: null,
+              agent_id: 'agent-missing',
+              caller_identity_hash: 'caller-missing',
+            },
+            {
+              session_id: 'sess-invalid',
+              litellm_call_id: 'call-invalid',
+              zen_account_ref: digestA,
+              provider_account_hash: 'raw-account-label',
+              account_label: 'raw-account-label',
+              grok_oauth: {
+                credential_family: 'xai_grok_oidc',
+                passthrough_route_family: 'grok_cli_chat_proxy',
+                route_family: 'grok',
+                auth_mode: 'oidc',
+                provider_account_hash: digestB,
+              },
+              xai_sanitizer: {
+                credential_family: 'xai_grok_oidc',
+                provider_account_hash: digestB,
+              },
+            },
+            {
+              session_id: 'sess-empty-ref',
+              zen_account_ref: EMPTY_QUOTA_ACCOUNT_REF,
+              agent_id: digestB,
+            },
+          ],
+        })
+      )
+    )
+
+    const response = await fetchUsageReportSessionDiagnostics({
+      from: '2026-05-20',
+      to: '2026-05-21',
+      limit: 5,
+    })
+
+    expectTypeOf<
+      UsageReportSessionDiagnosticsRow['zen_account_ref']
+    >().toEqualTypeOf<string | null | undefined>()
+    expect(
+      response.sessionDiagnostics.map((row) => row.zen_account_ref)
+    ).toEqual([refA, refB, null, null, null])
+    expect(response.sessionDiagnostics[0]).toMatchObject({
+      session_id: 'sess-zen-a',
+      trace_id: 'trace-zen-a',
+      litellm_call_id: 'call-zen-a',
+      agent_id: 'agent-a',
+      grok_oauth: {
+        credential_family: 'opencode_zen',
+        passthrough_route_family: 'opencode_zen',
+        route_family: 'opencode_zen',
+        auth_mode: 'api_key',
+      },
+    })
+    expect(response.sessionDiagnostics[1]?.grok_oauth).toMatchObject({
+      credential_family: 'opencode_zen',
+      route_family: 'opencode-zen',
+      auth_mode: 'bearer',
+    })
+    expect(response.sessionDiagnostics[3]?.grok_oauth).toMatchObject({
+      credential_family: 'xai_grok_oidc',
+      passthrough_route_family: 'grok_cli_chat_proxy',
+      route_family: 'grok',
+      auth_mode: 'oidc',
+    })
+    expect(response.sessionDiagnostics[3]?.xai_sanitizer).toMatchObject({
+      credential_family: 'xai_grok_oidc',
+    })
+    expect(response.sessionDiagnostics[3]?.zen_account_ref).toBeNull()
+    expect(response.sessionDiagnostics[4]?.agent_id).toBe(digestB)
+    expect(response.sessionDiagnostics[4]?.zen_account_ref).toBeNull()
+    expect(response.sessionDiagnostics[0]).not.toHaveProperty(
+      'provider_account_hash'
+    )
+    expect(response.sessionDiagnostics[0]).not.toHaveProperty(
+      'caller_identity_hash'
+    )
+    expect(response.sessionDiagnostics[0]?.grok_oauth).not.toHaveProperty(
+      'provider_account_hash'
+    )
+    expect(response.sessionDiagnostics[3]?.xai_sanitizer).not.toHaveProperty(
+      'provider_account_hash'
+    )
+
+    const serialized = JSON.stringify(response.sessionDiagnostics.slice(0, 4))
+    expect(serialized).not.toContain(digestA)
+    expect(serialized).not.toContain('raw-account-label')
+    expect(serialized).toContain(refA)
+    expect(serialized).toContain(refB)
   })
 })

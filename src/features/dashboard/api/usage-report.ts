@@ -3,6 +3,10 @@ import {
   normalizeSessionDiagnosticsStream,
   type UsageReportSessionDiagnosticsStream,
 } from '../components/status-section/session-diagnostics-stream'
+import {
+  normalizeSessionDiagnosticsZenAccountRef,
+  omitRawSessionAccountFields,
+} from '../lib/session-diagnostics-zen-account'
 
 export const LIVE_DASHBOARD_QUOTAS_REFETCH_INTERVAL_MS = 60_000
 export const LIVE_DASHBOARD_HEAVY_REFETCH_INTERVAL_MS = 120_000
@@ -1120,6 +1124,8 @@ export interface UsageReportSessionDiagnosticsRow {
   inbound_model_alias?: string | null
   agent_name?: string | null
   agent_id?: string | null
+  /** Verified Zen quota ref, `left(md5(account_hash), 12)`. */
+  zen_account_ref?: string | null
   diagnostic_flags?: string[]
   diagnostic_categories?: string[]
   grok_oauth?: {
@@ -2286,21 +2292,25 @@ function normalizeRequestWaitCheckpoint(
 function normalizeUsageReportSessionDiagnosticsRow(
   row: UsageReportSessionDiagnosticsRow
 ): UsageReportSessionDiagnosticsRow {
+  const safeRow = omitRawSessionAccountFields(row)
   const normalized: UsageReportSessionDiagnosticsRow = {
-    ...row,
-    request_wait_checkpoint: row.request_wait_checkpoint
-      ? normalizeRequestWaitCheckpoint(row.request_wait_checkpoint)
-      : row.request_wait_checkpoint,
-    host_name: row.host_name ?? null,
-    client_ip: row.client_ip ?? null,
-    grok_oauth: row.grok_oauth
+    ...safeRow,
+    request_wait_checkpoint: safeRow.request_wait_checkpoint
+      ? normalizeRequestWaitCheckpoint(safeRow.request_wait_checkpoint)
+      : safeRow.request_wait_checkpoint,
+    host_name: safeRow.host_name ?? null,
+    client_ip: safeRow.client_ip ?? null,
+    zen_account_ref: normalizeSessionDiagnosticsZenAccountRef(
+      safeRow.zen_account_ref
+    ),
+    grok_oauth: safeRow.grok_oauth
       ? {
-          ...row.grok_oauth,
+          ...omitRawSessionAccountFields(safeRow.grok_oauth),
           grok_native_oauth_managed: normalizeBooleanishString(
-            row.grok_oauth.grok_native_oauth_managed
+            safeRow.grok_oauth.grok_native_oauth_managed
           ),
         }
-      : row.grok_oauth,
+      : safeRow.grok_oauth,
     grok_side_channel: row.grok_side_channel
       ? {
           ...row.grok_side_channel,
@@ -2322,7 +2332,7 @@ function normalizeUsageReportSessionDiagnosticsRow(
       : row.output_contract,
     xai_sanitizer: row.xai_sanitizer
       ? {
-          ...row.xai_sanitizer,
+          ...omitRawSessionAccountFields(row.xai_sanitizer),
           xai_responses_request_sanitized: normalizeBooleanishString(
             row.xai_sanitizer.xai_responses_request_sanitized
           ),

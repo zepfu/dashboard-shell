@@ -3,7 +3,11 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { defineConfig } from 'vitest/config'
 
-const rootDir = path.dirname(fileURLToPath(import.meta.url))
+// The bundle config loader injects __dirname. The ESM runner loader does not.
+const rootDir =
+  typeof __dirname === 'string'
+    ? __dirname
+    : path.dirname(fileURLToPath(import.meta.url))
 
 // NOTE: We intentionally do NOT import the @module-federation/vite plugin here.
 // The federation plugin is incompatible with Vitest's test runner (it expects a

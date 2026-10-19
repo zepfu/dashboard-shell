@@ -4,6 +4,7 @@ import type {
   UsageReportSessionDiagnosticsResponse,
   UsageReportSessionDiagnosticsRow,
 } from '../../api/usage-report'
+import { sessionDiagnosticsRequestIdentity } from '../../lib/session-diagnostics-zen-account'
 import { displaySessionIdentityValue } from '../../lib/session-identity'
 import {
   canonicalProvider,
@@ -563,6 +564,7 @@ const SessionDiagnosticsCard = memo(function SessionDiagnosticsCard({
   const categories = row.diagnostic_categories ?? []
   const provider = row.provider ?? 'unknown'
   const hostAttribution = sessionDiagnosticsHostAttribution(row)
+  const requestIdentity = sessionDiagnosticsRequestIdentity(row)
   const transcriptDetail = asRecord(
     row.transcript_attribution?.session_history_transcript_attribution
   )
@@ -635,6 +637,20 @@ const SessionDiagnosticsCard = memo(function SessionDiagnosticsCard({
           ) : null}
         </div>
       ) : null}
+      <div className='status-diagnostics-request'>
+        <span>
+          session: <strong>{requestIdentity.sessionId}</strong>
+        </span>
+        <span>
+          trace: <strong>{requestIdentity.traceId}</strong>
+        </span>
+        <span>
+          request: <strong>{requestIdentity.requestId}</strong>
+        </span>
+        <span>
+          zen account: <strong>{requestIdentity.zenAccountRef}</strong>
+        </span>
+      </div>
       <div className='status-diagnostics-chip-row'>
         {[...flags, ...categories].slice(0, 10).map((flag) => (
           <span key={flag} className='status-diagnostics-chip'>
