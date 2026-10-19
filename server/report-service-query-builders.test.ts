@@ -3833,6 +3833,546 @@ describe('report-service query builders', () => {
     expect(sonnetRatio?.cache_read_vs_uncached_workload_ratio).toBeLessThan(1)
   })
 
+  test('test_buildQuotaEstimatorReport_exposes_phase4_forecast_without_phase3_confidence', () => {
+    const rows: Parameters<typeof buildQuotaEstimatorReport>[0] = []
+    for (let index = 0; index < 24; index += 1) {
+      const sonnetUncached = 0.4 + (index % 5) * 0.25
+      const sonnetCacheRead = 0.1 + ((index * 3) % 5) * 0.15
+      const sonnetCacheCreate = 0.05 + ((index * 2) % 4) * 0.2
+      const haikuUncached = 0.2 + ((index * 4) % 5) * 0.2
+      const deltaPct =
+        sonnetUncached * 2 +
+        sonnetCacheRead * 0.4 +
+        sonnetCacheCreate * 1.2 +
+        haikuUncached
+      const startAt = `2026-05-${String((index % 27) + 1).padStart(2, '0')}T00:00:00.000Z`
+      const endAt = `2026-05-${String((index % 27) + 1).padStart(2, '0')}T01:00:00.000Z`
+      const base = {
+        lag_minutes: 0,
+        provider: 'anthropic',
+        quota_key: 'anthropic_unified_7d:7d',
+        quota_type: 'weekly',
+        quota_lane: 'anthropic_weekly_all_model',
+        raw_observation_quota_type: 'weekly',
+        raw_interval_quota_type: 'weekly',
+        expected_reset_at: '2026-05-31T00:00:00.000Z',
+        reset_start_at: '2026-05-01T00:00:00.000Z',
+        reset_end_at: '2026-05-31T00:00:00.000Z',
+        interval_start_at: startAt,
+        interval_end_at: endAt,
+        previous_consumed_pct: index,
+        current_consumed_pct: index + deltaPct,
+        delta_pct: deltaPct,
+        is_reset_boundary: false,
+        is_capped_at_100: false,
+        trainable: true,
+        exclude_reason: null,
+        usd_cost: 0,
+        tool_calls: 0,
+        traces: 1,
+        output_tokens: 0,
+        reasoning_tokens: 0,
+      }
+      rows.push(
+        {
+          ...base,
+          model_family: 'sonnet',
+          uncached_input_tokens: sonnetUncached * 1_000_000,
+          cache_read_tokens: sonnetCacheRead * 1_000_000,
+          cache_create_tokens: sonnetCacheCreate * 1_000_000,
+        },
+        {
+          ...base,
+          model_family: 'haiku',
+          uncached_input_tokens: haikuUncached * 1_000_000,
+          cache_read_tokens: 0,
+          cache_create_tokens: 0,
+        }
+      )
+    }
+
+    const report = buildQuotaEstimatorReport(rows, {
+      from: '2026-05-01',
+      to: '2026-05-31',
+    })
+    const operational = report.estimates[0]?.operational
+    const sonnetUncached = operational?.weights.find(
+      (weight) =>
+        weight.model_family === 'sonnet' &&
+        weight.token_category === 'uncached_input'
+    )
+    const sonnetCacheRead = operational?.weights.find(
+      (weight) =>
+        weight.model_family === 'sonnet' &&
+        weight.token_category === 'cache_read'
+    )
+    const sonnetCacheCreate = operational?.weights.find(
+      (weight) =>
+        weight.model_family === 'sonnet' &&
+        weight.token_category === 'cache_create'
+    )
+    const sonnetRatio = operational?.cache_read_vs_uncached_input_ratios.find(
+      (ratio) => ratio.model_family === 'sonnet'
+    )
+
+    expect(report.metadata.phase).toBe('0-2')
+    expect(report.metadata.derivation).toBe('phase_2')
+    expect(report.metadata.intervalCensored).toBe(false)
+    expect(report.metadata.stateSpace).toBe(false)
+    expect(operational?.derivation).toBe('phase_2')
+    expect(operational?.interval_censored).toBe(false)
+    expect(operational?.state_space).toBe(false)
+    expect(operational?.lane_label).toBe('Weekly all-model')
+    expect(operational?.lane_family).toBe('all_model')
+    expect(operational?.forecast.promoted).toBe(true)
+    expect(['high_confidence', 'directional_only']).toContain(
+      operational?.forecast.status
+    )
+    expect(operational?.observation.lag_assumption_minutes).toBe(0)
+    expect(operational?.observation.observed_at).toBe(
+      '2026-05-24T01:00:00.000Z'
+    )
+    expect(operational?.observation.freshness.stale).toBe(true)
+    expect(operational?.observation.freshness.bounded_window).toBe(true)
+    expect(sonnetUncached?.coefficient_pct_per_mtok).toBeGreaterThan(1)
+    expect(sonnetCacheRead?.coefficient_pct_per_mtok).toBeGreaterThan(0)
+    expect(sonnetCacheCreate?.coefficient_pct_per_mtok).toBeGreaterThan(0)
+    expect(sonnetCacheRead!.coefficient_pct_per_mtok).toBeLessThan(
+      sonnetUncached!.coefficient_pct_per_mtok!
+    )
+    expect(sonnetCacheCreate!.coefficient_pct_per_mtok).not.toBe(
+      sonnetUncached!.coefficient_pct_per_mtok
+    )
+    expect(sonnetRatio?.cache_read_vs_uncached_input_ratio).toBeGreaterThan(0)
+    expect(sonnetRatio?.cache_read_vs_uncached_input_ratio).toBeLessThan(1)
+    expect(sonnetRatio?.status).toBe('consistent')
+    expect(operational?.forecast.forecast_next_interval_burn_pct).not.toBeNull()
+  })
+
+  test('test_buildQuotaEstimatorReport_holds_weights_when_residual_is_large', () => {
+    const rows: Parameters<typeof buildQuotaEstimatorReport>[0] = []
+    for (let index = 0; index < 12; index += 1) {
+      const endDay = String(index + 1).padStart(2, '0')
+      const base = {
+        lag_minutes: 0,
+        provider: 'openai',
+        quota_key: 'codex_bengalfox:primary',
+        quota_type: 'short',
+        quota_lane: 'openai_codex_all_model_5h',
+        raw_observation_quota_type: 'short',
+        raw_interval_quota_type: 'short',
+        expected_reset_at: '2026-05-12T05:00:00.000Z',
+        reset_start_at: '2026-05-12T00:00:00.000Z',
+        reset_end_at: '2026-05-12T05:00:00.000Z',
+        interval_start_at: `2026-05-${endDay}T00:00:00.000Z`,
+        interval_end_at: `2026-05-${endDay}T01:00:00.000Z`,
+        previous_consumed_pct: 10 + index,
+        current_consumed_pct: 12.5 + index,
+        delta_pct: 2.5,
+        is_reset_boundary: false,
+        is_capped_at_100: false,
+        trainable: true,
+        exclude_reason: null,
+        usd_cost: 0,
+        tool_calls: 0,
+        traces: 1,
+        output_tokens: 0,
+        reasoning_tokens: 0,
+        cache_read_tokens: 0,
+        cache_create_tokens: 0,
+      }
+      rows.push(
+        {
+          ...base,
+          model_family: 'sonnet',
+          uncached_input_tokens: 1_000_000,
+        },
+        {
+          ...base,
+          model_family: 'haiku',
+          uncached_input_tokens: 500_000,
+        }
+      )
+    }
+    rows.push({
+      lag_minutes: 0,
+      provider: 'openai',
+      quota_key: 'codex_bengalfox:primary',
+      quota_type: 'short',
+      quota_lane: 'openai_codex_all_model_5h',
+      raw_observation_quota_type: 'short',
+      raw_interval_quota_type: 'short',
+      expected_reset_at: '2026-05-12T05:00:00.000Z',
+      reset_start_at: '2026-05-12T00:00:00.000Z',
+      reset_end_at: '2026-05-12T05:00:00.000Z',
+      interval_start_at: '2026-05-13T00:00:00.000Z',
+      interval_end_at: '2026-05-13T01:00:00.000Z',
+      previous_consumed_pct: 40,
+      current_consumed_pct: 70,
+      delta_pct: 30,
+      is_reset_boundary: false,
+      is_capped_at_100: false,
+      trainable: true,
+      exclude_reason: null,
+      model_family: 'no_usage',
+      traces: 0,
+      uncached_input_tokens: 0,
+      output_tokens: 0,
+      cache_read_tokens: 0,
+      cache_create_tokens: 0,
+      reasoning_tokens: 0,
+      usd_cost: 0,
+      tool_calls: 0,
+    })
+
+    const report = buildQuotaEstimatorReport(rows, {
+      from: '2026-05-01',
+      to: '2026-05-13',
+    })
+    const operational = report.estimates[0]?.operational
+    const sonnetUncached = operational?.weights.find(
+      (weight) =>
+        weight.model_family === 'sonnet' &&
+        weight.token_category === 'uncached_input'
+    )
+    const haikuUncached = operational?.weights.find(
+      (weight) =>
+        weight.model_family === 'haiku' &&
+        weight.token_category === 'uncached_input'
+    )
+    const heldGoodIntervalBurn =
+      (sonnetUncached?.coefficient_pct_per_mtok ?? 0) * 1 +
+      (haikuUncached?.coefficient_pct_per_mtok ?? 0) * 0.5
+    const alertCodes = (operational?.alerts ?? [])
+      .filter((alert) => !alert.suppressed)
+      .map((alert) => alert.code)
+
+    expect(operational?.lane_label).toBe('Codex all-model · 5-hour')
+    expect(operational?.lane_family).toBe('all_model')
+    expect(operational?.warning_scope).toContain('all-model')
+    expect(operational?.warning_scope).toContain('Codex Spark')
+    expect(operational?.forecast.promoted).toBe(false)
+    expect(operational?.forecast.promotion_blocked).toBe(true)
+    expect(operational?.weight_source).toBe('held_pending_data_quality')
+    expect(operational?.data_quality.large_residual).toBe(true)
+    expect(operational?.data_quality.checks_ran).toBe(true)
+    expect(operational?.data_quality.promotion_blocked).toBe(true)
+    expect(alertCodes).toContain('residual_anomaly')
+    expect(alertCodes).toContain('usage_contamination')
+    expect(
+      operational?.alerts.find((alert) => alert.code === 'residual_anomaly')
+        ?.detail
+    ).toContain('OpenAI Codex all-model 5-hour lane')
+    expect(heldGoodIntervalBurn).toBeGreaterThan(2)
+    expect(heldGoodIntervalBurn).toBeLessThan(3)
+    expect(operational?.forecast.residual_pct).toBeGreaterThan(20)
+    expect(
+      operational?.forecast.forecast_next_interval_burn_pct ?? 0
+    ).toBeLessThan(1)
+    expect(operational?.observation.observed_at).toBe(
+      '2026-05-13T01:00:00.000Z'
+    )
+  })
+
+  test('test_buildQuotaEstimatorReport_blocks_coefficient_drift_after_large_residual', () => {
+    const rows: Parameters<typeof buildQuotaEstimatorReport>[0] = []
+    const mixes = [
+      { sonnet: 0.2, haiku: 1.0 },
+      { sonnet: 1.0, haiku: 0.2 },
+      { sonnet: 0.4, haiku: 0.8 },
+      { sonnet: 1.2, haiku: 0.3 },
+      { sonnet: 0.3, haiku: 1.1 },
+      { sonnet: 0.8, haiku: 0.4 },
+      { sonnet: 0.5, haiku: 0.9 },
+      { sonnet: 1.1, haiku: 0.2 },
+      { sonnet: 6, haiku: 0.2 },
+    ]
+    mixes.forEach((mix, index) => {
+      const deltaPct =
+        index === mixes.length - 1 ? 30 : mix.sonnet * 2 + mix.haiku
+      const endDay = String(index + 1).padStart(2, '0')
+      const base = {
+        lag_minutes: 0,
+        provider: 'anthropic',
+        quota_key: 'anthropic_unified_7d_sonnet:7d_sonnet',
+        quota_type: 'special',
+        quota_lane: 'anthropic_weekly_sonnet',
+        raw_observation_quota_type: 'special',
+        raw_interval_quota_type: 'special',
+        expected_reset_at: '2026-05-15T00:00:00.000Z',
+        reset_start_at: '2026-05-01T00:00:00.000Z',
+        reset_end_at: '2026-05-15T00:00:00.000Z',
+        interval_start_at: `2026-05-${endDay}T00:00:00.000Z`,
+        interval_end_at: `2026-05-${endDay}T01:00:00.000Z`,
+        previous_consumed_pct: 5 + index,
+        current_consumed_pct: 5 + index + deltaPct,
+        delta_pct: deltaPct,
+        is_reset_boundary: false,
+        is_capped_at_100: false,
+        trainable: true,
+        exclude_reason: null,
+        usd_cost: 0,
+        tool_calls: 0,
+        traces: 1,
+        output_tokens: 0,
+        cache_read_tokens: 0,
+        cache_create_tokens: 0,
+        reasoning_tokens: 0,
+      }
+      rows.push(
+        {
+          ...base,
+          model_family: 'sonnet',
+          uncached_input_tokens: mix.sonnet * 1_000_000,
+        },
+        {
+          ...base,
+          model_family: 'haiku',
+          uncached_input_tokens: mix.haiku * 1_000_000,
+        }
+      )
+    })
+
+    const report = buildQuotaEstimatorReport(rows, {
+      from: '2026-05-01',
+      to: '2026-05-15',
+    })
+    const operational = report.estimates[0]?.operational
+    const driftAlert = operational?.alerts.find(
+      (alert) => alert.code === 'coefficient_drift' && !alert.suppressed
+    )
+
+    expect(operational?.lane_label).toBe('Weekly Sonnet-only')
+    expect(operational?.forecast.promoted).toBe(false)
+    expect(operational?.weight_source).toBe('held_pending_data_quality')
+    expect(operational?.data_quality.large_residual).toBe(true)
+    expect(operational?.data_quality.checks_ran).toBe(true)
+    expect(driftAlert?.detail).toContain('Anthropic weekly Sonnet-only lane')
+    expect(driftAlert?.detail).toContain('not promoted')
+  })
+
+  test('test_buildQuotaEstimatorReport_labels_sonnet_only_and_spark_lanes_separately', () => {
+    const sparse = (
+      provider: string,
+      quotaType: string,
+      quotaKey: string,
+      quotaLane: string
+    ) => {
+      const base = {
+        lag_minutes: 0,
+        provider,
+        quota_key: quotaKey,
+        quota_type: quotaType,
+        quota_lane: quotaLane,
+        raw_observation_quota_type: quotaType,
+        raw_interval_quota_type: quotaType,
+        expected_reset_at: '2026-05-08T00:00:00.000Z',
+        reset_start_at: '2026-05-01T00:00:00.000Z',
+        reset_end_at: '2026-05-08T00:00:00.000Z',
+        is_reset_boundary: false,
+        is_capped_at_100: false,
+        trainable: true,
+        exclude_reason: null,
+        model_family: 'sonnet',
+        traces: 1,
+        uncached_input_tokens: 100_000,
+        output_tokens: 0,
+        cache_read_tokens: 0,
+        cache_create_tokens: 0,
+        reasoning_tokens: 0,
+        usd_cost: 0,
+        tool_calls: 0,
+      }
+      return [
+        {
+          ...base,
+          interval_start_at: '2026-05-01T00:00:00.000Z',
+          interval_end_at: '2026-05-01T01:00:00.000Z',
+          previous_consumed_pct: 1,
+          current_consumed_pct: 2,
+          delta_pct: 1,
+        },
+        {
+          ...base,
+          interval_start_at: '2026-05-01T01:00:00.000Z',
+          interval_end_at: '2026-05-01T02:00:00.000Z',
+          previous_consumed_pct: 2,
+          current_consumed_pct: 3,
+          delta_pct: 1,
+        },
+      ]
+    }
+    const report = buildQuotaEstimatorReport(
+      [
+        ...sparse(
+          'anthropic',
+          'special',
+          'anthropic_unified_7d_sonnet:7d_sonnet',
+          'anthropic_weekly_sonnet'
+        ),
+        ...sparse(
+          'openai',
+          'special',
+          'codex_spark:tokens',
+          'openai_spark_weekly'
+        ),
+        ...sparse(
+          'openai',
+          'short_special',
+          'codex_spark:tokens',
+          'openai_spark_5h'
+        ),
+        ...sparse(
+          'openai',
+          'weekly',
+          'codex_bengalfox:primary',
+          'openai_all_model_weekly'
+        ),
+      ],
+      { from: '2026-05-01', to: '2026-05-08' }
+    )
+    const byType = new Map(
+      report.estimates.map((estimate) => [
+        `${estimate.provider}:${estimate.quota_type}`,
+        estimate.operational,
+      ])
+    )
+    const anthropicSpecial = byType.get('anthropic:special')
+    const openaiSpecial = byType.get('openai:special')
+    const openaiShortSpecial = byType.get('openai:short_special')
+    const openaiWeekly = byType.get('openai:weekly')
+
+    expect(anthropicSpecial?.lane_label).toBe('Weekly Sonnet-only')
+    expect(anthropicSpecial?.lane_family).toBe('sonnet_only')
+    expect(openaiSpecial?.lane_label).toBe('Codex Spark · weekly')
+    expect(openaiSpecial?.lane_family).toBe('codex_spark')
+    expect(openaiShortSpecial?.lane_label).toBe('Codex Spark · 5-hour')
+    expect(openaiShortSpecial?.lane_family).toBe('codex_spark')
+    expect(openaiWeekly?.lane_label).toBe('Codex all-model · weekly')
+    expect(openaiWeekly?.lane_family).toBe('all_model')
+    expect(anthropicSpecial?.forecast.status).toBe('not_identifiable')
+    expect(
+      anthropicSpecial?.forecast.forecast_next_interval_burn_pct
+    ).toBeNull()
+    expect(
+      anthropicSpecial?.weights.every(
+        (weight) => weight.coefficient_pct_per_mtok === null
+      )
+    ).toBe(true)
+    expect(openaiSpecial?.warning_scope.startsWith('OpenAI Codex Spark')).toBe(
+      true
+    )
+    expect(openaiSpecial?.lane_label).not.toContain('all-model')
+    expect(
+      openaiWeekly?.warning_scope.startsWith('OpenAI Codex all-model')
+    ).toBe(true)
+    expect(openaiWeekly?.lane_label).not.toContain('Spark')
+  })
+
+  test('test_buildQuotaEstimatorReport_refreshes_forecast_observation_after_new_quota_point', () => {
+    const rows: Parameters<typeof buildQuotaEstimatorReport>[0] = []
+    for (let index = 0; index < 8; index += 1) {
+      const sonnet = 0.5 + (index % 3) * 0.4
+      const haiku = 0.3 + ((index + 1) % 3) * 0.3
+      const deltaPct = sonnet * 2 + haiku
+      const endDay = String(index + 1).padStart(2, '0')
+      const base = {
+        lag_minutes: 0,
+        provider: 'anthropic',
+        quota_key: 'anthropic_unified_7d:7d',
+        quota_type: 'weekly',
+        quota_lane: 'anthropic_weekly_all_model',
+        raw_observation_quota_type: 'weekly',
+        raw_interval_quota_type: 'weekly',
+        expected_reset_at: '2026-05-08T05:00:00.000Z',
+        reset_start_at: '2026-05-08T00:00:00.000Z',
+        reset_end_at: '2026-05-08T05:00:00.000Z',
+        interval_start_at: `2026-05-${endDay}T00:00:00.000Z`,
+        interval_end_at: `2026-05-${endDay}T01:00:00.000Z`,
+        previous_consumed_pct: 5 + index,
+        current_consumed_pct: 5 + index + deltaPct,
+        delta_pct: deltaPct,
+        is_reset_boundary: false,
+        is_capped_at_100: false,
+        trainable: true,
+        exclude_reason: null,
+        usd_cost: 0,
+        tool_calls: 0,
+        traces: 1,
+        output_tokens: 0,
+        cache_read_tokens: 0,
+        cache_create_tokens: 0,
+        reasoning_tokens: 0,
+      }
+      rows.push(
+        {
+          ...base,
+          model_family: 'sonnet',
+          uncached_input_tokens: sonnet * 1_000_000,
+        },
+        {
+          ...base,
+          model_family: 'haiku',
+          uncached_input_tokens: haiku * 1_000_000,
+        }
+      )
+    }
+
+    const before = buildQuotaEstimatorReport(rows, {
+      from: '2026-05-01',
+      to: '2026-05-08',
+    })
+    const after = buildQuotaEstimatorReport(
+      [
+        ...rows,
+        {
+          lag_minutes: 0,
+          provider: 'anthropic',
+          quota_key: 'anthropic_unified_7d:7d',
+          quota_type: 'weekly',
+          quota_lane: 'anthropic_weekly_all_model',
+          raw_observation_quota_type: 'weekly',
+          raw_interval_quota_type: 'weekly',
+          expected_reset_at: '2026-05-08T05:00:00.000Z',
+          reset_start_at: '2026-05-08T00:00:00.000Z',
+          reset_end_at: '2026-05-08T05:00:00.000Z',
+          interval_start_at: '2026-05-08T01:00:00.000Z',
+          interval_end_at: '2026-05-08T02:00:00.000Z',
+          previous_consumed_pct: 20,
+          current_consumed_pct: 20,
+          delta_pct: 0,
+          is_reset_boundary: false,
+          is_capped_at_100: false,
+          trainable: false,
+          exclude_reason: 'plateau_no_positive_delta',
+          model_family: 'no_usage',
+          traces: 0,
+          uncached_input_tokens: 0,
+          output_tokens: 0,
+          cache_read_tokens: 0,
+          cache_create_tokens: 0,
+          reasoning_tokens: 0,
+          usd_cost: 0,
+          tool_calls: 0,
+        },
+      ],
+      { from: '2026-05-01', to: '2026-05-08' }
+    )
+
+    expect(before.estimates[0]?.operational.observation.observed_at).toBe(
+      '2026-05-08T01:00:00.000Z'
+    )
+    expect(after.estimates[0]?.operational.observation.observed_at).toBe(
+      '2026-05-08T02:00:00.000Z'
+    )
+    expect(
+      after.estimates[0]?.operational.observation.lag_assumption_minutes
+    ).toBe(0)
+    expect(
+      after.estimates[0]?.operational.forecast.forecast_next_interval_burn_pct
+    ).not.toBeNull()
+  })
+
   test('test_buildTokenTrendHoursQuery_includes_tool_call_counts_for_tool_lane', () => {
     const query = buildTokenTrendHoursQuery(
       new URLSearchParams({ from: '2026-05-01', to: '2026-05-08' })

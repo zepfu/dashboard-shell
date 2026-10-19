@@ -118,8 +118,72 @@ declare module './report-service' {
     coefficient_pct_per_mtok: number
   }
 
+  interface QuotaEstimatorOperational {
+    derivation: string
+    lane_label: string
+    lane_family: string
+    warning_scope: string
+    weight_source: string
+    interval_censored: boolean
+    state_space: boolean
+    observation: {
+      observed_at: string | null
+      lag_assumption_minutes: number | null
+      freshness: {
+        stale: boolean
+        observation_age_minutes: number | null
+        trainable_interval_count: number
+        sample_cap: number
+        bounded_window?: boolean
+      }
+    }
+    forecast: {
+      status: string
+      promoted: boolean
+      promotion_blocked: boolean
+      forecast_next_interval_burn_pct: number | null
+      residual_pct: number | null
+      predicted_interval_delta_pct: number | null
+    }
+    weights: Array<{
+      model_family: string
+      token_category: string
+      coefficient_pct_per_mtok: number | null
+      estimate_status: string
+    }>
+    cache_read_vs_uncached_input_ratios: Array<{
+      model_family: string
+      cache_read_vs_uncached_input_ratio: number | null
+      status: string
+    }>
+    alerts: Array<{
+      code: string
+      severity: string
+      suppressed: boolean
+      detail: string
+      warning_scope: string
+    }>
+    data_quality: {
+      large_residual: boolean
+      checks_ran: boolean
+      promotion_blocked: boolean
+      gate_residual_pct: number | null
+    }
+  }
+
   interface QuotaEstimatorReport {
+    metadata: {
+      phase: string
+      derivation?: string
+      intervalCensored?: boolean
+      stateSpace?: boolean
+      operationalPhase?: string
+      confidenceModel?: string
+    }
     estimates: Array<{
+      provider: string
+      quota_type: string
+      quota_lane: string
       coefficients: QuotaEstimatorEstimate[]
       cache_read_vs_uncached_workload_ratio: number
       selected_lag_minutes: number
@@ -128,6 +192,7 @@ declare module './report-service' {
         model_family: string
         cache_read_vs_uncached_workload_ratio: number
       }>
+      operational: QuotaEstimatorOperational
     }>
     phase0Audit: { known_missing_fields: string[] }
   }

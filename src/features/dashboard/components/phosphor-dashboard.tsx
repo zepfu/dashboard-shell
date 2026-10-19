@@ -117,6 +117,7 @@ import { PgBouncerHealthPanel } from './status-section/pgbouncer-health-panel'
 import { ProviderAuthHealthPanel } from './status-section/provider-auth-health-panel'
 import { ProviderCreditLifecyclePanel } from './status-section/provider-credit-lifecycle-panel'
 import { ProviderStatusLegend } from './status-section/provider-status-legend'
+import { QuotaEstimatorForecastPanel } from './status-section/quota-estimator-forecast-panel'
 import { QuotaEstimatorWeightsPanel } from './status-section/quota-estimator-weights-panel'
 import {
   SectionTitle,
@@ -1911,10 +1912,16 @@ export default function PhosphorDashboard({
             quota-history UI removed).
           </p>
         ) : providerSectionView === 'weights' ? (
-          <QuotaEstimatorWeightsPanel
-            response={quotaEstimatorData}
-            loading={quotaEstimatorLoading || quotaEstimatorFetching}
-          />
+          <>
+            <QuotaEstimatorForecastPanel
+              response={quotaEstimatorData}
+              loading={quotaEstimatorLoading || quotaEstimatorFetching}
+            />
+            <QuotaEstimatorWeightsPanel
+              response={quotaEstimatorData}
+              loading={quotaEstimatorLoading || quotaEstimatorFetching}
+            />
+          </>
         ) : (
           <div className='status-diagnostics-stack'>
             <SessionTransferStatusView

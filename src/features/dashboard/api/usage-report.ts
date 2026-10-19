@@ -1539,6 +1539,103 @@ export interface UsageReportQuotaEstimatorDiagnostic {
   detail: string
 }
 
+export type UsageReportQuotaForecastStatus =
+  | 'high_confidence'
+  | 'directional_only'
+  | 'not_identifiable'
+
+export type UsageReportQuotaForecastTokenCategory =
+  | 'uncached_input'
+  | 'cache_read'
+  | 'cache_create'
+  | 'output'
+  | 'reasoning'
+
+export interface UsageReportQuotaForecastWeight {
+  model_family: string
+  token_category: UsageReportQuotaForecastTokenCategory
+  coefficient_pct_per_mtok: number | null
+  confidence_low_pct_per_mtok: number | null
+  confidence_high_pct_per_mtok: number | null
+  relative_weight_vs_sonnet_uncached_input: number | null
+  estimate_status: UsageReportQuotaForecastStatus
+  promoted: boolean
+}
+
+export interface UsageReportQuotaForecastAlert {
+  code: 'residual_anomaly' | 'usage_contamination' | 'coefficient_drift'
+  severity: 'info' | 'warning'
+  suppressed: boolean
+  lane_family: string
+  warning_scope: string
+  detail: string
+}
+
+export interface UsageReportQuotaEstimatorOperational {
+  derivation: 'phase_2'
+  confidence_model: 'rolling_exponential'
+  interval_censored: false
+  state_space: false
+  lane_label: string
+  lane_family: 'sonnet_only' | 'all_model' | 'codex_spark' | 'other'
+  warning_scope: string
+  weight_source: 'promoted_phase_2' | 'held_pending_data_quality' | 'withheld'
+  observation: {
+    observed_at: string | null
+    provider: string | null
+    quota_key: string | null
+    quota_type: string | null
+    quota_lane: string | null
+    lane_label: string
+    lane_family: 'sonnet_only' | 'all_model' | 'codex_spark' | 'other'
+    lag_assumption_minutes: number | null
+    freshness: {
+      generated_at: string
+      observation_age_minutes: number | null
+      stale: boolean
+      stale_after_minutes: number
+      trainable_interval_count: number
+      effective_sample_size: number | null
+      sample_cap: number
+      bounded_window: boolean
+    }
+  }
+  forecast: {
+    derivation: 'phase_2'
+    status: UsageReportQuotaForecastStatus
+    promoted: boolean
+    promotion_blocked: boolean
+    weight_source: 'promoted_phase_2' | 'held_pending_data_quality' | 'withheld'
+    observed_consumed_pct: number | null
+    observed_interval_delta_pct: number | null
+    predicted_interval_delta_pct: number | null
+    residual_pct: number | null
+    forecast_next_interval_burn_pct: number | null
+    forecast_basis: string | null
+    forecast_mix_observed_at: string | null
+  }
+  weights: UsageReportQuotaForecastWeight[]
+  cache_read_vs_uncached_input_ratios: Array<{
+    model_family: string
+    cache_read_vs_uncached_input_ratio: number | null
+    status: 'consistent' | 'anomalous' | 'not_identifiable'
+  }>
+  alerts: UsageReportQuotaForecastAlert[]
+  data_quality: {
+    large_residual: boolean
+    checks_ran: boolean
+    promotion_blocked: boolean
+    clear_residual_pct: number
+    large_residual_pct: number
+    gate_residual_pct: number | null
+    checks: Array<{
+      code: string
+      passed: boolean
+      detail: string
+    }>
+  }
+}
+
 export interface UsageReportQuotaEstimatorEstimate {
   provider: string
   quota_key: string
@@ -1581,6 +1678,7 @@ export interface UsageReportQuotaEstimatorEstimate {
   cache_read_ratios: UsageReportQuotaEstimatorCacheReadRatio[]
   coefficients: UsageReportQuotaEstimatorCoefficient[]
   diagnostics: UsageReportQuotaEstimatorDiagnostic[]
+  operational?: UsageReportQuotaEstimatorOperational
 }
 
 export interface UsageReportQuotaEstimatorResponse {
@@ -1589,6 +1687,11 @@ export interface UsageReportQuotaEstimatorResponse {
     to: string | null
     generatedAt?: string
     phase: '0-2'
+    derivation?: 'phase_2'
+    operationalPhase?: '4'
+    confidenceModel?: 'rolling_exponential'
+    intervalCensored?: false
+    stateSpace?: false
     lagCandidatesMinutes: number[]
     estimatorVersion: string
   } & ReportCacheMetadata

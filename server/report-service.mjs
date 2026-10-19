@@ -640,6 +640,19 @@ const QUOTA_ESTIMATOR_ROLLING_HALF_LIFE_HOURS = {
   special: 72,
   monthly: 168,
 }
+const QUOTA_PHASE4_LARGE_RESIDUAL_PCT = 5
+const QUOTA_PHASE4_CLEAR_RESIDUAL_PCT = 3
+const QUOTA_PHASE4_DRIFT_ABSOLUTE = 0.25
+const QUOTA_PHASE4_DRIFT_RELATIVE = 0.5
+const QUOTA_PHASE4_CONTAMINATION_MIN_DELTA_PCT = 1
+const QUOTA_PHASE4_CONTAMINATION_MAX_MTOK = 0.01
+const QUOTA_PHASE4_TOKEN_CATEGORIES = [
+  'uncached_input',
+  'cache_read',
+  'cache_create',
+  'output',
+  'reasoning',
+]
 const UPSTREAM_FETCH_TIMEOUT_MS = parseFiniteNumberEnv(
   'SHELL_REPORT_UPSTREAM_TIMEOUT_MS',
   30_000
@@ -11930,9 +11943,8 @@ function quotaEstimatorFeatureVector(interval, featureNames) {
 function fitNonNegativeRidge(samples, featureNames, options = {}) {
   const ridge = options.ridge ?? 1e-6
   const weights = options.weights ?? samples.map(() => 1)
-  const xs = samples.map((sample) =>
-    quotaEstimatorFeatureVector(sample, featureNames)
-  )
+  const featureVector = options.featureVector ?? quotaEstimatorFeatureVector
+  const xs = samples.map((sample) => featureVector(sample, featureNames))
   const ys = samples.map((sample) => sample.deltaPct ?? 0)
   const featureCount = featureNames.length
   const beta = Array(featureCount).fill(0)
@@ -12033,11 +12045,13 @@ function effectiveSampleSize(weights) {
   return (sum * sum) / sumSquares
 }
 
-function maxFeatureCorrelation(samples, featureNames) {
+function maxFeatureCorrelation(
+  samples,
+  featureNames,
+  featureVector = quotaEstimatorFeatureVector
+) {
   if (samples.length < 3 || featureNames.length < 2) return 0
-  const xs = samples.map((sample) =>
-    quotaEstimatorFeatureVector(sample, featureNames)
-  )
+  const xs = samples.map((sample) => featureVector(sample, featureNames))
   let maxCorrelation = 0
   for (let a = 0; a < featureNames.length; a += 1) {
     for (let b = a + 1; b < featureNames.length; b += 1) {
@@ -12067,16 +12081,23 @@ function maxFeatureCorrelation(samples, featureNames) {
   return maxCorrelation
 }
 
-function quotaEstimatorIdentifiability(samples, featureNames, weights = []) {
+function quotaEstimatorIdentifiability(
+  samples,
+  featureNames,
+  weights = [],
+  featureVector = quotaEstimatorFeatureVector
+) {
   const activeFeatures = featureNames.filter((featureName) =>
-    samples.some(
-      (sample) => quotaEstimatorFeatureVector(sample, [featureName])[0] > 0
-    )
+    samples.some((sample) => featureVector(sample, [featureName])[0] > 0)
   )
   const familyMix = new Set(
     activeFeatures.map((featureName) => featureName.split(':')[0])
   )
-  const maxCorrelation = maxFeatureCorrelation(samples, activeFeatures)
+  const maxCorrelation = maxFeatureCorrelation(
+    samples,
+    activeFeatures,
+    featureVector
+  )
   const sampleSize = samples.length
   const effectiveN = weights.length ? effectiveSampleSize(weights) : sampleSize
   let status = 'high_confidence'
@@ -12253,7 +12274,659 @@ function quotaEstimatorBacktest(samples, featureNames, halfLifeHours) {
   }
 }
 
-function buildQuotaEstimatorLaneEstimate(laggedIntervals) {
+function quotaPhase4FeatureValue(interval, featureName) {
+  const splitAt = featureName.indexOf(':')
+  if (splitAt < 0) return 0
+  const family = featureName.slice(0, splitAt)
+  const category = featureName.slice(splitAt + 1)
+  const totals = interval.featureTotals?.[family]
+  if (!totals) return 0
+  if (category === 'uncached_input') return totals.uncachedInputMtok ?? 0
+  if (category === 'cache_read') return totals.cacheReadMtok ?? 0
+  if (category === 'cache_create') return totals.cacheCreateMtok ?? 0
+  if (category === 'output') return totals.outputMtok ?? 0
+  if (category === 'reasoning') return totals.reasoningMtok ?? 0
+  return 0
+}
+
+function quotaPhase4FeatureVector(interval, featureNames) {
+  return featureNames.map((featureName) =>
+    quotaPhase4FeatureValue(interval, featureName)
+  )
+}
+
+function quotaPhase4ActiveFeatureNames(samples) {
+  const families = new Set()
+  for (const sample of samples) {
+    for (const family of Object.keys(sample.featureTotals ?? {})) {
+      families.add(family)
+    }
+  }
+  const names = []
+  for (const family of [...families].sort()) {
+    for (const category of QUOTA_PHASE4_TOKEN_CATEGORIES) {
+      const featureName = `${family}:${category}`
+      const active = samples.some(
+        (sample) => quotaPhase4FeatureValue(sample, featureName) > 0
+      )
+      if (active) names.push(featureName)
+    }
+  }
+  return names
+}
+
+function quotaPhase4Families(samples) {
+  const families = new Set()
+  for (const sample of samples) {
+    for (const family of Object.keys(sample.featureTotals ?? {})) {
+      families.add(family)
+    }
+  }
+  return [...families].sort()
+}
+
+function quotaPhase4LaneCopy(provider, quotaType, quotaLane) {
+  const normalizedProvider = String(provider ?? '').toLowerCase()
+  const normalizedType = String(quotaType ?? '')
+  if (normalizedProvider === 'anthropic' || normalizedProvider === 'claude') {
+    if (normalizedType === 'special') {
+      return {
+        lane_label: 'Weekly Sonnet-only',
+        lane_family: 'sonnet_only',
+        warning_scope: 'Anthropic weekly Sonnet-only lane',
+      }
+    }
+    if (normalizedType === 'short') {
+      return {
+        lane_label: '5-hour all-model',
+        lane_family: 'all_model',
+        warning_scope: 'Anthropic 5-hour all-model lane',
+      }
+    }
+    if (normalizedType === 'weekly') {
+      return {
+        lane_label: 'Weekly all-model',
+        lane_family: 'all_model',
+        warning_scope: 'Anthropic weekly all-model lane',
+      }
+    }
+  }
+  if (normalizedProvider === 'openai') {
+    if (normalizedType === 'short_special') {
+      return {
+        lane_label: 'Codex Spark · 5-hour',
+        lane_family: 'codex_spark',
+        warning_scope:
+          'OpenAI Codex Spark 5-hour lane, separate from OpenAI all-model lanes',
+      }
+    }
+    if (normalizedType === 'special') {
+      return {
+        lane_label: 'Codex Spark · weekly',
+        lane_family: 'codex_spark',
+        warning_scope:
+          'OpenAI Codex Spark weekly lane, separate from OpenAI all-model lanes',
+      }
+    }
+    if (normalizedType === 'short') {
+      return {
+        lane_label: 'Codex all-model · 5-hour',
+        lane_family: 'all_model',
+        warning_scope:
+          'OpenAI Codex all-model 5-hour lane, separate from Codex Spark lanes',
+      }
+    }
+    if (normalizedType === 'weekly') {
+      return {
+        lane_label: 'Codex all-model · weekly',
+        lane_family: 'all_model',
+        warning_scope:
+          'OpenAI Codex all-model weekly lane, separate from Codex Spark lanes',
+      }
+    }
+  }
+  return {
+    lane_label: quotaLane || 'unknown lane',
+    lane_family: 'other',
+    warning_scope: `${provider ?? 'unknown'} ${quotaType ?? 'unknown'} lane`,
+  }
+}
+
+function quotaPhase4IntervalMtok(interval) {
+  let total = 0
+  for (const totals of Object.values(interval.featureTotals ?? {})) {
+    total +=
+      (totals.uncachedInputMtok ?? 0) +
+      (totals.outputMtok ?? 0) +
+      (totals.cacheReadMtok ?? 0) +
+      (totals.cacheCreateMtok ?? 0) +
+      (totals.reasoningMtok ?? 0)
+  }
+  return total
+}
+
+function quotaPhase4Predict(coefficients, interval, featureNames) {
+  const vector = quotaPhase4FeatureVector(interval, featureNames)
+  let total = 0
+  for (let index = 0; index < featureNames.length; index += 1) {
+    total += vector[index] * (coefficients[featureNames[index]] ?? 0)
+  }
+  return total
+}
+
+function quotaPhase4SonnetOnlyContamination(provider, quotaType, coefficients) {
+  const normalizedProvider = String(provider ?? '').toLowerCase()
+  if (
+    (normalizedProvider !== 'anthropic' && normalizedProvider !== 'claude') ||
+    quotaType !== 'special'
+  ) {
+    return false
+  }
+  const sonnet = coefficients['sonnet:uncached_input'] ?? 0
+  for (const family of ['haiku', 'opus']) {
+    const coefficient = coefficients[`${family}:uncached_input`] ?? 0
+    if (sonnet > 0 && coefficient / sonnet > 0.1) return true
+    if (sonnet <= 0 && coefficient > 0.05) return true
+  }
+  return false
+}
+
+function quotaPhase4CacheRatios(coefficients, families) {
+  return families.map((family) => {
+    const uncached = coefficients[`${family}:uncached_input`]
+    const cacheRead = coefficients[`${family}:cache_read`]
+    if (uncached === undefined || cacheRead === undefined || !(uncached > 0)) {
+      return {
+        model_family: family,
+        cache_read_vs_uncached_input_ratio: null,
+        status: 'not_identifiable',
+      }
+    }
+    const ratio = cacheRead / uncached
+    return {
+      model_family: family,
+      cache_read_vs_uncached_input_ratio: ratio,
+      status: ratio <= 1 ? 'consistent' : 'anomalous',
+    }
+  })
+}
+
+function quotaPhase4Drift(candidate, held) {
+  const names = new Set([
+    ...Object.keys(candidate ?? {}),
+    ...Object.keys(held ?? {}),
+  ])
+  let maxAbsolute = 0
+  let maxRelative = 0
+  let feature = null
+  for (const name of names) {
+    const next = candidate?.[name] ?? 0
+    const previous = held?.[name] ?? 0
+    const absolute = Math.abs(next - previous)
+    const relative = absolute / Math.max(previous, next, 1e-6)
+    if (absolute >= maxAbsolute) {
+      maxAbsolute = absolute
+      maxRelative = relative
+      feature = name
+    }
+  }
+  return {
+    drifted:
+      maxAbsolute >= QUOTA_PHASE4_DRIFT_ABSOLUTE &&
+      maxRelative >= QUOTA_PHASE4_DRIFT_RELATIVE,
+    max_absolute: maxAbsolute,
+    max_relative: maxRelative,
+    feature,
+  }
+}
+
+function quotaPhase4Fit(samples, featureNames, halfLifeHours) {
+  const weights = samples.length
+    ? quotaEstimatorWeights(samples, halfLifeHours)
+    : []
+  if (
+    samples.length < QUOTA_ESTIMATOR_MIN_TRAINING_ROWS ||
+    featureNames.length === 0
+  ) {
+    return {
+      coefficients: {},
+      featureNames,
+      residuals: { rmse_pct: null, mae_pct: null, max_abs_error_pct: null },
+      identifiability: quotaEstimatorIdentifiability(
+        samples,
+        featureNames,
+        weights,
+        quotaPhase4FeatureVector
+      ),
+    }
+  }
+  const fit = fitNonNegativeRidge(samples, featureNames, {
+    weights,
+    featureVector: quotaPhase4FeatureVector,
+  })
+  return {
+    coefficients: fit.coefficients,
+    featureNames,
+    residuals: quotaEstimatorResidualMetrics(samples, fit.predictions, weights),
+    identifiability: quotaEstimatorIdentifiability(
+      samples,
+      featureNames,
+      weights,
+      quotaPhase4FeatureVector
+    ),
+  }
+}
+
+function quotaPhase4StandardError(
+  samples,
+  featureName,
+  residuals,
+  identifiability
+) {
+  const featureValues = samples.map((sample) =>
+    quotaPhase4FeatureValue(sample, featureName)
+  )
+  const featureScale = Math.sqrt(
+    featureValues.reduce((total, value) => total + value * value, 0) /
+      Math.max(featureValues.length, 1)
+  )
+  const widen =
+    identifiability.status === 'high_confidence'
+      ? 1
+      : identifiability.status === 'directional_only'
+        ? 2.5
+        : 6
+  return (
+    ((residuals.rmse_pct ?? 0) /
+      Math.sqrt(Math.max(identifiability.effective_sample_size, 1)) /
+      Math.max(featureScale, 1e-6)) *
+    widen
+  )
+}
+
+function quotaPhase4WeightRows({
+  families,
+  coefficients,
+  samples,
+  residuals,
+  identifiability,
+  promoted,
+}) {
+  const showNumbers =
+    identifiability.status !== 'not_identifiable' &&
+    Object.keys(coefficients).length > 0
+  const sonnetBase = showNumbers
+    ? (coefficients['sonnet:uncached_input'] ?? 0)
+    : 0
+  const rows = []
+  for (const family of families) {
+    for (const category of QUOTA_PHASE4_TOKEN_CATEGORIES) {
+      const featureName = `${family}:${category}`
+      const present = samples.some(
+        (sample) => quotaPhase4FeatureValue(sample, featureName) > 0
+      )
+      const coefficient =
+        showNumbers && present ? (coefficients[featureName] ?? 0) : null
+      const standardError =
+        coefficient === null
+          ? null
+          : quotaPhase4StandardError(
+              samples,
+              featureName,
+              residuals,
+              identifiability
+            )
+      rows.push({
+        model_family: family,
+        token_category: category,
+        coefficient_pct_per_mtok: coefficient,
+        confidence_low_pct_per_mtok:
+          coefficient === null || standardError === null
+            ? null
+            : Math.max(0, coefficient - 1.96 * standardError),
+        confidence_high_pct_per_mtok:
+          coefficient === null || standardError === null
+            ? null
+            : coefficient + 1.96 * standardError,
+        relative_weight_vs_sonnet_uncached_input:
+          category === 'uncached_input' &&
+          coefficient !== null &&
+          sonnetBase > 0
+            ? coefficient / sonnetBase
+            : null,
+        estimate_status:
+          showNumbers && present ? identifiability.status : 'not_identifiable',
+        promoted: showNumbers && present ? promoted : false,
+      })
+    }
+  }
+  return rows
+}
+
+function quotaPhase4LatestInterval(intervals) {
+  let latest = null
+  let latestTimestamp = null
+  for (const interval of intervals) {
+    const timestamp = quotaEstimatorIntervalEndTimestamp(interval.intervalEndAt)
+    if (timestamp === null) continue
+    if (latestTimestamp === null || timestamp >= latestTimestamp) {
+      latest = interval
+      latestTimestamp = timestamp
+    }
+  }
+  return latest
+}
+
+function buildQuotaPhase4Operational({
+  intervals,
+  selectedLag,
+  halfLifeHours,
+  generatedAt,
+}) {
+  const laneCopy = quotaPhase4LaneCopy(
+    intervals[0]?.provider,
+    intervals[0]?.quotaType,
+    intervals[0]?.quotaLane
+  )
+  const trainable = intervals.filter((interval) => interval.trainable)
+  const latestObservation = quotaPhase4LatestInterval(intervals)
+  const latestTrainable = trainable.length
+    ? trainable[trainable.length - 1]
+    : null
+  const featureNames = quotaPhase4ActiveFeatureNames(trainable)
+  const families = quotaPhase4Families(trainable)
+  const candidate = quotaPhase4Fit(trainable, featureNames, halfLifeHours)
+  const heldSamples = trainable.slice(0, -1)
+  const heldFeatureNames = quotaPhase4ActiveFeatureNames(heldSamples)
+  const held = quotaPhase4Fit(heldSamples, heldFeatureNames, halfLifeHours)
+  const heldUsable =
+    held.identifiability.status !== 'not_identifiable' &&
+    Object.keys(held.coefficients).length > 0
+  const gateResidual =
+    latestTrainable && heldUsable && latestTrainable.deltaPct != null
+      ? latestTrainable.deltaPct -
+        quotaPhase4Predict(
+          held.coefficients,
+          latestTrainable,
+          held.featureNames
+        )
+      : null
+  const absGate = gateResidual === null ? null : Math.abs(gateResidual)
+  const largeResidual =
+    absGate !== null && absGate >= QUOTA_PHASE4_LARGE_RESIDUAL_PCT
+  const hysteresisHold =
+    absGate !== null && absGate > QUOTA_PHASE4_CLEAR_RESIDUAL_PCT
+  const contamination =
+    latestTrainable !== null &&
+    (latestTrainable.deltaPct ?? 0) >=
+      QUOTA_PHASE4_CONTAMINATION_MIN_DELTA_PCT &&
+    quotaPhase4IntervalMtok(latestTrainable) <=
+      QUOTA_PHASE4_CONTAMINATION_MAX_MTOK
+  const sonnetContamination = quotaPhase4SonnetOnlyContamination(
+    intervals[0]?.provider,
+    intervals[0]?.quotaType,
+    candidate.coefficients
+  )
+  const heldSonnetContamination = quotaPhase4SonnetOnlyContamination(
+    intervals[0]?.provider,
+    intervals[0]?.quotaType,
+    held.coefficients
+  )
+  const drift = heldUsable
+    ? quotaPhase4Drift(candidate.coefficients, held.coefficients)
+    : { drifted: false, max_absolute: 0, max_relative: 0, feature: null }
+  const candidateRatios = quotaPhase4CacheRatios(
+    candidate.coefficients,
+    families
+  )
+  const heldRatios = quotaPhase4CacheRatios(held.coefficients, families)
+  const cacheAnomalous = candidateRatios.some(
+    (ratio) => ratio.status === 'anomalous'
+  )
+  const heldCacheAnomalous = heldRatios.some(
+    (ratio) => ratio.status === 'anomalous'
+  )
+  const newCacheAnomaly = cacheAnomalous && !heldCacheAnomalous
+  const checks = []
+  if (latestTrainable) {
+    checks.push({
+      code: 'large_residual',
+      passed: !hysteresisHold,
+      detail:
+        absGate === null
+          ? `${laneCopy.warning_scope}: the latest residual is unknown, so the weight change stays unpromoted.`
+          : `${laneCopy.warning_scope}: gate residual is ${absGate.toFixed(2)} pct. A weight change is promoted only after this residual is at or below ${QUOTA_PHASE4_CLEAR_RESIDUAL_PCT} pct.`,
+    })
+    checks.push({
+      code: 'usage_contamination',
+      passed: !contamination && !sonnetContamination && !newCacheAnomaly,
+      detail: contamination
+        ? `${laneCopy.warning_scope}: quota moved with almost no LiteLLM token usage. Check external usage or missing telemetry before promoting weights.`
+        : sonnetContamination
+          ? `${laneCopy.warning_scope}: a non-Sonnet coefficient is material on the weekly Sonnet-only lane. Check contamination before promoting weights.`
+          : newCacheAnomaly
+            ? `${laneCopy.warning_scope}: the cache-read coefficient moved above uncached input. Hold the weight change.`
+            : `${laneCopy.warning_scope}: no new usage-contamination signal on the latest observation.`,
+    })
+    checks.push({
+      code: 'coefficient_drift',
+      passed: !drift.drifted,
+      detail: drift.drifted
+        ? `${laneCopy.warning_scope}: ${drift.feature} moved by ${drift.max_absolute.toFixed(3)} pct per Mtok versus the held fit. That change stays unpromoted.`
+        : `${laneCopy.warning_scope}: coefficient movement is inside the drift gate.`,
+    })
+  }
+
+  const checksPass = checks.every((check) => check.passed)
+  const candidateUsable =
+    candidate.identifiability.status !== 'not_identifiable'
+  const promoted = candidateUsable && checksPass
+  let weightSource = 'withheld'
+  let displayed = {
+    coefficients: {},
+    featureNames: [],
+    residuals: candidate.residuals,
+    identifiability: {
+      ...candidate.identifiability,
+      status: 'not_identifiable',
+    },
+    samples: trainable,
+  }
+  if (promoted) {
+    weightSource = 'promoted_phase_2'
+    displayed = { ...candidate, samples: trainable }
+  } else if (
+    heldUsable &&
+    (hysteresisHold ||
+      contamination ||
+      sonnetContamination ||
+      newCacheAnomaly ||
+      drift.drifted ||
+      heldSonnetContamination ||
+      heldCacheAnomalous)
+  ) {
+    weightSource = 'held_pending_data_quality'
+    displayed = { ...held, samples: heldSamples }
+  }
+
+  let displayStatus =
+    weightSource === 'withheld'
+      ? 'not_identifiable'
+      : displayed.identifiability.status
+  const warningAttached =
+    largeResidual ||
+    contamination ||
+    sonnetContamination ||
+    cacheAnomalous ||
+    drift.drifted
+  if (warningAttached && displayStatus === 'high_confidence') {
+    displayStatus = 'directional_only'
+  }
+  const displayedIdentifiability = {
+    ...displayed.identifiability,
+    status: displayStatus,
+  }
+  const showForecastNumbers = weightSource !== 'withheld'
+  const weights = quotaPhase4WeightRows({
+    families,
+    coefficients: showForecastNumbers ? displayed.coefficients : {},
+    samples: showForecastNumbers ? displayed.samples : trainable,
+    residuals: displayed.residuals,
+    identifiability: showForecastNumbers
+      ? displayedIdentifiability
+      : { ...displayedIdentifiability, status: 'not_identifiable' },
+    promoted: weightSource === 'promoted_phase_2',
+  })
+  const ratios = showForecastNumbers
+    ? quotaPhase4CacheRatios(displayed.coefficients, families)
+    : families.map((family) => ({
+        model_family: family,
+        cache_read_vs_uncached_input_ratio: null,
+        status: 'not_identifiable',
+      }))
+  const predicted =
+    showForecastNumbers && latestTrainable
+      ? quotaPhase4Predict(
+          displayed.coefficients,
+          latestTrainable,
+          displayed.featureNames
+        )
+      : null
+  const observedDelta =
+    latestTrainable && latestTrainable.deltaPct != null
+      ? latestTrainable.deltaPct
+      : null
+  const residualPct =
+    predicted !== null && observedDelta !== null
+      ? observedDelta - predicted
+      : null
+  const observedConsumed =
+    latestObservation &&
+    latestObservation.currentConsumedPct != null &&
+    Number.isFinite(latestObservation.currentConsumedPct)
+      ? latestObservation.currentConsumedPct
+      : null
+  const observationTimestamp = latestObservation
+    ? quotaEstimatorIntervalEndTimestamp(latestObservation.intervalEndAt)
+    : null
+  const generatedTimestamp = quotaEstimatorIntervalEndTimestamp(generatedAt)
+  const ageMinutes =
+    observationTimestamp !== null && generatedTimestamp !== null
+      ? Math.max(
+          0,
+          Math.round((generatedTimestamp - observationTimestamp) / 60_000)
+        )
+      : null
+  const alerts = []
+  if (largeResidual) {
+    alerts.push({
+      code: 'residual_anomaly',
+      severity: 'warning',
+      suppressed: false,
+      lane_family: laneCopy.lane_family,
+      warning_scope: laneCopy.warning_scope,
+      detail: `${laneCopy.warning_scope}: large residual ${absGate.toFixed(2)} pct on the latest trainable interval. Data-quality checks block promoting that weight change into the displayed forecast.`,
+    })
+  } else if (hysteresisHold) {
+    alerts.push({
+      code: 'residual_anomaly',
+      severity: 'info',
+      suppressed: true,
+      lane_family: laneCopy.lane_family,
+      warning_scope: laneCopy.warning_scope,
+      detail: `${laneCopy.warning_scope}: residual ${absGate.toFixed(2)} pct is inside the hysteresis band, so it does not raise a warning. Weights stay held until the residual is at or below ${QUOTA_PHASE4_CLEAR_RESIDUAL_PCT} pct.`,
+    })
+  }
+  if (contamination || sonnetContamination || cacheAnomalous) {
+    alerts.push({
+      code: 'usage_contamination',
+      severity: 'warning',
+      suppressed: false,
+      lane_family: laneCopy.lane_family,
+      warning_scope: laneCopy.warning_scope,
+      detail: contamination
+        ? `${laneCopy.warning_scope}: usage contamination suspected because consumed quota moved without matching LiteLLM tokens.`
+        : sonnetContamination
+          ? `${laneCopy.warning_scope}: usage contamination suspected because a non-Sonnet family has a material coefficient on the weekly Sonnet-only lane.`
+          : `${laneCopy.warning_scope}: cache-read coefficient is above uncached input, so treat the ratio as a data-quality alert.`,
+    })
+  }
+  if (drift.drifted) {
+    alerts.push({
+      code: 'coefficient_drift',
+      severity: 'warning',
+      suppressed: false,
+      lane_family: laneCopy.lane_family,
+      warning_scope: laneCopy.warning_scope,
+      detail: `${laneCopy.warning_scope}: coefficient drift on ${drift.feature ?? 'a feature'} (${drift.max_absolute.toFixed(3)} pct per Mtok). The change is not promoted into the displayed forecast.`,
+    })
+  }
+
+  return {
+    derivation: 'phase_2',
+    confidence_model: 'rolling_exponential',
+    interval_censored: false,
+    state_space: false,
+    lane_label: laneCopy.lane_label,
+    lane_family: laneCopy.lane_family,
+    warning_scope: laneCopy.warning_scope,
+    weight_source: weightSource,
+    observation: {
+      observed_at: latestObservation?.intervalEndAt ?? null,
+      provider: intervals[0]?.provider ?? null,
+      quota_key: intervals[0]?.quotaKey ?? null,
+      quota_type: intervals[0]?.quotaType ?? null,
+      quota_lane: intervals[0]?.quotaLane ?? null,
+      lane_label: laneCopy.lane_label,
+      lane_family: laneCopy.lane_family,
+      lag_assumption_minutes: selectedLag ?? null,
+      freshness: {
+        generated_at: generatedAt,
+        observation_age_minutes: ageMinutes,
+        stale:
+          ageMinutes === null || ageMinutes > STALE_RECORD_THRESHOLD_MINUTES,
+        stale_after_minutes: STALE_RECORD_THRESHOLD_MINUTES,
+        trainable_interval_count: trainable.length,
+        effective_sample_size:
+          displayedIdentifiability.effective_sample_size ?? null,
+        sample_cap: QUOTA_ESTIMATOR_MAX_INTERVALS_PER_LANE,
+        bounded_window: true,
+      },
+    },
+    forecast: {
+      derivation: 'phase_2',
+      status: displayStatus,
+      promoted: weightSource === 'promoted_phase_2',
+      promotion_blocked: weightSource !== 'promoted_phase_2',
+      weight_source: weightSource,
+      observed_consumed_pct: observedConsumed,
+      observed_interval_delta_pct: observedDelta,
+      predicted_interval_delta_pct: showForecastNumbers ? predicted : null,
+      residual_pct: showForecastNumbers ? residualPct : null,
+      forecast_next_interval_burn_pct: showForecastNumbers ? predicted : null,
+      forecast_basis: showForecastNumbers
+        ? 'latest_trainable_token_mix_phase_2'
+        : null,
+      forecast_mix_observed_at: showForecastNumbers
+        ? (latestTrainable?.intervalEndAt ?? null)
+        : null,
+    },
+    weights,
+    cache_read_vs_uncached_input_ratios: ratios,
+    alerts,
+    data_quality: {
+      large_residual: largeResidual,
+      checks_ran: checks.length > 0,
+      promotion_blocked: weightSource !== 'promoted_phase_2',
+      clear_residual_pct: QUOTA_PHASE4_CLEAR_RESIDUAL_PCT,
+      large_residual_pct: QUOTA_PHASE4_LARGE_RESIDUAL_PCT,
+      gate_residual_pct: gateResidual,
+      checks,
+    },
+  }
+}
+
+function buildQuotaEstimatorLaneEstimate(laggedIntervals, options = {}) {
   const intervalsByLag = new Map()
   for (const interval of laggedIntervals) {
     const key = interval.lagMinutes
@@ -12411,6 +13084,12 @@ function buildQuotaEstimatorLaneEstimate(laggedIntervals) {
     cache_read_ratios: quotaEstimatorCacheReadRatios(rollingFit.coefficients),
     coefficients,
     diagnostics,
+    operational: buildQuotaPhase4Operational({
+      intervals,
+      selectedLag,
+      halfLifeHours,
+      generatedAt: options.generatedAt ?? new Date().toISOString(),
+    }),
   }
 }
 
@@ -12624,17 +13303,25 @@ export function buildQuotaEstimatorReport(rows, metadata = {}) {
     lanes.set(key, laneIntervals)
   }
 
+  const generatedAt = new Date().toISOString()
   return {
     metadata: {
       from: metadata.from ?? null,
       to: metadata.to ?? null,
-      generatedAt: new Date().toISOString(),
+      generatedAt,
       phase: '0-2',
+      derivation: 'phase_2',
+      operationalPhase: '4',
+      confidenceModel: 'rolling_exponential',
+      intervalCensored: false,
+      stateSpace: false,
       lagCandidatesMinutes: QUOTA_ESTIMATOR_LAG_MINUTES,
       estimatorVersion: 'quota-weight-phase0-2-v1',
     },
     phase0Audit: buildQuotaEstimatorPhase0Audit(),
-    estimates: [...lanes.values()].map(buildQuotaEstimatorLaneEstimate),
+    estimates: [...lanes.values()].map((laneIntervals) =>
+      buildQuotaEstimatorLaneEstimate(laneIntervals, { generatedAt })
+    ),
   }
 }
 
@@ -14695,7 +15382,7 @@ async function handleUsageQuotaEstimator(req, res) {
   await handleCachedUsageSubreport(
     req,
     res,
-    'usage-quota-estimator-v1',
+    'usage-quota-estimator-v2',
     loadUsageQuotaEstimator
   )
 }
