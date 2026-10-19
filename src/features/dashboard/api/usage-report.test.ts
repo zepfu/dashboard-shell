@@ -1835,6 +1835,163 @@ describe('D1-212/215/213/178/221/222 session diagnostics API contracts', () => {
       response.sessionDiagnostics[0].alias_route_events?.[0]?.attempt_number
     ).toBe('7')
   })
+
+  test('test_fetchUsageReportSessionDiagnostics_keeps_audit_terminal_evidence_and_drops_duplicates', async () => {
+    server.use(
+      http.get('/api/shell/reports/usage/session-diagnostics', () =>
+        HttpResponse.json({
+          metadata: {
+            from: '2026-05-20',
+            to: '2026-05-21',
+            limit: 3,
+            generatedAt: '2026-05-21T00:00:00.000Z',
+          },
+          sessionDiagnostics: [
+            {
+              session_id: null,
+              trace_id: 'trace-replay',
+              litellm_call_id: null,
+              provider: 'anthropic',
+              model: null,
+              repository: null,
+              audit_identity: {
+                source: 'alias_routing_audit',
+                history_row: 'absent',
+                session_id: 'unavailable',
+                trace_id: 'recorded',
+                litellm_call_id: 'unavailable',
+                provider: 'recorded',
+                model: 'unavailable',
+                repository: 'unavailable',
+                authorization: 'Bearer secret',
+              },
+              alias_route_events: [
+                {
+                  observed_at: '2026-05-20T12:00:00.000Z',
+                  trace_id: 'trace-replay',
+                  event_type: 'redispatch_required',
+                  failure_phase: 'session_owner_replay_unsafe_auto_review',
+                  failure_class: 'session_owner_redispatch',
+                  attempted_provider_call: false,
+                  redispatch_required: true,
+                  replay_safety: {
+                    classification: 'previous_response_id',
+                    field_path: '$.previous_response_id',
+                    raw_body: 'SECRET_PAYLOAD',
+                  },
+                  attempts: [{ api_key: 'sk-secret' }],
+                  api_key: 'sk-secret',
+                  metadata: { prompt: 'raw prompt' },
+                },
+              ],
+            },
+            {
+              session_id: 'sess-history',
+              litellm_call_id: 'call-dup',
+              provider: 'openai',
+              model: 'gpt-5',
+              alias_route_events: [
+                {
+                  observed_at: '2026-05-20T11:00:00.000Z',
+                  litellm_call_id: 'call-dup',
+                  session_id: 'sess-history',
+                  event_type: 'redispatch_required',
+                  failure_phase: 'session_owner_mismatch',
+                  attempted_provider_call: 'false',
+                  attempt_number: 2,
+                  redispatch_required: true,
+                },
+                {
+                  observed_at: '2026-05-20T11:00:00.000Z',
+                  litellm_call_id: 'call-dup',
+                  session_id: 'sess-history',
+                  event_type: 'redispatch_required',
+                  failure_phase: 'session_owner_mismatch',
+                  attempted_provider_call: false,
+                  attempt_number: 2,
+                  redispatch_required: true,
+                  api_key: 'sk-secret',
+                },
+              ],
+            },
+            {
+              session_id: 'sess-absent',
+              litellm_call_id: 'call-absent',
+              alias_route_events: [
+                {
+                  observed_at: '2026-05-20T10:00:00.000Z',
+                  litellm_call_id: 'call-absent',
+                  event_type: 'redispatch_required',
+                  redispatch_required: '1',
+                  attempt_number: '4',
+                },
+              ],
+            },
+          ],
+        })
+      )
+    )
+
+    const response = await fetchUsageReportSessionDiagnostics({
+      from: '2026-05-20',
+      to: '2026-05-21',
+      limit: 3,
+    })
+
+    const auditEvent = response.sessionDiagnostics[0]?.alias_route_events?.[0]
+    expect(response.sessionDiagnostics[0]?.audit_identity).toEqual({
+      source: 'alias_routing_audit',
+      history_row: 'absent',
+      session_id: 'unavailable',
+      trace_id: 'recorded',
+      litellm_call_id: 'unavailable',
+      provider: 'recorded',
+      model: 'unavailable',
+      repository: 'unavailable',
+    })
+    expect(auditEvent).toMatchObject({
+      event_type: 'redispatch_required',
+      failure_phase: 'session_owner_replay_unsafe_auto_review',
+      attempted_provider_call: false,
+      egress_disposition: 'replay_rejection',
+      replay_safety: {
+        classification: 'previous_response_id',
+        field_path: '$.previous_response_id',
+      },
+    })
+    expect(JSON.stringify(auditEvent)).not.toContain('SECRET_PAYLOAD')
+    expect(JSON.stringify(auditEvent)).not.toContain('sk-secret')
+    expect(JSON.stringify(auditEvent)).not.toContain('raw prompt')
+    expect(
+      JSON.stringify(response.sessionDiagnostics[0]?.audit_identity)
+    ).not.toContain('Bearer')
+
+    expect(response.sessionDiagnostics[1]?.alias_route_events).toHaveLength(1)
+    expect(
+      response.sessionDiagnostics[1]?.alias_route_events?.[0]
+    ).toMatchObject({
+      litellm_call_id: 'call-dup',
+      attempted_provider_call: false,
+      egress_disposition: 'local_guard',
+      attempt_number: 2,
+    })
+    expect(
+      JSON.stringify(response.sessionDiagnostics[1]?.alias_route_events)
+    ).not.toContain('sk-secret')
+
+    const absent = response.sessionDiagnostics[2]?.alias_route_events?.[0]
+    expect(absent).toMatchObject({
+      litellm_call_id: 'call-absent',
+      event_type: 'redispatch_required',
+      redispatch_required: true,
+      attempt_number: '4',
+      egress_disposition: 'unavailable',
+    })
+    expect(absent?.failure_phase).toBeUndefined()
+    expect(absent?.replay_safety).toBeUndefined()
+    expect(absent?.attempted_provider_call).toBeUndefined()
+    expect(absent?.session_owner_mismatch_reason).toBeUndefined()
+  })
 })
 
 test('test_fetchShellHealth_validates_shell_health_payload_shape', async () => {

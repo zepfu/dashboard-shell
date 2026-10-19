@@ -373,6 +373,198 @@ describe('SessionDiagnosticsPanel — D1-488 host attribution', () => {
   })
 })
 
+describe('SessionDiagnosticsPanel — D1-505 audit terminal decisions', () => {
+  const observedAt = '2026-05-20T12:00:00.000Z'
+
+  test('renders_audit_only_replay_history_duplicate_and_absent_evidence', () => {
+    const response: UsageReportSessionDiagnosticsResponse = {
+      metadata: { from: '2026-05-20', to: '2026-05-21', limit: 10 },
+      sessionDiagnostics: [
+        makeDiagnosticsRow({
+          session_id: null,
+          trace_id: 'trace-replay',
+          litellm_call_id: null,
+          provider: 'anthropic',
+          model: null,
+          repository: null,
+          client: null,
+          created_at: observedAt,
+          audit_identity: {
+            source: 'alias_routing_audit',
+            history_row: 'absent',
+            session_id: 'unavailable',
+            trace_id: 'recorded',
+            litellm_call_id: 'unavailable',
+            provider: 'recorded',
+            model: 'unavailable',
+            repository: 'unavailable',
+          },
+          alias_route_events: [
+            {
+              observed_at: observedAt,
+              trace_id: 'trace-replay',
+              alias_model: 'codex-auto-review',
+              provider: 'anthropic',
+              event_type: 'redispatch_required',
+              failure_phase: 'session_owner_replay_unsafe_auto_review',
+              failure_class: 'session_owner_redispatch',
+              attempt_number: 1,
+              redispatch_required: true,
+              last_resort: false,
+              attempted_provider_call: false,
+              replay_safety: {
+                classification: 'previous_response_id',
+                field_path: '$.previous_response_id',
+                raw_body: 'SECRET_PAYLOAD',
+              },
+              api_key: 'sk-secret',
+              attempts: [{ api_key: 'sk-secret' }],
+            } as UsageReportSessionDiagnosticsRow['alias_route_events'] extends
+              | Array<infer Event>
+              | undefined
+              ? Event
+              : never,
+          ],
+        }),
+        makeDiagnosticsRow({
+          session_id: 'sess-history',
+          litellm_call_id: 'call-dup',
+          provider: 'openai',
+          model: 'gpt-5',
+          client: 'codex',
+          repository: 'dashboard-shell',
+          created_at: '2026-05-20T11:00:00.000Z',
+          alias_route_events: [
+            {
+              observed_at: '2026-05-20T11:00:00.000Z',
+              litellm_call_id: 'call-dup',
+              session_id: 'sess-history',
+              alias_model: 'aawm-code',
+              provider: 'openai',
+              model: 'gpt-5',
+              event_type: 'redispatch_required',
+              failure_phase: 'session_owner_mismatch',
+              session_owner_mismatch_reason: 'owner_provider_mismatch',
+              attempt_number: 2,
+              cooldown_state: 'active',
+              redispatch_required: true,
+              last_resort: false,
+              attempted_provider_call: false,
+            },
+            {
+              observed_at: '2026-05-20T11:00:00.000Z',
+              litellm_call_id: 'call-dup',
+              session_id: 'sess-history',
+              alias_model: 'aawm-code',
+              provider: 'openai',
+              model: 'gpt-5',
+              event_type: 'redispatch_required',
+              failure_phase: 'session_owner_mismatch',
+              session_owner_mismatch_reason: 'owner_provider_mismatch',
+              attempt_number: 2,
+              cooldown_state: 'active',
+              redispatch_required: true,
+              last_resort: false,
+              attempted_provider_call: false,
+              api_key: 'sk-secret',
+            } as UsageReportSessionDiagnosticsRow['alias_route_events'] extends
+              | Array<infer Event>
+              | undefined
+              ? Event
+              : never,
+          ],
+        }),
+        makeDiagnosticsRow({
+          session_id: 'sess-absent',
+          litellm_call_id: 'call-absent',
+          provider: 'openai',
+          model: 'gpt-5',
+          created_at: '2026-05-20T10:00:00.000Z',
+          alias_route_events: [
+            {
+              observed_at: '2026-05-20T10:00:00.000Z',
+              litellm_call_id: 'call-absent',
+              event_type: 'redispatch_required',
+              attempt_number: 1,
+              redispatch_required: true,
+              last_resort: false,
+              cooldown_state: 'none',
+            },
+          ],
+        }),
+      ],
+    }
+
+    const { container } = render(
+      <SessionDiagnosticsPanel response={response} loading={false} />
+    )
+    const cards = Array.from(
+      container.querySelectorAll<HTMLElement>('.status-diagnostics-card')
+    )
+    expect(cards).toHaveLength(3)
+    const metaChip = (card: HTMLElement, label: string) =>
+      within(card).getByText((_content, element) => {
+        if (element?.tagName !== 'SPAN') return false
+        const text = (element.textContent ?? '').replace(/\s+/g, ' ').trim()
+        return text.toLowerCase().startsWith(label)
+      })
+
+    const auditCard = cards[0]
+    expect(
+      within(auditCard).getByText('audit-only terminal')
+    ).toBeInTheDocument()
+    expect(
+      within(auditCard).getByText('session unavailable')
+    ).toBeInTheDocument()
+    expect(
+      within(auditCard).getByText('litellm_call_id unavailable')
+    ).toBeInTheDocument()
+    expect(within(auditCard).getByText('trace recorded')).toBeInTheDocument()
+    expect(within(auditCard).getByText('replay rejection')).toBeInTheDocument()
+    expect(
+      within(auditCard).getByText('previous_response_id')
+    ).toBeInTheDocument()
+    expect(within(auditCard).getAllByText('false').length).toBeGreaterThan(0)
+    expect(
+      within(auditCard).getByText('session_owner_replay_unsafe_auto_review')
+    ).toBeInTheDocument()
+    expect(metaChip(auditCard, 'redispatch')).toBeInTheDocument()
+    expect(metaChip(auditCard, 'attempt')).toBeInTheDocument()
+    expect(
+      auditCard.querySelectorAll('.status-diagnostics-timeline')
+    ).toHaveLength(1)
+    expect(within(auditCard).queryByText('SECRET_PAYLOAD')).toBeNull()
+    expect(within(auditCard).queryByText('sk-secret')).toBeNull()
+
+    const historyCard = cards[1]
+    expect(within(historyCard).queryByText('audit-only terminal')).toBeNull()
+    expect(
+      historyCard.querySelectorAll('.status-diagnostics-timeline-row')
+    ).toHaveLength(1)
+    expect(within(historyCard).getByText('local guard')).toBeInTheDocument()
+    expect(
+      within(historyCard).getByText('owner_provider_mismatch')
+    ).toBeInTheDocument()
+    expect(metaChip(historyCard, 'cooldown')).toBeInTheDocument()
+    expect(metaChip(historyCard, 'redispatch')).toBeInTheDocument()
+    expect(metaChip(historyCard, 'last resort')).toBeInTheDocument()
+    expect(within(historyCard).queryByText('sk-secret')).toBeNull()
+
+    const absentCard = cards[2]
+    expect(within(absentCard).queryByText('audit-only terminal')).toBeNull()
+    expect(
+      within(absentCard).getAllByText('unavailable').length
+    ).toBeGreaterThan(0)
+    expect(within(absentCard).queryByText('local guard')).toBeNull()
+    expect(within(absentCard).queryByText('replay rejection')).toBeNull()
+    expect(within(absentCard).queryByText('previous_response_id')).toBeNull()
+    expect(within(absentCard).queryByText(/phase/i)).toBeNull()
+    expect(within(absentCard).queryByText(/reason/i)).toBeNull()
+    expect(metaChip(absentCard, 'redispatch')).toBeInTheDocument()
+    expect(metaChip(absentCard, 'attempt')).toBeInTheDocument()
+  })
+})
+
 // ---------------------------------------------------------------------------
 // G2 / G3 — PgBouncer default branch + vocab alignment
 // ---------------------------------------------------------------------------

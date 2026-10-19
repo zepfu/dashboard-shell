@@ -205,6 +205,9 @@ declare module './report-service' {
   export const buildSessionDiagnosticsQuery: (
     searchParams: SearchParamsLike
   ) => QueryResult
+  export const buildSessionDiagnosticsAuditTerminalQuery: (
+    searchParams: SearchParamsLike
+  ) => QueryResult
   export const buildProviderAliasRoutingQuery: (
     searchParams?: SearchParamsLike
   ) => QueryResult
