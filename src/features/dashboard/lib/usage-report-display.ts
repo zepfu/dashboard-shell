@@ -138,6 +138,19 @@ export function formatDashboardTime(value: string | Date): string {
   return DASHBOARD_TIME_FORMATTER.format(date)
 }
 
+/** Dashboard-local date and time, including the year, without 30-minute snapping. */
+export function formatDashboardDateTime(value: string | Date): string {
+  const date = value instanceof Date ? value : new Date(value)
+  if (Number.isNaN(date.getTime())) return '--'
+  const parts = datePartsInTimeZone(date, DASHBOARD_TIME_ZONE)
+  const year = parts.year.toString().padStart(4, '0')
+  const month = parts.month.toString().padStart(2, '0')
+  const day = parts.day.toString().padStart(2, '0')
+  const hour = parts.hour.toString().padStart(2, '0')
+  const minute = parts.minute.toString().padStart(2, '0')
+  return `${year}-${month}-${day} ${hour}:${minute}`
+}
+
 export function formatDashboardIntervalCompact(start: Date, end: Date): string {
   const format = (date: Date): string => {
     const parts = datePartsInTimeZone(date, DASHBOARD_TIME_ZONE)

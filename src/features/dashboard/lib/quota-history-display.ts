@@ -338,6 +338,8 @@ function aggregateQuotaHistoryRowsByReset(
         usageBreakdown.length > 0
           ? usageBreakdown.reduce((sum, entry) => sum + entry.tokens, 0)
           : (maxNullableNumber(group.map((row) => row.usage_tokens)) ?? 0)
+      // Interval and reset bounds stay on the history row. Provider billing
+      // period start/end are not derived from them.
       return {
         provider: first.provider,
         model: modelLabel ?? first.model,

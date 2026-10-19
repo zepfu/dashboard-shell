@@ -250,6 +250,8 @@ export function buildPriorBarFromHistory(
   h: UsageReportQuotaHistoryRow,
   provider: string
 ): QuotaBarGroup {
+  // History supplies interval and reset windows only. Billing-period bounds
+  // stay absent here so those windows are not shown as a billing period.
   const quotaTypeLower = h.quota_type.toLowerCase()
   const roundedSlotDate =
     h.expected_reset_at !== null

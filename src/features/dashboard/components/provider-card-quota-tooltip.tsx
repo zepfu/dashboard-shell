@@ -2,7 +2,11 @@
  * Quota interval tooltip body for ProviderCard (S2-21).
  */
 import type { ReactElement } from 'react'
-import { formatResetDistance, modelBrandHex } from '../lib/usage-report-display'
+import {
+  formatDashboardDateTime,
+  formatResetDistance,
+  modelBrandHex,
+} from '../lib/usage-report-display'
 import {
   fmtRequestCount,
   quotaConsumedPctDisplay,
@@ -75,6 +79,33 @@ function formatQuotaAbsolute(value: number): string {
   })
 }
 
+function formatBillingBoundary(iso: string): string {
+  const formatted = formatDashboardDateTime(iso)
+  return formatted === '--' ? 'unavailable' : formatted
+}
+
+function renderQuotaBillingPeriod(
+  quotaBar: QuotaBarGroup
+): ReactElement | null {
+  const start = quotaBar.tipBillingPeriodStartAt
+  const end = quotaBar.tipBillingPeriodEndAt
+  const markedUnavailable = quotaBar.tipBillingPeriodUnavailable === true
+  const hasStart = typeof start === 'string' && start.trim() !== ''
+  const hasEnd = typeof end === 'string' && end.trim() !== ''
+  if (!hasStart && !hasEnd && !markedUnavailable) return null
+
+  const startText = hasStart ? formatBillingBoundary(start) : 'unavailable'
+  const endText = hasEnd ? formatBillingBoundary(end) : 'unavailable'
+  const label =
+    startText !== 'unavailable' && endText !== 'unavailable'
+      ? `billing period ${startText} → ${endText}`
+      : startText === 'unavailable' && endText === 'unavailable'
+        ? 'billing period: unavailable'
+        : `billing period start ${startText} · end ${endText}`
+
+  return <div className='v9-tip-sub quota-tip-billing-period'>{label}</div>
+}
+
 function renderQuotaAbsolutes(quotaBar: QuotaBarGroup): ReactElement | null {
   const unitLabel = quotaUnitLabel(quotaBar.tipQuotaUnit)
   if (quotaBar.tipAbsolutesUnavailable === true) {
@@ -136,6 +167,7 @@ export function buildQuotaTooltip(quotaBar: QuotaBarGroup): ReactElement {
         </div>
       ))}
       {renderQuotaAbsolutes(quotaBar)}
+      {renderQuotaBillingPeriod(quotaBar)}
       {quotaBar.resetAt !== undefined && (
         <div className='v9-tip-sub quota-tip-reset'>
           resets {formatResetDistance(quotaBar.resetAt)}
