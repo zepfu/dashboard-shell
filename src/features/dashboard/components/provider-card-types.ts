@@ -101,6 +101,14 @@ export interface QuotaBarGroup {
   tipQuotaUnit?: string
   /** True when billing detail exists but absolute values are all null (percentage-only telemetry). */
   tipAbsolutesUnavailable?: boolean
+  /**
+   * Explicit provider billing-period bounds from billing_details.
+   * These are not the quota interval or the reset window.
+   */
+  tipBillingPeriodStartAt?: string | null
+  tipBillingPeriodEndAt?: string | null
+  /** A billing detail exists, but a billing-period bound is missing or unusable. */
+  tipBillingPeriodUnavailable?: boolean
   /** Preserve meaningful sub-1% consumption display for percentage-only providers. */
   showSubPercentPrecision?: boolean
   periodType?:

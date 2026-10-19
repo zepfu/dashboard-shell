@@ -882,3 +882,112 @@ describe('D1-496 — current provider quota history tabs', () => {
     }
   )
 })
+
+describe('D1-502 historical tabs do not invent billing periods', () => {
+  test('reset windows stay on the history row and billing bounds stay absent', () => {
+    const tabs = buildProviderQuotaHistoryTabs('kimi_code', [
+      makeHistoryRow({
+        provider: 'kimi_code',
+        model: null,
+        quota_type: 'short',
+        quota_key: KIMI_CODE_5H_QUOTA_UNITS_KEY,
+        quota_period: '5h',
+        source: 'kimi_code_usage',
+        account_ref: '119f6a46bf29',
+        client: 'kimi-code',
+        quota_unit: 'quota_units',
+        quota_limit: 100,
+        quota_used: 20,
+        quota_remaining: 80,
+        expected_reset_at: '2026-07-24T17:22:00Z',
+        interval_start: '2026-07-24T12:22:00Z',
+        interval_end: '2026-07-24T17:22:00Z',
+        min_remaining_pct: 80,
+        usage_tokens: 0,
+      }),
+      makeHistoryRow({
+        provider: 'kimi_code',
+        model: null,
+        quota_type: 'weekly',
+        quota_key: KIMI_CODE_7D_QUOTA_UNITS_KEY,
+        quota_period: '7d',
+        source: 'kimi_code_usage',
+        account_ref: '119f6a46bf29',
+        client: 'kimi-code',
+        quota_unit: 'quota_units',
+        quota_limit: null,
+        quota_used: null,
+        quota_remaining: null,
+        expected_reset_at: '2026-07-29T16:26:00Z',
+        interval_start: '2026-07-22T16:26:00Z',
+        interval_end: '2026-07-29T16:26:00Z',
+        min_remaining_pct: 99.87,
+        usage_tokens: 0,
+      }),
+    ])
+    const shortRow = tabs.find(
+      (tab) => tab.tabKey === 'kimi_code/5h-quota-units'
+    )?.rows[0]
+    const weeklyRow = tabs.find(
+      (tab) => tab.tabKey === 'kimi_code/7d-quota-units'
+    )?.rows[0]
+
+    expect(shortRow).toMatchObject({
+      quota_limit: 100,
+      quota_used: 20,
+      quota_remaining: 80,
+      quota_unit: 'quota_units',
+      expected_reset_at: '2026-07-24T17:22:00Z',
+      interval_start: '2026-07-24T12:22:00Z',
+      interval_end: '2026-07-24T17:22:00Z',
+    })
+    expect(shortRow).not.toHaveProperty('billing_period_start_at')
+    expect(shortRow).not.toHaveProperty('billing_period_end_at')
+    expect(weeklyRow).toMatchObject({
+      quota_unit: 'quota_units',
+      quota_limit: null,
+      expected_reset_at: '2026-07-29T16:26:00Z',
+      interval_start: '2026-07-22T16:26:00Z',
+    })
+    expect(weeklyRow).not.toHaveProperty('billing_period_start_at')
+    expect(weeklyRow).not.toHaveProperty('billing_period_end_at')
+    expect(JSON.stringify(tabs)).not.toContain('billing_period_start_at')
+    expect(JSON.stringify(tabs)).not.toContain('billing_period_end_at')
+  })
+
+  test('percent-only history remains usable without a billing date from its reset', () => {
+    const tabs = buildProviderQuotaHistoryTabs('alibaba_token_plan', [
+      makeHistoryRow({
+        provider: 'alibaba_token_plan',
+        model: null,
+        quota_type: 'short',
+        quota_key: ALIBABA_TOKEN_PLAN_5H_CREDITS_KEY,
+        quota_period: '5h',
+        source: 'alibaba_token_plan_usage',
+        quota_unit: 'credits',
+        quota_limit: null,
+        quota_used: null,
+        quota_remaining: null,
+        expected_reset_at: '2026-07-22T02:22:00Z',
+        interval_start: '2026-07-21T21:22:00Z',
+        interval_end: '2026-07-22T02:22:00Z',
+        min_remaining_pct: 99.96,
+        usage_tokens: 0,
+      }),
+    ])
+    const row = tabs.find(
+      (tab) => tab.tabKey === 'alibaba_token_plan/5h-credits'
+    )?.rows[0]
+
+    expect(row).toMatchObject({
+      quota_unit: 'credits',
+      quota_limit: null,
+      quota_used: null,
+      quota_remaining: null,
+      expected_reset_at: '2026-07-22T02:22:00Z',
+      interval_start: '2026-07-21T21:22:00Z',
+    })
+    expect(row).not.toHaveProperty('billing_period_start_at')
+    expect(row).not.toHaveProperty('billing_period_end_at')
+  })
+})

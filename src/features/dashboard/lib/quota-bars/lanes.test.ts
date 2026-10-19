@@ -20,7 +20,7 @@ import {
   ZAI_CODING_PLAN_7D_CREDITS_KEY,
   ZAI_CODING_PLAN_7D_PERCENT_KEY,
 } from './lane-defs'
-import { buildProviderLanes } from './lanes'
+import { buildPriorBarFromHistory, buildProviderLanes } from './lanes'
 
 function minimalQuotaRow(
   overrides: Partial<UsageReportQuotaRow> = {}
@@ -1216,4 +1216,133 @@ describe('D1-496 — current provider quota contracts', () => {
       ).toHaveLength(0)
     }
   )
+
+  test('test_billing_period_stays_on_its_lane_and_unit', () => {
+    const lanes = buildProviderLanes(
+      'zai_coding_plan',
+      [
+        zaiQuotaRow(ZAI_CODING_PLAN_5H_COUNT_KEY, '5h', 'count', {
+          billing_period_start_at: '2026-08-30T13:00:00.000Z',
+          billing_period_end_at: '2026-08-30T18:00:00.000Z',
+        }),
+        zaiQuotaRow(ZAI_CODING_PLAN_5H_PERCENT_KEY, '5h', 'percent', {
+          billing_period_start_at: null,
+          billing_period_end_at: null,
+        }),
+        zaiQuotaRow(ZAI_CODING_PLAN_7D_CREDITS_KEY, '7d', 'credits', {
+          billing_period_start_at: '2026-08-01T04:00:00.000Z',
+          billing_period_end_at: '2026-09-01T04:00:00.000Z',
+        }),
+      ],
+      []
+    )
+    const countLane = lanes.find(
+      (lane) => lane.laneKey === 'zai_coding_plan/5h-count'
+    )
+    const percentLane = lanes.find(
+      (lane) => lane.laneKey === 'zai_coding_plan/5h-percent'
+    )
+    const creditsLane = lanes.find(
+      (lane) => lane.laneKey === 'zai_coding_plan/7d-credits'
+    )
+
+    expect(countLane?.currentBar).toMatchObject({
+      tipQuotaUnit: 'count',
+      tipQuotaLimit: 100,
+      tipQuotaUsed: 20,
+      tipQuotaRemaining: 80,
+      tipObservedAt: '2026-08-30T11:59:00.000Z',
+      tipBillingPeriodStartAt: '2026-08-30T13:00:00.000Z',
+      tipBillingPeriodEndAt: '2026-08-30T18:00:00.000Z',
+      resetAt: '2026-08-30T14:00:00.000Z',
+    })
+    expect(countLane?.currentBar?.tipBillingPeriodStartAt).not.toBe(
+      '2026-08-30T09:00:00.000Z'
+    )
+    expect(countLane?.currentBar?.tipBillingPeriodEndAt).not.toBe(
+      countLane?.currentBar?.resetAt
+    )
+    expect(percentLane?.currentBar).toMatchObject({
+      tipQuotaUnit: 'percent',
+      tipQuotaLimit: null,
+      tipQuotaUsed: null,
+      tipQuotaRemaining: null,
+      tipAbsolutesUnavailable: true,
+      tipBillingPeriodUnavailable: true,
+      resetAt: '2026-08-30T14:00:00.000Z',
+    })
+    expect(percentLane?.currentBar?.tipBillingPeriodStartAt).toBeUndefined()
+    expect(percentLane?.currentBar?.tipBillingPeriodEndAt).toBeUndefined()
+    expect(creditsLane?.currentBar).toMatchObject({
+      tipQuotaUnit: 'credits',
+      tipQuotaLimit: 100,
+      tipBillingPeriodStartAt: '2026-08-01T04:00:00.000Z',
+      tipBillingPeriodEndAt: '2026-09-01T04:00:00.000Z',
+      resetAt: '2026-09-01T12:00:00.000Z',
+    })
+    expect(creditsLane?.currentBar?.tipBillingPeriodEndAt).not.toBe(
+      creditsLane?.currentBar?.resetAt
+    )
+  })
+})
+
+describe('D1-502 historical quota bars', () => {
+  test('prior bars keep reset windows and do not invent a billing period', () => {
+    const history = historyRow({
+      provider: 'kimi_code',
+      model: null,
+      quota_type: 'short',
+      quota_key: KIMI_CODE_5H_QUOTA_UNITS_KEY,
+      quota_period: '5h',
+      source: 'kimi_code_usage',
+      client: 'kimi-code',
+      quota_unit: 'quota_units',
+      quota_limit: 100,
+      quota_used: 20,
+      quota_remaining: 80,
+      expected_reset_at: '2026-07-24T12:00:00.000Z',
+      interval_start: '2026-07-24T07:00:00.000Z',
+      interval_end: '2026-07-24T12:00:00.000Z',
+      min_remaining_pct: 80,
+    })
+    const prior = buildPriorBarFromHistory(history, 'kimi_code')
+
+    expect(prior).toMatchObject({
+      resetAt: '2026-07-24T12:00:00.000Z',
+      tipQuotaLimit: 100,
+      tipQuotaUsed: 20,
+      tipQuotaRemaining: 80,
+      tipQuotaUnit: 'quota_units',
+    })
+    expect(prior.tipBillingPeriodStartAt).toBeUndefined()
+    expect(prior.tipBillingPeriodEndAt).toBeUndefined()
+    expect(prior.tipBillingPeriodUnavailable).toBeUndefined()
+    expect(prior.tipWindow).not.toContain('billing period')
+    expect(JSON.stringify(prior)).not.toContain('billing_period')
+  })
+
+  test('percent-only history stays usable without a substituted billing period', () => {
+    const history = historyRow({
+      provider: 'alibaba_token_plan',
+      model: null,
+      quota_type: 'short',
+      quota_key: ALIBABA_TOKEN_PLAN_5H_CREDITS_KEY,
+      quota_unit: 'credits',
+      quota_limit: null,
+      quota_used: null,
+      quota_remaining: null,
+      expected_reset_at: '2026-07-22T02:22:00.000Z',
+      interval_start: '2026-07-21T21:22:00.000Z',
+      interval_end: '2026-07-22T02:22:00.000Z',
+      min_remaining_pct: 99.96,
+    })
+    const prior = buildPriorBarFromHistory(history, 'alibaba_token_plan')
+
+    expect(prior.tipAbsolutesUnavailable).toBe(true)
+    expect(prior.tipQuotaUnit).toBe('credits')
+    expect(prior.resetAt).toBe('2026-07-22T02:22:00.000Z')
+    expect(prior.tipBillingPeriodStartAt).toBeUndefined()
+    expect(prior.tipBillingPeriodEndAt).toBeUndefined()
+    expect(prior.tipBillingPeriodUnavailable).toBeUndefined()
+  })
 })

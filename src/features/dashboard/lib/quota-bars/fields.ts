@@ -499,6 +499,46 @@ function quotaAbsolutesUnavailable(
   return undefined
 }
 
+function explicitBillingTimestamp(
+  value: string | null | undefined
+): string | null {
+  if (typeof value !== 'string') return null
+  const trimmed = value.trim()
+  if (trimmed.length === 0) return null
+  if (Number.isNaN(new Date(trimmed).getTime())) return null
+  return trimmed
+}
+
+/**
+ * Copies provider billing-period bounds onto a current quota bar.
+ * Missing bounds stay unavailable. Reset and interval timestamps are not used.
+ */
+function quotaBillingPeriodTip(
+  detail: UsageReportQuotaBillingDetail | undefined
+): Pick<
+  QuotaBarGroup,
+  | 'tipBillingPeriodStartAt'
+  | 'tipBillingPeriodEndAt'
+  | 'tipBillingPeriodUnavailable'
+> {
+  if (detail === undefined) return {}
+
+  const start = explicitBillingTimestamp(detail.billing_period_start_at)
+  const end = explicitBillingTimestamp(detail.billing_period_end_at)
+  if (start !== null && end !== null) {
+    return {
+      tipBillingPeriodStartAt: start,
+      tipBillingPeriodEndAt: end,
+    }
+  }
+
+  return {
+    ...(start === null ? {} : { tipBillingPeriodStartAt: start }),
+    ...(end === null ? {} : { tipBillingPeriodEndAt: end }),
+    tipBillingPeriodUnavailable: true,
+  }
+}
+
 function quotaIdentityForInterval(
   row: UsageReportQuotaRow,
   interval: QuotaIntervalKind
@@ -930,6 +970,7 @@ export function makeQuotaBarGroup(
     tipQuotaRemaining: billingDetail?.quota_remaining,
     tipQuotaUnit: billingDetail?.quota_unit ?? undefined,
     tipAbsolutesUnavailable: quotaAbsolutesUnavailable(row, interval),
+    ...quotaBillingPeriodTip(billingDetail),
     showSubPercentPrecision: isSubPercentPrecisionProvider(row.provider),
   }
 }
@@ -1012,6 +1053,7 @@ export function makeQuotaBarGroupAlways(
     tipQuotaRemaining: billingDetail?.quota_remaining,
     tipQuotaUnit: billingDetail?.quota_unit ?? undefined,
     tipAbsolutesUnavailable: quotaAbsolutesUnavailable(row, interval),
+    ...quotaBillingPeriodTip(billingDetail),
     showSubPercentPrecision: isSubPercentPrecisionProvider(row.provider),
   }
 }
