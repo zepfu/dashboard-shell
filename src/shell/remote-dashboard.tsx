@@ -191,6 +191,7 @@ function RemoteLazyModuleLoader({
     [moduleKey, loadGeneration]
   )
 
+  // eslint-disable-next-line react-hooks/static-components -- fresh lazy() per loadGeneration is the retry epoch
   return <LazyView routePath={routePath} />
 }
 

@@ -67,6 +67,7 @@ export function ConfigDrawer() {
         </div>
         <SheetFooter className='gap-2'>
           <Button
+            type='button'
             variant='destructive'
             onClick={handleReset}
             aria-label='Reset all settings to default values'
@@ -94,11 +95,14 @@ function SectionTitle({
   title,
   showReset = false,
   onReset,
+  resetAriaLabel,
   className,
 }: {
   title: string
   showReset?: boolean
   onReset?: () => void
+  /** Shown on the small per-section reset (RotateCcw) for accessibility and tests. */
+  resetAriaLabel?: string
   className?: string
 }) {
   return (
@@ -111,10 +115,12 @@ function SectionTitle({
       {title}
       {showReset && onReset && (
         <Button
+          type='button'
           size='icon'
           variant='secondary'
           className='size-4 rounded-full'
           onClick={onReset}
+          aria-label={resetAriaLabel}
         >
           <RotateCcw className='size-3' />
         </Button>
@@ -209,6 +215,7 @@ function SidebarConfig() {
         title='Sidebar'
         showReset={defaultVariant !== variant}
         onReset={() => setVariant(defaultVariant)}
+        resetAriaLabel='Reset sidebar style to default'
       />
       <Radio
         value={variant}
@@ -259,6 +266,7 @@ function LayoutConfig() {
           setOpen(true)
           setCollapsible(defaultCollapsible)
         }}
+        resetAriaLabel='Reset layout options to default'
       />
       <Radio
         value={radioState}
@@ -309,6 +317,7 @@ function DirConfig() {
         title='Direction'
         showReset={defaultDir !== dir}
         onReset={() => setDir(defaultDir)}
+        resetAriaLabel='Reset text direction to default'
       />
       <Radio
         value={dir}
