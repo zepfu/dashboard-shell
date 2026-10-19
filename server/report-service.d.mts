@@ -304,6 +304,96 @@ declare module './report-service.mjs' {
     res: unknown,
     proxyConfig: UpstreamApiProxyConfig
   ) => Promise<void>
+  export const SESSION_TRANSFER_BROWSER_PATH: string
+  export const SESSION_TRANSFER_RETENTION: {
+    readonly active_ttl_seconds: 180
+    readonly terminal_ttl_seconds: 45
+    readonly stale_after_seconds: 30
+  }
+  export function readSessionTransferSelection(
+    searchParams: SearchParamsLike
+  ): Record<string, string>
+  export function buildSessionTransferUpstreamUrl(
+    target: string,
+    selection: Record<string, string | null | undefined>
+  ): URL
+  export function sessionTransferAuthHeaders(
+    credential: string | undefined
+  ): Record<string, string>
+  export function normalizeSessionTransferUpstream(
+    body: unknown,
+    selection: Record<string, string | null | undefined>
+  ): {
+    availability: string
+    reason: string | null
+    transfers: Array<Record<string, unknown>>
+    retention: {
+      active_ttl_seconds: number
+      terminal_ttl_seconds: number
+      stale_after_seconds: number
+    }
+    [key: string]: unknown
+  }
+  export function loadSessionTransferStatus(options?: {
+    selection?: Record<string, string>
+    fetchImpl?: (
+      url: URL,
+      init: {
+        method?: string
+        headers?: Record<string, string>
+        signal?: AbortSignal
+      }
+    ) => Promise<{
+      ok: boolean
+      status: number
+      body: ReadableStream<Uint8Array> | null
+    }>
+    env?: Record<string, string | undefined>
+    timeoutMs?: number
+    signal?: AbortSignal
+  }): Promise<{
+    aborted?: boolean
+    body: {
+      availability: string
+      reason: string | null
+      transfers: Array<Record<string, unknown>>
+      retention: {
+        active_ttl_seconds: number
+        terminal_ttl_seconds: number
+        stale_after_seconds: number
+      }
+      [key: string]: unknown
+    }
+  }>
+  export function handleSessionTransferStatus(
+    req: {
+      method?: string
+      url?: string
+      headers?: Record<string, string | undefined>
+    },
+    res: {
+      writableEnded?: boolean
+      writableFinished?: boolean
+      once?: (event: string, listener: () => void) => void
+      off?: (event: string, listener: () => void) => void
+    },
+    deps?: {
+      fetchImpl?: (
+        url: URL,
+        init: {
+          method?: string
+          headers?: Record<string, string>
+          signal?: AbortSignal
+        }
+      ) => Promise<{
+        ok: boolean
+        status: number
+        body: ReadableStream<Uint8Array> | null
+      }>
+      env?: Record<string, string | undefined>
+      timeoutMs?: number
+    }
+  ): Promise<void>
   export const shouldSuppressCacheRefreshFailureDuringShutdown: (
     error: unknown,
     shuttingDown?: boolean

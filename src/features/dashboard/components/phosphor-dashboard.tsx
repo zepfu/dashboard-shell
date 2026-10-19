@@ -115,6 +115,7 @@ import {
   SectionSkeleton,
 } from './status-section/section-chrome'
 import { SessionDiagnosticsPanel } from './status-section/session-diagnostics-panel'
+import { SessionTransferStatusView } from './status-section/session-transfer-status-panel'
 import {
   TokenTrendChart,
   type LowerLaneMode,
@@ -792,6 +793,19 @@ export default function PhosphorDashboard({
     refetchInterval: false,
     refetchIntervalInBackground: false,
   })
+
+  const sessionTransferSuggestions = useMemo(() => {
+    const ids: string[] = []
+    const seen = new Set<string>()
+    for (const row of sessionDiagnosticsData?.sessionDiagnostics ?? []) {
+      const suggestedId = row.session_id?.trim()
+      if (!suggestedId || seen.has(suggestedId)) continue
+      seen.add(suggestedId)
+      ids.push(suggestedId)
+      if (ids.length === 12) break
+    }
+    return ids
+  }, [sessionDiagnosticsData])
 
   const anomalyLatencyRows = useMemo(
     () =>
@@ -1777,10 +1791,15 @@ export default function PhosphorDashboard({
             loading={quotaEstimatorLoading || quotaEstimatorFetching}
           />
         ) : (
-          <SessionDiagnosticsPanel
-            response={sessionDiagnosticsData}
-            loading={sessionDiagnosticsLoading || sessionDiagnosticsFetching}
-          />
+          <div className='status-diagnostics-stack'>
+            <SessionTransferStatusView
+              suggestedSessionIds={sessionTransferSuggestions}
+            />
+            <SessionDiagnosticsPanel
+              response={sessionDiagnosticsData}
+              loading={sessionDiagnosticsLoading || sessionDiagnosticsFetching}
+            />
+          </div>
         )}
       </section>
 
