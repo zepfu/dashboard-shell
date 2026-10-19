@@ -56,6 +56,50 @@ describe('report-service normalizeRow', () => {
     expect(out.agent_score_reasons).toEqual(['scope', 'tool'])
   })
 
+  test('projects safe stream diagnostics scalars and preserves recorded false', async () => {
+    const { __usageReportTestHelpers } = await import('./report-service.mjs')
+    const { normalizeSessionDiagnosticsRow } = __usageReportTestHelpers
+
+    const row = normalizeSessionDiagnosticsRow({
+      diagnostic_flags: ['stream'],
+      diagnostic_categories: ['stream_completeness'],
+      stream_diagnostics: {
+        provider_terminal_observed: false,
+        provider_terminal_event_type: 'response.completed',
+        parse_ambiguity: false,
+        aawm_stream_synthetic_terminal: 'false',
+        tool_argument_summaries: [{ arguments: 'SECRET_TOOL_ARG' }],
+        aawm_failure_origin: 'provider',
+        aawm_responses_stream_failure_retryable: false,
+        aawm_delivered_disposition: 'cancelled',
+      },
+    })
+
+    expect(row.diagnostic_flags).toEqual(['stream'])
+    expect(row.stream_diagnostics).toEqual({
+      provider_terminal_observed: false,
+      provider_terminal_event_type: 'response.completed',
+      parse_ambiguity: false,
+      aawm_stream_synthetic_terminal: false,
+    })
+    expect(row.stream_diagnostics).not.toHaveProperty('partial_frame')
+    expect(row.stream_diagnostics).not.toHaveProperty('state_omitted')
+    expect(JSON.stringify(row.stream_diagnostics)).not.toContain(
+      'SECRET_TOOL_ARG'
+    )
+
+    expect(
+      normalizeSessionDiagnosticsRow({
+        stream_diagnostics: {
+          aawm_stream_tracker_state: {
+            tool_argument_summaries: [{ arguments: 'NESTED_TOOL_ARG' }],
+            provider_terminal_event_type: 'response.completed',
+          },
+        },
+      }).stream_diagnostics
+    ).toBeNull()
+  })
+
   test('preserves nullable session diagnostics host attribution fields', async () => {
     const { __usageReportTestHelpers } = await import('./report-service.mjs')
     const { normalizeSessionDiagnosticsRow } = __usageReportTestHelpers

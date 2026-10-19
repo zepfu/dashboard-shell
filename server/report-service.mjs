@@ -31,6 +31,13 @@ import {
   REPORT_CACHE_VERSION,
   resolveReportCacheTtlMs,
 } from './report-cache-identity.mjs'
+import {
+  normalizeSessionDiagnosticsStream,
+  sessionDiagnosticsStreamCategorySql,
+  sessionDiagnosticsStreamFlagSql,
+  sessionDiagnosticsStreamMetadataPresentSql,
+  sessionDiagnosticsStreamProjectionSql,
+} from './session-diagnostics-stream.mjs'
 
 // Dynamic import for redis so that the module can be imported in environments
 // where the 'redis' package is not installed (for example, environments that
@@ -4930,6 +4937,7 @@ function sessionDiagnosticsMetadataPresentClause(columnPrefix = '') {
     OR ${p}metadata->>'anthropic_context_window_beta' IS NOT NULL
     OR ${p}metadata->>'anthropic_context_window_classification' IS NOT NULL
     OR ${grokSideChannelMetadataPresentClause(p)}
+    OR ${sessionDiagnosticsStreamMetadataPresentSql(`${p}metadata`)}
   )`
 }
 
@@ -10221,7 +10229,8 @@ SELECT
              OR metadata->>'anthropic_context_window_source' IS NOT NULL
              OR metadata->>'anthropic_context_window_beta' IS NOT NULL
              OR metadata->>'anthropic_context_window_classification' IS NOT NULL
-             THEN 'anthropic_context_window'::text END
+             THEN 'anthropic_context_window'::text END,
+        ${sessionDiagnosticsStreamFlagSql('metadata')}
     ], NULL) AS diagnostic_flags,
     ARRAY_REMOVE(ARRAY[
         CASE WHEN metadata->>'credential_family' IS NOT NULL
@@ -10251,7 +10260,8 @@ SELECT
              OR metadata->>'anthropic_context_window_source' IS NOT NULL
              OR metadata->>'anthropic_context_window_beta' IS NOT NULL
              OR metadata->>'anthropic_context_window_classification' IS NOT NULL
-             THEN 'context_window'::text END
+             THEN 'context_window'::text END,
+        ${sessionDiagnosticsStreamCategorySql('metadata')}
     ], NULL) AS diagnostic_categories,
     jsonb_strip_nulls(jsonb_build_object(
         'credential_family', NULLIF(metadata->>'credential_family', ''),
@@ -10373,6 +10383,7 @@ SELECT
             to_jsonb(NULLIF(metadata->>'anthropic_context_window_classification', ''))
         )
     )) AS anthropic_context_window,
+    ${sessionDiagnosticsStreamProjectionSql('metadata')} AS stream_diagnostics,
     COALESCE(
         alias_route_events,
         metadata->'aawm_alias_routing_audit_events',
@@ -10454,6 +10465,9 @@ function normalizeSessionDiagnosticsRow(row) {
     tool_definitions: normalizeJsonRecord(row.tool_definitions),
     anthropic_context_window: normalizeAnthropicContextWindow(
       row.anthropic_context_window
+    ),
+    stream_diagnostics: normalizeSessionDiagnosticsStream(
+      row.stream_diagnostics
     ),
     alias_route_events: Array.isArray(row.alias_route_events)
       ? row.alias_route_events

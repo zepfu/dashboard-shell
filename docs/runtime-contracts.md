@@ -821,6 +821,45 @@ Session diagnostics applies diagnostic metadata filters inside a bounded recent
 `session_history` candidate scan; response metadata includes `candidateLimit`
 for operators reviewing query scope.
 
+## Session Diagnostics (Recorded Stream Completeness)
+
+`/api/shell/reports/usage/session-diagnostics` admits a `session_history` row
+when supported stream metadata is present, including a row whose only
+diagnostic metadata is that stream evidence. The projection reads the persisted
+row. Calls that were not written to `session_history` are not represented as
+captured streams.
+
+Selected scalars from `metadata.aawm_stream_tracker_state`, when that value is
+a JSON object:
+
+- `provider_terminal_event_type`
+- `provider_terminal_observed`
+- `synthetic_terminal_event_type`
+- `parse_ambiguity`
+- `partial_frame`
+- `sequence_ambiguity`
+- `state_omitted`
+
+Top-level metadata, when present:
+
+- `aawm_stream_synthetic_terminal`
+- `aawm_stream_incomplete_reason`
+- `aawm_stream_terminal_event_type`
+- `aawm_stream_recovery_outcome`
+- `aawm_stream_recovery_parent_litellm_call_id`
+- `aawm_stream_recovery_previous_response_id`
+
+Recorded `false` stays `false`. Absent keys stay absent. Strings are trimmed
+and limited to 160 characters. The response omits the tracker object,
+tool-argument summaries, raw payloads, arrays, credentials, and unpersisted
+failure-origin, retryability, and delivered-disposition keys.
+
+The diagnostics card separates an observed provider terminal, a synthetic
+`response.completed`, and an unknown or incomplete recorded state. Recovery
+text is the recorded outcome plus parent-call or previous-response linkage. It
+does not prove that a hidden retry ran, and it does not mean every stream
+failed.
+
 ## Container Error Intake (`.analysis/*-error.jsonl`)
 
 Every dashboard-shell-owned compose container runs

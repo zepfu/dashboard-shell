@@ -33,6 +33,7 @@ import { ProviderAuthHealthPanel } from './provider-auth-health-panel'
 import { ProviderCreditLifecyclePanel } from './provider-credit-lifecycle-panel'
 import { QuotaEstimatorWeightsPanel } from './quota-estimator-weights-panel'
 import { SessionDiagnosticsPanel } from './session-diagnostics-panel'
+import { classifyRecordedStreamCompleteness } from './session-diagnostics-stream'
 
 const SHARED_STATUS_PANEL_HEAD = 'status-panel-head'
 const SHARED_STATUS_PILL_PREFIX = 'status-pill'
@@ -445,6 +446,203 @@ describe('SessionDiagnosticsPanel — D1-500 identity', () => {
       '  aawm-read-anthropic  '
     )
     expect(identityText(cards[3], 'model')).toBe('claude-opus-4-8')
+  })
+})
+
+describe('SessionDiagnosticsPanel — D1-501 recorded stream completeness', () => {
+  function renderStreamRow(row: UsageReportSessionDiagnosticsRow): HTMLElement {
+    render(
+      <SessionDiagnosticsPanel
+        response={{
+          metadata: { from: '2026-05-20', to: '2026-05-21', limit: 10 },
+          sessionDiagnostics: [row],
+        }}
+        loading={false}
+      />
+    )
+    return screen.getByTestId('recorded-stream-completeness')
+  }
+
+  test('test_stream_only_observed_terminal_keeps_recorded_false_and_omits_absent_scalars', () => {
+    const block = renderStreamRow(
+      makeDiagnosticsRow({
+        diagnostic_flags: ['stream'],
+        diagnostic_categories: ['stream_completeness'],
+        stream_diagnostics: {
+          provider_terminal_event_type: 'response.completed',
+          provider_terminal_observed: true,
+          parse_ambiguity: false,
+          aawm_stream_synthetic_terminal: false,
+          tool_argument_summaries: [{ arguments: 'SECRET_TOOL_ARG' }],
+          authorization: 'Bearer secret-token',
+        } as UsageReportSessionDiagnosticsRow['stream_diagnostics'],
+      })
+    )
+
+    expect(
+      within(block).getByText('Observed provider terminal')
+    ).toBeInTheDocument()
+    expect(within(block).getByText('response.completed')).toBeInTheDocument()
+    expect(within(block).getByText('parse_ambiguity')).toBeInTheDocument()
+    expect(within(block).getAllByText('false').length).toBeGreaterThan(0)
+    expect(within(block).queryByText('partial_frame')).toBeNull()
+    expect(within(block).queryByText('state_omitted')).toBeNull()
+    expect(within(block).queryByText('Synthetic completion')).toBeNull()
+    expect(within(block).queryByText('SECRET_TOOL_ARG')).toBeNull()
+    expect(within(block).queryByText(/Bearer/)).toBeNull()
+    expect(within(block).queryByText(/hidden retry/i)).toBeNull()
+    expect(within(block).queryByText(/every stream failed/i)).not.toBeNull()
+    expect(within(block).getByText(/not represented here/i)).toBeInTheDocument()
+  })
+
+  test('test_synthetic_completion_is_distinct_from_observed_and_incomplete_terminals', () => {
+    const synthetic = renderStreamRow(
+      makeDiagnosticsRow({
+        session_id: 'synthetic-completed',
+        diagnostic_flags: ['stream'],
+        stream_diagnostics: {
+          provider_terminal_observed: false,
+          synthetic_terminal_event_type: 'response.completed',
+          aawm_stream_synthetic_terminal: true,
+        },
+      })
+    )
+    expect(
+      within(synthetic).getByText('Synthetic completion')
+    ).toBeInTheDocument()
+    expect(
+      within(synthetic).queryByText('Observed provider terminal')
+    ).toBeNull()
+    expect(
+      within(synthetic).queryByText('Unknown or incomplete recorded state')
+    ).toBeNull()
+    cleanup()
+
+    const incomplete = renderStreamRow(
+      makeDiagnosticsRow({
+        session_id: 'synthetic-incomplete',
+        diagnostic_flags: ['stream'],
+        stream_diagnostics: {
+          provider_terminal_observed: false,
+          synthetic_terminal_event_type: 'response.incomplete',
+          parse_ambiguity: true,
+          partial_frame: true,
+          sequence_ambiguity: false,
+          aawm_stream_synthetic_terminal: true,
+          aawm_stream_incomplete_reason: 'upstream_stream_parse_ambiguity',
+        },
+      })
+    )
+    expect(
+      within(incomplete).getByText('Unknown or incomplete recorded state')
+    ).toBeInTheDocument()
+    expect(within(incomplete).queryByText('Synthetic completion')).toBeNull()
+    expect(
+      within(incomplete).queryByText('Observed provider terminal')
+    ).toBeNull()
+    expect(within(incomplete).getByText('parse_ambiguity')).toBeInTheDocument()
+    expect(
+      within(incomplete).getByText('parse_ambiguity').textContent
+    ).toContain('true')
+    expect(
+      within(incomplete).getByText('sequence_ambiguity').textContent
+    ).toContain('false')
+    expect(
+      within(incomplete).getByText('provider_terminal_observed').textContent
+    ).toContain('false')
+    expect(within(incomplete).queryByText('state_omitted')).toBeNull()
+    expect(
+      within(incomplete).getByText('upstream_stream_parse_ambiguity')
+    ).toBeInTheDocument()
+    expect(
+      classifyRecordedStreamCompleteness({
+        provider_terminal_observed: false,
+        provider_terminal_event_type: 'response.completed',
+      })
+    ).toBe('unknown_or_incomplete')
+    expect(
+      classifyRecordedStreamCompleteness({
+        provider_terminal_observed: false,
+        synthetic_terminal_event_type: 'response.completed',
+      })
+    ).toBe('synthetic_completion')
+  })
+
+  test('test_recovery_linkage_is_recorded_outcome_not_hidden_retry_proof', () => {
+    const block = renderStreamRow(
+      makeDiagnosticsRow({
+        diagnostic_flags: ['stream'],
+        stream_diagnostics: {
+          provider_terminal_observed: true,
+          provider_terminal_event_type: 'response.completed',
+          aawm_stream_recovery_outcome: 'recovered',
+          aawm_stream_recovery_parent_litellm_call_id: 'call-originating',
+          aawm_stream_recovery_previous_response_id: 'resp-previous',
+        },
+      })
+    )
+
+    expect(
+      within(block).getByText('Recorded recovery outcome')
+    ).toBeInTheDocument()
+    expect(within(block).getByText('recovered')).toBeInTheDocument()
+    expect(within(block).getByText('call-originating')).toBeInTheDocument()
+    expect(within(block).getByText('resp-previous')).toBeInTheDocument()
+    expect(
+      within(block).getByText(/not proof that a hidden retry ran/i)
+    ).toBeInTheDocument()
+    expect(within(block).queryByText(/retry succeeded/i)).toBeNull()
+    expect(within(block).queryByText(/hidden retry recovered/i)).toBeNull()
+  })
+
+  test('test_missing_stream_metadata_is_not_shown_as_a_captured_stream', () => {
+    render(
+      <SessionDiagnosticsPanel
+        response={{
+          metadata: { from: '2026-05-20', to: '2026-05-21', limit: 10 },
+          sessionDiagnostics: [
+            makeDiagnosticsRow({
+              output_contract: {
+                usage_output_contract_failure_class:
+                  'missing_required_final_phrase',
+              },
+            }),
+          ],
+        }}
+        loading={false}
+      />
+    )
+
+    expect(screen.queryByTestId('recorded-stream-completeness')).toBeNull()
+    expect(screen.queryByText('Observed provider terminal')).toBeNull()
+    expect(screen.queryByText('Synthetic completion')).toBeNull()
+    expect(
+      screen.queryByText('Unknown or incomplete recorded state')
+    ).toBeNull()
+    cleanup()
+
+    const admittedWithoutScalars = renderStreamRow(
+      makeDiagnosticsRow({
+        diagnostic_flags: ['stream'],
+        stream_diagnostics: null,
+      })
+    )
+    expect(
+      within(admittedWithoutScalars).getByText(
+        'Unknown or incomplete recorded state'
+      )
+    ).toBeInTheDocument()
+    expect(
+      within(admittedWithoutScalars).getByText(
+        /Selected stream scalars were not recorded on this row/i
+      )
+    ).toBeInTheDocument()
+    expect(
+      within(admittedWithoutScalars).queryByText('response.failed')
+    ).toBeNull()
+    expect(
+      within(admittedWithoutScalars).queryByText('provider_terminal_observed')
+    ).toBeNull()
   })
 })
 

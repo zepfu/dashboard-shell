@@ -9,6 +9,7 @@ import {
   providerBrandHex,
 } from '../../lib/usage-report-display'
 import { STATUS_PILL_FALLBACK, StatusPanel, statusPill } from './section-chrome'
+import { SessionDiagnosticsStreamBlock } from './session-diagnostics-stream-block'
 
 const SESSION_DIAGNOSTICS_HEAD_PILL = {
   loaded: { label: 'loaded', className: 'is-healthy' },
@@ -427,6 +428,10 @@ const SessionDiagnosticsCard = memo(function SessionDiagnosticsCard({
           </span>
         ))}
       </div>
+      <SessionDiagnosticsStreamBlock
+        stream={row.stream_diagnostics}
+        diagnosticFlags={flags}
+      />
 
       {row.grok_oauth ? (
         <div className='status-estimator-block'>

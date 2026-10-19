@@ -104,8 +104,8 @@ Session-level debugging lives behind the General dashboard `STATUS` section's
 `/api/shell/reports/usage/session-diagnostics`. That endpoint returns bounded
 recent `session_history` rows with exact-key metadata for route identity, alias
 routing audit events, output-contract evidence, tool-definition snapshots, xAI
-Responses request-shape sanitization, and Claude transcript attribution repair
-state. It intentionally stays separate from the high-level usage report so
+Responses request-shape sanitization, Claude transcript attribution repair
+state, and recorded stream completeness. It intentionally stays separate from the high-level usage report so
 debug-only rows can remain visible without changing Provider Status, Ledger, or
 Token Trend attribution.
 
