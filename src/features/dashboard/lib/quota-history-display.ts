@@ -127,15 +127,18 @@ function quotaHistoryRowMatchesLane(
     QUOTA_ONLY_PROVIDERS.includes(laneProvider) &&
     def.quotaKey !== undefined
   ) {
+    const laneKey = quotaTypeToLaneKey(def.quotaType)
     const expectedQuotaPeriod =
-      quotaTypeToLaneKey(def.quotaType) === 'short'
+      laneKey === 'short'
         ? '5h'
-        : quotaTypeToLaneKey(def.quotaType) === 'weekly'
+        : laneKey === 'weekly'
           ? '7d'
-          : null
+          : laneKey === 'monthly'
+            ? 'monthly'
+            : null
     if (laneProvider === 'kimi_code') {
       return (
-        expectedQuotaPeriod !== null &&
+        (expectedQuotaPeriod === '5h' || expectedQuotaPeriod === '7d') &&
         matchesKimiCodeQuotaContract(row, def.quotaKey, expectedQuotaPeriod)
       )
     }

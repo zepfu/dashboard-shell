@@ -5753,6 +5753,7 @@ const ALIBABA_TOKEN_PLAN_PROVIDER = 'alibaba_token_plan'
 const ALIBABA_TOKEN_PLAN_SOURCE = 'alibaba_token_plan_usage'
 const ALIBABA_TOKEN_PLAN_5H_KEY = 'alibaba_token_plan_5h:credits'
 const ALIBABA_TOKEN_PLAN_7D_KEY = 'alibaba_token_plan_7d:credits'
+const ALIBABA_TOKEN_PLAN_MONTHLY_KEY = 'alibaba_token_plan_monthly:credits'
 const ALIBABA_TOKEN_PLAN_QUOTA_UNIT = 'Credits'
 const KIMI_CODE_PROVIDER = 'kimi_code'
 const KIMI_CODE_SOURCE = 'kimi_code_usage'
@@ -6006,6 +6007,13 @@ function cursorAgentObservationPredicateSql(alias = 'o') {
         AND ${alias}.quota_period = 'monthly'
         AND ${alias}.quota_type = '${CURSOR_AGENT_QUOTA_TYPE}'
       )`
+}
+
+function alibabaTokenPlanQuotaWindowSql(alias = 'o') {
+  assertSqlIdentifier(alias, 'Quota observation alias')
+  return `(${alias}.quota_key = '${ALIBABA_TOKEN_PLAN_5H_KEY}' AND ${alias}.quota_period = '5h')
+          OR (${alias}.quota_key = '${ALIBABA_TOKEN_PLAN_7D_KEY}' AND ${alias}.quota_period = '7d')
+          OR (${alias}.quota_key = '${ALIBABA_TOKEN_PLAN_MONTHLY_KEY}' AND ${alias}.quota_period = 'monthly')`
 }
 
 function zaiCodingPlanObservationPredicateSql(alias = 'o') {
@@ -6395,9 +6403,7 @@ function buildQuotaRangeHistoryNormalizedCteSql(providerMode) {
     WHERE o.provider = '${ALIBABA_TOKEN_PLAN_PROVIDER}'
       AND o.source = '${ALIBABA_TOKEN_PLAN_SOURCE}'
       AND (
-          (o.quota_key = '${ALIBABA_TOKEN_PLAN_5H_KEY}' AND o.quota_period = '5h')
-          OR
-          (o.quota_key = '${ALIBABA_TOKEN_PLAN_7D_KEY}' AND o.quota_period = '7d')
+          ${alibabaTokenPlanQuotaWindowSql()}
       )
       AND o.observed_at IS NOT NULL
       AND o.expected_reset_at IS NOT NULL${observationDateRange}
@@ -6509,9 +6515,7 @@ alibaba_observations AS (
     WHERE o.provider = '${ALIBABA_TOKEN_PLAN_PROVIDER}'
       AND o.source = '${ALIBABA_TOKEN_PLAN_SOURCE}'
       AND (
-          (o.quota_key = '${ALIBABA_TOKEN_PLAN_5H_KEY}' AND o.quota_period = '5h')
-          OR
-          (o.quota_key = '${ALIBABA_TOKEN_PLAN_7D_KEY}' AND o.quota_period = '7d')
+          ${alibabaTokenPlanQuotaWindowSql()}
       )
       AND o.observed_at IS NOT NULL
       AND o.expected_reset_at IS NOT NULL
@@ -6781,9 +6785,7 @@ normalized AS (
     WHERE o.provider = '${ALIBABA_TOKEN_PLAN_PROVIDER}'
       AND o.source = '${ALIBABA_TOKEN_PLAN_SOURCE}'
       AND (
-          (o.quota_key = '${ALIBABA_TOKEN_PLAN_5H_KEY}' AND o.quota_period = '5h')
-          OR
-          (o.quota_key = '${ALIBABA_TOKEN_PLAN_7D_KEY}' AND o.quota_period = '7d')
+          ${alibabaTokenPlanQuotaWindowSql()}
       )
       AND o.observed_at IS NOT NULL
       AND o.expected_reset_at IS NOT NULL
@@ -7225,9 +7227,7 @@ normalized AS (
         WHERE o.provider = '${ALIBABA_TOKEN_PLAN_PROVIDER}'
           AND o.source = '${ALIBABA_TOKEN_PLAN_SOURCE}'
           AND (
-              (o.quota_key = '${ALIBABA_TOKEN_PLAN_5H_KEY}' AND o.quota_period = '5h')
-              OR
-              (o.quota_key = '${ALIBABA_TOKEN_PLAN_7D_KEY}' AND o.quota_period = '7d')
+              ${alibabaTokenPlanQuotaWindowSql()}
           )
           AND o.observed_at IS NOT NULL
           AND o.expected_reset_at IS NOT NULL
@@ -7891,9 +7891,7 @@ normalized AS (
         WHERE o.provider = '${ALIBABA_TOKEN_PLAN_PROVIDER}'
           AND o.source = '${ALIBABA_TOKEN_PLAN_SOURCE}'
           AND (
-              (o.quota_key = '${ALIBABA_TOKEN_PLAN_5H_KEY}' AND o.quota_period = '5h')
-              OR
-              (o.quota_key = '${ALIBABA_TOKEN_PLAN_7D_KEY}' AND o.quota_period = '7d')
+              ${alibabaTokenPlanQuotaWindowSql()}
           )
           AND o.observed_at IS NOT NULL
           AND o.expected_reset_at IS NOT NULL

@@ -160,6 +160,8 @@ export const ALIBABA_TOKEN_PLAN_5H_CREDITS_KEY =
   'alibaba_token_plan_5h:credits' as const
 export const ALIBABA_TOKEN_PLAN_7D_CREDITS_KEY =
   'alibaba_token_plan_7d:credits' as const
+export const ALIBABA_TOKEN_PLAN_MONTHLY_CREDITS_KEY =
+  'alibaba_token_plan_monthly:credits' as const
 export const KIMI_CODE_5H_QUOTA_UNITS_KEY = 'kimi_code_5h:quota_units' as const
 export const KIMI_CODE_7D_QUOTA_UNITS_KEY = 'kimi_code_7d:quota_units' as const
 
@@ -177,6 +179,11 @@ export const ZAI_CODING_PLAN_7D_PERCENT_KEY =
   'zai_coding_plan_7d:percent' as const
 export const ZAI_CODING_PLAN_7D_COUNT_KEY = 'zai_coding_plan_7d:count' as const
 
+/**
+ * Percentage-only Token Plan windows from alibaba_token_plan_usage.
+ * Monthly uses the producer key alibaba_token_plan_monthly:credits.
+ * A subscription is not copied onto a window it did not report.
+ */
 const ALIBABA_TOKEN_PLAN_LANE_DEFS: LaneDef[] = [
   {
     laneKey: 'alibaba_token_plan/5h-credits',
@@ -191,6 +198,13 @@ const ALIBABA_TOKEN_PLAN_LANE_DEFS: LaneDef[] = [
     quotaType: 'weekly',
     googleClass: null,
     quotaKey: ALIBABA_TOKEN_PLAN_7D_CREDITS_KEY,
+  },
+  {
+    laneKey: 'alibaba_token_plan/monthly-credits',
+    laneLabel: 'Monthly Credits',
+    quotaType: 'monthly',
+    googleClass: null,
+    quotaKey: ALIBABA_TOKEN_PLAN_MONTHLY_CREDITS_KEY,
   },
 ]
 
