@@ -37,6 +37,7 @@ export function TopNav({ className, links, ...props }: TopNavProps) {
           <DropdownMenuTrigger asChild>
             <Button size='icon' variant='outline' className='md:size-7'>
               <Menu />
+              <span className='sr-only'>Toggle navigation menu</span>
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent side='bottom' align='start'>

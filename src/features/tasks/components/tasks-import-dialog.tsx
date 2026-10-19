@@ -88,7 +88,12 @@ export function TasksImportDialog({
                 <FormItem className='my-2'>
                   <FormLabel>File</FormLabel>
                   <FormControl>
-                    <Input type='file' {...fileRef} className='h-8 py-0' />
+                    <Input
+                      type='file'
+                      {...fileRef}
+                      accept='text/csv'
+                      className='h-8 py-0'
+                    />
                   </FormControl>
                   <FormMessage />
                 </FormItem>

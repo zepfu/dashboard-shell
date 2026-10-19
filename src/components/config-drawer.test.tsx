@@ -85,6 +85,38 @@ describe('D1-451 W3 — ConfigDrawer on phosphor routes', () => {
   })
 })
 
+describe('config drawer reset controls', () => {
+  test('names section resets and sets explicit button types', async () => {
+    useLocationMock.mockReturnValue({ pathname: '/tasks' })
+    const user = userEvent.setup()
+    renderConfigDrawer()
+
+    await user.click(
+      screen.getByRole('button', { name: /open theme settings/i })
+    )
+
+    const sheet = await screen.findByRole('dialog')
+    expect(
+      within(sheet).queryByRole('button', {
+        name: 'Reset theme preference to default',
+      })
+    ).toBeNull()
+
+    const resetAll = within(sheet).getByRole('button', {
+      name: 'Reset all settings to default values',
+    })
+    expect(resetAll).toHaveAttribute('type', 'button')
+
+    await user.click(
+      within(sheet).getByRole('radio', { name: /select right to left/i })
+    )
+    const resetDirection = within(sheet).getByRole('button', {
+      name: 'Reset text direction to default',
+    })
+    expect(resetDirection).toHaveAttribute('type', 'button')
+  })
+})
+
 describe('D1-451 W3 — route context hook', () => {
   test('test_config_drawer_uses_phosphor_route_detection', async () => {
     const mod = await import('./config-drawer')
