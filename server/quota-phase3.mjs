@@ -1050,6 +1050,7 @@ export function buildQuotaPhase3Report(intervals, options = {}) {
       interval_residuals: cohort.phase3_interval_residuals,
       uncertainty_intervals: cohort.phase3_uncertainty_intervals,
     },
+    expectedIntervalManifest: cohort.expected_interval_manifest,
     phase0_2Prerequisites: phase2Prerequisites,
     evidence: options.evaluationEvidence,
   })
@@ -1124,6 +1125,7 @@ function comparisonForSelectedDisplayRule(estimate) {
   return cohort
     ? {
         phase3_reset_band_distances: cohort.phase3_reset_band_distances,
+        expected_interval_manifest: cohort.expected_interval_manifest,
         phase2_interval_residuals: cohort.phase2_interval_residuals,
         phase3_interval_residuals: cohort.phase3_interval_residuals,
         phase3_uncertainty_intervals: cohort.phase3_uncertainty_intervals,
@@ -1134,6 +1136,7 @@ function comparisonForSelectedDisplayRule(estimate) {
 function aggregateComparisonCohort(comparisons) {
   const result = {
     phase3_reset_band_distances: [],
+    expected_interval_manifest: [],
     phase2_interval_residuals: [],
     phase3_interval_residuals: [],
     phase3_uncertainty_intervals: [],
@@ -1210,6 +1213,8 @@ function buildLaneEstimate(lane, phase2LaneData, comparisonOptions = {}) {
         uncertainty_intervals:
           selectedEvaluationCohort.phase3_uncertainty_intervals,
       },
+      expectedIntervalManifest:
+        selectedEvaluationCohort.expected_interval_manifest,
       phase0_2Prerequisites: phase2LaneData?.prerequisites,
       evidence: comparisonOptions.evaluationEvidence,
     }),

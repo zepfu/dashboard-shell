@@ -871,6 +871,7 @@ describe('quota phase 3 interval-censored model', () => {
           currentConsumedPct: current,
           intervalStartAt: atMinute(index * 10),
           intervalEndAt: atMinute((index + 1) * 10),
+          trainable: true,
           featureTotals: { sonnet: totals },
         })
       )
@@ -934,5 +935,31 @@ describe('quota phase 3 interval-censored model', () => {
     expect(lane?.phase2_comparison.live_evaluation_status).toBe(
       report.phase2_comparison.live_evaluation_status
     )
+    expect(lane?.phase2_comparison.cohort.unmatched_phase2_interval_count).toBe(
+      0
+    )
+    expect(lane?.phase2_comparison.cohort.unmatched_phase3_interval_count).toBe(
+      0
+    )
+    expect(
+      lane?.phase2_comparison.cohort.paired_interval_forecast_count
+    ).toBeLessThan(intervals.length)
+    expect(lane?.phase2_comparison.cohort.paired_reset_window_count).toBe(0)
+    expect(
+      lane?.phase2_comparison.cohort.partial_paired_reset_window_count
+    ).toBe(1)
+    expect(
+      report.phase2_comparison.cohort.unmatched_phase2_interval_count
+    ).toBe(0)
+    expect(
+      report.phase2_comparison.cohort.unmatched_phase3_interval_count
+    ).toBe(0)
+    expect(
+      report.phase2_comparison.cohort.paired_interval_forecast_count
+    ).toBeLessThan(intervals.length)
+    expect(report.phase2_comparison.cohort.paired_reset_window_count).toBe(0)
+    expect(
+      report.phase2_comparison.cohort.partial_paired_reset_window_count
+    ).toBe(1)
   })
 })
