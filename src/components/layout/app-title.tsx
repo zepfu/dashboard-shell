@@ -5,8 +5,8 @@ import {
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
-  useSidebar,
 } from '@/components/ui/sidebar'
+import { useSidebar } from '@/components/ui/sidebar-context'
 import { Button } from '../ui/button'
 
 export function AppTitle() {

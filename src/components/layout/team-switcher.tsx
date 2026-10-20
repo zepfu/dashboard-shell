@@ -14,8 +14,8 @@ import {
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
-  useSidebar,
 } from '@/components/ui/sidebar'
+import { useSidebar } from '@/components/ui/sidebar-context'
 
 type TeamSwitcherProps = {
   teams: {

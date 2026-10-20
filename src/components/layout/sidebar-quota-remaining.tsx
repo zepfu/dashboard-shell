@@ -1,10 +1,7 @@
 import { useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import {
-  SidebarGroup,
-  SidebarGroupContent,
-  useSidebar,
-} from '@/components/ui/sidebar'
+import { SidebarGroup, SidebarGroupContent } from '@/components/ui/sidebar'
+import { useSidebar } from '@/components/ui/sidebar-context'
 import { Skeleton } from '@/components/ui/skeleton'
 import {
   Tooltip,
