@@ -42,13 +42,16 @@ describe('session diagnostics audit terminal query', () => {
       'FROM public.session_history'
     )
     expect(query.sql).toContain('NOT EXISTS')
+    expect(query.sql).toContain('jsonb_array_elements')
+    expect(query.sql).toContain(
+      "sh.metadata->'aawm_alias_routing_audit_events'"
+    )
     expect(query.sql).toContain("NULLIF(aa.litellm_call_id, '') IS NOT NULL")
     expect(query.sql).toContain('sh.litellm_call_id IS NOT NULL')
     expect(query.sql).toContain("NULLIF(aa.session_id, '') IS NOT NULL")
     expect(query.sql).toContain('sh.session_id IS NOT NULL')
     expect(query.sql).toContain("NULLIF(aa.trace_id, '') IS NOT NULL")
-    expect(query.sql).toContain("NULLIF(sh.trace_id, '') IS NOT NULL")
-    expect(query.sql).not.toContain('IS NOT DISTINCT FROM')
+    expect(query.sql).toContain('IS NOT DISTINCT FROM aa.attempt_number::text')
     expect(query.sql).toContain("aa.metadata->>'failure_phase'")
     expect(query.sql).toContain("aa.metadata->>'attempted_provider_call'")
     expect(query.sql).toContain("aa.metadata->'replay_safety'")
@@ -89,6 +92,35 @@ describe('session diagnostics audit terminal query', () => {
     expect(query.sql).not.toContain('session_owner_continuity_receipt')
     expect(query.sql).not.toContain('request_body')
     expect(query.sql).not.toContain('AND FALSE')
+  })
+
+  test('deduplicates_only_history_events_with_matching_call_event_identity', () => {
+    const query = auditQuery()
+    const duplicateLookup = query.sql.slice(
+      query.sql.indexOf('AND NOT EXISTS'),
+      query.sql.indexOf('ORDER BY aa.observed_at DESC')
+    )
+
+    expect(duplicateLookup).toContain(
+      "sh.metadata->'aawm_alias_routing_audit_events'"
+    )
+    expect(duplicateLookup).toContain(
+      "sh.metadata->'codex_auto_agent_audit_events'"
+    )
+    expect(duplicateLookup).toContain(
+      "sh.metadata->'anthropic_auto_agent_audit_events'"
+    )
+    expect(duplicateLookup).toContain(
+      "represented_event.value->>'litellm_call_id'"
+    )
+    expect(duplicateLookup).toContain("represented_event.value->>'event_type'")
+    expect(duplicateLookup).toContain(
+      "represented_event.value->>'attempt_number'"
+    )
+    expect(duplicateLookup).toContain("represented_event.value->>'observed_at'")
+    expect(duplicateLookup).toContain(
+      "(represented_event.value->>'observed_at')::timestamptz = aa.observed_at"
+    )
   })
 
   test('caps_the_limit_and_excludes_filters_without_recorded_identity', () => {
@@ -237,6 +269,32 @@ describe('session diagnostics audit terminal rows', () => {
         },
       ],
     })
+    const sameSessionDifferentCall = normalizeAuditTerminalDiagnosticRow({
+      created_at: '2026-05-20T11:30:00.000Z',
+      session_id: 'sess-history',
+      litellm_call_id: 'call-other',
+      provider: 'anthropic',
+      audit_identity: {
+        source: 'alias_routing_audit',
+        history_row: 'absent',
+        session_id: 'recorded',
+        trace_id: 'unavailable',
+        litellm_call_id: 'recorded',
+        provider: 'recorded',
+        model: 'unavailable',
+        repository: 'unavailable',
+      },
+      alias_route_events: [
+        {
+          observed_at: '2026-05-20T11:30:00.000Z',
+          session_id: 'sess-history',
+          litellm_call_id: 'call-other',
+          event_type: 'redispatch_required',
+          attempt_number: 3,
+          redispatch_required: true,
+        },
+      ],
+    })
     const auditOnly = normalizeAuditTerminalDiagnosticRow({
       created_at: '2026-05-20T12:00:00.000Z',
       session_id: null,
@@ -266,7 +324,7 @@ describe('session diagnostics audit terminal rows', () => {
 
     const merged = mergeSessionDiagnosticsWithAuditTerminalRows(
       history,
-      [duplicate, auditOnly],
+      [duplicate, sameSessionDifferentCall, auditOnly],
       25
     )
 
@@ -278,11 +336,17 @@ describe('session diagnostics audit terminal rows', () => {
     )
     expect(merged[1]?.litellm_call_id).toBe('call-dup')
     expect(merged[1]?.audit_identity).toBeNull()
-    expect(merged[1]?.alias_route_events).toHaveLength(1)
+    expect(merged[1]?.alias_route_events).toHaveLength(2)
     expect(merged[1]?.alias_route_events?.[0]).toMatchObject({
       failure_phase: 'session_owner_mismatch',
       attempted_provider_call: false,
       egress_disposition: 'local_guard',
+    })
+    expect(merged[1]?.alias_route_events?.[1]).toMatchObject({
+      litellm_call_id: 'call-other',
+      session_id: 'sess-history',
+      event_type: 'redispatch_required',
+      attempt_number: 3,
     })
     expect(JSON.stringify(merged)).not.toContain('sk-secret')
   })

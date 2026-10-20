@@ -312,24 +312,63 @@ WITH bounded_audit AS (
       AND NOT EXISTS (
         SELECT 1
         FROM public.session_history sh
+        CROSS JOIN LATERAL (
+          SELECT audit_event.value
+          FROM (
+            VALUES
+              (sh.metadata->'aawm_alias_routing_audit_events'),
+              (sh.metadata->'codex_auto_agent_audit_events'),
+              (sh.metadata->'anthropic_auto_agent_audit_events')
+          ) AS event_sources(events)
+          CROSS JOIN LATERAL jsonb_array_elements(
+            CASE
+              WHEN jsonb_typeof(event_sources.events) = 'array'
+              THEN event_sources.events
+              ELSE '[]'::jsonb
+            END
+          ) AS audit_event(value)
+        ) AS represented_event
         WHERE ${historyFilterParts.join('\n          AND ')}
-          AND (
-            (
-              NULLIF(aa.litellm_call_id, '') IS NOT NULL
-              AND sh.litellm_call_id IS NOT NULL
-              AND NULLIF(aa.litellm_call_id, '') = sh.litellm_call_id::text
-            )
-            OR (
-              NULLIF(aa.session_id, '') IS NOT NULL
-              AND sh.session_id IS NOT NULL
-              AND NULLIF(aa.session_id, '') = sh.session_id::text
-            )
-            OR (
-              NULLIF(aa.trace_id, '') IS NOT NULL
-              AND NULLIF(sh.trace_id, '') IS NOT NULL
-              AND NULLIF(aa.trace_id, '') = NULLIF(sh.trace_id, '')
-            )
-          )
+          AND CASE
+            WHEN NULLIF(aa.litellm_call_id, '') IS NOT NULL
+              THEN 'call:' || aa.litellm_call_id
+            WHEN NULLIF(aa.trace_id, '') IS NOT NULL
+              THEN 'trace:' || aa.trace_id
+            WHEN NULLIF(aa.session_id, '') IS NOT NULL
+              THEN 'session:' || aa.session_id
+            ELSE NULL
+          END = CASE
+            WHEN NULLIF(COALESCE(
+              NULLIF(represented_event.value->>'litellm_call_id', ''),
+              sh.litellm_call_id::text
+            ), '') IS NOT NULL
+              THEN 'call:' || COALESCE(
+                NULLIF(represented_event.value->>'litellm_call_id', ''),
+                sh.litellm_call_id::text
+              )
+            WHEN NULLIF(COALESCE(
+              NULLIF(represented_event.value->>'trace_id', ''),
+              NULLIF(sh.trace_id, '')
+            ), '') IS NOT NULL
+              THEN 'trace:' || COALESCE(
+                NULLIF(represented_event.value->>'trace_id', ''),
+                NULLIF(sh.trace_id, '')
+              )
+            WHEN NULLIF(COALESCE(
+              NULLIF(represented_event.value->>'session_id', ''),
+              sh.session_id::text
+            ), '') IS NOT NULL
+              THEN 'session:' || COALESCE(
+                NULLIF(represented_event.value->>'session_id', ''),
+                sh.session_id::text
+              )
+            ELSE NULL
+          END
+          AND NULLIF(represented_event.value->>'event_type', '') = aa.event_type
+          AND NULLIF(represented_event.value->>'attempt_number', '')
+            IS NOT DISTINCT FROM aa.attempt_number::text
+          AND NULLIF(represented_event.value->>'observed_at', '') IS NOT NULL
+          AND (represented_event.value->>'observed_at')::timestamptz = aa.observed_at
       )
     ORDER BY aa.observed_at DESC
     LIMIT ${limitPlaceholder}
