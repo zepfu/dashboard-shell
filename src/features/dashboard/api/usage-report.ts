@@ -2933,18 +2933,11 @@ export function projectUsageReportAliasRouteEvent(
 }
 
 function aliasEventCorrelationIdentity(
-  event: UsageReportAliasRouteEvent,
-  row?: Pick<
-    UsageReportSessionDiagnosticsRow,
-    'litellm_call_id' | 'trace_id' | 'session_id'
-  >
+  event: UsageReportAliasRouteEvent
 ): string {
-  const call = boundedAliasText(
-    event.litellm_call_id ?? row?.litellm_call_id,
-    256
-  )
-  const trace = boundedAliasText(event.trace_id ?? row?.trace_id, 256)
-  const session = boundedAliasText(event.session_id ?? row?.session_id, 256)
+  const call = boundedAliasText(event.litellm_call_id, 256)
+  const trace = boundedAliasText(event.trace_id, 256)
+  const session = boundedAliasText(event.session_id, 256)
   if (call) return `call:${call}`
   if (trace) return `trace:${trace}`
   if (session) return `session:${session}`
@@ -2960,11 +2953,10 @@ function aliasEventTimestamp(value: unknown): number | null {
 
 function sameRepresentedAliasEvent(
   left: UsageReportAliasRouteEvent,
-  right: UsageReportAliasRouteEvent,
-  row?: UsageReportSessionDiagnosticsRow
+  right: UsageReportAliasRouteEvent
 ): boolean {
-  const leftIdentity = aliasEventCorrelationIdentity(left, row)
-  const rightIdentity = aliasEventCorrelationIdentity(right, row)
+  const leftIdentity = aliasEventCorrelationIdentity(left)
+  const rightIdentity = aliasEventCorrelationIdentity(right)
   if (!leftIdentity || leftIdentity !== rightIdentity) return false
   if ((left.event_type ?? '') !== (right.event_type ?? '')) return false
   if (
@@ -2974,18 +2966,17 @@ function sameRepresentedAliasEvent(
   }
   const leftTime = aliasEventTimestamp(left.observed_at)
   const rightTime = aliasEventTimestamp(right.observed_at)
-  if (leftTime != null && rightTime != null) return leftTime === rightTime
-  return true
+  return leftTime != null && rightTime != null && leftTime === rightTime
 }
 
 export function dedupeUsageReportAliasRouteEvents(
   events: readonly UsageReportAliasRouteEvent[] | undefined,
-  row?: UsageReportSessionDiagnosticsRow
+  _row?: UsageReportSessionDiagnosticsRow
 ): UsageReportAliasRouteEvent[] {
   const deduped: UsageReportAliasRouteEvent[] = []
   for (const event of events ?? []) {
     const existing = deduped.find((candidate) =>
-      sameRepresentedAliasEvent(candidate, event, row)
+      sameRepresentedAliasEvent(candidate, event)
     )
     if (existing) {
       supplementAliasTerminalEvidence(existing, event)
@@ -3104,8 +3095,7 @@ function normalizeUsageReportSessionDiagnosticsRow(
       ? dedupeUsageReportAliasRouteEvents(
           row.alias_route_events.map((event) =>
             projectUsageReportAliasRouteEvent(event)
-          ),
-          row
+          )
         )
       : row.alias_route_events,
     audit_identity: sanitizeUsageReportAuditIdentity(row.audit_identity),

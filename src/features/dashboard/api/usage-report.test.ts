@@ -1981,6 +1981,41 @@ describe('D1-212/215/213/178/221/222 session diagnostics API contracts', () => {
                   redispatch_required: true,
                   api_key: 'sk-secret',
                 },
+                {
+                  observed_at: '2026-05-20T11:02:00.000Z',
+                  trace_id: 'trace-attempt-3',
+                  event_type: 'redispatch_required',
+                  attempt_number: 3,
+                },
+                {
+                  observed_at: '2026-05-20T11:02:00.000Z',
+                  litellm_call_id: 'call-attempt-3',
+                  trace_id: 'trace-attempt-3',
+                  event_type: 'redispatch_required',
+                  attempt_number: 3,
+                },
+                {
+                  litellm_call_id: 'call-attempt-4',
+                  event_type: 'redispatch_required',
+                  attempt_number: 4,
+                },
+                {
+                  litellm_call_id: 'call-attempt-4',
+                  event_type: 'redispatch_required',
+                  attempt_number: 4,
+                },
+                {
+                  observed_at: 'not-a-timestamp',
+                  litellm_call_id: 'call-attempt-5',
+                  event_type: 'redispatch_required',
+                  attempt_number: 5,
+                },
+                {
+                  observed_at: 'not-a-timestamp',
+                  litellm_call_id: 'call-attempt-5',
+                  event_type: 'redispatch_required',
+                  attempt_number: 5,
+                },
               ],
             },
             {
@@ -2035,7 +2070,7 @@ describe('D1-212/215/213/178/221/222 session diagnostics API contracts', () => {
       JSON.stringify(response.sessionDiagnostics[0]?.audit_identity)
     ).not.toContain('Bearer')
 
-    expect(response.sessionDiagnostics[1]?.alias_route_events).toHaveLength(1)
+    expect(response.sessionDiagnostics[1]?.alias_route_events).toHaveLength(7)
     expect(
       response.sessionDiagnostics[1]?.alias_route_events?.[0]
     ).toMatchObject({
