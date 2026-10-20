@@ -810,6 +810,15 @@ describe('quota phase 3 interval-censored model', () => {
     )
   })
 
+  test('rejects mixed lag residual diagnostics', () => {
+    const intervals = quantizedLatentBurn('rounded', 8)
+    intervals[1] = { ...intervals[1]!, lagMinutes: 5 }
+
+    expect(() => quotaPhase3OneStepDisplayedChangeResiduals(intervals)).toThrow(
+      'causal diagnostic requires a single lag'
+    )
+  })
+
   test('projects rounded and floored plateau forecasts through their display rule', () => {
     for (const rule of ['rounded', 'floored'] as const) {
       const intervals = quantizedLatentBurn(rule, 32)

@@ -2277,6 +2277,10 @@ function publicResetWindow(epoch, beta) {
 }
 
 function compileEpochs(intervals) {
+  const lags = new Set((intervals ?? []).map((interval) => lagOf(interval)))
+  if (lags.size > 1) {
+    throw new Error('causal diagnostic requires a single lag')
+  }
   const sorted = [...intervals].sort(compareIntervalTime)
   const usable = sorted.filter((interval) => !isBoundaryInterval(interval))
   const featureNames = collectFeatureNames(usable)
