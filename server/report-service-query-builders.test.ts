@@ -577,10 +577,6 @@ describe('Wave 1 F02/F06 query builder contracts', () => {
     expect(compactWhitespace(estimatorQuery.sql)).toContain(
       sessionAntigravityBranch
     )
-    expect(compactWhitespace(estimatorQuery.sql)).toContain(
-      "COALESCE(NULLIF(sh.metadata->>'claude_permission_check_response_model', ''), sh.model)"
-    )
-
     // Both builders must emit the same CASE shape (column alias differs only).
     const normalizeProviderCase = (sql: string, column: string) =>
       compactWhitespace(

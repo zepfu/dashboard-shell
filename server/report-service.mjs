@@ -9191,9 +9191,12 @@ WITH usage_events AS (
     SELECT
         ${estimatorProviderDimension} AS provider,
         CASE
-            WHEN ${estimatorProviderDimension} = 'anthropic' AND COALESCE(${estimatorModelExpression}, '') ILIKE '%haiku%' THEN 'haiku'
-            WHEN ${estimatorProviderDimension} = 'anthropic' AND COALESCE(${estimatorModelExpression}, '') ILIKE '%sonnet%' THEN 'sonnet'
-            WHEN ${estimatorProviderDimension} = 'anthropic' AND COALESCE(${estimatorModelExpression}, '') ILIKE '%opus%' THEN 'opus'
+            WHEN ${estimatorProviderDimension} = 'anthropic' AND sh.model = 'claude-auto-review' AND COALESCE(${estimatorModelExpression}, '') ILIKE '%haiku%' THEN 'haiku'
+            WHEN ${estimatorProviderDimension} = 'anthropic' AND sh.model = 'claude-auto-review' AND COALESCE(${estimatorModelExpression}, '') ILIKE '%sonnet%' THEN 'sonnet'
+            WHEN ${estimatorProviderDimension} = 'anthropic' AND sh.model = 'claude-auto-review' AND COALESCE(${estimatorModelExpression}, '') ILIKE '%opus%' THEN 'opus'
+            WHEN ${estimatorProviderDimension} = 'anthropic' AND sh.model <> 'claude-auto-review' AND COALESCE(sh.model, '') ILIKE '%haiku%' THEN 'haiku'
+            WHEN ${estimatorProviderDimension} = 'anthropic' AND sh.model <> 'claude-auto-review' AND COALESCE(sh.model, '') ILIKE '%sonnet%' THEN 'sonnet'
+            WHEN ${estimatorProviderDimension} = 'anthropic' AND sh.model <> 'claude-auto-review' AND COALESCE(sh.model, '') ILIKE '%opus%' THEN 'opus'
             WHEN ${estimatorProviderDimension} = 'openai' AND COALESCE(sh.model, '') ILIKE '%spark%' THEN 'spark'
             WHEN ${estimatorProviderDimension} = 'openai' AND COALESCE(sh.model, '') ILIKE '%codex%' THEN 'codex'
             WHEN ${estimatorProviderDimension} = 'openai' AND COALESCE(sh.model, '') ILIKE 'gpt%' THEN 'gpt'
