@@ -6112,8 +6112,37 @@ const QUOTA_ESTIMATOR_PROVIDERS_SQL = `(${[
 const QUOTA_ESTIMATOR_QUOTA_KEYS_SQL = `(${QUOTA_ESTIMATOR_LANE_DEFINITIONS.map(
   ({ quotaKey }) => sqlTextLiteral(quotaKey)
 ).join(', ')})`
-const ANTHROPIC_UNIFIED_5H_UTILIZATION_FIELD =
-  'anthropic-ratelimit-unified-5h-utilization'
+const ANTHROPIC_UNIFIED_PROJECTION_PROVENANCE_LANES = [
+  {
+    quotaKey: 'anthropic_unified_5h:5h',
+    utilizationField: 'anthropic-ratelimit-unified-5h-utilization',
+  },
+  {
+    quotaKey: 'anthropic_unified_7d:7d',
+    utilizationField: 'anthropic-ratelimit-unified-7d-utilization',
+  },
+  {
+    quotaKey: 'anthropic_unified_7d_sonnet:7d_sonnet',
+    utilizationField: 'anthropic-ratelimit-unified-7d_sonnet-utilization',
+  },
+]
+const ANTHROPIC_UNIFIED_PROJECTION_PROVENANCE_SQL = `CASE
+${ANTHROPIC_UNIFIED_PROJECTION_PROVENANCE_LANES.map(
+  ({ quotaKey, utilizationField }) => {
+    const fieldSql = sqlTextLiteral(utilizationField)
+    return `            WHEN o.provider = 'anthropic'
+              AND o.quota_key = ${sqlTextLiteral(quotaKey)}
+              AND o.quota_type = 'tokens'
+              AND BOOL_AND(COALESCE(
+                o.source = 'anthropic_response_headers'
+                  AND jsonb_typeof(o.raw_provider_fields -> ${fieldSql}) = 'string',
+                false
+              ))
+              AND COUNT(DISTINCT (o.raw_provider_fields ->> ${fieldSql})) = 1
+            THEN MIN(o.raw_provider_fields ->> ${fieldSql})`
+  }
+).join('\n')}
+        END`
 const QUOTA_ESTIMATOR_QUOTA_TYPE_CASE = `CASE
 ${QUOTA_ESTIMATOR_LANE_DEFINITIONS.map(
   ({ provider, quotaKey, quotaType }) =>
@@ -9126,18 +9155,7 @@ observations AS (
         MAX(o.quota_remaining) AS quota_remaining,
         MAX(o.billing_period_start_at) AS billing_period_start_at,
         MAX(o.billing_period_end_at) AS billing_period_end_at,
-        CASE
-            WHEN o.provider = 'anthropic'
-              AND o.quota_key = 'anthropic_unified_5h:5h'
-              AND o.quota_type = 'tokens'
-              AND BOOL_AND(COALESCE(
-                o.source = 'anthropic_response_headers'
-                  AND (o.raw_provider_fields ->> '${ANTHROPIC_UNIFIED_5H_UTILIZATION_FIELD}') IS NOT NULL,
-                false
-              ))
-              AND COUNT(DISTINCT (o.raw_provider_fields ->> '${ANTHROPIC_UNIFIED_5H_UTILIZATION_FIELD}')) = 1
-            THEN MIN(o.raw_provider_fields ->> '${ANTHROPIC_UNIFIED_5H_UTILIZATION_FIELD}')
-        END AS projection_provenance_text,
+        ${ANTHROPIC_UNIFIED_PROJECTION_PROVENANCE_SQL} AS projection_provenance_text,
         (ARRAY_AGG(COALESCE(o.raw_provider_fields, '{}'::jsonb) ORDER BY o.observed_at DESC))[1] AS raw_provider_fields,
         (ARRAY_AGG(COALESCE(o.evidence, '{}'::jsonb) ORDER BY o.observed_at DESC))[1] AS evidence
     FROM public.rate_limit_observations o
@@ -11804,6 +11822,9 @@ export function normalizeQuotaEstimatorObservationRow(row) {
     reset_end_at: row.reset_end_at ?? null,
     observed_at: row.observed_at ?? null,
     consumed_pct: normalizeNumber(row.consumed_pct),
+    ...(typeof row.projection_provenance_text === 'string'
+      ? { projection_provenance_text: row.projection_provenance_text }
+      : {}),
     projection_band_center_pct: certifiedProjectionBandCenterPct(row),
     quota_limit: normalizeNumber(row.quota_limit),
     quota_used: normalizeNumber(row.quota_used),

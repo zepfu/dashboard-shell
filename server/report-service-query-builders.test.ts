@@ -737,19 +737,43 @@ describe('buildQuotaEstimatorObservationQuery value assertions (S4-6)', () => {
       new URLSearchParams({ from: '2026-05-01', to: '2026-05-08' })
     )
     const sql = compactWhitespace(query.sql)
+    const provenanceLanes = [
+      {
+        quotaKey: 'anthropic_unified_5h:5h',
+        utilizationField: 'anthropic-ratelimit-unified-5h-utilization',
+      },
+      {
+        quotaKey: 'anthropic_unified_7d:7d',
+        utilizationField: 'anthropic-ratelimit-unified-7d-utilization',
+      },
+      {
+        quotaKey: 'anthropic_unified_7d_sonnet:7d_sonnet',
+        utilizationField: 'anthropic-ratelimit-unified-7d_sonnet-utilization',
+      },
+    ]
 
-    expect(sql).toContain(
-      "o.provider = 'anthropic' AND o.quota_key = 'anthropic_unified_5h:5h' AND o.quota_type = 'tokens'"
-    )
-    expect(sql).toContain(
-      "BOOL_AND(COALESCE( o.source = 'anthropic_response_headers' AND (o.raw_provider_fields ->> 'anthropic-ratelimit-unified-5h-utilization') IS NOT NULL, false ))"
-    )
-    expect(sql).toContain(
-      "COUNT(DISTINCT (o.raw_provider_fields ->> 'anthropic-ratelimit-unified-5h-utilization')) = 1"
-    )
-    expect(sql).toContain(
-      "THEN MIN(o.raw_provider_fields ->> 'anthropic-ratelimit-unified-5h-utilization') END AS projection_provenance_text"
-    )
+    for (const { quotaKey, utilizationField } of provenanceLanes) {
+      const branchMarker = `WHEN o.provider = 'anthropic' AND o.quota_key = '${quotaKey}' AND o.quota_type = 'tokens'`
+      const branchStart = sql.indexOf(branchMarker)
+      const nextBranchStart = sql.indexOf('WHEN o.provider', branchStart + 1)
+      const branch = sql.slice(
+        branchStart,
+        nextBranchStart === -1
+          ? sql.indexOf('END AS projection_provenance_text')
+          : nextBranchStart
+      )
+
+      expect(branchStart).toBeGreaterThanOrEqual(0)
+      expect(branch).toContain(
+        `BOOL_AND(COALESCE( o.source = 'anthropic_response_headers' AND jsonb_typeof(o.raw_provider_fields -> '${utilizationField}') = 'string', false ))`
+      )
+      expect(branch).toContain(
+        `COUNT(DISTINCT (o.raw_provider_fields ->> '${utilizationField}')) = 1`
+      )
+      expect(branch).toContain(
+        `THEN MIN(o.raw_provider_fields ->> '${utilizationField}')`
+      )
+    }
   })
 
   test('test_buildQuotaEstimatorObservationQuery_joins_reset_windows_for_interval_bounds', () => {
@@ -823,7 +847,13 @@ describe('quota estimator projection provenance', () => {
     expect(absentSource.projection_band_center_pct).toBeNull()
     expect(cappedSource.projection_band_center_pct).toBeNull()
     expect(lowerClampedSource.projection_band_center_pct).toBeNull()
-    expect(integralSource).not.toHaveProperty('projection_provenance_text')
+    expect(integralSource.projection_provenance_text).toBe('0.57')
+    expect(
+      normalizeQuotaEstimatorObservationRow({
+        ...integralSource,
+        projection_band_center_pct: -100,
+      }).projection_band_center_pct
+    ).toBe(57)
   })
 
   test('binds only preceding observation provenance to estimator intervals', () => {

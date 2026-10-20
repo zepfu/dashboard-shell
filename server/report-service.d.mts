@@ -145,7 +145,10 @@ declare module './report-service.mjs' {
   ) => QueryResult
   export const normalizeQuotaEstimatorObservationRow: (
     row: RecordRow
-  ) => RecordRow & { projection_band_center_pct: number | null }
+  ) => RecordRow & {
+    projection_band_center_pct: number | null
+    projection_provenance_text?: string
+  }
   export const buildQuotaEstimatorReport: (
     rows: Array<RecordRow>,
     metadata?: Record<string, unknown>
