@@ -1175,6 +1175,23 @@ function buildLaneEstimate(lane, phase2LaneData, comparisonOptions = {}) {
     phase3_interval_residuals: [],
     phase3_uncertainty_intervals: [],
   }
+  const phase2Comparison = compareQuotaPhase3ToPhase2({
+    scope: comparisonOptions.comparisonScope ?? 'in_request',
+    phase2: {
+      interval_residuals: selectedEvaluationCohort.phase2_interval_residuals,
+    },
+    phase3: {
+      reset_band_distances:
+        selectedEvaluationCohort.phase3_reset_band_distances,
+      interval_residuals: selectedEvaluationCohort.phase3_interval_residuals,
+      uncertainty_intervals:
+        selectedEvaluationCohort.phase3_uncertainty_intervals,
+    },
+    expectedIntervalManifest:
+      selectedEvaluationCohort.expected_interval_manifest,
+    phase0_2Prerequisites: phase2LaneData?.prerequisites,
+    evidence: comparisonOptions.evaluationEvidence,
+  })
 
   return {
     provider: lane.intervals[0]?.provider ?? 'unknown',
@@ -1199,25 +1216,10 @@ function buildLaneEstimate(lane, phase2LaneData, comparisonOptions = {}) {
     diagnostics: collectDiagnostics(
       byRule,
       lane.intervals[0] ?? {},
-      comparison
+      comparison,
+      phase2Comparison
     ),
-    phase2_comparison: compareQuotaPhase3ToPhase2({
-      scope: comparisonOptions.comparisonScope ?? 'in_request',
-      phase2: {
-        interval_residuals: selectedEvaluationCohort.phase2_interval_residuals,
-      },
-      phase3: {
-        reset_band_distances:
-          selectedEvaluationCohort.phase3_reset_band_distances,
-        interval_residuals: selectedEvaluationCohort.phase3_interval_residuals,
-        uncertainty_intervals:
-          selectedEvaluationCohort.phase3_uncertainty_intervals,
-      },
-      expectedIntervalManifest:
-        selectedEvaluationCohort.expected_interval_manifest,
-      phase0_2Prerequisites: phase2LaneData?.prerequisites,
-      evidence: comparisonOptions.evaluationEvidence,
-    }),
+    phase2_comparison: phase2Comparison,
     selectedEvaluationCohort: summarySource ? selectedEvaluationCohort : null,
   }
 }
@@ -2480,7 +2482,12 @@ function pearson(left, right) {
   return covariance / Math.sqrt(varianceLeft * varianceRight)
 }
 
-function collectDiagnostics(byRule, laneInterval, comparison) {
+function collectDiagnostics(
+  byRule,
+  laneInterval,
+  comparison,
+  phase2Comparison
+) {
   const diagnostics = [
     {
       code: 'cache_write_duration_unavailable',
@@ -2488,12 +2495,14 @@ function collectDiagnostics(byRule, laneInterval, comparison) {
       detail:
         'cache_creation_input_tokens stays one cache-create feature. 5-minute and 1-hour cache-write coefficients are not estimated.',
     },
-    {
+  ]
+  if (phase2Comparison.live_evaluation_status === 'unmet') {
+    diagnostics.push({
       code: 'live_phase2_comparison_unmet',
       severity: 'info',
-      detail: QUOTA_PHASE3_LIVE_EVALUATION.reason,
-    },
-  ]
+      detail: phase2Comparison.note,
+    })
+  }
   if (comparison.tie) {
     diagnostics.push({
       code: 'display_rules_not_separable',
