@@ -550,7 +550,12 @@ describe('quota phase 3 interval-censored model', () => {
   test('excludes partial reset windows from calibration while retaining their diagnostics', () => {
     const phase2Intervals = []
     const phase3Intervals = []
-    for (const [windowIndex, resetWindow] of ['reset-a', 'reset-b'].entries()) {
+    const expectedIntervalManifest = []
+    for (const [windowIndex, resetWindow] of [
+      'reset-a',
+      'reset-b',
+      'reset-c',
+    ].entries()) {
       for (let index = 0; index < 3; index += 1) {
         const intervalId = `${resetWindow}|${index}`
         const startMinute = windowIndex * 40 + index * 10
@@ -568,6 +573,11 @@ describe('quota phase 3 interval-censored model', () => {
           predicted_pct: phase2PredictedPct,
           residual_pct: observedPct - phase2PredictedPct,
         }
+        expectedIntervalManifest.push({
+          interval_id: intervalId,
+          reset_window_id: resetWindow,
+        })
+        if (resetWindow === 'reset-b' && index === 0) continue
         phase2Intervals.push(interval)
         phase3Intervals.push({
           ...interval,
@@ -578,10 +588,11 @@ describe('quota phase 3 interval-censored model', () => {
     }
     phase3Intervals.push({
       ...phase3Intervals.at(-1)!,
-      interval_id: 'reset-b|phase3-only',
+      interval_id: 'reset-c|phase3-only',
     })
     const comparison = compareQuotaPhase3ToPhase2({
       scope: 'fixture',
+      expectedIntervalManifest,
       phase2: {
         interval_residuals: phase2Intervals,
       },
@@ -619,17 +630,17 @@ describe('quota phase 3 interval-censored model', () => {
     ).toBeCloseTo(0.6)
     expect(
       comparison.metrics.partial_phase2_reset_window_one_step_sum_mae_pct
-    ).toBeCloseTo(4.5)
+    ).toBeCloseTo(3.75)
     expect(
       comparison.metrics.partial_phase3_reset_window_one_step_sum_mae_pct
-    ).toBeCloseTo(1.5)
+    ).toBeCloseTo(1.25)
     expect(comparison.cohort.paired_reset_window_count).toBe(1)
-    expect(comparison.cohort.diagnostic_paired_reset_window_count).toBe(2)
-    expect(comparison.cohort.partial_paired_reset_window_count).toBe(1)
+    expect(comparison.cohort.diagnostic_paired_reset_window_count).toBe(3)
+    expect(comparison.cohort.partial_paired_reset_window_count).toBe(2)
     expect(comparison.metrics.phase3_reset_window_mean_band_distance_pct).toBe(
       0.02
     )
-    expect(comparison.cohort.paired_interval_forecast_count).toBe(6)
+    expect(comparison.cohort.paired_interval_forecast_count).toBe(8)
     expect(comparison.cohort.unmatched_phase3_interval_count).toBe(1)
     expect(comparison.cohort.same_interval_cohort).toBe(false)
     expect(comparison.metric_definitions.prediction_task).toContain(

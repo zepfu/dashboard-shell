@@ -240,6 +240,10 @@ export function compareQuotaPhase3ToPhase2(input?: {
         | 'not_identifiable'
     }>
   }
+  expectedIntervalManifest?: ReadonlyArray<{
+    interval_id: string
+    reset_window_id: string
+  }>
   phase0_2Prerequisites?: Record<string, unknown>
   evidence?: Record<string, unknown>
 }): QuotaPhase3Comparison

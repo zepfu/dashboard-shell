@@ -125,6 +125,7 @@ export function compareQuotaPhase3ToPhase2({
   scope = 'fixture',
   phase2 = {},
   phase3 = {},
+  expectedIntervalManifest = [],
   phase0_2Prerequisites = {},
   evidence = {},
 } = {}) {
@@ -141,7 +142,8 @@ export function compareQuotaPhase3ToPhase2({
       pairedResetWindows,
       intervalForecastPairs,
       phase2.interval_residuals,
-      phase3.interval_residuals
+      phase3.interval_residuals,
+      expectedIntervalManifest
     )
   const phase2ResetWindowIds = uniqueResetWindowIds(phase2.interval_residuals)
   const phase3ResetWindowIds = uniqueResetWindowIds(phase3.interval_residuals)
@@ -296,11 +298,11 @@ export function compareQuotaPhase3ToPhase2({
       phase3_interval_residual:
         'displayed_delta_minus_phase3_one_step_interval_censored_prefix_fit',
       phase2_reset:
-        'mae_of_summed_phase2_one_step_predictions_on_complete_shared_forecast_intervals_by_reset_window',
+        'mae_of_summed_phase2_one_step_predictions_on_complete_expected_eligible_intervals_by_reset_window',
       phase3_reset:
-        'mae_of_summed_phase3_one_step_predictions_on_complete_shared_forecast_intervals_by_reset_window',
+        'mae_of_summed_phase3_one_step_predictions_on_complete_expected_eligible_intervals_by_reset_window',
       partial_reset_diagnostic:
-        'mae_of_summed_one_step_predictions_on_shared_forecast_intervals_in_reset_windows_with_incomplete_phase2_phase3_interval_pairing',
+        'mae_of_summed_one_step_predictions_on_available_forecasts_in_reset_windows_missing_expected_eligible_intervals_or_incomplete_phase2_phase3_pairing',
       phase3_reset_band_distance:
         'retrospective_smoothed_censored_band_distance_reported_separately',
       interval_residual_autocorrelation:
@@ -375,7 +377,8 @@ function partitionPairedResetWindows(
   windows,
   intervalPairing,
   phase2Rows,
-  phase3Rows
+  phase3Rows,
+  expectedIntervalManifest = []
 ) {
   const unmatchedIntervalIds = new Set([
     ...(intervalPairing.unmatched_phase2_ids ?? []),
@@ -388,6 +391,30 @@ function partitionPairedResetWindows(
   ]) {
     if (unmatchedIntervalIds.has(row?.interval_id) && row?.reset_window_id) {
       partialWindowIds.add(row.reset_window_id)
+    }
+  }
+  const phase2IntervalIds = new Set(
+    (Array.isArray(phase2Rows) ? phase2Rows : [])
+      .map((row) => row?.interval_id)
+      .filter((id) => typeof id === 'string' && id.length > 0)
+  )
+  const phase3IntervalIds = new Set(
+    (Array.isArray(phase3Rows) ? phase3Rows : [])
+      .map((row) => row?.interval_id)
+      .filter((id) => typeof id === 'string' && id.length > 0)
+  )
+  for (const expected of Array.isArray(expectedIntervalManifest)
+    ? expectedIntervalManifest
+    : []) {
+    if (
+      typeof expected?.interval_id === 'string' &&
+      expected.interval_id.length > 0 &&
+      typeof expected?.reset_window_id === 'string' &&
+      expected.reset_window_id.length > 0 &&
+      (!phase2IntervalIds.has(expected.interval_id) ||
+        !phase3IntervalIds.has(expected.interval_id))
+    ) {
+      partialWindowIds.add(expected.reset_window_id)
     }
   }
   return {
@@ -1465,6 +1492,21 @@ function phase3OneStepDisplayedChangeResidualRows(
   return rows
 }
 
+function expectedIntervalManifestForEpochs(epochs) {
+  return (epochs ?? []).flatMap((epoch) =>
+    (epoch.observations ?? [])
+      .map((observation) => observation.source)
+      .filter(isQuotaPhase3ForecastEligible)
+      .map((source) => {
+        const row = evaluationIntervalRow(source, {})
+        return {
+          interval_id: row.interval_id,
+          reset_window_id: row.reset_window_id,
+        }
+      })
+  )
+}
+
 function evaluatePairedCohort({
   epochs,
   smoothed,
@@ -1509,6 +1551,7 @@ function evaluatePairedCohort({
     }
   }
 
+  const expectedIntervalManifest = expectedIntervalManifestForEpochs(epochs)
   const intervalPairs = pairEvaluationRows(
     phase2ResidualRows,
     phase3ResidualRows,
@@ -1520,7 +1563,8 @@ function evaluatePairedCohort({
       pairedResetWindows,
       intervalPairs,
       phase2ResidualRows,
-      phase3ResidualRows
+      phase3ResidualRows,
+      expectedIntervalManifest
     )
   const bandPairs = pairEvaluationRows(
     pairedResetWindows,
@@ -1622,6 +1666,7 @@ function evaluatePairedCohort({
     clear_uncertainty_intervals: clearUncertaintyIntervals,
     evaluation_cohort: {
       phase3_reset_band_distances: phase3ResetBandDistances,
+      expected_interval_manifest: expectedIntervalManifest,
       phase2_interval_residuals: phase2ResidualRows,
       phase3_interval_residuals: phase3ResidualRows,
       phase3_uncertainty_intervals: phase3UncertaintyIntervals,
