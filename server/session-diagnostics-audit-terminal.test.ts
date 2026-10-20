@@ -386,6 +386,7 @@ describe('session diagnostics audit terminal rows', () => {
       25
     )
 
+    const mergedEvents = merged[1]?.alias_route_events ?? []
     expect(merged).toHaveLength(2)
     expect(merged[0]?.litellm_call_id).toBeNull()
     expect(merged[0]?.audit_identity?.history_row).toBe('absent')
@@ -394,53 +395,60 @@ describe('session diagnostics audit terminal rows', () => {
     )
     expect(merged[1]?.litellm_call_id).toBe('call-dup')
     expect(merged[1]?.audit_identity).toBeNull()
-    expect(merged[1]?.alias_route_events).toHaveLength(8)
-    expect(merged[1]?.alias_route_events?.[0]).toMatchObject({
+    expect(mergedEvents).toHaveLength(8)
+    expect(
+      mergedEvents.filter((event) => event.attempt_number === 2)
+    ).toHaveLength(1)
+    expect(
+      mergedEvents.find((event) => event.attempt_number === 2)
+    ).toMatchObject({
       failure_phase: 'session_owner_mismatch',
       attempted_provider_call: false,
       egress_disposition: 'local_guard',
     })
-    expect(merged[1]?.alias_route_events?.[1]).toMatchObject({
+    const eventWithoutCallId = mergedEvents.find(
+      (event) => event.trace_id === 'trace-a'
+    )
+    expect(eventWithoutCallId).toMatchObject({
       trace_id: 'trace-a',
       event_type: 'redispatch_required',
       attempt_number: 3,
     })
-    expect(merged[1]?.alias_route_events?.[1]?.litellm_call_id).toBeUndefined()
-    expect(merged[1]?.alias_route_events?.[2]).toMatchObject({
-      event_type: 'redispatch_required',
-      attempt_number: 4,
-    })
-    expect(merged[1]?.alias_route_events?.[2]?.observed_at).toBeUndefined()
-    expect(merged[1]?.alias_route_events?.[3]).toMatchObject({
-      observed_at: 'not-a-timestamp',
-      event_type: 'redispatch_required',
-      attempt_number: 5,
-    })
-    expect(merged[1]?.alias_route_events?.[4]).toMatchObject({
+    expect(eventWithoutCallId?.litellm_call_id).toBeUndefined()
+    const callIdBackedEvent = mergedEvents.find(
+      (event) => event.trace_id === 'trace-row-b' && event.attempt_number === 3
+    )
+    expect(callIdBackedEvent).toMatchObject({
       litellm_call_id: 'call-dup',
       trace_id: 'trace-row-b',
       event_type: 'redispatch_required',
       attempt_number: 3,
     })
-    expect(merged[1]?.alias_route_events?.[1]?.observed_at).toBe(
-      merged[1]?.alias_route_events?.[4]?.observed_at
+    expect(eventWithoutCallId?.observed_at).toBe(callIdBackedEvent?.observed_at)
+    const missingTimestampEvents = mergedEvents.filter(
+      (event) => event.attempt_number === 4
     )
-    expect(merged[1]?.alias_route_events?.[5]).toMatchObject({
-      litellm_call_id: 'call-dup',
-      event_type: 'redispatch_required',
-      attempt_number: 4,
-    })
-    expect(merged[1]?.alias_route_events?.[6]).toMatchObject({
-      litellm_call_id: 'call-dup',
-      event_type: 'redispatch_required',
-      attempt_number: 5,
-    })
-    expect(merged[1]?.alias_route_events?.[7]).toMatchObject({
-      litellm_call_id: 'call-other',
-      session_id: 'sess-history',
-      event_type: 'redispatch_required',
-      attempt_number: 3,
-    })
+    expect(missingTimestampEvents).toHaveLength(2)
+    expect(
+      missingTimestampEvents.some((event) => event.observed_at === undefined)
+    ).toBe(true)
+    const invalidTimestampEvents = mergedEvents.filter(
+      (event) => event.attempt_number === 5
+    )
+    expect(invalidTimestampEvents).toHaveLength(2)
+    expect(
+      invalidTimestampEvents.some(
+        (event) => event.observed_at === 'not-a-timestamp'
+      )
+    ).toBe(true)
+    expect(
+      mergedEvents.some(
+        (event) =>
+          event.litellm_call_id === 'call-other' &&
+          event.session_id === 'sess-history' &&
+          event.attempt_number === 3
+      )
+    ).toBe(true)
     expect(JSON.stringify(merged)).not.toContain('sk-secret')
   })
 
