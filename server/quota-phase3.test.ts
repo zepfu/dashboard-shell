@@ -6,6 +6,7 @@ import {
   quotaPhase3DisplayBand,
   quotaPhase3Lag1Autocorrelation,
   quotaPhase3OneStepDisplayedChangeResiduals,
+  quotaPhase3ProjectDisplayedChange,
   type QuotaPhase3Coefficient,
   type QuotaPhase3History,
   type QuotaPhase3Report,
@@ -32,6 +33,7 @@ interface EstimatorInterval {
   intervalStartAt: string
   intervalEndAt: string
   previousConsumedPct: number
+  previousProjectionBandCenterPct?: number
   currentConsumedPct: number
   deltaPct: number
   isResetBoundary: boolean
@@ -217,6 +219,80 @@ describe('quota phase 3 interval-censored model', () => {
     expect(quotaPhase3BandDistance(0.4, floored)).toBeCloseTo(0.6)
     expect(quotaPhase3BandDistance(80, capped)).toBeCloseTo(20)
     expect(quotaPhase3BandDistance(140, capped)).toBe(0)
+  })
+
+  test('uses certified integral projection centers without changing subtraction', () => {
+    const firstPrevious = 56.99999999999999
+    const secondPrevious = 57.99999999999999
+
+    expect(
+      quotaPhase3ProjectDisplayedChange({
+        latentPreviousPct: 0,
+        previousDisplayedPct: firstPrevious,
+        latentIncrementPct: 0,
+        displayRule: 'rounded',
+      })
+    ).toBe(-0.9999999999999929)
+    expect(
+      quotaPhase3ProjectDisplayedChange({
+        latentPreviousPct: 0,
+        previousDisplayedPct: firstPrevious,
+        previousDisplayBandCenterPct: 57,
+        latentIncrementPct: 0,
+        displayRule: 'rounded',
+      })
+    ).toBe(57 - firstPrevious)
+    expect(
+      quotaPhase3ProjectDisplayedChange({
+        latentPreviousPct: 0,
+        previousDisplayedPct: secondPrevious,
+        latentIncrementPct: 0,
+        displayRule: 'rounded',
+      })
+    ).toBe(-0.9999999999999929)
+    expect(
+      quotaPhase3ProjectDisplayedChange({
+        latentPreviousPct: 0,
+        previousDisplayedPct: secondPrevious,
+        previousDisplayBandCenterPct: 58,
+        latentIncrementPct: 0,
+        displayRule: 'rounded',
+      })
+    ).toBe(58 - secondPrevious)
+
+    const fractionalPrevious = 57.25
+    const legacyFractionalPrediction = quotaPhase3ProjectDisplayedChange({
+      latentPreviousPct: 0,
+      previousDisplayedPct: fractionalPrevious,
+      latentIncrementPct: 0,
+      displayRule: 'rounded',
+    })
+    expect(legacyFractionalPrediction).toBe(-0.25)
+    expect(
+      quotaPhase3ProjectDisplayedChange({
+        latentPreviousPct: 0,
+        previousDisplayedPct: fractionalPrevious,
+        previousDisplayBandCenterPct: 57.25,
+        latentIncrementPct: 0,
+        displayRule: 'rounded',
+      })
+    ).toBe(legacyFractionalPrediction)
+
+    const cappedPrediction = quotaPhase3ProjectDisplayedChange({
+      latentPreviousPct: 0,
+      previousDisplayedPct: 99.5,
+      latentIncrementPct: 0,
+      displayRule: 'rounded',
+    })
+    expect(
+      quotaPhase3ProjectDisplayedChange({
+        latentPreviousPct: 0,
+        previousDisplayedPct: 99.5,
+        previousDisplayBandCenterPct: 99,
+        latentIncrementPct: 0,
+        displayRule: 'rounded',
+      })
+    ).toBe(cappedPrediction)
   })
 
   test('lag-1 autocorrelation matches a persistent series and an alternating series', () => {

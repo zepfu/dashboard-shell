@@ -213,6 +213,7 @@ export function quotaPhase3BandDistance(
 export function quotaPhase3ProjectDisplayedChange(input: {
   latentPreviousPct: number
   previousDisplayedPct: number
+  previousDisplayBandCenterPct?: number
   latentIncrementPct: number
   displayRule: 'rounded' | 'floored'
 }): number

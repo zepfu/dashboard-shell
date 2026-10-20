@@ -1488,6 +1488,7 @@ function phase3OneStepDisplayedChangeResidualRows(
         const predicted = quotaPhase3ProjectDisplayedChange({
           latentPreviousPct: latentPrevious,
           previousDisplayedPct: previousDisplayed,
+          previousDisplayBandCenterPct: source.previousProjectionBandCenterPct,
           latentIncrementPct: predictedLatentIncrement,
           displayRule: rule,
         })
@@ -1532,8 +1533,13 @@ function expectedIntervalManifestForEpochs(epochs) {
   )
 }
 
-function reconcileLatentToDisplayBand(latent, displayed, rule) {
-  const band = quotaPhase3DisplayBand(displayed, rule, {
+function reconcileLatentToDisplayBand(
+  latent,
+  displayed,
+  rule,
+  bandCenter = displayed
+) {
+  const band = quotaPhase3DisplayBand(bandCenter, rule, {
     capped: displayed >= 99.5,
   })
   if (!band) return latent
@@ -1553,13 +1559,22 @@ function displayQuotaLevel(latent, rule) {
 export function quotaPhase3ProjectDisplayedChange({
   latentPreviousPct,
   previousDisplayedPct,
+  previousDisplayBandCenterPct,
   latentIncrementPct,
   displayRule,
 }) {
+  const certifiedBandCenter =
+    previousDisplayedPct < 99.5 &&
+    Number.isSafeInteger(previousDisplayBandCenterPct) &&
+    previousDisplayBandCenterPct >= 0 &&
+    previousDisplayBandCenterPct < 99.5
+      ? previousDisplayBandCenterPct
+      : previousDisplayedPct
   const reconciledLatentPrevious = reconcileLatentToDisplayBand(
     latentPreviousPct,
     previousDisplayedPct,
-    displayRule
+    displayRule,
+    certifiedBandCenter
   )
   const predictedLatentEnd = reconciledLatentPrevious + latentIncrementPct
   return (
