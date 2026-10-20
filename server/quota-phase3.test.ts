@@ -120,6 +120,7 @@ function exactBurn(options: {
         ...(options.resetAt ? { expectedResetAt: options.resetAt } : {}),
         previousConsumedPct: previous,
         currentConsumedPct: current,
+        intervalStartAt: atMinute(minute - 10),
         intervalEndAt: atMinute(minute),
         featureTotals: { [options.family]: totals },
       })
@@ -546,29 +547,93 @@ describe('quota phase 3 interval-censored model', () => {
     expect(sparkCoefficient.relative_weight_vs_anchor).toBeCloseTo(1)
   })
 
-  test('does not turn a favorable fixture comparison into live acceptance', () => {
+  test('excludes partial reset windows from calibration while retaining their diagnostics', () => {
+    const phase2Intervals = []
+    const phase3Intervals = []
+    for (const [windowIndex, resetWindow] of ['reset-a', 'reset-b'].entries()) {
+      for (let index = 0; index < 3; index += 1) {
+        const intervalId = `${resetWindow}|${index}`
+        const startMinute = windowIndex * 40 + index * 10
+        const observedPct = resetWindow === 'reset-a' ? 1 : 2
+        const phase2PredictedPct = resetWindow === 'reset-a' ? 0.2 : 0.5
+        const phase3PredictedPct = resetWindow === 'reset-a' ? 0.8 : 1.5
+        const interval = {
+          interval_id: intervalId,
+          lane_id: 'lane-a',
+          series_id: `lane-a|${resetWindow}`,
+          reset_window_id: resetWindow,
+          interval_start_at: atMinute(startMinute),
+          interval_end_at: atMinute(startMinute + 10),
+          observed_pct: observedPct,
+          predicted_pct: phase2PredictedPct,
+          residual_pct: observedPct - phase2PredictedPct,
+        }
+        phase2Intervals.push(interval)
+        phase3Intervals.push({
+          ...interval,
+          predicted_pct: phase3PredictedPct,
+          residual_pct: observedPct - phase3PredictedPct,
+        })
+      }
+    }
+    phase3Intervals.push({
+      ...phase3Intervals.at(-1)!,
+      interval_id: 'reset-b|phase3-only',
+    })
     const comparison = compareQuotaPhase3ToPhase2({
       scope: 'fixture',
       phase2: {
-        reset_window_mae_pct: 5,
-        interval_residual_autocorrelation: 0.8,
+        interval_residuals: phase2Intervals,
       },
       phase3: {
-        reset_window_mean_band_distance_pct: 0.01,
-        reset_window_point_mae_pct: 0.2,
-        interval_residual_autocorrelation: 0.05,
+        interval_residuals: phase3Intervals,
+        reset_band_distances: [
+          { reset_window_id: 'reset-a', band_distance_pct: 0.01 },
+          { reset_window_id: 'reset-b', band_distance_pct: 0.03 },
+        ],
+        uncertainty_intervals: [
+          {
+            confidence_low_pct_per_mtok: 0,
+            confidence_high_pct_per_mtok: 1,
+            estimate_status: 'not_identifiable',
+          },
+        ],
       },
     })
 
     expect(comparison.scope).toBe('fixture')
     expect(comparison.live_evaluation_status).toBe('unmet')
+    expect(comparison.metric_outcomes.better_reset_window_calibration).toBe(
+      'better'
+    )
     expect(comparison.acceptance.better_reset_window_calibration).toBe('unmet')
     expect(comparison.acceptance.lower_interval_residual_autocorrelation).toBe(
       'unmet'
     )
     expect(comparison.acceptance.clear_uncertainty_intervals).toBe('met')
+    expect(
+      comparison.metrics.phase2_reset_window_one_step_sum_mae_pct
+    ).toBeCloseTo(2.4)
+    expect(
+      comparison.metrics.phase3_reset_window_one_step_sum_mae_pct
+    ).toBeCloseTo(0.6)
+    expect(
+      comparison.metrics.partial_phase2_reset_window_one_step_sum_mae_pct
+    ).toBeCloseTo(4.5)
+    expect(
+      comparison.metrics.partial_phase3_reset_window_one_step_sum_mae_pct
+    ).toBeCloseTo(1.5)
+    expect(comparison.cohort.paired_reset_window_count).toBe(1)
+    expect(comparison.cohort.diagnostic_paired_reset_window_count).toBe(2)
+    expect(comparison.cohort.partial_paired_reset_window_count).toBe(1)
     expect(comparison.metrics.phase3_reset_window_mean_band_distance_pct).toBe(
-      0.01
+      0.02
+    )
+    expect(comparison.cohort.paired_interval_forecast_count).toBe(6)
+    expect(comparison.cohort.unmatched_phase3_interval_count).toBe(1)
+    expect(comparison.cohort.same_interval_cohort).toBe(false)
+    expect(comparison.metric_definitions.prediction_task).toContain(
+      'not_a_heldout_or_out_of_sample_backtest'
     )
     expect(comparison).not.toHaveProperty('phase3_is_better')
   })
@@ -638,24 +703,23 @@ describe('quota phase 3 interval-censored model', () => {
     ).toBe('unmet')
     expect(
       report.phase3?.live_evaluation.evidence_search.rolling_vs_static_backtests
-    ).toBe('not_found_in_repository')
-    expect(
-      report.phase3?.live_evaluation.evidence_search.d1_092_todo_record
-    ).toBe('not_in_todo_store')
+    ).not.toBe('met')
+    expect(report.phase3?.live_evaluation.evidence_status).toBe('not_retained')
   })
 
   test('compares a displayed-change forecast residual, not a persistent level gap', () => {
     const intervals: EstimatorInterval[] = []
-    let offset = 4
+    let current = 4
     for (let index = 0; index < 18; index += 1) {
-      offset += index % 3 === 0 ? 0.2 : 0.05
-      const displayed = 30 + offset
+      const previous = current
+      current += 2
       const totals = emptyTotals()
       totals.uncachedInputMtok = 1
       intervals.push(
         makeInterval({
-          previousConsumedPct: displayed - 2,
-          currentConsumedPct: displayed,
+          previousConsumedPct: previous,
+          currentConsumedPct: current,
+          intervalStartAt: atMinute(index * 10),
           intervalEndAt: atMinute((index + 1) * 10),
           featureTotals: { sonnet: totals },
         })
@@ -663,12 +727,16 @@ describe('quota phase 3 interval-censored model', () => {
     }
 
     const report = reportFor(intervals)
-    const residuals = quotaPhase3OneStepDisplayedChangeResiduals(intervals)
+    const selectedRule =
+      report.estimates[0]?.display_rule_comparison.preferred_rule ?? 'rounded'
+    const residuals = quotaPhase3OneStepDisplayedChangeResiduals(intervals, {
+      displayRule: selectedRule,
+    })
     const opening = intervals[0]?.previousConsumedPct ?? 0
     let consumed = 0
     const levelGaps = intervals.map((interval) => {
       consumed += 1
-      return opening + consumed * 2 - interval.currentConsumedPct
+      return opening + consumed * 3 - interval.currentConsumedPct
     })
     const forecastAutocorrelation =
       quotaPhase3Lag1Autocorrelation(residuals) ?? 1
@@ -679,10 +747,12 @@ describe('quota phase 3 interval-censored model', () => {
 
     expect(
       report.phase2_comparison.metric_definitions.phase3_interval_residual
-    ).toBe('displayed_delta_minus_phase3_one_step_forecast')
+    ).toBe('displayed_delta_minus_phase3_one_step_interval_censored_prefix_fit')
     expect(
       report.phase2_comparison.metric_definitions.phase2_interval_residual
-    ).toBe('displayed_delta_minus_phase2_rolling_prediction')
+    ).toBe(
+      'displayed_delta_minus_phase2_one_step_rolling_exponential_prefix_fit'
+    )
     expect(residuals.length).toBeGreaterThan(3)
     expect(meanAbsolute(residuals)).toBeLessThan(0.05)
     expect(meanAbsolute(levelGaps)).toBeGreaterThan(5)
@@ -697,6 +767,85 @@ describe('quota phase 3 interval-censored model', () => {
     expect(report.phase2_comparison.live_evaluation_status).toBe('unmet')
     expect(report.live_evaluation.lower_interval_residual_autocorrelation).toBe(
       'unmet'
+    )
+  })
+
+  test('scores paired plateaus and reports the selected cohort per lane', () => {
+    const intervals: EstimatorInterval[] = []
+    const opening = 10
+    for (let index = 0; index < 48; index += 1) {
+      const previous = Math.floor(opening + index * 0.37)
+      const current = Math.floor(opening + (index + 1) * 0.37)
+      const totals = emptyTotals()
+      totals.uncachedInputMtok = 1
+      intervals.push(
+        makeInterval({
+          previousConsumedPct: previous,
+          currentConsumedPct: current,
+          intervalStartAt: atMinute(index * 10),
+          intervalEndAt: atMinute((index + 1) * 10),
+          featureTotals: { sonnet: totals },
+        })
+      )
+    }
+
+    const report = buildQuotaPhase3Report(intervals, {
+      comparisonScope: 'retained_live_cohort',
+      phase2Estimates: [
+        {
+          provider: 'anthropic',
+          quota_key: 'anthropic_unified_7d:7d',
+          quota_type: 'weekly',
+          quota_lane: 'anthropic_weekly_all_model',
+          residuals: {
+            static_baseline: {},
+            rolling_exponential: { rmse_pct: 1, mae_pct: 1 },
+          },
+          lag_sensitivity: [
+            {
+              lag_minutes: 0,
+              trainable_interval_count: intervals.length,
+              status: 'evaluated',
+            },
+          ],
+          identifiability: { status: 'directional_only' },
+          backtest: {
+            status: 'evaluated',
+            static_rmse_pct: 1,
+            rolling_rmse_pct: 1,
+          },
+          trainable_interval_count: intervals.length,
+          selected_lag_minutes: 0,
+        },
+      ],
+      evaluationEvidence: {
+        cohort_validation: { status: 'verified' },
+        phase2_baseline_validation: { status: 'verified' },
+      },
+    })
+    const lane = report.estimates[0]
+
+    expect(lane?.display_rule_comparison.preferred_rule).toBe('floored')
+    expect(
+      lane?.phase2_comparison.cohort.paired_interval_forecast_count
+    ).toBeGreaterThan(0)
+    expect(
+      lane?.phase2_comparison.cohort.paired_plateau_interval_count
+    ).toBeGreaterThan(0)
+    expect(lane?.phase2_comparison.metrics.paired_interval_forecast_count).toBe(
+      report.phase2_comparison.metrics.paired_interval_forecast_count
+    )
+    expect(
+      lane?.phase2_comparison.metrics.phase3_interval_residual_autocorrelation
+    ).toBe(
+      report.phase2_comparison.metrics.phase3_interval_residual_autocorrelation
+    )
+    expect(lane?.phase2_comparison.scope).toBe(report.phase2_comparison.scope)
+    expect(lane?.phase2_comparison.evidence_status).toBe(
+      report.phase2_comparison.evidence_status
+    )
+    expect(lane?.phase2_comparison.live_evaluation_status).toBe(
+      report.phase2_comparison.live_evaluation_status
     )
   })
 })

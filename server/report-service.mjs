@@ -13316,7 +13316,21 @@ function buildQuotaEstimatorRowsFromReadModels(observations, usageBuckets) {
 }
 
 export function buildQuotaEstimatorReport(rows, metadata = {}) {
-  const intervals = buildQuotaEstimatorIntervals(rows)
+  const phase3Evaluation = metadata.phase3Evaluation ?? {}
+  const retainedReadModels = phase3Evaluation.readModels
+  const estimatorRows =
+    Array.isArray(retainedReadModels?.observations) &&
+    Array.isArray(retainedReadModels?.usageBuckets)
+      ? buildQuotaEstimatorRowsFromReadModels(
+          retainedReadModels.observations.map(
+            normalizeQuotaEstimatorObservationRow
+          ),
+          retainedReadModels.usageBuckets.map(
+            normalizeQuotaEstimatorUsageBucketRow
+          )
+        )
+      : rows
+  const intervals = buildQuotaEstimatorIntervals(estimatorRows)
   const lanes = new Map()
   for (const interval of intervals) {
     const key = quotaEstimatorLaneKey({
@@ -13331,9 +13345,12 @@ export function buildQuotaEstimatorReport(rows, metadata = {}) {
   }
 
   const generatedAt = new Date().toISOString()
-  const estimates = [...lanes.values()].map((laneIntervals) =>
+  const computedEstimates = [...lanes.values()].map((laneIntervals) =>
     buildQuotaEstimatorLaneEstimate(laneIntervals, { generatedAt })
   )
+  const estimates = Array.isArray(phase3Evaluation.phase2Baseline?.estimates)
+    ? phase3Evaluation.phase2Baseline.estimates
+    : computedEstimates
   const selectedLagByLane = {}
   for (const estimate of estimates) {
     selectedLagByLane[
@@ -13367,6 +13384,8 @@ export function buildQuotaEstimatorReport(rows, metadata = {}) {
       to: metadata.to ?? null,
       selectedLagByLane,
       phase2Estimates: estimates,
+      comparisonScope: phase3Evaluation.comparisonScope ?? 'in_request',
+      evaluationEvidence: phase3Evaluation.evidence,
     }),
   }
 }

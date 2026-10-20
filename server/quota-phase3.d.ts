@@ -63,9 +63,45 @@ export interface QuotaPhase3RuleScore {
   mean_reset_window_band_distance: number | null
   mean_reset_window_point_abs_error: number | null
   interval_residual_autocorrelation: number | null
+  interval_residual_abs_autocorrelation: number | null
+  phase2_interval_residual_autocorrelation: number | null
+  phase2_interval_residual_abs_autocorrelation: number | null
+  phase2_reset_window_one_step_sum_mae_pct: number | null
+  phase3_reset_window_one_step_sum_mae_pct: number | null
+  partial_phase2_reset_window_one_step_sum_mae_pct: number | null
+  partial_phase3_reset_window_one_step_sum_mae_pct: number | null
+  phase3_reset_window_mean_band_distance_pct: number | null
+  reset_window_count: number
+  partial_reset_window_count: number
+  diagnostic_reset_window_count: number
+  interval_forecast_count: number
+  paired_plateau_interval_count: number
+  same_interval_cohort: boolean
+  reset_window_id_sha256: string | null
+  phase2_interval_id_sha256: string | null
+  unmatched_phase2_interval_count: number
+  unmatched_phase3_interval_count: number
+  unmatched_phase2_reset_window_count: number
+  unmatched_phase3_reset_window_count: number
+  paired_autocorrelation_interval_count: number
+  paired_autocorrelation_series_count: number
+  clear_uncertainty_intervals: boolean
   holdout_mean_band_distance: number | null
   selection_distance: number | null
   identifiability_status: string
+}
+
+export interface QuotaPhase3EvaluationInterval {
+  interval_id: string
+  lane_id: string
+  series_id: string
+  reset_window_id: string
+  interval_start_at: string
+  interval_end_at: string
+  observed_pct: number
+  predicted_pct: number
+  residual_pct: number
+  model?: string
 }
 
 export interface QuotaPhase3Estimate {
@@ -96,18 +132,7 @@ export interface QuotaPhase3Estimate {
     floored: QuotaPhase3History
   }
   diagnostics: Array<{ code: string; severity: string; detail: string }>
-  phase2_comparison: {
-    live_evaluation_status: string
-    acceptance: {
-      better_reset_window_calibration: string
-      lower_interval_residual_autocorrelation: string
-    }
-    metric_definitions?: {
-      phase2_interval_residual: string
-      phase3_interval_residual: string
-    }
-    metrics?: Record<string, number | null>
-  }
+  phase2_comparison: QuotaPhase3Comparison
 }
 
 export interface QuotaPhase3Report {
@@ -125,48 +150,50 @@ export interface QuotaPhase3Report {
     coefficients_not_estimated: string[]
   }
   live_evaluation: {
-    status: string
-    better_reset_window_calibration: string
-    lower_interval_residual_autocorrelation: string
-    clear_uncertainty_intervals: string
+    status: 'met' | 'unmet'
+    evidence_status:
+      | 'retained_live_verified'
+      | 'retained_live_unverified'
+      | 'provided_unverified'
+      | 'not_retained'
+    better_reset_window_calibration: 'met' | 'unmet'
+    lower_interval_residual_autocorrelation: 'met' | 'unmet'
+    clear_uncertainty_intervals: 'met' | 'unmet'
     evidence_search: Record<string, string>
     reason: string
   }
-  phase2_comparison: {
-    scope: string
-    live_evaluation_status: string
-    acceptance: {
-      better_reset_window_calibration: string
-      lower_interval_residual_autocorrelation: string
-      clear_uncertainty_intervals: string
-    }
-    metric_definitions: {
-      phase2_interval_residual: string
-      phase3_interval_residual: string
-      phase2_reset: string
-      phase3_reset: string
-    }
-    metrics: Record<string, number | null>
-    note: string
-  }
+  phase2_comparison: QuotaPhase3Comparison
   estimates: QuotaPhase3Estimate[]
 }
 
 export interface QuotaPhase3Comparison {
   scope: string
-  live_evaluation_status: string
+  live_evaluation_status: 'met' | 'unmet'
+  evidence_status:
+    | 'retained_live_verified'
+    | 'retained_live_unverified'
+    | 'provided_unverified'
+    | 'not_retained'
+  phase0_2_prerequisite_status: 'met' | 'incomplete'
   acceptance: {
-    better_reset_window_calibration: string
-    lower_interval_residual_autocorrelation: string
-    clear_uncertainty_intervals: string
+    better_reset_window_calibration: 'met' | 'unmet'
+    lower_interval_residual_autocorrelation: 'met' | 'unmet'
+    clear_uncertainty_intervals: 'met' | 'unmet'
   }
+  metric_outcomes: {
+    better_reset_window_calibration: 'better' | 'worse' | 'tie' | 'unavailable'
+    lower_interval_residual_autocorrelation:
+      | 'better'
+      | 'worse'
+      | 'tie'
+      | 'unavailable'
+    clear_uncertainty_intervals: 'available' | 'unavailable'
+  }
+  cohort: Record<string, number | boolean | string | null>
+  phase0_2_prerequisites: Record<string, unknown>
+  evidence: Record<string, unknown>
   note: string
-  metric_definitions: {
-    phase2_interval_residual: string
-    phase3_interval_residual: string
-    phase2_reset: string
-    phase3_reset: string
-  }
+  metric_definitions: Record<string, string>
   metrics: Record<string, number | null>
 }
 
@@ -187,20 +214,34 @@ export function quotaPhase3Lag1Autocorrelation(
 
 export function quotaPhase3OneStepDisplayedChangeResiduals(
   intervals: readonly object[],
-  options?: { featureNames?: readonly string[] }
+  options?: {
+    featureNames?: readonly string[]
+    displayRule?: 'rounded' | 'floored'
+  }
 ): number[]
 
 export function compareQuotaPhase3ToPhase2(input?: {
   scope?: string
   phase2?: {
-    reset_window_mae_pct?: number | null
-    interval_residual_autocorrelation?: number | null
+    interval_residuals?: readonly QuotaPhase3EvaluationInterval[]
   }
   phase3?: {
-    reset_window_mean_band_distance_pct?: number | null
-    reset_window_point_mae_pct?: number | null
-    interval_residual_autocorrelation?: number | null
+    interval_residuals?: readonly QuotaPhase3EvaluationInterval[]
+    reset_band_distances?: ReadonlyArray<{
+      reset_window_id: string
+      band_distance_pct: number | null
+    }>
+    uncertainty_intervals?: ReadonlyArray<{
+      confidence_low_pct_per_mtok: number | null
+      confidence_high_pct_per_mtok: number | null
+      estimate_status:
+        | 'high_confidence'
+        | 'directional_only'
+        | 'not_identifiable'
+    }>
   }
+  phase0_2Prerequisites?: Record<string, unknown>
+  evidence?: Record<string, unknown>
 }): QuotaPhase3Comparison
 
 export function buildQuotaPhase3Report(
@@ -211,8 +252,31 @@ export function buildQuotaPhase3Report(
     selectedLagByLane?: Record<string, number>
     phase2Estimates?: readonly object[]
     comparisonScope?: string
+    evaluationEvidence?: Record<string, unknown>
   }
 ): QuotaPhase3Report
+
+export interface QuotaPhase3ArtifactValidation {
+  status: 'verified' | 'unverified'
+  validation: string
+  sha256: string
+  source_revision: string | null
+  failures: string[]
+  [key: string]: unknown
+}
+
+export function validateQuotaPhase3RetainedCohort(input?: {
+  artifactText?: string
+  expectedSha256?: string
+  expectedSourceRevision?: string
+}): QuotaPhase3ArtifactValidation
+
+export function validateQuotaPhase3Phase2Baseline(input?: {
+  artifactText?: string
+  expectedSha256?: string
+  expectedSourceRevision?: string
+  expectedCohortSha256?: string
+}): QuotaPhase3ArtifactValidation
 
 export const QUOTA_PHASE3_CACHE_READ_PRIOR: QuotaPhase3Report['cache_read_prior']
 

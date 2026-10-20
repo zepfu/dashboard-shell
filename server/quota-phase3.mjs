@@ -12,6 +12,7 @@
  * artifact, identifiability score, or rolling-versus-static backtest to
  * compare against.
  */
+import { createHash } from 'node:crypto'
 
 const INTERIOR_TIE_BREAK_WEIGHT = 1e-6
 const STATE_SMOOTH_WEIGHT = 0.35
@@ -34,18 +35,18 @@ const TOKEN_CATEGORIES = [
 
 export const QUOTA_PHASE3_LIVE_EVALUATION = {
   status: 'unmet',
+  evidence_status: 'not_retained',
   better_reset_window_calibration: 'unmet',
   lower_interval_residual_autocorrelation: 'unmet',
-  clear_uncertainty_intervals: 'met',
+  clear_uncertainty_intervals: 'unmet',
   evidence_search: {
-    phase_0_2_residual_reports: 'not_found_in_repository',
-    lag_sensitivity_artifacts: 'not_found_in_repository',
-    identifiability_score_artifacts: 'not_found_in_repository',
-    rolling_vs_static_backtests: 'not_found_in_repository',
-    d1_092_todo_record: 'not_in_todo_store',
+    phase_0_2_residual_reports: 'not_provided',
+    lag_sensitivity_artifacts: 'not_provided',
+    identifiability_score_artifacts: 'not_provided',
+    rolling_vs_static_backtests: 'not_provided',
   },
   reason:
-    'No verified Phase 0-2 residual report, lag-sensitivity result, identifiability score, or rolling-versus-static backtest is stored in this repository. D1-092 is not in the TODO store. Fixture and in-request comparisons are descriptive and do not establish live calibration.',
+    'Reset-window and residual-autocorrelation comparisons require validated retained-cohort evidence and Phase 0-2 prerequisites.',
 }
 
 export const QUOTA_PHASE3_CACHE_READ_PRIOR = {
@@ -124,88 +125,910 @@ export function compareQuotaPhase3ToPhase2({
   scope = 'fixture',
   phase2 = {},
   phase3 = {},
+  phase0_2Prerequisites = {},
+  evidence = {},
 } = {}) {
+  const intervalForecastPairs = pairEvaluationRows(
+    phase2.interval_residuals,
+    phase3.interval_residuals,
+    'interval_id'
+  )
+  const pairedResetWindows = aggregatePairedResetWindows(
+    intervalForecastPairs.pairs
+  )
+  const { complete: completeResetWindows, partial: partialResetWindows } =
+    partitionPairedResetWindows(
+      pairedResetWindows,
+      intervalForecastPairs,
+      phase2.interval_residuals,
+      phase3.interval_residuals
+    )
+  const phase2ResetWindowIds = uniqueResetWindowIds(phase2.interval_residuals)
+  const phase3ResetWindowIds = uniqueResetWindowIds(phase3.interval_residuals)
+  const pairedResetWindowIds = new Set(
+    pairedResetWindows.map((window) => window.reset_window_id)
+  )
+  const unmatchedPhase2ResetWindowCount = [...phase2ResetWindowIds].filter(
+    (id) => !pairedResetWindowIds.has(id)
+  ).length
+  const unmatchedPhase3ResetWindowCount = [...phase3ResetWindowIds].filter(
+    (id) => !pairedResetWindowIds.has(id)
+  ).length
+  const phase2ResetMae = meanOf(
+    completeResetWindows.map((window) =>
+      Math.abs(window.phase2_predicted_pct - window.observed_pct)
+    )
+  )
+  const phase3ResetMae = meanOf(
+    completeResetWindows.map((window) =>
+      Math.abs(window.phase3_predicted_pct - window.observed_pct)
+    )
+  )
+  const partialPhase2ResetMae = meanOf(
+    partialResetWindows.map((window) =>
+      Math.abs(window.phase2_predicted_pct - window.observed_pct)
+    )
+  )
+  const partialPhase3ResetMae = meanOf(
+    partialResetWindows.map((window) =>
+      Math.abs(window.phase3_predicted_pct - window.observed_pct)
+    )
+  )
+  const phase2Autocorrelation = pooledLag1Autocorrelation(
+    intervalForecastPairs.pairs,
+    'phase2'
+  )
+  const phase3Autocorrelation = pooledLag1Autocorrelation(
+    intervalForecastPairs.pairs,
+    'phase3'
+  )
+  const resetOutcome = compareLowerMetric(
+    phase2ResetMae,
+    phase3ResetMae,
+    completeResetWindows.length > 0
+  )
+  const autocorrelationOutcome = compareLowerMetric(
+    phase2Autocorrelation.value === null
+      ? null
+      : Math.abs(phase2Autocorrelation.value),
+    phase3Autocorrelation.value === null
+      ? null
+      : Math.abs(phase3Autocorrelation.value),
+    phase2Autocorrelation.series_count > 0 &&
+      phase3Autocorrelation.series_count > 0
+  )
+  const evidenceStatus = retainedEvidenceStatus(scope, evidence)
+  const prerequisitesMet = phase0_2Prerequisites.status === 'met'
+  const verifiedLiveEvidence =
+    evidenceStatus === 'retained_live_verified' && prerequisitesMet
+  const clearUncertaintyIntervals = hasClearUncertaintyIntervals(
+    phase3.uncertainty_intervals
+  )
+  const resetBandPairs = pairEvaluationRows(
+    pairedResetWindows,
+    phase3.reset_band_distances,
+    'reset_window_id'
+  )
+  const phase3BandDistance = meanOf(
+    resetBandPairs.pairs
+      .map((pair) => finiteOrNull(pair.phase3.band_distance_pct))
+      .filter((value) => value !== null)
+  )
+  const acceptance = {
+    better_reset_window_calibration:
+      verifiedLiveEvidence && resetOutcome === 'better' ? 'met' : 'unmet',
+    lower_interval_residual_autocorrelation:
+      verifiedLiveEvidence && autocorrelationOutcome === 'better'
+        ? 'met'
+        : 'unmet',
+    clear_uncertainty_intervals: clearUncertaintyIntervals ? 'met' : 'unmet',
+  }
+  const status = Object.values(acceptance).every((value) => value === 'met')
+    ? 'met'
+    : 'unmet'
+  const evidenceSearch = phase0_2Prerequisites
   return {
     scope,
-    live_evaluation_status: QUOTA_PHASE3_LIVE_EVALUATION.status,
-    acceptance: {
-      better_reset_window_calibration: 'unmet',
-      lower_interval_residual_autocorrelation: 'unmet',
-      clear_uncertainty_intervals: 'met',
+    live_evaluation_status: status,
+    evidence_status: evidenceStatus,
+    phase0_2_prerequisite_status: prerequisitesMet ? 'met' : 'incomplete',
+    acceptance,
+    metric_outcomes: {
+      better_reset_window_calibration: resetOutcome,
+      lower_interval_residual_autocorrelation: autocorrelationOutcome,
+      clear_uncertainty_intervals: clearUncertaintyIntervals
+        ? 'available'
+        : 'unavailable',
     },
-    note: QUOTA_PHASE3_LIVE_EVALUATION.reason,
+    cohort: {
+      paired_reset_window_count: completeResetWindows.length,
+      paired_reset_window_id_sha256: digestIds(
+        completeResetWindows.map((window) => window.reset_window_id)
+      ),
+      diagnostic_paired_reset_window_count: pairedResetWindows.length,
+      partial_paired_reset_window_count: partialResetWindows.length,
+      unmatched_phase2_reset_window_count: unmatchedPhase2ResetWindowCount,
+      unmatched_phase3_reset_window_count: unmatchedPhase3ResetWindowCount,
+      paired_interval_forecast_count: intervalForecastPairs.pairs.length,
+      paired_plateau_interval_count: intervalForecastPairs.pairs.filter(
+        (pair) =>
+          pair.phase2.observed_pct === 0 && pair.phase3.observed_pct === 0
+      ).length,
+      paired_interval_id_sha256: digestIds(
+        intervalForecastPairs.pairs.map((pair) => pair.phase2.interval_id)
+      ),
+      unmatched_phase2_interval_count:
+        intervalForecastPairs.unmatched_phase2_ids.length,
+      unmatched_phase3_interval_count:
+        intervalForecastPairs.unmatched_phase3_ids.length,
+      paired_autocorrelation_interval_count: Math.min(
+        phase2Autocorrelation.interval_count,
+        phase3Autocorrelation.interval_count
+      ),
+      paired_autocorrelation_series_count: Math.min(
+        phase2Autocorrelation.series_count,
+        phase3Autocorrelation.series_count
+      ),
+      phase3_reset_band_distance_count: resetBandPairs.pairs.length,
+      same_interval_cohort:
+        intervalForecastPairs.unmatched_phase2_ids.length === 0 &&
+        intervalForecastPairs.unmatched_phase3_ids.length === 0,
+    },
+    phase0_2_prerequisites: evidenceSearch,
+    evidence: publicEvaluationEvidence(evidence, evidenceStatus),
+    note: comparisonNote({
+      evidenceStatus,
+      prerequisitesMet,
+      resetOutcome,
+      autocorrelationOutcome,
+      phase0_2Prerequisites,
+      unmatchedPhase2Intervals:
+        intervalForecastPairs.unmatched_phase2_ids.length,
+      unmatchedPhase3Intervals:
+        intervalForecastPairs.unmatched_phase3_ids.length,
+      partialResetWindowCount: partialResetWindows.length,
+    }),
     metric_definitions: {
+      prediction_task:
+        'causal_one_step_interval_forecasts_within_the_retained_window_not_a_heldout_or_out_of_sample_backtest',
       phase2_interval_residual:
-        'displayed_delta_minus_phase2_rolling_prediction',
+        'displayed_delta_minus_phase2_one_step_rolling_exponential_prefix_fit',
       phase3_interval_residual:
-        'displayed_delta_minus_phase3_one_step_forecast',
-      phase2_reset: 'mean_absolute_error_of_summed_trainable_deltas',
-      phase3_reset: 'mean_distance_outside_the_censored_reset_band',
+        'displayed_delta_minus_phase3_one_step_interval_censored_prefix_fit',
+      phase2_reset:
+        'mae_of_summed_phase2_one_step_predictions_on_complete_shared_forecast_intervals_by_reset_window',
+      phase3_reset:
+        'mae_of_summed_phase3_one_step_predictions_on_complete_shared_forecast_intervals_by_reset_window',
+      partial_reset_diagnostic:
+        'mae_of_summed_one_step_predictions_on_shared_forecast_intervals_in_reset_windows_with_incomplete_phase2_phase3_interval_pairing',
+      phase3_reset_band_distance:
+        'retrospective_smoothed_censored_band_distance_reported_separately',
+      interval_residual_autocorrelation:
+        'absolute_pooled_within_lane_lag1_autocorrelation_of_paired_one_step_displayed_delta_forecast_residuals',
     },
     metrics: {
-      phase2_reset_window_mae_pct: finiteOrNull(phase2.reset_window_mae_pct),
-      phase3_reset_window_mean_band_distance_pct: finiteOrNull(
-        phase3.reset_window_mean_band_distance_pct
-      ),
-      phase3_reset_window_point_mae_pct: finiteOrNull(
-        phase3.reset_window_point_mae_pct
-      ),
-      phase2_interval_residual_autocorrelation: finiteOrNull(
-        phase2.interval_residual_autocorrelation
-      ),
-      phase3_interval_residual_autocorrelation: finiteOrNull(
-        phase3.interval_residual_autocorrelation
-      ),
+      phase2_reset_window_one_step_sum_mae_pct: phase2ResetMae,
+      phase3_reset_window_one_step_sum_mae_pct: phase3ResetMae,
+      partial_phase2_reset_window_one_step_sum_mae_pct: partialPhase2ResetMae,
+      partial_phase3_reset_window_one_step_sum_mae_pct: partialPhase3ResetMae,
+      phase3_reset_window_mean_band_distance_pct: phase3BandDistance,
+      phase2_interval_residual_autocorrelation: phase2Autocorrelation.value,
+      phase3_interval_residual_autocorrelation: phase3Autocorrelation.value,
+      phase2_interval_residual_abs_autocorrelation:
+        phase2Autocorrelation.value === null
+          ? null
+          : Math.abs(phase2Autocorrelation.value),
+      phase3_interval_residual_abs_autocorrelation:
+        phase3Autocorrelation.value === null
+          ? null
+          : Math.abs(phase3Autocorrelation.value),
+      paired_reset_window_count: completeResetWindows.length,
+      partial_paired_reset_window_count: partialResetWindows.length,
+      paired_interval_forecast_count: intervalForecastPairs.pairs.length,
+      paired_plateau_interval_count: intervalForecastPairs.pairs.filter(
+        (pair) =>
+          pair.phase2.observed_pct === 0 && pair.phase3.observed_pct === 0
+      ).length,
+      uncertainty_interval_count: phase3.uncertainty_intervals?.length ?? 0,
     },
+  }
+}
+
+function aggregatePairedResetWindows(pairs) {
+  const windows = new Map()
+  for (const pair of pairs ?? []) {
+    const phase2 = pair.phase2
+    const phase3 = pair.phase3
+    const resetWindowId = phase2?.reset_window_id
+    if (!resetWindowId || phase3?.reset_window_id !== resetWindowId) continue
+    const phase2Observed = finiteOrNull(phase2.observed_pct)
+    const phase3Observed = finiteOrNull(phase3.observed_pct)
+    const phase2Predicted = finiteOrNull(phase2.predicted_pct)
+    const phase3Predicted = finiteOrNull(phase3.predicted_pct)
+    if (
+      phase2Observed === null ||
+      phase3Observed === null ||
+      phase2Predicted === null ||
+      phase3Predicted === null
+    ) {
+      continue
+    }
+    const window = windows.get(resetWindowId) ?? {
+      reset_window_id: resetWindowId,
+      phase2_predicted_pct: 0,
+      phase3_predicted_pct: 0,
+      observed_pct: 0,
+      paired_interval_count: 0,
+    }
+    window.phase2_predicted_pct += phase2Predicted
+    window.phase3_predicted_pct += phase3Predicted
+    window.observed_pct += phase2Observed
+    window.paired_interval_count += 1
+    windows.set(resetWindowId, window)
+  }
+  return [...windows.values()].sort((left, right) =>
+    left.reset_window_id.localeCompare(right.reset_window_id)
+  )
+}
+
+function partitionPairedResetWindows(
+  windows,
+  intervalPairing,
+  phase2Rows,
+  phase3Rows
+) {
+  const unmatchedIntervalIds = new Set([
+    ...(intervalPairing.unmatched_phase2_ids ?? []),
+    ...(intervalPairing.unmatched_phase3_ids ?? []),
+  ])
+  const partialWindowIds = new Set()
+  for (const row of [
+    ...(Array.isArray(phase2Rows) ? phase2Rows : []),
+    ...(Array.isArray(phase3Rows) ? phase3Rows : []),
+  ]) {
+    if (unmatchedIntervalIds.has(row?.interval_id) && row?.reset_window_id) {
+      partialWindowIds.add(row.reset_window_id)
+    }
+  }
+  return {
+    complete: windows.filter(
+      (window) => !partialWindowIds.has(window.reset_window_id)
+    ),
+    partial: windows.filter((window) =>
+      partialWindowIds.has(window.reset_window_id)
+    ),
+  }
+}
+
+function uniqueResetWindowIds(rows) {
+  return new Set(
+    (Array.isArray(rows) ? rows : [])
+      .map((row) => row?.reset_window_id)
+      .filter((id) => typeof id === 'string' && id.length > 0)
+  )
+}
+
+function pairEvaluationRows(phase2Rows, phase3Rows, idKey) {
+  const indexRows = (rows) => {
+    const byId = new Map()
+    const duplicates = new Set()
+    for (const row of Array.isArray(rows) ? rows : []) {
+      const id = typeof row?.[idKey] === 'string' ? row[idKey] : ''
+      if (!id) continue
+      if (byId.has(id)) {
+        byId.delete(id)
+        duplicates.add(id)
+      } else if (!duplicates.has(id)) {
+        byId.set(id, row)
+      }
+    }
+    return { byId, duplicates }
+  }
+
+  const phase2 = indexRows(phase2Rows)
+  const phase3 = indexRows(phase3Rows)
+  const pairs = []
+  for (const [id, phase2Row] of phase2.byId) {
+    const phase3Row = phase3.byId.get(id)
+    if (!phase3Row || phase3.duplicates.has(id)) continue
+    pairs.push({ id, phase2: phase2Row, phase3: phase3Row })
+  }
+  pairs.sort((left, right) => compareEvaluationRows(left.phase2, right.phase2))
+  const pairedIds = new Set(pairs.map((pair) => pair.id))
+  const unmatchedIds = (indexed) =>
+    new Set([
+      ...indexed.duplicates,
+      ...[...indexed.byId.keys()].filter((id) => !pairedIds.has(id)),
+    ])
+
+  return {
+    pairs,
+    unmatched_phase2_ids: [...unmatchedIds(phase2)],
+    unmatched_phase3_ids: [...unmatchedIds(phase3)],
+  }
+}
+
+function compareEvaluationRows(left, right) {
+  const leftStart = Date.parse(left?.interval_start_at ?? '')
+  const rightStart = Date.parse(right?.interval_start_at ?? '')
+  if (
+    Number.isFinite(leftStart) &&
+    Number.isFinite(rightStart) &&
+    leftStart !== rightStart
+  ) {
+    return leftStart - rightStart
+  }
+  const leftEnd = Date.parse(left?.interval_end_at ?? '')
+  const rightEnd = Date.parse(right?.interval_end_at ?? '')
+  if (
+    Number.isFinite(leftEnd) &&
+    Number.isFinite(rightEnd) &&
+    leftEnd !== rightEnd
+  ) {
+    return leftEnd - rightEnd
+  }
+  return String(left?.interval_id ?? left?.reset_window_id ?? '').localeCompare(
+    String(right?.interval_id ?? right?.reset_window_id ?? '')
+  )
+}
+
+function pooledLag1Autocorrelation(pairs, side) {
+  const bySeries = new Map()
+  for (const pair of pairs ?? []) {
+    const row = pair?.[side]
+    const residual = finiteOrNull(row?.residual_pct)
+    const seriesId = typeof row?.series_id === 'string' ? row.series_id : ''
+    if (residual === null || !seriesId) continue
+    const rows = bySeries.get(seriesId) ?? []
+    rows.push({ ...row, residual_pct: residual })
+    bySeries.set(seriesId, rows)
+  }
+
+  let covariance = 0
+  let variance = 0
+  let intervalCount = 0
+  let seriesCount = 0
+  for (const rows of bySeries.values()) {
+    rows.sort(compareEvaluationRows)
+    let segment = []
+    const addSegment = () => {
+      if (segment.length < 3) {
+        segment = []
+        return
+      }
+      const mean =
+        segment.reduce((sum, row) => sum + row.residual_pct, 0) / segment.length
+      for (const row of segment) {
+        variance += (row.residual_pct - mean) ** 2
+      }
+      for (let index = 1; index < segment.length; index += 1) {
+        covariance +=
+          (segment[index].residual_pct - mean) *
+          (segment[index - 1].residual_pct - mean)
+      }
+      intervalCount += segment.length
+      seriesCount += 1
+      segment = []
+    }
+
+    for (const row of rows) {
+      const previous = segment[segment.length - 1]
+      const previousEnd = Date.parse(previous?.interval_end_at ?? '')
+      const currentStart = Date.parse(row.interval_start_at ?? '')
+      if (
+        previous &&
+        (!Number.isFinite(previousEnd) ||
+          !Number.isFinite(currentStart) ||
+          previousEnd !== currentStart)
+      ) {
+        addSegment()
+      }
+      segment.push(row)
+    }
+    addSegment()
+  }
+
+  return {
+    value:
+      intervalCount === 0
+        ? null
+        : variance <= 1e-12
+          ? 0
+          : covariance / variance,
+    interval_count: intervalCount,
+    series_count: seriesCount,
+  }
+}
+
+function compareLowerMetric(phase2Value, phase3Value, available) {
+  const left = finiteOrNull(phase2Value)
+  const right = finiteOrNull(phase3Value)
+  if (!available || left === null || right === null) return 'unavailable'
+  if (right < left - 1e-12) return 'better'
+  if (right > left + 1e-12) return 'worse'
+  return 'tie'
+}
+
+function hasClearUncertaintyIntervals(intervals) {
+  return (
+    Array.isArray(intervals) &&
+    intervals.length > 0 &&
+    intervals.every((row) => {
+      const lower = finiteOrNull(row?.confidence_low_pct_per_mtok)
+      const upper = finiteOrNull(row?.confidence_high_pct_per_mtok)
+      return (
+        lower !== null &&
+        upper !== null &&
+        lower >= 0 &&
+        upper > lower &&
+        ['high_confidence', 'directional_only', 'not_identifiable'].includes(
+          row?.estimate_status
+        )
+      )
+    })
+  )
+}
+
+function retainedEvidenceStatus(scope, evidence) {
+  if (scope !== 'retained_live_cohort') {
+    return evidence && Object.keys(evidence).length
+      ? 'provided_unverified'
+      : 'not_retained'
+  }
+  const cohort = evidence?.cohort_validation ?? evidence?.cohort
+  const phase2 = evidence?.phase2_baseline_validation ?? evidence?.phase2
+  if (cohort?.status === 'verified' && phase2?.status === 'verified') {
+    return 'retained_live_verified'
+  }
+  return evidence && Object.keys(evidence).length
+    ? 'retained_live_unverified'
+    : 'not_retained'
+}
+
+function publicEvaluationEvidence(evidence, status) {
+  const cohort = evidence?.cohort_validation ?? evidence?.cohort
+  const phase2 = evidence?.phase2_baseline_validation ?? evidence?.phase2
+  const providers = Array.isArray(cohort?.providers)
+    ? [
+        ...new Set(
+          cohort.providers.filter((value) => typeof value === 'string')
+        ),
+      ].sort()
+    : []
+  return {
+    status,
+    cohort: cohort
+      ? {
+          status: cohort.status ?? 'unverified',
+          sha256: cohort.sha256 ?? null,
+          source_revision: cohort.source_revision ?? null,
+          captured_at: cohort.captured_at ?? null,
+          database: cohort.database ?? null,
+          window: cohort.window ?? null,
+          observation_count: cohort.observation_count ?? 0,
+          usage_bucket_count: cohort.usage_bucket_count ?? 0,
+          providers,
+        }
+      : null,
+    phase0_2_baseline: phase2
+      ? {
+          status: phase2.status ?? 'unverified',
+          sha256: phase2.sha256 ?? null,
+          source_revision: phase2.source_revision ?? null,
+          generated_at: phase2.generated_at ?? null,
+          database: phase2.database ?? null,
+          window: phase2.window ?? null,
+          interval_row_count: phase2.interval_row_count ?? 0,
+          estimate_lane_count: phase2.estimate_lane_count ?? 0,
+        }
+      : null,
+  }
+}
+
+function comparisonNote({
+  evidenceStatus,
+  prerequisitesMet,
+  resetOutcome,
+  autocorrelationOutcome,
+  phase0_2Prerequisites,
+  unmatchedPhase2Intervals,
+  unmatchedPhase3Intervals,
+  partialResetWindowCount,
+}) {
+  if (evidenceStatus !== 'retained_live_verified') {
+    return 'Live acceptance requires verified retained-cohort and Phase 0-2 provenance; available fixture or in-request metrics remain descriptive.'
+  }
+  if (!prerequisitesMet) {
+    return `Retained cohort provenance is valid, but Phase 0-2 prerequisites are incomplete: ${phase0_2Prerequisites.evaluable_lane_count ?? 0} of ${phase0_2Prerequisites.lane_count ?? 0} lanes are evaluable, with ${phase0_2Prerequisites.not_identifiable_lane_count ?? 0} not-identifiable lanes and ${phase0_2Prerequisites.no_trainable_lane_count ?? 0} lanes without trainable intervals.`
+  }
+  if (
+    resetOutcome === 'unavailable' ||
+    autocorrelationOutcome === 'unavailable'
+  ) {
+    return 'Retained evidence is verified, but there are not enough complete shared reset windows or contiguous one-step forecasts to evaluate every live gate.'
+  }
+  const exclusions =
+    unmatchedPhase2Intervals || unmatchedPhase3Intervals
+      ? ` The shared eligible interval cohort excludes ${unmatchedPhase2Intervals ?? 0} Phase 2-only and ${unmatchedPhase3Intervals ?? 0} Phase 3-only forecasts.`
+      : ''
+  const partialWindows = partialResetWindowCount
+    ? ` ${partialResetWindowCount} partially paired reset windows are excluded from the reset-calibration gate and retained as diagnostics.`
+    : ''
+  return `Verified retained-cohort comparison: one-step calibration on complete shared forecast intervals is ${resetOutcome} and absolute within-lane interval residual autocorrelation is ${autocorrelationOutcome}. This is an in-window prefix forecast comparison, not a held-out backtest. Lag and display rule were selected retrospectively from this cohort, so the result is not prospective validation.${exclusions}${partialWindows} Retrospective censored-band distance and uncertainty intervals are reported separately.`
+}
+
+function digestIds(ids) {
+  const values = [
+    ...new Set((ids ?? []).filter((id) => typeof id === 'string')),
+  ].sort()
+  return values.length
+    ? createHash('sha256').update(values.join('\n')).digest('hex')
+    : null
+}
+
+function isValidDateOnly(value) {
+  return (
+    typeof value === 'string' &&
+    /^\d{4}-\d{2}-\d{2}$/.test(value) &&
+    Number.isFinite(Date.parse(`${value}T00:00:00.000Z`)) &&
+    new Date(`${value}T00:00:00.000Z`).toISOString().slice(0, 10) === value
+  )
+}
+
+function isSha256(value) {
+  return typeof value === 'string' && /^[a-f0-9]{64}$/i.test(value)
+}
+
+function inspectPhase2Prerequisites(estimates) {
+  const lanes = (Array.isArray(estimates) ? estimates : []).map((estimate) => {
+    const residuals = estimate?.residuals
+    const residualReportPresent =
+      residuals &&
+      typeof residuals === 'object' &&
+      residuals.static_baseline &&
+      residuals.rolling_exponential &&
+      ['rmse_pct', 'mae_pct'].every((key) =>
+        Object.hasOwn(residuals.rolling_exponential, key)
+      )
+    const lagSensitivityPresent =
+      Array.isArray(estimate?.lag_sensitivity) &&
+      estimate.lag_sensitivity.length > 0 &&
+      estimate.lag_sensitivity.every(
+        (row) =>
+          Number.isFinite(row?.lag_minutes) &&
+          Number.isFinite(row?.trainable_interval_count) &&
+          typeof row?.status === 'string'
+      )
+    const identifiabilityPresent = [
+      'high_confidence',
+      'directional_only',
+      'not_identifiable',
+    ].includes(estimate?.identifiability?.status)
+    const backtestPresent =
+      typeof estimate?.backtest?.status === 'string' &&
+      Object.hasOwn(estimate.backtest, 'static_rmse_pct') &&
+      Object.hasOwn(estimate.backtest, 'rolling_rmse_pct')
+    const trainableCount = finiteOrNull(estimate?.trainable_interval_count) ?? 0
+    const backtestEvaluated =
+      estimate?.backtest?.status === 'evaluated' &&
+      Number.isFinite(estimate.backtest.static_rmse_pct) &&
+      Number.isFinite(estimate.backtest.rolling_rmse_pct)
+    return {
+      provider: estimate?.provider ?? 'unknown',
+      quota_lane: estimate?.quota_lane ?? 'unknown',
+      trainable_interval_count: trainableCount,
+      identifiability_status: estimate?.identifiability?.status ?? 'unknown',
+      residual_report: residualReportPresent ? 'present' : 'missing',
+      lag_sensitivity: lagSensitivityPresent ? 'present' : 'missing',
+      identifiability_score: identifiabilityPresent ? 'present' : 'missing',
+      rolling_vs_static_backtest: backtestPresent ? 'present' : 'missing',
+      backtest_status: estimate?.backtest?.status ?? 'missing',
+      evaluable: trainableCount > 0 && backtestEvaluated,
+    }
+  })
+  const nonEmpty = lanes.length > 0
+  const outputsPresent =
+    nonEmpty &&
+    lanes.every(
+      (lane) =>
+        lane.residual_report === 'present' &&
+        lane.lag_sensitivity === 'present' &&
+        lane.identifiability_score === 'present' &&
+        lane.rolling_vs_static_backtest === 'present'
+    )
+  const evaluableLaneCount = lanes.filter((lane) => lane.evaluable).length
+  const status =
+    outputsPresent && evaluableLaneCount === lanes.length && lanes.length > 0
+      ? 'met'
+      : 'incomplete'
+  return {
+    status,
+    coverage_status:
+      evaluableLaneCount === lanes.length && lanes.length > 0
+        ? 'complete'
+        : evaluableLaneCount > 0
+          ? 'limited'
+          : 'none',
+    lane_count: lanes.length,
+    evaluable_lane_count: evaluableLaneCount,
+    not_identifiable_lane_count: lanes.filter(
+      (lane) => lane.identifiability_status === 'not_identifiable'
+    ).length,
+    no_trainable_lane_count: lanes.filter(
+      (lane) => lane.trainable_interval_count === 0
+    ).length,
+    components: {
+      residual_reports: outputsPresent ? 'met' : 'incomplete',
+      lag_sensitivity: outputsPresent ? 'met' : 'incomplete',
+      identifiability_scores: outputsPresent ? 'met' : 'incomplete',
+      rolling_vs_static_backtests:
+        evaluableLaneCount === lanes.length && lanes.length > 0
+          ? 'met'
+          : 'incomplete',
+    },
+    lanes,
+  }
+}
+
+function phase2DataByLane(estimates) {
+  const map = new Map()
+  for (const estimate of estimates ?? []) {
+    const key = [
+      estimate.provider,
+      estimate.quota_key,
+      estimate.quota_type,
+      estimate.quota_lane,
+    ].join('|')
+    map.set(key, {
+      prerequisites: inspectPhase2Prerequisites([estimate]),
+    })
+  }
+  return map
+}
+
+export function validateQuotaPhase3RetainedCohort({
+  artifactText,
+  expectedSha256,
+  expectedSourceRevision,
+} = {}) {
+  const failures = []
+  const raw = typeof artifactText === 'string' ? artifactText : ''
+  const actualSha256 = createHash('sha256').update(raw).digest('hex')
+  if (
+    typeof expectedSha256 !== 'string' ||
+    !/^[a-f0-9]{64}$/i.test(expectedSha256) ||
+    actualSha256 !== expectedSha256.toLowerCase()
+  ) {
+    failures.push('sha256_mismatch')
+  }
+
+  let artifact = null
+  try {
+    artifact = JSON.parse(raw)
+  } catch {
+    failures.push('invalid_json')
+  }
+  if (!artifact || typeof artifact !== 'object' || Array.isArray(artifact)) {
+    failures.push('invalid_artifact')
+  } else {
+    if (artifact.database !== 'aawm_tristore') {
+      failures.push('unexpected_database')
+    }
+    if (artifact.transaction !== 'REPEATABLE READ READ ONLY; ROLLBACK') {
+      failures.push('read_only_transaction_not_verified')
+    }
+    if (
+      !Number.isFinite(artifact.statement_timeout_ms) ||
+      artifact.statement_timeout_ms <= 0
+    ) {
+      failures.push('statement_timeout_missing')
+    }
+    if (
+      typeof artifact.source_revision !== 'string' ||
+      !/^[a-f0-9]{40}$/i.test(artifact.source_revision) ||
+      (expectedSourceRevision &&
+        artifact.source_revision.toLowerCase() !==
+          expectedSourceRevision.toLowerCase())
+    ) {
+      failures.push('source_revision_mismatch')
+    }
+    if (
+      typeof artifact.captured_at !== 'string' ||
+      !Number.isFinite(Date.parse(artifact.captured_at))
+    ) {
+      failures.push('capture_timestamp_missing')
+    }
+    if (
+      !isValidDateOnly(artifact.window?.from) ||
+      !isValidDateOnly(artifact.window?.to) ||
+      artifact.window.from >= artifact.window.to
+    ) {
+      failures.push('invalid_window')
+    }
+    if (
+      !Array.isArray(artifact.observations) ||
+      artifact.observations.length === 0
+    ) {
+      failures.push('observations_missing')
+    }
+    if (
+      !Array.isArray(artifact.usage_buckets) ||
+      artifact.usage_buckets.length === 0
+    ) {
+      failures.push('usage_buckets_missing')
+    }
+    for (const key of ['report_service', 'quota_phase3']) {
+      if (!isSha256(artifact.source_hashes?.[key])) {
+        failures.push(`source_hash_missing:${key}`)
+      }
+    }
+    for (const key of ['observations', 'usage_buckets']) {
+      if (!isSha256(artifact.query_hashes?.[key])) {
+        failures.push(`query_hash_missing:${key}`)
+      }
+    }
+  }
+
+  const validationStatus = failures.length ? 'unverified' : 'verified'
+  const evidence = artifact && typeof artifact === 'object' ? artifact : {}
+  return {
+    status: validationStatus,
+    validation:
+      validationStatus === 'verified'
+        ? 'sha256_and_shape_verified'
+        : 'validation_failed',
+    sha256: actualSha256,
+    source_revision: evidence.source_revision ?? null,
+    captured_at: evidence.captured_at ?? null,
+    database: evidence.database ?? null,
+    transaction: evidence.transaction ?? null,
+    statement_timeout_ms: evidence.statement_timeout_ms ?? null,
+    window: evidence.window ?? null,
+    observation_count: Array.isArray(evidence.observations)
+      ? evidence.observations.length
+      : 0,
+    usage_bucket_count: Array.isArray(evidence.usage_buckets)
+      ? evidence.usage_buckets.length
+      : 0,
+    providers: Array.isArray(evidence.observations)
+      ? [
+          ...new Set(
+            evidence.observations.map((row) => row.provider).filter(Boolean)
+          ),
+        ].sort()
+      : [],
+    source_hashes: evidence.source_hashes ?? {},
+    query_hashes: evidence.query_hashes ?? {},
+    failures,
+  }
+}
+
+export function validateQuotaPhase3Phase2Baseline({
+  artifactText,
+  expectedSha256,
+  expectedSourceRevision,
+  expectedCohortSha256,
+} = {}) {
+  const failures = []
+  const raw = typeof artifactText === 'string' ? artifactText : ''
+  const actualSha256 = createHash('sha256').update(raw).digest('hex')
+  if (
+    !isSha256(expectedSha256) ||
+    actualSha256 !== expectedSha256.toLowerCase()
+  ) {
+    failures.push('sha256_mismatch')
+  }
+
+  let artifact = null
+  try {
+    artifact = JSON.parse(raw)
+  } catch {
+    failures.push('invalid_json')
+  }
+  if (!artifact || typeof artifact !== 'object' || Array.isArray(artifact)) {
+    failures.push('invalid_artifact')
+  } else {
+    if (
+      typeof artifact.source_revision !== 'string' ||
+      !/^[a-f0-9]{40}$/i.test(artifact.source_revision) ||
+      (expectedSourceRevision &&
+        artifact.source_revision.toLowerCase() !==
+          expectedSourceRevision.toLowerCase())
+    ) {
+      failures.push('source_revision_mismatch')
+    }
+    if (!isSha256(artifact.report_source_sha256)) {
+      failures.push('report_source_hash_missing')
+    }
+    if (
+      !isSha256(artifact.cohort_sha256) ||
+      (expectedCohortSha256 &&
+        artifact.cohort_sha256.toLowerCase() !==
+          expectedCohortSha256.toLowerCase())
+    ) {
+      failures.push('cohort_hash_mismatch')
+    }
+    if (artifact.database !== 'aawm_tristore') {
+      failures.push('unexpected_database')
+    }
+    if (
+      !isValidDateOnly(artifact.window?.from) ||
+      !isValidDateOnly(artifact.window?.to) ||
+      artifact.window.from >= artifact.window.to
+    ) {
+      failures.push('invalid_window')
+    }
+    if (
+      !Number.isInteger(artifact.interval_rows) ||
+      artifact.interval_rows <= 0
+    ) {
+      failures.push('interval_rows_missing')
+    }
+    if (
+      artifact.baseline?.metadata?.phase !== '0-2' ||
+      !Array.isArray(artifact.baseline?.estimates) ||
+      artifact.baseline.estimates.length === 0 ||
+      Object.hasOwn(artifact.baseline, 'phase3')
+    ) {
+      failures.push('phase0_2_baseline_missing')
+    }
+  }
+
+  const baseline = artifact?.baseline
+  const prerequisites = inspectPhase2Prerequisites(baseline?.estimates)
+  const validationStatus = failures.length ? 'unverified' : 'verified'
+  return {
+    status: validationStatus,
+    validation:
+      validationStatus === 'verified'
+        ? 'sha256_and_provenance_verified'
+        : 'validation_failed',
+    sha256: actualSha256,
+    source_revision: artifact?.source_revision ?? null,
+    report_source_sha256: artifact?.report_source_sha256 ?? null,
+    cohort_sha256: artifact?.cohort_sha256 ?? null,
+    database: artifact?.database ?? null,
+    generated_at: artifact?.generated_at ?? null,
+    window: artifact?.window ?? null,
+    interval_row_count: artifact?.interval_rows ?? 0,
+    estimate_lane_count: baseline?.estimates?.length ?? 0,
+    prerequisites,
+    failures,
   }
 }
 
 export function buildQuotaPhase3Report(intervals, options = {}) {
   const lanes = groupIntervals(intervals ?? [], options.selectedLagByLane ?? {})
-  const phase2ByLane = phase2CoefficientsByLane(options.phase2Estimates)
-  const estimates = lanes.map((lane) =>
-    buildLaneEstimate(lane, phase2ByLane.get(lane.key))
+  const phase2ByLane = phase2DataByLane(options.phase2Estimates)
+  const phase2Prerequisites = inspectPhase2Prerequisites(
+    options.phase2Estimates
   )
+  const laneResults = lanes.map((lane) =>
+    buildLaneEstimate(lane, phase2ByLane.get(lane.key), {
+      comparisonScope: options.comparisonScope,
+      evaluationEvidence: options.evaluationEvidence,
+    })
+  )
+  const selectedComparisons = laneResults.map((estimate) =>
+    comparisonForSelectedDisplayRule(estimate)
+  )
+  const cohort = aggregateComparisonCohort(selectedComparisons)
   const comparison = compareQuotaPhase3ToPhase2({
     scope: options.comparisonScope ?? 'in_request',
     phase2: {
-      reset_window_mae_pct: meanOf(
-        estimates.map(
-          (estimate) =>
-            estimate.phase2_comparison.metrics.phase2_reset_window_mae_pct
-        )
-      ),
-      interval_residual_autocorrelation: meanOf(
-        estimates.map(
-          (estimate) =>
-            estimate.phase2_comparison.metrics
-              .phase2_interval_residual_autocorrelation
-        )
-      ),
+      interval_residuals: cohort.phase2_interval_residuals,
     },
     phase3: {
-      reset_window_mean_band_distance_pct: meanOf(
-        estimates.map(
-          (estimate) =>
-            estimate.phase2_comparison.metrics
-              .phase3_reset_window_mean_band_distance_pct
-        )
-      ),
-      reset_window_point_mae_pct: meanOf(
-        estimates.map(
-          (estimate) =>
-            estimate.phase2_comparison.metrics.phase3_reset_window_point_mae_pct
-        )
-      ),
-      interval_residual_autocorrelation: meanOf(
-        estimates.map(
-          (estimate) =>
-            estimate.phase2_comparison.metrics
-              .phase3_interval_residual_autocorrelation
-        )
-      ),
+      reset_band_distances: cohort.phase3_reset_band_distances,
+      interval_residuals: cohort.phase3_interval_residuals,
+      uncertainty_intervals: cohort.phase3_uncertainty_intervals,
     },
+    phase0_2Prerequisites: phase2Prerequisites,
+    evidence: options.evaluationEvidence,
   })
+  const estimates = laneResults.map(
+    ({ selectedEvaluationCohort, ...estimate }) => estimate
+  )
 
   return {
     phase: '3',
@@ -234,7 +1057,7 @@ export function buildQuotaPhase3Report(intervals, options = {}) {
     },
     cache_read_prior: QUOTA_PHASE3_CACHE_READ_PRIOR,
     cache_write_policy: QUOTA_PHASE3_CACHE_WRITE_POLICY,
-    live_evaluation: QUOTA_PHASE3_LIVE_EVALUATION,
+    live_evaluation: publicLiveEvaluation(comparison),
     phase2_comparison: comparison,
     estimates,
     from: options.from ?? null,
@@ -242,45 +1065,85 @@ export function buildQuotaPhase3Report(intervals, options = {}) {
   }
 }
 
-function buildLaneEstimate(lane, phase2Coefficients) {
+function publicLiveEvaluation(comparison) {
+  const prerequisites = comparison.phase0_2_prerequisites ?? {}
+  const components =
+    comparison.evidence_status === 'retained_live_verified'
+      ? (prerequisites.components ?? {})
+      : {}
+  return {
+    status: comparison.live_evaluation_status,
+    evidence_status: comparison.evidence_status,
+    better_reset_window_calibration:
+      comparison.acceptance.better_reset_window_calibration,
+    lower_interval_residual_autocorrelation:
+      comparison.acceptance.lower_interval_residual_autocorrelation,
+    clear_uncertainty_intervals:
+      comparison.acceptance.clear_uncertainty_intervals,
+    evidence_search: {
+      phase_0_2_residual_reports: components.residual_reports ?? 'not_provided',
+      lag_sensitivity_artifacts: components.lag_sensitivity ?? 'not_provided',
+      identifiability_score_artifacts:
+        components.identifiability_scores ?? 'not_provided',
+      rolling_vs_static_backtests:
+        components.rolling_vs_static_backtests ?? 'not_provided',
+    },
+    reason: comparison.note,
+  }
+}
+
+function comparisonForSelectedDisplayRule(estimate) {
+  const cohort = estimate.selectedEvaluationCohort
+  return cohort
+    ? {
+        phase3_reset_band_distances: cohort.phase3_reset_band_distances,
+        phase2_interval_residuals: cohort.phase2_interval_residuals,
+        phase3_interval_residuals: cohort.phase3_interval_residuals,
+        phase3_uncertainty_intervals: cohort.phase3_uncertainty_intervals,
+      }
+    : null
+}
+
+function aggregateComparisonCohort(comparisons) {
+  const result = {
+    phase3_reset_band_distances: [],
+    phase2_interval_residuals: [],
+    phase3_interval_residuals: [],
+    phase3_uncertainty_intervals: [],
+  }
+  for (const comparison of comparisons ?? []) {
+    if (!comparison) continue
+    for (const key of Object.keys(result)) {
+      result[key].push(...(comparison[key] ?? []))
+    }
+  }
+  return result
+}
+
+function buildLaneEstimate(lane, phase2LaneData, comparisonOptions = {}) {
   const compiled = compileEpochs(lane.intervals)
   const semantics = providerSemantics(lane.intervals[0] ?? {})
+  const phase2ResidualRows = phase2OneStepDisplayedChangeResidualRows(
+    lane.intervals
+  )
   const byRule = {}
   for (const rule of DISPLAY_RULES) {
-    byRule[rule] = fitDisplayRule(compiled, rule, semantics)
-  }
-  const forecastAutocorrelation = quotaPhase3Lag1Autocorrelation(
-    quotaPhase3OneStepDisplayedChangeResiduals(lane.intervals, {
-      featureNames: compiled.featureNames,
+    byRule[rule] = fitDisplayRule({
+      compiled,
+      rule,
+      semantics,
+      phase2ResidualRows,
     })
-  )
-  for (const rule of DISPLAY_RULES) {
-    byRule[rule].interval_residual_autocorrelation = forecastAutocorrelation
   }
   const comparison = compareDisplayRules(byRule)
-  const phase2Summary = summarizePhase2(lane.intervals, phase2Coefficients)
   const summarySource = comparison.preferred_rule
     ? byRule[comparison.preferred_rule]
     : null
-  const phase3Summary = {
-    reset_window_mean_band_distance_pct: summarySource
-      ? summarySource.mean_reset_window_band_distance
-      : meanOf([
-          byRule.rounded.mean_reset_window_band_distance,
-          byRule.floored.mean_reset_window_band_distance,
-        ]),
-    reset_window_point_mae_pct: summarySource
-      ? summarySource.mean_reset_window_point_abs_error
-      : meanOf([
-          byRule.rounded.mean_reset_window_point_abs_error,
-          byRule.floored.mean_reset_window_point_abs_error,
-        ]),
-    interval_residual_autocorrelation: summarySource
-      ? summarySource.interval_residual_autocorrelation
-      : meanOf([
-          byRule.rounded.interval_residual_autocorrelation,
-          byRule.floored.interval_residual_autocorrelation,
-        ]),
+  const selectedEvaluationCohort = summarySource?.evaluation_cohort ?? {
+    phase3_reset_band_distances: [],
+    phase2_interval_residuals: [],
+    phase3_interval_residuals: [],
+    phase3_uncertainty_intervals: [],
   }
 
   return {
@@ -309,14 +1172,25 @@ function buildLaneEstimate(lane, phase2Coefficients) {
       comparison
     ),
     phase2_comparison: compareQuotaPhase3ToPhase2({
-      scope: 'in_request',
-      phase2: phase2Summary,
-      phase3: phase3Summary,
+      scope: comparisonOptions.comparisonScope ?? 'in_request',
+      phase2: {
+        interval_residuals: selectedEvaluationCohort.phase2_interval_residuals,
+      },
+      phase3: {
+        reset_band_distances:
+          selectedEvaluationCohort.phase3_reset_band_distances,
+        interval_residuals: selectedEvaluationCohort.phase3_interval_residuals,
+        uncertainty_intervals:
+          selectedEvaluationCohort.phase3_uncertainty_intervals,
+      },
+      phase0_2Prerequisites: phase2LaneData?.prerequisites,
+      evidence: comparisonOptions.evaluationEvidence,
     }),
+    selectedEvaluationCohort: summarySource ? selectedEvaluationCohort : null,
   }
 }
 
-function fitDisplayRule(compiled, rule, semantics) {
+function fitDisplayRule({ compiled, rule, semantics, phase2ResidualRows }) {
   const epochs = compiled.epochs.map((epoch) => applyRule(epoch, rule))
   const featureNames = compiled.featureNames
   const forward = []
@@ -358,6 +1232,19 @@ function fitDisplayRule(compiled, rule, semantics) {
     semantics,
     identifiability,
   })
+  const phase3ResidualRows = phase3OneStepDisplayedChangeResidualRows(
+    epochs,
+    featureNames,
+    semantics
+  )
+  const pairedEvaluation = evaluatePairedCohort({
+    epochs,
+    smoothed,
+    history,
+    phase2ResidualRows,
+    phase3ResidualRows,
+    rule,
+  })
   const observationDistances = []
   const resetBandDistances = []
   const resetPointErrors = []
@@ -396,7 +1283,7 @@ function fitDisplayRule(compiled, rule, semantics) {
     mean_observation_band_distance: meanOf(observationDistances),
     mean_reset_window_band_distance: meanOf(resetBandDistances),
     mean_reset_window_point_abs_error: meanOf(resetPointErrors),
-    interval_residual_autocorrelation: null,
+    ...pairedEvaluation,
     holdout_mean_band_distance: holdout,
     selection_distance:
       holdout === null ? meanOf(observationDistances) : holdout,
@@ -404,6 +1291,341 @@ function fitDisplayRule(compiled, rule, semantics) {
       holdout === null
         ? 'in_sample_censored_loss'
         : 'heldout_tail_censored_loss',
+  }
+}
+
+function phase2OneStepDisplayedChangeResidualRows(intervals) {
+  const ordered = [...(intervals ?? [])].sort(compareIntervalTime)
+  const trainable = ordered
+    .filter(
+      (interval) =>
+        interval.trainable &&
+        !isBoundaryInterval(interval) &&
+        Number.isFinite(Number(interval.deltaPct))
+    )
+    .sort(compareIntervalTime)
+  const families = new Set()
+  for (const interval of trainable) {
+    for (const family of Object.keys(interval.featureTotals ?? {})) {
+      families.add(family)
+    }
+  }
+  const featureNames = [...families]
+    .sort()
+    .flatMap((family) => [`${family}:workload`, `${family}:cache_read`])
+  if (!featureNames.length) return []
+
+  const gram = Array.from({ length: featureNames.length }, () =>
+    Array(featureNames.length).fill(0)
+  )
+  const xty = Array(featureNames.length).fill(0)
+  const rows = []
+  let trained = 0
+  let lastTime = null
+  const halfLife = forecastHalfLifeHours(trainable[0]?.quotaType)
+
+  for (const interval of ordered) {
+    const time = Date.parse(interval.intervalEndAt ?? '')
+    const finiteTime = Number.isFinite(time) ? time : null
+    if (
+      trained > 0 &&
+      finiteTime !== null &&
+      lastTime !== null &&
+      finiteTime !== lastTime
+    ) {
+      const ageHours = Math.max(0, (finiteTime - lastTime) / 3_600_000)
+      const decay = Math.exp((-Math.LN2 * ageHours) / Math.max(halfLife, 1))
+      scaleMatrix(gram, decay)
+      scaleVector(xty, decay)
+    }
+
+    if (
+      trained >= FORECAST_MIN_TRAIN &&
+      isQuotaPhase3ForecastEligible(interval)
+    ) {
+      const features = phase2FeatureVector(interval, featureNames)
+      const observed = Number(interval.deltaPct)
+      const beta = solveNonNegativeNormal(gram, xty)
+      const predicted = dot(features, beta)
+      rows.push(
+        evaluationIntervalRow(interval, {
+          observed_pct: observed,
+          predicted_pct: predicted,
+          residual_pct: observed - predicted,
+          model: 'phase2',
+        })
+      )
+    }
+    const trainableInterval =
+      interval.trainable &&
+      !isBoundaryInterval(interval) &&
+      Number.isFinite(Number(interval.deltaPct))
+    if (trainableInterval) {
+      const features = phase2FeatureVector(interval, featureNames)
+      const observed = Number(interval.deltaPct)
+      rankOneUpdate(gram, xty, features, observed, 1)
+      trained += 1
+    }
+    if (finiteTime !== null) lastTime = finiteTime
+  }
+  return rows
+}
+
+function isQuotaPhase3ForecastEligible(interval) {
+  const delta = Number(interval?.deltaPct)
+  return (
+    Number.isFinite(delta) &&
+    delta >= 0 &&
+    !interval?.isCappedAt100 &&
+    !isBoundaryInterval(interval)
+  )
+}
+
+function phase2FeatureVector(interval, featureNames) {
+  return featureNames.map((name) => {
+    const [family, category] = name.split(':')
+    const totals = interval.featureTotals?.[family] ?? {}
+    if (category === 'cache_read') return totals.cacheReadMtok ?? 0
+    return (
+      (totals.uncachedInputMtok ?? 0) +
+      (totals.outputMtok ?? 0) +
+      (totals.cacheCreateMtok ?? 0) +
+      (totals.reasoningMtok ?? 0)
+    )
+  })
+}
+
+function evaluationIntervalRow(interval, metrics) {
+  const lane = laneKey(interval)
+  const reset = String(interval.expectedResetAt ?? '')
+  const start = interval.intervalStartAt ?? ''
+  const end = interval.intervalEndAt ?? ''
+  return {
+    interval_id: [lane, reset, start, end].join('|'),
+    lane_id: lane,
+    series_id: [lane, reset].join('|'),
+    reset_window_id: [lane, reset].join('|'),
+    interval_start_at: start,
+    interval_end_at: end,
+    ...metrics,
+  }
+}
+
+function phase3OneStepDisplayedChangeResidualRows(
+  epochs,
+  featureNames,
+  semantics
+) {
+  const rows = []
+  if (!featureNames.length) return rows
+  let anchor = null
+  for (const epoch of epochs) {
+    const prefix = []
+    for (const observation of epoch.observations) {
+      const source = observation.source
+      if (
+        isQuotaPhase3ForecastEligible(source) &&
+        (anchor || prefix.length >= FORECAST_MIN_TRAIN)
+      ) {
+        const prefixEpoch = {
+          ...epoch,
+          observations: prefix,
+          resetTarget: null,
+        }
+        const beta = fitEpoch({
+          epoch: prefixEpoch,
+          featureNames,
+          anchor,
+          anchorWeight: anchor ? STATE_SMOOTH_WEIGHT : 0,
+          semantics,
+        })
+        const observed = Number(source.deltaPct)
+        const predicted = dot(observation.increment, beta)
+        rows.push(
+          evaluationIntervalRow(source, {
+            observed_pct: observed,
+            predicted_pct: predicted,
+            residual_pct: observed - predicted,
+            model: 'phase3',
+          })
+        )
+      }
+      prefix.push(observation)
+    }
+    if (prefix.length > 0) {
+      anchor = fitEpoch({
+        epoch,
+        featureNames,
+        anchor,
+        anchorWeight: anchor ? STATE_SMOOTH_WEIGHT : 0,
+        semantics,
+      })
+    }
+  }
+  return rows
+}
+
+function evaluatePairedCohort({
+  epochs,
+  smoothed,
+  history,
+  phase2ResidualRows,
+  phase3ResidualRows,
+  rule,
+}) {
+  const phase3ResetBandDistances = []
+  const phase3UncertaintyIntervals = []
+
+  for (let index = 0; index < epochs.length; index += 1) {
+    const epoch = epochs[index]
+    const beta = smoothed[index] ?? []
+    const first = epoch.observations[0]?.source
+    const resetWindowId = first
+      ? [laneKey(first), epoch.resetKey].join('|')
+      : null
+
+    if (epoch.resetTarget && resetWindowId) {
+      phase3ResetBandDistances.push({
+        reset_window_id: resetWindowId,
+        lane_id: first ? laneKey(first) : 'unknown',
+        band_distance_pct:
+          quotaPhase3BandDistance(
+            dot(epoch.resetTarget.total, beta),
+            epoch.resetTarget.band
+          ) ?? null,
+      })
+    }
+
+    for (const coefficient of history.epochs[index]?.coefficients ?? []) {
+      phase3UncertaintyIntervals.push({
+        reset_window_id: resetWindowId,
+        lane_id: first ? laneKey(first) : 'unknown',
+        display_rule: rule,
+        feature: coefficient.feature,
+        confidence_low_pct_per_mtok: coefficient.confidence_low_pct_per_mtok,
+        confidence_high_pct_per_mtok: coefficient.confidence_high_pct_per_mtok,
+        estimate_status: coefficient.estimate_status,
+      })
+    }
+  }
+
+  const intervalPairs = pairEvaluationRows(
+    phase2ResidualRows,
+    phase3ResidualRows,
+    'interval_id'
+  )
+  const pairedResetWindows = aggregatePairedResetWindows(intervalPairs.pairs)
+  const { complete: completeResetWindows, partial: partialResetWindows } =
+    partitionPairedResetWindows(
+      pairedResetWindows,
+      intervalPairs,
+      phase2ResidualRows,
+      phase3ResidualRows
+    )
+  const bandPairs = pairEvaluationRows(
+    pairedResetWindows,
+    phase3ResetBandDistances,
+    'reset_window_id'
+  )
+  const phase2Autocorrelation = pooledLag1Autocorrelation(
+    intervalPairs.pairs,
+    'phase2'
+  )
+  const phase3Autocorrelation = pooledLag1Autocorrelation(
+    intervalPairs.pairs,
+    'phase3'
+  )
+  const phase2ResetMae = meanOf(
+    completeResetWindows.map((window) =>
+      Math.abs(window.phase2_predicted_pct - window.observed_pct)
+    )
+  )
+  const phase3ResetMae = meanOf(
+    completeResetWindows.map((window) =>
+      Math.abs(window.phase3_predicted_pct - window.observed_pct)
+    )
+  )
+  const partialPhase2ResetMae = meanOf(
+    partialResetWindows.map((window) =>
+      Math.abs(window.phase2_predicted_pct - window.observed_pct)
+    )
+  )
+  const partialPhase3ResetMae = meanOf(
+    partialResetWindows.map((window) =>
+      Math.abs(window.phase3_predicted_pct - window.observed_pct)
+    )
+  )
+  const phase3BandDistance = meanOf(
+    bandPairs.pairs
+      .map((pair) => finiteOrNull(pair.phase3.band_distance_pct))
+      .filter((value) => value !== null)
+  )
+  const clearUncertaintyIntervals = hasClearUncertaintyIntervals(
+    phase3UncertaintyIntervals
+  )
+
+  return {
+    interval_residual_autocorrelation: phase3Autocorrelation.value,
+    interval_residual_abs_autocorrelation:
+      phase3Autocorrelation.value === null
+        ? null
+        : Math.abs(phase3Autocorrelation.value),
+    phase2_interval_residual_autocorrelation: phase2Autocorrelation.value,
+    phase2_interval_residual_abs_autocorrelation:
+      phase2Autocorrelation.value === null
+        ? null
+        : Math.abs(phase2Autocorrelation.value),
+    phase2_reset_window_one_step_sum_mae_pct: phase2ResetMae,
+    phase3_reset_window_one_step_sum_mae_pct: phase3ResetMae,
+    partial_phase2_reset_window_one_step_sum_mae_pct: partialPhase2ResetMae,
+    partial_phase3_reset_window_one_step_sum_mae_pct: partialPhase3ResetMae,
+    phase3_reset_window_mean_band_distance_pct: phase3BandDistance,
+    reset_window_count: completeResetWindows.length,
+    partial_reset_window_count: partialResetWindows.length,
+    diagnostic_reset_window_count: pairedResetWindows.length,
+    interval_forecast_count: intervalPairs.pairs.length,
+    paired_plateau_interval_count: intervalPairs.pairs.filter(
+      (pair) => pair.phase2.observed_pct === 0 && pair.phase3.observed_pct === 0
+    ).length,
+    same_interval_cohort:
+      intervalPairs.pairs.length > 0 &&
+      intervalPairs.unmatched_phase2_ids.length === 0 &&
+      intervalPairs.unmatched_phase3_ids.length === 0,
+    reset_window_id_sha256: digestIds(
+      completeResetWindows.map((window) => window.reset_window_id)
+    ),
+    phase2_interval_id_sha256: digestIds(
+      intervalPairs.pairs.map((pair) => pair.id)
+    ),
+    unmatched_phase2_interval_count: intervalPairs.unmatched_phase2_ids.length,
+    unmatched_phase3_interval_count: intervalPairs.unmatched_phase3_ids.length,
+    unmatched_phase2_reset_window_count: [
+      ...uniqueResetWindowIds(phase2ResidualRows),
+    ].filter(
+      (id) =>
+        !pairedResetWindows.some((window) => window.reset_window_id === id)
+    ).length,
+    unmatched_phase3_reset_window_count: [
+      ...uniqueResetWindowIds(phase3ResidualRows),
+    ].filter(
+      (id) =>
+        !pairedResetWindows.some((window) => window.reset_window_id === id)
+    ).length,
+    paired_autocorrelation_interval_count: Math.min(
+      phase2Autocorrelation.interval_count,
+      phase3Autocorrelation.interval_count
+    ),
+    paired_autocorrelation_series_count: Math.min(
+      phase2Autocorrelation.series_count,
+      phase3Autocorrelation.series_count
+    ),
+    clear_uncertainty_intervals: clearUncertaintyIntervals,
+    evaluation_cohort: {
+      phase3_reset_band_distances: phase3ResetBandDistances,
+      phase2_interval_residuals: phase2ResidualRows,
+      phase3_interval_residuals: phase3ResidualRows,
+      phase3_uncertainty_intervals: phase3UncertaintyIntervals,
+    },
   }
 }
 
@@ -442,6 +1664,41 @@ function publicRuleScore(result) {
     mean_reset_window_band_distance: result.mean_reset_window_band_distance,
     mean_reset_window_point_abs_error: result.mean_reset_window_point_abs_error,
     interval_residual_autocorrelation: result.interval_residual_autocorrelation,
+    interval_residual_abs_autocorrelation:
+      result.interval_residual_abs_autocorrelation,
+    phase2_interval_residual_autocorrelation:
+      result.phase2_interval_residual_autocorrelation,
+    phase2_interval_residual_abs_autocorrelation:
+      result.phase2_interval_residual_abs_autocorrelation,
+    phase2_reset_window_one_step_sum_mae_pct:
+      result.phase2_reset_window_one_step_sum_mae_pct,
+    phase3_reset_window_one_step_sum_mae_pct:
+      result.phase3_reset_window_one_step_sum_mae_pct,
+    partial_phase2_reset_window_one_step_sum_mae_pct:
+      result.partial_phase2_reset_window_one_step_sum_mae_pct,
+    partial_phase3_reset_window_one_step_sum_mae_pct:
+      result.partial_phase3_reset_window_one_step_sum_mae_pct,
+    phase3_reset_window_mean_band_distance_pct:
+      result.phase3_reset_window_mean_band_distance_pct,
+    reset_window_count: result.reset_window_count,
+    partial_reset_window_count: result.partial_reset_window_count,
+    diagnostic_reset_window_count: result.diagnostic_reset_window_count,
+    interval_forecast_count: result.interval_forecast_count,
+    paired_plateau_interval_count: result.paired_plateau_interval_count,
+    same_interval_cohort: result.same_interval_cohort,
+    reset_window_id_sha256: result.reset_window_id_sha256,
+    phase2_interval_id_sha256: result.phase2_interval_id_sha256,
+    unmatched_phase2_reset_window_count:
+      result.unmatched_phase2_reset_window_count,
+    unmatched_phase3_reset_window_count:
+      result.unmatched_phase3_reset_window_count,
+    unmatched_phase2_interval_count: result.unmatched_phase2_interval_count,
+    unmatched_phase3_interval_count: result.unmatched_phase3_interval_count,
+    paired_autocorrelation_interval_count:
+      result.paired_autocorrelation_interval_count,
+    paired_autocorrelation_series_count:
+      result.paired_autocorrelation_series_count,
+    clear_uncertainty_intervals: result.clear_uncertainty_intervals,
     holdout_mean_band_distance: result.holdout_mean_band_distance,
     selection_distance: result.selection_distance,
     identifiability_status: result.identifiability.status,
@@ -983,6 +2240,7 @@ function compileEpochs(intervals) {
       displayed,
       capped: Boolean(interval.isCappedAt100) || displayed >= 99.5,
       at: interval.intervalEndAt ?? null,
+      source: interval,
     })
     current.endAt = interval.intervalEndAt ?? current.endAt
   }
@@ -1226,9 +2484,7 @@ function collectDiagnostics(byRule, laneInterval, comparison) {
 
 const FORECAST_MIN_TRAIN = 4
 const FORECAST_RIDGE = 1e-6
-const FORECAST_SOLVE_ITERATIONS = 80
-const FORECAST_PHI_PRIOR = 12
-const FORECAST_PHI_LIMIT = 0.95
+const FORECAST_SOLVE_ITERATIONS = 500
 const FORECAST_HALF_LIFE_HOURS = {
   short: 5,
   short_special: 5,
@@ -1293,148 +2549,21 @@ function solveNonNegativeNormal(gram, xty, warm) {
   return beta
 }
 
-function shrunkChangePersistence(residuals) {
-  const raw = quotaPhase3Lag1Autocorrelation(residuals)
-  if (raw === null) return 0
-  const shrunk =
-    raw * (residuals.length / (residuals.length + FORECAST_PHI_PRIOR))
-  return Math.max(-FORECAST_PHI_LIMIT, Math.min(FORECAST_PHI_LIMIT, shrunk))
-}
-
 export function quotaPhase3OneStepDisplayedChangeResiduals(
   intervals,
   options = {}
 ) {
-  const trainable = [...(intervals ?? [])]
-    .filter(
-      (interval) =>
-        interval.trainable &&
-        !isBoundaryInterval(interval) &&
-        Number.isFinite(Number(interval.deltaPct))
-    )
-    .sort(compareIntervalTime)
-  const featureNames = [
-    ...(options.featureNames ??
-      collectFeatureNames(
-        trainable.filter((interval) => !isBoundaryInterval(interval))
-      )),
-  ]
-  if (!featureNames.length || trainable.length <= FORECAST_MIN_TRAIN) return []
-
-  const featureCount = featureNames.length
-  const gram = Array.from({ length: featureCount }, () =>
-    Array(featureCount).fill(0)
-  )
-  const xty = Array(featureCount).fill(0)
-  let beta = Array(featureCount).fill(0)
-  let trained = 0
-  let lastTime = null
-  const halfLife = forecastHalfLifeHours(trainable[0]?.quotaType)
-  const regressionResiduals = []
-  const innovations = []
-
-  for (const interval of trainable) {
-    const time = Date.parse(interval.intervalEndAt ?? '')
-    const finiteTime = Number.isFinite(time) ? time : null
-    if (
-      trained > 0 &&
-      finiteTime !== null &&
-      lastTime !== null &&
-      finiteTime !== lastTime
-    ) {
-      const ageHours = Math.max(0, (finiteTime - lastTime) / 3_600_000)
-      const decay = Math.exp((-Math.LN2 * ageHours) / Math.max(halfLife, 1))
-      scaleMatrix(gram, decay)
-      scaleVector(xty, decay)
-    }
-    const features = featureVector(interval, featureNames)
-    const displayedDelta = Number(interval.deltaPct)
-    if (trained >= FORECAST_MIN_TRAIN) {
-      beta = solveNonNegativeNormal(gram, xty, beta)
-      const regressionResidual = displayedDelta - dot(features, beta)
-      const persistence =
-        regressionResiduals.length === 0
-          ? 0
-          : shrunkChangePersistence(regressionResiduals) *
-            regressionResiduals[regressionResiduals.length - 1]
-      innovations.push(regressionResidual - persistence)
-      regressionResiduals.push(regressionResidual)
-    }
-    rankOneUpdate(gram, xty, features, displayedDelta, 1)
-    trained += 1
-    if (finiteTime !== null) lastTime = finiteTime
-  }
-  return innovations
-}
-
-function summarizePhase2(intervals, coefficients) {
-  if (!coefficients || !Object.keys(coefficients).length) {
-    return {
-      reset_window_mae_pct: null,
-      interval_residual_autocorrelation: null,
-    }
-  }
-  const trainable = intervals.filter(
-    (interval) =>
-      interval.trainable &&
-      !isBoundaryInterval(interval) &&
-      Number.isFinite(Number(interval.deltaPct))
-  )
-  const residuals = trainable.map(
-    (interval) =>
-      Number(interval.deltaPct) - predictPhase2Delta(interval, coefficients)
-  )
-  const windows = new Map()
-  for (const interval of trainable) {
-    const key = String(interval.expectedResetAt ?? '')
-    const window = windows.get(key) ?? { predicted: 0, observed: 0 }
-    window.predicted += predictPhase2Delta(interval, coefficients)
-    window.observed += Number(interval.deltaPct)
-    windows.set(key, window)
-  }
-  const errors = [...windows.values()].map((window) =>
-    Math.abs(window.predicted - window.observed)
-  )
-  return {
-    reset_window_mae_pct: meanOf(errors),
-    interval_residual_autocorrelation:
-      quotaPhase3Lag1Autocorrelation(residuals),
-  }
-}
-
-function predictPhase2Delta(interval, coefficients) {
-  let total = 0
-  for (const [family, totals] of Object.entries(interval.featureTotals ?? {})) {
-    const workload =
-      (totals.uncachedInputMtok ?? 0) +
-      (totals.outputMtok ?? 0) +
-      (totals.cacheCreateMtok ?? 0) +
-      (totals.reasoningMtok ?? 0)
-    total += workload * (coefficients[`${family}:workload`] ?? 0)
-    total +=
-      (totals.cacheReadMtok ?? 0) * (coefficients[`${family}:cache_read`] ?? 0)
-  }
-  return total
-}
-
-function phase2CoefficientsByLane(estimates) {
-  const map = new Map()
-  for (const estimate of estimates ?? []) {
-    const key = [
-      estimate.provider,
-      estimate.quota_key,
-      estimate.quota_type,
-      estimate.quota_lane,
-    ].join('|')
-    const coefficients = {}
-    for (const row of estimate.coefficients ?? []) {
-      if (row.estimate_kind === 'rolling_exponential') {
-        coefficients[row.feature] = row.coefficient_pct_per_mtok
-      }
-    }
-    map.set(key, coefficients)
-  }
-  return map
+  const compiled = compileEpochs(intervals ?? [])
+  const featureNames = [...(options.featureNames ?? compiled.featureNames)]
+  if (!featureNames.length) return []
+  const rule = options.displayRule ?? 'rounded'
+  const epochs = compiled.epochs.map((epoch) => applyRule(epoch, rule))
+  const semantics = providerSemantics(intervals?.[0] ?? {})
+  return phase3OneStepDisplayedChangeResidualRows(
+    epochs,
+    featureNames,
+    semantics
+  ).map((row) => row.residual_pct)
 }
 
 function groupIntervals(intervals, selectedLagByLane) {

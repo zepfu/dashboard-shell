@@ -200,11 +200,19 @@ declare module './report-service' {
       phase: string
       estimator_version: string
       live_evaluation: {
-        status: string
-        better_reset_window_calibration: string
-        lower_interval_residual_autocorrelation: string
+        status: 'met' | 'unmet'
+        evidence_status:
+          | 'retained_live_verified'
+          | 'retained_live_unverified'
+          | 'provided_unverified'
+          | 'not_retained'
+        better_reset_window_calibration: 'met' | 'unmet'
+        lower_interval_residual_autocorrelation: 'met' | 'unmet'
+        clear_uncertainty_intervals: 'met' | 'unmet'
         evidence_search: Record<string, string>
+        reason: string
       }
+      phase2_comparison: import('./quota-phase3').QuotaPhase3Comparison
       estimates: Array<Record<string, unknown>>
     }
   }

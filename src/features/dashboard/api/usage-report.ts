@@ -1701,10 +1701,12 @@ export interface UsageReportQuotaPhase3Response {
   estimator_version: string
   model: 'cumulative_interval_censored_state_space'
   live_evaluation: {
-    status: 'unmet'
-    better_reset_window_calibration: 'unmet'
-    lower_interval_residual_autocorrelation: 'unmet'
-    clear_uncertainty_intervals: 'met'
+    status: 'met' | 'unmet'
+    evidence_status: string
+    better_reset_window_calibration: 'met' | 'unmet'
+    lower_interval_residual_autocorrelation: 'met' | 'unmet'
+    clear_uncertainty_intervals: 'met' | 'unmet'
+    evidence_search: Record<string, string>
     reason: string
   }
   cache_read_prior: {
@@ -1719,13 +1721,21 @@ export interface UsageReportQuotaPhase3Response {
   }
   phase2_comparison: {
     scope: string
-    live_evaluation_status: 'unmet'
+    live_evaluation_status: 'met' | 'unmet'
+    evidence_status: string
+    phase0_2_prerequisite_status: 'met' | 'incomplete'
     acceptance: {
-      better_reset_window_calibration: 'unmet'
-      lower_interval_residual_autocorrelation: 'unmet'
-      clear_uncertainty_intervals: 'met'
+      better_reset_window_calibration: 'met' | 'unmet'
+      lower_interval_residual_autocorrelation: 'met' | 'unmet'
+      clear_uncertainty_intervals: 'met' | 'unmet'
     }
+    metric_outcomes: Record<string, string>
+    cohort: Record<string, number | boolean | string | null>
+    phase0_2_prerequisites: Record<string, unknown>
+    evidence: Record<string, unknown>
+    metric_definitions: Record<string, string>
     metrics: Record<string, number | null>
+    note: string
   }
   estimates: Array<Record<string, unknown>>
 }
