@@ -101,6 +101,8 @@ export interface QuotaPhase3EvaluationInterval {
   observed_pct: number
   predicted_pct: number
   residual_pct: number
+  predicted_latent_increment_pct?: number
+  display_rule?: 'rounded' | 'floored'
   model?: string
 }
 
@@ -207,6 +209,13 @@ export function quotaPhase3BandDistance(
   prediction: number,
   band: QuotaPhase3Band | null
 ): number | null
+
+export function quotaPhase3ProjectDisplayedChange(input: {
+  latentPreviousPct: number
+  previousDisplayedPct: number
+  latentIncrementPct: number
+  displayRule: 'rounded' | 'floored'
+}): number
 
 export function quotaPhase3Lag1Autocorrelation(
   values: readonly number[]

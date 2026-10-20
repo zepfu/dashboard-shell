@@ -151,6 +151,33 @@ function displayedBurn(options: {
   })
 }
 
+function quantizedLatentBurn(
+  rule: 'rounded' | 'floored',
+  count: number
+): EstimatorInterval[] {
+  const opening = 10
+  const increments = [0.2, 0.8]
+  const display = (value: number) =>
+    rule === 'floored' ? Math.floor(value) : Math.round(value)
+  let cumulativeBurn = 0
+
+  return Array.from({ length: count }, (_, index) => {
+    const previousBurn = cumulativeBurn
+    cumulativeBurn += increments[index % increments.length] ?? 0
+    const previous = display(opening + previousBurn)
+    const current = display(opening + cumulativeBurn)
+    const totals = emptyTotals()
+    totals.uncachedInputMtok = cumulativeBurn - previousBurn
+    return makeInterval({
+      previousConsumedPct: previous,
+      currentConsumedPct: current,
+      intervalStartAt: atMinute(index * 10),
+      intervalEndAt: atMinute((index + 1) * 10),
+      featureTotals: { sonnet: totals },
+    })
+  })
+}
+
 function reportFor(intervals: readonly EstimatorInterval[]): QuotaPhase3Report {
   return buildQuotaPhase3Report(intervals)
 }
@@ -758,7 +785,9 @@ describe('quota phase 3 interval-censored model', () => {
 
     expect(
       report.phase2_comparison.metric_definitions.phase3_interval_residual
-    ).toBe('displayed_delta_minus_phase3_one_step_interval_censored_prefix_fit')
+    ).toBe(
+      'displayed_delta_minus_phase3_one_step_interval_censored_prefix_fit_projected_through_selected_display_rule'
+    )
     expect(
       report.phase2_comparison.metric_definitions.phase2_interval_residual
     ).toBe(
@@ -779,6 +808,53 @@ describe('quota phase 3 interval-censored model', () => {
     expect(report.live_evaluation.lower_interval_residual_autocorrelation).toBe(
       'unmet'
     )
+  })
+
+  test('projects rounded and floored plateau forecasts through their display rule', () => {
+    for (const rule of ['rounded', 'floored'] as const) {
+      const intervals = quantizedLatentBurn(rule, 32)
+      const residuals = quotaPhase3OneStepDisplayedChangeResiduals(intervals, {
+        displayRule: rule,
+      })
+      const plateauCount = intervals.filter(
+        (interval) => interval.deltaPct === 0
+      ).length
+      const thresholdCrossingCount = intervals.filter(
+        (interval) => interval.deltaPct === 1
+      ).length
+
+      expect(plateauCount).toBeGreaterThan(0)
+      expect(thresholdCrossingCount).toBeGreaterThan(0)
+      expect(residuals.length).toBe(28)
+      expect(residuals).toEqual(Array.from({ length: 28 }, () => 0))
+
+      const prefixResiduals = quotaPhase3OneStepDisplayedChangeResiduals(
+        intervals.slice(0, 20),
+        { displayRule: rule }
+      )
+      expect(residuals.slice(0, prefixResiduals.length)).toEqual(
+        prefixResiduals
+      )
+
+      const last = intervals[intervals.length - 1]
+      if (!last) throw new Error('missing final quantized interval')
+      const changedEnding = [
+        ...intervals.slice(0, -1),
+        {
+          ...last,
+          currentConsumedPct: last.currentConsumedPct + 1,
+          deltaPct: last.deltaPct + 1,
+        },
+      ]
+      const changedResiduals = quotaPhase3OneStepDisplayedChangeResiduals(
+        changedEnding,
+        { displayRule: rule }
+      )
+      expect(changedResiduals.slice(0, -1)).toEqual(residuals.slice(0, -1))
+      expect(changedResiduals[changedResiduals.length - 1]).toBe(
+        residuals[residuals.length - 1]! + 1
+      )
+    }
   })
 
   test('scores paired plateaus and reports the selected cohort per lane', () => {

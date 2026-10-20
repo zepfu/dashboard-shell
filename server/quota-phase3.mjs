@@ -296,7 +296,7 @@ export function compareQuotaPhase3ToPhase2({
       phase2_interval_residual:
         'displayed_delta_minus_phase2_one_step_rolling_exponential_prefix_fit',
       phase3_interval_residual:
-        'displayed_delta_minus_phase3_one_step_interval_censored_prefix_fit',
+        'displayed_delta_minus_phase3_one_step_interval_censored_prefix_fit_projected_through_selected_display_rule',
       phase2_reset:
         'mae_of_summed_phase2_one_step_predictions_on_complete_expected_eligible_intervals_by_reset_window',
       phase3_reset:
@@ -1262,7 +1262,8 @@ function fitDisplayRule({ compiled, rule, semantics, phase2ResidualRows }) {
   const phase3ResidualRows = phase3OneStepDisplayedChangeResidualRows(
     epochs,
     featureNames,
-    semantics
+    semantics,
+    rule
   )
   const pairedEvaluation = evaluatePairedCohort({
     epochs,
@@ -1441,7 +1442,8 @@ function evaluationIntervalRow(interval, metrics) {
 function phase3OneStepDisplayedChangeResidualRows(
   epochs,
   featureNames,
-  semantics
+  semantics,
+  rule
 ) {
   const rows = []
   if (!featureNames.length) return rows
@@ -1467,12 +1469,28 @@ function phase3OneStepDisplayedChangeResidualRows(
           semantics,
         })
         const observed = Number(source.deltaPct)
-        const predicted = dot(observation.increment, beta)
+        const previousDisplayed = Number(source.previousConsumedPct)
+        const previousCum =
+          prefix[prefix.length - 1]?.cum ?? Array(featureNames.length).fill(0)
+        const latentPrevious = predictLevel(
+          epoch.openingDisplayed,
+          previousCum,
+          beta
+        )
+        const predictedLatentIncrement = dot(observation.increment, beta)
+        const predicted = quotaPhase3ProjectDisplayedChange({
+          latentPreviousPct: latentPrevious,
+          previousDisplayedPct: previousDisplayed,
+          latentIncrementPct: predictedLatentIncrement,
+          displayRule: rule,
+        })
         rows.push(
           evaluationIntervalRow(source, {
             observed_pct: observed,
             predicted_pct: predicted,
             residual_pct: observed - predicted,
+            predicted_latent_increment_pct: predictedLatentIncrement,
+            display_rule: rule,
             model: 'phase3',
           })
         )
@@ -1504,6 +1522,41 @@ function expectedIntervalManifestForEpochs(epochs) {
           reset_window_id: row.reset_window_id,
         }
       })
+  )
+}
+
+function reconcileLatentToDisplayBand(latent, displayed, rule) {
+  const band = quotaPhase3DisplayBand(displayed, rule, {
+    capped: displayed >= 99.5,
+  })
+  if (!band) return latent
+  if (latent < band.lower) return band.lower
+  if (Number.isFinite(band.upper) && latent >= band.upper) {
+    const openUpperOffset =
+      Number.EPSILON * Math.max(1, Math.abs(band.upper)) * 2
+    return band.upper - openUpperOffset
+  }
+  return latent
+}
+
+function displayQuotaLevel(latent, rule) {
+  return rule === 'floored' ? Math.floor(latent) : Math.round(latent)
+}
+
+export function quotaPhase3ProjectDisplayedChange({
+  latentPreviousPct,
+  previousDisplayedPct,
+  latentIncrementPct,
+  displayRule,
+}) {
+  const reconciledLatentPrevious = reconcileLatentToDisplayBand(
+    latentPreviousPct,
+    previousDisplayedPct,
+    displayRule
+  )
+  const predictedLatentEnd = reconciledLatentPrevious + latentIncrementPct
+  return (
+    displayQuotaLevel(predictedLatentEnd, displayRule) - previousDisplayedPct
   )
 }
 
@@ -2607,7 +2660,8 @@ export function quotaPhase3OneStepDisplayedChangeResiduals(
   return phase3OneStepDisplayedChangeResidualRows(
     epochs,
     featureNames,
-    semantics
+    semantics,
+    rule
   ).map((row) => row.residual_pct)
 }
 
