@@ -19,6 +19,7 @@ import {
   buildQuotaRangeHistoryFallbackQuery,
   buildQuotaQuery,
   normalizeQuotaRow,
+  normalizeQuotaEstimatorObservationRow,
   buildQuotaVelocityQuery,
   buildQuotaRangeHistoryQuery,
   buildDegradedUsageQuotaHistoryReport,
@@ -107,6 +108,13 @@ type NormalizedQuotaHistoryRowForTest = Record<string, unknown> & {
 }
 
 type QuotaReportTestHelpers = {
+  buildQuotaEstimatorIntervals: (
+    rows: Array<Record<string, unknown>>
+  ) => Array<Record<string, unknown>>
+  buildQuotaEstimatorRowsFromReadModels: (
+    observations: Array<Record<string, unknown>>,
+    usageBuckets: Array<Record<string, unknown>>
+  ) => Array<Record<string, unknown>>
   attachQuotaVelocityRows: (
     row: Record<string, unknown>,
     rowsByLane: Map<string, Record<string, unknown>>
@@ -128,6 +136,8 @@ function isQuotaReportTestHelpers(
 ): value is QuotaReportTestHelpers {
   if (!isRecord(value)) return false
   return (
+    typeof value.buildQuotaEstimatorIntervals === 'function' &&
+    typeof value.buildQuotaEstimatorRowsFromReadModels === 'function' &&
     typeof value.attachQuotaVelocityRows === 'function' &&
     typeof value.buildQuotaVelocityRowsByLane === 'function' &&
     typeof value.normalizeQuotaHistoryRow === 'function'
@@ -184,6 +194,8 @@ if (!isQuotaReportTestHelpers(quotaReportTestHelpersValue)) {
 }
 
 const {
+  buildQuotaEstimatorIntervals,
+  buildQuotaEstimatorRowsFromReadModels,
   attachQuotaVelocityRows,
   buildQuotaVelocityRowsByLane,
   normalizeQuotaHistoryRow,
@@ -720,6 +732,26 @@ describe('buildQuotaEstimatorObservationQuery value assertions (S4-6)', () => {
     expect(query.sql).toContain('100 - o.remaining_pct')
   })
 
+  test('test_buildQuotaEstimatorObservationQuery_requires_unanimous_authoritative_projection_provenance', () => {
+    const query = buildQuotaEstimatorObservationQuery(
+      new URLSearchParams({ from: '2026-05-01', to: '2026-05-08' })
+    )
+    const sql = compactWhitespace(query.sql)
+
+    expect(sql).toContain(
+      "o.provider = 'anthropic' AND o.quota_key = 'anthropic_unified_5h:5h' AND o.quota_type = 'tokens'"
+    )
+    expect(sql).toContain(
+      "BOOL_AND(COALESCE( o.source = 'anthropic_response_headers' AND (o.raw_provider_fields ->> 'anthropic-ratelimit-unified-5h-utilization') IS NOT NULL, false ))"
+    )
+    expect(sql).toContain(
+      "COUNT(DISTINCT (o.raw_provider_fields ->> 'anthropic-ratelimit-unified-5h-utilization')) = 1"
+    )
+    expect(sql).toContain(
+      "THEN MIN(o.raw_provider_fields ->> 'anthropic-ratelimit-unified-5h-utilization') END AS projection_provenance_text"
+    )
+  })
+
   test('test_buildQuotaEstimatorObservationQuery_joins_reset_windows_for_interval_bounds', () => {
     const query = buildQuotaEstimatorObservationQuery(
       new URLSearchParams({ from: '2026-05-01', to: '2026-05-08' })
@@ -754,6 +786,118 @@ describe('buildQuotaEstimatorObservationQuery value assertions (S4-6)', () => {
     expect(query.sql).toContain('o.observed_at <')
     // Must use New York timezone for consistent daily boundaries
     expect(query.sql).toContain("TIME ZONE 'America/New_York'")
+  })
+})
+
+describe('quota estimator projection provenance', () => {
+  test('certifies exact integral source percentages while rejecting same-double and fractional sources', () => {
+    const normalizeObservation = (
+      provenanceText: string | null,
+      consumedPct: number
+    ) =>
+      normalizeQuotaEstimatorObservationRow({
+        provider: 'anthropic',
+        raw_provider: 'anthropic',
+        quota_key: 'anthropic_unified_5h:5h',
+        quota_type: 'short',
+        quota_lane: 'anthropic_5h_all_model',
+        expected_reset_at: '2026-07-22T21:10:00.000Z',
+        observed_at: '2026-07-22T19:16:42.199408Z',
+        consumed_pct: consumedPct,
+        projection_provenance_text: provenanceText,
+      })
+
+    const integralSource = normalizeObservation('0.57', 56.99999999999999)
+    const sameDoubleFractionalSource = normalizeObservation(
+      '0.56999999999999995',
+      56.99999999999999
+    )
+    const genuineFractionalSource = normalizeObservation('0.5725', 57.25)
+    const absentSource = normalizeObservation(null, 56.99999999999999)
+    const cappedSource = normalizeObservation('1', 100)
+    const lowerClampedSource = normalizeObservation('-0.01', 0)
+
+    expect(integralSource.projection_band_center_pct).toBe(57)
+    expect(sameDoubleFractionalSource.projection_band_center_pct).toBeNull()
+    expect(genuineFractionalSource.projection_band_center_pct).toBeNull()
+    expect(absentSource.projection_band_center_pct).toBeNull()
+    expect(cappedSource.projection_band_center_pct).toBeNull()
+    expect(lowerClampedSource.projection_band_center_pct).toBeNull()
+    expect(integralSource).not.toHaveProperty('projection_provenance_text')
+  })
+
+  test('binds only preceding observation provenance to estimator intervals', () => {
+    const normalizeObservation = (
+      observedAt: string,
+      provenanceText: string,
+      consumedPct: number
+    ) =>
+      normalizeQuotaEstimatorObservationRow({
+        provider: 'anthropic',
+        raw_provider: 'anthropic',
+        quota_key: 'anthropic_unified_5h:5h',
+        quota_type: 'short',
+        quota_lane: 'anthropic_5h_all_model',
+        expected_reset_at: '2026-07-22T21:10:00.000Z',
+        observed_at: observedAt,
+        consumed_pct: consumedPct,
+        projection_provenance_text: provenanceText,
+      })
+    const observations = [
+      normalizeObservation(
+        '2026-07-22T19:16:42.199408Z',
+        '0.57',
+        56.99999999999999
+      ),
+      normalizeObservation(
+        '2026-07-22T19:18:17.616356Z',
+        '0.58',
+        57.99999999999999
+      ),
+      normalizeObservation(
+        '2026-07-22T19:18:22.396008Z',
+        '0.59',
+        58.99999999999999
+      ),
+      normalizeObservation('2026-07-22T19:19:00.000000Z', '1', 100),
+    ]
+    const estimatorRows = buildQuotaEstimatorRowsFromReadModels(
+      observations,
+      []
+    )
+    const intervals = buildQuotaEstimatorIntervals(estimatorRows)
+    const firstObservationIntervals = intervals.filter(
+      (interval) => interval.intervalStartAt === observations[0].observed_at
+    )
+    const secondObservationIntervals = intervals.filter(
+      (interval) => interval.intervalStartAt === observations[1].observed_at
+    )
+    const cappedIntervals = intervals.filter(
+      (interval) => interval.intervalStartAt === observations[2].observed_at
+    )
+
+    expect(firstObservationIntervals.length).toBeGreaterThan(0)
+    expect(secondObservationIntervals.length).toBeGreaterThan(0)
+    expect(cappedIntervals.length).toBeGreaterThan(0)
+    expect(
+      firstObservationIntervals.every(
+        (interval) => interval.previousProjectionBandCenterPct === 57
+      )
+    ).toBe(true)
+    expect(
+      secondObservationIntervals.every(
+        (interval) => interval.previousProjectionBandCenterPct === 58
+      )
+    ).toBe(true)
+    expect(
+      cappedIntervals.every(
+        (interval) => interval.previousProjectionBandCenterPct === undefined
+      )
+    ).toBe(true)
+    expect(estimatorRows[0].delta_pct).toBe(
+      Number(observations[1].consumed_pct) -
+        Number(observations[0].consumed_pct)
+    )
   })
 })
 

@@ -6112,6 +6112,8 @@ const QUOTA_ESTIMATOR_PROVIDERS_SQL = `(${[
 const QUOTA_ESTIMATOR_QUOTA_KEYS_SQL = `(${QUOTA_ESTIMATOR_LANE_DEFINITIONS.map(
   ({ quotaKey }) => sqlTextLiteral(quotaKey)
 ).join(', ')})`
+const ANTHROPIC_UNIFIED_5H_UTILIZATION_FIELD =
+  'anthropic-ratelimit-unified-5h-utilization'
 const QUOTA_ESTIMATOR_QUOTA_TYPE_CASE = `CASE
 ${QUOTA_ESTIMATOR_LANE_DEFINITIONS.map(
   ({ provider, quotaKey, quotaType }) =>
@@ -9124,6 +9126,18 @@ observations AS (
         MAX(o.quota_remaining) AS quota_remaining,
         MAX(o.billing_period_start_at) AS billing_period_start_at,
         MAX(o.billing_period_end_at) AS billing_period_end_at,
+        CASE
+            WHEN o.provider = 'anthropic'
+              AND o.quota_key = 'anthropic_unified_5h:5h'
+              AND o.quota_type = 'tokens'
+              AND BOOL_AND(COALESCE(
+                o.source = 'anthropic_response_headers'
+                  AND (o.raw_provider_fields ->> '${ANTHROPIC_UNIFIED_5H_UTILIZATION_FIELD}') IS NOT NULL,
+                false
+              ))
+              AND COUNT(DISTINCT (o.raw_provider_fields ->> '${ANTHROPIC_UNIFIED_5H_UTILIZATION_FIELD}')) = 1
+            THEN MIN(o.raw_provider_fields ->> '${ANTHROPIC_UNIFIED_5H_UTILIZATION_FIELD}')
+        END AS projection_provenance_text,
         (ARRAY_AGG(COALESCE(o.raw_provider_fields, '{}'::jsonb) ORDER BY o.observed_at DESC))[1] AS raw_provider_fields,
         (ARRAY_AGG(COALESCE(o.evidence, '{}'::jsonb) ORDER BY o.observed_at DESC))[1] AS evidence
     FROM public.rate_limit_observations o
@@ -9153,6 +9167,7 @@ SELECT
     COALESCE(rw.reset_end_at, o.expected_reset_at) AS reset_end_at,
     o.observed_at,
     o.consumed_pct,
+    o.projection_provenance_text,
     o.quota_limit,
     o.quota_used,
     o.quota_remaining,
@@ -11775,7 +11790,7 @@ function normalizeQuotaHistoryRow(row) {
   }
 }
 
-function normalizeQuotaEstimatorObservationRow(row) {
+export function normalizeQuotaEstimatorObservationRow(row) {
   return {
     provider: row.provider ?? 'unknown',
     raw_provider: row.raw_provider ?? null,
@@ -11789,6 +11804,7 @@ function normalizeQuotaEstimatorObservationRow(row) {
     reset_end_at: row.reset_end_at ?? null,
     observed_at: row.observed_at ?? null,
     consumed_pct: normalizeNumber(row.consumed_pct),
+    projection_band_center_pct: certifiedProjectionBandCenterPct(row),
     quota_limit: normalizeNumber(row.quota_limit),
     quota_used: normalizeNumber(row.quota_used),
     quota_remaining: normalizeNumber(row.quota_remaining),
@@ -11797,6 +11813,62 @@ function normalizeQuotaEstimatorObservationRow(row) {
     raw_provider_fields: normalizeJsonRecord(row.raw_provider_fields),
     evidence: normalizeJsonRecord(row.evidence),
   }
+}
+
+function parseExactDecimalRational(value) {
+  if (typeof value !== 'string') return null
+  const text = value.trim()
+  if (text.length === 0 || text.length > 96) return null
+  const match =
+    /^([+-]?)(?:(\d+)(?:\.(\d*))?|\.(\d+))(?:[eE]([+-]?\d+))?$/.exec(text)
+  if (!match) return null
+
+  const integerPart = match[2] ?? '0'
+  const fractionalPart = match[3] ?? match[4] ?? ''
+  const exponent = Number(match[5] ?? '0')
+  if (!Number.isSafeInteger(exponent) || Math.abs(exponent) > 128) {
+    return null
+  }
+
+  let numerator = BigInt(`${integerPart}${fractionalPart}`)
+  if (match[1] === '-') numerator = -numerator
+  const scale = fractionalPart.length - exponent
+  if (scale < 0) {
+    numerator *= 10n ** BigInt(-scale)
+    return { numerator, denominator: 1n, text }
+  }
+  return {
+    numerator,
+    denominator: 10n ** BigInt(scale),
+    text,
+  }
+}
+
+function certifiedProjectionBandCenterPct(row) {
+  const exact = parseExactDecimalRational(row.projection_provenance_text)
+  const retainedConsumedPct = normalizeNumber(row.consumed_pct)
+  if (!exact || retainedConsumedPct === null) return null
+
+  const utilization = Number(exact.text)
+  if (!Number.isFinite(utilization)) return null
+  // Match the producer's existing unit branch, then keep percentage math exact.
+  const usedNumerator =
+    utilization <= 1 ? exact.numerator * 100n : exact.numerator
+  const denominator = exact.denominator
+  if (
+    usedNumerator <= 0n ||
+    usedNumerator >= 100n * denominator ||
+    retainedConsumedPct >= 99.5 ||
+    usedNumerator % denominator !== 0n
+  ) {
+    return null
+  }
+
+  const center = Number(usedNumerator / denominator)
+  const usedPercentage = utilization <= 1 ? utilization * 100 : utilization
+  const remainingPct = Math.max(0, Math.min(100, 100 - usedPercentage))
+  const replayedConsumedPct = Math.max(0, Math.min(100, 100 - remainingPct))
+  return replayedConsumedPct === retainedConsumedPct ? center : null
 }
 
 function normalizeQuotaEstimatorUsageBucketRow(row) {
@@ -11900,6 +11972,12 @@ function buildQuotaEstimatorIntervals(rows) {
         intervalStartAt: row.interval_start_at,
         intervalEndAt: row.interval_end_at,
         previousConsumedPct: row.previous_consumed_pct,
+        ...(typeof row.previous_projection_band_center_pct === 'number'
+          ? {
+              previousProjectionBandCenterPct:
+                row.previous_projection_band_center_pct,
+            }
+          : {}),
         currentConsumedPct: row.current_consumed_pct,
         deltaPct: row.delta_pct,
         isResetBoundary: row.is_reset_boundary,
@@ -13251,6 +13329,13 @@ function buildQuotaEstimatorRowsFromReadModels(observations, usageBuckets) {
         interval_end_at: current.observed_at,
         previous_consumed_pct: previousConsumed,
         current_consumed_pct: currentConsumed,
+        ...(!isCappedAt100 &&
+        typeof previous.projection_band_center_pct === 'number'
+          ? {
+              previous_projection_band_center_pct:
+                previous.projection_band_center_pct,
+            }
+          : {}),
         delta_pct: deltaPct,
         is_reset_boundary: isResetBoundary,
         is_capped_at_100: isCappedAt100,
@@ -16761,6 +16846,7 @@ export const __usageReportTestHelpers = {
 
 export const __quotaReportTestHelpers = {
   buildQuotaEstimatorReport,
+  buildQuotaEstimatorIntervals,
   buildQuotaEstimatorRowsFromReadModels,
   buildQuotaVelocityRowsByLane,
   attachQuotaVelocityRows,
