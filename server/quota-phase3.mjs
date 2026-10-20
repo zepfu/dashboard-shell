@@ -1577,9 +1577,11 @@ export function quotaPhase3ProjectDisplayedChange({
     certifiedBandCenter
   )
   const predictedLatentEnd = reconciledLatentPrevious + latentIncrementPct
-  return (
-    displayQuotaLevel(predictedLatentEnd, displayRule) - previousDisplayedPct
+  const predictedDisplayedEnd = Math.min(
+    100,
+    Math.max(0, displayQuotaLevel(predictedLatentEnd, displayRule))
   )
+  return predictedDisplayedEnd - previousDisplayedPct
 }
 
 function evaluatePairedCohort({

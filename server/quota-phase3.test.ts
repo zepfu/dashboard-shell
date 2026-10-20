@@ -295,6 +295,19 @@ describe('quota phase 3 interval-censored model', () => {
     ).toBe(cappedPrediction)
   })
 
+  test('bounds the projected displayed endpoint to the source range', () => {
+    const previousDisplayedPct = 61
+    const predictedChange = quotaPhase3ProjectDisplayedChange({
+      latentPreviousPct: 60.5,
+      previousDisplayedPct,
+      latentIncrementPct: 70.40266780972622,
+      displayRule: 'rounded',
+    })
+
+    expect(previousDisplayedPct + predictedChange).toBe(100)
+    expect(predictedChange).toBe(39)
+  })
+
   test('lag-1 autocorrelation matches a persistent series and an alternating series', () => {
     expect(quotaPhase3Lag1Autocorrelation([1, 2, 3, 4, 5])).toBeCloseTo(0.4)
     expect(quotaPhase3Lag1Autocorrelation([1, -1, 1, -1, 1, -1])).toBeCloseTo(
