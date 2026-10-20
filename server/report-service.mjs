@@ -11809,6 +11809,10 @@ function normalizeQuotaHistoryRow(row) {
 }
 
 export function normalizeQuotaEstimatorObservationRow(row) {
+  const legacyConsumedPct = normalizeNumber(row.consumed_pct)
+  const normalizedConsumedPct =
+    normalizeAnthropicUnifiedUtilizationConsumedPct(row) ?? legacyConsumedPct
+
   return {
     provider: row.provider ?? 'unknown',
     raw_provider: row.raw_provider ?? null,
@@ -11821,11 +11825,14 @@ export function normalizeQuotaEstimatorObservationRow(row) {
     reset_start_at: row.reset_start_at ?? null,
     reset_end_at: row.reset_end_at ?? null,
     observed_at: row.observed_at ?? null,
-    consumed_pct: normalizeNumber(row.consumed_pct),
+    consumed_pct: normalizedConsumedPct,
     ...(typeof row.projection_provenance_text === 'string'
       ? { projection_provenance_text: row.projection_provenance_text }
       : {}),
-    projection_band_center_pct: certifiedProjectionBandCenterPct(row),
+    projection_band_center_pct: certifiedProjectionBandCenterPct({
+      ...row,
+      consumed_pct: normalizedConsumedPct,
+    }),
     quota_limit: normalizeNumber(row.quota_limit),
     quota_used: normalizeNumber(row.quota_used),
     quota_remaining: normalizeNumber(row.quota_remaining),
@@ -11834,6 +11841,35 @@ export function normalizeQuotaEstimatorObservationRow(row) {
     raw_provider_fields: normalizeJsonRecord(row.raw_provider_fields),
     evidence: normalizeJsonRecord(row.evidence),
   }
+}
+
+function isAnthropicUnifiedProjectionLane(row) {
+  return (
+    row.provider === 'anthropic' &&
+    row.raw_provider === 'anthropic' &&
+    row.raw_observation_quota_type === 'tokens' &&
+    ANTHROPIC_UNIFIED_PROJECTION_PROVENANCE_LANES.some(
+      ({ quotaKey }) => row.quota_key === quotaKey
+    )
+  )
+}
+
+function normalizeAnthropicUnifiedUtilizationConsumedPct(row) {
+  if (
+    !isAnthropicUnifiedProjectionLane(row) ||
+    typeof row.projection_provenance_text !== 'string'
+  ) {
+    return null
+  }
+
+  const exact = parseExactDecimalRational(row.projection_provenance_text)
+  if (!exact) return null
+  const utilization = Number(exact.text)
+  if (!Number.isFinite(utilization)) return null
+
+  // Anthropic unified utilization headers are ratios, including values above 1.
+  const remainingPct = Math.max(0, Math.min(100, 100 - utilization * 100))
+  return Math.max(0, Math.min(100, 100 - remainingPct))
 }
 
 function parseExactDecimalRational(value) {
@@ -11866,15 +11902,15 @@ function parseExactDecimalRational(value) {
 }
 
 function certifiedProjectionBandCenterPct(row) {
+  if (!isAnthropicUnifiedProjectionLane(row)) return null
   const exact = parseExactDecimalRational(row.projection_provenance_text)
   const retainedConsumedPct = normalizeNumber(row.consumed_pct)
   if (!exact || retainedConsumedPct === null) return null
 
   const utilization = Number(exact.text)
   if (!Number.isFinite(utilization)) return null
-  // Match the producer's existing unit branch, then keep percentage math exact.
-  const usedNumerator =
-    utilization <= 1 ? exact.numerator * 100n : exact.numerator
+  // Keep ratio-to-percentage arithmetic exact for integral display centers.
+  const usedNumerator = exact.numerator * 100n
   const denominator = exact.denominator
   if (
     usedNumerator <= 0n ||
@@ -11886,7 +11922,7 @@ function certifiedProjectionBandCenterPct(row) {
   }
 
   const center = Number(usedNumerator / denominator)
-  const usedPercentage = utilization <= 1 ? utilization * 100 : utilization
+  const usedPercentage = utilization * 100
   const remainingPct = Math.max(0, Math.min(100, 100 - usedPercentage))
   const replayedConsumedPct = Math.max(0, Math.min(100, 100 - remainingPct))
   return replayedConsumedPct === retainedConsumedPct ? center : null
@@ -11929,7 +11965,8 @@ function buildQuotaEstimatorPhase0Audit() {
     quota_pct_interval_shape: {
       source_table: 'public.rate_limit_observations',
       reset_context_table: 'public.rate_limit_intervals',
-      value_policy: 'consumed_pct = 100 - remaining_pct',
+      value_policy:
+        'Use unanimous authoritative Anthropic unified utilization ratios multiplied by 100 and clamped to 0..100; otherwise consumed_pct = 100 - remaining_pct.',
       interval_policy:
         'consecutive observations per provider/quota_key/expected_reset_at form plateau intervals.',
       excluded_training_rows: [

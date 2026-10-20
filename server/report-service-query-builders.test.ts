@@ -825,6 +825,7 @@ describe('quota estimator projection provenance', () => {
         quota_key: 'anthropic_unified_5h:5h',
         quota_type: 'short',
         quota_lane: 'anthropic_5h_all_model',
+        raw_observation_quota_type: 'tokens',
         expected_reset_at: '2026-07-22T21:10:00.000Z',
         observed_at: '2026-07-22T19:16:42.199408Z',
         consumed_pct: consumedPct,
@@ -856,6 +857,79 @@ describe('quota estimator projection provenance', () => {
     ).toBe(57)
   })
 
+  test('normalizes authoritative Anthropic unified utilization ratios and preserves legacy fallback', () => {
+    const lanes = [
+      {
+        quotaKey: 'anthropic_unified_5h:5h',
+        quotaType: 'short',
+        quotaLane: 'anthropic_5h_all_model',
+        utilizationField: 'anthropic-ratelimit-unified-5h-utilization',
+      },
+      {
+        quotaKey: 'anthropic_unified_7d:7d',
+        quotaType: 'weekly',
+        quotaLane: 'anthropic_weekly_all_model',
+        utilizationField: 'anthropic-ratelimit-unified-7d-utilization',
+      },
+      {
+        quotaKey: 'anthropic_unified_7d_sonnet:7d_sonnet',
+        quotaType: 'special',
+        quotaLane: 'anthropic_weekly_sonnet',
+        utilizationField: 'anthropic-ratelimit-unified-7d_sonnet-utilization',
+      },
+    ]
+    const normalizedRatios = lanes.map(
+      ({ quotaKey, quotaType, quotaLane, utilizationField }) =>
+        normalizeQuotaEstimatorObservationRow({
+          provider: 'anthropic',
+          raw_provider: 'anthropic',
+          quota_key: quotaKey,
+          quota_type: quotaType,
+          quota_lane: quotaLane,
+          raw_observation_quota_type: 'tokens',
+          observed_at: '2026-07-11T06:43:00.000Z',
+          consumed_pct: 1.05,
+          projection_provenance_text: '1.05',
+          quota_limit: 100,
+          quota_used: 105,
+          quota_remaining: 0,
+          billing_period_start_at: '2026-07-04T06:43:00.000Z',
+          billing_period_end_at: '2026-07-11T06:43:00.000Z',
+          raw_provider_fields: { [utilizationField]: '1.05' },
+          evidence: { source: 'anthropic_response_headers' },
+        })
+    )
+    const missingProvenance = normalizeQuotaEstimatorObservationRow({
+      provider: 'anthropic',
+      raw_provider: 'anthropic',
+      quota_key: 'anthropic_unified_5h:5h',
+      quota_type: 'short',
+      raw_observation_quota_type: 'tokens',
+      consumed_pct: 1.05,
+    })
+    const unverifiedLane = normalizeQuotaEstimatorObservationRow({
+      provider: 'anthropic',
+      raw_provider: 'anthropic',
+      quota_key: 'anthropic_other:5h',
+      quota_type: 'short',
+      raw_observation_quota_type: 'tokens',
+      consumed_pct: 1.05,
+      projection_provenance_text: '1.05',
+    })
+
+    expect(normalizedRatios.map((row) => row.consumed_pct)).toEqual([
+      100, 100, 100,
+    ])
+    expect(
+      normalizedRatios.map((row) => row.projection_band_center_pct)
+    ).toEqual([null, null, null])
+    expect(missingProvenance.consumed_pct).toBe(1.05)
+    expect(unverifiedLane.consumed_pct).toBe(1.05)
+    expect(normalizeQuotaEstimatorObservationRow(normalizedRatios[0])).toEqual(
+      normalizedRatios[0]
+    )
+  })
+
   test('binds only preceding observation provenance to estimator intervals', () => {
     const normalizeObservation = (
       observedAt: string,
@@ -868,6 +942,7 @@ describe('quota estimator projection provenance', () => {
         quota_key: 'anthropic_unified_5h:5h',
         quota_type: 'short',
         quota_lane: 'anthropic_5h_all_model',
+        raw_observation_quota_type: 'tokens',
         expected_reset_at: '2026-07-22T21:10:00.000Z',
         observed_at: observedAt,
         consumed_pct: consumedPct,
