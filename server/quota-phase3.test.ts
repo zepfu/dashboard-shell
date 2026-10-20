@@ -921,8 +921,14 @@ describe('quota phase 3 interval-censored model', () => {
       },
     })
     const lane = report.estimates[0]
+    const diagnosticCodes = lane?.diagnostics.map((row) => row.code) ?? []
 
     expect(lane?.display_rule_comparison.preferred_rule).toBe('floored')
+    if (lane?.phase2_comparison.live_evaluation_status === 'met') {
+      expect(diagnosticCodes).not.toContain('live_phase2_comparison_unmet')
+    } else {
+      expect(diagnosticCodes).toContain('live_phase2_comparison_unmet')
+    }
     expect(
       lane?.phase2_comparison.cohort.paired_interval_forecast_count
     ).toBeGreaterThan(0)
