@@ -338,37 +338,25 @@ WITH bounded_audit AS (
               THEN 'session:' || aa.session_id
             ELSE NULL
           END = CASE
-            WHEN NULLIF(COALESCE(
-              NULLIF(represented_event.value->>'litellm_call_id', ''),
-              sh.litellm_call_id::text
-            ), '') IS NOT NULL
-              THEN 'call:' || COALESCE(
-                NULLIF(represented_event.value->>'litellm_call_id', ''),
-                sh.litellm_call_id::text
-              )
-            WHEN NULLIF(COALESCE(
-              NULLIF(represented_event.value->>'trace_id', ''),
-              NULLIF(sh.trace_id, '')
-            ), '') IS NOT NULL
-              THEN 'trace:' || COALESCE(
-                NULLIF(represented_event.value->>'trace_id', ''),
-                NULLIF(sh.trace_id, '')
-              )
-            WHEN NULLIF(COALESCE(
-              NULLIF(represented_event.value->>'session_id', ''),
-              sh.session_id::text
-            ), '') IS NOT NULL
-              THEN 'session:' || COALESCE(
-                NULLIF(represented_event.value->>'session_id', ''),
-                sh.session_id::text
-              )
+            WHEN NULLIF(represented_event.value->>'litellm_call_id', '') IS NOT NULL
+              THEN 'call:' || (represented_event.value->>'litellm_call_id')
+            WHEN NULLIF(represented_event.value->>'trace_id', '') IS NOT NULL
+              THEN 'trace:' || (represented_event.value->>'trace_id')
+            WHEN NULLIF(represented_event.value->>'session_id', '') IS NOT NULL
+              THEN 'session:' || (represented_event.value->>'session_id')
             ELSE NULL
           END
           AND NULLIF(represented_event.value->>'event_type', '') = aa.event_type
           AND NULLIF(represented_event.value->>'attempt_number', '')
             IS NOT DISTINCT FROM aa.attempt_number::text
-          AND NULLIF(represented_event.value->>'observed_at', '') IS NOT NULL
-          AND (represented_event.value->>'observed_at')::timestamptz = aa.observed_at
+          AND CASE
+            WHEN pg_input_is_valid(
+              NULLIF(represented_event.value->>'observed_at', ''),
+              'timestamptz'
+            )
+              THEN (represented_event.value->>'observed_at')::timestamptz = aa.observed_at
+            ELSE FALSE
+          END
       )
     ORDER BY aa.observed_at DESC
     LIMIT ${limitPlaceholder}
@@ -688,11 +676,10 @@ function timestampMillis(value) {
   return Number.isFinite(parsed) ? parsed : null
 }
 
-function correlationIdentity(event, row) {
-  const call =
-    nonempty(event?.litellm_call_id) || nonempty(row?.litellm_call_id)
-  const trace = nonempty(event?.trace_id) || nonempty(row?.trace_id)
-  const session = nonempty(event?.session_id) || nonempty(row?.session_id)
+function correlationIdentity(event) {
+  const call = nonempty(event?.litellm_call_id)
+  const trace = nonempty(event?.trace_id)
+  const session = nonempty(event?.session_id)
   if (call) return `call:${call}`
   if (trace) return `trace:${trace}`
   if (session) return `session:${session}`
@@ -722,9 +709,9 @@ function supplementAliasTerminalEvidence(existing, incoming) {
   if (disposition) existing.egress_disposition = disposition
 }
 
-function sameRepresentedAuditEvent(left, right, leftRow, rightRow) {
-  const leftIdentity = correlationIdentity(left, leftRow)
-  const rightIdentity = correlationIdentity(right, rightRow)
+function sameRepresentedAuditEvent(left, right) {
+  const leftIdentity = correlationIdentity(left)
+  const rightIdentity = correlationIdentity(right)
   if (!leftIdentity || leftIdentity !== rightIdentity) return false
   if (
     (nonempty(left?.event_type) ?? '') !== (nonempty(right?.event_type) ?? '')
@@ -738,8 +725,7 @@ function sameRepresentedAuditEvent(left, right, leftRow, rightRow) {
   }
   const leftTime = timestampMillis(left?.observed_at)
   const rightTime = timestampMillis(right?.observed_at)
-  if (leftTime != null && rightTime != null) return leftTime === rightTime
-  return true
+  return leftTime != null && rightTime != null && leftTime === rightTime
 }
 
 function rowRepresentsAliasTimeline(row) {
@@ -817,7 +803,7 @@ export function mergeSessionDiagnosticsWithAuditTerminalRows(
       const novel = []
       for (const event of auditRow.alias_route_events) {
         const existing = (match.alias_route_events ?? []).find((candidate) =>
-          sameRepresentedAuditEvent(candidate, event, match, auditRow)
+          sameRepresentedAuditEvent(candidate, event)
         )
         if (existing) {
           supplementAliasTerminalEvidence(existing, event)

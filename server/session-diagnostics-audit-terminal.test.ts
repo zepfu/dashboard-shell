@@ -94,7 +94,7 @@ describe('session diagnostics audit terminal query', () => {
     expect(query.sql).not.toContain('AND FALSE')
   })
 
-  test('deduplicates_only_history_events_with_matching_call_event_identity', () => {
+  test('deduplicates_only_history_events_with_matching_call_event_identity', async () => {
     const query = auditQuery()
     const duplicateLookup = query.sql.slice(
       query.sql.indexOf('AND NOT EXISTS'),
@@ -113,14 +113,22 @@ describe('session diagnostics audit terminal query', () => {
     expect(duplicateLookup).toContain(
       "represented_event.value->>'litellm_call_id'"
     )
+    expect(duplicateLookup).not.toContain('sh.litellm_call_id::text')
+    expect(duplicateLookup).not.toContain('NULLIF(sh.trace_id')
+    expect(duplicateLookup).not.toContain('sh.session_id::text')
     expect(duplicateLookup).toContain("represented_event.value->>'event_type'")
     expect(duplicateLookup).toContain(
       "represented_event.value->>'attempt_number'"
     )
-    expect(duplicateLookup).toContain("represented_event.value->>'observed_at'")
+    expect(duplicateLookup).toContain('pg_input_is_valid(')
+    expect(duplicateLookup).toContain("'timestamptz'")
     expect(duplicateLookup).toContain(
-      "(represented_event.value->>'observed_at')::timestamptz = aa.observed_at"
+      "THEN (represented_event.value->>'observed_at')::timestamptz = aa.observed_at"
     )
+    expect(duplicateLookup).toContain('ELSE FALSE')
+
+    const { parse } = await import('pgsql-parser')
+    expect((await parse(query.sql)).stmts.length).toBeGreaterThan(0)
   })
 
   test('caps_the_limit_and_excludes_filters_without_recorded_identity', () => {
@@ -224,6 +232,7 @@ describe('session diagnostics audit terminal rows', () => {
       {
         created_at: '2026-05-20T11:00:00.000Z',
         session_id: 'sess-history',
+        trace_id: 'trace-row-b',
         litellm_call_id: 'call-dup',
         provider: 'openai',
         diagnostic_flags: ['alias_routing'],
@@ -237,12 +246,36 @@ describe('session diagnostics audit terminal rows', () => {
             attempt_number: 2,
             redispatch_required: true,
           },
+          {
+            observed_at: '2026-05-20T11:15:00.000Z',
+            session_id: 'sess-history',
+            trace_id: 'trace-a',
+            event_type: 'redispatch_required',
+            attempt_number: 3,
+            redispatch_required: true,
+          },
+          {
+            session_id: 'sess-history',
+            litellm_call_id: 'call-dup',
+            event_type: 'redispatch_required',
+            attempt_number: 4,
+            redispatch_required: true,
+          },
+          {
+            observed_at: 'not-a-timestamp',
+            session_id: 'sess-history',
+            litellm_call_id: 'call-dup',
+            event_type: 'redispatch_required',
+            attempt_number: 5,
+            redispatch_required: true,
+          },
         ],
       },
     ]
     const duplicate = normalizeAuditTerminalDiagnosticRow({
       created_at: '2026-05-20T11:00:00.000Z',
       session_id: 'sess-history',
+      trace_id: 'trace-row-b',
       litellm_call_id: 'call-dup',
       provider: 'openai',
       audit_identity: {
@@ -266,6 +299,31 @@ describe('session diagnostics audit terminal rows', () => {
           attempt_number: 2,
           redispatch_required: true,
           api_key: 'sk-secret',
+        },
+        {
+          observed_at: '2026-05-20T11:15:00.000Z',
+          session_id: 'sess-history',
+          trace_id: 'trace-row-b',
+          litellm_call_id: 'call-dup',
+          event_type: 'redispatch_required',
+          attempt_number: 3,
+          redispatch_required: true,
+        },
+        {
+          observed_at: '2026-05-20T11:20:00.000Z',
+          session_id: 'sess-history',
+          litellm_call_id: 'call-dup',
+          event_type: 'redispatch_required',
+          attempt_number: 4,
+          redispatch_required: true,
+        },
+        {
+          observed_at: '2026-05-20T11:25:00.000Z',
+          session_id: 'sess-history',
+          litellm_call_id: 'call-dup',
+          event_type: 'redispatch_required',
+          attempt_number: 5,
+          redispatch_required: true,
         },
       ],
     })
@@ -336,13 +394,48 @@ describe('session diagnostics audit terminal rows', () => {
     )
     expect(merged[1]?.litellm_call_id).toBe('call-dup')
     expect(merged[1]?.audit_identity).toBeNull()
-    expect(merged[1]?.alias_route_events).toHaveLength(2)
+    expect(merged[1]?.alias_route_events).toHaveLength(8)
     expect(merged[1]?.alias_route_events?.[0]).toMatchObject({
       failure_phase: 'session_owner_mismatch',
       attempted_provider_call: false,
       egress_disposition: 'local_guard',
     })
     expect(merged[1]?.alias_route_events?.[1]).toMatchObject({
+      trace_id: 'trace-a',
+      event_type: 'redispatch_required',
+      attempt_number: 3,
+    })
+    expect(merged[1]?.alias_route_events?.[1]?.litellm_call_id).toBeUndefined()
+    expect(merged[1]?.alias_route_events?.[2]).toMatchObject({
+      event_type: 'redispatch_required',
+      attempt_number: 4,
+    })
+    expect(merged[1]?.alias_route_events?.[2]?.observed_at).toBeUndefined()
+    expect(merged[1]?.alias_route_events?.[3]).toMatchObject({
+      observed_at: 'not-a-timestamp',
+      event_type: 'redispatch_required',
+      attempt_number: 5,
+    })
+    expect(merged[1]?.alias_route_events?.[4]).toMatchObject({
+      litellm_call_id: 'call-dup',
+      trace_id: 'trace-row-b',
+      event_type: 'redispatch_required',
+      attempt_number: 3,
+    })
+    expect(merged[1]?.alias_route_events?.[1]?.observed_at).toBe(
+      merged[1]?.alias_route_events?.[4]?.observed_at
+    )
+    expect(merged[1]?.alias_route_events?.[5]).toMatchObject({
+      litellm_call_id: 'call-dup',
+      event_type: 'redispatch_required',
+      attempt_number: 4,
+    })
+    expect(merged[1]?.alias_route_events?.[6]).toMatchObject({
+      litellm_call_id: 'call-dup',
+      event_type: 'redispatch_required',
+      attempt_number: 5,
+    })
+    expect(merged[1]?.alias_route_events?.[7]).toMatchObject({
       litellm_call_id: 'call-other',
       session_id: 'sess-history',
       event_type: 'redispatch_required',
