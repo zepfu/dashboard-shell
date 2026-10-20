@@ -971,4 +971,94 @@ describe('quota phase 3 interval-censored model', () => {
       report.phase2_comparison.cohort.partial_paired_reset_window_count
     ).toBe(1)
   })
+
+  test('reports the lane diagnostic from its own comparison status', () => {
+    const base = quantizedLatentBurn('floored', 16)
+    const biased = base.map((interval, index) =>
+      index === base.length - 1
+        ? {
+            ...interval,
+            currentConsumedPct: interval.currentConsumedPct + 0.4,
+            deltaPct: interval.deltaPct + 0.4,
+          }
+        : interval
+    )
+    const stamp = (
+      intervals: EstimatorInterval[],
+      resetAt: string,
+      startMinute: number
+    ) =>
+      intervals.map((interval, index) => ({
+        ...interval,
+        quotaKey: 'met_lane',
+        quotaLane: 'met_lane',
+        trainable: true,
+        expectedResetAt: resetAt,
+        intervalStartAt: atMinute(startMinute + index * 10),
+        intervalEndAt: atMinute(startMinute + (index + 1) * 10),
+      }))
+    const metIntervals = [
+      ...stamp(biased, '2026-05-08T00:00:00.000Z', 0),
+      ...stamp(biased, '2026-05-15T00:00:00.000Z', 200),
+    ]
+    const unmetIntervals = quantizedLatentBurn('rounded', 32).map(
+      (interval) => ({
+        ...interval,
+        quotaKey: 'unmet_lane',
+        quotaLane: 'unmet_lane',
+      })
+    )
+    const phase2Estimate = {
+      provider: 'anthropic',
+      quota_key: 'met_lane',
+      quota_type: 'weekly',
+      quota_lane: 'met_lane',
+      residuals: {
+        static_baseline: { rmse_pct: 1, mae_pct: 1 },
+        rolling_exponential: { rmse_pct: 20, mae_pct: 20 },
+      },
+      lag_sensitivity: [
+        {
+          lag_minutes: 0,
+          trainable_interval_count: metIntervals.length,
+          status: 'evaluated',
+        },
+      ],
+      identifiability: { status: 'directional_only' },
+      backtest: {
+        status: 'evaluated',
+        static_rmse_pct: 1,
+        rolling_rmse_pct: 20,
+      },
+      trainable_interval_count: metIntervals.length,
+      selected_lag_minutes: 0,
+    }
+    const report = buildQuotaPhase3Report(
+      [...metIntervals, ...unmetIntervals],
+      {
+        comparisonScope: 'retained_live_cohort',
+        phase2Estimates: [phase2Estimate],
+        evaluationEvidence: {
+          cohort_validation: { status: 'verified' },
+          phase2_baseline_validation: { status: 'verified' },
+        },
+      }
+    )
+    const metLane = report.estimates.find(
+      (estimate) => estimate.quota_lane === 'met_lane'
+    )
+    const unmetLane = report.estimates.find(
+      (estimate) => estimate.quota_lane === 'unmet_lane'
+    )
+    const unmetDiagnostic = unmetLane?.diagnostics.find(
+      (row) => row.code === 'live_phase2_comparison_unmet'
+    )
+
+    expect(metLane?.phase2_comparison.live_evaluation_status).toBe('met')
+    expect(metLane?.diagnostics.map((row) => row.code)).not.toContain(
+      'live_phase2_comparison_unmet'
+    )
+    expect(unmetLane?.phase2_comparison.live_evaluation_status).toBe('unmet')
+    expect(unmetDiagnostic?.detail).toBe(unmetLane?.phase2_comparison.note)
+  })
 })
